@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=KonqPopupMenu/Plugin
+MimeType=model/stl;model/x.stl-ascii;model/x.stl-binary;model/3mf;application/vnd.ms-3mfdocument;
+Actions=RepairMesh
+X-KDE-Priority=TopLevel
+X-KDE-Submenu=Sutura
+
+[Desktop Action RepairMesh]
+Name=Repair with Sutura
+Icon=object-rotate-left
+Exec=%HOME%/.local/share/sutura/open.sh %F

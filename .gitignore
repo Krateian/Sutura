@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+*_fixed.stl
+*_fixed.3mf
+broken.stl
+.DS_Store

@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec "$HOME/.local/share/sutura/venv/bin/python" "$HOME/.local/share/sutura/repair.py" "$@"
