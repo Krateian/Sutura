@@ -1,36 +1,55 @@
 #!/usr/bin/env python3
-"""Sutura - small GUI frontend.
+"""Sutura - Qt (PySide6) GUI frontend.
 
-Pick one or more mesh files, run the two-stage repair on each, and read
-back what was fixed. Results are always written to new "_fixed" files.
+Pick or drop mesh files, run the two-stage repair on each via the installed
+CLI, and read back what was fixed. Results are always written to new
+"_fixed" files. Repair runs in a background thread and can be stopped.
 """
-import tkinter as tk
-from tkinter import ttk, filedialog
-import subprocess
-import threading
-import json
 import os
 import sys
+import json
+import subprocess
+
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QIcon, QFontDatabase
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
+    QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView)
 
 SUTURA = os.path.expanduser('~/.local/bin/sutura')
 
-BG = '#1e2327'
-PANEL = '#16191c'
-FG = '#dbe4ea'
-MUTED = '#8b98a5'
-ACCENT = '#14b8a6'
-BORDER = '#3a444c'
+# PySide6 bundles its own Qt plugins and cannot see the system platform
+# theme (plasma-integration), so QFileDialog would fall back to Qt's
+# embedded widget (no rubber-band rectangle selection). Point Qt at the
+# system plugin directory and select the KDE theme before QApplication.
+# Safe because the system Qt version matches the bundled one.
+if sys.platform.startswith('linux'):
+    os.environ.setdefault('QT_QPA_PLATFORMTHEME', 'kde')
+    _sys_plugins = '/usr/lib/qt6/plugins'
+    if os.path.isdir(_sys_plugins):
+        _existing = os.environ.get('QT_PLUGIN_PATH', '')
+        if _sys_plugins not in _existing.split(os.pathsep):
+            os.environ['QT_PLUGIN_PATH'] = (
+                (_existing + os.pathsep) if _existing else '') + _sys_plugins
 
-MONO = ('DejaVu Sans Mono', 9)
-UI_FONT = ('Noto Sans', 10)
-
-
-def run_repair(path):
-    r = subprocess.run([SUTURA, path], capture_output=True, text=True, timeout=600)
+# --- CLI output parsing. Kept from the previous GUI - do not rewrite. ------
+def parse_cli_output(out, err):
     try:
-        return json.loads(r.stdout.strip().splitlines()[-1])
+        return json.loads(out.strip().splitlines()[-1])
     except Exception:
-        return {'error': r.stderr.strip() or r.stdout.strip()}
+        return {'error': err.strip() or out.strip()}
+
+
+def summarize(data):
+    if data.get('error') and 'stage1' not in data:
+        return 'ERROR'
+    s1 = data.get('stage1', {})
+    if s1.get('two_manifold') and s1.get('holes_remaining', 0) == 0:
+        return 'watertight'
+    if s1.get('two_manifold'):
+        return '%d hole(s)' % s1.get('holes_remaining', 0)
+    return 'partial'
 
 
 def format_report(data):
@@ -71,181 +90,284 @@ def format_report(data):
     return '\n'.join(lines)
 
 
-def summarize(data):
-    if data.get('error') and 'stage1' not in data:
-        return 'ERROR'
-    s1 = data.get('stage1', {})
-    if s1.get('two_manifold') and s1.get('holes_remaining', 0) == 0:
-        return 'watertight'
-    if s1.get('two_manifold'):
-        return '%d hole(s)' % s1.get('holes_remaining', 0)
-    return 'partial'
+class RepairWorker(QThread):
+    """Repairs files sequentially in a background thread."""
+
+    file_started = Signal(str)
+    file_done = Signal(str, str, str)   # path, summary, report
+    progress = Signal(int, int)          # current, total
+    all_done = Signal(bool)              # cancelled
+
+    def __init__(self, files, parent=None):
+        super().__init__(parent)
+        self._files = list(files)
+        self._cancelled = False
+        self._proc = None
+
+    def cancel(self):
+        self._cancelled = True
+        if self._proc is not None and self._proc.poll() is None:
+            self._proc.terminate()
+
+    def run(self):
+        n = len(self._files)
+        for idx, path in enumerate(self._files, 1):
+            if self._cancelled:
+                self.file_done.emit(path, 'Cancelled', '')
+                continue
+            self.file_started.emit(path)
+            data = self._run_one(path)
+            if self._cancelled:
+                self.file_done.emit(path, 'Stopped', '')
+                continue
+            self.file_done.emit(path, summarize(data), format_report(data))
+            self.progress.emit(idx, n)
+        self.all_done.emit(self._cancelled)
+
+    def _run_one(self, path):
+        self._proc = subprocess.Popen(
+            [SUTURA, path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            out, err = self._proc.communicate(timeout=600)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            out, err = self._proc.communicate()
+            return {'error': 'timeout while repairing'}
+        finally:
+            self._proc = None
+        return parse_cli_output(out, err)
 
 
-def load_icon():
-    for size in (48, 32, 64, 128):
-        path = os.path.expanduser(
-            '~/.local/share/icons/hicolor/%dx%d/apps/sutura.png' % (size, size))
-        if os.path.exists(path):
-            try:
-                return tk.PhotoImage(file=path)
-            except tk.TclError:
-                pass
-    return None
+class MainWindow(QMainWindow):
+    MESH_EXTS = ('.stl', '.3mf')
 
-
-class App:
-    def __init__(self, root):
-        self.root = root
-        root.title('Sutura')
-        root.configure(bg=BG)
-        root.geometry('760x600')
-        root.minsize(600, 460)
-        self._style()
-
-        icon = load_icon()
-        if icon is not None:
-            root.iconphoto(True, icon)
-        self._icon = icon
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Sutura')
+        self.resize(780, 620)
+        self.setWindowIcon(self._load_icon())
+        self.setAcceptDrops(True)
 
         self.files = []
+        self._item_by_path = {}
+        self.worker = None
 
-        # --- file list -----------------------------------------------------
-        top = ttk.Frame(root)
-        top.pack(fill='both', expand=True, padx=12, pady=(12, 4))
+        self._build_ui()
+        self._apply_accent()
 
-        self.tree = ttk.Treeview(top, columns=('status',), show='tree headings', height=8)
-        self.tree.heading('#0', text='Files')
-        self.tree.heading('status', text='Result')
-        self.tree.column('#0', width=560)
-        self.tree.column('status', width=110, anchor='center')
-        self.tree.pack(side='left', fill='both', expand=True)
+    # --- UI ---------------------------------------------------------------
+    def _build_ui(self):
+        central = QWidget(self)
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
 
-        scroll = ttk.Scrollbar(top, orient='vertical', command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        scroll.pack(side='right', fill='y')
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(['File', 'Result'])
+        self.tree.setColumnWidth(0, 580)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        layout.addWidget(self.tree)
 
-        # --- buttons -------------------------------------------------------
-        btns = ttk.Frame(root)
-        btns.pack(fill='x', padx=12, pady=(4, 4))
-        ttk.Button(btns, text='Add files…', command=self.add_files).pack(side='left', padx=(0, 6))
-        ttk.Button(btns, text='Remove selected', command=self.remove_selected).pack(side='left', padx=(0, 6))
-        ttk.Button(btns, text='Clear', command=self.clear_files).pack(side='left')
+        buttons = QHBoxLayout()
+        self.btn_add_files = QPushButton('Add files…')
+        self.btn_add_folder = QPushButton('Add folder…')
+        self.btn_remove = QPushButton('Remove selected')
+        self.btn_clear = QPushButton('Clear')
+        self.btn_repair = QPushButton('Repair')
+        self.btn_repair.setObjectName('repairBtn')
+        self.btn_stop = QPushButton('Stop')
+        buttons.addWidget(self.btn_add_files)
+        buttons.addWidget(self.btn_add_folder)
+        buttons.addWidget(self.btn_remove)
+        buttons.addWidget(self.btn_clear)
+        buttons.addStretch(1)
+        buttons.addWidget(self.btn_repair)
+        buttons.addWidget(self.btn_stop)
+        layout.addLayout(buttons)
 
-        self.repair_btn = ttk.Button(btns, text='Repair', style='Accent.TButton',
-                                     command=self.repair, state='disabled')
-        self.repair_btn.pack(side='right')
+        row = QHBoxLayout()
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.status = QLabel('Ready')
+        row.addWidget(self.progress, 1)
+        row.addWidget(self.status)
+        layout.addLayout(row)
 
-        # --- status / progress ---------------------------------------------
-        mid = ttk.Frame(root)
-        mid.pack(fill='x', padx=12, pady=(4, 4))
-        self.progress = ttk.Progressbar(mid, mode='determinate', maximum=100)
-        self.progress.pack(side='left', fill='x', expand=True, padx=(0, 10))
-        self.status = tk.StringVar(value='Ready')
-        ttk.Label(mid, textvariable=self.status, foreground=MUTED).pack(side='left')
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        layout.addWidget(self.log, 1)
 
-        # --- per-file report log -------------------------------------------
-        log_frame = ttk.Frame(root)
-        log_frame.pack(fill='both', expand=True, padx=12, pady=(4, 12))
-        self.log = tk.Text(log_frame, wrap='word', bg=PANEL, fg=FG, insertbackground=FG,
-                           font=MONO, relief='flat', padx=10, pady=8)
-        self.log.pack(side='left', fill='both', expand=True)
-        lscroll = ttk.Scrollbar(log_frame, orient='vertical', command=self.log.yview)
-        self.log.configure(yscrollcommand=lscroll.set)
-        lscroll.pack(side='right', fill='y')
+        self.btn_add_files.clicked.connect(self.add_files)
+        self.btn_add_folder.clicked.connect(self.add_folder)
+        self.btn_remove.clicked.connect(self.remove_selected)
+        self.btn_clear.clicked.connect(self.clear_files)
+        self.btn_repair.clicked.connect(self.repair)
+        self.btn_stop.clicked.connect(self.stop)
 
-    def _style(self):
-        style = ttk.Style(self.root)
+        self.btn_repair.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+
+    def _apply_accent(self):
+        # Only the brand teal accent; the rest comes from the system theme.
+        self.setStyleSheet('''
+            QPushButton#repairBtn {
+                background-color: #14b8a6; color: #0b0f11;
+                border: none; border-radius: 4px; padding: 6px 18px; font-weight: bold;
+            }
+            QPushButton#repairBtn:hover { background-color: #17c9b4; }
+            QPushButton#repairBtn:disabled { background-color: palette(mid); color: palette(midlight); }
+            QProgressBar::chunk { background-color: #14b8a6; }
+        ''')
+
+    def _load_icon(self):
+        for size in (48, 32, 64, 128):
+            path = os.path.expanduser(
+                '~/.local/share/icons/hicolor/%dx%d/apps/sutura.png' % (size, size))
+            if os.path.exists(path):
+                return QIcon(path)
+        return QIcon()
+
+    # --- adding files / folders --------------------------------------------
+    def _add_path(self, path):
+        if not path or path in self.files:
+            return False
+        self.files.append(path)
+        item = QTreeWidgetItem([path, ''])
+        self.tree.addTopLevelItem(item)
+        self._item_by_path[path] = item
+        return True
+
+    def _add_meshes_from_folder(self, folder):
+        added = 0
         try:
-            style.theme_use('clam')
-        except tk.TclError:
-            pass
-        style.configure('.', background=BG, foreground=FG, fieldbackground=PANEL,
-                        bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
-                        font=UI_FONT)
-        style.configure('TFrame', background=BG)
-        style.configure('TLabel', background=BG, foreground=FG)
-        style.configure('TButton', background='#2a3238', foreground=FG,
-                        bordercolor=BORDER, padding=(12, 6), font=UI_FONT)
-        style.map('TButton', background=[('active', '#39434b'), ('pressed', ACCENT)],
-                  foreground=[('pressed', '#0b0f11')])
-        style.configure('Accent.TButton', background=ACCENT, foreground='#0b0f11')
-        style.map('Accent.TButton',
-                  background=[('active', '#17c9b4'), ('pressed', '#0f8a7c')])
-        style.configure('Treeview', background=PANEL, fieldbackground=PANEL,
-                        foreground=FG, rowheight=24)
-        style.map('Treeview', background=[('selected', ACCENT)],
-                  foreground=[('selected', '#0b0f11')])
-        style.configure('Treeview.Heading', background='#2a3238', foreground=FG,
-                        relief='flat')
-        style.configure('Horizontal.TProgressbar', background=ACCENT,
-                        troughcolor=PANEL, bordercolor=BORDER)
+            entries = sorted(os.listdir(folder))
+        except OSError:
+            return 0
+        for name in entries:
+            if name.lower().endswith(self.MESH_EXTS):
+                if self._add_path(os.path.join(folder, name)):
+                    added += 1
+        return added
+
+    def _add_path_or_folder(self, path):
+        if os.path.isdir(path):
+            return self._add_meshes_from_folder(path)
+        return 1 if self._add_path(path) else 0
 
     def add_files(self):
-        paths = filedialog.askopenfilenames(
-            title='Select mesh files',
-            filetypes=[('Mesh files', '*.stl *.STL *.3mf *.3MF'), ('All files', '*.*')])
-        for p in paths:
-            if p not in self.files:
-                self.files.append(p)
-                self.tree.insert('', 'end', iid=p, text=p, values=('pending',))
-        self.refresh_state()
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, 'Select mesh files', '',
+            'Mesh files (*.stl *.STL *.3mf *.3MF);;All files (*)')
+        added = sum(1 for p in paths if self._add_path(p))
+        if added:
+            self._log('Added %d file(s)' % added)
+        self._refresh_buttons()
+
+    def add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, 'Select a folder with mesh files')
+        if folder:
+            added = self._add_meshes_from_folder(folder)
+            if added:
+                self._log('Added %d file(s) from %s' % (added, folder))
+            else:
+                self.status.setText('No mesh files in that folder')
+            self._refresh_buttons()
 
     def remove_selected(self):
-        for iid in self.tree.selection():
-            if iid in self.files:
-                self.files.remove(iid)
-            self.tree.delete(iid)
-        self.refresh_state()
+        for item in self.tree.selectedItems():
+            path = item.text(0)
+            if path in self.files:
+                self.files.remove(path)
+            self._item_by_path.pop(path, None)
+            self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
+        self._refresh_buttons()
 
     def clear_files(self):
         self.files.clear()
-        self.tree.delete(*self.tree.get_children())
-        self.refresh_state()
+        self._item_by_path.clear()
+        self.tree.clear()
+        self._refresh_buttons()
 
-    def refresh_state(self):
-        self.repair_btn.config(state='normal' if self.files else 'disabled')
+    # --- drag & drop (whole window) ----------------------------------------
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
 
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        added = 0
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path:
+                added += self._add_path_or_folder(path)
+        if added:
+            self._log('Added %d file(s) (drag)' % added)
+            self._refresh_buttons()
+        event.acceptProposedAction()
+
+    # --- repair ------------------------------------------------------------
     def repair(self):
-        if not self.files:
+        if not self.files or self.worker is not None:
             return
-        self.repair_btn.config(state='disabled')
-        self.progress.configure(maximum=len(self.files), value=0)
-        self.status.set('Repairing…')
-        self.log.delete('1.0', 'end')
-        for iid in self.tree.get_children():
-            self.tree.set(iid, 'status', '')
-        threading.Thread(target=self._work, args=(list(self.files),), daemon=True).start()
+        for i in range(self.tree.topLevelItemCount()):
+            self.tree.topLevelItem(i).setText(1, '')
+        self.btn_repair.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.progress.setRange(0, len(self.files))
+        self.progress.setValue(0)
+        self.status.setText('Repairing…')
+        self.log.clear()
 
-    def _work(self, paths):
-        for idx, path in enumerate(paths, start=1):
-            self.root.after(0, lambda p=path: self.tree.set(p, 'status', '…'))
-            data = run_repair(path)
-            summary = summarize(data)
-            self.root.after(0, lambda p=path, s=summary: self.tree.set(p, 'status', s))
-            report = format_report(data)
-            self.root.after(0, lambda p=path, r=report: self._append_log(p, r))
-            self.root.after(0, lambda i=idx: self.progress.configure(value=i))
-            self.root.after(0, lambda i=idx, n=len(paths): self.status.set(
-                'Repairing… %d/%d' % (i, n)))
-        self.root.after(0, self._done)
+        self.worker = RepairWorker(self.files, self)
+        self.worker.file_done.connect(self._on_file_done)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.all_done.connect(self._on_all_done)
+        self.worker.start()
 
-    def _append_log(self, path, report):
-        self.log.insert('end', '%s\n%s\n\n' % (path, report))
-        self.log.see('end')
+    def stop(self):
+        if self.worker is not None:
+            self.worker.cancel()
+            self.btn_stop.setEnabled(False)
 
-    def _done(self):
-        self.status.set('Done')
-        self.repair_btn.config(state='normal')
+    def _on_file_done(self, path, summary, report):
+        item = self._item_by_path.get(path)
+        if item is not None:
+            item.setText(1, summary)
+        if report:
+            self._log('%s\n%s' % (path, report))
+
+    def _on_progress(self, current, total):
+        self.progress.setValue(current)
+        self.status.setText('Repairing… %d/%d' % (current, total))
+
+    def _on_all_done(self, cancelled):
+        self.status.setText('Done' + (' (stopped)' if cancelled else ''))
+        self.btn_stop.setEnabled(False)
+        self.btn_repair.setEnabled(bool(self.files))
+        self.worker = None
+
+    def _log(self, text):
+        self.log.appendPlainText(text)
+        self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
+
+    def _refresh_buttons(self):
+        self.btn_repair.setEnabled(bool(self.files) and self.worker is None)
+
+
+def main():
+    app = QApplication(sys.argv)
+    win = MainWindow()
+    for p in sys.argv[1:]:
+        win._add_path(p)
+    win._refresh_buttons()
+    win.show()
+    sys.exit(app.exec())
 
 
 if __name__ == '__main__':
-    root = tk.Tk()
-    app = App(root)
-    if len(sys.argv) > 1:
-        for p in sys.argv[1:]:
-            if p not in app.files:
-                app.files.append(p)
-                app.tree.insert('', 'end', iid=p, text=p, values=('pending',))
-        app.refresh_state()
-    root.mainloop()
+    main()

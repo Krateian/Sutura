@@ -82,6 +82,15 @@ echo "==> Dolphin service menu"
 sed "s|%HOME%|$HOME|g" "$SRC/share/sutura.desktop" > "$SERVICE_DIR/sutura.desktop"
 chmod 0755 "$SERVICE_DIR/sutura.desktop"
 
+echo "==> application entry"
+APP_ENTRIES="$HOME/.local/share/applications"
+mkdir -p "$APP_ENTRIES"
+sed "s|%HOME%|$HOME|g" "$SRC/share/sutura-app.desktop" > "$APP_ENTRIES/sutura.desktop"
+chmod 0644 "$APP_ENTRIES/sutura.desktop"
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APP_ENTRIES" >/dev/null 2>&1 || true
+fi
+
 echo "==> icons (hicolor)"
 HICON="$HOME/.local/share/icons/hicolor"
 if [ -d "$SRC/assets/icon" ]; then

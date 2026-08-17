@@ -15,6 +15,12 @@ rm -f "$BIN_DIR/sutura"
 echo "Removing $SERVICE_DIR/sutura.desktop"
 rm -f "$SERVICE_DIR/sutura.desktop"
 
+echo "Removing $HOME/.local/share/applications/sutura.desktop"
+rm -f "$HOME/.local/share/applications/sutura.desktop"
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
+fi
+
 echo "Removing hicolor icons"
 HICON="$HOME/.local/share/icons/hicolor"
 for s in 16 32 48 64 128 256; do

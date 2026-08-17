@@ -70,11 +70,11 @@ wrapper at `~/.local/bin/sutura`, installs the hicolor app icons, and
 registers the Dolphin service menu. Re-running is safe.
 
 Installation uses pip inside isolated virtualenvs — no AUR, no yay/paru
-required, nothing touches your system package manager.
+required, nothing touches your system package manager. The GUI needs
+PySide6 (~79 MB download, part of the `venv`); total installed size for
+the two virtualenvs is roughly 800 MB.
 
 On Arch, if `python311` is not installed, install it first (see above).
-The GUI uses `tkinter`, which ships with the standard `python` package on
-Arch; on other distros you may need `python3-tk` / `python3-tkinter`.
 
 ## Usage
 
@@ -105,7 +105,12 @@ GUI:
 ```
 
 The GUI supports batch repair: add any number of files, press **Repair**,
-and each one is processed in turn with its result listed per file.
+and each one is processed in turn with its result listed per file. Files
+can be added with **Add files…** (native multi-select, rubber-band included),
+**Add folder…** (every `.stl`/`.3mf` in the folder, one level deep), or by
+dragging files or folders onto the window. **Stop** terminates the running
+repair and marks the remaining files as cancelled. Drag & drop works on
+native Wayland sessions (the GUI is a Qt application, not XWayland).
 
 Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each
@@ -168,6 +173,12 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 
 ## Known limitations
 
+* **Native KDE file dialog.** The GUI sets `QT_QPA_PLATFORMTHEME=kde` and
+  points `QT_PLUGIN_PATH` at `/usr/lib/qt6/plugins` so QFileDialog uses the
+  native KDE dialog (rubber-band rectangle selection included). This assumes
+  the system Qt version matches the bundled PySide6 Qt; on other distros
+  where that differs, Qt falls back to its embedded dialog — rectangle
+  selection may be unavailable, but Ctrl/Shift+click always works.
 * **Self-intersections within one connected shell.** manifold3d rebuilds the
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check

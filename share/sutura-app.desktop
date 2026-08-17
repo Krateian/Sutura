@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Sutura
+Comment=Repair STL/3MF meshes
+Exec=%HOME%/.local/share/sutura/venv/bin/python %HOME%/.local/share/sutura/gui.py
+Icon=sutura
+Terminal=false
+Categories=Graphics;3DGraphics;
+StartupNotify=true
