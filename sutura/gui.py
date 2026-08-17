@@ -17,7 +17,30 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView)
 
-SUTURA = os.path.expanduser('~/.local/bin/sutura')
+def _find_sutura_cmd():
+    """Resolve the CLI to run, mirroring repair.py's staged fallbacks.
+
+    Priority: $SUTURA env override -> ~/.local/bin/sutura (the Linux
+    install wrapper) -> the repair.py next to this file, run with the
+    current interpreter (uninstalled / repo / macOS single-env case).
+    Returns the argv list for subprocess, or None if nothing was found.
+    """
+    env = os.environ.get('SUTURA')
+    if env:
+        return [env]
+
+    wrapper = os.path.expanduser('~/.local/bin/sutura')
+    if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
+        return [wrapper]
+
+    # fall back to this file's own directory: repair.py + current python
+    repair = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'repair.py')
+    if os.path.isfile(repair):
+        return [sys.executable, repair]
+    return None
+
+
+SUTURA_CMD = _find_sutura_cmd()
 
 # PySide6 bundles its own Qt plugins and cannot see the system platform
 # theme (plasma-integration), so QFileDialog would fall back to Qt's
@@ -128,8 +151,16 @@ class RepairWorker(QThread):
         self.all_done.emit(self._cancelled)
 
     def _run_one(self, path):
-        self._proc = subprocess.Popen(
-            [SUTURA, path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if SUTURA_CMD is None:
+            return {'error': 'sutura not found: no $SUTURA, no ~/.local/bin/sutura, '
+                             'and no repair.py next to the GUI'}
+        try:
+            self._proc = subprocess.Popen(
+                [*SUTURA_CMD, path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except OSError as e:
+            # e.g. FileNotFoundError - never crash the worker thread silently.
+            return {'error': 'could not start sutura: %s' % e}
         try:
             out, err = self._proc.communicate(timeout=600)
         except subprocess.TimeoutExpired:
