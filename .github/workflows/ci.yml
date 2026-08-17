@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # CLI / repair tests are headless and need no display.
+      - name: Install the repair engine
+        run: |
+          python -m venv venv
+          ./venv/bin/pip install --quiet --upgrade pip
+          ./venv/bin/pip install --quiet -r requirements.txt
+
+      - name: Install manifold3d (stage 2)
+        run: |
+          python -m venv venv311
+          ./venv311/bin/pip install --quiet --upgrade pip
+          ./venv311/bin/pip install --quiet -r requirements-311.txt
+
+      - name: Smoke test (broken cube)
+        env:
+          SUTURA_DIR: ${{ github.workspace }}
+        run: |
+          ./venv/bin/python tests/make_broken_stl.py /tmp/broken.stl
+          ./venv/bin/python sutura/repair.py /tmp/broken.stl >/tmp/out.json
+          ./venv/bin/python -c "import json; d=json.load(open('/tmp/out.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0"
+
+      - name: Layered multi-object 3MF regression
+        env:
+          SUTURA_DIR: ${{ github.workspace }}
+        run: |
+          # use the repo repair engine + venv311 directly (no CLI install needed)
+          ./venv/bin/python tests/make_layered_multiobject_3mf.py /tmp/layered.3mf
+          ./venv/bin/python sutura/repair.py /tmp/layered.3mf >/tmp/out2.json
+          ./venv/bin/python -c "import json; d=json.load(open('/tmp/out2.json')); assert d.get('objects',0)==2"
+          ./venv/bin/python -c "import zipfile; zipfile.ZipFile('/tmp/layered_fixed.3mf').testzip() is None"
+
+      - name: Adversarial input regression
+        env:
+          SUTURA_DIR: ${{ github.workspace }}
+        run: |
+          SUTURA="$PWD/sutura/repair.py" ./venv/bin/python tests/test_adversarial.py

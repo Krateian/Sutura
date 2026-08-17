@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 
-SUTURA = os.path.expanduser('~/.local/bin/sutura')
+SUTURA = os.environ.get('SUTURA', os.path.expanduser('~/.local/bin/sutura'))
 
 CUBE = [
     ((-1, -1, -1), (1, -1, -1), (1, 1, -1)), ((-1, -1, -1), (1, 1, -1), (-1, 1, -1)),

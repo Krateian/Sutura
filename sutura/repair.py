@@ -27,7 +27,7 @@ import zipfile
 import subprocess
 import numpy as np
 
-SUTURA_DIR = os.path.expanduser('~/.local/share/sutura')
+SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
