@@ -407,9 +407,39 @@ def human_report(r):
     return '\n'.join(lines)
 
 
+def process_file(src, human):
+    """Repair one file. Returns (result_dict, category)."""
+    if not os.path.exists(src):
+        return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
+
+    stem, ext = os.path.splitext(src)
+    out = stem + '_fixed' + ext
+
+    tmpdir = tempfile.mkdtemp(prefix='sutura-')
+    result = {'input': src, 'output': out}
+    try:
+        if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
+            result.update(repair_3mf(src, out, tmpdir))
+        else:
+            result.update(repair_file(src, out, tmpdir))
+    except Exception as e:
+        result['error'] = 'repair failed: %s' % e
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    s1 = result.get('stage1', {})
+    if 'error' in result and 'stage1' not in result:
+        category = 'error'
+    elif s1.get('two_manifold') and s1.get('holes_remaining', 0) == 0:
+        category = 'ok'
+    else:
+        category = 'warning'
+    return result, category
+
+
 def main():
     args = sys.argv[1:]
-    src = None
+    files = []
     out = None
     human = False
     i = 0
@@ -422,40 +452,45 @@ def main():
             human = True
             i += 1
         else:
-            src = a
+            files.append(a)
             i += 1
 
-    if not src or not os.path.exists(src):
-        if src in ('-h', '--help', 'help'):
-            print('Usage: sutura [FILE] [-o OUTPUT] [--human]')
-            print('Repair an STL/3MF mesh. Output is written with a "_fixed" suffix.')
-            sys.exit(0)
-        print(json.dumps({'error': 'file not found: %s' % src}))
+    if not files or any(f in ('-h', '--help', 'help') for f in files):
+        print('Usage: sutura [FILE ...] [-o OUTPUT] [--human]')
+        print('Repair one or more STL/3MF meshes. Output files get a "_fixed" suffix.')
+        print('-o is only valid with a single input file.')
+        sys.exit(0)
+
+    if len(files) > 1 and out is not None:
+        print(json.dumps({'error': '-o cannot be used with multiple input files'}))
         sys.exit(1)
 
-    stem, ext = os.path.splitext(src)
-    if out is None:
-        out = stem + '_fixed' + ext
+    results = [process_file(f, human) for f in files]
+    ok = sum(1 for _, c in results if c == 'ok')
+    warnings = sum(1 for _, c in results if c == 'warning')
+    errors = sum(1 for _, c in results if c == 'error')
 
-    tmpdir = tempfile.mkdtemp(prefix='sutura-')
-    result = {'input': src, 'output': out}
-
-    try:
-        if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
-            result.update(repair_3mf(src, out, tmpdir))
+    if len(files) == 1:
+        result, category = results[0]
+        if human:
+            print(human_report(result))
         else:
-            result.update(repair_file(src, out, tmpdir))
-    except Exception as e:
-        result['error'] = 'repair failed: %s' % e
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+            print(json.dumps(result, ensure_ascii=False))
+        sys.exit(0 if category != 'error' else 1)
 
     if human:
-        print(human_report(result))
+        for result, category in results:
+            print(human_report(result))
+            print()
+        print('Summary: %d file(s), %d fully repaired, %d with warnings, %d failed.'
+              % (len(files), ok, warnings, errors))
     else:
-        print(json.dumps(result, ensure_ascii=False))
-    # a repair that could not run (e.g. malformed input) is a failure
-    sys.exit(0 if ('error' not in result or 'stage1' in result) else 1)
+        payload = {
+            'files': [r for r, _ in results],
+            'summary': {'total': len(files), 'ok': ok, 'warning': warnings, 'error': errors},
+        }
+        print(json.dumps(payload, ensure_ascii=False))
+    sys.exit(0 if errors == 0 else 1)
 
 
 if __name__ == '__main__':

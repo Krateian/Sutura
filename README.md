@@ -81,7 +81,12 @@ CLI:
 sutura model.stl            # writes model_fixed.stl
 sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # human-readable report
+sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
 ```
+
+With multiple files, every input is repaired in turn and a summary is
+printed (`N fully repaired, M with warnings, K failed`); the exit code is
+non-zero if any file failed. `-o` is only valid with a single file.
 
 Multi-object 3MF files are handled natively: every object mesh is repaired
 independently and written back into the archive, so no object is lost. The
@@ -92,6 +97,9 @@ GUI:
 ```sh
 ~/.local/share/sutura/gui.py
 ```
+
+The GUI supports batch repair: add any number of files, press **Repair**,
+and each one is processed in turn with its result listed per file.
 
 Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each
