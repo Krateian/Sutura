@@ -19,6 +19,7 @@ import sys
 import os
 import re
 import json
+import math
 import struct
 import tempfile
 import shutil
@@ -125,6 +126,11 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
 
+    if len(t) == 0 or len(v) == 0:
+        raise ValueError('input mesh is empty (no triangles)')
+    if not np.isfinite(v).all():
+        raise ValueError('input mesh contains NaN or infinite coordinates')
+
     stats = {'stage1': {}}
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -145,6 +151,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
         if (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0)):
             ms, after, applied, skipped = fb, fafter, fapplied, fskipped
+
+    if after.get('faces_number', 0) == 0:
+        raise ValueError('all faces are degenerate; nothing to repair')
 
     holes_after = max(after.get('boundary_edges', 0) // 2, 0)
     nm_after = after.get('non_two_manifold_edges', 0)
@@ -202,9 +211,55 @@ def save_mesh(out_path, verts, tris):
     ms.save_current_mesh(out_path)
 
 
+def scan_bad_coordinates(path):
+    """Return a description of NaN/Inf coordinates in STL/OBJ files, or None."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.obj':
+        with open(path, errors='replace') as f:
+            for line in f:
+                if line.startswith('v '):
+                    for tok in line.split()[1:4]:
+                        try:
+                            if not math.isfinite(float(tok)):
+                                return 'NaN or infinite coordinates'
+                        except ValueError:
+                            pass
+        return None
+    with open(path, 'rb') as f:
+        head = f.read(80)
+        if head[:5] == b'solid':
+            f.seek(0)
+            for line in f:
+                if line.strip().startswith(b'vertex'):
+                    for tok in line.split()[1:4]:
+                        try:
+                            if not math.isfinite(float(tok)):
+                                return 'NaN or infinite coordinates'
+                        except ValueError:
+                            pass
+            return None
+        buf = f.read(4)
+        if len(buf) < 4:
+            return None  # not a complete binary STL; let the loader report it
+        n = struct.unpack('<I', buf)[0]
+        for _ in range(n):
+            buf = f.read(50)
+            if len(buf) < 50:
+                break  # truncated file; let the loader report it
+            for i in range(12, 48, 12):
+                if not all(math.isfinite(x) for x in struct.unpack('<3f', buf[i:i + 12])):
+                    return 'NaN or infinite coordinates'
+    return None
+
+
 def repair_file(src, out, tmpdir):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
+
+    bad_coords = scan_bad_coordinates(src)
+    if bad_coords:
+        raise ValueError('input mesh contains %s' % bad_coords)
+
     load_ms = ml.MeshSet()
     load_ms.load_new_mesh(src)
     verts = np.asarray(load_ms.current_mesh().vertex_matrix(), dtype=np.float32)
@@ -399,7 +454,8 @@ def main():
         print(human_report(result))
     else:
         print(json.dumps(result, ensure_ascii=False))
-    sys.exit(0)
+    # a repair that could not run (e.g. malformed input) is a failure
+    sys.exit(0 if ('error' not in result or 'stage1' in result) else 1)
 
 
 if __name__ == '__main__':
