@@ -28,9 +28,13 @@ def write_obj(path, verts, tris):
             f.write('f %d %d %d\n' % (t[0] + 1, t[1] + 1, t[2] + 1))
 
 
-def main():
-    src, dst = sys.argv[1], sys.argv[2]
+def run_bridge(src, dst):
+    """Rebuild the closed OBJ at src into a manifold solid at dst.
 
+    Returns the JSON report dict. Used both by the CLI entry point (as a
+    separate interpreter) and, when manifold3d is importable in the current
+    process, by repair.py in-process.
+    """
     mesh = trimesh.load(src, force='mesh')
     verts = np.asarray(mesh.vertices, dtype=np.float32)
     tris = np.asarray(mesh.faces, dtype=np.int32)
@@ -46,8 +50,7 @@ def main():
 
     if man.is_empty():
         report['error'] = 'manifold3d could not process the input (%s)' % man.status()
-        print(json.dumps(report))
-        return
+        return report
 
     report['volume_before'] = float(man.volume())
 
@@ -68,6 +71,12 @@ def main():
 
     write_obj(dst, out_verts, out_tris)
     report['ok'] = True
+    return report
+
+
+def main():
+    src, dst = sys.argv[1], sys.argv[2]
+    report = run_bridge(src, dst)
     print(json.dumps(report))
 
 

@@ -71,7 +71,10 @@ def format_report(data):
         lines.append('')
         lines.append('Stage 2 (Manifold):')
         if 'error' in s2:
-            lines.append('  ERROR: %s' % s2['error'])
+            if s2['error'].startswith('Stage 2 skipped'):
+                lines.append('  SKIPPED: %s' % s2['error'])
+            else:
+                lines.append('  ERROR: %s' % s2['error'])
         else:
             lines.append('  Input triangles : %d' % s2.get('input_faces', 0))
             lines.append('  Output triangles: %d' % s2.get('output_faces', 0))

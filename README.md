@@ -39,6 +39,13 @@ resolve self-intersecting geometry; manifold3d guarantees a watertight result
 but its Python binding rejects any input that is not already closed
 (`Error.NotManifold`), so stage 1 must finish the mesh first.
 
+On Linux, stage 2 runs in a dedicated python3.11 virtualenv (manifold3d
+ships no wheel for Python 3.14). On single-environment installs (macOS/conda,
+or any setup where manifold3d is importable from the current Python), stage 2
+runs in-process instead. If manifold3d is not available at all, the report
+explicitly says `Stage 2 skipped: manifold3d not available in this
+environment.` — it is never silently omitted.
+
 The original file is never overwritten. Output is written with a `_fixed`
 suffix in the same directory.
 

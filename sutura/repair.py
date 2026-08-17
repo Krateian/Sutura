@@ -205,19 +205,42 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
 
 
 def run_stage2(inter, out_obj):
-    if not os.path.exists(VENV311) or not os.path.exists(BRIDGE):
-        return None, None
-    r = subprocess.run(
-        [VENV311, BRIDGE, inter, out_obj],
-        capture_output=True, text=True, timeout=600,
-    )
-    if r.returncode != 0:
-        return {'error': r.stderr.strip() or r.stdout.strip()}, None
+    """Run stage 2, trying the fixed two-venv path first, then in-process.
+
+    Returns (report, ok) where ok is True if a stage 2 result was produced.
+    If manifold3d is unavailable, returns a report dict that explicitly
+    says stage 2 was skipped (never silent).
+    """
+    # 1) primary: the fixed Linux two-venv layout (python3.11 + manifold3d)
+    if os.path.exists(VENV311) and os.path.exists(BRIDGE):
+        r = subprocess.run(
+            [VENV311, BRIDGE, inter, out_obj],
+            capture_output=True, text=True, timeout=600,
+        )
+        if r.returncode == 0:
+            try:
+                report = json.loads(r.stdout.strip().splitlines()[-1])
+            except Exception:
+                report = {'error': 'unparseable manifold output'}
+            if 'error' not in report:
+                return report, True
+        # fall through to the in-process attempt if the venv failed
+
+    # 2) single-environment install (macOS/conda, or any env where manifold3d
+    #    is importable from the current interpreter): call the bridge in-process.
     try:
-        report = json.loads(r.stdout.strip().splitlines()[-1])
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('sutura_manifold_bridge', BRIDGE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        report = module.run_bridge(inter, out_obj)
+        if 'error' not in report:
+            return report, True
     except Exception:
-        report = {'error': 'unparseable manifold output'}
-    return report, r.returncode
+        pass
+
+    # 3) not available at all: report it explicitly, never silently.
+    return {'error': 'Stage 2 skipped: manifold3d not available in this environment.'}, False
 
 
 def save_mesh(out_path, verts, tris):
@@ -290,9 +313,11 @@ def repair_file(src, out, tmpdir):
 
     report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir)
 
-    # stage 2 (manifold3d) applies to watertight results
+    # stage 2 (manifold3d) applies to watertight results. Try it whenever the
+    # bridge script is present; run_stage2 handles the fixed venv path, an
+    # in-process single-environment install, or an explicit "skipped" report.
     if (report['stage1'].get('two_manifold') and report['stage1'].get('holes_remaining', 0) == 0
-            and os.path.exists(VENV311) and os.path.exists(BRIDGE)):
+            and os.path.exists(BRIDGE)):
         inter = os.path.join(tmpdir, 'stage1.obj')
         out_obj = os.path.join(tmpdir, 'stage2.obj')
         write_obj(inter, new_v, new_t)
@@ -419,7 +444,10 @@ def human_report(r):
         lines.append('')
         lines.append('Stage 2 (Manifold):')
         if 'error' in s2:
-            lines.append('  ERROR: %s' % s2['error'])
+            if s2['error'].startswith('Stage 2 skipped'):
+                lines.append('  SKIPPED: %s' % s2['error'])
+            else:
+                lines.append('  ERROR: %s' % s2['error'])
         else:
             for k, v in s2.items():
                 lines.append('  %s: %s' % (k, v))
