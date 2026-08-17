@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [1.0.0] - unreleased
+## [0.1.0] - unreleased
 
 Initial public release. Two-stage mesh repair for STL/3MF files on Linux.
 
