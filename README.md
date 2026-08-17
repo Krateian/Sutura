@@ -8,7 +8,8 @@
   <img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI">
 </p>
 
-Two-stage mesh repair for STL and 3MF files, built for Linux.
+Two-stage mesh repair for STL and 3MF files, built for Linux with full
+macOS support.
 
 Linux has no direct equivalent of Windows' right-click "Fix model" (3D Builder,
 Netfabb) or Bambu Studio's broken-on-Linux "Fix model" button. Sutura provides
@@ -51,12 +52,21 @@ suffix in the same directory.
 
 ## Requirements
 
+Linux:
+
 * `python3` (>= 3.11) with venv support, for the PyMeshLab venv
 * `python3.11` specifically, for the manifold3d venv (manifold3d ships
   wheels only up to Python 3.13)
 * KDE Plasma for the Dolphin service menu (optional; CLI and GUI work anywhere)
 
-Installing Python 3.11:
+macOS (Apple Silicon / Intel):
+
+* Homebrew and Miniforge (conda). pymeshlab has no PyPI wheel for Apple
+  Silicon, so it must come from conda-forge; this is why macOS uses a single
+  conda environment (`install-macos.sh`) rather than the Linux pip-only flow.
+* Install Python 3.11 via conda (`install-macos.sh` does this automatically).
+
+Linux Python 3.11 install:
 
 * Arch / CachyOS: `sudo pacman -S python311`
 * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
@@ -87,6 +97,8 @@ needed.
 
 ## Install
 
+### Linux
+
 One line (fetches the latest `main` and installs):
 
 ```sh
@@ -111,6 +123,24 @@ PySide6 (~79 MB download, part of the `venv`); total installed size for
 the two virtualenvs is roughly 800 MB.
 
 On Arch, if `python311` is not installed, install it first (see above).
+
+### macOS
+
+```sh
+git clone https://github.com/Krateian/Sutura.git
+cd Sutura
+./install-macos.sh
+```
+
+`install-macos.sh` checks for Homebrew, installs Miniforge via Homebrew if
+conda is missing, creates a `sutura-env` conda environment (Python 3.11),
+installs pymeshlab from conda-forge and manifold3d/trimesh/PySide6 from pip,
+verifies the imports, copies the app files to `~/.local/share/sutura/`, and
+creates `~/.local/bin/sutura` (CLI) and `~/.local/bin/sutura-gui` launchers.
+It is macOS-only and re-runnable.
+
+Note: conda can be initialized non-interactively; if the script asks you to
+restart the terminal for `conda init` to take effect, do so and re-run it.
 
 ## Usage
 
@@ -221,6 +251,10 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 
 ## Known limitations
 
+* **macOS has no right-click / Finder integration yet.** On macOS only the
+  CLI and the GUI are available; there is no equivalent of Linux's Dolphin
+  service menu ("Repair with Sutura"). macOS users run `sutura-gui` or
+  `sutura <file>` from a terminal.
 * **Native KDE file dialog.** The GUI sets `QT_QPA_PLATFORMTHEME=kde` and
   points `QT_PLUGIN_PATH` at `/usr/lib/qt6/plugins` so QFileDialog uses the
   native KDE dialog (rubber-band rectangle selection included). This assumes

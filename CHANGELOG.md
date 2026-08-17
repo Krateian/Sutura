@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.1] - unreleased
+
+### Added
+
+- macOS support (Apple Silicon / Intel) via a single conda environment.
+- `install-macos.sh`: automated setup (Homebrew + Miniforge + `sutura-env`
+  conda env with pymeshlab/manifold3d/trimesh/PySide6, CLI and GUI
+  launchers), macOS-only.
+- Stage 2 runs in-process when manifold3d is importable from the current
+  interpreter (single-environment installs such as macOS/conda), instead of
+  only through the fixed Linux `venv311` subprocess.
+
+### Changed
+
+- GUI resolves the `sutura` CLI flexibly (`$SUTURA` env, the Linux wrapper,
+  or the bundled `repair.py` run with the current interpreter).
+
+### Fixed
+
+- The GUI no longer hangs on "Repairing…" if the CLI is missing: subprocess
+  launch failures are caught and reported as a clear per-file error, and the
+  worker always finishes (`all_done` emitted).
+
 ## [0.1.0] - unreleased
 
 Initial public release. Two-stage mesh repair for STL/3MF files on Linux.
