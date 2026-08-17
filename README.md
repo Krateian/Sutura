@@ -69,11 +69,17 @@ This creates two virtualenvs under `~/.local/share/sutura`, installs the CLI
 wrapper at `~/.local/bin/sutura`, installs the hicolor app icons, and
 registers the Dolphin service menu. Re-running is safe.
 
+Installation uses pip inside isolated virtualenvs — no AUR, no yay/paru
+required, nothing touches your system package manager.
+
 On Arch, if `python311` is not installed, install it first (see above).
 The GUI uses `tkinter`, which ships with the standard `python` package on
 Arch; on other distros you may need `python3-tk` / `python3-tkinter`.
 
 ## Usage
+
+Runs fully offline after installation — no telemetry, no network calls
+during repair, works without internet once installed.
 
 CLI:
 
