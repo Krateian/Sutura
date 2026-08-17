@@ -48,3 +48,10 @@ Initial public release. Two-stage mesh repair for STL/3MF files on Linux.
 - Truncated/wrong-count STLs, NaN/Inf coordinates and empty meshes being
   silently mishandled or returning exit 0 on failure.
 - kdialog progress updates in the service menu.
+
+### Known platform note
+
+- Python 3.12/3.13 are not covered by CI. `pymeshlab` imports on Python 3.13
+  but the VCG repair pipeline segfaults there; the root cause has not been
+  investigated. CI runs on 3.11 (the manifold3d / stage 2 target) and 3.14
+  (the current Python).
