@@ -135,6 +135,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     before = before_ms.apply_filter('get_topological_measures')
+    before_geom = before_ms.apply_filter('get_geometric_measures')
+    before_volume = before_geom.get('mesh_volume', 0)
     holes_before = max(before.get('boundary_edges', 0) // 2, 0)
     nm_before = before.get('non_two_manifold_edges', 0)
 
@@ -174,6 +176,19 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
     geom = ms.apply_filter('get_geometric_measures')
     if geom.get('mesh_volume', 0) < 0:
         ms.apply_filter('meshing_invert_face_orientation')
+        geom = ms.apply_filter('get_geometric_measures')
+    after_volume = geom.get('mesh_volume', 0)
+
+    volume_change_pct = 0.0
+    if before_volume and after_volume:
+        volume_change_pct = abs(after_volume - before_volume) / abs(before_volume) * 100
+    stats['stage1']['volume_before'] = float(before_volume)
+    stats['stage1']['volume_after'] = float(after_volume)
+    stats['stage1']['volume_change_percent'] = round(volume_change_pct, 2)
+    if volume_change_pct > 15:
+        stats['stage1']['volume_warning'] = (
+            'Volume changed by %.1f%% - verify in slicer before printing.'
+            % volume_change_pct)
 
     new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
     new_tris = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
@@ -386,6 +401,11 @@ def human_report(r):
     lines.append('  Faces removed           : %d' % s1.get('faces_removed', 0))
     lines.append('  Connected components    : %d' % s1.get('components', 0))
     lines.append('  Two-manifold            : %s' % ('YES' if s1.get('two_manifold') else 'NO'))
+    if s1.get('volume_change_percent') is not None:
+        lines.append('  Volume change          : %s%%' % s1.get('volume_change_percent'))
+    if s1.get('volume_warning'):
+        lines.append('')
+        lines.append('  WARNING: %s' % s1['volume_warning'])
     if 'stage2' in r:
         s2 = r['stage2']
         lines.append('')
