@@ -48,6 +48,15 @@ def format_report(data):
             if s2.get('shells_merged'):
                 lines.append('  Shells merged   : %d' % s2['shells_merged'])
             lines.append('  Volume (after)  : %.4f' % s2.get('volume_after', 0))
+    if 'objects' in data:
+        lines.append('')
+        lines.append('3MF objects repaired: %d' % data.get('objects', 0))
+        for i, rep in enumerate(data.get('object_reports', [])):
+            s1o = rep.get('stage1', {})
+            ok = s1o.get('two_manifold') and s1o.get('holes_remaining', 0) == 0
+            lines.append('  object %d: %s (%d hole(s) remaining, two-manifold=%s)' % (
+                i, 'watertight' if ok else 'partial',
+                s1o.get('holes_remaining', 0), 'YES' if s1o.get('two_manifold') else 'NO'))
     return '\n'.join(lines)
 
 

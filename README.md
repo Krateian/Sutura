@@ -120,6 +120,18 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 * **manifold3d Python binding.** It rejects any input with open edges; if
   stage 1 cannot close a hole, stage 2 is skipped and the stage 1 result is
   used as-is (the report says so).
+* **Layered/duplicated-vertex 3MF exports.** Some slicers (Bambu Studio
+  included) write 3MFs whose objects repeat every vertex position ~15x as
+  separate vertex entries, and whose surfaces are folded (several faces
+  coincident on one edge). VCG can turn such meshes into valid 2-manifolds,
+  but a few sub-millimetre cracks may remain that `close_holes` refuses to
+  fill (the fill patch would be degenerate). The result is two-manifold but
+  not always fully watertight; most slicers auto-heal cracks this small on
+  import. Example from development: a 2-object Bambu export ended with 13
+  and 26 remaining micro-holes per object after the best possible VCG pass.
+* **All objects are preserved.** Multi-object 3MFs are repaired object by
+  object and written back, so no object is lost. The per-object result is
+  reported in the CLI output and the GUI.
 
 ## License
 

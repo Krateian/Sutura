@@ -273,6 +273,13 @@ def repair_3mf(src, out, tmpdir):
     if not meshes:
         return {'error': 'no mesh objects found in 3MF'}
 
+    # TODO(stage2): if an object ever comes out of stage 1 fully closed
+    # (two-manifold with no boundary edges), manifold3d could be applied to
+    # that object individually to guarantee a watertight solid. Currently
+    # every layered/folded Bambu-style object we have seen remains open after
+    # stage 1, so the manifold3d bridge (which rejects open meshes) is
+    # skipped for all objects and no per-object stage 2 is attempted.
+
     with zipfile.ZipFile(src) as z:
         items = [(i, z.read(i)) for i in z.namelist()]
 
