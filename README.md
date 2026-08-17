@@ -62,8 +62,8 @@ cd Sutura
 ```
 
 This creates two virtualenvs under `~/.local/share/sutura`, installs the CLI
-wrapper at `~/.local/bin/sutura`, and registers the Dolphin service menu.
-Re-running is safe.
+wrapper at `~/.local/bin/sutura`, installs the hicolor app icons, and
+registers the Dolphin service menu. Re-running is safe.
 
 On Arch, if `python311` is not installed, install it first (see above).
 The GUI uses `tkinter`, which ships with the standard `python` package on
@@ -78,6 +78,10 @@ sutura model.stl            # writes model_fixed.stl
 sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # human-readable report
 ```
+
+Multi-object 3MF files are handled natively: every object mesh is repaired
+independently and written back into the archive, so no object is lost. The
+report lists the result per object (holes remaining, two-manifold).
 
 GUI:
 
@@ -94,6 +98,8 @@ installer does this automatically) or restart Dolphin.
 
 ## Test
 
+Synthetic broken mesh:
+
 ```sh
 python3 tests/make_broken_stl.py /tmp/broken.stl
 sutura /tmp/broken.stl --human
@@ -101,6 +107,36 @@ sutura /tmp/broken.stl --human
 
 The generator produces a cube with a missing face, an inverted winding, a
 duplicated face, a fin triangle and a self-intersecting triangle.
+
+Regression suites:
+
+```sh
+python3 tests/make_layered_multiobject_3mf.py --check   # layered multi-object 3MF
+python3 tests/test_adversarial.py                       # malformed-input handling
+```
+
+Real-world samples in `tests/real-world-samples/` come from the
+[Thingi10K](https://ten-thousand-models.appspot.com/) dataset (Zhou &
+Jacobson): three genuinely broken models — one non-manifold, one
+self-intersecting, one both. They retain their original licenses from the
+Thingi10K metadata; see `tests/real-world-samples/README.md` for details
+and the repair result expected from each.
+
+## Robustness
+
+Malformed or hostile inputs are rejected with a clear error and a non-zero
+exit code, never a crash or a silently wrong result:
+
+| Input | Behaviour |
+|---|---|
+| Truncated / cut-off binary STL | rejected: "Unable to open file ... Malformed file" |
+| Header claims more triangles than the file holds | rejected: "Malformed file" |
+| NaN/Infinity vertex coordinates | rejected: "input mesh contains NaN or infinite coordinates" |
+| Empty mesh (0 triangles) | rejected: "input mesh is empty (no triangles)" |
+| Fully degenerate mesh (only zero-area faces) | rejected: "all faces are degenerate; nothing to repair" |
+| Wrong extension (OBJ content in `.stl`, or the reverse) | rejected: "Unable to open file" |
+
+Any of these returns exit code 1, so scripts can reliably detect failure.
 
 ## Libraries
 
