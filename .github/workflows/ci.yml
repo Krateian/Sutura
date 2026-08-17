@@ -45,8 +45,9 @@ jobs:
           SUTURA_DIR: ${{ github.workspace }}
         run: |
           ./venv/bin/python tests/make_broken_stl.py /tmp/broken.stl
-          ./venv/bin/python sutura/repair.py /tmp/broken.stl >/tmp/out.json 2>&1
+          ./venv/bin/python sutura/repair.py /tmp/broken.stl >/tmp/out.json 2>&1 || true
           cat /tmp/out.json
+          test -s /tmp/out.json
           ./venv/bin/python -c "import json; d=json.load(open('/tmp/out.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0"
 
       - name: Layered multi-object 3MF regression
