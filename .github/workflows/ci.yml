@@ -23,10 +23,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # pymeshlab's STL/OBJ I/O plugins need libOpenGL.so.0, which is not
-      # present on the default headless runner image.
-      - name: Install system OpenGL library
-        run: sudo apt-get update && sudo apt-get install -y libopengl0
+      # pymeshlab's STL/OBJ I/O plugins are Qt plugins that need the GL
+      # runtime libs, which the default headless runner image lacks.
+      - name: Install system GL libraries
+        run: sudo apt-get update && sudo apt-get install -y libopengl0 libgl1 libglu1-mesa
 
       # CLI / repair tests are headless and need no display.
       - name: Install the repair engine
@@ -39,6 +39,7 @@ jobs:
         run: ./venv/bin/python -c "import pymeshlab; print('pymeshlab OK')"
 
       - name: Install manifold3d (stage 2)
+        if: matrix.python-version == '3.11'   # only 3.11 has a wheel
         run: |
           python -m venv venv311
           ./venv311/bin/pip install --quiet --upgrade pip
