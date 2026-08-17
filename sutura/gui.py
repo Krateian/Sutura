@@ -18,13 +18,8 @@ from PySide6.QtWidgets import (
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView)
 
 def _find_sutura_cmd():
-    """Resolve the CLI to run, mirroring repair.py's staged fallbacks.
-
-    Priority: $SUTURA env override -> ~/.local/bin/sutura (the Linux
-    install wrapper) -> the repair.py next to this file, run with the
-    current interpreter (uninstalled / repo / macOS single-env case).
-    Returns the argv list for subprocess, or None if nothing was found.
-    """
+    """Resolve the CLI: $SUTURA env, the Linux wrapper, or the bundled
+    repair.py run with the current interpreter (uninstalled/macOS case)."""
     env = os.environ.get('SUTURA')
     if env:
         return [env]
@@ -33,7 +28,6 @@ def _find_sutura_cmd():
     if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
         return [wrapper]
 
-    # fall back to this file's own directory: repair.py + current python
     repair = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'repair.py')
     if os.path.isfile(repair):
         return [sys.executable, repair]
@@ -42,11 +36,9 @@ def _find_sutura_cmd():
 
 SUTURA_CMD = _find_sutura_cmd()
 
-# PySide6 bundles its own Qt plugins and cannot see the system platform
-# theme (plasma-integration), so QFileDialog would fall back to Qt's
-# embedded widget (no rubber-band rectangle selection). Point Qt at the
-# system plugin directory and select the KDE theme before QApplication.
-# Safe because the system Qt version matches the bundled one.
+# PySide6 bundles its own Qt plugins and misses the system platform theme
+# (plasma-integration), so QFileDialog would fall back to Qt's embedded
+# widget (no rubber-band selection). Point Qt at the system plugin dir.
 if sys.platform.startswith('linux'):
     os.environ.setdefault('QT_QPA_PLATFORMTHEME', 'kde')
     _sys_plugins = '/usr/lib/qt6/plugins'
@@ -56,7 +48,6 @@ if sys.platform.startswith('linux'):
             os.environ['QT_PLUGIN_PATH'] = (
                 (_existing + os.pathsep) if _existing else '') + _sys_plugins
 
-# --- CLI output parsing. Kept from the previous GUI - do not rewrite. ------
 def parse_cli_output(out, err):
     try:
         return json.loads(out.strip().splitlines()[-1])
@@ -244,7 +235,6 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(False)
 
     def _apply_accent(self):
-        # Only the brand teal accent; the rest comes from the system theme.
         self.setStyleSheet('''
             QPushButton#repairBtn {
                 background-color: #14b8a6; color: #0b0f11;

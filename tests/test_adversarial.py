@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Regression test for file-level-broken (adversarial) inputs.
+"""Regression test for file-level-broken inputs.
 
 Each generated input must be rejected with a non-zero exit code and an
-'error' entry in the JSON report. A silent "success" (exit 0) for a
-malformed input is the failure mode this guards against: previously the
-tool returned exit 0 on every failure, and NaN/Inf triangles were silently
-dropped and reported as a clean repair.
-
+'error' in the JSON report. A silent exit-0 success on malformed input is
+the failure mode this guards (the tool once returned 0 on every failure).
 Usage: test_adversarial.py  (expects the installed `sutura` CLI)
 """
 import json

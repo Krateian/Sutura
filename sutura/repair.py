@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """Sutura - two-stage STL/3MF mesh repair engine.
 
-Stage 1 (PyMeshLab/VCG): removes duplicates and degenerates, repairs
-non-manifold edges, orients faces coherently, closes holes of any size,
-drops small open debris components.
-Stage 2 (manifold3d): rebuilds the (now closed) mesh as a valid manifold
-solid, resolving overlaps between shells via a boolean union.
+Stage 1 (PyMeshLab/VCG): clean up, orient, close holes, drop debris.
+Stage 2 (manifold3d): rebuild the closed mesh as a watertight solid and
+merge overlapping shells.
 
-Multi-object 3MF files are handled natively: every object mesh is repaired
-independently and written back into the archive, so no object is lost.
-Meshes are repaired in memory as numpy arrays; the intermediate file
-round-trips used for single-mesh input are skipped for 3MF objects so the
-original vertex structure is preserved.
-
-The output is written to a new file; the input is never overwritten.
+Multi-object 3MF files are repaired per object and written back, so no
+object is lost. Meshes are handled in memory as numpy arrays to preserve
+the original vertex structure. Output is a new file; the input is never
+overwritten.
 """
 import sys
 import os
@@ -205,12 +200,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
 
 
 def run_stage2(inter, out_obj):
-    """Run stage 2, trying the fixed two-venv path first, then in-process.
-
-    Returns (report, ok) where ok is True if a stage 2 result was produced.
-    If manifold3d is unavailable, returns a report dict that explicitly
-    says stage 2 was skipped (never silent).
-    """
+    """Run stage 2. Returns (report, ok); reports a skip, never silence."""
     # 1) primary: the fixed Linux two-venv layout (python3.11 + manifold3d)
     if os.path.exists(VENV311) and os.path.exists(BRIDGE):
         r = subprocess.run(
@@ -226,8 +216,7 @@ def run_stage2(inter, out_obj):
                 return report, True
         # fall through to the in-process attempt if the venv failed
 
-    # 2) single-environment install (macOS/conda, or any env where manifold3d
-    #    is importable from the current interpreter): call the bridge in-process.
+    # 2) single-environment installs (macOS/conda): call the bridge in-process
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location('sutura_manifold_bridge', BRIDGE)
@@ -239,7 +228,7 @@ def run_stage2(inter, out_obj):
     except Exception:
         pass
 
-    # 3) not available at all: report it explicitly, never silently.
+    # 3) unavailable: report it explicitly, never silently
     return {'error': 'Stage 2 skipped: manifold3d not available in this environment.'}, False
 
 
@@ -282,9 +271,9 @@ def scan_bad_coordinates(path):
         if len(buf) < 4:
             return 'malformed STL (no triangle count)'
         n = struct.unpack('<I', buf)[0]
-        # A valid binary STL is exactly 84 + n*50 bytes; a mismatch means the
-        # header count is wrong or the file was cut off, which pymeshlab can
-        # hang on instead of failing cleanly.
+        # A valid binary STL is exactly 84 + n*50 bytes; a mismatch means a
+        # bad header count or a cut-off file, which pymeshlab hangs on instead
+        # of failing cleanly.
         size = os.path.getsize(path)
         if size != 84 + n * 50:
             return 'malformed STL (declared %d triangles, file size mismatch)' % n
@@ -313,9 +302,8 @@ def repair_file(src, out, tmpdir):
 
     report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir)
 
-    # stage 2 (manifold3d) applies to watertight results. Try it whenever the
-    # bridge script is present; run_stage2 handles the fixed venv path, an
-    # in-process single-environment install, or an explicit "skipped" report.
+    # stage 2 applies to watertight results; run_stage2 handles the fixed
+    # venv, in-process, or an explicit "skipped" report.
     if (report['stage1'].get('two_manifold') and report['stage1'].get('holes_remaining', 0) == 0
             and os.path.exists(BRIDGE)):
         inter = os.path.join(tmpdir, 'stage1.obj')

@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
 """Generate a synthetic layered multi-object 3MF for regression testing.
 
-Reproduces a failure mode found in real-world Bambu Studio exports:
-
-  * the archive contains more than one object mesh, and
-  * every vertex position is duplicated N times (~15x) as separate
-    vertex entries, with each duplicate layer having its own copy of
-    the triangle list.
-
-A repair pipeline that round-trips meshes through STL and re-deduplicates
-by position corrupts such meshes into a triangle soup (edges shared by
-many faces, geometry destroyed). Sutura must preserve the original vertex
-structure and output valid 2-manifold meshes.
+Reproduces a real Bambu Studio export failure mode: the archive has more
+than one object mesh, and every vertex position is duplicated ~15x as
+separate entries, each layer with its own triangle list. A pipeline that
+round-trips through STL and re-deduplicates by position corrupts this into
+a triangle soup (edges shared by many faces); Sutura must preserve the
+original vertex structure and output valid 2-manifold meshes.
 
 Usage:
     make_layered_multiobject_3mf.py [OUTPUT]          # write the 3MF
     make_layered_multiobject_3mf.py --check [OUTPUT]  # also repair + validate
 
-The --check mode runs the installed `sutura` CLI on the generated file and
-fails (exit 1) if any object is lost, the output is not a valid zip, or an
-object's output mesh has edges shared by more than 2 faces.
+--check fails (exit 1) if an object is lost, the output is not a valid zip,
+or an object's output has edges shared by more than 2 faces.
 """
 import os
 import re

@@ -1,15 +1,11 @@
 #!/usr/bin/env python3
-"""Torture tests: adversarial-but-printable geometry scenarios.
+"""Torture tests: hard-but-printable geometry.
 
-Runs the installed `sutura` CLI on four generated scenarios and compares
-the mesh before and after:
-
-  1. large sphere  - 5M+ triangles, measure repair time
-  2. thin wall     - hollow box with <0.1 mm walls (thin features must not
-                     be mistaken for noise and removed)
-  3. multi-part    - disconnected legitimate parts around the 8-face
-                     debris-removal threshold
-  4. scan mesh     - rough, high-triangle surface with many micro-cracks
+Runs the installed `sutura` CLI on four scenarios and compares before/after:
+  1. 5M-triangle sphere (repair time)
+  2. 0.05 mm thin slab (thin features must survive, not be dropped as noise)
+  3. multi-part assembly (the 8-face debris threshold must not delete parts)
+  4. rough scan-style mesh with many micro-cracks
 
 Usage: torture_tests.py  (needs the installed CLI at ~/.local/bin/sutura)
 """

@@ -29,12 +29,8 @@ def write_obj(path, verts, tris):
 
 
 def run_bridge(src, dst):
-    """Rebuild the closed OBJ at src into a manifold solid at dst.
-
-    Returns the JSON report dict. Used both by the CLI entry point (as a
-    separate interpreter) and, when manifold3d is importable in the current
-    process, by repair.py in-process.
-    """
+    """Rebuild the closed OBJ at src into a manifold solid at dst; returns
+    the report dict. Shared by the CLI entry point and repair.py in-process."""
     mesh = trimesh.load(src, force='mesh')
     verts = np.asarray(mesh.vertices, dtype=np.float32)
     tris = np.asarray(mesh.faces, dtype=np.int32)
