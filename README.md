@@ -47,7 +47,17 @@ needed.
 
 ## Install
 
+One line (fetches the latest `main` and installs):
+
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Krateian/Sutura/main/install.sh | bash
+```
+
+Or from a clone:
+
+```sh
+git clone https://github.com/Krateian/Sutura.git
+cd Sutura
 ./install.sh
 ```
 

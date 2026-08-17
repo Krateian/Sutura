@@ -1,18 +1,40 @@
 #!/usr/bin/env bash
 # Sutura installer.
 #
-# Installs the two virtualenvs, the CLI wrapper, and the Dolphin
-# service menu under the user's home. Re-running is safe.
+# Installs the two virtualenvs, the CLI wrapper, the Dolphin service menu
+# and the hicolor icons under the user's home.
+#
+# It can run in two modes:
+#   * local  - the repository files are next to this script (git clone)
+#   * remote - this script is piped straight into bash; the repository is
+#              fetched from GitHub first (curl -fsSL <url> | bash)
+#
+# Re-running is safe: existing virtualenvs are reused.
 set -euo pipefail
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$HOME/.local/share/sutura"
 BIN_DIR="$HOME/.local/bin"
 SERVICE_DIR="$HOME/.local/share/kio/servicemenus"
 
+# The tarball used in remote mode. Override REPO_URL to install from a fork.
+REPO_URL="${REPO_URL:-https://github.com/Krateian/Sutura/archive/refs/heads/main.tar.gz}"
+
 MAIN_PY="${PYTHON:-python3}"
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# --- locate the repository source ------------------------------------------
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd)"
+if [ -f "$script_dir/requirements.txt" ]; then
+    SRC="$script_dir"
+    echo "==> local install from $SRC"
+else
+    SRC="$APP_DIR/repo"
+    echo "==> fetching source from GitHub"
+    mkdir -p "$SRC"
+    curl -fsSL "$REPO_URL" | tar xz --strip-components=1 -C "$SRC"
+fi
+[ -f "$SRC/requirements.txt" ] || die "could not obtain requirements.txt"
 
 # --- find a python3.11 for the manifold3d venv ----------------------------
 VENV311_PY="$(command -v python3.11 || true)"
@@ -62,12 +84,16 @@ chmod 0755 "$SERVICE_DIR/sutura.desktop"
 
 echo "==> icons (hicolor)"
 HICON="$HOME/.local/share/icons/hicolor"
-for s in 16 32 48 64 128 256; do
-    install -d "$HICON/${s}x${s}/apps"
-    install -m 0644 "$SRC/assets/icon/sutura-${s}.png" "$HICON/${s}x${s}/apps/sutura.png"
-done
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache -f -t "$HICON" >/dev/null 2>&1 || true
+if [ -d "$SRC/assets/icon" ]; then
+    for s in 16 32 48 64 128 256; do
+        install -d "$HICON/${s}x${s}/apps"
+        install -m 0644 "$SRC/assets/icon/sutura-${s}.png" "$HICON/${s}x${s}/apps/sutura.png"
+    done
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+        gtk-update-icon-cache -f -t "$HICON" >/dev/null 2>&1 || true
+    fi
+else
+    echo "    (icons skipped: assets/icon missing in source)"
 fi
 
 if command -v kbuildsycoca6 >/dev/null 2>&1; then
