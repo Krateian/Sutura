@@ -10,6 +10,10 @@ Linux has no direct equivalent of Windows' right-click "Fix model" (3D Builder,
 Netfabb) or Bambu Studio's broken-on-Linux "Fix model" button. Sutura provides
 that workflow: pick a mesh, repair it, keep the original untouched.
 
+## Screenshot
+
+![Sutura GUI](assets/screenshot.png)
+
 ## Why two stages
 
 * **Stage 1 - PyMeshLab (VCG).** Removes duplicate and degenerate faces,
