@@ -30,3 +30,11 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - If a user-visible behaviour is added or changed in this session (CLI flag,
   GUI behaviour, install step, new feature), update `README.md` in the same
   session — without the user asking.
+
+## Cleanup discipline
+
+- At the end of any session that created temporary/debug files (test scripts,
+  probe files, generated meshes, log files used only for diagnosis), delete
+  them without being asked — both in `/tmp` and in the repo. Before finishing,
+  run `git status` and a quick `ls` of any temp working directories, and remove
+  anything not meant to persist.

@@ -6,3 +6,6 @@ __pycache__/
 broken.stl
 .DS_Store
 test-layered-multiobject.3mf
+*.log
+*.tmp
+*.zip

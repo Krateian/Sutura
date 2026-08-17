@@ -31,6 +31,8 @@ SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sut
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
+VERSION = "1.0.0"
+
 TOPOMETRICS = [
     'vertices_number', 'faces_number', 'boundary_edges', 'connected_components_number',
     'genus', 'incident_faces_on_non_two_manifold_edges',
@@ -468,12 +470,13 @@ def main():
     parser = argparse.ArgumentParser(
         prog='sutura',
         description='Repair one or more STL/3MF meshes. Output files get a "_fixed" suffix.')
-    parser.add_argument('files', nargs='+', metavar='FILE',
+    parser.add_argument('files', nargs='*', metavar='FILE',
                         help='input mesh file(s)')
     parser.add_argument('-o', '--output', metavar='OUTPUT',
                         help='output file (only valid with a single input)')
     parser.add_argument('--human', action='store_true',
                         help='print a human-readable report')
+    parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
     files = args.files
     out = args.output
