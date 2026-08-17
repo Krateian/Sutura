@@ -5,8 +5,9 @@ MimeType=model/stl;model/x.stl-ascii;model/x.stl-binary;model/3mf;application/vn
 Actions=RepairMesh
 X-KDE-Priority=TopLevel
 X-KDE-Submenu=Sutura
+Icon=sutura
 
 [Desktop Action RepairMesh]
 Name=Repair with Sutura
-Icon=object-rotate-left
+Icon=sutura
 Exec=%HOME%/.local/share/sutura/open.sh %F

@@ -15,6 +15,18 @@ rm -f "$BIN_DIR/sutura"
 echo "Removing $SERVICE_DIR/sutura.desktop"
 rm -f "$SERVICE_DIR/sutura.desktop"
 
+echo "Removing hicolor icons"
+HICON="$HOME/.local/share/icons/hicolor"
+for s in 16 32 48 64 128 256; do
+    rm -f "$HICON/${s}x${s}/apps/sutura.png"
+    rmdir "$HICON/${s}x${s}/apps" 2>/dev/null || true
+    rmdir "$HICON/${s}x${s}" 2>/dev/null || true
+done
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t "$HICON" >/dev/null 2>&1 || true
+fi
+
 if command -v kbuildsycoca6 >/dev/null 2>&1; then
     kbuildsycoca6 >/dev/null 2>&1 || true
 fi

@@ -1,5 +1,9 @@
 # Sutura
 
+<p align="center">
+  <img src="assets/icon/sutura-128.png" alt="Sutura" width="128">
+</p>
+
 Two-stage mesh repair for STL and 3MF files, built for Linux.
 
 Linux has no direct equivalent of Windows' right-click "Fix model" (3D Builder,

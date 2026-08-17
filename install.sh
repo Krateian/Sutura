@@ -59,6 +59,17 @@ chmod 0755 "$BIN_DIR/sutura"
 echo "==> Dolphin service menu"
 sed "s|%HOME%|$HOME|g" "$SRC/share/sutura.desktop" > "$SERVICE_DIR/sutura.desktop"
 chmod 0755 "$SERVICE_DIR/sutura.desktop"
+
+echo "==> icons (hicolor)"
+HICON="$HOME/.local/share/icons/hicolor"
+for s in 16 32 48 64 128 256; do
+    install -d "$HICON/${s}x${s}/apps"
+    install -m 0644 "$SRC/assets/icon/sutura-${s}.png" "$HICON/${s}x${s}/apps/sutura.png"
+done
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -f -t "$HICON" >/dev/null 2>&1 || true
+fi
+
 if command -v kbuildsycoca6 >/dev/null 2>&1; then
     kbuildsycoca6 >/dev/null 2>&1 || true
 fi
