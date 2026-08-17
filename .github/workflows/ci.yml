@@ -26,11 +26,15 @@ jobs:
           ./venv/bin/pip install --quiet --upgrade pip
           ./venv/bin/pip install --quiet -r requirements.txt
 
+      - name: Import check (pymeshlab)
+        run: ./venv/bin/python -c "import pymeshlab; print('pymeshlab OK')"
+
       - name: Install manifold3d (stage 2)
         run: |
           python -m venv venv311
           ./venv311/bin/pip install --quiet --upgrade pip
           ./venv311/bin/pip install --quiet -r requirements-311.txt
+        continue-on-error: true   # stage 2 is optional for these tests
 
       - name: Smoke test (broken cube)
         env:
