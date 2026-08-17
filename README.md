@@ -49,6 +49,26 @@ Installing Python 3.11:
 On other distros, if your default `python3` *is* 3.11, no extra install is
 needed.
 
+## Troubleshooting
+
+* **`python3.11` not found.** Stage 2 (manifold3d) needs Python 3.11 because
+  it ships wheels only up to 3.13. Install it per distro:
+  * Arch / CachyOS: `sudo pacman -S python311`
+  * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
+  * Fedora: `sudo dnf install python3.11`
+  Then run `install.sh` again — it reuses the existing virtualenvs.
+* **PySide6 install fails.** The GUI needs `PySide6-Essentials`, which is
+  installed into the `venv` from PyPI. On distros where `pip install
+  PySide6-Essentials` fails (missing build tooling or a blocked PyPI), install
+  the system Qt Python bindings instead and point the entry point at them:
+  * Debian/Ubuntu: `sudo apt install python3-pyside6`
+  * Fedora: `sudo dnf install python3-pyside6`
+  * Arch: `sudo pacman -S pyside6` (in the official `extra` repository)
+* **The GUI has no KDE file dialog.** The native dialog needs `plasma-integration`
+  and a system Qt version that matches PySide6's. If the rubber-band selection
+  is missing, Qt falls back to its embedded dialog — Ctrl/Shift+click still
+  work for multi-selection.
+
 ## Install
 
 One line (fetches the latest `main` and installs):
