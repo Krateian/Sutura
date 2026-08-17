@@ -70,4 +70,9 @@ jobs:
         env:
           SUTURA_DIR: ${{ github.workspace }}
         run: |
-          SUTURA="$PWD/sutura/repair.py" ./venv/bin/python tests/test_adversarial.py
+          # test_adversarial runs $SUTURA as a single executable; point it at
+          # a shim that invokes repair.py with the venv interpreter (the
+          # script's own shebang would use the system python without pymeshlab).
+          printf '#!/bin/bash\nexec ./venv/bin/python ./sutura/repair.py "$@"\n' > /tmp/sutura-wrap
+          chmod +x /tmp/sutura-wrap
+          SUTURA=/tmp/sutura-wrap ./venv/bin/python tests/test_adversarial.py

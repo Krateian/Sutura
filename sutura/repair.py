@@ -255,12 +255,18 @@ def scan_bad_coordinates(path):
             return None
         buf = f.read(4)
         if len(buf) < 4:
-            return None  # not a complete binary STL; let the loader report it
+            return 'malformed STL (no triangle count)'
         n = struct.unpack('<I', buf)[0]
+        # A valid binary STL is exactly 84 + n*50 bytes; a mismatch means the
+        # header count is wrong or the file was cut off, which pymeshlab can
+        # hang on instead of failing cleanly.
+        size = os.path.getsize(path)
+        if size != 84 + n * 50:
+            return 'malformed STL (declared %d triangles, file size mismatch)' % n
         for _ in range(n):
             buf = f.read(50)
             if len(buf) < 50:
-                break  # truncated file; let the loader report it
+                return 'malformed STL (truncated data)'
             for i in range(12, 48, 12):
                 if not all(math.isfinite(x) for x in struct.unpack('<3f', buf[i:i + 12])):
                     return 'NaN or infinite coordinates'

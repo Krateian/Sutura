@@ -85,7 +85,10 @@ def build(tmp):
 
 
 def run_sutura(path):
-    r = subprocess.run([SUTURA, path], capture_output=True, text=True, timeout=120)
+    try:
+        r = subprocess.run([SUTURA, path], capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return 124, {}   # hung, not a clean rejection -> treated as a failure
     try:
         rep = json.loads(r.stdout.strip().splitlines()[-1])
     except Exception:
