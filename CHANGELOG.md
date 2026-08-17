@@ -48,6 +48,9 @@ Initial public release. Two-stage mesh repair for STL/3MF files on Linux.
 - Truncated/wrong-count STLs, NaN/Inf coordinates and empty meshes being
   silently mishandled or returning exit 0 on failure.
 - kdialog progress updates in the service menu.
+- Binary STL files with a truncated or inconsistent triangle count could
+  hang indefinitely during repair instead of failing cleanly (found via CI
+  hardening).
 
 ### Known platform note
 

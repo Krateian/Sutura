@@ -4,11 +4,20 @@
   <img src="assets/icon/sutura-128.png" alt="Sutura" width="128">
 </p>
 
+<p align="center">
+  <img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI">
+</p>
+
 Two-stage mesh repair for STL and 3MF files, built for Linux.
 
 Linux has no direct equivalent of Windows' right-click "Fix model" (3D Builder,
 Netfabb) or Bambu Studio's broken-on-Linux "Fix model" button. Sutura provides
 that workflow: pick a mesh, repair it, keep the original untouched.
+
+Sutura is continuously hardened against real-world inputs — Thingi10K models,
+malformed files, adversarial inputs and torture scenarios (huge meshes, thin
+walls, multi-part assemblies) — and every change is verified automatically by
+CI on each push and pull request.
 
 ## Screenshot
 
@@ -165,6 +174,18 @@ self-intersecting, one both. They retain their original licenses from the
 Thingi10K metadata; see `tests/real-world-samples/README.md` for details
 and the repair result expected from each.
 
+Torture tests cover hard-but-printable geometry:
+
+```sh
+python3 tests/torture_tests.py
+```
+
+This runs four scenarios and reports the before/after for each: a 5M-triangle
+sphere (repair time), a 0.05 mm thin slab (feature-loss risk — it must survive
+intact), a multi-part assembly (the 8-face debris-removal threshold must not
+delete legitimate parts), and a rough scan-style mesh with many micro-cracks
+(residual-holes expectation).
+
 ## Robustness
 
 Malformed or hostile inputs are rejected with a clear error and a non-zero
@@ -227,6 +248,20 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 * **All objects are preserved.** Multi-object 3MFs are repaired object by
   object and written back, so no object is lost. The per-object result is
   reported in the CLI output and the GUI.
+
+## Contributing
+
+Missing a feature? Found a mesh that won't repair? Open an issue. A good
+bug report is worth far more than a bare "it doesn't work", so when you
+report a mesh please include:
+
+* the `sutura <file> --human` output (or the JSON report),
+* the command you ran,
+* and, if you know it, how the mesh was produced — slicer, scanner, CAD
+  export, etc.
+
+This makes the root cause much easier to pin down. Structured reports are
+encouraged: see `.github/ISSUE_TEMPLATE/bug_report.md`.
 
 ## License
 
