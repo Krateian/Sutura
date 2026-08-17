@@ -458,28 +458,20 @@ def process_file(src, human):
 
 
 def main():
-    args = sys.argv[1:]
-    files = []
-    out = None
-    human = False
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a == '-o' and i + 1 < len(args):
-            out = args[i + 1]
-            i += 2
-        elif a == '--human':
-            human = True
-            i += 1
-        else:
-            files.append(a)
-            i += 1
-
-    if not files or any(f in ('-h', '--help', 'help') for f in files):
-        print('Usage: sutura [FILE ...] [-o OUTPUT] [--human]')
-        print('Repair one or more STL/3MF meshes. Output files get a "_fixed" suffix.')
-        print('-o is only valid with a single input file.')
-        sys.exit(0)
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog='sutura',
+        description='Repair one or more STL/3MF meshes. Output files get a "_fixed" suffix.')
+    parser.add_argument('files', nargs='+', metavar='FILE',
+                        help='input mesh file(s)')
+    parser.add_argument('-o', '--output', metavar='OUTPUT',
+                        help='output file (only valid with a single input)')
+    parser.add_argument('--human', action='store_true',
+                        help='print a human-readable report')
+    args = parser.parse_args()
+    files = args.files
+    out = args.output
+    human = args.human
 
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
