@@ -55,10 +55,11 @@ command -v "$MAIN_PY" >/dev/null || die "python3 not found"
 
 mkdir -p "$APP_DIR" "$BIN_DIR" "$SERVICE_DIR"
 
-echo "==> virtualenv (stage 1: PyMeshLab) [$MAIN_PY]"
+echo "==> virtualenv (stage 1: PyMeshLab + GUI) [$MAIN_PY]"
 [ -d "$APP_DIR/venv" ] || "$MAIN_PY" -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/venv/bin/pip" install --quiet -r "$SRC/requirements.txt"
+"$APP_DIR/venv/bin/pip" install --quiet -r "$SRC/requirements-gui.txt"
 
 echo "==> virtualenv (stage 2: manifold3d) [$VENV311_PY]"
 [ -d "$APP_DIR/venv311" ] || "$VENV311_PY" -m venv "$APP_DIR/venv311"
