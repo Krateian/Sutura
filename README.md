@@ -147,6 +147,10 @@ restart the terminal for `conda init` to take effect, do so and re-run it.
 Runs fully offline after installation — no telemetry, no network calls
 during repair, works without internet once installed.
 
+Sutura checks GitHub for updates only if you opt in (disabled by default).
+Updates back up the previous install automatically and roll back if the new
+version fails a self-check — no data beyond the update check itself is sent.
+
 CLI:
 
 ```sh

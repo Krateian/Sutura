@@ -8,14 +8,102 @@ CLI, and read back what was fixed. Results are always written to new
 import os
 import sys
 import json
+import importlib.util
 import subprocess
 
-from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QIcon, QFontDatabase
+from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint
+from PySide6.QtGui import QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
-    QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView)
+    QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
+    QMessageBox)
+
+# the updater/repair modules live beside this file in both the repo and the
+# installed layout, so put this directory on the path and import them flat.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import updater
+
+# single source of truth: prefer the package, else the repair.py beside us
+try:
+    from sutura import VERSION
+except ImportError:
+    _spec = importlib.util.spec_from_file_location(
+        'sutura_repair', os.path.join(_HERE, 'repair.py'))
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    VERSION = _mod.VERSION
+
+# --- i18n ---------------------------------------------------------------
+STRINGS = {
+    'en': {
+        'app_title': 'Sutura',
+        'col_file': 'File', 'col_result': 'Result',
+        'add_files': 'Add files…', 'add_folder': 'Add folder…',
+        'remove': 'Remove selected', 'clear': 'Clear',
+        'repair': 'Repair', 'stop': 'Stop',
+        'ready': 'Ready', 'repairing': 'Repairing…',
+        'repairing_n': 'Repairing… %d/%d', 'done': 'Done',
+        'done_stopped': 'Done (stopped)', 'select_files': 'Select mesh files',
+        'mesh_filter': 'Mesh files (*.stl *.STL *.3mf *.3MF);;All files (*)',
+        'select_folder': 'Select a folder with mesh files',
+        'no_mesh': 'No mesh files in that folder',
+        'added_n': 'Added %d file(s)', 'added_folder': 'Added %d file(s) from %s',
+        'added_drag': 'Added %d file(s) (drag)',
+        'update_btn_tooltip_idle': 'Check for updates',
+        'update_btn_tooltip': 'Update available: v%s',
+        'first_run_title': 'Enable update checks?',
+        'first_run_msg': ("Should Sutura check for new versions once a week? "
+                          "(One request to GitHub, no other data sent)"),
+        'update_confirm_title': 'Update available',
+        'update_confirm_msg': ('Update to v%s? The current version will be '
+                               'backed up and a rollback guarantee provided.'),
+        'updating': 'Updating…', 'no_update': 'Already up to date',
+        'update_success': 'Updated to %s', 'update_failed': 'Update failed',
+        'rollback_notice': 'rollback', 'issue_prompt': 'You can open an issue with the log.',
+        'update_check_failed': 'Update check failed',
+        'checked_days_ago': 'Last checked %d day(s) ago',
+    },
+    'tr': {
+        'app_title': 'Sutura',
+        'col_file': 'Dosya', 'col_result': 'Sonuç',
+        'add_files': 'Dosya ekle…', 'add_folder': 'Klasör ekle…',
+        'remove': 'Seçileni kaldır', 'clear': 'Temizle',
+        'repair': 'Onar', 'stop': 'Durdur',
+        'ready': 'Hazır', 'repairing': 'Onarılıyor…',
+        'repairing_n': 'Onarılıyor… %d/%d', 'done': 'Bitti',
+        'done_stopped': 'Bitti (durduruldu)', 'select_files': 'Mesh dosyası seç',
+        'mesh_filter': 'Mesh dosyaları (*.stl *.STL *.3mf *.3MF);;Tüm dosyalar (*)',
+        'select_folder': 'Mesh dosyası olan klasörü seç',
+        'no_mesh': 'Klasörde mesh dosyası yok',
+        'added_n': '%d dosya eklendi', 'added_folder': '%s klasöründen %d dosya eklendi',
+        'added_drag': 'Sürüklenen %d dosya eklendi',
+        'update_btn_tooltip_idle': 'Güncellemeleri kontrol et',
+        'update_btn_tooltip': 'Güncelleme var: v%s',
+        'first_run_title': 'Güncelleme kontrolü açılsın mı?',
+        'first_run_msg': ('Sutura haftada bir yeni sürüm kontrol etsin mi? '
+                          '(GitHub\'a tek istek, başka veri gönderilmez)'),
+        'update_confirm_title': 'Güncelleme var',
+        'update_confirm_msg': ('v%s sürümüne güncellensin mi? Mevcut sürüm '
+                               'yedeklenip geri dönüş garantisi sağlanacak.'),
+        'updating': 'Güncelleniyor…', 'no_update': 'Zaten güncel',
+        'update_success': 'v%s sürümüne güncellendi', 'update_failed': 'Güncelleme başarısız',
+        'rollback_notice': 'geri dönüldü', 'issue_prompt': 'Log ile issue açabilirsin.',
+        'update_check_failed': 'Güncelleme kontrolü başarısız',
+        'checked_days_ago': 'Son kontrol %d gün önce',
+    },
+}
+
+
+def _t(key, *args):
+    lang = QLocale.system().name().split('_')[0]
+    table = STRINGS.get(lang, STRINGS['en'])
+    s = table.get(key, STRINGS['en'].get(key, key))
+    return s % args if args else s
+
 
 def _find_sutura_cmd():
     """Resolve the CLI: $SUTURA env, the Linux wrapper, or the bundled
@@ -107,6 +195,35 @@ def format_report(data):
     return '\n'.join(lines)
 
 
+class UpdateCheckWorker(QThread):
+    """Background check for a newer release. Emits found(new_tag|None)."""
+
+    finished_check = Signal(object)
+
+    def __init__(self, force=False, parent=None):
+        super().__init__(parent)
+        self.force = force
+
+    def run(self):
+        new_tag, _cfg = updater.check_for_update(force=self.force)
+        self.finished_check.emit(new_tag)
+
+
+class UpdateWorker(QThread):
+    """Background update: backup, download, install, health check, rollback."""
+
+    progress_msg = Signal(str)
+    finished_update = Signal(bool, str)   # ok, message
+
+    def __init__(self, tag, parent=None):
+        super().__init__(parent)
+        self.tag = tag
+
+    def run(self):
+        ok, msg, _prev = updater.perform_update(self.tag, progress=self.progress_msg.emit)
+        self.finished_update.emit(ok, msg)
+
+
 class RepairWorker(QThread):
     """Repairs files sequentially in a background thread."""
 
@@ -168,7 +285,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Sutura')
+        self.setWindowTitle(_t('app_title'))
         self.resize(780, 620)
         self.setWindowIcon(self._load_icon())
         self.setAcceptDrops(True)
@@ -176,9 +293,14 @@ class MainWindow(QMainWindow):
         self.files = []
         self._item_by_path = {}
         self.worker = None
+        self.update_check = None
+        self.update_worker = None
+        self.available_tag = None
 
         self._build_ui()
         self._apply_accent()
+        self._maybe_ask_update_on_first_run()
+        self._maybe_check_updates()
 
     # --- UI ---------------------------------------------------------------
     def _build_ui(self):
@@ -188,24 +310,34 @@ class MainWindow(QMainWindow):
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels(['File', 'Result'])
+        self.tree.setHeaderLabels([_t('col_file'), _t('col_result')])
         self.tree.setColumnWidth(0, 580)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         layout.addWidget(self.tree)
 
         buttons = QHBoxLayout()
-        self.btn_add_files = QPushButton('Add files…')
-        self.btn_add_folder = QPushButton('Add folder…')
-        self.btn_remove = QPushButton('Remove selected')
-        self.btn_clear = QPushButton('Clear')
-        self.btn_repair = QPushButton('Repair')
+        self.btn_add_files = QPushButton(_t('add_files'))
+        self.btn_add_folder = QPushButton(_t('add_folder'))
+        self.btn_remove = QPushButton(_t('remove'))
+        self.btn_clear = QPushButton(_t('clear'))
+        self.btn_repair = QPushButton(_t('repair'))
         self.btn_repair.setObjectName('repairBtn')
-        self.btn_stop = QPushButton('Stop')
+        self.btn_stop = QPushButton(_t('stop'))
+        # update indicator (top-right corner)
+        self.update_btn = QToolButton()
+        self.update_btn.setIcon(self._update_icon(active=False))
+        self.update_btn.setToolTip(_t('update_btn_tooltip_idle'))
+        self.update_btn.setFixedSize(22, 22)
+        self.update_btn.setAutoRaise(True)
+        self.update_btn.setEnabled(False)
+        self.update_btn.setVisible(updater.config_exists() or updater.load_config().get('check_for_updates'))
+        self.update_btn.clicked.connect(self._on_update_clicked)
         buttons.addWidget(self.btn_add_files)
         buttons.addWidget(self.btn_add_folder)
         buttons.addWidget(self.btn_remove)
         buttons.addWidget(self.btn_clear)
         buttons.addStretch(1)
+        buttons.addWidget(self.update_btn)
         buttons.addWidget(self.btn_repair)
         buttons.addWidget(self.btn_stop)
         layout.addLayout(buttons)
@@ -214,7 +346,7 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
-        self.status = QLabel('Ready')
+        self.status = QLabel(_t('ready'))
         row.addWidget(self.progress, 1)
         row.addWidget(self.status)
         layout.addLayout(row)
@@ -253,6 +385,93 @@ class MainWindow(QMainWindow):
                 return QIcon(path)
         return QIcon()
 
+    def _update_icon(self, active=False):
+        """Small up-arrow icon; teal when an update is available."""
+        size = 16
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor('#14b8a6') if active else QColor('#5a646c')
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawPolygon(QPolygon([QPoint(3, 10), QPoint(8, 4), QPoint(13, 10)]))
+        p.setPen(color)
+        p.drawLine(8, 4, 8, 13)
+        p.end()
+        return QIcon(pm)
+
+    def _maybe_ask_update_on_first_run(self):
+        """Ask once (on first run, no config) whether to enable update checks."""
+        if updater.config_exists():
+            return
+        ret = QMessageBox.question(
+            self, _t('first_run_title'), _t('first_run_msg'),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret == QMessageBox.Yes:
+            updater.opt_in_check_updates()
+        else:
+            updater.save_config(updater.load_config())  # record the decision
+
+    def _maybe_check_updates(self):
+        """Start a background check if enabled and due."""
+        cfg = updater.load_config()
+        if not updater.should_check(cfg):
+            return
+        if self.update_check is not None:
+            return
+        self.update_check = UpdateCheckWorker(parent=self)
+        self.update_check.finished_check.connect(self._on_update_check_done)
+        self.update_check.start()
+
+    def _on_update_check_done(self, new_tag):
+        self.update_check = None
+        if new_tag:
+            self.available_tag = new_tag
+            self.update_btn.setIcon(self._update_icon(active=True))
+            self.update_btn.setToolTip(_t('update_btn_tooltip', new_tag))
+            self.update_btn.setEnabled(True)
+            self.update_btn.setVisible(True)
+
+    def _on_update_clicked(self):
+        if self.available_tag is None:
+            # manual check (idle icon click)
+            self.update_btn.setEnabled(False)
+            self.status.setText(_t('updating'))
+            self.update_check = UpdateCheckWorker(force=True, parent=self)
+            self.update_check.finished_check.connect(self._on_update_check_done)
+            self.update_check.start()
+            return
+        tag = self.available_tag
+        ret = QMessageBox.question(
+            self, _t('update_confirm_title'),
+            _t('update_confirm_msg', tag),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if ret != QMessageBox.Yes:
+            return
+        self.update_btn.setEnabled(False)
+        self.btn_repair.setEnabled(False)
+        self.status.setText(_t('updating'))
+        self.update_worker = UpdateWorker(tag, parent=self)
+        self.update_worker.progress_msg.connect(self.status.setText)
+        self.update_worker.finished_update.connect(self._on_update_done)
+        self.update_worker.start()
+
+    def _on_update_done(self, ok, msg):
+        self.update_worker = None
+        self.update_btn.setEnabled(True)
+        self.btn_repair.setEnabled(bool(self.files))
+        if ok:
+            self.available_tag = None
+            self.update_btn.setIcon(self._update_icon(active=False))
+            self.update_btn.setToolTip(_t('update_btn_tooltip_idle'))
+            QMessageBox.information(self, _t('app_title'), _t('update_success', msg.split()[-1]))
+        else:
+            self.status.setText(_t('update_failed'))
+            QMessageBox.warning(
+                self, _t('update_failed'),
+                '%s\n\n%s' % (msg, _t('issue_prompt')))
+
     # --- adding files / folders --------------------------------------------
     def _add_path(self, path):
         if not path or path in self.files:
@@ -282,21 +501,21 @@ class MainWindow(QMainWindow):
 
     def add_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
-            self, 'Select mesh files', '',
-            'Mesh files (*.stl *.STL *.3mf *.3MF);;All files (*)')
+            self, _t('select_files'), '',
+            _t('mesh_filter'))
         added = sum(1 for p in paths if self._add_path(p))
         if added:
-            self._log('Added %d file(s)' % added)
+            self._log(_t('added_n', added))
         self._refresh_buttons()
 
     def add_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, 'Select a folder with mesh files')
+        folder = QFileDialog.getExistingDirectory(self, _t('select_folder'))
         if folder:
             added = self._add_meshes_from_folder(folder)
             if added:
-                self._log('Added %d file(s) from %s' % (added, folder))
+                self._log(_t('added_folder', added, folder))
             else:
-                self.status.setText('No mesh files in that folder')
+                self.status.setText(_t('no_mesh'))
             self._refresh_buttons()
 
     def remove_selected(self):
@@ -330,7 +549,7 @@ class MainWindow(QMainWindow):
             if path:
                 added += self._add_path_or_folder(path)
         if added:
-            self._log('Added %d file(s) (drag)' % added)
+            self._log(_t('added_drag', added))
             self._refresh_buttons()
         event.acceptProposedAction()
 
@@ -344,7 +563,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(True)
         self.progress.setRange(0, len(self.files))
         self.progress.setValue(0)
-        self.status.setText('Repairing…')
+        self.status.setText(_t('repairing'))
         self.log.clear()
 
         self.worker = RepairWorker(self.files, self)
@@ -367,10 +586,10 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, current, total):
         self.progress.setValue(current)
-        self.status.setText('Repairing… %d/%d' % (current, total))
+        self.status.setText(_t('repairing_n', current, total))
 
     def _on_all_done(self, cancelled):
-        self.status.setText('Done' + (' (stopped)' if cancelled else ''))
+        self.status.setText(_t('done_stopped') if cancelled else _t('done'))
         self.btn_stop.setEnabled(False)
         self.btn_repair.setEnabled(bool(self.files))
         self.worker = None
