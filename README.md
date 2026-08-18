@@ -206,6 +206,15 @@ files or folders onto the window. **Stop** terminates the running repair and
 marks the remaining files as cancelled. Drag & drop works on native Wayland
 sessions (the GUI is a Qt application, not XWayland).
 
+#### Defect detail panel
+
+![Defect detail panel](assets/defect-panel.png)
+
+When a file is selected, the panel below the log lists the defects found in
+its input mesh: each hole's centroid and diameter (in mm) and each
+non-manifold region. This complements the batch summary strip above the log —
+the strip is a per-batch count, this panel is per-file detail.
+
 Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each
 file is repaired headlessly and a summary dialog is shown.
