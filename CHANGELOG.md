@@ -22,6 +22,20 @@ All notable changes to this project are documented here.
   in the CLI JSON output; `--human` shows it only with `--defects` to avoid
   noise. The GUI shows the selected file's defects in a dedicated panel below
   the log. `defects.py` is stdlib+numpy only (no pymeshlab/trimesh).
+- **Mesh type-aware repair (`sutura/mesh_classifier.py`).** Heuristically
+  guesses whether an input is mechanical or organic from dihedral-angle
+  geometry (numpy, not ML) and, on high-confidence cases, tunes two Stage 1
+  thresholds: `mincomponentsize` (debris cutoff) and `maxholesize` (hole
+  fill). Ambiguous meshes report `unknown` and keep the historical default
+  parameters (safe fallback). The detected type is shown in the GUI defect
+  panel header, as a `Type:` line in `--human`, and as
+  `detected_type`/`detected_confidence` in the JSON report.
+  **Experimental:** the per-type threshold values (mechanical 4/300, organic
+  12/1000) are uncalibrated starting points, deliberately conservative and
+  reversible. Curved-but-mechanical parts (cylinders, fillets) are not
+  classified and keep defaults.
+- `README.tr.md`: Turkish translation of the README (new, kept in sync with
+  README.md).
 
 ### Fixed
 

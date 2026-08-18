@@ -24,6 +24,7 @@ import numpy as np
 
 from classification import classify, issue_label, is_stage2_skipped
 from defects import detect as detect_defects
+from mesh_classifier import classify_mesh
 
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
@@ -39,23 +40,23 @@ TOPOMETRICS = [
 ]
 
 
-def stage1_chain(ml):
+def stage1_chain(ml, maxholesize=1000, mincomponentsize=8):
     return [
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
         ('meshing_remove_duplicate_vertices', {}),
         ('meshing_repair_non_manifold_edges', {}),
         ('meshing_re_orient_faces_coherently', {}),
-        ('meshing_close_holes', {'maxholesize': 1000}),
+        ('meshing_close_holes', {'maxholesize': maxholesize}),
         ('meshing_repair_non_manifold_vertices', {}),
         ('meshing_remove_connected_component_by_face_number',
-         {'mincomponentsize': 8, 'removeunref': True}),
+         {'mincomponentsize': mincomponentsize, 'removeunref': True}),
         ('meshing_remove_unreferenced_vertices', {}),
         ('meshing_re_orient_faces_coherently', {}),
     ]
 
 
-def delete_fallback_chain(ml):
+def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8):
     return [
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
@@ -67,9 +68,9 @@ def delete_fallback_chain(ml):
         ('meshing_repair_non_manifold_edges', {}),
         ('meshing_repair_non_manifold_vertices', {}),
         ('meshing_remove_connected_component_by_face_number',
-         {'mincomponentsize': 8, 'removeunref': True}),
+         {'mincomponentsize': mincomponentsize, 'removeunref': True}),
         ('meshing_re_orient_faces_coherently', {}),
-        ('meshing_close_holes', {'maxholesize': 1000}),
+        ('meshing_close_holes', {'maxholesize': maxholesize}),
     ]
 
 
@@ -132,6 +133,30 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
     stats = {'stage1': {}}
+
+    # Mesh-type-aware Stage 1 tuning (organic vs mechanical).
+    #
+    # These per-type values are ESTIMATED starting points, not calibrated on
+    # real repair data - a deliberate, conservative, reversible choice. They
+    # only shift debris/hole-closing thresholds; the classifier reports
+    # 'unknown' in ambiguous cases and we keep the default parameters, so a
+    # wrong guess cannot badly distort a mesh.
+    #
+    #   mechanical: preserve small sharp details (lower debris cutoff, 4) and
+    #               avoid oversized hole fill on precise geometry (300).
+    #   organic   : aggressively drop scan debris (higher cutoff, 12) and
+    #               close large open regions (1000, same as default).
+    #   unknown   : fall back to the historical defaults (8, 1000).
+    _type_params = {
+        'mechanical': {'mincomponentsize': 4, 'maxholesize': 300},
+        'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
+        'unknown': {'mincomponentsize': 8, 'maxholesize': 1000},
+    }
+    _cls = classify_mesh(verts, tris)
+    stats['detected_type'] = _cls['type']
+    stats['detected_confidence'] = _cls['confidence']
+    _p = _type_params.get(_cls['type'], _type_params['unknown'])
+
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     before = before_ms.apply_filter('get_topological_measures')
@@ -142,13 +167,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
 
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-    applied, skipped = apply_chain(ms, stage1_chain(ml))
+    applied, skipped = apply_chain(
+        ms, stage1_chain(ml, **_p))
     after = ms.apply_filter('get_topological_measures')
 
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
         fb = ml.MeshSet()
         fb.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-        fapplied, fskipped = apply_chain(fb, delete_fallback_chain(ml))
+        fapplied, fskipped = apply_chain(
+            fb, delete_fallback_chain(ml, **_p))
         fafter = fb.apply_filter('get_topological_measures')
         if (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0)):
@@ -440,6 +467,10 @@ def human_report(r, show_defects=False):
     lines = []
     lines.append('Input : %s' % r.get('input'))
     lines.append('Output: %s' % r.get('output'))
+    dt = r.get('detected_type')
+    if dt:
+        conf = r.get('detected_confidence', 0.0)
+        lines.append('Type  : %s (confidence %.2f)' % (dt, conf))
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))

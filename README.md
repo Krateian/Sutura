@@ -222,6 +222,40 @@ file is repaired headlessly and a summary dialog is shown.
 After installing or removing the service menu, run `kbuildsycoca6` (the
 installer does this automatically) or restart Dolphin.
 
+## Mesh type-aware repair
+
+Sutura heuristically guesses whether an input mesh is **mechanical** (cube,
+gear, CAD part) or **organic** (sculpt, scanned model) from pure geometry —
+adjacent-face dihedral angles, computed in numpy. It is *not* an ML model and
+is deliberately conservative: it only acts on high-confidence cases and
+reports `unknown` otherwise, in which case the historical default Stage 1
+parameters are used unchanged.
+
+The detected type is shown in the GUI defect-panel header (e.g. `Detected:
+mechanical (0.23)`) and in the `--human` report as a `Type:` line; the JSON
+report carries `detected_type` and `detected_confidence`.
+
+When classified, the type tunes two Stage 1 thresholds:
+
+| Type | `mincomponentsize` (debris cutoff) | `maxholesize` (hole fill) | Effect |
+|---|---|---|---|
+| mechanical | 4 | 300 | preserve small sharp details, avoid oversized hole patches |
+| organic | 12 | 1000 | drop scan debris more aggressively, close large open regions |
+| unknown | 8 | 1000 | historical defaults (unchanged) |
+
+> These per-type values are **experimental starting points**, not calibrated
+> on real repair data — a conservative, reversible choice. Only the two
+> thresholds above shift; they can be tuned in `repair.py` as more samples are
+> collected.
+
+### Known limitation of the classifier
+
+Curved-but-mechanical parts (e.g. a cylinder, shaft, or filleted geometry) are
+**not** classified — they fall into the `unknown` bucket and keep the default
+parameters. This is a deliberate trade-off: the classifier only fires on
+clearly flat/sharp mechanical or clearly smooth organic meshes, and prefers to
+do nothing over applying a wrong parameter set.
+
 ## Test
 
 Synthetic broken mesh:

@@ -13,6 +13,7 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - The GUI (`sutura/gui.py`, tkinter) just shells out to the installed `sutura` CLI and parses the last stdout JSON line.
 - Result classification lives in `sutura/classification.py` (stdlib-only, no numpy/pymeshlab): `classify()` returns `(category, issues, summary_key)` and both the CLI (`repair.py`) and the GUI (`gui.py`) import it so they never diverge. "Watertight" is only claimed when stage 2 actually ran and returned `ok`; a stage-1-closed mesh with stage 2 skipped/errored/never-run (e.g. macOS in-process fallback unavailable) is a warning. CLI `--human`/JSON label issues via this module (English, not localized); the GUI localizes the same codes through its EN/TR dictionary.
 - `sutura/defects.py` (stdlib+numpy only) detects the input mesh's holes and non-manifold regions from plain `verts`/`tris` arrays; `repair.py` calls `detect()` on the input and stores it in the report's `defects` key (always in JSON; `--human` only with `--defects`). The GUI renders the selected file's defects in a panel below the log. Keep it free of pymeshlab/trimesh so it stays importable anywhere.
+- `sutura/mesh_classifier.py` (stdlib+numpy only) heuristically classifies a mesh as `mechanical`/`organic`/`unknown` from dihedral-angle geometry. `repair_mesh_from_arrays` calls it and, on non-`unknown`, tunes two Stage 1 thresholds (`mincomponentsize`, `maxholesize`) via the per-type `_type_params` table in `repair.py`. Those per-type values are EXPERIMENTAL/uncalibrated starting points (see the code comment) — treat them as reversible. The result lands in the report as `detected_type`/`detected_confidence` and is shown in the GUI defect-panel header. Keep it free of pymeshlab/trimesh.
 
 ## Tests (no framework — plain scripts, need the venvs installed)
 
@@ -21,6 +22,7 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - `python3 tests/test_adversarial.py` — malformed-input rejection; it expects the **installed** CLI at `~/.local/bin/sutura`, not the repo copy.
 - `python3 tests/test_classification.py` — classification stdlib-only rule (importing it must not pull in numpy/pymeshlab) plus the documented category/issue scenarios (watertight, volume warning, stage 2 skipped/error, partial, malformed).
 - `python3 tests/test_defects.py` — defects stdlib+numpy-only rule plus hole/non-manifold detection on a clean cube and a cube with a removed face / duplicated face.
+- `~/.local/share/sutura/venv/bin/python tests/test_mesh_classifier.py` — mesh classifier stdlib+numpy-only rule (subprocess check) plus mechanical (cube), organic (sphere), and unknown-fallback (cylinder) decisions. Needs the venv because it builds test meshes with trimesh.
 - `tests/real-world-samples/` (Thingi10K, original licenses) are genuinely broken models; see its README for expected results.
 
 ## Conventions
@@ -34,6 +36,9 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - If a user-visible behaviour is added or changed in this session (CLI flag,
   GUI behaviour, install step, new feature), update `README.md` in the same
   session — without the user asking.
+- `README.tr.md` is the Turkish translation of `README.md` and must be kept in
+  sync with it: any user-visible addition/change to `README.md` also updates
+  `README.tr.md` in the same session, without being asked.
 
 ## Cleanup discipline
 

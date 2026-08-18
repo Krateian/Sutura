@@ -81,6 +81,7 @@ STRINGS = {
         'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm',
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
+        'type_detected': 'Detected: %s (%.2f)',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -121,6 +122,7 @@ STRINGS = {
         'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f mm',
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
+        'type_detected': 'Tespit edilen: %s (%.2f)',
     },
 }
 
@@ -322,6 +324,7 @@ class MainWindow(QMainWindow):
         self.update_worker = None
         self.available_tag = None
         self._defects_by_path = {}
+        self._type_by_path = {}
 
         self._build_ui()
         self._apply_accent()
@@ -605,7 +608,9 @@ class MainWindow(QMainWindow):
             self.tree.topLevelItem(i).setText(1, '')
         self._batch_results = []
         self._defects_by_path = {}
+        self._type_by_path = {}
         self.defects.clear()
+        self.defect_label.setText(_t('defects_header'))
         self.summary.setVisible(False)
         self.summary.setText('')
         self.btn_repair.setEnabled(False)
@@ -633,6 +638,8 @@ class MainWindow(QMainWindow):
         if data:
             self._batch_results.append(data)
             self._defects_by_path[path] = data.get('defects')
+            self._type_by_path[path] = (data.get('detected_type'),
+                                        data.get('detected_confidence'))
             if self._item_by_path.get(path) is self.tree.currentItem():
                 self._show_defects(path)
         if report:
@@ -651,6 +658,13 @@ class MainWindow(QMainWindow):
     def _show_defects(self, path):
         """Render the selected file's input defects into the defect panel."""
         d = self._defects_by_path.get(path)
+        # header: base label + detected mesh type (separate from the defect
+        # list itself and from the batch summary strip)
+        base = _t('defects_header')
+        dt = self._type_by_path.get(path)
+        if dt and dt[0]:
+            base += ' — ' + _t('type_detected', dt[0], dt[1] or 0.0)
+        self.defect_label.setText(base)
         lines = []
         if d:
             holes = d.get('holes', [])
