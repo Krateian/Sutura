@@ -71,12 +71,12 @@ ENV_PY="$(conda run -n "$ENV_NAME" which python)"
 
 # 7) copy the application files --------------------------------------------
 mkdir -p "$APP_DIR" "$BIN_DIR"
-for f in repair.py manifold_bridge.py gui.py __init__.py; do
+for f in repair.py manifold_bridge.py classification.py updater.py gui.py __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/$f"
 done
 # the importable package layout (for 'from sutura import ...' and __init__)
 mkdir -p "$APP_DIR/sutura"
-for f in repair.py manifold_bridge.py gui.py __init__.py; do
+for f in repair.py manifold_bridge.py classification.py updater.py gui.py __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/sutura/$f"
 done
 

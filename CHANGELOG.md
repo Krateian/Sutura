@@ -23,6 +23,10 @@ All notable changes to this project are documented here.
   the installed `~/.local/share/sutura/` directory, so the installed CLI and
   GUI failed with `ModuleNotFoundError` right after install. Both modules are
   now copied with the rest of the application files.
+- `install-macos.sh` had the same gap (it only copied `repair.py`,
+  `manifold_bridge.py`, `gui.py`, `__init__.py`), so a macOS install was also
+  missing `classification.py` and `updater.py`. Both are now copied in the
+  flat layout and the importable package layout.
 
 ### Changed
 
