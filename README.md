@@ -171,7 +171,8 @@ gains `summary.issue_counts`. `-o` is only valid with a single file. In JSON
 mode each file's report also includes a `defects` list describing the input's
 holes (centroid, diameter) and non-manifold regions; in `--human` mode this
 list is shown only when `--defects` is passed, so the default report stays
-concise. Diameters are in the mesh's own units (usually millimetres).
+concise. Diameter values assume millimetres, the common STL/3MF convention;
+if your file uses a different unit, scale the interpretation accordingly.
 
 A mesh is only counted as **watertight** when stage 2 actually ran and
 validated the closed solid. If stage 1 closes a mesh but stage 2 is skipped,
@@ -180,7 +181,11 @@ unavailable), the file is reported as a warning, not watertight.
 
 Multi-object 3MF files are handled natively: every object mesh is repaired
 independently and written back into the archive, so no object is lost. The
-report lists the result per object (holes remaining, two-manifold).
+report lists the result per object (holes remaining, two-manifold). Defects
+are also computed per object (`object_reports[i].defects`); there is no
+top-level aggregate `defects` field for a 3MF. Note that, as in the batch
+report, objects with byte-identical geometry are deduplicated: only the first
+occurrence is reported.
 
 GUI:
 

@@ -424,7 +424,7 @@ def human_defects(r):
         lines.append('  none')
     for h in holes:
         c = h['centroid']
-        lines.append('  hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f, %d verts'
+        lines.append('  hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm, %d verts'
                      % (c[0], c[1], c[2], h['diameter'], h['vertices']))
     for r_ in nm:
         c = r_['centroid']
