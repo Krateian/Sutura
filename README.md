@@ -306,4 +306,7 @@ encouraged: see `.github/ISSUE_TEMPLATE/bug_report.md`.
 
 ## License
 
-Apache License 2.0 See `LICENSE`.
+Apache License 2.0. See `LICENSE`.
+
+This project also includes a `NOTICE` file (Apache 2.0 §4d) preserving
+attribution; if you redistribute or build on Sutura, please keep it intact.

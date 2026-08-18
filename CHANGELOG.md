@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.2] - 2026-08-18
+
+### Changed
+
+- License changed from MIT to Apache License 2.0; added a `NOTICE` file
+  (Apache 2.0 §4d) preserving attribution.
+
 ## [0.1.1] - unreleased
 
 ### Added

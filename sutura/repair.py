@@ -26,7 +26,7 @@ SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sut
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 
 TOPOMETRICS = [
     'vertices_number', 'faces_number', 'boundary_edges', 'connected_components_number',
