@@ -142,13 +142,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
     # 'unknown' in ambiguous cases and we keep the default parameters, so a
     # wrong guess cannot badly distort a mesh.
     #
-    #   mechanical: preserve small sharp details (lower debris cutoff, 4) and
-    #               avoid oversized hole fill on precise geometry (300).
+    #   mechanical: avoid oversized hole fill on precise geometry (300).
+    #               mincomponentsize is kept at the default 8 (not lowered):
+    #               lowering it to 4 let small/degenerate meshes (e.g. the
+    #               2-triangle case in tests/test_adversarial.py) survive the
+    #               debris cutoff and be "repaired" instead of rejected - a
+    #               CI regression (test_adversarial 'degenerate').
     #   organic   : aggressively drop scan debris (higher cutoff, 12) and
     #               close large open regions (1000, same as default).
     #   unknown   : fall back to the historical defaults (8, 1000).
     _type_params = {
-        'mechanical': {'mincomponentsize': 4, 'maxholesize': 300},
+        'mechanical': {'mincomponentsize': 8, 'maxholesize': 300},
         'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
         'unknown': {'mincomponentsize': 8, 'maxholesize': 1000},
     }

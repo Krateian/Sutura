@@ -10,6 +10,12 @@ only high-confidence cases and reports `unknown` otherwise, so repair can fall
 back to its existing fixed parameters instead of risking a wrong parameter
 set on a mis-classified mesh.
 
+Note: the mechanical class's `mincomponentsize` in `repair.py` is kept at the
+default 8 (not lowered) because lowering it to 4 let small/degenerate meshes
+survive the debris cutoff and get "repaired" instead of rejected (a CI
+regression in tests/test_adversarial.py 'degenerate'). Do not lower it below
+8 without addressing that.
+
 Decision rules (calibrated on synthetic + Thingi10K meshes, see
 tests/test_mesh_classifier.py):
   mechanical   : near90 > 60 OR coplanar > 45

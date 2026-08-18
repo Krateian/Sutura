@@ -43,6 +43,12 @@ All notable changes to this project are documented here.
   the installed `~/.local/share/sutura/` directory, so the installed CLI and
   GUI failed with `ModuleNotFoundError` right after install. Both modules are
   now copied with the rest of the application files.
+- **Mesh classifier regression.** The `mechanical` class initially lowered
+  Stage 1's `mincomponentsize` to 4, which let small/degenerate meshes (e.g.
+  the 2-triangle case in `tests/test_adversarial.py`) survive the debris
+  cutoff and be "repaired" instead of rejected — a CI regression (the
+  `degenerate` adversarial scenario). `mincomponentsize` is now kept at the
+  default 8 for `mechanical`; the type still tunes `maxholesize` (300).
 - `install-macos.sh` had the same gap (it only copied `repair.py`,
   `manifold_bridge.py`, `gui.py`, `__init__.py`), so a macOS install was also
   missing `classification.py` and `updater.py`. Both are now copied in the
