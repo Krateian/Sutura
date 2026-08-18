@@ -67,10 +67,12 @@ echo "==> virtualenv (stage 2: manifold3d) [$VENV311_PY]"
 "$APP_DIR/venv311/bin/pip" install --quiet -r "$SRC/requirements-311.txt"
 
 echo "==> copying application files"
-install -m 0755 "$SRC/sutura/repair.py"        "$APP_DIR/repair.py"
+install -m 0755 "$SRC/sutura/repair.py"          "$APP_DIR/repair.py"
 install -m 0755 "$SRC/sutura/manifold_bridge.py" "$APP_DIR/manifold_bridge.py"
-install -m 0755 "$SRC/sutura/gui.py"           "$APP_DIR/gui.py"
-install -m 0755 "$SRC/sutura/open.sh"          "$APP_DIR/open.sh"
+install -m 0755 "$SRC/sutura/classification.py"  "$APP_DIR/classification.py"
+install -m 0755 "$SRC/sutura/updater.py"         "$APP_DIR/updater.py"
+install -m 0755 "$SRC/sutura/gui.py"             "$APP_DIR/gui.py"
+install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
 
 echo "==> CLI wrapper"
 cat > "$BIN_DIR/sutura" <<EOF

@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented here.
 
+## [0.1.3] - unreleased
+
+### Added
+
+- **Batch repair summary.** When more than one file is repaired in one run,
+  the CLI and GUI now show a breakdown of how many files came out watertight,
+  with warnings, or failed, and which kinds of warnings/errors occurred
+  (volume change, Stage 2 skipped, partial repair, malformed input).
+- CLI `--human` prints the per-issue counts under the batch summary; JSON mode
+  adds `summary.issue_counts` and a `category`/`issues` field on each file.
+- GUI shows a summary strip when a batch finishes (watertight / warnings /
+  failed counts) with a clickable "show issues" detail in the log.
+- `sutura/classification.py`: stdlib-only single source of truth for result
+  classification, shared by the CLI and the GUI (no numpy/pymeshlab import).
+
+### Fixed
+
+- `install.sh` was not copying `classification.py` (and `updater.py`) into
+  the installed `~/.local/share/sutura/` directory, so the installed CLI and
+  GUI failed with `ModuleNotFoundError` right after install. Both modules are
+  now copied with the rest of the application files.
+
+### Changed
+
+- **Breaking:** a mesh that stage 1 closes but stage 2 does not confirm (Stage
+  2 skipped, Stage 2 error, or Stage 2 never ran - e.g. the macOS/conda
+  in-process fallback being unavailable) is now reported as a **warning**, not
+  watertight. "Watertight" is only claimed when stage 2 actually validated the
+  closed solid. Stage 2 processing errors (a genuine manifold3d/bridge
+  failure, not a skip) are also now classified as **warning** rather than
+  error - the stage 1 output is still written, so a stage 2 error should not
+  hard-fail a batch. `stage2_skipped` and `stage2_error` remain distinct issue
+  codes and are counted separately in `summary.issue_counts`.
+
 ## [0.1.2] - 2026-08-18
 
 ### Changed

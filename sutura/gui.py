@@ -37,6 +37,9 @@ except ImportError:
     _spec.loader.exec_module(_mod)
     VERSION = _mod.VERSION
 
+# result classification (stdlib-only single source shared with the CLI)
+import classification
+
 # --- i18n ---------------------------------------------------------------
 STRINGS = {
     'en': {
@@ -66,6 +69,14 @@ STRINGS = {
         'rollback_notice': 'rollback', 'issue_prompt': 'You can open an issue with the log.',
         'update_check_failed': 'Update check failed',
         'checked_days_ago': 'Last checked %d day(s) ago',
+        'sum_watertight': 'watertight', 'sum_warning': 'with warnings', 'sum_error': 'failed',
+        'sum_show_issues': 'show issues', 'sum_issues_detail': 'Issue detail',
+        'res_watertight': 'watertight', 'res_stage2_skipped': 'stage 2 skipped',
+        'res_stage2_error': 'stage 2 error', 'res_holes': '%d hole(s)',
+        'res_partial': 'partial', 'res_error': 'ERROR',
+        'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
+        'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
+        'issue_malformed': 'Malformed input', 'issue_error': 'Error',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -94,6 +105,14 @@ STRINGS = {
         'rollback_notice': 'geri dönüldü', 'issue_prompt': 'Log ile issue açabilirsin.',
         'update_check_failed': 'Güncelleme kontrolü başarısız',
         'checked_days_ago': 'Son kontrol %d gün önce',
+        'sum_watertight': 'su geçirmez', 'sum_warning': 'uyarılı', 'sum_error': 'hata',
+        'sum_show_issues': 'sorunları göster', 'sum_issues_detail': 'Sorun detayı',
+        'res_watertight': 'su geçirmez', 'res_stage2_skipped': 'stage 2 atlandı',
+        'res_stage2_error': 'stage 2 hatası', 'res_holes': '%d delik',
+        'res_partial': 'kısmi', 'res_error': 'HATA',
+        'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
+        'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
+        'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
     },
 }
 
@@ -144,14 +163,11 @@ def parse_cli_output(out, err):
 
 
 def summarize(data):
-    if data.get('error') and 'stage1' not in data:
-        return 'ERROR'
-    s1 = data.get('stage1', {})
-    if s1.get('two_manifold') and s1.get('holes_remaining', 0) == 0:
-        return 'watertight'
-    if s1.get('two_manifold'):
-        return '%d hole(s)' % s1.get('holes_remaining', 0)
-    return 'partial'
+    """Short per-file result label, using the shared classifier, localized."""
+    _cat, _issues, key = classification.classify(data)
+    if key == 'holes':
+        return _t('res_holes', *classification.summary_args(data))
+    return _t('res_' + key)
 
 
 def format_report(data):
@@ -228,7 +244,7 @@ class RepairWorker(QThread):
     """Repairs files sequentially in a background thread."""
 
     file_started = Signal(str)
-    file_done = Signal(str, str, str)   # path, summary, report
+    file_done = Signal(str, str, str, object)   # path, summary, report, data
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
 
@@ -247,14 +263,14 @@ class RepairWorker(QThread):
         n = len(self._files)
         for idx, path in enumerate(self._files, 1):
             if self._cancelled:
-                self.file_done.emit(path, 'Cancelled', '')
+                self.file_done.emit(path, 'Cancelled', '', {})
                 continue
             self.file_started.emit(path)
             data = self._run_one(path)
             if self._cancelled:
-                self.file_done.emit(path, 'Stopped', '')
+                self.file_done.emit(path, 'Stopped', '', {})
                 continue
-            self.file_done.emit(path, summarize(data), format_report(data))
+            self.file_done.emit(path, summarize(data), format_report(data), data)
             self.progress.emit(idx, n)
         self.all_done.emit(self._cancelled)
 
@@ -292,6 +308,7 @@ class MainWindow(QMainWindow):
 
         self.files = []
         self._item_by_path = {}
+        self._batch_results = []
         self.worker = None
         self.update_check = None
         self.update_worker = None
@@ -350,6 +367,14 @@ class MainWindow(QMainWindow):
         row.addWidget(self.progress, 1)
         row.addWidget(self.status)
         layout.addLayout(row)
+
+        # batch summary strip (populated when a batch finishes)
+        self.summary = QLabel('')
+        self.summary.setTextFormat(Qt.RichText)
+        self.summary.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.summary.linkActivated.connect(self._on_summary_link)
+        self.summary.setVisible(False)
+        layout.addWidget(self.summary)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -559,6 +584,9 @@ class MainWindow(QMainWindow):
             return
         for i in range(self.tree.topLevelItemCount()):
             self.tree.topLevelItem(i).setText(1, '')
+        self._batch_results = []
+        self.summary.setVisible(False)
+        self.summary.setText('')
         self.btn_repair.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.progress.setRange(0, len(self.files))
@@ -577,10 +605,12 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self.btn_stop.setEnabled(False)
 
-    def _on_file_done(self, path, summary, report):
+    def _on_file_done(self, path, summary, report, data):
         item = self._item_by_path.get(path)
         if item is not None:
             item.setText(1, summary)
+        if data:
+            self._batch_results.append(data)
         if report:
             self._log('%s\n%s' % (path, report))
 
@@ -593,6 +623,39 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(False)
         self.btn_repair.setEnabled(bool(self.files))
         self.worker = None
+        if not cancelled:
+            self._render_summary()
+
+    def _render_summary(self):
+        """Build the batch summary strip: counts + clickable issue detail."""
+        if not self._batch_results:
+            return
+        n_wt = sum(1 for d in self._batch_results
+                   if d.get('category') == 'watertight')
+        n_wa = sum(1 for d in self._batch_results
+                   if d.get('category') == 'warning')
+        n_er = sum(1 for d in self._batch_results
+                   if d.get('category') == 'error')
+        issue_counts = {}
+        for d in self._batch_results:
+            for code in d.get('issues', []):
+                issue_counts[code] = issue_counts.get(code, 0) + 1
+        text = ('<b>%d %s</b> &nbsp;·&nbsp; %d %s &nbsp;·&nbsp; %d %s'
+                % (n_wt, _t('sum_watertight'), n_wa, _t('sum_warning'),
+                   n_er, _t('sum_error')))
+        if issue_counts:
+            text += ' &nbsp;·&nbsp; <a href="issues">%s</a>' % _t('sum_show_issues')
+        self.summary.setText(text)
+        self.summary.setVisible(True)
+        # stash counts for the link handler
+        self._summary_issue_counts = issue_counts
+
+    def _on_summary_link(self, _link):
+        if not getattr(self, '_summary_issue_counts', None):
+            return
+        self._log('--- ' + _t('sum_issues_detail') + ' ---')
+        for code, n in self._summary_issue_counts.items():
+            self._log('  - %s: %d' % (_t('issue_' + code), n))
 
     def _log(self, text):
         self.log.appendPlainText(text)

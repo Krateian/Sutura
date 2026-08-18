@@ -22,6 +22,8 @@ import zipfile
 import subprocess
 import numpy as np
 
+from classification import classify, issue_label, is_stage2_skipped
+
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
@@ -471,13 +473,9 @@ def process_file(src, human):
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
-    s1 = result.get('stage1', {})
-    if 'error' in result and 'stage1' not in result:
-        category = 'error'
-    elif s1.get('two_manifold') and s1.get('holes_remaining', 0) == 0:
-        category = 'ok'
-    else:
-        category = 'warning'
+    category, issues, _summary = classify(result)
+    result['category'] = category
+    result['issues'] = issues
     return result, category
 
 
@@ -503,9 +501,15 @@ def main():
         sys.exit(1)
 
     results = [process_file(f, human) for f in files]
-    ok = sum(1 for _, c in results if c == 'ok')
+    ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')
+
+    # issue counts across the whole batch (e.g. volume_warning: 3)
+    issue_counts = {}
+    for r, _ in results:
+        for code in r.get('issues', []):
+            issue_counts[code] = issue_counts.get(code, 0) + 1
 
     if len(files) == 1:
         result, category = results[0]
@@ -519,12 +523,17 @@ def main():
         for result, category in results:
             print(human_report(result))
             print()
-        print('Summary: %d file(s), %d fully repaired, %d with warnings, %d failed.'
+        print('Summary: %d file(s), %d watertight, %d with warnings, %d failed.'
               % (len(files), ok, warnings, errors))
+        for code, n in issue_counts.items():
+            print('  - %s: %d dosya' % (issue_label(code), n))
     else:
         payload = {
             'files': [r for r, _ in results],
-            'summary': {'total': len(files), 'ok': ok, 'warning': warnings, 'error': errors},
+            'summary': {
+                'total': len(files), 'ok': ok, 'warning': warnings, 'error': errors,
+                'issue_counts': issue_counts,
+            },
         }
         print(json.dumps(payload, ensure_ascii=False))
     sys.exit(0 if errors == 0 else 1)

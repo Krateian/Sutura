@@ -161,8 +161,17 @@ sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
 ```
 
 With multiple files, every input is repaired in turn and a summary is
-printed (`N fully repaired, M with warnings, K failed`); the exit code is
-non-zero if any file failed. `-o` is only valid with a single file.
+printed (`N watertight, M with warnings, K failed`), including a breakdown of
+the kinds of warnings/errors that occurred (volume change, Stage 2 skipped,
+partial repair, malformed input). The exit code is non-zero if any file
+failed. In JSON mode each file's report also carries a `category`
+(`watertight`/`warning`/`error`) and an `issues` list, and the batch summary
+gains `summary.issue_counts`. `-o` is only valid with a single file.
+
+A mesh is only counted as **watertight** when stage 2 actually ran and
+validated the closed solid. If stage 1 closes a mesh but stage 2 is skipped,
+errors, or never runs (for example the macOS/conda in-process fallback being
+unavailable), the file is reported as a warning, not watertight.
 
 Multi-object 3MF files are handled natively: every object mesh is repaired
 independently and written back into the archive, so no object is lost. The
@@ -175,12 +184,15 @@ GUI:
 ```
 
 The GUI supports batch repair: add any number of files, press **Repair**,
-and each one is processed in turn with its result listed per file. Files
-can be added with **Add files…** (native multi-select, rubber-band included),
-**Add folder…** (every `.stl`/`.3mf` in the folder, one level deep), or by
-dragging files or folders onto the window. **Stop** terminates the running
-repair and marks the remaining files as cancelled. Drag & drop works on
-native Wayland sessions (the GUI is a Qt application, not XWayland).
+and each one is processed in turn with its result listed per file. When the
+batch finishes, a summary strip appears above the log (`X watertight, Y with
+warnings, Z failed`) with a clickable **show issues** link that lists the
+warning/error types and how many files each affected. Files can be added with
+**Add files…** (native multi-select, rubber-band included), **Add folder…**
+(every `.stl`/`.3mf` in the folder, one level deep), or by dragging files or
+folders onto the window. **Stop** terminates the running repair and marks the
+remaining files as cancelled. Drag & drop works on native Wayland sessions
+(the GUI is a Qt application, not XWayland).
 
 Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each

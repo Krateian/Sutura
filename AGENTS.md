@@ -11,12 +11,14 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - `install.sh` creates both virtualenvs (`venv` with PyMeshLab from `requirements.txt`, `venv311` with manifold3d from `requirements-311.txt`), copies the source into `~/.local/share/sutura/`, and installs `~/.local/bin/sutura`. Re-running is safe. It bails if no `python3.11` is available (manifold3d ships wheels only up to Python 3.13).
 - Multi-object 3MF files are repaired object-by-object in memory (numpy arrays), preserving the original archive structure; per-object stage 2 is deliberately skipped (see the `TODO(stage2)` in `repair_3mf`). Single-mesh files round-trip through OBJ for stage 2.
 - The GUI (`sutura/gui.py`, tkinter) just shells out to the installed `sutura` CLI and parses the last stdout JSON line.
+- Result classification lives in `sutura/classification.py` (stdlib-only, no numpy/pymeshlab): `classify()` returns `(category, issues, summary_key)` and both the CLI (`repair.py`) and the GUI (`gui.py`) import it so they never diverge. "Watertight" is only claimed when stage 2 actually ran and returned `ok`; a stage-1-closed mesh with stage 2 skipped/errored/never-run (e.g. macOS in-process fallback unavailable) is a warning. CLI `--human`/JSON label issues via this module (English, not localized); the GUI localizes the same codes through its EN/TR dictionary.
 
 ## Tests (no framework — plain scripts, need the venvs installed)
 
 - Smoke: `python3 tests/make_broken_stl.py /tmp/broken.stl && sutura /tmp/broken.stl --human` — generates a cube with missing face, inverted winding, duplicate/degenerate/self-intersecting triangles.
 - `python3 tests/make_layered_multiobject_3mf.py --check` — layered/folded-vertex 3MF regression.
 - `python3 tests/test_adversarial.py` — malformed-input rejection; it expects the **installed** CLI at `~/.local/bin/sutura`, not the repo copy.
+- `python3 tests/test_classification.py` — classification stdlib-only rule (importing it must not pull in numpy/pymeshlab) plus the documented category/issue scenarios (watertight, volume warning, stage 2 skipped/error, partial, malformed).
 - `tests/real-world-samples/` (Thingi10K, original licenses) are genuinely broken models; see its README for expected results.
 
 ## Conventions
