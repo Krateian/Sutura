@@ -16,6 +16,12 @@ All notable changes to this project are documented here.
   failed counts) with a clickable "show issues" detail in the log.
 - `sutura/classification.py`: stdlib-only single source of truth for result
   classification, shared by the CLI and the GUI (no numpy/pymeshlab import).
+- **Defect detection (`sutura/defects.py`).** The input mesh's holes and
+  non-manifold regions are now reported per defect (centroid, hole diameter,
+  size) instead of just aggregate counts. The defect list is always included
+  in the CLI JSON output; `--human` shows it only with `--defects` to avoid
+  noise. The GUI shows the selected file's defects in a dedicated panel below
+  the log. `defects.py` is stdlib+numpy only (no pymeshlab/trimesh).
 
 ### Fixed
 

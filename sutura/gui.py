@@ -77,6 +77,10 @@ STRINGS = {
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
         'issue_malformed': 'Malformed input', 'issue_error': 'Error',
+        'defects_header': 'Input defects (selected file):',
+        'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f',
+        'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
+        'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -113,6 +117,10 @@ STRINGS = {
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
         'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
+        'defects_header': 'Girdi kusurları (seçili dosya):',
+        'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f',
+        'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
+        'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
     },
 }
 
@@ -313,6 +321,7 @@ class MainWindow(QMainWindow):
         self.update_check = None
         self.update_worker = None
         self.available_tag = None
+        self._defects_by_path = {}
 
         self._build_ui()
         self._apply_accent()
@@ -381,12 +390,22 @@ class MainWindow(QMainWindow):
         self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         layout.addWidget(self.log, 1)
 
+        # per-file defect detail panel (selected file's holes / non-manifold)
+        self.defect_label = QLabel(_t('defects_header'))
+        layout.addWidget(self.defect_label)
+        self.defects = QPlainTextEdit()
+        self.defects.setReadOnly(True)
+        self.defects.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.defects.setFixedHeight(110)
+        layout.addWidget(self.defects)
+
         self.btn_add_files.clicked.connect(self.add_files)
         self.btn_add_folder.clicked.connect(self.add_folder)
         self.btn_remove.clicked.connect(self.remove_selected)
         self.btn_clear.clicked.connect(self.clear_files)
         self.btn_repair.clicked.connect(self.repair)
         self.btn_stop.clicked.connect(self.stop)
+        self.tree.currentItemChanged.connect(self._on_selection)
 
         self.btn_repair.setEnabled(False)
         self.btn_stop.setEnabled(False)
@@ -585,6 +604,8 @@ class MainWindow(QMainWindow):
         for i in range(self.tree.topLevelItemCount()):
             self.tree.topLevelItem(i).setText(1, '')
         self._batch_results = []
+        self._defects_by_path = {}
+        self.defects.clear()
         self.summary.setVisible(False)
         self.summary.setText('')
         self.btn_repair.setEnabled(False)
@@ -611,12 +632,40 @@ class MainWindow(QMainWindow):
             item.setText(1, summary)
         if data:
             self._batch_results.append(data)
+            self._defects_by_path[path] = data.get('defects')
+            if self._item_by_path.get(path) is self.tree.currentItem():
+                self._show_defects(path)
         if report:
             self._log('%s\n%s' % (path, report))
 
     def _on_progress(self, current, total):
         self.progress.setValue(current)
         self.status.setText(_t('repairing_n', current, total))
+
+    def _on_selection(self, current, _prev):
+        if current is not None:
+            self._show_defects(current.text(0))
+        else:
+            self.defects.clear()
+
+    def _show_defects(self, path):
+        """Render the selected file's input defects into the defect panel."""
+        d = self._defects_by_path.get(path)
+        lines = []
+        if d:
+            holes = d.get('holes', [])
+            nm = d.get('non_manifold', [])
+            for h in holes:
+                c = h['centroid']
+                lines.append(_t('defect_hole', c[0], c[1], c[2], h['diameter']))
+            for r in nm:
+                c = r['centroid']
+                lines.append(_t('defect_nm', c[0], c[1], c[2], r['faces']))
+            if not holes and not nm:
+                lines.append(_t('defect_none'))
+        if not lines:
+            lines.append(_t('defect_empty'))
+        self.defects.setPlainText('\n'.join(lines))
 
     def _on_all_done(self, cancelled):
         self.status.setText(_t('done_stopped') if cancelled else _t('done'))

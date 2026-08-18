@@ -23,6 +23,7 @@ import subprocess
 import numpy as np
 
 from classification import classify, issue_label, is_stage2_skipped
+from defects import detect as detect_defects
 
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
@@ -303,6 +304,7 @@ def repair_file(src, out, tmpdir):
     tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
     report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir)
+    report['defects'] = detect_defects(verts, tris)
 
     # stage 2 applies to watertight results; run_stage2 handles the fixed
     # venv, in-process, or an explicit "skipped" report.
@@ -385,6 +387,7 @@ def repair_3mf(src, out, tmpdir):
                 new_v, new_t = cache[key]
             else:
                 rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir)
+                rep['defects'] = detect_defects(verts, tris)
                 reports.append(rep)
                 cache[key] = (new_v, new_t)
 
@@ -409,7 +412,28 @@ def repair_3mf(src, out, tmpdir):
     return agg
 
 
-def human_report(r):
+def human_defects(r):
+    """Render the defect list for --human mode (only with --defects)."""
+    d = r.get('defects')
+    if not d:
+        return None
+    lines = ['', 'Defects (input):']
+    holes = d.get('holes', [])
+    nm = d.get('non_manifold', [])
+    if not holes and not nm:
+        lines.append('  none')
+    for h in holes:
+        c = h['centroid']
+        lines.append('  hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f, %d verts'
+                     % (c[0], c[1], c[2], h['diameter'], h['vertices']))
+    for r_ in nm:
+        c = r_['centroid']
+        lines.append('  non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces'
+                     % (c[0], c[1], c[2], r_['faces']))
+    return '\n'.join(lines)
+
+
+def human_report(r, show_defects=False):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
     s1 = r.get('stage1', {})
@@ -450,6 +474,14 @@ def human_report(r):
             lines.append('  object %d: %s (%d hole(s) remaining, two-manifold=%s)' % (
                 i, 'watertight' if ok else 'partial',
                 s1o.get('holes_remaining', 0), 'YES' if s1o.get('two_manifold') else 'NO'))
+            if show_defects:
+                ds = human_defects(rep)
+                if ds:
+                    lines.append(ds)
+    elif show_defects:
+        ds = human_defects(r)
+        if ds:
+            lines.append(ds)
     return '\n'.join(lines)
 
 
@@ -490,11 +522,15 @@ def main():
                         help='output file (only valid with a single input)')
     parser.add_argument('--human', action='store_true',
                         help='print a human-readable report')
+    parser.add_argument('--defects', action='store_true',
+                        help='with --human, also list input defects (holes / '
+                             'non-manifold regions). JSON always includes defects.')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
     files = args.files
     out = args.output
     human = args.human
+    show_defects = args.defects
 
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
@@ -514,14 +550,14 @@ def main():
     if len(files) == 1:
         result, category = results[0]
         if human:
-            print(human_report(result))
+            print(human_report(result, show_defects=show_defects))
         else:
             print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if category != 'error' else 1)
 
     if human:
         for result, category in results:
-            print(human_report(result))
+            print(human_report(result, show_defects=show_defects))
             print()
         print('Summary: %d file(s), %d watertight, %d with warnings, %d failed.'
               % (len(files), ok, warnings, errors))
