@@ -1,0 +1,47 @@
+name: Build AppImage
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish under (e.g. v0.1.5). The AppImage is built from the current default branch; use this to backfill an AppImage onto an existing git tag that predates the build pipeline.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # create/update a GitHub Release and upload the AppImage asset
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build AppImage
+        run: ./scripts/build_appimage.sh
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.ref }}
+          files: dist/Sutura-x86_64.AppImage
+          name: ${{ steps.tag.outputs.ref }}
+          body: |
+            Sutura ${{ steps.tag.outputs.ref }}
+
+            This release's AppImage is built automatically from the
+            `scripts/build_appimage.sh` pipeline. The `install.sh` (git clone)
+            flow remains fully supported.

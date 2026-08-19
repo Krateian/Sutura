@@ -119,9 +119,11 @@ registers the Dolphin service menu. Re-running is safe.
 
 **AppImage (optional).** A self-contained AppImage with both Python runtimes
 bundled (3.14 for stage 1 + GUI, 3.11 for stage 2) — no virtualenvs and no
-system `python3.11` needed. Build it with `scripts/build_appimage.sh`
-(produces `dist/Sutura-x86_64.AppImage`) or download a release build. Make
-it executable and run:
+system `python3.11` needed. Each tagged release ships a prebuilt
+`Sutura-x86_64.AppImage` on the
+[GitHub releases page](https://github.com/Krateian/Sutura/releases); you can
+also build it yourself with `scripts/build_appimage.sh` (produces
+`dist/Sutura-x86_64.AppImage`). Make it executable and run:
 
 ```sh
 chmod +x Sutura-x86_64.AppImage
@@ -130,9 +132,8 @@ chmod +x Sutura-x86_64.AppImage
 ```
 
 Unlike the `install.sh` flow, the AppImage build cannot update itself in
-place; get a new AppImage from the
-[GitHub releases page](https://github.com/Krateian/Sutura/releases). The
-Dolphin right-click service menu is still installed by `install.sh`.
+place; grab a new AppImage from the releases page above. The Dolphin
+right-click service menu is still installed by `install.sh`.
 
 Installation uses pip inside isolated virtualenvs — no AUR, no yay/paru
 required, nothing touches your system package manager. The GUI needs
