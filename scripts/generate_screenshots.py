@@ -45,6 +45,19 @@ def load_gui():
     return m
 
 
+def _repo_cli_wrapper():
+    """Return a path to an executable that runs the repo's own repair.py with
+    the current interpreter. The GUI resolves the CLI from $SUTURA first, and
+    without this it would pick up an installed (possibly older) CLI that lacks
+    the latest report fields."""
+    wrap = os.path.join(tempfile.gettempdir(), 'sutura-repo-cli.sh')
+    with open(wrap, 'w') as f:
+        f.write('#!/bin/sh\nexec "%s" "%s" "$@"\n' % (
+            sys.executable, os.path.join(REPO, 'sutura', 'repair.py')))
+    os.chmod(wrap, 0o755)
+    return wrap
+
+
 def make_meshes(tmp):
     broken = os.path.join(tmp, 'broken.stl')
     clean = os.path.join(tmp, 'clean.stl')
@@ -89,6 +102,7 @@ def run(m, files, size, select_broken, out_path):
 
 
 def main():
+    os.environ['SUTURA'] = _repo_cli_wrapper()
     m = load_gui()
     with tempfile.TemporaryDirectory(prefix='sutura-ss-') as tmp:
         broken, clean = make_meshes(tmp)

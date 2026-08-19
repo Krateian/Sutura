@@ -95,6 +95,23 @@ def write_obj(path, verts, tris):
             f.write('f %d %d %d\n' % (t[0] + 1, t[1] + 1, t[2] + 1))
 
 
+def surface_area(verts, tris):
+    """Total triangle surface area of a mesh, computed directly from geometry.
+
+    Works for both open and closed meshes (VCG's geometric-measures volume
+    and area are only meaningful on closed meshes). Pure numpy, platform
+    independent."""
+    if len(tris) == 0 or len(verts) == 0:
+        return 0.0
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int32)
+    a = v[t[:, 0]]
+    b = v[t[:, 1]]
+    c = v[t[:, 2]]
+    cross = np.cross(b - a, c - a)
+    return float(np.sum(0.5 * np.linalg.norm(cross, axis=1)))
+
+
 def read_obj(path):
     verts = []
     tris = []
@@ -166,6 +183,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
     before = before_ms.apply_filter('get_topological_measures')
     before_geom = before_ms.apply_filter('get_geometric_measures')
     before_volume = before_geom.get('mesh_volume', 0)
+    before_area = surface_area(v, t)
+    before_verts = before.get('vertices_number', 0)
+    before_faces = before.get('faces_number', 0)
     holes_before = max(before.get('boundary_edges', 0) // 2, 0)
     nm_before = before.get('non_two_manifold_edges', 0)
 
@@ -210,25 +230,39 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
         geom = ms.apply_filter('get_geometric_measures')
     after_volume = geom.get('mesh_volume', 0)
 
-    volume_change_pct = 0.0
-    if before_volume and after_volume:
-        volume_change_pct = abs(after_volume - before_volume) / abs(before_volume) * 100
-    stats['stage1']['volume_before'] = float(before_volume)
-    stats['stage1']['volume_after'] = float(after_volume)
-    stats['stage1']['volume_change_percent'] = round(volume_change_pct, 2)
-    if volume_change_pct > 15:
-        stats['stage1']['volume_warning'] = (
-            'Volume changed by %.1f%% - verify in slicer before printing.'
-            % volume_change_pct)
-
     new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
     new_tris = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
     fin = ms.apply_filter('get_topological_measures')
+    after_area = surface_area(new_verts, new_tris)
+    after_verts = fin.get('vertices_number', 0)
+    after_faces = fin.get('faces_number', 0)
+
+    volume_change_pct = 0.0
+    if before_volume and after_volume:
+        volume_change_pct = (after_volume - before_volume) / abs(before_volume) * 100
+    surface_change_pct = 0.0
+    if before_area and after_area:
+        surface_change_pct = (after_area - before_area) / abs(before_area) * 100
+    stats['stage1']['volume_before'] = float(before_volume)
+    stats['stage1']['volume_after'] = float(after_volume)
+    stats['stage1']['volume_change_percent'] = round(volume_change_pct, 2)
+    stats['stage1']['surface_area_before'] = round(before_area, 3)
+    stats['stage1']['surface_area_after'] = round(after_area, 3)
+    stats['stage1']['surface_area_change_percent'] = round(surface_change_pct, 2)
+    if abs(volume_change_pct) > 15:
+        stats['stage1']['volume_warning'] = (
+            'Volume changed by %.1f%% - verify in slicer before printing.'
+            % abs(volume_change_pct))
+
     stats['stage1'].update({
         'two_manifold': bool(fin.get('is_mesh_two_manifold')),
         'holes_remaining': max(fin.get('boundary_edges', 0) // 2, 0),
         'components': fin.get('connected_components_number'),
         'faces_after': fin.get('faces_number'),
+        'vertices_before': int(before_verts),
+        'vertices_after': int(after_verts),
+        'faces_before': int(before_faces),
+        'faces_after': int(after_faces),
     })
     return stats, new_verts, new_tris
 
@@ -464,7 +498,7 @@ def human_defects(r):
     return '\n'.join(lines)
 
 
-def human_report(r, show_defects=False):
+def human_report(r, show_defects=False, show_diff=False):
     if 'error' in r and 'stage1' not in r:
         return 'ERROR: %s' % r['error']
     s1 = r.get('stage1', {})
@@ -483,6 +517,13 @@ def human_report(r, show_defects=False):
     lines.append('  Faces removed           : %d' % s1.get('faces_removed', 0))
     lines.append('  Connected components    : %d' % s1.get('components', 0))
     lines.append('  Two-manifold            : %s' % ('YES' if s1.get('two_manifold') else 'NO'))
+    if show_diff:
+        lines.append('  Vertices                : %s -> %s' % (
+            s1.get('vertices_before', 0), s1.get('vertices_after', 0)))
+        lines.append('  Faces                   : %s -> %s' % (
+            s1.get('faces_before', 0), s1.get('faces_after', 0)))
+        if s1.get('surface_area_change_percent') is not None:
+            lines.append('  Surface area change     : %s%%' % s1.get('surface_area_change_percent'))
     if s1.get('volume_change_percent') is not None:
         lines.append('  Volume change          : %s%%' % s1.get('volume_change_percent'))
     if s1.get('volume_warning'):
@@ -509,6 +550,11 @@ def human_report(r, show_defects=False):
             lines.append('  object %d: %s (%d hole(s) remaining, two-manifold=%s)' % (
                 i, 'watertight' if ok else 'partial',
                 s1o.get('holes_remaining', 0), 'YES' if s1o.get('two_manifold') else 'NO'))
+            if show_diff:
+                lines.append('    vertices %s -> %s, faces %s -> %s, surface %s%%' % (
+                    s1o.get('vertices_before', 0), s1o.get('vertices_after', 0),
+                    s1o.get('faces_before', 0), s1o.get('faces_after', 0),
+                    s1o.get('surface_area_change_percent', 0)))
             if show_defects:
                 ds = human_defects(rep)
                 if ds:
@@ -560,12 +606,17 @@ def main():
     parser.add_argument('--defects', action='store_true',
                         help='with --human, also list input defects (holes / '
                              'non-manifold regions). JSON always includes defects.')
+    parser.add_argument('--diff', action='store_true',
+                        help='with --human, also show before/after geometry '
+                             'diff (vertices, faces, surface area change). '
+                             'JSON always includes these fields.')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
     files = args.files
     out = args.output
     human = args.human
     show_defects = args.defects
+    show_diff = args.diff
 
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
@@ -585,14 +636,14 @@ def main():
     if len(files) == 1:
         result, category = results[0]
         if human:
-            print(human_report(result, show_defects=show_defects))
+            print(human_report(result, show_defects=show_defects, show_diff=show_diff))
         else:
             print(json.dumps(result, ensure_ascii=False))
         sys.exit(0 if category != 'error' else 1)
 
     if human:
         for result, category in results:
-            print(human_report(result, show_defects=show_defects))
+            print(human_report(result, show_defects=show_defects, show_diff=show_diff))
             print()
         print('Summary: %d file(s), %d watertight, %d with warnings, %d failed.'
               % (len(files), ok, warnings, errors))

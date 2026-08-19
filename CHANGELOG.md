@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Before/after geometry diff in reports.** Each repair now reports the
+  actual before/after geometry numbers alongside the existing volume warning:
+  `volume_change_percent` (now signed, indicating direction), plus
+  `surface_area_before`/`after` and `surface_area_change_percent`
+  (computed directly from the triangles, so it is meaningful on open meshes
+  too), and `vertices_before`/`after`, `faces_before`/`after`. These are
+  always in the CLI JSON (`stage1`) and shown per object for multi-object
+  3MF files; `--human --diff` also prints them. The GUI defect panel shows a
+  one-line summary ("Volume: +0.12% · Surface: -2.37% · Vertex: 12→9") above
+  the defect list, localized (EN/TR).
+- **`--diff` CLI flag.** With `--human`, also print the before/after geometry
+  diff. JSON always includes the fields.
+
 ### Security
 
 - **Restricted CI token permissions.** `.github/workflows/ci.yml` now sets
