@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Security
+
+- **Restricted CI token permissions.** `.github/workflows/ci.yml` now sets
+  `permissions: contents: read` at the workflow level. The CI jobs only check
+  out the repo and run tests, so they no longer receive the default
+  broad-scope GITHUB_TOKEN (fixes GitHub CodeQL
+  `actions/missing-workflow-permissions` warning).
+
 ## [0.1.5] - 2026-08-19
 
 ### Added
