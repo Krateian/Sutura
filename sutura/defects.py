@@ -82,23 +82,35 @@ def _loop_geometry(loop, verts):
     return centroid, diameter
 
 
-def detect_holes(verts, tris):
+def detect_holes(verts, tris, with_indices=False):
     """Return a list of hole dicts:
-    {centroid:[x,y,z], diameter, vertices:int}."""
+    {centroid:[x,y,z], diameter, vertices:int}.
+
+    With ``with_indices=True`` each hole also carries ``verts_idx`` (the
+    boundary-loop vertex indices) so a renderer can highlight the hole rim.
+    The default (False) keeps the CLI JSON contract unchanged."""
     boundary, adj, _edges, _keys = _boundary_edges(tris)
     if not boundary:
         return []
     holes = []
     for loop in _boundary_loops(adj):
         centroid, diameter = _loop_geometry(loop, verts)
-        holes.append({'centroid': centroid, 'diameter': round(diameter, 4),
-                      'vertices': len(loop)})
+        hole = {'centroid': centroid, 'diameter': round(diameter, 4),
+                'vertices': len(loop)}
+        if with_indices:
+            hole['verts_idx'] = [int(i) for i in loop]
+        holes.append(hole)
     return holes
 
 
-def detect_non_manifold(verts, tris):
+def detect_non_manifold(verts, tris, with_indices=False):
     """Return a list of non-manifold region dicts, clustered by face
-    connectivity. Each region: {centroid:[x,y,z], faces:int}."""
+    connectivity. Each region: {centroid:[x,y,z], faces:int}.
+
+    With ``with_indices=True`` each region also carries ``verts_idx`` (the
+    region's vertex indices) and ``faces_idx`` (the region's face indices) so
+    a renderer can highlight the region. The default (False) keeps the CLI
+    JSON contract unchanged."""
     tris = np.asarray(tris, dtype=np.int64)
     tri_idx = np.repeat(np.arange(len(tris)), 3)
     edges = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0)
@@ -151,11 +163,20 @@ def detect_non_manifold(verts, tris):
     for g in groups.values():
         region_verts = np.unique(tris[g].reshape(-1))
         centroid = verts[region_verts].mean(axis=0).tolist()
-        regions.append({'centroid': centroid, 'faces': len(g)})
+        region = {'centroid': centroid, 'faces': len(g)}
+        if with_indices:
+            region['verts_idx'] = [int(i) for i in region_verts]
+            region['faces_idx'] = [int(i) for i in g]
+        regions.append(region)
     return regions
 
 
-def detect(verts, tris):
-    """Full defect report: {'holes': [...], 'non_manifold': [...]}."""
-    return {'holes': detect_holes(verts, tris),
-            'non_manifold': detect_non_manifold(verts, tris)}
+def detect(verts, tris, with_indices=False):
+    """Full defect report: {'holes': [...], 'non_manifold': [...]}.
+
+    ``with_indices`` is passed through to the per-defect detectors; the CLI
+    (which calls this without the flag) keeps its JSON contract unchanged,
+    while the GUI may request the extra index lists for rendering."""
+    return {'holes': detect_holes(verts, tris, with_indices=with_indices),
+            'non_manifold': detect_non_manifold(verts, tris,
+                                                with_indices=with_indices)}

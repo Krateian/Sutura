@@ -242,12 +242,34 @@ its input mesh: each hole's centroid and diameter (in mm) and each
 non-manifold region. This complements the batch summary strip above the log —
 the strip is a per-batch count, this panel is per-file detail.
 
+**Defect heatmap.** Below the defect list, **Show heatmap** renders the
+selected mesh with its defect regions (hole rims and non-manifold areas)
+highlighted red against the grey mesh, shown as a small thumbnail. Clicking
+the thumbnail opens a larger zoom dialog. Rendering is on-demand (never
+automatic, so a large batch doesn't stall) and cached per file. For a
+multi-object 3MF it renders the first object, matching the defect panel's
+existing first-object behaviour. The renderer is a CPU rasterizer (works
+headless, in the AppImage, and on macOS CI) that runs in a subprocess so the
+GUI stays responsive and crash-free; if a mesh can't be rendered it falls
+back silently to the text-only panel.
+
 Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each
 file is repaired headlessly and a summary dialog is shown.
 
 After installing or removing the service menu, run `kbuildsycoca6` (the
 installer does this automatically) or restart Dolphin.
+
+### OrcaSlicer plugin (experimental)
+
+There is also an **experimental** [OrcaSlicer script plugin](orcaslicer-plugin/)
+under `orcaslicer-plugin/` that repairs a file straight from the slicer by
+shelling out to the installed Sutura CLI. It is offered as a starting point
+and is **untested in a real OrcaSlicer**: the Python plugin system it targets
+only exists in OrcaSlicer **nightly builds / releases newer than 2.4.2**,
+which we do not run, so we have not been able to verify it end-to-end. See the
+[plugin README](orcaslicer-plugin/README.md) for install steps and its
+limitations.
 
 ## Mesh type-aware repair
 

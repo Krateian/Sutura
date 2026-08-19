@@ -74,6 +74,8 @@ install -m 0755 "$SRC/sutura/defects.py"         "$APP_DIR/defects.py"
 install -m 0755 "$SRC/sutura/mesh_classifier.py" "$APP_DIR/mesh_classifier.py"
 install -m 0755 "$SRC/sutura/updater.py"         "$APP_DIR/updater.py"
 install -m 0755 "$SRC/sutura/gui.py"             "$APP_DIR/gui.py"
+install -m 0755 "$SRC/sutura/heatmap.py"         "$APP_DIR/heatmap.py"
+install -m 0755 "$SRC/sutura/heatmap_render.py"  "$APP_DIR/heatmap_render.py"
 install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
 
 echo "==> CLI wrapper"

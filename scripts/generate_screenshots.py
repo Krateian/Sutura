@@ -70,7 +70,7 @@ def make_meshes(tmp):
     return broken, clean
 
 
-def run(m, files, size, select_broken, out_path):
+def run(m, files, size, select_broken, out_path, show_heatmap=False):
     app = QApplication.instance() or QApplication([])
     win = m.MainWindow()
     win.resize(*size)
@@ -87,11 +87,24 @@ def run(m, files, size, select_broken, out_path):
             if select_broken:
                 win.tree.setCurrentItem(win.tree.topLevelItem(0))
                 app.processEvents()
+            if show_heatmap:
+                win._on_show_heatmap()
+                QTimer.singleShot(100, wait_heatmap)
+                return
             win.grab().save(out_path)
             done['ok'] = True
             app.quit()
         else:
             QTimer.singleShot(200, poll)
+
+    def wait_heatmap():
+        if win.heatmap_worker is None:
+            app.processEvents()
+            win.grab().save(out_path)
+            done['ok'] = True
+            app.quit()
+        else:
+            QTimer.singleShot(100, wait_heatmap)
 
     win.repair()
     QTimer.singleShot(200, poll)
@@ -107,9 +120,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='sutura-ss-') as tmp:
         broken, clean = make_meshes(tmp)
         files = [broken, clean]
-        run(m, files, MAIN_SIZE, select_broken=True,
+        run(m, files, MAIN_SIZE, select_broken=True, show_heatmap=True,
             out_path=os.path.join(ASSETS, 'screenshot.png'))
-        run(m, files, PANEL_SIZE, select_broken=True,
+        run(m, files, PANEL_SIZE, select_broken=True, show_heatmap=True,
             out_path=os.path.join(ASSETS, 'defect-panel.png'))
     print('done')
 

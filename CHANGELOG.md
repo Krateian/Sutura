@@ -18,6 +18,28 @@ All notable changes to this project are documented here.
   the defect list, localized (EN/TR).
 - **`--diff` CLI flag.** With `--human`, also print the before/after geometry
   diff. JSON always includes the fields.
+- **Defect heatmap (GUI).** A "Show heatmap" button under the defect panel
+  renders the selected mesh with hole/non-manifold regions highlighted red on
+  a neutral grey mesh, shown as a clickable thumbnail that opens a larger
+  zoom dialog. Rendering is on-demand (never automatic) and cached per file.
+  For multi-object 3MF files it renders the first object, matching the defect
+  panel's existing first-object behaviour.
+  - `defects.detect(..., with_indices=True)` now also returns each defect's
+    `verts_idx`/`faces_idx` index lists for highlighting; the CLI JSON
+    contract is unchanged (default is `with_indices=False`).
+  - **Rendering is a CPU rasterizer, not GPU OpenGL.** An offscreen
+    `QOpenGLContext` + FBO pipeline was prototyped first, but raw GL draw
+    calls (`glDrawArrays`/`glDrawElements`) segfault on headless systems
+    (verified on an NVIDIA box without a display) and can be unavailable in
+    the AppImage/macOS CI. The shipped `heatmap.py` depth-sorts and fills
+    faces with Qt's raster paint engine (~250k tris/s on CPU), which works
+    everywhere and never crashes the GUI.
+  - **The render runs in a subprocess** (`heatmap_render.py`), not a GUI
+    thread: using pymeshlab inside a Qt worker thread while a `QMainWindow`
+    exists corrupts the heap at interpreter shutdown (PySide6 6.11 + Python
+    3.14). The subprocess isolates pymeshlab entirely and keeps the GUI
+    responsive and crash-free. Failure falls back silently to the text-only
+    defect panel.
 
 ### Security
 

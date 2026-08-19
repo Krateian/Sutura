@@ -8,6 +8,7 @@ CLI, and read back what was fixed. Results are always written to new
 import os
 import sys
 import json
+import tempfile
 import importlib.util
 import subprocess
 
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
-    QMessageBox)
+    QMessageBox, QDialog)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -87,6 +88,11 @@ STRINGS = {
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
         'type_detected': 'Detected: %s (%.2f)',
         'diff_line': 'Volume: %s%% \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
+        'show_heatmap': 'Show heatmap',
+        'heatmap_rendering': 'Rendering heatmap…',
+        'heatmap_failed': 'Could not render heatmap',
+        'heatmap_thumb_tooltip': 'Click to enlarge',
+        'heatmap_zoom_title': 'Heatmap — %s',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -133,6 +139,11 @@ STRINGS = {
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
         'type_detected': 'Tespit edilen: %s (%.2f)',
         'diff_line': 'Hacim: %s%% \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
+        'show_heatmap': 'Isı haritası göster',
+        'heatmap_rendering': 'Isı haritası çiziliyor…',
+        'heatmap_failed': 'Isı haritası çizilemedi',
+        'heatmap_thumb_tooltip': 'Büyütmek için tıkla',
+        'heatmap_zoom_title': 'Isı haritası — %s',
     },
 }
 
@@ -316,6 +327,66 @@ class RepairWorker(QThread):
         return parse_cli_output(out, err)
 
 
+class HeatmapWorker(QThread):
+    """Renders a mesh heatmap off the GUI thread and off the GUI process.
+
+    The render (pymeshlab mesh load + defect detect + rasterise) runs as a
+    subprocess (``heatmap_render.py``) writing a PNG to a temp file. This
+    keeps pymeshlab out of the GUI process entirely -- using pymeshlab inside
+    a Qt worker thread while a QMainWindow exists corrupts the heap at
+    interpreter shutdown (PySide6 6.11 + Python 3.14). The PNG is read back
+    as bytes and decoded to a QPixmap in the main thread.
+    """
+
+    done = Signal(str, str, bytes)     # path, size_key, png bytes
+    failed = Signal(str, str)          # path, message
+
+    def __init__(self, path, size_key, w, h, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._size_key = size_key
+        self._w = w
+        self._h = h
+
+    def run(self):
+        renderer = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'heatmap_render.py')
+        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+        outfile = tmp.name
+        tmp.close()
+        try:
+            proc = subprocess.run(
+                [sys.executable, renderer, self._path, outfile,
+                 str(self._w), str(self._h)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=300)
+            if proc.returncode != 0 or not os.path.getsize(outfile):
+                self.failed.emit(self._path, _t('heatmap_failed'))
+                return
+            with open(outfile, 'rb') as f:
+                png = f.read()
+        except (OSError, subprocess.TimeoutExpired):
+            self.failed.emit(self._path, _t('heatmap_failed'))
+            return
+        finally:
+            try:
+                os.unlink(outfile)
+            except OSError:
+                pass
+        self.done.emit(self._path, self._size_key, png)
+
+
+class _ClickableLabel(QLabel):
+    """QLabel that emits ``clicked`` on a left mouse press."""
+
+    clicked = Signal()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class MainWindow(QMainWindow):
     MESH_EXTS = ('.stl', '.3mf')
 
@@ -336,6 +407,9 @@ class MainWindow(QMainWindow):
         self._defects_by_path = {}
         self._type_by_path = {}
         self._diff_by_path = {}
+        self._heatmap_cache = {}      # path -> {size_key: QPixmap}
+        self.heatmap_worker = None
+        self._heatmap_zoom = None
 
         self._build_ui()
         self._apply_accent()
@@ -419,6 +493,22 @@ class MainWindow(QMainWindow):
         self.defects.setFixedHeight(110)
         layout.addWidget(self.defects)
 
+        # on-demand defect heatmap: render button + clickable thumbnail
+        heat_row = QHBoxLayout()
+        self.btn_show_heatmap = QPushButton(_t('show_heatmap'))
+        self.btn_show_heatmap.setEnabled(False)
+        heat_row.addWidget(self.btn_show_heatmap, 0, Qt.AlignTop)
+        self.heatmap_thumb = _ClickableLabel(_t('heatmap_failed'))
+        self.heatmap_thumb.setAlignment(Qt.AlignCenter)
+        self.heatmap_thumb.setFixedSize(220, 150)
+        self.heatmap_thumb.setStyleSheet(
+            'QLabel { background-color: #14181c; color: palette(mid); '
+            'border: 1px solid palette(mid); border-radius: 4px; }')
+        self.heatmap_thumb.setToolTip(_t('heatmap_thumb_tooltip'))
+        self.heatmap_thumb.setVisible(False)
+        heat_row.addWidget(self.heatmap_thumb, 1)
+        layout.addLayout(heat_row)
+
         self.btn_add_files.clicked.connect(self.add_files)
         self.btn_add_folder.clicked.connect(self.add_folder)
         self.btn_remove.clicked.connect(self.remove_selected)
@@ -426,6 +516,8 @@ class MainWindow(QMainWindow):
         self.btn_repair.clicked.connect(self.repair)
         self.btn_stop.clicked.connect(self.stop)
         self.tree.currentItemChanged.connect(self._on_selection)
+        self.btn_show_heatmap.clicked.connect(self._on_show_heatmap)
+        self.heatmap_thumb.clicked.connect(self._on_heatmap_thumb_clicked)
 
         self.btn_repair.setEnabled(False)
         self.btn_stop.setEnabled(False)
@@ -603,13 +695,18 @@ class MainWindow(QMainWindow):
             if path in self.files:
                 self.files.remove(path)
             self._item_by_path.pop(path, None)
+            self._heatmap_cache.pop(path, None)
             self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
         self._refresh_buttons()
+        if not self.tree.currentItem():
+            self._set_heatmap_thumb(None)
 
     def clear_files(self):
         self.files.clear()
         self._item_by_path.clear()
+        self._heatmap_cache.clear()
         self.tree.clear()
+        self._set_heatmap_thumb(None)
         self._refresh_buttons()
 
     # --- drag & drop (whole window) ----------------------------------------
@@ -686,8 +783,10 @@ class MainWindow(QMainWindow):
     def _on_selection(self, current, _prev):
         if current is not None:
             self._show_defects(current.text(0))
+            self._refresh_heatmap_thumb(current.text(0))
         else:
             self.defects.clear()
+            self._set_heatmap_thumb(None)
 
     def _show_defects(self, path):
         """Render the selected file's input defects into the defect panel."""
@@ -724,6 +823,92 @@ class MainWindow(QMainWindow):
         if not lines:
             lines.append(_t('defect_empty'))
         self.defects.setPlainText('\n'.join(lines))
+
+    # --- heatmap -----------------------------------------------------------
+    def _refresh_heatmap_thumb(self, path):
+        """Enable/disable the heatmap button and show any cached thumbnail."""
+        self.btn_show_heatmap.setEnabled(bool(path) and self.heatmap_worker is None)
+        cached = (self._heatmap_cache.get(path) or {}).get('thumb')
+        if cached is not None:
+            self._set_heatmap_thumb(cached)
+        else:
+            self._set_heatmap_thumb(None)
+
+    def _set_heatmap_thumb(self, pixmap):
+        if pixmap is None:
+            self.heatmap_thumb.setText(_t('heatmap_failed'))
+            self.heatmap_thumb.setPixmap(QPixmap())
+            self.heatmap_thumb.setVisible(False)
+        else:
+            self.heatmap_thumb.setPixmap(pixmap.scaled(
+                self.heatmap_thumb.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.heatmap_thumb.setText('')
+            self.heatmap_thumb.setVisible(True)
+
+    def _current_path(self):
+        item = self.tree.currentItem()
+        return item.text(0) if item is not None else None
+
+    def _on_show_heatmap(self):
+        path = self._current_path()
+        if not path or self.heatmap_worker is not None:
+            return
+        self._start_heatmap_render(path, 'thumb', 240, 180)
+
+    def _on_heatmap_thumb_clicked(self):
+        path = self._current_path()
+        if not path or self.heatmap_worker is not None:
+            return
+        cached = (self._heatmap_cache.get(path) or {}).get('zoom')
+        if cached is not None:
+            self._open_heatmap_zoom(path, cached)
+        else:
+            self._start_heatmap_render(path, 'zoom', 720, 540)
+
+    def _start_heatmap_render(self, path, size_key, w, h):
+        self.status.setText(_t('heatmap_rendering'))
+        self.btn_show_heatmap.setEnabled(False)
+        self.heatmap_worker = HeatmapWorker(path, size_key, w, h, self)
+        self.heatmap_worker.done.connect(self._on_heatmap_done)
+        self.heatmap_worker.failed.connect(self._on_heatmap_failed)
+        self.heatmap_worker.start()
+
+    def _on_heatmap_done(self, path, size_key, png):
+        self.heatmap_worker = None
+        pix = QPixmap()
+        if not pix.loadFromData(png, 'PNG') or pix.isNull():
+            self._on_heatmap_failed(path, _t('heatmap_failed'))
+            return
+        self._heatmap_cache.setdefault(path, {})[size_key] = pix
+        if self._current_path() == path:
+            if size_key == 'thumb':
+                self._set_heatmap_thumb(pix)
+                self.status.setText(_t('ready'))
+            elif size_key == 'zoom':
+                self._open_heatmap_zoom(path, pix)
+                self.status.setText(_t('ready'))
+        self.btn_show_heatmap.setEnabled(bool(self._current_path()))
+
+    def _on_heatmap_failed(self, path, msg):
+        self.heatmap_worker = None
+        self.status.setText(msg)
+        if self._current_path() == path:
+            self._set_heatmap_thumb(None)
+        self.btn_show_heatmap.setEnabled(bool(self._current_path()))
+
+    def _open_heatmap_zoom(self, path, pix):
+        if self._heatmap_zoom is not None:
+            self._heatmap_zoom.close()
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_t('heatmap_zoom_title', os.path.basename(path)))
+        lay = QVBoxLayout(dlg)
+        label = QLabel()
+        label.setPixmap(pix)
+        label.setAlignment(Qt.AlignCenter)
+        lay.addWidget(label)
+        dlg.resize(pix.width() + 24, pix.height() + 24)
+        dlg.exec()
+        self._heatmap_zoom = dlg
 
     def _on_all_done(self, cancelled):
         self.status.setText(_t('done_stopped') if cancelled else _t('done'))

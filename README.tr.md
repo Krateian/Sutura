@@ -244,12 +244,34 @@ kusurları listeler: her deliğin merkezi ve çapı (mm) ve her non-manifold
 bölge. Bu, log'un üstündeki batch özet şeridini tamamlar — şerit batch başına
 bir sayımdır, bu panel dosya başına detaydır.
 
+**Kusur ısı haritası.** Kusur listesinin altında, **Isı haritası göster**
+seçili meshi, kusur bölgeleri (delik kenarları ve non-manifold alanlar) gri
+mesh üzerinde kırmızı vurgulanmış olarak çizer ve küçük bir önizleme olarak
+gösterir. Önizlemeye tıklamak daha büyük bir yakınlaştırma diyaloğu açar.
+Çizim isteğe bağlıdır (asla otomatik değil, böylece büyük bir batch takılmaz)
+ve dosya başına önbelleklenir. Çoklu obje içeren bir 3MF'de, kusur panelinin
+mevcut ilk-objeyi-göster davranışıyla tutarlı şekilde ilk obje çizilir.
+Çizici bir CPU rasterizer'ıdır (headless, AppImage ve macOS CI'de çalışır) ve
+GUI'nin duyarlı ve çökmesiz kalması için bir alt süreçte çalışır; bir mesh
+çizilemezse sessizce salt-metin panele geri döner.
+
 Dolphin: bir STL/3MF dosyasına sağ tık -> **Sutura ile Onar**. Tek seçimde GUI
 dosya yüklü açılır; çoklu seçimde her dosya başsız onarılır ve bir özet
 diyaloğu gösterilir.
 
 Servis menüsünü kurduktan veya kaldırdıktan sonra `kbuildsycoca6` çalıştırın
 (kurulum bunu otomatik yapar) veya Dolphin'i yeniden başlatın.
+
+### OrcaSlicer eklentisi (deneysel)
+
+Ayrıca `orcaslicer-plugin/` altında, kurulu Sutura CLI'sına dışarıdan
+çağırarak bir dosyayı dilimleyiciden doğrudan onaran **deneysel** bir
+[OrcaSlicer betik eklentisi](orcaslicer-plugin/) vardır. Bir başlangıç noktası
+olarak sunulur ve **gerçek bir OrcaSlicer'da test edilmemiştir**: hedeflediği
+Python eklenti sistemi yalnızca OrcaSlicer **nightly sürümlerinde / 2.4.2'den
+yeni sürümlerde** bulunur ve biz bunları çalıştırmadığımız için uçtan uca
+doğrulayamadık. Kurulum adımları ve sınırlamaları için
+[eklenti README'sine](orcaslicer-plugin/README.md) bakın.
 
 ## Mesh türüne duyarlı onarım
 

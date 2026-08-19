@@ -64,7 +64,7 @@ echo "==> pip install: stage 2 (manifold3d)"
 
 echo "==> copying application modules"
 for f in repair.py gui.py classification.py defects.py mesh_classifier.py \
-         manifold_bridge.py updater.py open.sh __init__.py; do
+         manifold_bridge.py updater.py heatmap.py heatmap_render.py open.sh __init__.py; do
     install -m 0755 "$REPO_ROOT/sutura/$f" "$LIB/"
 done
 install -m 0644 "$REPO_ROOT/requirements.txt" \

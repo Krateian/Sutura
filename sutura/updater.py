@@ -253,14 +253,18 @@ def requirements_changed(src_dir, req_files):
 # ---------------------------------------------------------------- install
 
 def _copy_python_files(src_dir):
-    for f in ('repair.py', 'manifold_bridge.py', 'gui.py', '__init__.py'):
+    for f in ('repair.py', 'manifold_bridge.py', 'classification.py',
+              'defects.py', 'mesh_classifier.py', 'updater.py', 'gui.py',
+              'heatmap.py', 'heatmap_render.py', '__init__.py'):
         shutil.copy2(os.path.join(src_dir, 'sutura', f), os.path.join(APP_DIR, f))
 
 
 def _install_linux(src_dir, req_files):
     """install.sh-style copy + venv update only when requirements change."""
     sutura_src = os.path.join(src_dir, 'sutura')
-    for f in ('repair.py', 'manifold_bridge.py', 'gui.py', '__init__.py', 'open.sh'):
+    for f in ('repair.py', 'manifold_bridge.py', 'classification.py',
+              'defects.py', 'mesh_classifier.py', 'updater.py', 'gui.py',
+              'heatmap.py', 'heatmap_render.py', '__init__.py', 'open.sh'):
         shutil.copy2(os.path.join(sutura_src, f), os.path.join(APP_DIR, f))
     for f in ('install.sh', 'uninstall.sh'):
         src = os.path.join(src_dir, f)
