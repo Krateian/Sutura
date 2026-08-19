@@ -6,6 +6,14 @@
 
 <p align="center">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage build">
+  <img src="https://img.shields.io/github/v/release/Krateian/Sutura" alt="Latest release">
+  <img src="https://img.shields.io/github/license/Krateian/Sutura" alt="License">
+  <img src="https://img.shields.io/github/downloads/Krateian/Sutura/total" alt="Downloads">
+  <img src="https://img.shields.io/github/contributors/Krateian/Sutura" alt="Contributors">
+  <img src="https://img.shields.io/github/languages/top/Krateian/Sutura" alt="Top language">
+  <img src="https://img.shields.io/github/repo-size/Krateian/Sutura" alt="Repo size">
+  <img src="https://img.shields.io/github/commit-activity/y/Krateian/Sutura" alt="Commit activity">
 </p>
 
 Two-stage mesh repair for STL and 3MF files, built for Linux with full

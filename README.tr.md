@@ -6,6 +6,14 @@
 
 <p align="center">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI">
+  <img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage build">
+  <img src="https://img.shields.io/github/v/release/Krateian/Sutura" alt="Son sürüm">
+  <img src="https://img.shields.io/github/license/Krateian/Sutura" alt="Lisans">
+  <img src="https://img.shields.io/github/downloads/Krateian/Sutura/total" alt="İndirmeler">
+  <img src="https://img.shields.io/github/contributors/Krateian/Sutura" alt="Katkıda bulunanlar">
+  <img src="https://img.shields.io/github/languages/top/Krateian/Sutura" alt="Ana dil">
+  <img src="https://img.shields.io/github/repo-size/Krateian/Sutura" alt="Depo boyutu">
+  <img src="https://img.shields.io/github/commit-activity/y/Krateian/Sutura" alt="Commit etkinliği">
 </p>
 
 STL ve 3MF dosyaları için iki aşamalı mesh onarımı; Linux için geliştirilmiş,
