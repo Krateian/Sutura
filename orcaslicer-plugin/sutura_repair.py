@@ -8,23 +8,25 @@
 # author = "Krateian"
 # version = "0.1.0"
 # ///
-"""Sutura Repair — OrcaSlicer script plugin prototype.
+"""Sutura Repair — OrcaSlicer script plugin.
 
-This is a minimal, proof-of-concept OrcaSlicer Script plugin that calls the
-installed Sutura CLI (`~/.local/bin/sutura`) as a subprocess from a background
-thread and reports the result through the host UI. It deliberately does NOT
-bundle pymeshlab/manifold3d into OrcaSlicer's embedded Python — it just shells
-out to the separately-installed CLI, which is the lowest-risk integration path
-established by the feasibility research.
+Calls the installed Sutura CLI (`~/.local/bin/sutura`) as a subprocess from a
+background thread and reports the result through the host UI. It deliberately
+does NOT bundle pymeshlab/manifold3d into OrcaSlicer's embedded Python — it
+just shells out to the separately-installed CLI.
 
-EXPERIMENTAL / UNTESTED IN A REAL OrcaSlicer.
+EXPERIMENTAL — untested in a real OrcaSlicer. The plugin system needs a build
+newer than 2.4.2; the author has not run this in a real instance, only
+validated logic/API usage against the documented API. See the README for the
+full notes.
 
-Platform note: Linux only for now. This relies on the Linux install.sh CLI
-path (~/.local/bin/sutura); Sutura has no Windows support, and on macOS the
-CLI lives elsewhere (~/.local/share/sutura, from the conda install-macos.sh).
-If made cross-platform later, the SUTURA_CLI default should detect the path
-per platform instead of hardcoding the Linux one (not implemented — just a
-note).
+Limitations:
+  * Does NOT repair the currently selected model — `execute()` takes no
+    arguments and there is no API for the selection; this repairs a fixed /
+    configured target (SUTURA_TARGET env).
+  * Linux only: depends on the install.sh CLI path (~/.local/bin/sutura).
+    No Windows support; macOS uses a different layout. If made cross-platform,
+    the SUTURA_CLI default should detect the path per platform.
 """
 
 import os

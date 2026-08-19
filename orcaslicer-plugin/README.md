@@ -1,18 +1,35 @@
-# Sutura × OrcaSlicer plugin — prototype
+# Sutura × OrcaSlicer plugin
 
-**EXPERIMENTAL / UNTESTED IN A REAL OrcaSlicer.** This is a proof-of-concept
-OrcaSlicer Script plugin that shells out to the separately-installed Sutura
-CLI from a background thread and shows the result in the host UI. It does not
+Repair STL/3MF meshes straight from OrcaSlicer. This plugin shells out to the
+[separately-installed Sutura CLI](https://github.com/Krateian/Sutura) in a
+background thread and shows the repair result in the slicer — it does not
 bundle pymeshlab/manifold3d into OrcaSlicer's embedded Python.
 
-> **Platform note (Linux only for now).** This plugin currently works only on
-> Linux, because it depends on the Linux `install.sh` CLI path
-> `~/.local/bin/sutura`. Sutura has no Windows support at all. On macOS the
-> CLI lives elsewhere (`~/.local/share/sutura`, from the `install-macos.sh`
-> conda setup), so the current default path would be wrong there. If this is
-> ever made cross-platform, the `SUTURA_CLI` env var default should do
-> platform-based path detection instead of hardcoding `~/.local/bin/sutura`
-> (not implemented now — just a note).
+## ⚠️ EXPERIMENTAL — untested in a real OrcaSlicer instance
+
+Please read this before installing. The OrcaSlicer Python plugin system was
+introduced in **nightly builds / releases newer than 2.4.2**, which the
+developer of this plugin does not have installed yet. As a result this plugin
+has **never been run inside a real OrcaSlicer** — only its logic and API usage
+have been validated with stub tests against the documented API. It may work,
+it may need a small fix or two; if you hit an issue, please report it (see
+"Feedback" below). It is offered in good faith as a starting point, not a
+guaranteed-working product.
+
+## ⚠️ Does NOT repair the currently selected model
+
+OrcaSlicer's script plugin `execute()` takes **no arguments**, and there is no
+documented API to get the currently-selected model. This plugin therefore
+repairs a **fixed/configured target file** (set via the `SUTURA_TARGET`
+environment variable), not whatever you have selected in the slicer. Real
+"repair the selected model" support is future work.
+
+## ⚠️ Linux only
+
+Sutura's default CLI path (`~/.local/bin/sutura`) is the Linux `install.sh`
+layout. On macOS the CLI lives elsewhere (a different directory from the
+`install-macos.sh` conda setup), and on Windows Sutura is not supported at
+all. On Linux, this plugin should work.
 
 ## How it works
 
@@ -26,15 +43,17 @@ bundle pymeshlab/manifold3d into OrcaSlicer's embedded Python.
 
 ## Install (OrcaSlicer 2.4.2+ / nightly)
 
-Copy the plugin folder into OrcaSlicer's plugin dir:
+1. Install Sutura on Linux first (`./install.sh` from the
+   [Sutura repo](https://github.com/Krateian/Sutura)), so `~/.local/bin/sutura`
+   exists.
+2. Copy the plugin folder into OrcaSlicer's plugin dir:
 
-```sh
-mkdir -p ~/.config/OrcaSlicer/orca_plugins/SuturaRepair
-cp sutura_repair.py ~/.config/OrcaSlicer/orca_plugins/SuturaRepair/
-```
+   ```sh
+   mkdir -p ~/.config/OrcaSlicer/orca_plugins/SuturaRepair
+   cp sutura_repair.py ~/.config/OrcaSlicer/orca_plugins/SuturaRepair/
+   ```
 
-Then enable it in the Plugins dialog. Sutura itself must be installed
-(`~/.local/bin/sutura`), e.g. via `./install.sh`.
+3. Enable it in the OrcaSlicer Plugins dialog, then run it.
 
 ## Configuration
 
@@ -43,10 +62,8 @@ Then enable it in the Plugins dialog. Sutura itself must be installed
 - `SUTURA_TARGET` env var — target mesh file to repair. Otherwise the
   prototype falls back to a sample path.
 
-## Known limitation / open question
+## Feedback
 
-Script `execute()` takes **no arguments** and there is no documented API for
-the currently-selected model, so this prototype cannot yet repair "the file I
-have selected in the slicer". It repairs a configured target file instead.
-Getting the real selection (e.g. via `orca.host` model access or the D-Bus
-`AnotherInstance` trick) is Phase 2 and needs a real OrcaSlicer to validate.
+This is experimental. If you find a bug, a missing feature, or something that
+does not work in your OrcaSlicer, please open an issue at
+https://github.com/Krateian/Sutura/issues — your report helps make it better.
