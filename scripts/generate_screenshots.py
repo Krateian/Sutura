@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Regenerate the README GUI screenshots (assets/*.png) from the real GUI.
 
-Runs the installed sutura GUI offscreen, drives a real batch repair, and
-renders the key moments to PNGs under assets/. This keeps the screenshots in
-sync with the actual UI whenever a visible behaviour changes.
+Runs the GUI offscreen, drives a real batch repair, and renders the key
+moments to PNGs under assets/. This keeps the screenshots in sync with the
+actual UI whenever a visible behaviour changes.
 
-Run from the repo root after `./install.sh` (so the installed copy matches):
+Run from the repo root with a Python that has the GUI dependencies
+(PySide6-Essentials + trimesh). The repo's own sutura/gui.py is loaded, so
+no prior install is required:
 
     ~/.local/share/sutura/venv/bin/python scripts/generate_screenshots.py
+    # or: python3 scripts/generate_screenshots.py   (if PySide6 + trimesh are present)
 
 Outputs (overwrites in assets/):
   screenshot.png     - main GUI: batch summary strip + defect panel, a
@@ -25,7 +28,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GUI_PY = os.path.expanduser('~/.local/share/sutura/gui.py')
+GUI_PY = os.path.join(REPO, 'sutura', 'gui.py')
 ASSETS = os.path.join(REPO, 'assets')
 
 # sizes match the historical README screenshots

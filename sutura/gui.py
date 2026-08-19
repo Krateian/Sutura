@@ -388,6 +388,10 @@ class MainWindow(QMainWindow):
         self.status = QLabel(_t('ready'))
         row.addWidget(self.progress, 1)
         row.addWidget(self.status)
+        # decorative, muted version label in the bottom-right corner
+        self.version_label = QLabel('v' + VERSION)
+        self.version_label.setObjectName('versionLabel')
+        row.addWidget(self.version_label)
         layout.addLayout(row)
 
         # batch summary strip (populated when a batch finishes)
@@ -432,6 +436,9 @@ class MainWindow(QMainWindow):
             QPushButton#repairBtn:hover { background-color: #17c9b4; }
             QPushButton#repairBtn:disabled { background-color: palette(mid); color: palette(midlight); }
             QProgressBar::chunk { background-color: #14b8a6; }
+            QLabel#versionLabel {
+                color: palette(mid); font-size: 10px;
+            }
         ''')
 
     def _load_icon(self):
