@@ -5,6 +5,15 @@ OrcaSlicer Script plugin that shells out to the separately-installed Sutura
 CLI from a background thread and shows the result in the host UI. It does not
 bundle pymeshlab/manifold3d into OrcaSlicer's embedded Python.
 
+> **Platform note (Linux only for now).** This plugin currently works only on
+> Linux, because it depends on the Linux `install.sh` CLI path
+> `~/.local/bin/sutura`. Sutura has no Windows support at all. On macOS the
+> CLI lives elsewhere (`~/.local/share/sutura`, from the `install-macos.sh`
+> conda setup), so the current default path would be wrong there. If this is
+> ever made cross-platform, the `SUTURA_CLI` env var default should do
+> platform-based path detection instead of hardcoding `~/.local/bin/sutura`
+> (not implemented now — just a note).
+
 ## How it works
 
 - `sutura_repair.py` is a single-file OrcaSlicer plugin (PEP 723 metadata +

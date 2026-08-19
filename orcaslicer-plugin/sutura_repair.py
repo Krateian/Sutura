@@ -18,6 +18,13 @@ out to the separately-installed CLI, which is the lowest-risk integration path
 established by the feasibility research.
 
 EXPERIMENTAL / UNTESTED IN A REAL OrcaSlicer.
+
+Platform note: Linux only for now. This relies on the Linux install.sh CLI
+path (~/.local/bin/sutura); Sutura has no Windows support, and on macOS the
+CLI lives elsewhere (~/.local/share/sutura, from the conda install-macos.sh).
+If made cross-platform later, the SUTURA_CLI default should detect the path
+per platform instead of hardcoding the Linux one (not implemented — just a
+note).
 """
 
 import os
