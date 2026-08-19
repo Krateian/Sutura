@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.1.6] - 2026-08-20
 
 ### Added
 
@@ -40,6 +40,50 @@ All notable changes to this project are documented here.
     3.14). The subprocess isolates pymeshlab entirely and keeps the GUI
     responsive and crash-free. Failure falls back silently to the text-only
     defect panel.
+- **AppImage packaging.** `scripts/build_appimage.sh` bundles two relocatable
+  python-build-standalone runtimes (Python 3.14 for stage 1 + GUI, 3.11 for
+  stage 2) plus the app modules and builds `dist/Sutura-x86_64.AppImage` with
+  appimagetool (which carries its own `mksquashfs`, so no system package is
+  needed). The AppRun dispatch exports `SUTURA_DIR`/`SUTURA` so the bundled
+  copy finds its venv311/bridge/CLI without code changes. In AppImage mode
+  (detected via the `APPIMAGE` env var) the GUI skips first-run/background
+  update checks and the update button shows a "download from releases"
+  message instead of self-updating, since a read-only squashfs cannot be
+  written to. Also fixes an updater crash where the VERSION fallback read a
+  host install dir that does not exist on an install.sh-free AppImage setup.
+- **Muted version number in the GUI status row.** A small `vX.Y.Z` label (from
+  the shared `VERSION` constant, not hardcoded) now sits at the right end of
+  the status row, per KDE HIG status-bar conventions. The screenshot generator
+  now points at the repo's own `gui.py` instead of an installed copy.
+- **Experimental OrcaSlicer plugin.** `orcaslicer-plugin/` adds a
+  self-contained OrcaSlicer script plugin that repairs a file straight from
+  the slicer by shelling out to the installed Sutura CLI in a background
+  thread. It is offered as a starting point and is **untested in a real
+  OrcaSlicer**: the Python plugin system it targets exists only in OrcaSlicer
+  nightly builds / releases newer than 2.4.2, which we have not run, so it has
+  only been stub-tested against the documented API. It repairs a configured
+  target file (not the selected model — `execute()` takes no selection) and is
+  Linux-only (relies on the `install.sh` CLI path `~/.local/bin/sutura`).
+- **Dependabot config** for pip and GitHub Actions so dependencies and
+  workflow actions are kept up to date automatically.
+
+### CI
+
+- **AppImage build & publish workflow.** A new workflow builds
+  `dist/Sutura-x86_64.AppImage` on every `v*.*.*` tag push (and via
+  `workflow_dispatch` to backfill older tags) and uploads it as an asset to
+  the corresponding GitHub Release.
+- **Dynamic GitHub status badges.** READMEs now show live badges backed by
+  real endpoints (CI and AppImage-build workflow status, latest release,
+  license, downloads, contributors, top language, repo size, commit activity).
+- **CodeQL code-scanning workflow.** Standard CodeQL Action for Python runs on
+  push to `main`, pull requests and a weekly schedule, uploading SARIF results
+  to code scanning; adds the CodeQL workflow-status badge to both READMEs.
+
+### Dependencies
+
+- Bump `actions/checkout` from 4 to 7.
+- Bump `actions/setup-python` from 5 to 7.
 
 ### Security
 
