@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Python deps: requirements.txt, requirements-311.txt, requirements-gui.txt
+  # all live in the repo root. Dependabot scans the pip directory for every
+  # requirements*.txt file, so a single "/" entry covers all three.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions: tracks actions/*@vN used in .github/workflows (ci.yml).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
