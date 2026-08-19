@@ -53,6 +53,10 @@ All notable changes to this project are documented here.
   `manifold_bridge.py`, `gui.py`, `__init__.py`), so a macOS install was also
   missing `classification.py` and `updater.py`. Both are now copied in the
   flat layout and the importable package layout.
+- **Dolphin service menu submenu (`X-KDE-Submenu=Sutura`)** prevented the
+  action from appearing for `.stl` files on some KDE/Plasma versions; the
+  submenu was removed and the action now shows at the top level for both
+  `.stl` and `.3mf`.
 
 ### Changed
 
