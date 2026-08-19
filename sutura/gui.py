@@ -58,6 +58,10 @@ STRINGS = {
         'added_drag': 'Added %d file(s) (drag)',
         'update_btn_tooltip_idle': 'Check for updates',
         'update_btn_tooltip': 'Update available: v%s',
+        'appimage_update_msg': ('You are running the AppImage build. Sutura '
+                               'cannot update itself in this mode.\nPlease '
+                               'download the latest AppImage from:\n'
+                               'https://github.com/Krateian/Sutura/releases'),
         'first_run_title': 'Enable update checks?',
         'first_run_msg': ("Should Sutura check for new versions once a week? "
                           "(One request to GitHub, no other data sent)"),
@@ -99,6 +103,10 @@ STRINGS = {
         'added_drag': 'Sürüklenen %d dosya eklendi',
         'update_btn_tooltip_idle': 'Güncellemeleri kontrol et',
         'update_btn_tooltip': 'Güncelleme var: v%s',
+        'appimage_update_msg': ('AppImage derlemesini kullanıyorsun. Bu modda '
+                               'Sutura kendini güncelleyemez.\nEn son AppImage\'ı '
+                               'şuradan indir:\n'
+                               'https://github.com/Krateian/Sutura/releases'),
         'first_run_title': 'Güncelleme kontrolü açılsın mı?',
         'first_run_msg': ('Sutura haftada bir yeni sürüm kontrol etsin mi? '
                           '(GitHub\'a tek istek, başka veri gönderilmez)'),
@@ -359,7 +367,9 @@ class MainWindow(QMainWindow):
         self.update_btn.setFixedSize(22, 22)
         self.update_btn.setAutoRaise(True)
         self.update_btn.setEnabled(False)
-        self.update_btn.setVisible(updater.config_exists() or updater.load_config().get('check_for_updates'))
+        self.update_btn.setVisible(
+            updater.is_appimage() or updater.config_exists()
+            or updater.load_config().get('check_for_updates'))
         self.update_btn.clicked.connect(self._on_update_clicked)
         buttons.addWidget(self.btn_add_files)
         buttons.addWidget(self.btn_add_folder)
@@ -449,7 +459,11 @@ class MainWindow(QMainWindow):
         return QIcon(pm)
 
     def _maybe_ask_update_on_first_run(self):
-        """Ask once (on first run, no config) whether to enable update checks."""
+        """Ask once (on first run, no config) whether to enable update checks.
+
+        Skipped for AppImage builds: self-update is not available there."""
+        if updater.is_appimage():
+            return
         if updater.config_exists():
             return
         ret = QMessageBox.question(
@@ -461,7 +475,11 @@ class MainWindow(QMainWindow):
             updater.save_config(updater.load_config())  # record the decision
 
     def _maybe_check_updates(self):
-        """Start a background check if enabled and due."""
+        """Start a background check if enabled and due.
+
+        Skipped for AppImage builds: self-update is not available there."""
+        if updater.is_appimage():
+            return
         cfg = updater.load_config()
         if not updater.should_check(cfg):
             return
@@ -481,6 +499,10 @@ class MainWindow(QMainWindow):
             self.update_btn.setVisible(True)
 
     def _on_update_clicked(self):
+        if updater.is_appimage():
+            QMessageBox.information(
+                self, _t('app_title'), _t('appimage_update_msg'))
+            return
         if self.available_tag is None:
             # manual check (idle icon click)
             self.update_btn.setEnabled(False)

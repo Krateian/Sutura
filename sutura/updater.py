@@ -40,17 +40,38 @@ BACKUP_DIR = os.path.expanduser('~/.local/share/sutura.backup')
 GITHUB_API = 'https://api.github.com/repos/Krateian/Sutura/releases/latest'
 CHECK_INTERVAL_SECONDS = 7 * 24 * 60 * 60
 
+APPIMAGE_RELEASE_URL = 'https://github.com/Krateian/Sutura/releases'
+
+
+def is_appimage():
+    """True when running inside an AppImage.
+
+    The AppImage runtime exports APPIMAGE (path to the AppImage file) and
+    APPDIR (its mount point) to every launched process, so a bundled app can
+    tell it is running from an AppImage. A self-contained AppImage cannot be
+    updated in place (its payload is a read-only squashfs), so callers use
+    this to disable the self-update flow and point at the releases page.
+    """
+    return bool(os.environ.get('APPIMAGE'))
+
 # single source of truth: read from repair.py (works both as a package and as
-# a standalone file in the install dir)
+# a standalone file next to updater.py in the install/AppImage dir)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 try:
     from sutura import VERSION
 except ImportError:
     import importlib.util
-    _spec = importlib.util.spec_from_file_location(
-        'sutura_repair', os.path.join(APP_DIR, 'repair.py'))
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
-    VERSION = _mod.VERSION
+    VERSION = 'unknown'
+    for _candidate in (os.path.join(_HERE, 'repair.py'),
+                       os.path.join(APP_DIR, 'repair.py')):
+        if os.path.isfile(_candidate):
+            _spec = importlib.util.spec_from_file_location(
+                'sutura_repair', _candidate)
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            VERSION = _mod.VERSION
+            break
 
 DEFAULT_CONFIG = {
     'check_for_updates': False,
@@ -157,8 +178,13 @@ def should_check(cfg):
 
 def check_for_update(force=False):
     """Run the check if enabled and due (or forced). Returns (new_tag|None,
-    cfg). Marks last_check only when a check actually ran."""
+    cfg). Marks last_check only when a check actually ran.
+
+    Disabled entirely for AppImage builds: the update flow cannot reinstall
+    into a read-only AppImage payload."""
     cfg = load_config()
+    if is_appimage():
+        return None, cfg
     if not force and not should_check(cfg):
         return None, cfg
     try:
@@ -368,7 +394,14 @@ def perform_update(tag, progress=None):
 
     Returns (ok, message, previous_version). progress is an optional
     callable(status: str).
+
+    Not supported for AppImage builds: the payload is a read-only squashfs,
+    so the caller should point the user at the GitHub releases page instead.
     """
+    if is_appimage():
+        return (False,
+                'The AppImage build cannot update itself. Download the latest '
+                'AppImage from %s' % APPIMAGE_RELEASE_URL, VERSION)
     previous = VERSION
     if progress:
         progress('backing up')

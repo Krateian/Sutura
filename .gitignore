@@ -10,3 +10,4 @@ test-layered-multiobject.3mf
 *.tmp
 *.zip
 screenshots/
+dist/

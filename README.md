@@ -117,6 +117,23 @@ This creates two virtualenvs under `~/.local/share/sutura`, installs the CLI
 wrapper at `~/.local/bin/sutura`, installs the hicolor app icons, and
 registers the Dolphin service menu. Re-running is safe.
 
+**AppImage (optional).** A self-contained AppImage with both Python runtimes
+bundled (3.14 for stage 1 + GUI, 3.11 for stage 2) — no virtualenvs and no
+system `python3.11` needed. Build it with `scripts/build_appimage.sh`
+(produces `dist/Sutura-x86_64.AppImage`) or download a release build. Make
+it executable and run:
+
+```sh
+chmod +x Sutura-x86_64.AppImage
+./Sutura-x86_64.AppImage            # GUI
+./Sutura-x86_64.AppImage model.stl  # CLI (writes model_fixed.stl)
+```
+
+Unlike the `install.sh` flow, the AppImage build cannot update itself in
+place; get a new AppImage from the
+[GitHub releases page](https://github.com/Krateian/Sutura/releases). The
+Dolphin right-click service menu is still installed by `install.sh`.
+
 Installation uses pip inside isolated virtualenvs — no AUR, no yay/paru
 required, nothing touches your system package manager. The GUI needs
 PySide6 (~79 MB download, part of the `venv`); total installed size for

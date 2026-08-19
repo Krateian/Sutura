@@ -119,6 +119,23 @@ Bu, `~/.local/share/sutura` altında iki sanal ortam oluşturur, CLI sarmalayıc
 `~/.local/bin/sutura`'ya kurar, hicolor uygulama ikonlarını kurar ve Dolphin
 servis menüsünü kaydeder. Yeniden çalıştırmak güvenlidir.
 
+**AppImage (isteğe bağlı).** Her iki Python çalışma zamanının da paketlendiği
+tek dosyalık AppImage — sanal ortam yok, sistemde `python3.11` gerekmez
+(aşama 1 + GUI için 3.14, aşama 2 için 3.11 paketlenir). `scripts/build_appimage.sh`
+ile derleyin (`dist/Sutura-x86_64.AppImage` üretir) veya bir sürüm derlemesini
+indirin. Çalıştırılabilir yapıp çalıştırın:
+
+```sh
+chmod +x Sutura-x86_64.AppImage
+./Sutura-x86_64.AppImage            # GUI
+./Sutura-x86_64.AppImage model.stl  # CLI (model_fixed.stl yazar)
+```
+
+`install.sh` akışından farklı olarak AppImage derlemesi kendini yerinde
+güncelleyemez; yeni AppImage'ı [GitHub sürümler
+sayfasından](https://github.com/Krateian/Sutura/releases) indirin. Dolphin
+sağ tık servis menüsü hâlâ `install.sh` ile kurulur.
+
 Kurulum izole sanal ortamların içinde pip kullanır — AUR yok, yay/paru gerekmez,
 sistem paket yöneticinize hiçbir şey dokunmaz. GUI PySide6 (~79 MB indirme,
 `venv`'in parçası) gerektirir; iki sanal ortamın toplam kurulu boyutu kabaca
