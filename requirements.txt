@@ -1,2 +1,2 @@
 pymeshlab==2025.7.post1
-numpy>=2.4.0,<2.6
+numpy>=2.5.2,<2.6
