@@ -7,6 +7,7 @@
 <p align="center">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage build">
+  <img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL">
   <img src="https://img.shields.io/github/v/release/Krateian/Sutura" alt="Son sürüm">
   <img src="https://img.shields.io/github/license/Krateian/Sutura" alt="Lisans">
   <img src="https://img.shields.io/github/downloads/Krateian/Sutura/total" alt="İndirmeler">
