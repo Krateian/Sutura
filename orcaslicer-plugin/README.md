@@ -33,7 +33,7 @@ all. On Linux, this plugin should work.
 
 ## How it works
 
-- `sutura_repair.py` is a single-file OrcaSlicer plugin (PEP 723 metadata +
+- `sutura_repair_linux_x86_64.py` is a single-file OrcaSlicer plugin (PEP 723 metadata +
   `@orca.plugin` registration), placed as one entry file in a plugin folder.
 - On "Run", `execute()` (on the UI thread) returns immediately and spawns a
   daemon `threading.Thread`, so the repair never freezes the slicer.
@@ -50,7 +50,7 @@ all. On Linux, this plugin should work.
 
    ```sh
    mkdir -p ~/.config/OrcaSlicer/orca_plugins/SuturaRepair
-   cp sutura_repair.py ~/.config/OrcaSlicer/orca_plugins/SuturaRepair/
+   cp sutura_repair_linux_x86_64.py ~/.config/OrcaSlicer/orca_plugins/SuturaRepair/
    ```
 
 3. Enable it in the OrcaSlicer Plugins dialog, then run it.
