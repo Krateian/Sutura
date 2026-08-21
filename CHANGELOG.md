@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **Heatmap now uses a three-point lighting model.** The CPU rasterizer
+  (`heatmap.py`) previously filled every non-defect face with a single flat
+  grey, which made the red defect regions hard to read and gave the mesh no
+  visual depth. Faces are now shaded with vectorized Lambertian diffuse from
+  three fixed lights — a bright key (camera direction), a low fill (camera
+  left) and a rim/back light (silhouette edges) — plus an ambient term, so
+  surface curvature and edge lines read clearly. Defect (red) faces get a
+  38% lighting modulation over the base red, keeping the "hot" region
+  clearly red from every angle while still shading it. All normal/light math
+  is numpy-vectorized (no per-face Python loop). Benchmark on the torture
+  scan mesh (1.24M tris): ~224k tris/s vs ~244k tris/s before — about 8%
+  slower, well within tolerance. Pure numpy/QPainter, platform-independent
+  (macOS included). Screenshots regenerated.
+
 ## [0.1.6] - 2026-08-20
 
 ### Added
