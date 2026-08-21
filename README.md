@@ -410,10 +410,13 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
   `sutura <file>` from a terminal.
 * **Native KDE file dialog.** The GUI sets `QT_QPA_PLATFORMTHEME=kde` and
   points `QT_PLUGIN_PATH` at `/usr/lib/qt6/plugins` so QFileDialog uses the
-  native KDE dialog (rubber-band rectangle selection included). This assumes
-  the system Qt version matches the bundled PySide6 Qt; on other distros
-  where that differs, Qt falls back to its embedded dialog — rectangle
-  selection may be unavailable, but Ctrl/Shift+click always works.
+  native KDE dialog (rubber-band rectangle selection included). This works
+  only when the system Qt version matches the bundled PySide6 Qt — the GUI
+  checks the versions (via `qmake`) and only mixes in the system plugins on a
+  match. When they differ (e.g. system Qt 6.11.2 vs bundled 6.11.1), the
+  system platform plugins cannot load into the bundled Qt, so the GUI keeps
+  Qt on its own bundled plugins and falls back to the embedded dialog —
+  rectangle selection may be unavailable, but Ctrl/Shift+click always works.
 * **Self-intersections within one connected shell.** manifold3d rebuilds the
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check

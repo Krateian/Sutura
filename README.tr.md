@@ -415,10 +415,13 @@ güvenilir şekilde algılayabilir.
 * **Yerel KDE dosya diyaloğu.** GUI, QFileDialog'un yerel KDE diyaloğunu
   (lastik-bant dikdörtgen seçimi dahil) kullanması için
   `QT_QPA_PLATFORMTHEME=kde` ayarlar ve `QT_PLUGIN_PATH`'i
-  `/usr/lib/qt6/plugins`'e yönlendirir. Bu, sistem Qt sürümünün paketlenmiş
-  PySide6 Qt'siyle eşleştiğini varsayar; bunun farklı olduğu diğer
-  dağıtımlarda Qt gömülü diyaloğuna geri döner — dikdörtgen seçim
-  kullanılamayabilir, ama Ctrl/Shift+tık her zaman çalışır.
+  `/usr/lib/qt6/plugins`'e yönlendirir. Bu yalnızca sistem Qt sürümü
+  paketlenmiş PySide6 Qt'siyle eşleştiğinde çalışır — GUI sürümleri
+  (`qmake` ile) kontrol eder ve sistem eklentilerini yalnızca eşleşmede
+  karıştırır. Farklı olduklarında (ör. sistem Qt 6.11.2'ye karşı paketli
+  6.11.1), sistem platform eklentileri paketli Qt'ye yüklenemez, bu yüzden
+  GUI Qt'yi kendi paketli eklentilerinde tutar ve gömülü diyaloğa geri döner —
+  dikdörtgen seçim kullanılamayabilir, ama Ctrl/Shift+tık her zaman çalışır.
 * **Tek bağlı kabuk içinde kendisiyle kesişimler.** manifold3d meshi bir katı
   olarak yeniden kurar, bu iç/örtüşen geometriyi çözer, ama patolojik
   durumlarda yeniden kurma özellikleri hafifçe şekillendirebilir. Sonucu her

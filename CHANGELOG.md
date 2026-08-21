@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **GUI would not start when the system Qt version drifted from the bundled
+  PySide6 Qt.** The GUI mixes the system plugin directory
+  (`/usr/lib/qt6/plugins`) into `QT_PLUGIN_PATH` for the native KDE file
+  dialog, but the system platform plugins (libqwayland.so/libqxcb.so) are
+  built against the system Qt's private API. After a system Qt upgrade that
+  no longer matches the bundled PySide6 Qt (e.g. system 6.11.2 vs bundled
+  6.11.1), loading them aborted startup with `undefined symbol
+  ... Qt_6_PRIVATE_API` — "Could not load the Qt platform plugin". The GUI
+  now compares the system Qt version (via `qmake`) with the bundled
+  PySide6 `qVersion()` and only mixes in the system plugins on an exact
+  match; on a mismatch it keeps Qt on its own bundled plugins, so the GUI
+  opens with Qt's embedded file dialog instead of failing hard.
+
 ### Changed
 
 - **README audit + Feature Status section.** Both `README.md` and

@@ -12,7 +12,7 @@ import tempfile
 import importlib.util
 import subprocess
 
-from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint
+from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion
 from PySide6.QtGui import QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -177,10 +177,31 @@ SUTURA_CMD = _find_sutura_cmd()
 # PySide6 bundles its own Qt plugins and misses the system platform theme
 # (plasma-integration), so QFileDialog would fall back to Qt's embedded
 # widget (no rubber-band selection). Point Qt at the system plugin dir.
+#
+# This must only happen when the system Qt version matches the bundled
+# PySide6 Qt: the system platform plugins (libqwayland.so/libqxcb.so) are
+# built against the system Qt's private API, so loading them into a different
+# PySide6 Qt version aborts startup with an "undefined symbol
+# ... Qt_6_PRIVATE_API" error (e.g. system Qt 6.11.2 with bundled Qt 6.11.1).
+# On a mismatch, leave Qt on its own bundled plugins so the GUI still opens
+# (with Qt's embedded file dialog instead of the native KDE one).
+def _system_qt_matches_bundle():
+    for qmake in ('qmake6', 'qmake'):
+        try:
+            out = subprocess.run(
+                [qmake, '-query', 'QT_VERSION'],
+                capture_output=True, text=True, timeout=5)
+        except Exception:
+            continue
+        if out.returncode == 0:
+            return out.stdout.strip() == qVersion()
+    return False
+
+
 if sys.platform.startswith('linux'):
     os.environ.setdefault('QT_QPA_PLATFORMTHEME', 'kde')
     _sys_plugins = '/usr/lib/qt6/plugins'
-    if os.path.isdir(_sys_plugins):
+    if os.path.isdir(_sys_plugins) and _system_qt_matches_bundle():
         _existing = os.environ.get('QT_PLUGIN_PATH', '')
         if _sys_plugins not in _existing.split(os.pathsep):
             os.environ['QT_PLUGIN_PATH'] = (
