@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **README.tr.md çeviri kalitesi gözden geçirildi.** (Translation quality
+  pass on the Turkish README: natural phrasing instead of literal
+  machine-translation, consistent technical terminology — e.g. "mesh" /
+  "su geçirmez" / "boolean" kept consistently, feature-status table and
+  recent additions (diff/version flags, before/after) verified against the
+  English source; markdown structure unchanged.)
+
 ### Added
 
 - **Before/after mesh comparison (GUI).** A **Show before/after** button next
