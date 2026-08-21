@@ -60,6 +60,29 @@ atlanmaz.
 Orijinal dosya asla üzerine yazılmaz. Çıktı aynı dizinde `_fixed` sonekiyle
 yazılır.
 
+## Özellik durumu
+
+Her ana alanın dürüst bir olgunluk anlık görüntüsü — neyin sağlam olduğu,
+bilinen sınırlamanın ne olduğu ve nerede dikkatli olunması gerektiği.
+Yüzdeler bir değerlendirmedir, ölçüm değil; Sutura'ya nerede güvenebileceğinizi
+ve çıktıyı nerede hâlâ kontrol etmeniz gerektiğini söylemek içindir.
+
+| Alan | Olgunluk | Ne sağlam / Nerede dikkatli |
+|---|---|---|
+| STL onarımı (iki aşamalı) | ~%95 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmıştır. %100 değil: patolojik kendisiyle-kesişimler aşama 2 yeniden kurmasında yeniden şekillenebilir ve çok büyük delikler akıllı bir yeniden yapılandırma değil, düz bir yamayla kapatılır. |
+| 3MF çok nesneli | ~%90 | Her nesne bağımsız onarılır ve bellekte geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt-bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen-köşeli bir 3MF, dilimleyicilerin genellikle otomatik iyileştirdiği birkaç milimetre-altı çatlak tutabilir. |
+| Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testli. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u (yalnızca çizim amaçlı) dizin verisini atlar. |
+| GUI | ~%85 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, ısı haritası, durum/sürüm satırı, i18n (EN/TR). Boşluklar: CLI'ya dışarıdan çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
+| CLI | ~%90 | Kararlı bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme GUI konusudur). |
+| Batch işleme | ~%90 | Özetli çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) işlenir; batch özeti devam ettirilemez ve başarısız bir dosya gerisini durdurmaz. |
+| Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL segfault yapar, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelidir ve çok nesneli 3MF'de yalnızca ilk nesneyi çizer. |
+| Mesh türüne duyarlı onarım | ~%70 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğini ayarlar. Deneysel: tür başına değerler kalibre edilmemiş başlangıç noktalarıdır ve eğrisel-ama-mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
+| Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Boşluklar: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (salt-okunur squashfs). |
+| Otomatik güncelleme | ~%75 | Opt-in, başarısız kendi kendini kontrolünde yedekler ve geri alır. Uyarılar: yalnızca Linux/pip kurulumudur (AppImage yeni bir sürüm indirir) ve GitHub ile konuştuğu için çevrimdışı değildir. |
+| Dolphin entegrasyonu | ~%85 | STL/3MF için sağ tık servis menüsü, tekli/çoklu seçim işlenir. KDE Plasma'ya ve `kbuildsycoca6` yenilemesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta yoktur. |
+| OrcaSlicer eklentisi | ~%35 — deneysel | Kendi kendine yeten betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ derlemelerindeki bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux'tur. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
+| Test kapsamı | ~%85 | Düz-script süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, kusurlar, mesh sınıflandırıcı, işkence) push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+
 ## Gereksinimler
 
 Linux:
@@ -188,7 +211,9 @@ sutura model.stl            # model_fixed.stl yazar
 sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # insan-okunur rapor
 sutura model.stl --human --defects   # ayrıca girdi deliklerini / non-manifold bölgeleri listele
+sutura model.stl --human --diff      # ayrıca önce/sonra geometri farkını yazdır
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
+sutura --version            # sürümü yazdır ve çık
 ```
 
 Birden çok dosyada, her girdi sırayla onarılır ve bir özet basılır (`N
@@ -203,6 +228,14 @@ dosyayla geçerlidir. JSON modda her dosyanın raporu ayrıca girdinin delikleri
 varsayılan rapor kısa kalır. Çap değerleri, yaygın STL/3MF kuralı olarak
 milimetre varsayar; dosyanız farklı bir birim kullanıyorsa yorumu buna göre
 ölçekleyin.
+
+Her rapor ayrıca önce/sonra geometriyi `stage1` içinde kaydeder:
+`volume_change_percent` (işaretli), `surface_area_before`/`after` ve
+`surface_area_change_percent` ile `vertices_before`/`after`,
+`faces_before`/`after`. Bunlar her zaman JSON'da bulunur ve çok nesneli 3MF
+dosyalarında nesne başına gösterilir; `--human --diff` bunları da yazdırır ve
+GUI kusur paneli tek satırlık bir özet gösterir ("Volume: +0.12% · Surface:
+-2.37% · Vertex: 12→9").
 
 Bir mesh yalnızca aşama 2 gerçekten çalışıp kapalı katıyı doğruladığında
 **su geçirmez** sayılır. Aşama 1 bir meshi kapatır ama aşama 2 atlanır, hata
@@ -290,7 +323,7 @@ Sınıflandırıldığında tür iki Aşama 1 eşiğini ayarlar:
 
 | Tür | `mincomponentsize` (döküntü eşiği) | `maxholesize` (delik dolgusu) | Etki |
 |---|---|---|---|
-| mekanik | 4 | 300 | küçük keskin detayları koru, aşırı büyük delik yamalarından kaçın |
+| mekanik | 8 | 300 | küçük keskin detayları koru, aşırı büyük delik yamalarından kaçın |
 | organik | 12 | 1000 | tarama döküntüsünü daha agresif at, büyük açık bölgeleri kapat |
 | unknown | 8 | 1000 | tarihsel varsayılanlar (değişmez) |
 

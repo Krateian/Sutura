@@ -6,6 +6,18 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **README audit + Feature Status section.** Both `README.md` and
+  `README.tr.md` now carry an honest "Feature status" table before the
+  Requirements section, giving a maturity percentage per major area (STL
+  repair, 3MF multi-object, GUI, CLI, batch, defect detection, heatmap, mesh
+  classification, cross-platform, auto-update, Dolphin, OrcaSlicer plugin,
+  tests) with a one-line reason per figure and the known limitation that
+  explains why it is not 100%. OrcaSlicer is explicitly marked experimental
+  (~35%). The READMEs were also corrected where they had drifted from the
+  code: the mesh-classifier table now shows the actual `mechanical`
+  `mincomponentsize` of 8 (was stale at 4), and the CLI/geometry-diff docs now
+  cover the previously-undocumented `--diff` and `--version` flags plus the
+  before/after geometry fields and the GUI diff line.
 - **Heatmap now uses a three-point lighting model.** The CPU rasterizer
   (`heatmap.py`) previously filled every non-defect face with a single flat
   grey, which made the red defect regions hard to read and gave the mesh no

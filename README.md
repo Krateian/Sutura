@@ -59,6 +59,29 @@ environment.` — it is never silently omitted.
 The original file is never overwritten. Output is written with a `_fixed`
 suffix in the same directory.
 
+## Feature status
+
+A honest maturity snapshot of each major area — what is solid, what is a
+known limitation, and where to be cautious. The percentages are an
+assessment, not a metric; they are meant to tell you where you can trust
+Sutura and where you should still double-check the output.
+
+| Area | Maturity | What is solid / where to be careful |
+|---|---|---|
+| STL repair (two-stage) | ~95% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs. Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and very large holes are closed with a flat patch, not a smart reconstruction. |
+| 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF can keep a few sub-millimetre cracks that slicers usually auto-heal. |
+| Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
+| GUI | ~85% | Native Qt batch repair, drag & drop, defect panel, heatmap, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
+| CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
+| Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
+| Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
+| Mesh type-aware repair | ~70% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds. Experimental: the per-type values are uncalibrated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
+| Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
+| Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
+| Dolphin integration | ~85% | Right-click service menu for STL/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
+| OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
+| Test coverage | ~85% | Plain-script suites (smoke, layered 3MF, adversarial, classification, defects, mesh classifier, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
+
 ## Requirements
 
 Linux:
@@ -185,7 +208,9 @@ sutura model.stl            # writes model_fixed.stl
 sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # human-readable report
 sutura model.stl --human --defects   # also list input holes / non-manifold regions
+sutura model.stl --human --diff      # also print the before/after geometry diff
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
+sutura --version            # print the version and exit
 ```
 
 With multiple files, every input is repaired in turn and a summary is
@@ -200,6 +225,14 @@ holes (centroid, diameter) and non-manifold regions; in `--human` mode this
 list is shown only when `--defects` is passed, so the default report stays
 concise. Diameter values assume millimetres, the common STL/3MF convention;
 if your file uses a different unit, scale the interpretation accordingly.
+
+Every report also records the before/after geometry in `stage1`:
+`volume_change_percent` (signed), `surface_area_before`/`after` and
+`surface_area_change_percent`, and `vertices_before`/`after`,
+`faces_before`/`after`. These are always in the JSON and shown per object for
+multi-object 3MF files; `--human --diff` prints them too, and the GUI defect
+panel shows a one-line summary ("Volume: +0.12% · Surface: -2.37% · Vertex:
+12→9").
 
 A mesh is only counted as **watertight** when stage 2 actually ran and
 validated the closed solid. If stage 1 closes a mesh but stage 2 is skipped,
@@ -288,7 +321,7 @@ When classified, the type tunes two Stage 1 thresholds:
 
 | Type | `mincomponentsize` (debris cutoff) | `maxholesize` (hole fill) | Effect |
 |---|---|---|---|
-| mechanical | 4 | 300 | preserve small sharp details, avoid oversized hole patches |
+| mechanical | 8 | 300 | preserve small sharp details, avoid oversized hole patches |
 | organic | 12 | 1000 | drop scan debris more aggressively, close large open regions |
 | unknown | 8 | 1000 | historical defaults (unchanged) |
 
