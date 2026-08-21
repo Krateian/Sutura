@@ -352,6 +352,14 @@ When classified, the type tunes two Stage 1 thresholds:
 > thresholds above shift; they can be tuned in `repair.py` as more samples are
 > collected.
 
+A classified mesh only gets these tuned thresholds when its confidence clears
+a **per-class gate** (mechanical ≥ 0.75, organic ≥ 0.55). Below the gate the
+type is still reported (`detected_type`) but the conservative default
+thresholds (`mincomponentsize=8`, `maxholesize=1000`) are used instead — the
+report and the GUI defect panel show this as `tuning_applied: false` /
+"default thresholds". The gate is class-specific because the organic
+confidence is structurally capped around 0.62.
+
 ### Known limitation of the classifier
 
 Curved-but-mechanical parts (e.g. a cylinder, shaft, or filleted geometry) are

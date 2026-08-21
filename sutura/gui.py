@@ -88,6 +88,8 @@ STRINGS = {
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
         'type_detected': 'Detected: %s (%.2f)',
+        'type_tuned': ' — tuned thresholds',
+        'type_default': ' — default thresholds (confidence below gate)',
         'diff_line': 'Volume: %s%% \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Show heatmap',
         'heatmap_rendering': 'Rendering heatmap…',
@@ -145,6 +147,8 @@ STRINGS = {
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
         'type_detected': 'Tespit edilen: %s (%.2f)',
+        'type_tuned': ' — ayarlanmış eşikler',
+        'type_default': ' — varsayılan eşikler (güven eşiğinin altında)',
         'diff_line': 'Hacim: %s%% \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Isı haritası göster',
         'heatmap_rendering': 'Isı haritası çiziliyor…',
@@ -918,7 +922,8 @@ class MainWindow(QMainWindow):
             self._batch_results.append(data)
             self._defects_by_path[path] = data.get('defects')
             self._type_by_path[path] = (data.get('detected_type'),
-                                        data.get('detected_confidence'))
+                                        data.get('detected_confidence'),
+                                        data.get('tuning_applied'))
             self._diff_by_path[path] = data.get('stage1', {})
             self._output_by_path[path] = data.get('output')
             if self._item_by_path.get(path) is self.tree.currentItem():
@@ -950,6 +955,12 @@ class MainWindow(QMainWindow):
         dt = self._type_by_path.get(path)
         if dt and dt[0]:
             base += ' — ' + _t('type_detected', dt[0], dt[1] or 0.0)
+            # tuning status: tuned thresholds vs default (below confidence gate)
+            tuning = dt[2]
+            if tuning is True:
+                base += _t('type_tuned')
+            elif tuning is False:
+                base += _t('type_default')
         self.defect_label.setText(base)
         lines = []
         # before/after geometry diff summary (from stage1)

@@ -6,6 +6,22 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **Confidence gate for mesh-type-aware tuning (Aşama 3).** A classified
+  mesh only gets its tuned Stage 1 thresholds (`mincomponentsize`/
+  `maxholesize`) when the classifier is reasonably sure. The gate is
+  class-specific — mechanical `MECH_TUNE_GATE=0.75`, organic
+  `ORG_TUNE_GATE=0.55` (named constants in `repair.py`) — because the
+  organic confidence is structurally capped at ~0.62 (the sigmoid over the
+  coplanar metric cannot exceed it), so an organic gate cannot be as high as
+  a mechanical one. Below the gate the detected type is still reported, but
+  the conservative default thresholds (`mincomponentsize=8`,
+  `maxholesize=1000`) are used. The report gains `tuning_applied` (true/
+  false) in the JSON and a "- tuned / - default thresholds" note in
+  `--human`; the GUI defect panel shows the same status, localized EN/TR.
+  Measured with the calibration harness on the 28-mesh labeled set: 20/28
+  meshes stay tuned, 5 classified meshes fall back to defaults (3 borderline
+  mechanical at ~0.72 — lattice/damaged box — and 2 noisiest organic blobs
+  at ~0.50–0.52), matching the Aşama-3 analysis.
 - **README.tr.md çeviri kalitesi gözden geçirildi.** (Translation quality
   pass on the Turkish README: natural phrasing instead of literal
   machine-translation, consistent technical terminology — e.g. "mesh" /

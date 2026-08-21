@@ -32,6 +32,30 @@ BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
 VERSION = "0.1.6"
 
+# Confidence gate for mesh-type-aware Stage 1 tuning: a classified mesh only
+# gets its per-type thresholds (see _type_params in repair_mesh_from_arrays)
+# when the classifier is reasonably sure; below the gate we use the historical
+# default thresholds while still REPORTING the detected type. Class-specific
+# because the organic confidence is structurally capped at ~0.62 (sigmoid over
+# the coplanar metric), so the organic gate cannot be as high as mechanical.
+# Values from scripts/calibrate_classifier.py: 0.75 drops the 3 borderline
+# mechanical (lattice/damaged box at ~0.72), 0.55 drops the 2 noisiest
+# organic blobs; everything clearly mechanical/organic stays tuned.
+MECH_TUNE_GATE = 0.75
+ORG_TUNE_GATE = 0.55
+
+
+def tuning_applied_for(mesh_type, confidence):
+    """Whether the tuned Stage 1 thresholds should be used for a classified
+    mesh, given the confidence gate. Unknown always returns False (defaults
+    are used); a classified mesh must clear its class-specific gate. Returns
+    a plain Python bool so the value is JSON-serializable."""
+    if mesh_type == 'mechanical':
+        return bool(confidence >= MECH_TUNE_GATE)
+    if mesh_type == 'organic':
+        return bool(confidence >= ORG_TUNE_GATE)
+    return False
+
 TOPOMETRICS = [
     'vertices_number', 'faces_number', 'boundary_edges', 'connected_components_number',
     'genus', 'incident_faces_on_non_two_manifold_edges',
@@ -173,10 +197,20 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
         'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
         'unknown': {'mincomponentsize': 8, 'maxholesize': 1000},
     }
+    # Confidence gate: a low-confidence classification still reports its type
+    # but does NOT apply the tuned thresholds (see MECH_TUNE_GATE/ORG_TUNE_GATE
+    # above). This keeps the label informative without risking an
+    # uncalibrated parameter set on an unsure mesh.
     _cls = classify_mesh(verts, tris)
     stats['detected_type'] = _cls['type']
     stats['detected_confidence'] = _cls['confidence']
-    _p = _type_params.get(_cls['type'], _type_params['unknown'])
+    _type = _cls['type']
+    _conf = _cls['confidence']
+    stats['tuning_applied'] = tuning_applied_for(_type, _conf)
+    if not stats['tuning_applied']:
+        _p = _type_params['unknown']
+    else:
+        _p = _type_params.get(_type, _type_params['unknown'])
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -508,7 +542,11 @@ def human_report(r, show_defects=False, show_diff=False):
     dt = r.get('detected_type')
     if dt:
         conf = r.get('detected_confidence', 0.0)
-        lines.append('Type  : %s (confidence %.2f)' % (dt, conf))
+        tuning = r.get('tuning_applied')
+        line = 'Type  : %s (confidence %.2f)' % (dt, conf)
+        if tuning is not None:
+            line += ' - tuned thresholds' if tuning else ' - default thresholds (below confidence gate)'
+        lines.append(line)
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))

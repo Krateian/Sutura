@@ -357,6 +357,14 @@ Sınıflandırıldığında tür iki Aşama 1 eşiğini ayarlar:
 > Yalnızca yukarıdaki iki eşik kayar; daha fazla örnek toplandıkça
 > `repair.py`'de ayarlanabilirler.
 
+Sınıflandırılan bir mesh, bu ayarlanmış eşikleri yalnızca confidence'ı bir
+**sınıf-özel eşiği** aştığında alır (mekanik ≥ 0.75, organik ≥ 0.55). Eşiğin
+altında tür yine raporlanır (`detected_type`), ama onun yerine ihtiyatlı
+varsayılan eşikler kullanılır (`mincomponentsize=8`, `maxholesize=1000`);
+rapor ve GUI kusur paneli bunu `tuning_applied: false` / "varsayılan eşikler"
+olarak gösterir. Eşik sınıf-özelidir çünkü organik confidence yapısal olarak
+~0.62'de tavanlanır.
+
 ### Sınıflandırıcının bilinen sınırlaması
 
 Eğrisel ama mekanik parçalar (ör. bir silindir, mil veya yuvarlatılmış

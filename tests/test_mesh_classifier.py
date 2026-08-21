@@ -125,6 +125,53 @@ def test_confidence_monotonic():
     assert m_high >= m_low, (m_low, m_high)
 
 
+def test_tuning_gate_thresholds():
+    # the repair confidence gate (Aşama 3): a classified mesh only gets its
+    # tuned Stage 1 thresholds when confidence clears the class-specific gate
+    # (mechanical 0.75, organic 0.55); below it defaults are used. Unknown
+    # never tunes.
+    from repair import (MECH_TUNE_GATE, ORG_TUNE_GATE, tuning_applied_for)
+    assert MECH_TUNE_GATE == 0.75
+    assert ORG_TUNE_GATE == 0.55
+    # exactly at the gate -> tuned (>=), just below -> defaults
+    assert tuning_applied_for('mechanical', MECH_TUNE_GATE) == True
+    assert tuning_applied_for('mechanical', MECH_TUNE_GATE - 0.001) == False
+    assert tuning_applied_for('mechanical', 0.92) == True
+    assert tuning_applied_for('organic', ORG_TUNE_GATE) == True
+    assert tuning_applied_for('organic', ORG_TUNE_GATE - 0.001) == False
+    assert tuning_applied_for('organic', 0.62) == True
+    # unknown and unclassified -> defaults, even at high confidence
+    assert tuning_applied_for('unknown', 0.9) == False
+    assert tuning_applied_for(None, 0.9) == False
+
+
+def test_tuning_gate_low_confidence_mesh_uses_defaults():
+    # end-to-end: a real mesh classified below the gate must report
+    # tuning_applied=False but keep its detected type (defaults used). The
+    # lattice sits at ~0.72 mechanical, below the 0.75 gate.
+    import trimesh
+    from mesh_classifier import classify_mesh
+    from repair import tuning_applied_for
+    from make_classifier_set import _lattices
+    name, v, t, _label = _lattices()[0]
+    r = classify_mesh(v, t)
+    assert r['type'] == 'mechanical', r
+    assert r['confidence'] < 0.75, r
+    assert not tuning_applied_for(r['type'], r['confidence'])
+
+
+def test_tuning_gate_high_confidence_mesh_tuned():
+    # a clearly mechanical box (~0.92) is above the gate -> tuned applied.
+    from mesh_classifier import classify_mesh
+    from repair import tuning_applied_for
+    from make_classifier_set import _boxes
+    name, v, t, _label = _boxes()[0]
+    r = classify_mesh(v, t)
+    assert r['type'] == 'mechanical', r
+    assert r['confidence'] >= 0.75, r
+    assert tuning_applied_for(r['type'], r['confidence'])
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):
