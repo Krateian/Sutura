@@ -76,6 +76,7 @@ ve çıktıyı nerede hâlâ kontrol etmeniz gerektiğini söylemek içindir.
 | CLI | ~%90 | Kararlı bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme GUI konusudur). |
 | Batch işleme | ~%90 | Özetli çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) işlenir; batch özeti devam ettirilemez ve başarısız bir dosya gerisini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL segfault yapar, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelidir ve çok nesneli 3MF'de yalnızca ilk nesneyi çizer. |
+| Öncesi/sonrası karşılaştırma | ~%40 | Orijinal ve onarılmış görünümler arasında statik CPU-rasterize tıkla-geçiş, ilk sürüm. Isı haritasıyla aynı GL kısıtı, interaktif bir 3D kaydırıcı yerine tıkla-geçiş demektir; çok nesneli 3MF'de yalnızca ilk nesne karşılaştırılır ve görsel-yalnızdır (üzerine çizilmiş metrik okuması yok). |
 | Mesh türüne duyarlı onarım | ~%70 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğini ayarlar. Deneysel: tür başına değerler kalibre edilmemiş başlangıç noktalarıdır ve eğrisel-ama-mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Boşluklar: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (salt-okunur squashfs). |
 | Otomatik güncelleme | ~%75 | Opt-in, başarısız kendi kendini kontrolünde yedekler ve geri alır. Uyarılar: yalnızca Linux/pip kurulumudur (AppImage yeni bir sürüm indirir) ve GitHub ile konuştuğu için çevrimdışı değildir. |
@@ -289,6 +290,14 @@ mevcut ilk-objeyi-göster davranışıyla tutarlı şekilde ilk obje çizilir.
 Çizici bir CPU rasterizer'ıdır (headless, AppImage ve macOS CI'de çalışır) ve
 GUI'nin duyarlı ve çökmesiz kalması için bir alt süreçte çalışır; bir mesh
 çizilemezse sessizce salt-metin panele geri döner.
+
+**Öncesi/sonrası karşılaştırma.** Bir dosya onarıldıktan sonra,
+**Öncesi/sonrası göster** orijinal ve onarılmış meshleri *aynı* kamera
+çerçevesiyle çizer ve tek görüntü alanı ile **Orijinal**/**Onarılmış**
+arasında geçiş yapan bir düğme içeren bir diyalog açar (ısı haritasıyla aynı
+CPU-çizici kısıtı yüzünden bilinçli olarak sürüklemeli bir 3D kaydırıcı
+değil, statik tıkla-geçiş). Alt süreçte çalışır ve isteğe bağlıdır, bu yüzden
+bir batch'i asla yavaşlatmaz.
 
 Dolphin: bir STL/3MF dosyasına sağ tık -> **Sutura ile Onar**. Tek seçimde GUI
 dosya yüklü açılır; çoklu seçimde her dosya başsız onarılır ve bir özet

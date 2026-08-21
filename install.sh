@@ -76,6 +76,7 @@ install -m 0755 "$SRC/sutura/updater.py"         "$APP_DIR/updater.py"
 install -m 0755 "$SRC/sutura/gui.py"             "$APP_DIR/gui.py"
 install -m 0755 "$SRC/sutura/heatmap.py"         "$APP_DIR/heatmap.py"
 install -m 0755 "$SRC/sutura/heatmap_render.py"  "$APP_DIR/heatmap_render.py"
+install -m 0755 "$SRC/sutura/before_after_render.py" "$APP_DIR/before_after_render.py"
 install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
 
 echo "==> CLI wrapper"

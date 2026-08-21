@@ -94,6 +94,12 @@ STRINGS = {
         'heatmap_failed': 'Could not render heatmap',
         'heatmap_thumb_tooltip': 'Click to enlarge',
         'heatmap_zoom_title': 'Heatmap — %s',
+        'show_before_after': 'Show before/after',
+        'before_after_rendering': 'Rendering before/after…',
+        'before_after_failed': 'Could not render before/after',
+        'before_after_title': 'Before/after — %s',
+        'ba_original': 'Original',
+        'ba_repaired': 'Repaired',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -145,6 +151,12 @@ STRINGS = {
         'heatmap_failed': 'Isı haritası çizilemedi',
         'heatmap_thumb_tooltip': 'Büyütmek için tıkla',
         'heatmap_zoom_title': 'Isı haritası — %s',
+        'show_before_after': 'Öncesi/sonrası göster',
+        'before_after_rendering': 'Öncesi/sonrası çiziliyor…',
+        'before_after_failed': 'Öncesi/sonrası çizilemedi',
+        'before_after_title': 'Öncesi/Sonrası — %s',
+        'ba_original': 'Orijinal',
+        'ba_repaired': 'Onarılmış',
     },
 }
 
@@ -450,6 +462,58 @@ class HeatmapWorker(QThread):
         self.done.emit(self._path, self._size_key, png)
 
 
+class BeforeAfterWorker(QThread):
+    """Renders the original vs repaired comparison in a subprocess.
+
+    Same isolation rule as ``HeatmapWorker``: pymeshlab stays out of the GUI
+    process. Loads both meshes in the subprocess, renders them with a SHARED
+    isometric camera frame (identical framing, so the toggle is meaningful),
+    and hands two PNG byte blobs back to the main thread.
+    """
+
+    done = Signal(str, bytes, bytes)     # path, before_png, after_png
+    failed = Signal(str, str)            # path, message
+
+    def __init__(self, path, repaired, w, h, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._repaired = repaired
+        self._w = w
+        self._h = h
+
+    def run(self):
+        renderer = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'before_after_render.py')
+        tmpdir = tempfile.mkdtemp(prefix='sutura-ba-')
+        prefix = os.path.join(tmpdir, 'sutura_ba')
+        before_file = prefix + '_before.png'
+        after_file = prefix + '_after.png'
+        try:
+            proc = subprocess.run(
+                [sys.executable, renderer, self._path, self._repaired,
+                 before_file, after_file, str(self._w), str(self._h)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+            if (proc.returncode != 0 or not os.path.getsize(before_file)
+                    or not os.path.getsize(after_file)):
+                self.failed.emit(self._path, _t('before_after_failed'))
+                return
+            with open(before_file, 'rb') as f:
+                before = f.read()
+            with open(after_file, 'rb') as f:
+                after = f.read()
+        except (OSError, subprocess.TimeoutExpired):
+            self.failed.emit(self._path, _t('before_after_failed'))
+            return
+        finally:
+            try:
+                os.unlink(before_file)
+                os.unlink(after_file)
+                os.rmdir(tmpdir)
+            except OSError:
+                pass
+        self.done.emit(self._path, before, after)
+
+
 class _ClickableLabel(QLabel):
     """QLabel that emits ``clicked`` on a left mouse press."""
 
@@ -481,9 +545,12 @@ class MainWindow(QMainWindow):
         self._defects_by_path = {}
         self._type_by_path = {}
         self._diff_by_path = {}
+        self._output_by_path = {}
         self._heatmap_cache = {}      # path -> {size_key: QPixmap}
         self.heatmap_worker = None
         self._heatmap_zoom = None
+        self.before_after_worker = None
+        self._before_after_zoom = None
 
         self._build_ui()
         self._apply_accent()
@@ -572,6 +639,9 @@ class MainWindow(QMainWindow):
         self.btn_show_heatmap = QPushButton(_t('show_heatmap'))
         self.btn_show_heatmap.setEnabled(False)
         heat_row.addWidget(self.btn_show_heatmap, 0, Qt.AlignTop)
+        self.btn_before_after = QPushButton(_t('show_before_after'))
+        self.btn_before_after.setEnabled(False)
+        heat_row.addWidget(self.btn_before_after, 0, Qt.AlignTop)
         self.heatmap_thumb = _ClickableLabel(_t('heatmap_failed'))
         self.heatmap_thumb.setAlignment(Qt.AlignCenter)
         self.heatmap_thumb.setFixedSize(220, 150)
@@ -592,6 +662,7 @@ class MainWindow(QMainWindow):
         self.tree.currentItemChanged.connect(self._on_selection)
         self.btn_show_heatmap.clicked.connect(self._on_show_heatmap)
         self.heatmap_thumb.clicked.connect(self._on_heatmap_thumb_clicked)
+        self.btn_before_after.clicked.connect(self._on_show_before_after)
 
         self.btn_repair.setEnabled(False)
         self.btn_stop.setEnabled(False)
@@ -770,17 +841,21 @@ class MainWindow(QMainWindow):
                 self.files.remove(path)
             self._item_by_path.pop(path, None)
             self._heatmap_cache.pop(path, None)
+            self._output_by_path.pop(path, None)
             self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
         self._refresh_buttons()
         if not self.tree.currentItem():
             self._set_heatmap_thumb(None)
+            self.btn_before_after.setEnabled(False)
 
     def clear_files(self):
         self.files.clear()
         self._item_by_path.clear()
         self._heatmap_cache.clear()
+        self._output_by_path.clear()
         self.tree.clear()
         self._set_heatmap_thumb(None)
+        self.btn_before_after.setEnabled(False)
         self._refresh_buttons()
 
     # --- drag & drop (whole window) ----------------------------------------
@@ -845,8 +920,10 @@ class MainWindow(QMainWindow):
             self._type_by_path[path] = (data.get('detected_type'),
                                         data.get('detected_confidence'))
             self._diff_by_path[path] = data.get('stage1', {})
+            self._output_by_path[path] = data.get('output')
             if self._item_by_path.get(path) is self.tree.currentItem():
                 self._show_defects(path)
+                self._refresh_before_after_btn(path)
         if report:
             self._log('%s\n%s' % (path, report))
 
@@ -858,9 +935,11 @@ class MainWindow(QMainWindow):
         if current is not None:
             self._show_defects(current.text(0))
             self._refresh_heatmap_thumb(current.text(0))
+            self._refresh_before_after_btn(current.text(0))
         else:
             self.defects.clear()
             self._set_heatmap_thumb(None)
+            self.btn_before_after.setEnabled(False)
 
     def _show_defects(self, path):
         """Render the selected file's input defects into the defect panel."""
@@ -983,6 +1062,75 @@ class MainWindow(QMainWindow):
         dlg.resize(pix.width() + 24, pix.height() + 24)
         dlg.exec()
         self._heatmap_zoom = dlg
+
+    # --- before/after comparison ------------------------------------------
+    def _refresh_before_after_btn(self, path):
+        """Enable the button only when the selected file has a repaired output."""
+        self.btn_before_after.setEnabled(
+            bool(path) and bool(self._output_by_path.get(path))
+            and self.before_after_worker is None)
+
+    def _on_show_before_after(self):
+        path = self._current_path()
+        repaired = self._output_by_path.get(path) if path else None
+        if not path or not repaired or self.before_after_worker is not None:
+            return
+        self.status.setText(_t('before_after_rendering'))
+        self.btn_before_after.setEnabled(False)
+        self.before_after_worker = BeforeAfterWorker(path, repaired, 720, 540, self)
+        self.before_after_worker.done.connect(self._on_before_after_done)
+        self.before_after_worker.failed.connect(self._on_before_after_failed)
+        self.before_after_worker.start()
+
+    def _on_before_after_done(self, path, before_png, after_png):
+        self.before_after_worker = None
+        before = QPixmap()
+        after = QPixmap()
+        if (not before.loadFromData(before_png, 'PNG') or before.isNull()
+                or not after.loadFromData(after_png, 'PNG') or after.isNull()):
+            self._on_before_after_failed(path, _t('before_after_failed'))
+            return
+        if self._current_path() == path:
+            self._open_before_after(path, before, after)
+            self.status.setText(_t('ready'))
+        self._refresh_before_after_btn(self._current_path())
+
+    def _on_before_after_failed(self, path, msg):
+        self.before_after_worker = None
+        self.status.setText(msg)
+        self._refresh_before_after_btn(self._current_path())
+
+    def _open_before_after(self, path, before, after):
+        """Modal dialog: a single image area plus a toggle button that flips
+        between the original and the repaired view (no dragging, no slider —
+        deliberately, the CPU renderer is static)."""
+        if self._before_after_zoom is not None:
+            self._before_after_zoom.close()
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_t('before_after_title', os.path.basename(path)))
+        lay = QVBoxLayout(dlg)
+        view = QLabel()
+        view.setAlignment(Qt.AlignCenter)
+        lay.addWidget(view, 1)
+        btn = QPushButton(_t('ba_original'))
+        btn.setCheckable(True)
+        state = {'show_after': False}
+
+        def show():
+            pix = after if state['show_after'] else before
+            view.setPixmap(pix)
+            btn.setText(_t('ba_repaired' if state['show_after'] else 'ba_original'))
+
+        def toggle(_checked):
+            state['show_after'] = btn.isChecked()
+            show()
+
+        btn.toggled.connect(toggle)
+        lay.addWidget(btn)
+        show()
+        dlg.resize(before.width() + 24, before.height() + 60)
+        self._before_after_zoom = dlg
+        dlg.exec()
 
     def _on_all_done(self, cancelled):
         self.status.setText(_t('done_stopped') if cancelled else _t('done'))

@@ -75,6 +75,7 @@ Sutura and where you should still double-check the output.
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
 | Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
 | Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
+| Before/after comparison | ~40% | Static CPU-rasterized toggle between original and repaired views, first version. Same GL constraint as the heatmap means it is a click-toggle, not an interactive 3D slider; only the first object is compared for multi-object 3MF, and it is visual-only (no metric readouts overlaid yet). |
 | Mesh type-aware repair | ~70% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds. Experimental: the per-type values are uncalibrated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
@@ -287,6 +288,13 @@ existing first-object behaviour. The renderer is a CPU rasterizer (works
 headless, in the AppImage, and on macOS CI) that runs in a subprocess so the
 GUI stays responsive and crash-free; if a mesh can't be rendered it falls
 back silently to the text-only panel.
+
+**Before/after comparison.** After a file is repaired, **Show before/after**
+renders the original and repaired meshes with the *same* camera framing and
+opens a dialog with a single image area and a toggle button that flips
+between **Original** and **Repaired** (a static click-toggle, deliberately not
+an interactive 3D slider — same CPU-renderer constraint as the heatmap). It
+runs in a subprocess and is on-demand, so it never slows a batch.
 
 Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each

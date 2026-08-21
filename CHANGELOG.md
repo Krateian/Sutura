@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Before/after mesh comparison (GUI).** A **Show before/after** button next
+  to the heatmap button renders the selected file's original and repaired
+  meshes with the SAME shared isometric camera frame — identical framing and
+  scale, so the toggle is a true comparison — and opens a dialog with a single
+  image area plus a toggle button that flips between "Original" and
+  "Repaired". On-demand only (never auto-rendered), cached per file, with the
+  same loading state as the heatmap button. Deliberately a static CPU
+  rasterizer pair, not an interactive 3D slider: offscreen GL draw calls
+  segfault on headless systems (the same constraint that made the heatmap a
+  CPU renderer), so the comparison is a click-toggle between two rasterised
+  PNGs. The render runs in a subprocess (`before_after_render.py`, same
+  isolation rule as `heatmap_render.py`): pymeshlab never touches the GUI
+  process. Renders the first object for multi-object 3MF, matching the defect
+  panel. `heatmap.py` gained an optional shared `frame` (camera) so two meshes
+  render identically; the existing heatmap render path is unchanged.
+
 ### Changed
 
 - **Mesh classifier confidence is now a signed-margin score

@@ -95,11 +95,23 @@ def _shade_index(shade):
     return np.clip(idx, 0, _SHADE_LEVELS)
 
 
-def _project(verts, w, h, pad):
+def _project(verts, w, h, pad, frame=None):
     """Orthographic projection of centered verts through the isometric view.
+
+    ``frame`` is an optional ``(center, scale)`` tuple that forces the SAME
+    camera for multiple meshes (used by the before/after comparison, so the
+    original and the repaired mesh frame identically). When None, the camera
+    auto-fits this mesh alone.
 
     Returns (px, py, z) screen pixel coordinates and view-space depth.
     """
+    if frame is not None:
+        center, s = frame
+        v = (verts - center) @ _ISOMETRIC.T
+        x, y, z = v[:, 0], v[:, 1], v[:, 2]
+        px = w * 0.5 + x * s
+        py = h * 0.5 - y * s   # flip y (image origin top-left)
+        return px, py, z
     lo = verts.min(axis=0)
     hi = verts.max(axis=0)
     center = (lo + hi) * 0.5
@@ -116,6 +128,28 @@ def _project(verts, w, h, pad):
     return px, py, z
 
 
+def shared_frame(verts_list, w, h, pad):
+    """A (center, scale) camera frame that fits ALL meshes in ``verts_list``
+    with the same projection, so before/after renders are directly
+    comparable. Uses the combined bounding box and the combined view-space
+    extent for the scale."""
+    lo = np.asarray(verts_list[0]).min(axis=0)
+    hi = np.asarray(verts_list[0]).max(axis=0)
+    for vs in verts_list[1:]:
+        lo = np.minimum(lo, np.asarray(vs).min(axis=0))
+        hi = np.maximum(hi, np.asarray(vs).max(axis=0))
+    center = (lo + hi) * 0.5
+    xs, ys = [], []
+    for vs in verts_list:
+        v = (np.asarray(vs) - center) @ _ISOMETRIC.T
+        xs.extend([float(v[:, 0].min()), float(v[:, 0].max())])
+        ys.extend([float(v[:, 1].min()), float(v[:, 1].max())])
+    span_x = (max(xs) - min(xs)) or 1.0
+    span_y = (max(ys) - min(ys)) or 1.0
+    s = min((w - 2 * pad) / span_x, (h - 2 * pad) / span_y)
+    return center, s
+
+
 def _defect_vertex_set(holes, non_manifold):
     """Union of all defect vertex indices (hole rims + non-manifold regions)."""
     dv = set()
@@ -127,14 +161,17 @@ def _defect_vertex_set(holes, non_manifold):
 
 
 def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
-           pad=24, bg=(18, 22, 26), mesh=(178, 186, 194), defect=(235, 60, 70)):
+           pad=24, bg=(18, 22, 26), mesh=(178, 186, 194), defect=(235, 60, 70),
+           frame=None):
     """Render a mesh heatmap to a QImage.
 
     verts: (N,3) float array; tris: (M,3) int array. ``holes``/``non_manifold``
     are the defect dict lists from ``defects.detect(..., with_indices=True)``;
     their ``verts_idx`` entries mark which vertices (and thus faces) are drawn
-    red. Returns a QImage (RGB32). Never raises for empty/degenerate input:
-    a blank image is returned so callers can fall back gracefully.
+    red. ``frame`` is an optional ``(center, scale)`` from ``shared_frame`` to
+    force the same camera as another render. Returns a QImage (RGB32). Never
+    raises for empty/degenerate input: a blank image is returned so callers
+    can fall back gracefully.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
@@ -144,7 +181,7 @@ def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
         return img
 
     try:
-        px, py, z = _project(verts, w, h, pad)
+        px, py, z = _project(verts, w, h, pad, frame=frame)
     except Exception:
         return img
 
