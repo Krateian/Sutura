@@ -266,7 +266,9 @@ panelde, batch özet şeridinden ayrı gösterir. Dosyalar **Dosya ekle…** (ye
 `.stl`/`.3mf`, tek seviye) veya dosya/klasörleri pencereye sürükleyerek
 eklenebilir. **Durdur** çalışan onarımı sonlandırır ve kalan dosyaları
 iptal edilmiş olarak işaretler. Sürükle & bırak yerel Wayland oturumlarında
-çalışır (GUI bir Qt uygulamasıdır, XWayland değil).
+çalışır (GUI bir Qt uygulamasıdır, XWayland değil). GUI kendi koyu Fusion
+temasını taşır (teal vurgu rengi), böylece sistem masaüstü temasından
+bağımsız olarak her platformda ve Qt sürümünde aynı görünür.
 
 #### Kusur detay paneli
 

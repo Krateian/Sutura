@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Self-contained dark theme (Fusion + QPalette).** The GUI no longer
+  depends on the system Qt platform theme for its look. Right after the
+  `QApplication` is created it applies Qt's bundled `Fusion` style plus a
+  dark `QPalette` (`_dark_palette()` in `gui.py`), so it renders the same on
+  every platform and Qt version — including when the system Qt differs from
+  the bundled PySide6 Qt and the native KDE/Breeze theme is unavailable.
+  The accent (highlight/link/button) is **teal `#14b8a6`**: it matches the
+  teal already used for the Repair button, the progress bar and the update
+  arrow, reads as "repaired / healthy" for a mesh-repair tool, and keeps a
+  single consistent brand colour across the whole UI instead of introducing a
+  second one. The status-row version label was bumped to a lighter dimmed
+  grey (`#9aa4ae`, a dimmed WindowText variant) so it stays subtle but reads
+  clearly on the dark background. The screenshot generator applies the same
+  theme so `assets/*.png` always match the real GUI. The Qt version-check for
+  the native file dialog is untouched — this theme is a separate, parallel
+  layer.
+
 ### Fixed
 
 - **GUI would not start when the system Qt version drifted from the bundled

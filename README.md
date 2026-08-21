@@ -264,7 +264,9 @@ with **Add files…** (native multi-select, rubber-band included), **Add
 folder…** (every `.stl`/`.3mf` in the folder, one level deep), or by dragging
 files or folders onto the window. **Stop** terminates the running repair and
 marks the remaining files as cancelled. Drag & drop works on native Wayland
-sessions (the GUI is a Qt application, not XWayland).
+sessions (the GUI is a Qt application, not XWayland). The GUI ships its own
+dark Fusion theme (teal accent), so it looks the same on every platform and
+Qt version regardless of the system desktop theme.
 
 #### Defect detail panel
 

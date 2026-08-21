@@ -72,6 +72,7 @@ def make_meshes(tmp):
 
 def run(m, files, size, select_broken, out_path, show_heatmap=False):
     app = QApplication.instance() or QApplication([])
+    m.apply_dark_theme(app)
     win = m.MainWindow()
     win.resize(*size)
     win.show()

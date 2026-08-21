@@ -13,7 +13,8 @@ import importlib.util
 import subprocess
 
 from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion
-from PySide6.QtGui import QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon
+from PySide6.QtGui import (
+    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon, QPalette)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
@@ -206,6 +207,58 @@ if sys.platform.startswith('linux'):
         if _sys_plugins not in _existing.split(os.pathsep):
             os.environ['QT_PLUGIN_PATH'] = (
                 (_existing + os.pathsep) if _existing else '') + _sys_plugins
+
+
+# --- Self-contained dark theme (independent of the system Qt/theme) ---
+# Instead of relying on the system platform theme (KDE/Breeze), the GUI ships
+# its own look: Qt's bundled Fusion style plus a dark QPalette. This works on
+# every platform and every Qt version, whether or not the system theme is
+# available or matches the bundled PySide6 Qt. The accent is the same teal
+# (#14b8a6) already used for the repair button/progress/update arrow, so the
+# highlight/link roles stay consistent with the rest of the UI.
+_ACCENT = QColor('#14b8a6')
+_ACCENT_DARK_TEXT = QColor('#0b0f11')
+
+
+def _dark_palette():
+    p = QPalette()
+    _grp = (
+        (QPalette.Window, QColor('#353535')),
+        (QPalette.WindowText, QColor('#f2f4f6')),
+        (QPalette.Base, QColor('#2b2d30')),
+        (QPalette.AlternateBase, QColor('#353535')),
+        (QPalette.ToolTipBase, QColor('#2b2d30')),
+        (QPalette.ToolTipText, QColor('#f2f4f6')),
+        (QPalette.Text, QColor('#f2f4f6')),
+        (QPalette.Button, QColor('#3a3d42')),
+        (QPalette.ButtonText, QColor('#f2f4f6')),
+        (QPalette.BrightText, QColor('#ff5b5b')),
+        (QPalette.Link, _ACCENT),
+        (QPalette.Highlight, _ACCENT),
+        (QPalette.HighlightedText, _ACCENT_DARK_TEXT),
+        (QPalette.PlaceholderText, QColor('#8b949e')),
+    )
+    for role, color in _grp:
+        p.setColor(QPalette.All, role, color)
+    # muted disabled variants
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText,
+                 QPalette.HighlightedText):
+        p.setColor(QPalette.Disabled, role, QColor('#6b7480'))
+    p.setColor(QPalette.Disabled, QPalette.Button, QColor('#2b2d30'))
+    p.setColor(QPalette.Disabled, QPalette.Base, QColor('#232426'))
+    return p
+
+
+def apply_dark_theme(app):
+    """Apply the self-contained Fusion dark theme to a QApplication.
+
+    Used by ``main()`` and by the screenshot generator, so screenshots always
+    match the real GUI regardless of the system Qt/theme.
+    """
+    app.setStyle('Fusion')
+    app.setPalette(_dark_palette())
+    return app
+
 
 def parse_cli_output(out, err):
     try:
@@ -553,7 +606,7 @@ class MainWindow(QMainWindow):
             QPushButton#repairBtn:disabled { background-color: palette(mid); color: palette(midlight); }
             QProgressBar::chunk { background-color: #14b8a6; }
             QLabel#versionLabel {
-                color: palette(mid); font-size: 10px;
+                color: #9aa4ae; font-size: 10px;
             }
         ''')
 
@@ -980,6 +1033,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    apply_dark_theme(app)
     win = MainWindow()
     for p in sys.argv[1:]:
         win._add_path(p)
