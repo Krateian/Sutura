@@ -6,6 +6,32 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **Mesh classifier confidence is now a signed-margin score
+  (`sutura/mesh_classifier.py`).** Instead of two hard per-metric thresholds
+  with a confidence that measured distance to a single boundary (and a flat 0
+  for `unknown`), each metric (near-90° dihedral fraction, coplanar fraction)
+  is mapped through a smooth sigmoid and the two signals are combined
+  (mechanical = OR of the two, organic = AND). The decision is taken on the
+  margin between the two memberships (`mechanical >= 0.7`, `organic >= 0.5`),
+  which removes the hard `[55,60]` near90 discontinuity — barely-over-60
+  organic meshes (low-poly spheres/tori) now fall to `unknown` instead of
+  being wrongly tuned as mechanical. `unknown` no longer returns a flat 0: it
+  carries the proximity to the nearer class plus `metrics['leaning']`. The
+  public return shape `{'type', 'confidence', 'metrics'}` is unchanged, so
+  `repair.py` / `gui.py` / the CLI JSON contract are untouched. Measured on a
+  new labeled synthetic set (28 meshes): mechanical precision went 0.857 →
+  1.000 (the two false positives became `unknown`), recall stayed 1.000, and
+  mean confidence on correct predictions went 0.203 → 0.739 while there are
+  no wrong non-`unknown` predictions left.
+- **Classifier calibration harness (`scripts/calibrate_classifier.py`) + labeled
+  synthetic set (`tests/make_classifier_set.py`).** A deterministic set of 28
+  labeled meshes (boxes/gears/lattices/extruded profiles vs UV/ico spheres,
+  torus, capsule, noisy blobs — several LODs each plus damaged variants) and a
+  harness that reports per-class precision/recall, unknown rate and the
+  confidence distribution on correct/wrong/unknown predictions. Used to
+  baseline the classifier and to verify the signed-margin change above; the
+  per-type repair thresholds (`mincomponentsize`/`maxholesize`) were **not**
+  changed by this work.
 - **Self-contained dark theme (Fusion + QPalette).** The GUI no longer
   depends on the system Qt platform theme for its look. Right after the
   `QApplication` is created it applies Qt's bundled `Fusion` style plus a

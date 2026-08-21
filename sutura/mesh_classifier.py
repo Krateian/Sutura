@@ -16,10 +16,19 @@ survive the debris cutoff and get "repaired" instead of rejected (a CI
 regression in tests/test_adversarial.py 'degenerate'). Do not lower it below
 8 without addressing that.
 
+Confidence is a signed-margin score: each class gets a smooth membership in
+[0,1] built from sigmoids over BOTH geometric metrics (not a single hard
+threshold), and the decision is taken on the margin between the two
+memberships. This removes the hard `[55,60]` near90 discontinuity: the type
+flip is now a smooth logistic transition, and an `unknown` result still
+carries a non-zero proximity value (which class it leans toward, and how
+close) instead of a flat 0. The public return shape
+``{'type', 'confidence', 'metrics'}`` is unchanged.
+
 Decision rules (calibrated on synthetic + Thingi10K meshes, see
-tests/test_mesh_classifier.py):
-  mechanical   : near90 > 60 OR coplanar > 45
-  organic      : near90 < 55 AND coplanar < 5
+tests/test_mesh_classifier.py and scripts/calibrate_classifier.py):
+  mechanical   : mechanical membership >= 0.7
+  organic      : organic membership >= 0.5
   else         : unknown  (caller keeps default parameters)
 where
   near90   = fraction of adjacent-face dihedral angles in [60, 120] deg (%)
@@ -27,11 +36,27 @@ where
 """
 import numpy as np
 
-# Thresholds from calibration (conservative, wide 'unknown' band).
-MECH_NEAR90 = 60.0
-MECH_COPLANAR = 45.0
-ORG_NEAR90 = 55.0
-ORG_COPLANAR = 5.0
+# Sigmoid midpoints (the historical hard thresholds become the 50% points).
+_MECH_NEAR90 = 60.0
+_MECH_COPLANAR = 45.0
+_ORG_NEAR90 = 55.0
+_ORG_COPLANAR = 5.0
+# Sigmoid widths: how fast each metric saturates around its midpoint.
+_W_NEAR90 = 5.0
+_W_COPLANAR = 10.0
+# Decision floors. The mechanical floor (0.7) is deliberately above the 60
+# near90 midpoint so barely-over-60 organic meshes (low-poly spheres/tori)
+# fall into `unknown` instead of being wrongly tuned as mechanical. The
+# organic floor (0.5) reproduces the historical `near90 < 55 AND coplanar < 5`
+# rule exactly.
+_MECH_FLOOR = 0.7
+_ORG_FLOOR = 0.5
+
+
+def _sigmoid(x):
+    """Stable logistic sigmoid."""
+    x = np.clip(x, -50.0, 50.0)
+    return 1.0 / (1.0 + np.exp(-x))
 
 
 def _dihedral_stats(verts, tris):
@@ -69,30 +94,51 @@ def _dihedral_stats(verts, tris):
     return near90, coplanar
 
 
+def _class_scores(near90, coplanar):
+    """Smooth class memberships (mechanical, organic) in [0,1] from both
+    metrics. mechanical is an OR of the two signals (either is enough),
+    organic is an AND (both must be low)."""
+    mech_near = _sigmoid((near90 - _MECH_NEAR90) / _W_NEAR90)
+    mech_cop = _sigmoid((coplanar - _MECH_COPLANAR) / _W_COPLANAR)
+    mechanical = max(mech_near, mech_cop)
+
+    org_near = 1.0 - _sigmoid((near90 - _ORG_NEAR90) / _W_NEAR90)
+    org_cop = 1.0 - _sigmoid((coplanar - _ORG_COPLANAR) / _W_COPLANAR)
+    organic = min(org_near, org_cop)
+    return mechanical, organic
+
+
 def classify_mesh(verts, tris):
     """Return {'type', 'confidence', 'metrics'}.
 
     type: 'mechanical' | 'organic' | 'unknown'
-    confidence: 0..1, how far the decision is from its threshold boundary
-    metrics: {'near90': ..., 'coplanar': ...}
+    confidence: 0..1, the signed-margin strength toward the decided class;
+                for 'unknown' it is the proximity to the nearer class (the
+                max of the two memberships) so it is never a flat 0.
+    metrics: {'near90', 'coplanar', 'mechanical_score', 'organic_score',
+              'leaning' (unknown only)}
     """
     near90, coplanar = _dihedral_stats(verts, tris)
-    metrics = {'near90': round(near90, 2), 'coplanar': round(coplanar, 2)}
+    mechanical, organic = _class_scores(near90, coplanar)
+    metrics = {
+        'near90': round(near90, 2),
+        'coplanar': round(coplanar, 2),
+        'mechanical_score': round(mechanical, 3),
+        'organic_score': round(organic, 3),
+    }
 
-    if near90 > MECH_NEAR90 or coplanar > MECH_COPLANAR:
-        # mechanical: distance from the nearer mechanical boundary
-        if near90 > MECH_NEAR90:
-            conf = (near90 - MECH_NEAR90) / (100.0 - MECH_NEAR90)
-        else:
-            conf = (coplanar - MECH_COPLANAR) / (100.0 - MECH_COPLANAR)
-        conf = min(max(conf, 0.0), 1.0)
-        return {'type': 'mechanical', 'confidence': round(conf, 3), 'metrics': metrics}
+    if mechanical >= _MECH_FLOOR:
+        return {'type': 'mechanical',
+                'confidence': round(mechanical, 3),
+                'metrics': metrics}
 
-    if near90 < ORG_NEAR90 and coplanar < ORG_COPLANAR:
-        # organic: near90 must be comfortably below 55 and coplanar below 5
-        conf = min((ORG_NEAR90 - near90) / ORG_NEAR90,
-                   (ORG_COPLANAR - coplanar) / ORG_COPLANAR)
-        conf = min(max(conf, 0.0), 1.0)
-        return {'type': 'organic', 'confidence': round(conf, 3), 'metrics': metrics}
+    if organic >= _ORG_FLOOR:
+        return {'type': 'organic',
+                'confidence': round(organic, 3),
+                'metrics': metrics}
 
-    return {'type': 'unknown', 'confidence': 0.0, 'metrics': metrics}
+    # unknown: keep the proximity to the nearer class (signed margin sign)
+    metrics['leaning'] = 'mechanical' if mechanical >= organic else 'organic'
+    return {'type': 'unknown',
+            'confidence': round(max(mechanical, organic), 3),
+            'metrics': metrics}

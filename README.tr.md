@@ -317,9 +317,21 @@ Bu bir ML modeli *değildir* ve bilinçli olarak muhafazakârdır: yalnızca yü
 güvenli durumlarda harekete geçer, aksi halde `unknown` bildirir ve bu durumda
 tarihsel varsayılan Aşama 1 parametreleri değiştirilmeden kullanılır.
 
+Confidence bir **imzalı-marj (signed-margin) skorudur**: her metrik (near-90°
+dihedral oranı, neredeyse-eşdüzlem oranı) yumuşak bir sigmoidden geçirilir ve
+iki sinyal birleştirilir (mekanik = VEYA, organik = VE), böylece karar sert
+bir eşik yerine yumuşak bir marjdır — `[55,60]` near90 sınırında keskin bir
+sıçrama yoktur. Bir `unknown` sonucu yine de sıfır olmayan bir yakınlık
+değeri taşır (mesh hangi sınıfa yakın ve ne kadar yakın) — geri dönüş bile
+bilgilendiricidir.
+
 Tespit edilen tür GUI kusur-paneli başlığında (ör. `Tespit edilen: mechanical
-(0.23)`) ve `--human` raporunda bir `Type:` satırı olarak gösterilir; JSON
-raporu `detected_type` ve `detected_confidence` taşır.
+(0.92)`) ve `--human` raporunda bir `Type:` satırı olarak gösterilir; JSON
+raporu `detected_type` ve `detected_confidence` taşır. Bir kalibrasyon aracı
+(`scripts/calibrate_classifier.py`) etiketli sentetik bir kümeye
+(`tests/make_classifier_set.py`) karşı precision/recall ve confidence
+ayrışmasını ölçer, böylece eşikler kontrol edilebilir ve geri alınabilir
+kalır.
 
 Sınıflandırıldığında tür iki Aşama 1 eşiğini ayarlar:
 

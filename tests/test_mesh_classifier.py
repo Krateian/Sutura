@@ -6,6 +6,9 @@ Checks that:
   2. classify_mesh() returns the calibrated decisions for synthetic meshes:
      mechanical cubes/boxes, organic spheres/torus/capsule, and unknown for
      a curved-but-not-organically-clear cylinder.
+  3. The confidence is a signed-margin score: monotonic in the driving
+     metric, high on clearly mechanical/organic meshes, and never a flat 0
+     for `unknown` (it carries the proximity to the nearer class).
 Usage: python3 tests/test_mesh_classifier.py
 """
 import os
@@ -27,6 +30,12 @@ def _cube():
         (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
         (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)], dtype=np.int32)
     return v, t
+
+
+def _box():
+    import trimesh
+    m = trimesh.creation.box(extents=(1.0, 1.0, 1.0))
+    return np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int32)
 
 
 def _icosphere(subdivisions):
@@ -68,6 +77,8 @@ def test_confidence_in_range():
         r = classify_mesh(v, t)
         assert 0.0 <= r['confidence'] <= 1.0, r
         assert 'metrics' in r and 'near90' in r['metrics'], r
+        assert 'mechanical_score' in r['metrics'], r
+        assert 'organic_score' in r['metrics'], r
 
 
 def test_unknown_falls_back():
@@ -79,6 +90,39 @@ def test_unknown_falls_back():
     r = classify_mesh(np.asarray(m.vertices, np.float32),
                       np.asarray(m.faces, np.int32))
     assert r['type'] == 'unknown', r
+    # the unknown result still carries a non-zero proximity value, so callers
+    # can tell which way the mesh leans and how close it is
+    assert r['confidence'] > 0.0, r
+    assert r['metrics'].get('leaning') in ('mechanical', 'organic'), r
+
+
+def test_clean_boxes_get_high_confidence():
+    from mesh_classifier import classify_mesh
+    for name, v, t in [('cube', *_cube()), ('box', *_box())]:
+        r = classify_mesh(v, t)
+        assert r['type'] == 'mechanical', (name, r)
+        assert r['confidence'] >= 0.7, (name, r)
+        # mechanical confidence is driven by the near90 metric: it must be
+        # monotonic w.r.t. the mechanical score
+        assert r['metrics']['mechanical_score'] >= r['confidence'] - 1e-9, r
+
+
+def test_confidence_monotonic():
+    # the signed-margin score must be monotonic in the driving metric when the
+    # other is held constant: more near90 => not less mechanical, and fewer
+    # near90 => not less organic. Tested on the internal scoring function.
+    from mesh_classifier import _class_scores
+    mech, org = _class_scores(45.0, 0.0)
+    prev_mech, prev_org = mech, org
+    for near90 in np.linspace(45.0, 95.0, 26):
+        m, o = _class_scores(float(near90), 0.0)
+        assert m >= prev_mech - 1e-9, (near90, m, prev_mech)
+        assert o <= prev_org + 1e-9, (near90, o, prev_org)
+        prev_mech, prev_org = m, o
+    # and the reverse direction: coplanar drives the mechanical OR-signal too
+    m_low, _ = _class_scores(30.0, 0.0)
+    m_high, _ = _class_scores(30.0, 60.0)
+    assert m_high >= m_low, (m_low, m_high)
 
 
 def main():

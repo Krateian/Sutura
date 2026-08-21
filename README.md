@@ -315,9 +315,21 @@ is deliberately conservative: it only acts on high-confidence cases and
 reports `unknown` otherwise, in which case the historical default Stage 1
 parameters are used unchanged.
 
+The confidence is a **signed-margin score**: each metric (near-90° dihedral
+fraction, near-coplanar fraction) is mapped through a smooth sigmoid and the
+two signals are combined (mechanical = OR, organic = AND), so the decision is
+a soft margin rather than a single hard threshold — there is no sharp jump at
+the `[55,60]` near90 boundary. An `unknown` result still carries a non-zero
+proximity value (which class the mesh leans toward, and how close) instead of
+a flat 0, so even the fallback is informative.
+
 The detected type is shown in the GUI defect-panel header (e.g. `Detected:
-mechanical (0.23)`) and in the `--human` report as a `Type:` line; the JSON
-report carries `detected_type` and `detected_confidence`.
+mechanical (0.92)`) and in the `--human` report as a `Type:` line; the JSON
+report carries `detected_type` and `detected_confidence`. A calibration
+harness (`scripts/calibrate_classifier.py`) measures precision/recall and
+confidence separation against a labeled synthetic set
+(`tests/make_classifier_set.py`), so the thresholds stay checkable and
+reversible.
 
 When classified, the type tunes two Stage 1 thresholds:
 
