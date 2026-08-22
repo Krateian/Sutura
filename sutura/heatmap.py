@@ -43,6 +43,8 @@ _LIGHT_RIM_W = 0.16
 _AMBIENT = 0.30
 # defect faces get a partial shading blend so the "hot" region stays clearly red
 _RED_MOD = 0.38   # 38% lighting modulation over the base red
+# healed faces use the same vivid modulation so the green stays bright/exaggerated
+_HEALED_MOD = _RED_MOD
 _SHADE_LEVELS = 64
 _GREY_MIN = 0.18   # fraction of the base colour preserved in full shadow
 
@@ -184,16 +186,19 @@ def _defect_vertex_set(holes, non_manifold):
 
 def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
            pad=24, bg=(18, 22, 26), mesh=(178, 186, 194), defect=(235, 60, 70),
-           frame=None):
+           healed=None, healed_color=(46, 204, 113), frame=None):
     """Render a mesh heatmap to a QImage.
 
     verts: (N,3) float array; tris: (M,3) int array. ``holes``/``non_manifold``
     are the defect dict lists from ``defects.detect(..., with_indices=True)``;
     their ``verts_idx`` entries mark which vertices (and thus faces) are drawn
-    red. ``frame`` is an optional ``(center, scale)`` from ``shared_frame`` to
-    force the same camera as another render. Returns a QImage (RGB32). Never
-    raises for empty/degenerate input: a blank image is returned so callers
-    can fall back gracefully.
+    in the ``defect`` colour. ``healed`` is an optional (M,) bool mask (one
+    entry per face); faces marked healed that are NOT defect faces are drawn
+    in ``healed_color``. Precedence: defect faces first, then healed, then
+    the neutral ``mesh`` colour. ``frame`` is an optional ``(center, scale)``
+    from ``shared_frame`` to force the same camera as another render. Returns
+    a QImage (RGB32). Never raises for empty/degenerate input: a blank image
+    is returned so callers can fall back gracefully.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
@@ -213,11 +218,17 @@ def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
         is_defect[list(dv)] = True
     is_defect_face = is_defect[tris].any(axis=1)
 
-    # three-point lighting: face normals -> per-face shade, split by defect
+    if healed is None:
+        is_healed_face = np.zeros(len(tris), dtype=bool)
+    else:
+        is_healed_face = np.asarray(healed, dtype=bool)
+
+    # three-point lighting: face normals -> per-face shade, split by region
     normals = _face_normals(verts, tris)
     shade = _lighting_shade(normals)
     grey_shade = _shade_index(shade)
     red_shade = _shade_index(_RED_MOD + (1 - _RED_MOD) * shade)
+    green_shade = _shade_index(_HEALED_MOD + (1 - _HEALED_MOD) * shade)
 
     # painter's algorithm: sort far -> near by mean view-space depth
     face_z = z[tris].mean(axis=1)
@@ -225,6 +236,7 @@ def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
 
     grey_lut = _shade_lut(mesh)
     red_lut = _shade_lut(defect)
+    green_lut = _shade_lut(healed_color)
     p = QPainter(img)
     p.setPen(Qt.NoPen)
     for i in order:
@@ -236,6 +248,8 @@ def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
         ])
         if is_defect_face[i]:
             p.setBrush(red_lut[red_shade[i]])
+        elif is_healed_face[i]:
+            p.setBrush(green_lut[green_shade[i]])
         else:
             p.setBrush(grey_lut[grey_shade[i]])
         p.drawPolygon(poly)

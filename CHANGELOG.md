@@ -4,6 +4,33 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.8-beta.2] - 2026-08-23
+
+Second beta pre-release: fixes the before/after colour scheme that beta.1
+shipped. Still never offered to auto-update users (`/releases/latest` skips
+pre-releases).
+
+### Changed
+
+- **Before/after tri-state colour scheme (fixes the beta.1 all-teal body).**
+  The repaired view no longer paints the whole body teal. It now uses three
+  states: **grey** where the mesh was never broken, a vivid **green**
+  `(46,204,113)` where an original defect used to be and is now healthy, and
+  **orange** `(255,140,60)` where a defect remains (the original view keeps
+  its red `(235,60,70)` defects). Because repair changes the mesh topology
+  (before/after vertex indices don't correspond), the green classification is
+  **spatial**: `before_after_render.healed_face_mask` measures each repaired
+  face against the original defect centroids' real extent (max |v - centroid|
+  from `verts_idx`, × 1.5 halo — not the bbox diameter) and only counts a
+  face as healed when the repaired mesh's own detect() reports no defect
+  there. Only the `cap` (256) largest defects drive the green highlight, so a
+  scan mesh with thousands of micro-cracks stays fast (measured ~2.4 s for a
+  1.27M-face scan mesh with 3.9k defects); the orange "still broken" signal
+  is uncapped and always full-resolution. `heatmap.render` gained an optional
+  `healed` (M,) face mask + `healed_color` parameter (backward compatible:
+  heatmap_render.py unchanged). Applied to both the main and the detail
+  before/after views.
+
 ## [0.1.8-beta.1] - 2026-08-23
 
 First **beta (pre-release)** build, published so willing users can try two new

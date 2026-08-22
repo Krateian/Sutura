@@ -3,8 +3,9 @@
 
 Loads the repo GUI, adds a broken mesh, repairs it, opens the before/after
 dialog and verifies: the dialog appears with a main image and a detail image,
-the toggle flips both between original (defect-red) and repaired (teal), and
-the detail image differs from the main one for a localized defect.
+the toggle flips both between original (defect-red) and repaired (tri-state:
+grey/green/orange), and the detail image differs from the main one for a
+localized defect.
 
 Run from the repo root under the sutura venv with a display available:
     ~/.local/share/sutura/venv/bin/python scripts/verify_before_after_dialog.py

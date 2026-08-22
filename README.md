@@ -75,7 +75,7 @@ Sutura and where you should still double-check the output.
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
 | Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
 | Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
-| Before/after comparison | ~50% | Static CPU-rasterized toggle between original and repaired views with a **worst-defect zoom detail** close-up and the teal/red colour scheme (fixed = teal `#14b8a6`, remaining defects = red). Same GL constraint as the heatmap means it is a click-toggle, not an interactive 3D slider; only the first object is compared for multi-object 3MF, and it is visual-only (no metric readouts overlaid yet). |
+| Before/after comparison | ~50% | Static CPU-rasterized toggle between original and repaired views with a **worst-defect zoom detail** close-up and a tri-state colour scheme (grey = never broken, green `(46,204,113)` = healed, orange `(255,140,60)` = still broken). The healed map is spatial (repaired-face centroids vs original defect extents) and capped at the 256 largest defects so scan meshes stay fast. Same GL constraint as the heatmap means it is a click-toggle, not an interactive 3D slider; only the first object is compared for multi-object 3MF, and it is visual-only (no metric readouts overlaid yet). |
 | Validate (`sutura validate`) | ~50% (beta) | New in 0.1.8-beta.1: read-only analysis of holes / non-manifold regions / self-intersections / connected components / signed volume (orientation) / surface area with a watertight verdict — no repair, no output file. Beta quality: the combined metrics are new and not yet calibrated against real-world repair outcomes, and multi-object 3MF validates each object but keeps only a minimal aggregate report. |
 | Dry-run (`--dry-run`) | ~45% (beta) | New in 0.1.8-beta.1: reports the would-do plan (detected type, mode, Stage 1 thresholds, found holes / debris / self-intersections, stage 2 availability) and writes nothing. Beta quality: the plan is derived from the input analysis, so exact hole-close counts are not guaranteed to match a real run, and the extreme-mode extra passes are not simulated. |
 | Mesh type-aware repair | ~70% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds. Experimental: the per-type values are uncalibrated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
@@ -339,13 +339,20 @@ renders the original and repaired meshes with the *same* camera framing and
 opens a dialog with the main image, a toggle button that flips between
 **Original** and **Repaired**, and — below the main image — a smaller
 **detail** close-up of the *worst original defect region* (the defect with
-the largest physical bounding-box diagonal). The original view marks its
-defects in red; the repaired view is rendered in the brand teal `#14b8a6`
-(fixed/healthy) with any *remaining* holes / non-manifold regions in red. The
-close-up uses the same zoomed camera for both sides, so the original vs
-repaired comparison is apples-to-apples. It is a static click-toggle,
-deliberately not an interactive 3D slider — same CPU-renderer constraint as
-the heatmap — and runs in a subprocess on-demand, so it never slows a batch.
+the largest physical bounding-box diagonal). The repaired view uses a
+tri-state colour map: **grey** where the mesh was never broken, a vivid
+**green** `(46,204,113)` highlight where an original defect used to be and
+is now healthy, and **orange** `(255,140,60)` where a defect remains (the
+original view marks its defects in red `(235,60,70)`). Because repair changes the mesh
+topology (the before/after vertex indices don't correspond), the green
+classification is *spatial*: each repaired face is measured against the
+original defect centroids (their real extent from `defects.detect`), and
+only the largest defects (capped at 256) drive the highlight so a scan mesh
+with thousands of micro-cracks stays fast. The close-up uses the same zoomed
+camera for both sides, so the original vs repaired comparison is
+apples-to-apples. It is a static click-toggle, deliberately not an
+interactive 3D slider — same CPU-renderer constraint as the heatmap — and
+runs in a subprocess on-demand, so it never slows a batch.
 
 **Repair mode.** A **Mode: Auto** button next to the heatmap/before-after
 buttons opens a small dialog with a five-step slider —

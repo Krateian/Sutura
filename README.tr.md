@@ -77,7 +77,7 @@ söyler.
 | CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
 | Batch işleme | ~%90 | Dosya başına sonuçları ve bir özeti olan çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) desteklenir; batch kaldığı yerden sürdürülemez ve başarısız bir dosya diğerlerini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL çağrıları segfault verir, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelenir ve çok nesneli 3MF'de yalnızca ilk nesne çizilir. |
-| Öncesi/sonrası karşılaştırma | ~%50 | Orijinal ve onarılmış görünümler arasında statik, CPU ile çizilmiş görüntülerin tıkla-geçişi; **en yoğun bozukluk bölgesi yakın çekimi** ve teal/kırmızı renk şemasıyla (düzelen = teal `#14b8a6`, kalan kusur = kırmızı). Isı haritasıyla aynı GL kısıtı, etkileşimli bir 3D kaydırıcı yerine tıkla-geçiş demektir; çok nesneli 3MF'de yalnızca ilk nesne karşılaştırılır ve özellik yalnızca görseldir (henüz üzerine metrik değeri çizilmez). |
+| Öncesi/sonrası karşılaştırma | ~%50 | Orijinal ve onarılmış görünümler arasında statik, CPU ile çizilmiş görüntülerin tıkla-geçişi; **en yoğun bozukluk bölgesi yakın çekimi** ve üç durumlu renk şemasıyla (gri = hiç bozulmamış, yeşil `(46,204,113)` = düzelen, turuncu `(255,140,60)` = hâlâ bozuk). Düzelen harita uzaysaldır (onarılmış yüz merkezleri, orijinal kusur uzantılarına göre) ve tarama mesh'lerinin hızlı kalması için en büyük 256 kusurla sınırlıdır. Isı haritasıyla aynı GL kısıtı, etkileşimli bir 3D kaydırıcı yerine tıkla-geçiş demektir; çok nesneli 3MF'de yalnızca ilk nesne karşılaştırılır ve özellik yalnızca görseldir (henüz üzerine metrik değeri çizilmez). |
 | Validate (`sutura validate`) | ~%50 (beta) | 0.1.8-beta.1'de yeni: delik / non-manifold bölgeler / self-intersection / bağlı bileşenler / işaretli hacim (yön) / yüzey alanı ve watertight kararının salt-okunur analizi — onarım yok, çıktı dosyası yok. Beta kalitesi: birleşik metrikler yeni ve gerçek dünya onarım sonuçlarına karşı henüz kalibre edilmemiştir; çok nesneli 3MF her nesneyi doğrular ama yalnızca asgari bir özet rapor tutar. |
 | Dry-run (`--dry-run`) | ~%45 (beta) | 0.1.8-beta.1'de yeni: yapılacak planı bildirir (tespit edilen tür, mod, Aşama 1 eşikleri, bulunan delik / döküntü / self-intersection, aşama 2 uygunluğu) ve hiçbir şey yazmaz. Beta kalitesi: plan girdi analizinden türetilir, bu yüzden tam delik kapatma sayıları gerçek bir çalışmayla birebir uyuşacağının garantisi değildir ve extreme modun ek geçişleri simüle edilmez. |
 | Mesh türüne duyarlı onarım | ~%70 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar. Deneysel: tür başına değerler kalibre edilmemiş başlangıç noktalarıdır ve eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
@@ -344,9 +344,15 @@ CI'de çalışır) ve GUI'nin duyarlı ve çökmesiz kalması için bir alt sür
 yapan bir düğme ve ana görüntünün altında *en yoğun orijinal bozukluk
 bölgesinin* (en büyük fiziksel köşegen uzunluğuna sahip kusurun) daha küçük
 bir **detay** yakın çekimi içeren bir diyalog açar. Orijinal görünüm
-kusurlarını kırmızıyla işaretler; onarılmış görünüm marka rengi teal
-`#14b8a6` (düzelen/sağlıklı) ile çizilir ve *kalan* delik / non-manifold
-bölgeler kırmızıdır. Yakın çekim, her iki taraf için aynı yakınlaştırılmış
+kusurlarını kırmızıyla işaretler. Onarılmış görünüm üç durumlu bir renk
+haritası kullanır: hiç bozulmamış bölgeler **gri**, eski bir kusurun olduğu
+yer artık sağlıklıysa parlak **yeşil** `(46,204,113)`, hâlâ kusur kalıyorsa
+**turuncu** `(255,140,60)`. Onarım topolojiyi değiştirdiği için (önceki/
+sonraki vertex indeksleri eşleşmez) yeşil sınıflandırma *uzaysaldır*: her
+onarılmış yüz, orijinal kusur merkezlerine göre ölçülür (`defects.detect`'in
+gerçek yarıçapı) ve yalnızca en büyük kusurlar (en fazla 256) vurguyu
+üretir — binlerce mikro çatlaklı tarama mesh'lerinde hızlı kalır. Yakın
+çekim, her iki taraf için aynı yakınlaştırılmış
 kameralı çerçeveyi kullanır, böylece orijinal/onarılmış karşılaştırması
 birebir tutarlıdır. Isı haritasıyla aynı CPU-çizici kısıtı yüzünden bilinçli
 olarak etkileşimli bir 3D kaydırıcı değil, statik bir tıkla-geçiştir; alt
