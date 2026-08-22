@@ -71,7 +71,7 @@ Sutura and where you should still double-check the output.
 | STL repair (two-stage) | ~95% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs. Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and very large holes are closed with a flat patch, not a smart reconstruction. |
 | 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF can keep a few sub-millimetre cracks that slicers usually auto-heal. |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
-| GUI | ~85% | Native Qt batch repair, drag & drop, defect panel, heatmap, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
+| GUI | ~85% | Native Qt batch repair, drag & drop, defect panel, heatmap, before/after comparison, repair-mode picker, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
 | Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
 | Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
@@ -229,7 +229,8 @@ bypass the classifier and use exact thresholds:
 | `extreme` | 20 | 10000 | most aggressive; note this can delete an object whose whole connected part has fewer than 20 faces |
 
 The chosen mode is always reported (`repair_mode` in JSON, `Mode:` in
-`--human`; per object for multi-object 3MF).
+`--human`; per object for multi-object 3MF). The GUI exposes the same five
+modes through its **Mode** button (batch-wide, see the GUI section below).
 
 With multiple files, every input is repaired in turn and a summary is
 printed (`N watertight, M with warnings, K failed`), including a breakdown of
@@ -312,6 +313,15 @@ opens a dialog with a single image area and a toggle button that flips
 between **Original** and **Repaired** (a static click-toggle, deliberately not
 an interactive 3D slider — same CPU-renderer constraint as the heatmap). It
 runs in a subprocess and is on-demand, so it never slows a batch.
+
+**Repair mode.** A **Mode: Auto** button next to the heatmap/before-after
+buttons opens a small dialog with a five-step slider —
+**Low / Medium / Auto / Aggressive / Extreme** — and a one-line description
+that updates live as the slider moves (the Extreme step warns it can delete
+objects smaller than 20 faces). The mode is a **batch-wide** setting: it
+applies to the next Repair run for every file, not per file, and is passed to
+the CLI as `--mode <mode>` (the same five values as the CLI flag, default
+`auto`). The current mode is always shown on the button.
 
 Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each

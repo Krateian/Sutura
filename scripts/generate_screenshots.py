@@ -3,7 +3,9 @@
 
 Runs the GUI offscreen, drives a real batch repair, and renders the key
 moments to PNGs under assets/. This keeps the screenshots in sync with the
-actual UI whenever a visible behaviour changes.
+actual UI whenever a visible behaviour changes. The locale is forced to
+English regardless of the system locale, so the screenshots are always the
+English variant (standing rule).
 
 Run from the repo root with a Python that has the GUI dependencies
 (PySide6-Essentials + trimesh). The repo's own sutura/gui.py is loaded, so
@@ -26,6 +28,11 @@ import tempfile
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
+
+# The README screenshots are always the English UI, whatever the system
+# locale. Qt's QLocale.system() reads the environment at app startup, so set
+# LANG before anything creates a QApplication.
+os.environ['LANG'] = 'en_US.UTF-8'
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GUI_PY = os.path.join(REPO, 'sutura', 'gui.py')

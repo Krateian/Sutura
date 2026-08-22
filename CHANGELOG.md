@@ -19,6 +19,15 @@ All notable changes to this project are documented here.
   `mincomponentsize` stays >= 8 in every mode (never lower, CI regression
   risk); note that `extreme` (mincomponentsize=20) will delete a whole object
   whose connected part has fewer than 20 faces — intended but aggressive.
+- **Repair mode picker (GUI).** A small **Mode: Auto** button next to the
+  heatmap/before-after buttons opens `RepairModeDialog`: a five-step
+  horizontal slider (Low–Medium–Auto–Aggressive–Extreme) with a live,
+  localized one-line description per step (the Extreme step honestly warns it
+  can delete objects smaller than 20 faces) and OK/Cancel. The mode is stored
+  **batch-wide** on the main window (`self._repair_mode`, default `auto`), not
+  per file, and `RepairWorker` passes it to the CLI as `--mode <mode>`, so the
+  chosen mode appears in the JSON `repair_mode` of every report in the batch.
+  Fully localized EN/TR. Screenshots regenerated (English UI).
 
 ### Changed
 

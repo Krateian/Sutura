@@ -73,7 +73,7 @@ söyler.
 | STL onarımı (iki aşamalı) | ~%95 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmıştır. %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve çok büyük delikler akıllı bir yeniden yapılandırma yerine düz bir yamayla kapatılır. |
 | 3MF çok nesneli | ~%90 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen köşeli bir 3MF, dilimleyicilerin genellikle otomatik iyileştirdiği birkaç milimetre-altı çatlak tutabilir. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
-| GUI | ~%85 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, ısı haritası, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
+| GUI | ~%85 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, ısı haritası, öncesi/sonrası karşılaştırma, onarım modu seçici, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
 | CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
 | Batch işleme | ~%90 | Dosya başına sonuçları ve bir özeti olan çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) desteklenir; batch kaldığı yerden sürdürülemez ve başarısız bir dosya diğerlerini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL çağrıları segfault verir, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelenir ve çok nesneli 3MF'de yalnızca ilk nesne çizilir. |
@@ -234,7 +234,8 @@ birebir eşikleri kullanır:
 | `extreme` | 20 | 10000 | en agresif; not: tek bağlı parçası 20'den az yüzlü bir nesnenin tamamı silinebilir |
 
 Seçilen mod her zaman raporlanır (`repair_mode` JSON'da, `Mode:` `--human`da;
-çok nesneli 3MF'de nesne başına).
+çok nesneli 3MF'de nesne başına). GUI, aynı beş modu **Mod** düğmesi üzerinden
+sunar (batch geneli; aşağıdaki GUI bölümüne bakın).
 
 Birden çok dosyada her girdi sırayla onarılır ve bir özet yazdırılır (`N
 su geçirmez, M uyarılı, K başarısız`), oluşan uyarı/hata türlerinin dökümüyle
@@ -317,6 +318,15 @@ arasında geçiş yapan bir düğme içeren bir diyalog açar (ısı haritasıyl
 CPU-çizici kısıtı yüzünden bilinçli olarak etkileşimli bir 3D kaydırıcı
 değil, statik bir tıkla-geçiştir). Alt süreçte çalışır ve isteğe bağlıdır,
 bu yüzden bir batch'i asla yavaşlatmaz.
+
+**Onarım modu.** Isı haritası/öncesi-sonrası düğmelerinin yanındaki
+**Mod: Otomatik** düğmesi, beş kademeli bir kaydırıcı içeren küçük bir diyalog
+açar — **Düşük / Orta / Otomatik / Agresif / Aşırı** — kaydırıcı hareket
+ettikçe canlı güncellenen tek cümlelik bir açıklamayla (Aşırı kademesi,
+20'den az yüzlü nesneleri silebileceği konusunda dürüstçe uyarır). Mod,
+**batch geneli** bir ayardır: sonraki Onar çalışmasında tüm dosyalara uygulanır
+(dosya başına değil) ve CLI'ya `--mode <mod>` olarak iletilir (CLI bayrağıyla
+aynı beş değer, varsayılan `auto`). Güncel mod her zaman düğmede görünür.
 
 Dolphin: bir STL/3MF dosyasına sağ tık -> **Sutura ile Onar**. Tek seçimde GUI
 dosya yüklü olarak açılır; çoklu seçimde her dosya arka planda onarılır ve bir

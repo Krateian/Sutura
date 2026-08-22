@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
-    QMessageBox, QDialog)
+    QMessageBox, QDialog, QSlider)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -102,6 +102,25 @@ STRINGS = {
         'before_after_title': 'Before/after — %s',
         'ba_original': 'Original',
         'ba_repaired': 'Repaired',
+        'mode_btn': 'Mode: %s',
+        'mode_dialog_title': 'Repair mode',
+        'mode_name_low': 'Low',
+        'mode_name_medium': 'Medium',
+        'mode_name_auto': 'Auto',
+        'mode_name_aggressive': 'Aggressive',
+        'mode_name_extreme': 'Extreme',
+        'mode_desc_low': ('Low — most conservative: closes only small holes, '
+                          'minimal debris removal.'),
+        'mode_desc_medium': 'Medium — the historical default thresholds.',
+        'mode_desc_auto': ('Auto — the mesh classifier + confidence gate pick '
+                           'per-type thresholds (default).'),
+        'mode_desc_aggressive': ('Aggressive — more debris removed, larger '
+                                 'holes closed.'),
+        'mode_desc_extreme': ('Extreme — most aggressive; can delete a whole '
+                              'object whose connected part has fewer than 20 '
+                              'faces.'),
+        'mode_ok': 'OK',
+        'mode_cancel': 'Cancel',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -161,6 +180,24 @@ STRINGS = {
         'before_after_title': 'Öncesi/Sonrası — %s',
         'ba_original': 'Orijinal',
         'ba_repaired': 'Onarılmış',
+        'mode_btn': 'Mod: %s',
+        'mode_dialog_title': 'Onarım modu',
+        'mode_name_low': 'Düşük',
+        'mode_name_medium': 'Orta',
+        'mode_name_auto': 'Otomatik',
+        'mode_name_aggressive': 'Agresif',
+        'mode_name_extreme': 'Aşırı',
+        'mode_desc_low': ('Düşük — en muhafazakâr: yalnızca küçük delikleri '
+                          'kapatır, en az moloz temizliği.'),
+        'mode_desc_medium': 'Orta — tarihsel varsayılan eşikler.',
+        'mode_desc_auto': ('Otomatik — mesh sınıflandırıcı + güven eşiği '
+                           'türüne göre eşikleri seçer (varsayılan).'),
+        'mode_desc_aggressive': ('Agresif — daha fazla moloz temizlenir, daha '
+                                 'büyük delikler kapatılır.'),
+        'mode_desc_extreme': ('Aşırı — en agresif; bağlantılı parçası 20 yüzden '
+                              'az olan tüm nesneyi silebilir.'),
+        'mode_ok': 'Tamam',
+        'mode_cancel': 'İptal',
     },
 }
 
@@ -369,9 +406,10 @@ class RepairWorker(QThread):
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
 
-    def __init__(self, files, parent=None):
+    def __init__(self, files, mode='auto', parent=None):
         super().__init__(parent)
         self._files = list(files)
+        self._mode = mode
         self._cancelled = False
         self._proc = None
 
@@ -401,7 +439,7 @@ class RepairWorker(QThread):
                              'and no repair.py next to the GUI'}
         try:
             self._proc = subprocess.Popen(
-                [*SUTURA_CMD, path],
+                [*SUTURA_CMD, '--mode', self._mode, path],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except OSError as e:
             # e.g. FileNotFoundError - never crash the worker thread silently.
@@ -529,6 +567,63 @@ class _ClickableLabel(QLabel):
         super().mousePressEvent(event)
 
 
+class RepairModeDialog(QDialog):
+    """Modal picker for the batch repair mode.
+
+    A five-step horizontal slider (Low-Medium-Auto-Aggressive-Extreme, left to
+    right) with a live description label that updates as the slider moves, and
+    OK/Cancel buttons. The mode is a batch-wide setting (one value for the
+    whole run), so the dialog only hands back the chosen value.
+    """
+
+    MODES = ('low', 'medium', 'auto', 'aggressive', 'extreme')
+
+    def __init__(self, current='auto', parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_t('mode_dialog_title'))
+        self.setModal(True)
+        lay = QVBoxLayout(self)
+
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, len(self.MODES) - 1)
+        self.slider.setValue(self.MODES.index(current))
+        self.slider.setTickPosition(QSlider.TicksBelow)
+        self.slider.setTickInterval(1)
+        self.slider.setMinimumWidth(360)
+        lay.addWidget(self.slider)
+
+        ticks = QHBoxLayout()
+        for mode in self.MODES:
+            lab = QLabel(_t('mode_name_' + mode))
+            lab.setAlignment(Qt.AlignCenter)
+            ticks.addWidget(lab, 1)
+        lay.addLayout(ticks)
+
+        self.desc = QLabel()
+        self.desc.setWordWrap(True)
+        lay.addWidget(self.desc)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        ok = QPushButton(_t('mode_ok'))
+        cancel = QPushButton(_t('mode_cancel'))
+        ok.setDefault(True)
+        btns.addWidget(ok)
+        btns.addWidget(cancel)
+        lay.addLayout(btns)
+
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        self.slider.valueChanged.connect(self._update_desc)
+        self._update_desc(self.slider.value())
+
+    def _update_desc(self, idx):
+        self.desc.setText(_t('mode_desc_' + self.MODES[idx]))
+
+    def selected_mode(self):
+        return self.MODES[self.slider.value()]
+
+
 class MainWindow(QMainWindow):
     MESH_EXTS = ('.stl', '.3mf')
 
@@ -555,6 +650,7 @@ class MainWindow(QMainWindow):
         self._heatmap_zoom = None
         self.before_after_worker = None
         self._before_after_zoom = None
+        self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
 
         self._build_ui()
         self._apply_accent()
@@ -646,6 +742,10 @@ class MainWindow(QMainWindow):
         self.btn_before_after = QPushButton(_t('show_before_after'))
         self.btn_before_after.setEnabled(False)
         heat_row.addWidget(self.btn_before_after, 0, Qt.AlignTop)
+        # batch-wide repair mode picker (low/medium/auto/aggressive/extreme)
+        self.btn_mode = QPushButton(
+            _t('mode_btn', _t('mode_name_' + self._repair_mode)))
+        heat_row.addWidget(self.btn_mode, 0, Qt.AlignTop)
         self.heatmap_thumb = _ClickableLabel(_t('heatmap_failed'))
         self.heatmap_thumb.setAlignment(Qt.AlignCenter)
         self.heatmap_thumb.setFixedSize(220, 150)
@@ -667,6 +767,7 @@ class MainWindow(QMainWindow):
         self.btn_show_heatmap.clicked.connect(self._on_show_heatmap)
         self.heatmap_thumb.clicked.connect(self._on_heatmap_thumb_clicked)
         self.btn_before_after.clicked.connect(self._on_show_before_after)
+        self.btn_mode.clicked.connect(self._on_choose_repair_mode)
 
         self.btn_repair.setEnabled(False)
         self.btn_stop.setEnabled(False)
@@ -903,7 +1004,7 @@ class MainWindow(QMainWindow):
         self.status.setText(_t('repairing'))
         self.log.clear()
 
-        self.worker = RepairWorker(self.files, self)
+        self.worker = RepairWorker(self.files, self._repair_mode, self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
         self.worker.all_done.connect(self._on_all_done)
@@ -913,6 +1014,14 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             self.worker.cancel()
             self.btn_stop.setEnabled(False)
+
+    def _on_choose_repair_mode(self):
+        """Open the repair-mode dialog; apply the chosen mode to the next batch."""
+        dlg = RepairModeDialog(self._repair_mode, self)
+        if dlg.exec() == QDialog.Accepted:
+            self._repair_mode = dlg.selected_mode()
+            self.btn_mode.setText(
+                _t('mode_btn', _t('mode_name_' + self._repair_mode)))
 
     def _on_file_done(self, path, summary, report, data):
         item = self._item_by_path.get(path)
