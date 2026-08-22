@@ -56,6 +56,23 @@ def tuning_applied_for(mesh_type, confidence):
         return bool(confidence >= ORG_TUNE_GATE)
     return False
 
+
+# Repair modes: a fixed five-step ladder from conservative to aggressive.
+# 'auto' is NOT a fixed parameter set - it resolves at repair time through
+# classify_mesh + the confidence gate (the shipped default behaviour); the
+# fixed modes (low/medium/aggressive/extreme) bypass the classifier entirely
+# and use these exact thresholds. 'medium' is the historical default
+# (mincomponentsize=8, maxholesize=1000). mincomponentsize stays >= 8 so
+# small/degenerate meshes never survive the debris cutoff (CI regression
+# risk if lowered, see the _type_params comment).
+MODE_PARAMS = {
+    'low': {'mincomponentsize': 8, 'maxholesize': 200},
+    'medium': {'mincomponentsize': 8, 'maxholesize': 1000},
+    'aggressive': {'mincomponentsize': 12, 'maxholesize': 3000},
+    'extreme': {'mincomponentsize': 20, 'maxholesize': 10000},
+}
+REPAIR_MODES = ('low', 'medium', 'auto', 'aggressive', 'extreme')
+
 TOPOMETRICS = [
     'vertices_number', 'faces_number', 'boundary_edges', 'connected_components_number',
     'genus', 'incident_faces_on_non_two_manifold_edges',
@@ -162,8 +179,13 @@ def stl_write_binary(path, verts, tris):
             f.write(struct.pack('<H', 0))
 
 
-def repair_mesh_from_arrays(verts, tris, tmpdir):
-    """Repair one mesh given as numpy arrays. Returns (report, verts, tris)."""
+def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
+    """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
+
+    ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
+    classifier + confidence gate exactly as before; the fixed modes
+    (low/medium/aggressive/extreme) use the MODE_PARAMS thresholds directly.
+    """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -204,13 +226,22 @@ def repair_mesh_from_arrays(verts, tris, tmpdir):
     _cls = classify_mesh(verts, tris)
     stats['detected_type'] = _cls['type']
     stats['detected_confidence'] = _cls['confidence']
+    stats['repair_mode'] = mode
     _type = _cls['type']
     _conf = _cls['confidence']
-    stats['tuning_applied'] = tuning_applied_for(_type, _conf)
-    if not stats['tuning_applied']:
-        _p = _type_params['unknown']
+    if mode == 'auto':
+        # shipped default: classifier + confidence gate, unchanged
+        stats['tuning_applied'] = tuning_applied_for(_type, _conf)
+        if not stats['tuning_applied']:
+            _p = _type_params['unknown']
+        else:
+            _p = _type_params.get(_type, _type_params['unknown'])
     else:
-        _p = _type_params.get(_type, _type_params['unknown'])
+        # fixed repair mode: use the exact MODE_PARAMS thresholds; the
+        # classifier is still run (cheap) so detected_type/confidence remain
+        # informative, but they no longer drive parameter selection.
+        stats['tuning_applied'] = False
+        _p = MODE_PARAMS[mode]
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -389,7 +420,7 @@ def scan_bad_coordinates(path):
     return None
 
 
-def repair_file(src, out, tmpdir):
+def repair_file(src, out, tmpdir, mode='auto'):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -402,7 +433,7 @@ def repair_file(src, out, tmpdir):
     verts = np.asarray(load_ms.current_mesh().vertex_matrix(), dtype=np.float32)
     tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
-    report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir)
+    report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
     report['defects'] = detect_defects(verts, tris)
 
     # stage 2 applies to watertight results; run_stage2 handles the fixed
@@ -461,7 +492,7 @@ def build_mesh_block(verts, tris):
     return '\n'.join(lines)
 
 
-def repair_3mf(src, out, tmpdir):
+def repair_3mf(src, out, tmpdir, mode='auto'):
     """Repair every object mesh in a 3MF archive, preserving structure."""
     meshes = parse_3mf_meshes(src)
     if not meshes:
@@ -485,7 +516,7 @@ def repair_3mf(src, out, tmpdir):
             if key in cache:
                 new_v, new_t = cache[key]
             else:
-                rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir)
+                rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
                 rep['defects'] = detect_defects(verts, tris)
                 reports.append(rep)
                 cache[key] = (new_v, new_t)
@@ -539,6 +570,7 @@ def human_report(r, show_defects=False, show_diff=False):
     lines = []
     lines.append('Input : %s' % r.get('input'))
     lines.append('Output: %s' % r.get('output'))
+    lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
     dt = r.get('detected_type')
     if dt:
         conf = r.get('detected_confidence', 0.0)
@@ -604,7 +636,7 @@ def human_report(r, show_defects=False, show_diff=False):
     return '\n'.join(lines)
 
 
-def process_file(src, human):
+def process_file(src, human, mode='auto'):
     """Repair one file. Returns (result_dict, category)."""
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -616,9 +648,9 @@ def process_file(src, human):
     result = {'input': src, 'output': out}
     try:
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
-            result.update(repair_3mf(src, out, tmpdir))
+            result.update(repair_3mf(src, out, tmpdir, mode=mode))
         else:
-            result.update(repair_file(src, out, tmpdir))
+            result.update(repair_file(src, out, tmpdir, mode=mode))
     except Exception as e:
         result['error'] = 'repair failed: %s' % e
     finally:
@@ -648,6 +680,10 @@ def main():
                         help='with --human, also show before/after geometry '
                              'diff (vertices, faces, surface area change). '
                              'JSON always includes these fields.')
+    parser.add_argument('--mode', choices=REPAIR_MODES, default='auto',
+                        help='repair mode: low/medium/aggressive/extreme use '
+                             'fixed Stage 1 thresholds; auto (default) uses '
+                             'the mesh classifier + confidence gate.')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
     files = args.files
@@ -655,12 +691,13 @@ def main():
     human = args.human
     show_defects = args.defects
     show_diff = args.diff
+    mode = args.mode
 
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
         sys.exit(1)
 
-    results = [process_file(f, human) for f in files]
+    results = [process_file(f, human, mode=mode) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

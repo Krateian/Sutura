@@ -210,9 +210,26 @@ sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # human-readable report
 sutura model.stl --human --defects   # also list input holes / non-manifold regions
 sutura model.stl --human --diff      # also print the before/after geometry diff
+sutura model.stl --mode aggressive   # use the aggressive repair mode
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
 sutura --version            # print the version and exit
 ```
+
+**Repair mode (`--mode`).** A five-step aggressiveness ladder for Stage 1
+thresholds, defaulting to **`auto`** (which is the historical behaviour: the
+mesh classifier + confidence gate pick per-type thresholds). The fixed modes
+bypass the classifier and use exact thresholds:
+
+| Mode | `mincomponentsize` | `maxholesize` | Effect |
+|---|---|---|---|
+| `low` | 8 | 200 | most conservative: closes only small holes, minimal debris removal |
+| `medium` | 8 | 1000 | the historical default thresholds |
+| `auto` | — | — | classifier + confidence gate (default); type-dependent, so not fixed |
+| `aggressive` | 12 | 3000 | more debris removed, larger holes closed |
+| `extreme` | 20 | 10000 | most aggressive; note this can delete an object whose whole connected part has fewer than 20 faces |
+
+The chosen mode is always reported (`repair_mode` in JSON, `Mode:` in
+`--human`; per object for multi-object 3MF).
 
 With multiple files, every input is repaired in turn and a summary is
 printed (`N watertight, M with warnings, K failed`), including a breakdown of

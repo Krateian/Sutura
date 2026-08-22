@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Repair mode (`--mode`).** A five-step Stage 1 aggressiveness ladder,
+  defaulting to `auto`: `low {8,200}`, `medium {8,1000}` (the historical
+  default thresholds), `auto` (the shipped classifier + confidence-gate
+  behaviour — the default, so existing users/CI see no change), `aggressive
+  {12,3000}`, `extreme {20,10000}`. Fixed modes bypass the classifier for
+  parameter selection (it still runs for the informative
+  `detected_type`/`detected_confidence` fields, and `tuning_applied` is
+  false); `auto` is byte-identical to running without `--mode`. The mode is
+  reported as `repair_mode` in the JSON, a `Mode:` line in `--human`, and
+  per-object for multi-object 3MF. Invalid values are rejected by argparse.
+  `mincomponentsize` stays >= 8 in every mode (never lower, CI regression
+  risk); note that `extreme` (mincomponentsize=20) will delete a whole object
+  whose connected part has fewer than 20 faces — intended but aggressive.
+
 ### Changed
 
 - **Confidence gate for mesh-type-aware tuning (Aşama 3).** A classified

@@ -215,9 +215,26 @@ sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # insanın okuyabileceği rapor
 sutura model.stl --human --defects   # ayrıca girdi deliklerini / non-manifold bölgeleri listeler
 sutura model.stl --human --diff      # ayrıca önce/sonra geometri farkını yazdırır
+sutura model.stl --mode aggressive   # agresif onarım modunu kullan
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
 sutura --version            # sürümü yazdırır ve çıkar
 ```
+
+**Onarım modu (`--mode`).** Aşama 1 eşikleri için beş kademeli bir agresiflik
+merdiveni; varsayılan **`auto`**'dur (tarihsel davranış: mesh sınıflandırıcı +
+güven eşiği tür başına eşikleri seçer). Sabit modlar sınıflandırıcıyı atlar ve
+birebir eşikleri kullanır:
+
+| Mod | `mincomponentsize` | `maxholesize` | Etki |
+|---|---|---|---|
+| `low` | 8 | 200 | en muhafazakâr: yalnızca küçük delikler kapanır, minimum döküntü temizliği |
+| `medium` | 8 | 1000 | tarihsel varsayılan eşikler |
+| `auto` | — | — | sınıflandırıcı + güven eşiği (varsayılan); türe bağlı, sabit değil |
+| `aggressive` | 12 | 3000 | daha çok döküntü silinir, daha büyük delikler kapanır |
+| `extreme` | 20 | 10000 | en agresif; not: tek bağlı parçası 20'den az yüzlü bir nesnenin tamamı silinebilir |
+
+Seçilen mod her zaman raporlanır (`repair_mode` JSON'da, `Mode:` `--human`da;
+çok nesneli 3MF'de nesne başına).
 
 Birden çok dosyada her girdi sırayla onarılır ve bir özet yazdırılır (`N
 su geçirmez, M uyarılı, K başarısız`), oluşan uyarı/hata türlerinin dökümüyle
