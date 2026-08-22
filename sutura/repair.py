@@ -127,6 +127,36 @@ def apply_chain(ms, chain):
     return applied, skipped
 
 
+def extreme_extra_passes(ms, ml, params):
+    """Extreme-mode extra Stage 1 passes (Stage C).
+
+    After the main chain has run, select and remove self-intersecting faces
+    (``compute_selection_by_self_intersections_per_face`` ->
+    ``meshing_remove_selected_faces`` -> ``meshing_remove_unreferenced_vertices``)
+    and then run the main chain ONE more time with the same thresholds to close
+    the new holes / drop the new debris the removal exposed.
+
+    Deliberately NOT meshing_isotropic_explicit_remeshing: a full remesh can
+    unpredictably change topology, so it stays out of scope.
+
+    Returns
+    (passes_applied, self_intersections_found, self_intersections_removed,
+     second_chain_applied, second_chain_skipped).
+    When the mesh already has no self-intersecting faces the extra passes are
+    skipped harmlessly (no error, nothing removed) and passes_applied is False.
+    """
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    found = int(ms.current_mesh().face_selection_array().sum())
+    if found == 0:
+        return False, 0, 0, 0, {}
+    before_removal = ms.current_mesh().face_number()
+    ms.apply_filter('meshing_remove_selected_faces')
+    removed = max(before_removal - ms.current_mesh().face_number(), 0)
+    ms.apply_filter('meshing_remove_unreferenced_vertices')
+    applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
+    return True, found, removed, applied2, skipped2
+
+
 def write_obj(path, verts, tris):
     with open(path, 'w') as f:
         f.write('# sutura intermediate\n')
@@ -272,6 +302,26 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
 
     if after.get('faces_number', 0) == 0:
         raise ValueError('all faces are degenerate; nothing to repair')
+
+    # Extreme-only extra passes (Stage C): self-intersection cleanup + one more
+    # run of the main chain to close the holes / drop the debris the removal
+    # exposed. ONLY for mode == 'extreme'; every other mode is untouched.
+    # meshing_isotropic_explicit_remeshing (full remesh) is deliberately out of
+    # scope: it can unpredictably change topology.
+    stats['extreme_passes_applied'] = False
+    if mode == 'extreme':
+        applied_extra, si_found, si_removed, applied2, skipped2 = \
+            extreme_extra_passes(ms, ml, _p)
+        stats['extreme_passes_applied'] = applied_extra
+        applied += applied2
+        if skipped2:
+            skipped.update(skipped2)
+        if si_found:
+            stats['self_intersections_found'] = si_found
+            stats['self_intersections_removed'] = si_removed
+        after = ms.apply_filter('get_topological_measures')
+        if after.get('faces_number', 0) == 0:
+            raise ValueError('all faces are degenerate; nothing to repair')
 
     holes_after = max(after.get('boundary_edges', 0) // 2, 0)
     nm_after = after.get('non_two_manifold_edges', 0)
@@ -587,6 +637,11 @@ def human_report(r, show_defects=False, show_diff=False):
     lines.append('  Faces removed           : %d' % s1.get('faces_removed', 0))
     lines.append('  Connected components    : %d' % s1.get('components', 0))
     lines.append('  Two-manifold            : %s' % ('YES' if s1.get('two_manifold') else 'NO'))
+    if r.get('extreme_passes_applied'):
+        lines.append('  Extreme passes          : applied (%d self-intersecting face(s) removed)'
+                     % r.get('self_intersections_removed', 0))
+    elif r.get('repair_mode') == 'extreme':
+        lines.append('  Extreme passes          : none needed (no self-intersections)')
     if show_diff:
         lines.append('  Vertices                : %s -> %s' % (
             s1.get('vertices_before', 0), s1.get('vertices_after', 0)))

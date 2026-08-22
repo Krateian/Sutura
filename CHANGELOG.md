@@ -28,6 +28,21 @@ All notable changes to this project are documented here.
   per file, and `RepairWorker` passes it to the CLI as `--mode <mode>`, so the
   chosen mode appears in the JSON `repair_mode` of every report in the batch.
   Fully localized EN/TR. Screenshots regenerated (English UI).
+- **Extreme extra passes (Stage C).** In `--mode extreme` only, the repair now
+  runs two extra Stage 1 steps after the main chain: it selects and removes
+  self-intersecting faces (`compute_selection_by_self_intersections_per_face`
+  → `meshing_remove_selected_faces` → `meshing_remove_unreferenced_vertices`)
+  and then runs the main chain one more time with the same thresholds to close
+  the holes / drop the debris that removal exposed. When the mesh has no
+  self-intersections the extra passes are skipped harmlessly. The report gains
+  `extreme_passes_applied` (true/false, every mode) and, when the passes ran,
+  `self_intersections_found`/`self_intersections_removed`; `--human` shows an
+  "Extreme passes" line. Deliberately **not** a full remesh —
+  `meshing_isotropic_explicit_remeshing` is out of scope because it can
+  unpredictably change topology. The other four modes are untouched (verified
+  by the auto-equality regression test). Torture harness gained a
+  self-intersecting-pair scenario run in extreme mode (self-intersections
+  78 → 0, `extreme_passes_applied=True`).
 
 ### Changed
 

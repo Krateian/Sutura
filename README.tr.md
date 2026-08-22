@@ -231,10 +231,13 @@ birebir eşikleri kullanır:
 | `medium` | 8 | 1000 | tarihsel varsayılan eşikler |
 | `auto` | — | — | sınıflandırıcı + güven eşiği (varsayılan); türe bağlı, sabit değil |
 | `aggressive` | 12 | 3000 | daha çok döküntü silinir, daha büyük delikler kapanır |
-| `extreme` | 20 | 10000 | en agresif; not: tek bağlı parçası 20'den az yüzlü bir nesnenin tamamı silinebilir |
+| `extreme` | 20 | 10000 | en agresif; not: tek bağlı parçası 20'den az yüzlü bir nesnenin tamamı silinebilir. Extreme eşiklerine ek olarak **ek self-intersection geçişleri** çalıştırır: kendisiyle-kesişen yüzler silinir ve silme sonrası açığa çıkan kusurları yakalamak için Aşama 1 zinciri (delik kapatma + döküntü temizleme) bir kez daha çalışır. Bilinçli olarak tam bir remesh **değildir** (`meshing_isotropic_explicit_remeshing` kapsam dışıdır — topolojiyi öngörülemez şekilde değiştirebilir). |
 
 Seçilen mod her zaman raporlanır (`repair_mode` JSON'da, `Mode:` `--human`da;
-çok nesneli 3MF'de nesne başına). GUI, aynı beş modu **Mod** düğmesi üzerinden
+çok nesneli 3MF'de nesne başına). `extreme` için rapor ayrıca
+`extreme_passes_applied` (ek geçişler çalıştıysa true) ve çalıştıysa
+`self_intersections_found`/`self_intersections_removed` taşır; `--human` bir
+"Extreme passes" satırı gösterir. GUI, aynı beş modu **Mod** düğmesi üzerinden
 sunar (batch geneli; aşağıdaki GUI bölümüne bakın).
 
 Birden çok dosyada her girdi sırayla onarılır ve bir özet yazdırılır (`N

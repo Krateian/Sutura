@@ -226,11 +226,14 @@ bypass the classifier and use exact thresholds:
 | `medium` | 8 | 1000 | the historical default thresholds |
 | `auto` | — | — | classifier + confidence gate (default); type-dependent, so not fixed |
 | `aggressive` | 12 | 3000 | more debris removed, larger holes closed |
-| `extreme` | 20 | 10000 | most aggressive; note this can delete an object whose whole connected part has fewer than 20 faces |
+| `extreme` | 20 | 10000 | most aggressive; note this can delete an object whose whole connected part has fewer than 20 faces. On top of the extreme thresholds it runs **extra self-intersection passes**: any self-intersecting faces are removed and the Stage 1 chain (hole closing + debris removal) runs a second time to catch what the removal exposed. Deliberately **not** a full remesh (`meshing_isotropic_explicit_remeshing` is out of scope — it can unpredictably change topology). |
 
 The chosen mode is always reported (`repair_mode` in JSON, `Mode:` in
-`--human`; per object for multi-object 3MF). The GUI exposes the same five
-modes through its **Mode** button (batch-wide, see the GUI section below).
+`--human`; per object for multi-object 3MF). For `extreme`, the report also
+carries `extreme_passes_applied` (true when the extra passes ran) and, when
+they did, `self_intersections_found`/`self_intersections_removed`; `--human`
+shows an "Extreme passes" line. The GUI exposes the same five modes through
+its **Mode** button (batch-wide, see the GUI section below).
 
 With multiple files, every input is repaired in turn and a summary is
 printed (`N watertight, M with warnings, K failed`), including a breakdown of

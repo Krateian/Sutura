@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Torture tests: hard-but-printable geometry.
 
-Runs the installed `sutura` CLI on four scenarios and compares before/after:
+Runs the installed `sutura` CLI on five scenarios and compares before/after:
   1. 5M-triangle sphere (repair time)
   2. 0.05 mm thin slab (thin features must survive, not be dropped as noise)
   3. multi-part assembly (the 8-face debris threshold must not delete parts)
   4. rough scan-style mesh with many micro-cracks
+  5. two interpenetrating spheres (self-intersections; run in --mode extreme,
+     where the extra self-intersection passes must remove them)
 
-Usage: torture_tests.py  (needs the installed CLI at ~/.local/bin/sutura)
+Usage: torture_tests.py  (uses $SUTURA, or the installed CLI at
+~/.local/bin/sutura by default)
 """
 import json
 import math
@@ -19,7 +22,7 @@ import tempfile
 
 import numpy as np
 
-SUTURA = os.path.expanduser('~/.local/bin/sutura')
+SUTURA = os.environ.get('SUTURA', os.path.expanduser('~/.local/bin/sutura'))
 
 
 def write_stl(path, verts, tris):
@@ -43,17 +46,24 @@ def measure(path):
     m = ms.current_mesh()
     topo = ms.apply_filter('get_topological_measures')
     geom = ms.apply_filter('get_geometric_measures')
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    si = int(ms.current_mesh().face_selection_array().sum())
     return {
         'faces': m.face_number(),
         'verts': m.vertex_number(),
         'boundary_edges': topo['boundary_edges'],
         'components': topo['connected_components_number'],
         'volume': geom.get('mesh_volume', 0.0),
+        'self_intersections': si,
     }
 
 
-def run_sutura(path):
-    r = subprocess.run([SUTURA, path], capture_output=True, text=True, timeout=1200)
+def run_sutura(path, mode=None):
+    cmd = [SUTURA]
+    if mode:
+        cmd += ['--mode', mode]
+    cmd.append(path)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
     try:
         rep = json.loads(r.stdout.strip().splitlines()[-1])
     except Exception:
@@ -157,6 +167,24 @@ def scan_mesh(tmp):
     return out, len(tris)
 
 
+def self_intersecting(tmp):
+    """Two interpenetrating icospheres - faces cross each other, so the
+    self-intersection filter flags them. Large enough (80 faces each) that
+    extreme's mincomponentsize=20 does not delete the whole object."""
+    import trimesh
+    verts, tris = [], []
+    for center, scale in [((0.0, 0.0, 0.0), 1.0), ((0.55, 0.55, 0.55), 1.0)]:
+        m = trimesh.creation.icosphere(subdivisions=2)
+        v = np.asarray(m.vertices, dtype=np.float32) * scale + np.asarray(center, dtype=np.float32)
+        t = np.asarray(m.faces, dtype=np.int64)
+        base = len(verts)
+        verts.extend(tuple(x) for x in v)
+        tris.extend((a + base, b + base, c + base) for a, b, c in t)
+    out = os.path.join(tmp, 'selfint.stl')
+    write_stl(out, verts, tris)
+    return out, len(tris)
+
+
 # -------------------------------------------------------------------- main
 
 def check(name, out, fixed, before, after, rep, notes):
@@ -170,6 +198,9 @@ def check(name, out, fixed, before, after, rep, notes):
         after['faces'], after['components'], s1.get('two_manifold')))
     print('  holes : before=%d after=%d' % (
         before['boundary_edges'] // 2, after['boundary_edges'] // 2))
+    si = (before.get('self_intersections'), after.get('self_intersections', 0))
+    if si[0] or si[1]:
+        print('  self-intersections : before=%d after=%d' % si)
     dv = 0.0
     if before['volume'] and after['volume']:
         dv = abs(after['volume'] - before['volume']) / abs(before['volume']) * 100
@@ -226,6 +257,21 @@ def main():
                                                           'volume': 0}
     check('4 scan mesh (%d tris)' % ntri, path, fixed, before, after, rep,
           ['rough surface + micro-cracks; residual micro-holes are expected'])
+
+    # 5) self-intersecting, run in extreme mode: the extra passes must clean
+    #    the self-intersections and report extreme_passes_applied
+    path, ntri = self_intersecting(tmp)
+    before = measure(path)
+    rep = run_sutura(path, 'extreme')
+    fixed = path[:-4] + '_fixed.stl'
+    after = measure(fixed) if os.path.exists(fixed) else {'faces': 0, 'boundary_edges': 0,
+                                                          'volume': 0, 'self_intersections': 0}
+    check('5 self-intersecting (extreme mode)', path, fixed, before, after, rep,
+          ['extreme extra passes remove self-intersections',
+           'extreme_passes_applied=%s, found=%s, removed=%s' % (
+               rep.get('extreme_passes_applied'),
+               rep.get('self_intersections_found'),
+               rep.get('self_intersections_removed'))])
 
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
