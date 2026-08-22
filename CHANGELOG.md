@@ -4,6 +4,52 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.8-beta.1] - 2026-08-23
+
+First **beta (pre-release)** build, published so willing users can try two new
+features on GitHub while regular auto-update users never see it: `/releases/latest`
+skips pre-releases, so the update checker stays on the stable channel.
+
+### Added
+
+- **`validate` subcommand.** `sutura validate model.stl` analyzes a mesh
+  WITHOUT repairing or writing anything: `defects.detect()` holes /
+  non-manifold regions, the mesh classifier (`detected_type` /
+  `detected_confidence`), self-intersecting face count, connected components,
+  signed volume (winding orientation), surface area and a `watertight`
+  verdict. JSON report; `--human` for a readable one (`--defects` lists each
+  defect region). Multi-object 3MF files report per-object. Exit 0 on a
+  successful analysis (even a broken mesh), exit 1 on a hard error (missing /
+  malformed input).
+- **`--dry-run`.** `sutura model.stl --dry-run` reports what a repair WOULD
+  do — detected type, the resolved mode and Stage 1 thresholds
+  (`mincomponentsize`/`maxholesize`), `tuning_applied`, found holes / largest
+  hole diameter / non-manifold regions / self-intersections / removable
+  debris faces, and whether stage 2 would run — and writes NO output file at
+  all (no `_fixed`, no temp residue). Threshold resolution is shared with the
+  real repair via `resolve_mode_params`, so dry-run and repair can never
+  diverge (same single-source-of-truth rule as `classification.py`).
+- **Zoom / balloon detail (before/after GUI).** The before/after dialog now
+  renders a second, smaller close-up of the WORST original defect region
+  (the defect with the largest physical bounding-box diagonal, holes and
+  non-manifold regions compared on the same metric). The close-up uses the
+  same zoomed camera frame for both views (`heatmap.focus_frame`), so the
+  original vs repaired comparison is apples-to-apples. When the original has
+  no defects the detail view simply mirrors the main view.
+- **New before/after colour scheme.** The before view now shows the original
+  defects in the historical red `(235,60,70)` (previously the before image
+  was unmarked); the repaired view is rendered in the brand teal `#14b8a6`
+  (fixed/healthy) with any REMAINING holes / non-manifold regions in red.
+  Same scheme in the close-up.
+
+### Changed
+
+- **`updater.py` semver hardening.** `parse_version` now understands semver
+  pre-release tags: a stable release sorts after any pre-release of the same
+  version, so a beta tester is offered the eventual stable release instead of
+  being stuck on the beta. The `/tags` fallback also skips dashed (pre-release)
+  tags so it can never surface a beta to a normal user.
+
 ## [0.1.7] - 2026-08-22
 
 ### Added

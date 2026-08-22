@@ -75,13 +75,15 @@ Sutura and where you should still double-check the output.
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
 | Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
 | Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
-| Before/after comparison | ~40% | Static CPU-rasterized toggle between original and repaired views, first version. Same GL constraint as the heatmap means it is a click-toggle, not an interactive 3D slider; only the first object is compared for multi-object 3MF, and it is visual-only (no metric readouts overlaid yet). |
+| Before/after comparison | ~50% | Static CPU-rasterized toggle between original and repaired views with a **worst-defect zoom detail** close-up and the teal/red colour scheme (fixed = teal `#14b8a6`, remaining defects = red). Same GL constraint as the heatmap means it is a click-toggle, not an interactive 3D slider; only the first object is compared for multi-object 3MF, and it is visual-only (no metric readouts overlaid yet). |
+| Validate (`sutura validate`) | ~50% (beta) | New in 0.1.8-beta.1: read-only analysis of holes / non-manifold regions / self-intersections / connected components / signed volume (orientation) / surface area with a watertight verdict — no repair, no output file. Beta quality: the combined metrics are new and not yet calibrated against real-world repair outcomes, and multi-object 3MF validates each object but keeps only a minimal aggregate report. |
+| Dry-run (`--dry-run`) | ~45% (beta) | New in 0.1.8-beta.1: reports the would-do plan (detected type, mode, Stage 1 thresholds, found holes / debris / self-intersections, stage 2 availability) and writes nothing. Beta quality: the plan is derived from the input analysis, so exact hole-close counts are not guaranteed to match a real run, and the extreme-mode extra passes are not simulated. |
 | Mesh type-aware repair | ~70% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds. Experimental: the per-type values are uncalibrated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
-| Test coverage | ~85% | Plain-script suites (smoke, layered 3MF, adversarial, classification, defects, mesh classifier, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
+| Test coverage | ~85% | Plain-script suites (smoke, layered 3MF, adversarial, classification, defects, heatmap frames, validate/dry-run, mesh classifier, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
 
@@ -211,9 +213,31 @@ sutura model.stl --human    # human-readable report
 sutura model.stl --human --defects   # also list input holes / non-manifold regions
 sutura model.stl --human --diff      # also print the before/after geometry diff
 sutura model.stl --mode aggressive   # use the aggressive repair mode
+sutura validate model.stl   # analyze WITHOUT repairing (read-only report)
+sutura model.stl --dry-run  # report what a repair would do, write NOTHING
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
 sutura --version            # print the version and exit
 ```
+
+**Validate (`validate`).** `sutura validate model.stl` analyzes a mesh and
+reports it without repairing or writing anything — a read-only health check.
+The JSON report carries `validation` (`holes` / `non_manifold` lists with
+centroid + diameter / face counts, `self_intersections`, `connected_components`,
+`watertight`, `signed_volume`, `surface_area`, `orientation`), plus
+`detected_type` and `detected_confidence` from the mesh classifier.
+`--human` prints it readably (`--defects` lists each defect region).
+Multi-object 3MF files validate per object (`object_reports`). Exit 0 means
+the analysis ran (even on a broken mesh); a missing / malformed input exits 1.
+
+**Dry-run (`--dry-run`).** `sutura model.stl --dry-run` tells you what a
+repair WOULD do without doing it: the detected type, the resolved repair
+mode and exact Stage 1 thresholds (`mincomponentsize` / `maxholesize`),
+`tuning_applied`, and what was found on the input (`holes_found` / largest
+hole diameter / `non_manifold_regions` / `self_intersections` /
+`debris_faces_removable`) plus whether stage 2 would run. It writes **no
+output file at all** — no `_fixed`, no temp residue. The thresholds come from
+the same `resolve_mode_params` the real repair uses, so the two can never
+diverge.
 
 **Repair mode (`--mode`).** A five-step aggressiveness ladder for Stage 1
 thresholds, defaulting to **`auto`** (which is the historical behaviour: the
@@ -312,10 +336,16 @@ back silently to the text-only panel.
 
 **Before/after comparison.** After a file is repaired, **Show before/after**
 renders the original and repaired meshes with the *same* camera framing and
-opens a dialog with a single image area and a toggle button that flips
-between **Original** and **Repaired** (a static click-toggle, deliberately not
-an interactive 3D slider — same CPU-renderer constraint as the heatmap). It
-runs in a subprocess and is on-demand, so it never slows a batch.
+opens a dialog with the main image, a toggle button that flips between
+**Original** and **Repaired**, and — below the main image — a smaller
+**detail** close-up of the *worst original defect region* (the defect with
+the largest physical bounding-box diagonal). The original view marks its
+defects in red; the repaired view is rendered in the brand teal `#14b8a6`
+(fixed/healthy) with any *remaining* holes / non-manifold regions in red. The
+close-up uses the same zoomed camera for both sides, so the original vs
+repaired comparison is apples-to-apples. It is a static click-toggle,
+deliberately not an interactive 3D slider — same CPU-renderer constraint as
+the heatmap — and runs in a subprocess on-demand, so it never slows a batch.
 
 **Repair mode.** A **Mode: Auto** button next to the heatmap/before-after
 buttons opens a small dialog with a five-step slider —

@@ -25,6 +25,7 @@ hand on a Mac):
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -114,14 +115,29 @@ def opt_in_check_updates():
 
 # ---------------------------------------------------------------- semver
 
+# Prerelease ordering rank: any stable release sorts after any prerelease of
+# the same (major, minor, patch), so a beta tester is offered the eventual
+# stable release even though both share the same core version.
+_PRE_BETA = 0
+_PRE_STABLE = 1
+
+
 def parse_version(tag):
-    """Parse a tag like 'v0.1.2' into (major, minor, patch)."""
-    s = tag.lstrip('v')
-    parts = s.split('.')
-    try:
-        return tuple(int(p) for p in parts[:3])
-    except ValueError:
+    """Parse a tag like 'v0.1.2' or 'v0.1.8-beta.1' into a sortable tuple.
+
+    Returns (major, minor, patch, prerelease_rank, prerelease_id). A stable
+    release carries the sentinel rank and therefore compares NEWER than any
+    prerelease of the same version (v0.1.8 > v0.1.8-beta.1), so an update
+    check on a beta build offers the stable release once it exists. Returns
+    None on a malformed version."""
+    m = re.match(r'^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.\-]+))?$', tag)
+    if not m:
         return None
+    major, minor, patch = (int(m.group(i)) for i in (1, 2, 3))
+    pre = m.group(4)
+    if pre is None:
+        return (major, minor, patch, _PRE_STABLE, '')
+    return (major, minor, patch, _PRE_BETA, pre)
 
 
 def is_newer(tag, current):
@@ -160,7 +176,9 @@ def _latest_tag():
             tags = json.loads(resp.read().decode())
         for t in tags:
             name = t.get('name', '')
-            if name.startswith('v'):
+            # skip prerelease tags (e.g. v0.1.8-beta.1) so the fallback never
+            # surfaces a beta to a normal user
+            if name.startswith('v') and '-' not in name:
                 return name
         return None
     except Exception:

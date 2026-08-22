@@ -150,6 +150,28 @@ def shared_frame(verts_list, w, h, pad):
     return center, s
 
 
+def focus_frame(verts, verts_idx, w, h, pad, fill=0.75):
+    """A (center, scale) camera frame zoomed in on a defect region.
+
+    ``verts_idx`` lists the defect's vertices (from ``defects.detect`` with
+    ``with_indices=True``). The frame centers on their mean and scales so the
+    defect's view-space bounding box occupies ``fill`` of the viewport, so a
+    ``render(..., frame=...)`` call with it frames exactly that region. A
+    defect with no vertices falls back to the mesh auto-fit camera."""
+    verts = np.asarray(verts, dtype=np.float64)
+    vs = verts[np.asarray(verts_idx, dtype=np.int64)]
+    if len(vs) == 0:
+        return shared_frame([verts], w, h, pad)
+    center = vs.mean(axis=0)
+    v = (vs - center) @ _ISOMETRIC.T
+    xs, ys = v[:, 0], v[:, 1]
+    span_x = float(xs.max() - xs.min()) or 1.0
+    span_y = float(ys.max() - ys.min()) or 1.0
+    s = min((w - 2 * pad) * fill / span_x,
+            (h - 2 * pad) * fill / span_y)
+    return center, s
+
+
 def _defect_vertex_set(holes, non_manifold):
     """Union of all defect vertex indices (hole rims + non-manifold regions)."""
     dv = set()

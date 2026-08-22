@@ -102,6 +102,7 @@ STRINGS = {
         'before_after_title': 'Before/after — %s',
         'ba_original': 'Original',
         'ba_repaired': 'Repaired',
+        'before_after_detail': 'Detail — worst defect region',
         'mode_btn': 'Mode: %s',
         'mode_dialog_title': 'Repair mode',
         'mode_name_low': 'Low',
@@ -180,6 +181,7 @@ STRINGS = {
         'before_after_title': 'Öncesi/Sonrası — %s',
         'ba_original': 'Orijinal',
         'ba_repaired': 'Onarılmış',
+        'before_after_detail': 'Detay — en yoğun bozukluk bölgesi',
         'mode_btn': 'Mod: %s',
         'mode_dialog_title': 'Onarım modu',
         'mode_name_low': 'Düşük',
@@ -510,10 +512,11 @@ class BeforeAfterWorker(QThread):
     Same isolation rule as ``HeatmapWorker``: pymeshlab stays out of the GUI
     process. Loads both meshes in the subprocess, renders them with a SHARED
     isometric camera frame (identical framing, so the toggle is meaningful),
-    and hands two PNG byte blobs back to the main thread.
+    and hands four PNG byte blobs back to the main thread: before, after,
+    detail_before, detail_after.
     """
 
-    done = Signal(str, bytes, bytes)     # path, before_png, after_png
+    done = Signal(str, bytes, bytes, bytes, bytes)  # path, before, after, detail_before, detail_after
     failed = Signal(str, str)            # path, message
 
     def __init__(self, path, repaired, w, h, parent=None):
@@ -530,19 +533,28 @@ class BeforeAfterWorker(QThread):
         prefix = os.path.join(tmpdir, 'sutura_ba')
         before_file = prefix + '_before.png'
         after_file = prefix + '_after.png'
+        dbefore_file = prefix + '_detail_before.png'
+        dafter_file = prefix + '_detail_after.png'
         try:
             proc = subprocess.run(
                 [sys.executable, renderer, self._path, self._repaired,
-                 before_file, after_file, str(self._w), str(self._h)],
+                 before_file, after_file, dbefore_file, dafter_file,
+                 str(self._w), str(self._h)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
             if (proc.returncode != 0 or not os.path.getsize(before_file)
-                    or not os.path.getsize(after_file)):
+                    or not os.path.getsize(after_file)
+                    or not os.path.getsize(dbefore_file)
+                    or not os.path.getsize(dafter_file)):
                 self.failed.emit(self._path, _t('before_after_failed'))
                 return
             with open(before_file, 'rb') as f:
                 before = f.read()
             with open(after_file, 'rb') as f:
                 after = f.read()
+            with open(dbefore_file, 'rb') as f:
+                dbefore = f.read()
+            with open(dafter_file, 'rb') as f:
+                dafter = f.read()
         except (OSError, subprocess.TimeoutExpired):
             self.failed.emit(self._path, _t('before_after_failed'))
             return
@@ -550,10 +562,12 @@ class BeforeAfterWorker(QThread):
             try:
                 os.unlink(before_file)
                 os.unlink(after_file)
+                os.unlink(dbefore_file)
+                os.unlink(dafter_file)
                 os.rmdir(tmpdir)
             except OSError:
                 pass
-        self.done.emit(self._path, before, after)
+        self.done.emit(self._path, before, after, dbefore, dafter)
 
 
 class _ClickableLabel(QLabel):
@@ -1202,16 +1216,20 @@ class MainWindow(QMainWindow):
         self.before_after_worker.failed.connect(self._on_before_after_failed)
         self.before_after_worker.start()
 
-    def _on_before_after_done(self, path, before_png, after_png):
+    def _on_before_after_done(self, path, before_png, after_png, dbefore_png, dafter_png):
         self.before_after_worker = None
         before = QPixmap()
         after = QPixmap()
+        dbefore = QPixmap()
+        dafter = QPixmap()
         if (not before.loadFromData(before_png, 'PNG') or before.isNull()
-                or not after.loadFromData(after_png, 'PNG') or after.isNull()):
+                or not after.loadFromData(after_png, 'PNG') or after.isNull()
+                or not dbefore.loadFromData(dbefore_png, 'PNG') or dbefore.isNull()
+                or not dafter.loadFromData(dafter_png, 'PNG') or dafter.isNull()):
             self._on_before_after_failed(path, _t('before_after_failed'))
             return
         if self._current_path() == path:
-            self._open_before_after(path, before, after)
+            self._open_before_after(path, before, after, dbefore, dafter)
             self.status.setText(_t('ready'))
         self._refresh_before_after_btn(self._current_path())
 
@@ -1220,10 +1238,11 @@ class MainWindow(QMainWindow):
         self.status.setText(msg)
         self._refresh_before_after_btn(self._current_path())
 
-    def _open_before_after(self, path, before, after):
-        """Modal dialog: a single image area plus a toggle button that flips
-        between the original and the repaired view (no dragging, no slider —
-        deliberately, the CPU renderer is static)."""
+    def _open_before_after(self, path, before, after, dbefore, dafter):
+        """Modal dialog: the main image plus a smaller detail close-up of the
+        worst defect region, and ONE toggle button that flips both together
+        (original <-> repaired; no dragging, no slider — deliberately, the
+        CPU renderer is static)."""
         if self._before_after_zoom is not None:
             self._before_after_zoom.close()
         dlg = QDialog(self)
@@ -1232,13 +1251,29 @@ class MainWindow(QMainWindow):
         view = QLabel()
         view.setAlignment(Qt.AlignCenter)
         lay.addWidget(view, 1)
+        detail_lab = QLabel()
+        detail_lab.setAlignment(Qt.AlignCenter)
+        detail_lab.setStyleSheet('font-size: 11px; color: #8891a0;')
+        lay.addWidget(detail_lab)
+        detail_caption = QLabel(_t('before_after_detail'))
+        detail_caption.setAlignment(Qt.AlignCenter)
+        detail_caption.setStyleSheet('font-size: 10px; color: #5b6472;')
+        lay.addWidget(detail_caption)
         btn = QPushButton(_t('ba_original'))
         btn.setCheckable(True)
         state = {'show_after': False}
 
+        def _thumb(pix):
+            return pix.scaled(pix.width() // 2, pix.height() // 2,
+                              Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
         def show():
-            pix = after if state['show_after'] else before
-            view.setPixmap(pix)
+            if state['show_after']:
+                view.setPixmap(after)
+                detail_lab.setPixmap(_thumb(dafter))
+            else:
+                view.setPixmap(before)
+                detail_lab.setPixmap(_thumb(dbefore))
             btn.setText(_t('ba_repaired' if state['show_after'] else 'ba_original'))
 
         def toggle(_checked):
@@ -1248,7 +1283,7 @@ class MainWindow(QMainWindow):
         btn.toggled.connect(toggle)
         lay.addWidget(btn)
         show()
-        dlg.resize(before.width() + 24, before.height() + 60)
+        dlg.resize(before.width() + 24, before.height() + 150)
         self._before_after_zoom = dlg
         dlg.exec()
 

@@ -30,7 +30,7 @@ SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sut
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
-VERSION = "0.1.7"
+VERSION = "0.1.8-beta.1"
 
 # Confidence gate for mesh-type-aware Stage 1 tuning: a classified mesh only
 # gets its per-type thresholds (see _type_params in repair_mesh_from_arrays)
@@ -72,6 +72,49 @@ MODE_PARAMS = {
     'extreme': {'mincomponentsize': 20, 'maxholesize': 10000},
 }
 REPAIR_MODES = ('low', 'medium', 'auto', 'aggressive', 'extreme')
+
+# Mesh-type-aware Stage 1 thresholds (organic vs mechanical).
+#
+# These per-type values are ESTIMATED starting points, not calibrated on
+# real repair data - a deliberate, conservative, reversible choice. They
+# only shift debris/hole-closing thresholds; the classifier reports
+# 'unknown' in ambiguous cases and we keep the default parameters, so a
+# wrong guess cannot badly distort a mesh.
+#
+#   mechanical: avoid oversized hole fill on precise geometry (300).
+#               mincomponentsize is kept at the default 8 (not lowered):
+#               lowering it to 4 let small/degenerate meshes (e.g. the
+#               2-triangle case in tests/test_adversarial.py) survive the
+#               debris cutoff and be "repaired" instead of rejected - a
+#               CI regression (test_adversarial 'degenerate').
+#   organic   : aggressively drop scan debris (higher cutoff, 12) and
+#               close large open regions (1000, same as default).
+#   unknown   : fall back to the historical defaults (8, 1000).
+_TYPE_PARAMS = {
+    'mechanical': {'mincomponentsize': 8, 'maxholesize': 300},
+    'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
+    'unknown': {'mincomponentsize': 8, 'maxholesize': 1000},
+}
+
+
+def resolve_mode_params(mode, mesh_type, confidence):
+    """Resolve the Stage 1 thresholds for a repair/dry-run run.
+
+    Single source of truth shared by the real repair chain and --dry-run so
+    they can never diverge (same principle as classification.py). Returns
+    ({mincomponentsize, maxholesize}, tuning_applied).
+
+    ``mode`` is one of REPAIR_MODES: the fixed modes (low/medium/aggressive/
+    extreme) use MODE_PARAMS directly (the classifier still runs for the
+    informative detected_type/confidence, but does not drive parameters);
+    ``auto`` uses the mesh classifier + the class-specific confidence gate.
+    """
+    if mode != 'auto':
+        return dict(MODE_PARAMS[mode]), False
+    applied = tuning_applied_for(mesh_type, confidence)
+    if not applied:
+        return dict(_TYPE_PARAMS['unknown']), False
+    return dict(_TYPE_PARAMS.get(mesh_type, _TYPE_PARAMS['unknown'])), True
 
 TOPOMETRICS = [
     'vertices_number', 'faces_number', 'boundary_edges', 'connected_components_number',
@@ -183,6 +226,23 @@ def surface_area(verts, tris):
     return float(np.sum(0.5 * np.linalg.norm(cross, axis=1)))
 
 
+def signed_volume(verts, tris):
+    """Signed volume of a triangle mesh (sum of origin-tetrahedra volumes).
+
+    The sign reflects the winding orientation: a negative value means the
+    faces are globally inverted (normals pointing inward). Pure numpy, works
+    for open meshes too (the value is then not a real volume, only a signed
+    sum - interpret with care)."""
+    if len(tris) == 0 or len(verts) == 0:
+        return 0.0
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    a = v[t[:, 0]]
+    b = v[t[:, 1]]
+    c = v[t[:, 2]]
+    return float(np.sum(np.einsum('ij,ij->i', a, np.cross(b, c))) / 6.0)
+
+
 def read_obj(path):
     verts = []
     tris = []
@@ -227,51 +287,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
 
     stats = {'stage1': {}}
 
-    # Mesh-type-aware Stage 1 tuning (organic vs mechanical).
-    #
-    # These per-type values are ESTIMATED starting points, not calibrated on
-    # real repair data - a deliberate, conservative, reversible choice. They
-    # only shift debris/hole-closing thresholds; the classifier reports
-    # 'unknown' in ambiguous cases and we keep the default parameters, so a
-    # wrong guess cannot badly distort a mesh.
-    #
-    #   mechanical: avoid oversized hole fill on precise geometry (300).
-    #               mincomponentsize is kept at the default 8 (not lowered):
-    #               lowering it to 4 let small/degenerate meshes (e.g. the
-    #               2-triangle case in tests/test_adversarial.py) survive the
-    #               debris cutoff and be "repaired" instead of rejected - a
-    #               CI regression (test_adversarial 'degenerate').
-    #   organic   : aggressively drop scan debris (higher cutoff, 12) and
-    #               close large open regions (1000, same as default).
-    #   unknown   : fall back to the historical defaults (8, 1000).
-    _type_params = {
-        'mechanical': {'mincomponentsize': 8, 'maxholesize': 300},
-        'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
-        'unknown': {'mincomponentsize': 8, 'maxholesize': 1000},
-    }
-    # Confidence gate: a low-confidence classification still reports its type
-    # but does NOT apply the tuned thresholds (see MECH_TUNE_GATE/ORG_TUNE_GATE
-    # above). This keeps the label informative without risking an
-    # uncalibrated parameter set on an unsure mesh.
+    # Mesh-type-aware Stage 1 tuning (organic vs mechanical): resolved through
+    # the shared resolve_mode_params so repair and --dry-run stay in sync.
     _cls = classify_mesh(verts, tris)
     stats['detected_type'] = _cls['type']
     stats['detected_confidence'] = _cls['confidence']
     stats['repair_mode'] = mode
-    _type = _cls['type']
-    _conf = _cls['confidence']
-    if mode == 'auto':
-        # shipped default: classifier + confidence gate, unchanged
-        stats['tuning_applied'] = tuning_applied_for(_type, _conf)
-        if not stats['tuning_applied']:
-            _p = _type_params['unknown']
-        else:
-            _p = _type_params.get(_type, _type_params['unknown'])
-    else:
-        # fixed repair mode: use the exact MODE_PARAMS thresholds; the
-        # classifier is still run (cheap) so detected_type/confidence remain
-        # informative, but they no longer drive parameter selection.
-        stats['tuning_applied'] = False
-        _p = MODE_PARAMS[mode]
+    _p, stats['tuning_applied'] = resolve_mode_params(
+        mode, _cls['type'], _cls['confidence'])
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -426,6 +449,11 @@ def save_mesh(out_path, verts, tris):
 def scan_bad_coordinates(path):
     """Return a description of NaN/Inf coordinates in STL/OBJ files, or None."""
     ext = os.path.splitext(path)[1].lower()
+    if ext == '.3mf':
+        # 3MF meshes are parsed as XML (parse_3mf_meshes); NaN/Inf vertex
+        # attributes simply don't match the numeric regex and are skipped, so
+        # there is nothing to scan here.
+        return None
     if ext == '.obj':
         with open(path, errors='replace') as f:
             for line in f:
@@ -592,6 +620,181 @@ def repair_3mf(src, out, tmpdir, mode='auto'):
     return agg
 
 
+def load_meshes(src):
+    """Load a mesh file as a list of (model_name|None, verts, tris).
+
+    STL/OBJ give one entry with ``model_name`` None; a 3MF yields one entry
+    per object (or an empty list when it has no mesh objects). Shared by
+    validate and dry-run so both see exactly what repair would see."""
+    import pymeshlab as ml
+    ext = os.path.splitext(src)[1].lower()
+    if ext == '.3mf':
+        out = []
+        for name, blocks in parse_3mf_meshes(src).items():
+            for vs, ts, _span in blocks:
+                out.append((name, np.asarray(vs, dtype=np.float32),
+                            np.asarray(ts, dtype=np.int32)))
+        return out
+    load_ms = ml.MeshSet()
+    load_ms.load_new_mesh(src)
+    m = load_ms.current_mesh()
+    return [(None, np.asarray(m.vertex_matrix(), dtype=np.float32),
+             np.asarray(m.face_matrix(), dtype=np.int32))]
+
+
+def validate_mesh_from_arrays(verts, tris):
+    """Analyze one mesh WITHOUT repairing it.
+
+    Combines defects.detect(), the mesh classifier and cheap pymeshlab
+    measures (self-intersecting faces, connected components) into a
+    read-only report. Never writes anything."""
+    import pymeshlab as ml
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int32)
+    if len(t) == 0 or len(v) == 0:
+        raise ValueError('input mesh is empty (no triangles)')
+    if not np.isfinite(v).all():
+        raise ValueError('input mesh contains NaN or infinite coordinates')
+
+    cls = classify_mesh(verts, tris)
+    d = detect_defects(verts, tris)
+    holes = d['holes']
+    nm = d['non_manifold']
+
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
+    topo = ms.apply_filter('get_topological_measures')
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    self_intersections = int(ms.current_mesh().face_selection_array().sum())
+
+    vol = signed_volume(v, t)
+    validation = {
+        'vertices': int(v.shape[0]),
+        'faces': int(t.shape[0]),
+        'holes': holes,
+        'non_manifold': nm,
+        'self_intersections': self_intersections,
+        'connected_components': int(topo.get('connected_components_number', 1)),
+        'watertight': bool(len(holes) == 0 and len(nm) == 0 and self_intersections == 0),
+        'signed_volume': round(float(vol), 6),
+        'surface_area': round(surface_area(v, t), 3),
+        'orientation': 'inverted' if vol < 0 else 'consistent',
+    }
+    return {'validation': validation,
+            'detected_type': cls['type'],
+            'detected_confidence': cls['confidence']}
+
+
+def validate_file(src):
+    """Validate a mesh file without repairing it. Returns the report dict;
+    a hard error (missing/malformed input) is a dict with an 'error' key."""
+    result = {'input': src}
+    try:
+        if not os.path.exists(src):
+            raise ValueError('file not found: %s' % src)
+        bad_coords = scan_bad_coordinates(src)
+        if bad_coords:
+            raise ValueError('input mesh contains %s' % bad_coords)
+        meshes = load_meshes(src)
+        if not meshes:
+            raise ValueError('no mesh objects found in 3MF')
+        reports = []
+        for name, vs, ts in meshes:
+            rep = validate_mesh_from_arrays(vs, ts)
+            if name is not None:
+                rep['model'] = name
+            reports.append(rep)
+        if len(reports) == 1:
+            result.update(reports[0])
+        else:
+            result['objects'] = len(reports)
+            result['object_reports'] = reports
+            result['detected_type'] = reports[0].get('detected_type')
+            result['detected_confidence'] = reports[0].get('detected_confidence')
+    except Exception as e:
+        result['error'] = 'validation failed: %s' % e
+    return result
+
+
+def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
+    """Report what a repair WOULD do for one mesh, without doing it.
+
+    Detects the type, resolves the mode/thresholds and counts the holes /
+    debris / self-intersections. The debris count reuses the same
+    meshing_remove_connected_component_by_face_number filter the repair
+    chain runs, applied to an in-memory scratch mesh - nothing is written."""
+    import pymeshlab as ml
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int32)
+    if len(t) == 0 or len(v) == 0:
+        raise ValueError('input mesh is empty (no triangles)')
+    if not np.isfinite(v).all():
+        raise ValueError('input mesh contains NaN or infinite coordinates')
+
+    cls = classify_mesh(verts, tris)
+    d = detect_defects(verts, tris)
+    holes = d['holes']
+    nm = d['non_manifold']
+    params, tuning = resolve_mode_params(mode, cls['type'], cls['confidence'])
+
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
+    topo = ms.apply_filter('get_topological_measures')
+    # "found" counts describe the INPUT mesh (like defects.detect does), so
+    # self-intersections are measured before the debris-removal step below.
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    self_intersections = int(ms.current_mesh().face_selection_array().sum())
+    ms.apply_filter('set_selection_none')
+    before_faces = ms.current_mesh().face_number()
+    ms.apply_filter('meshing_remove_connected_component_by_face_number',
+                    mincomponentsize=params['mincomponentsize'], removeunref=True)
+    debris_faces = max(before_faces - ms.current_mesh().face_number(), 0)
+
+    return {
+        'repair_mode': mode,
+        'detected_type': cls['type'],
+        'detected_confidence': cls['confidence'],
+        'tuning_applied': tuning,
+        'would_apply': params,
+        'holes_found': len(holes),
+        'largest_hole_diameter': round(max((h['diameter'] for h in holes), default=0.0), 4),
+        'non_manifold_regions': len(nm),
+        'debris_faces_removable': debris_faces,
+        'self_intersections': self_intersections,
+        'connected_components': int(topo.get('connected_components_number', 1)),
+        'stage2_bridge_available': bool(os.path.exists(BRIDGE)),
+    }
+
+
+def dry_run_file(src, mode='auto'):
+    """Dry-run one mesh file. Returns the report dict; a hard error is a
+    dict with an 'error' key. Never writes any output file."""
+    result = {'input': src}
+    try:
+        if not os.path.exists(src):
+            raise ValueError('file not found: %s' % src)
+        bad_coords = scan_bad_coordinates(src)
+        if bad_coords:
+            raise ValueError('input mesh contains %s' % bad_coords)
+        meshes = load_meshes(src)
+        if not meshes:
+            raise ValueError('no mesh objects found in 3MF')
+        reports = []
+        for name, vs, ts in meshes:
+            rep = dry_run_mesh_from_arrays(vs, ts, mode)
+            if name is not None:
+                rep['model'] = name
+            reports.append(rep)
+        if len(reports) == 1:
+            result.update(reports[0])
+        else:
+            result['objects'] = len(reports)
+            result['object_reports'] = reports
+    except Exception as e:
+        result['error'] = 'dry run failed: %s' % e
+    return result
+
+
 def human_defects(r):
     """Render the defect list for --human mode (only with --defects)."""
     d = r.get('defects')
@@ -691,6 +894,84 @@ def human_report(r, show_defects=False, show_diff=False):
     return '\n'.join(lines)
 
 
+def human_validate(r, show_defects=False):
+    """Render a validate report for --human mode."""
+    if 'error' in r and 'validation' not in r:
+        return 'ERROR: %s' % r['error']
+    lines = ['Input : %s' % r.get('input')]
+    if 'object_reports' in r:
+        lines.append('3MF objects validated: %d' % r.get('objects', 0))
+        for i, rep in enumerate(r.get('object_reports', [])):
+            v = rep.get('validation', {})
+            lines.append('  object %d (%s): %d verts, %d faces, %d hole(s), '
+                         '%d non-manifold region(s), %d self-intersection(s), watertight=%s' % (
+                i, rep.get('model', '?'), v.get('vertices', 0), v.get('faces', 0),
+                len(v.get('holes', [])), len(v.get('non_manifold', [])),
+                v.get('self_intersections', 0), 'YES' if v.get('watertight') else 'NO'))
+        return '\n'.join(lines)
+    v = r.get('validation', {})
+    lines.append('Type  : %s (confidence %.2f)' % (
+        r.get('detected_type', '?'), r.get('detected_confidence', 0.0)))
+    lines.append('')
+    lines.append('Validation:')
+    lines.append('  Vertices            : %d' % v.get('vertices', 0))
+    lines.append('  Faces               : %d' % v.get('faces', 0))
+    lines.append('  Holes               : %d' % len(v.get('holes', [])))
+    lines.append('  Non-manifold regions: %d' % len(v.get('non_manifold', [])))
+    lines.append('  Self-intersections  : %d' % v.get('self_intersections', 0))
+    lines.append('  Connected components: %d' % v.get('connected_components', 0))
+    lines.append('  Watertight          : %s' % ('YES' if v.get('watertight') else 'NO'))
+    lines.append('  Signed volume       : %.6f' % v.get('signed_volume', 0.0))
+    lines.append('  Surface area        : %.3f' % v.get('surface_area', 0.0))
+    lines.append('  Orientation         : %s' % v.get('orientation', '?'))
+    if show_defects:
+        for h in v.get('holes', []):
+            c = h['centroid']
+            lines.append('    hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f, %d verts'
+                         % (c[0], c[1], c[2], h['diameter'], h['vertices']))
+        for nm in v.get('non_manifold', []):
+            c = nm['centroid']
+            lines.append('    non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces'
+                         % (c[0], c[1], c[2], nm['faces']))
+    return '\n'.join(lines)
+
+
+def human_dry_run(r):
+    """Render a --dry-run report for --human mode."""
+    if 'error' in r and 'repair_mode' not in r:
+        return 'ERROR: %s' % r['error']
+    lines = ['Input : %s' % r.get('input'),
+             'Dry-run: no output file will be written']
+    if 'object_reports' in r:
+        lines.append('3MF objects: %d' % r.get('objects', 0))
+        for i, rep in enumerate(r.get('object_reports', [])):
+            lines.append('  object %d (%s): mode=%s, type=%s, holes=%d, '
+                         'non-manifold=%d, debris=%d face(s), self-intersections=%d' % (
+                i, rep.get('model', '?'), rep.get('repair_mode', '?'),
+                rep.get('detected_type', '?'), rep.get('holes_found', 0),
+                rep.get('non_manifold_regions', 0), rep.get('debris_faces_removable', 0),
+                rep.get('self_intersections', 0)))
+        return '\n'.join(lines)
+    lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
+    lines.append('Type  : %s (confidence %.2f)' % (
+        r.get('detected_type', '?'), r.get('detected_confidence', 0.0)))
+    pa = r.get('would_apply', {})
+    tuning = 'tuned thresholds' if r.get('tuning_applied') else 'default thresholds'
+    lines.append('Tuning: %s' % tuning)
+    lines.append('Would apply: mincomponentsize=%d, maxholesize=%d' % (
+        pa.get('mincomponentsize', 0), pa.get('maxholesize', 0)))
+    lines.append('Found  : %d hole(s) (largest %.3f), %d non-manifold region(s), '
+                 '%d self-intersection(s), %d debris face(s) (< mincomponentsize)' % (
+        r.get('holes_found', 0), r.get('largest_hole_diameter', 0.0),
+        r.get('non_manifold_regions', 0), r.get('self_intersections', 0),
+        r.get('debris_faces_removable', 0)))
+    s2 = r.get('stage2_bridge_available')
+    lines.append('Stage 2: %s' % (
+        'would run if stage 1 closes the mesh (bridge available)' if s2
+        else 'not available on this system'))
+    return '\n'.join(lines)
+
+
 def process_file(src, human, mode='auto'):
     """Repair one file. Returns (result_dict, category)."""
     if not os.path.exists(src):
@@ -739,6 +1020,9 @@ def main():
                         help='repair mode: low/medium/aggressive/extreme use '
                              'fixed Stage 1 thresholds; auto (default) uses '
                              'the mesh classifier + confidence gate.')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='do not repair: report what would be done and '
+                             'write no output file')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
     files = args.files
@@ -747,10 +1031,63 @@ def main():
     show_defects = args.defects
     show_diff = args.diff
     mode = args.mode
+    dry_run = args.dry_run
 
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
         sys.exit(1)
+
+    # 'validate' as the first positional argument switches to validate-only
+    # mode: analyze the mesh(es) without repairing or writing anything.
+    if files and files[0] == 'validate':
+        targets = files[1:]
+        if not targets:
+            print(json.dumps({'error': 'validate requires at least one input file'}))
+            sys.exit(1)
+        if out is not None:
+            print(json.dumps({'error': '-o is not valid with validate'}))
+            sys.exit(1)
+        if dry_run:
+            print(json.dumps({'error': '--dry-run is not valid with validate'}))
+            sys.exit(1)
+        results = [validate_file(f) for f in targets]
+        nerr = sum(1 for r in results if 'error' in r)
+        if len(targets) == 1:
+            result = results[0]
+            if human:
+                print(human_validate(result, show_defects=show_defects))
+            else:
+                print(json.dumps(result, ensure_ascii=False))
+            sys.exit(0 if nerr == 0 else 1)
+        if human:
+            for result in results:
+                print(human_validate(result, show_defects=show_defects))
+                print()
+        else:
+            print(json.dumps({'files': results}, ensure_ascii=False))
+        sys.exit(0 if nerr == 0 else 1)
+
+    # --dry-run: analyze and report the plan, write no output file at all.
+    if dry_run:
+        if out is not None:
+            print(json.dumps({'error': '-o is not valid with --dry-run'}))
+            sys.exit(1)
+        results = [dry_run_file(f, mode=mode) for f in files]
+        nerr = sum(1 for r in results if 'error' in r)
+        if len(files) == 1:
+            result = results[0]
+            if human:
+                print(human_dry_run(result))
+            else:
+                print(json.dumps(result, ensure_ascii=False))
+            sys.exit(0 if nerr == 0 else 1)
+        if human:
+            for result in results:
+                print(human_dry_run(result))
+                print()
+        else:
+            print(json.dumps({'files': results}, ensure_ascii=False))
+        sys.exit(0 if nerr == 0 else 1)
 
     results = [process_file(f, human, mode=mode) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')

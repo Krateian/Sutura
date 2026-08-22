@@ -77,13 +77,15 @@ söyler.
 | CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--version`), JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
 | Batch işleme | ~%90 | Dosya başına sonuçları ve bir özeti olan çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) desteklenir; batch kaldığı yerden sürdürülemez ve başarısız bir dosya diğerlerini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL çağrıları segfault verir, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelenir ve çok nesneli 3MF'de yalnızca ilk nesne çizilir. |
-| Öncesi/sonrası karşılaştırma | ~%40 | Orijinal ve onarılmış görünümler arasında statik, CPU ile çizilmiş görüntülerin tıkla-geçişi; ilk sürüm. Isı haritasıyla aynı GL kısıtı, etkileşimli bir 3D kaydırıcı yerine tıkla-geçiş demektir; çok nesneli 3MF'de yalnızca ilk nesne karşılaştırılır ve özellik yalnızca görseldir (henüz üzerine metrik değeri çizilmez). |
+| Öncesi/sonrası karşılaştırma | ~%50 | Orijinal ve onarılmış görünümler arasında statik, CPU ile çizilmiş görüntülerin tıkla-geçişi; **en yoğun bozukluk bölgesi yakın çekimi** ve teal/kırmızı renk şemasıyla (düzelen = teal `#14b8a6`, kalan kusur = kırmızı). Isı haritasıyla aynı GL kısıtı, etkileşimli bir 3D kaydırıcı yerine tıkla-geçiş demektir; çok nesneli 3MF'de yalnızca ilk nesne karşılaştırılır ve özellik yalnızca görseldir (henüz üzerine metrik değeri çizilmez). |
+| Validate (`sutura validate`) | ~%50 (beta) | 0.1.8-beta.1'de yeni: delik / non-manifold bölgeler / self-intersection / bağlı bileşenler / işaretli hacim (yön) / yüzey alanı ve watertight kararının salt-okunur analizi — onarım yok, çıktı dosyası yok. Beta kalitesi: birleşik metrikler yeni ve gerçek dünya onarım sonuçlarına karşı henüz kalibre edilmemiştir; çok nesneli 3MF her nesneyi doğrular ama yalnızca asgari bir özet rapor tutar. |
+| Dry-run (`--dry-run`) | ~%45 (beta) | 0.1.8-beta.1'de yeni: yapılacak planı bildirir (tespit edilen tür, mod, Aşama 1 eşikleri, bulunan delik / döküntü / self-intersection, aşama 2 uygunluğu) ve hiçbir şey yazmaz. Beta kalitesi: plan girdi analizinden türetilir, bu yüzden tam delik kapatma sayıları gerçek bir çalışmayla birebir uyuşacağının garantisi değildir ve extreme modun ek geçişleri simüle edilmez. |
 | Mesh türüne duyarlı onarım | ~%70 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar. Deneysel: tür başına değerler kalibre edilmemiş başlangıç noktalarıdır ve eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Eksikler: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%35 — deneysel | Tek başına çalışan betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ sürümlerinde bulunan bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux içindir. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
-| Test kapsamı | ~%85 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, kusurlar, mesh sınıflandırıcı, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+| Test kapsamı | ~%85 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, kusurlar, ısı haritası çerçeveleri, validate/dry-run, mesh sınıflandırıcı, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
 
@@ -216,9 +218,31 @@ sutura model.stl --human    # insanın okuyabileceği rapor
 sutura model.stl --human --defects   # ayrıca girdi deliklerini / non-manifold bölgeleri listeler
 sutura model.stl --human --diff      # ayrıca önce/sonra geometri farkını yazdırır
 sutura model.stl --mode aggressive   # agresif onarım modunu kullan
+sutura validate model.stl   # onarmadan ANALİZ (salt-okunur rapor)
+sutura model.stl --dry-run  # onarımın ne yapacağını raporlar, HİÇBİR ŞEY yazmaz
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
 sutura --version            # sürümü yazdırır ve çıkar
 ```
+
+**Validate (`validate`).** `sutura validate model.stl` bir mesh'i onarmadan
+analiz eder ve raporlar — salt-okunur bir sağlık kontrolü, hiçbir şey yazmaz.
+JSON raporu `validation` taşır (`holes` / `non_manifold` listeleri merkez +
+çap / yüz sayılarıyla, `self_intersections`, `connected_components`,
+`watertight`, `signed_volume`, `surface_area`, `orientation`) ayrıca mesh
+sınıflandırıcısından `detected_type` ve `detected_confidence`.
+`--human` bunu okunur biçimde yazdırır (`--defects` her kusur bölgesini
+listeler). Çok nesneli 3MF dosyaları nesne nesne doğrulanır
+(`object_reports`). Çıkış 0, analizin çalıştığı anlamına gelir (kırık bir
+mesh'te bile); kayıp / bozuk girdi 1 ile çıkar.
+
+**Dry-run (`--dry-run`).** `sutura model.stl --dry-run`, bir onarımın NE
+yapacağını yapmadan söyler: tespit edilen tür, çözülen onarım modu ve birebir
+Aşama 1 eşikleri (`mincomponentsize` / `maxholesize`), `tuning_applied` ve
+girdide bulunanlar (`holes_found` / en büyük delik çapı /
+`non_manifold_regions` / `self_intersections` / `debris_faces_removable`)
+ayrıca aşama 2'nin çalışıp çalışmayacağı. **Hiç çıktı dosyası yazmaz** —
+ne `_fixed` ne geçici kalıntı. Eşikler, gerçek onarımın kullandığı aynı
+`resolve_mode_params`'tan gelir, böylece ikisi asla ayrışamaz.
 
 **Onarım modu (`--mode`).** Aşama 1 eşikleri için beş kademeli bir agresiflik
 merdiveni; varsayılan **`auto`**'dur (tarihsel davranış: mesh sınıflandırıcı +
@@ -316,11 +340,17 @@ CI'de çalışır) ve GUI'nin duyarlı ve çökmesiz kalması için bir alt sür
 
 **Öncesi/sonrası karşılaştırma.** Bir dosya onarıldıktan sonra
 **Öncesi/sonrası göster**, orijinal ve onarılmış meshleri *aynı* kamera
-çerçevesiyle çizer ve tek görüntü alanı ile **Orijinal**/**Onarılmış**
-arasında geçiş yapan bir düğme içeren bir diyalog açar (ısı haritasıyla aynı
-CPU-çizici kısıtı yüzünden bilinçli olarak etkileşimli bir 3D kaydırıcı
-değil, statik bir tıkla-geçiştir). Alt süreçte çalışır ve isteğe bağlıdır,
-bu yüzden bir batch'i asla yavaşlatmaz.
+çerçevesiyle çizer ve ana görüntü, **Orijinal**/**Onarılmış** arasında geçiş
+yapan bir düğme ve ana görüntünün altında *en yoğun orijinal bozukluk
+bölgesinin* (en büyük fiziksel köşegen uzunluğuna sahip kusurun) daha küçük
+bir **detay** yakın çekimi içeren bir diyalog açar. Orijinal görünüm
+kusurlarını kırmızıyla işaretler; onarılmış görünüm marka rengi teal
+`#14b8a6` (düzelen/sağlıklı) ile çizilir ve *kalan* delik / non-manifold
+bölgeler kırmızıdır. Yakın çekim, her iki taraf için aynı yakınlaştırılmış
+kameralı çerçeveyi kullanır, böylece orijinal/onarılmış karşılaştırması
+birebir tutarlıdır. Isı haritasıyla aynı CPU-çizici kısıtı yüzünden bilinçli
+olarak etkileşimli bir 3D kaydırıcı değil, statik bir tıkla-geçiştir; alt
+süreçte çalışır ve isteğe bağlıdır, bu yüzden bir batch'i asla yavaşlatmaz.
 
 **Onarım modu.** Isı haritası/öncesi-sonrası düğmelerinin yanındaki
 **Mod: Otomatik** düğmesi, beş kademeli bir kaydırıcı içeren küçük bir diyalog
