@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-08-22
+
 ### Added
 
 - **Repair mode (`--mode`).** A five-step Stage 1 aggressiveness ladder,

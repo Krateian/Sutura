@@ -30,7 +30,7 @@ SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sut
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 
 # Confidence gate for mesh-type-aware Stage 1 tuning: a classified mesh only
 # gets its per-type thresholds (see _type_params in repair_mesh_from_arrays)
