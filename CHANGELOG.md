@@ -4,6 +4,57 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-08-25
+
+Repair Confidence Score, the GUI Analyze button with mode suggestions, a GUI
+drag-and-drop selection fix, and closing the v0.1.8 README documentation
+debt.
+
+### Added
+
+- **Repair Confidence Score.** Every repair report now carries a single
+  0–100 `repair_confidence` value with a High/Medium/Low label that combines
+  existing repair signals (stage 2 outcome, remaining holes, classifier
+  confidence, tuning status, repair mode, self-intersections, volume change)
+  into one honest figure; `--human` shows it as a `Confidence: X/100 (Label)`
+  line and the GUI defect-panel header adds a localized confidence segment.
+  validate / `--dry-run` report an estimate instead (`estimated_confidence`),
+  explicitly labelled with "actual result may differ after repair", because
+  the post-repair signals do not exist yet. New stdlib-only
+  `sutura/confidence.py` (`repair_confidence()` /
+  `estimate_confidence_pre_repair()`), shared by the CLI and the GUI.
+- **GUI Analyze button + analysis pane.** A new **Analyze** action runs the
+  same read-only checks as `validate` + `--dry-run` on the selected files
+  (nothing is written) and shows them in a dedicated pane above the input
+  defects: detected type / mode / tuning status, hole / self-intersection /
+  non-manifold / debris counts, a watertight pre-verdict, and the estimated
+  confidence with its "result may differ" warning.
+- **Mode suggestions.** The analysis pane lists up to three priority-ordered
+  mode suggestions (e.g. an aggressive/extreme step for scan-derived holes,
+  an assembly-type caution, an extreme caveat for parts under 20 faces).
+  Informational only — they never change the mode automatically.
+- **Button regrouping + icons.** The toolbar is now grouped into three
+  logical rows (file management / analyze+mode+repair+stop /
+  heatmap+before-after), with Qt standard icons for common actions, custom
+  QPainter icons for Analyze/Repair, and EN/TR tooltips on every button.
+
+### Fixed
+
+- **GUI: drag-and-drop files are now auto-selected.** A file added by drag &
+  drop (or any add path) is selected immediately, so the analysis and defect
+  panels update to it right away instead of showing the previous file's
+  content.
+
+### Documentation
+
+- Closed the v0.1.8 README documentation debt: the Feature Status table was
+  re-scored against the actual codebase (Repair modes row added, before/after
+  ~60%, validate ~55%, dry-run ~50%, mesh type-aware ~75%, test coverage
+  ~88%, GUI ~87%) and the extreme-mode `extreme_removed_object` distinct
+  error is documented.
+- README.md / README.tr.md now document the Repair Confidence Score and the
+  Analyze flow; screenshots regenerated (including a new analyze-panel.png).
+
 ## [0.1.8] - 2026-08-24
 
 First **stable** 0.1.8 release. This is the sum of the two 0.1.8 beta
