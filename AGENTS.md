@@ -72,6 +72,29 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
   git log --follow on the asset files). This audit runs automatically at
   every release — the user does not need to ask or remind.
 
+## Release checklist
+
+Whenever doing a version release (tag + push + GitHub Release), run ALL of
+the following in order, without being asked separately for each:
+
+1. Bump the version constant (repair.py) — batch bumps, don't bump on every
+   commit (see Conventions).
+2. Update CHANGELOG.md with a real entry for this version.
+3. Commit the version bump with a summary body.
+4. Tag the release (vX.Y.Z).
+5. Feature Status table audit (README.md/tr.md) against the actual commits
+   since the previous tag — bump percentages only when the honest state
+   changed; check the test-suite list in the 'Test coverage' row is current.
+6. Re-run scripts/generate_screenshots.py if the GUI's visible state changed
+   since assets/ was last generated (check via git log --follow).
+7. Push (main + tag) via the HTTPS token method.
+8. Create the GitHub Release with a real written summary (not just a
+   CHANGELOG link).
+
+This checklist is the release process — steps 5 and 6 are not optional
+extras to be reminded about separately; they are part of doing a release at
+all.
+
 ## Cleanup discipline
 
 - At the end of any session that created temporary/debug files (test scripts,
