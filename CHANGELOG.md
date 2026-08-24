@@ -12,6 +12,17 @@ pre-releases).
 
 ### Changed
 
+- **Before/after camera now aims at the worst defect (defect_camera).**
+  The before/after comparison no longer uses a fixed isometric view: the
+  shared camera is automatically directed toward the worst ORIGINAL
+  defect's centroid (`heatmap.defect_camera`), so the defect never hides
+  behind the mesh and stays visible in both the main and the detail
+  views. The fixed `_ISOMETRIC` camera is used only as a fallback when
+  the mesh is clean or the defect sits at the bounding-box centre.
+  Known limitation: on extremely asymmetric meshes (long/thin,
+  dumbbell-like) the defect-facing angle can collapse the view-space
+  bounding box and render the mesh small — deferred to the v0.2
+  interactive 3D viewer, where the user can adjust it by hand.
 - **Before/after tri-state colour scheme (fixes the beta.1 all-teal body).**
   The repaired view no longer paints the whole body teal. It now uses three
   states: **grey** where the mesh was never broken, a vivid **green**
