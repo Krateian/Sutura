@@ -339,7 +339,10 @@ renders the original and repaired meshes with the *same* camera framing and
 opens a dialog with the main image, a toggle button that flips between
 **Original** and **Repaired**, and — below the main image — a smaller
 **detail** close-up of the *worst original defect region* (the defect with
-the largest physical bounding-box diagonal). The repaired view uses a
+the largest physical bounding-box diagonal). The camera is automatically
+directed toward that worst defect so it is never hidden behind the mesh;
+only a clean mesh (or a defect sitting at the mesh's bounding-box centre)
+falls back to the fixed isometric view. The repaired view uses a
 tri-state colour map: **grey** where the mesh was never broken, a vivid
 **green** `(46,204,113)` highlight where an original defect used to be and
 is now healthy, and **orange** `(255,140,60)` where a defect remains (the

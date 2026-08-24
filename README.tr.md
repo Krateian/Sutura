@@ -343,7 +343,10 @@ CI'de çalışır) ve GUI'nin duyarlı ve çökmesiz kalması için bir alt sür
 çerçevesiyle çizer ve ana görüntü, **Orijinal**/**Onarılmış** arasında geçiş
 yapan bir düğme ve ana görüntünün altında *en yoğun orijinal bozukluk
 bölgesinin* (en büyük fiziksel köşegen uzunluğuna sahip kusurun) daha küçük
-bir **detay** yakın çekimi içeren bir diyalog açar. Orijinal görünüm
+bir **detay** yakın çekimi içeren bir diyalog açar. Kamera otomatik olarak o
+en yoğun kusura yönlendirilir, böylece kusur asla mesh'in arkasında kalmaz;
+yalnızca kusursuz bir mesh (veya bbox merkezine oturan bir kusur) sabit
+izometrik görünüme düşer. Orijinal görünüm
 kusurlarını kırmızıyla işaretler. Onarılmış görünüm üç durumlu bir renk
 haritası kullanır: hiç bozulmamış bölgeler **gri**, eski bir kusurun olduğu
 yer artık sağlıklıysa parlak **yeşil** `(46,204,113)`, hâlâ kusur kalıyorsa
