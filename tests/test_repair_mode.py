@@ -110,6 +110,51 @@ def test_human_report_shows_mode(tmp):
     assert 'Mode  : aggressive' in r.stdout, r.stdout
 
 
+def _tiny_cube_stl(path):
+    """A cube with a whole face removed - 10 triangles (below extreme's
+    mincomponentsize=20), so extreme mode deletes the entire mesh as debris
+    while every other mode repairs it normally."""
+    import numpy as np
+    v = np.array([
+        [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1],
+        [0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1],
+    ], dtype=np.float32)
+    quads = [
+        (0, 1, 3, 2), (4, 6, 7, 5), (0, 2, 6, 4),
+        (1, 5, 7, 3), (0, 4, 5, 1), (2, 3, 7, 6),
+    ]
+    tris = []
+    for a, b, c, d in quads:
+        tris += [(a, b, c), (a, c, d)]
+    tris = [t for i, t in enumerate(tris) if i not in (0, 1)]  # remove the +X face
+    _write_stl(path, v, tris)
+    return len(tris)
+
+
+def test_extreme_removed_object_is_distinct_from_malformed(tmp):
+    path = os.path.join(tmp, 'tiny.stl')
+    _tiny_cube_stl(path)
+    # extreme: mincomponentsize=20 deletes the 10-face mesh -> the dedicated
+    # 'extreme_removed_object' issue, NOT the generic malformed/error.
+    r = _run(['--mode', 'extreme', path])
+    d = _json(r)
+    assert r.returncode == 1, r.stdout
+    assert d.get('category') == 'error', d
+    assert 'extreme_removed_object' in d.get('issues', []), d
+    assert 'Extreme mode removed all geometry' in d.get('error', ''), d
+    assert 'malformed' not in d.get('issues', []), d
+    # --human shows the same clear message
+    rh = _run(['--mode', 'extreme', '--human', path])
+    assert rh.returncode == 1, rh.stdout
+    assert 'Extreme mode removed all geometry' in rh.stdout, rh.stdout
+    # a less aggressive mode repairs the same mesh normally (no error)
+    for mode in ('low', 'medium', 'auto', 'aggressive'):
+        rm = _run(['--mode', mode, path])
+        dm = _json(rm)
+        assert rm.returncode == 0, (mode, rm.stderr)
+        assert 'error' not in dm, (mode, dm.get('error'))
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='sutura-mode-') as tmp:
         for name, fn in sorted(globals().items()):

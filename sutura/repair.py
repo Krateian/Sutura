@@ -32,6 +32,15 @@ BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
 VERSION = "0.1.8-beta.2"
 
+
+class ExtremeRemovedAllError(ValueError):
+    """Raised when a repair leaves the mesh with ZERO faces because extreme
+    mode's mincomponentsize=20 deleted every connected component (a small
+    mesh, e.g. the 13-face broken.stl cube, all below the threshold). This is
+    the intended-but-aggressive extreme behaviour, NOT malformed input, so it
+    is reported distinctly from the generic 'all faces are degenerate' error.
+    """
+
 # Confidence gate for mesh-type-aware Stage 1 tuning: a classified mesh only
 # gets its per-type thresholds (see _type_params in repair_mesh_from_arrays)
 # when the classifier is reasonably sure; below the gate we use the historical
@@ -324,6 +333,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
             ms, after, applied, skipped = fb, fafter, fapplied, fskipped
 
     if after.get('faces_number', 0) == 0:
+        if mode == 'extreme':
+            raise ExtremeRemovedAllError(
+                'Extreme mode removed all geometry (small connected component '
+                'below the size threshold); try a less aggressive mode (e.g. Auto)')
         raise ValueError('all faces are degenerate; nothing to repair')
 
     # Extreme-only extra passes (Stage C): self-intersection cleanup + one more
@@ -344,7 +357,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
             stats['self_intersections_removed'] = si_removed
         after = ms.apply_filter('get_topological_measures')
         if after.get('faces_number', 0) == 0:
-            raise ValueError('all faces are degenerate; nothing to repair')
+            raise ExtremeRemovedAllError(
+                'Extreme mode removed all geometry (small connected component '
+                'below the size threshold); try a less aggressive mode (e.g. Auto)')
 
     holes_after = max(after.get('boundary_edges', 0) // 2, 0)
     nm_after = after.get('non_two_manifold_edges', 0)
@@ -987,6 +1002,9 @@ def process_file(src, human, mode='auto'):
             result.update(repair_3mf(src, out, tmpdir, mode=mode))
         else:
             result.update(repair_file(src, out, tmpdir, mode=mode))
+    except ExtremeRemovedAllError as e:
+        result['error'] = str(e)
+        result['extreme_removed_object'] = True
     except Exception as e:
         result['error'] = 'repair failed: %s' % e
     finally:

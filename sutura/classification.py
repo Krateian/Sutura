@@ -42,6 +42,14 @@ def classify(data):
     """
     issues = []
 
+    # Extreme mode with a small mesh deleted every face (mincomponentsize=20):
+    # this is the intended-but-aggressive extreme behaviour, NOT malformed
+    # input, so it is reported distinctly (same 'error' category, different
+    # issue code + clear message). Checked before the generic error branch.
+    if data.get('extreme_removed_object'):
+        issues.append('extreme_removed_object')
+        return 'error', issues, 'extreme_removed_object'
+
     if data.get('error') and 'stage1' not in data:
         issues.append('malformed')
         return 'error', issues, 'error'

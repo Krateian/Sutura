@@ -83,6 +83,9 @@ STRINGS = {
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
         'issue_malformed': 'Malformed input', 'issue_error': 'Error',
+        'issue_extreme_removed_object': ('Extreme mode removed all geometry '
+                                         '(component below size threshold) — try '
+                                         'a less aggressive mode'),
         'defects_header': 'Input defects (selected file):',
         'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm',
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
@@ -162,6 +165,9 @@ STRINGS = {
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
         'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
+        'issue_extreme_removed_object': ('Extreme mod tüm geometriyi sildi '
+                                         '(bileşen boyut eşiğinin altında) — '
+                                         'daha az agresif bir mod deneyin'),
         'defects_header': 'Girdi kusurları (seçili dosya):',
         'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f mm',
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
