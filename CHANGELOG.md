@@ -4,49 +4,13 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
-## [0.1.8-beta.2] - 2026-08-23
+## [0.1.8] - 2026-08-24
 
-Second beta pre-release: fixes the before/after colour scheme that beta.1
-shipped. Still never offered to auto-update users (`/releases/latest` skips
-pre-releases).
-
-### Changed
-
-- **Before/after camera now aims at the worst defect (defect_camera).**
-  The before/after comparison no longer uses a fixed isometric view: the
-  shared camera is automatically directed toward the worst ORIGINAL
-  defect's centroid (`heatmap.defect_camera`), so the defect never hides
-  behind the mesh and stays visible in both the main and the detail
-  views. The fixed `_ISOMETRIC` camera is used only as a fallback when
-  the mesh is clean or the defect sits at the bounding-box centre.
-  Known limitation: on extremely asymmetric meshes (long/thin,
-  dumbbell-like) the defect-facing angle can collapse the view-space
-  bounding box and render the mesh small — deferred to the v0.2
-  interactive 3D viewer, where the user can adjust it by hand.
-- **Before/after tri-state colour scheme (fixes the beta.1 all-teal body).**
-  The repaired view no longer paints the whole body teal. It now uses three
-  states: **grey** where the mesh was never broken, a vivid **green**
-  `(46,204,113)` where an original defect used to be and is now healthy, and
-  **orange** `(255,140,60)` where a defect remains (the original view keeps
-  its red `(235,60,70)` defects). Because repair changes the mesh topology
-  (before/after vertex indices don't correspond), the green classification is
-  **spatial**: `before_after_render.healed_face_mask` measures each repaired
-  face against the original defect centroids' real extent (max |v - centroid|
-  from `verts_idx`, × 1.5 halo — not the bbox diameter) and only counts a
-  face as healed when the repaired mesh's own detect() reports no defect
-  there. Only the `cap` (256) largest defects drive the green highlight, so a
-  scan mesh with thousands of micro-cracks stays fast (measured ~2.4 s for a
-  1.27M-face scan mesh with 3.9k defects); the orange "still broken" signal
-  is uncapped and always full-resolution. `heatmap.render` gained an optional
-  `healed` (M,) face mask + `healed_color` parameter (backward compatible:
-  heatmap_render.py unchanged). Applied to both the main and the detail
-  before/after views.
-
-## [0.1.8-beta.1] - 2026-08-23
-
-First **beta (pre-release)** build, published so willing users can try two new
-features on GitHub while regular auto-update users never see it: `/releases/latest`
-skips pre-releases, so the update checker stays on the stable channel.
+First **stable** 0.1.8 release. This is the sum of the two 0.1.8 beta
+pre-releases: the read-only analysis tooling, the before/after comparison
+(with its camera-directing and colour-scheme refinements), and the
+extreme-mode reporting fix — all together for the first time. Auto-update
+users are now offered this release on the stable channel.
 
 ### Added
 
@@ -67,18 +31,37 @@ skips pre-releases, so the update checker stays on the stable channel.
   all (no `_fixed`, no temp residue). Threshold resolution is shared with the
   real repair via `resolve_mode_params`, so dry-run and repair can never
   diverge (same single-source-of-truth rule as `classification.py`).
-- **Zoom / balloon detail (before/after GUI).** The before/after dialog now
-  renders a second, smaller close-up of the WORST original defect region
-  (the defect with the largest physical bounding-box diagonal, holes and
-  non-manifold regions compared on the same metric). The close-up uses the
-  same zoomed camera frame for both views (`heatmap.focus_frame`), so the
+- **Before/after comparison (introduced in beta.1, refined in beta.2).** The
+  repaired view uses a **tri-state colour scheme**: **grey** where the mesh
+  was never broken, a vivid **green** `(46,204,113)` where an original defect
+  used to be and is now healthy, and **orange** `(255,140,60)` where a defect
+  remains (the original view keeps its red `(235,60,70)` defects). Because
+  repair changes the mesh topology (before/after vertex indices don't
+  correspond), the green classification is **spatial**:
+  `before_after_render.healed_face_mask` measures each repaired face against
+  the original defect centroids' real extent (max |v - centroid| from
+  `verts_idx`, × 1.5 halo — not the bbox diameter) and only counts a face as
+  healed when the repaired mesh's own detect() reports no defect there. Only
+  the `cap` (256) largest defects drive the green highlight, so a scan mesh
+  with thousands of micro-cracks stays fast; the orange "still broken" signal
+  is uncapped and always full-resolution.
+- **Worst-defect zoom / balloon detail (before/after GUI).** The before/after
+  dialog renders a second, smaller close-up of the WORST original defect
+  region (the defect with the largest physical bounding-box diagonal, holes
+  and non-manifold regions compared on the same metric). The close-up uses
+  the same zoomed camera frame for both views (`heatmap.focus_frame`), so the
   original vs repaired comparison is apples-to-apples. When the original has
   no defects the detail view simply mirrors the main view.
-- **New before/after colour scheme.** The before view now shows the original
-  defects in the historical red `(235,60,70)` (previously the before image
-  was unmarked); the repaired view is rendered in the brand teal `#14b8a6`
-  (fixed/healthy) with any REMAINING holes / non-manifold regions in red.
-  Same scheme in the close-up.
+- **The before/after camera now aims at the worst defect (defect_camera).**
+  The shared camera is no longer a fixed isometric view: it is automatically
+  directed toward the worst ORIGINAL defect's centroid
+  (`heatmap.defect_camera`), so the defect never hides behind the mesh and
+  stays visible in both the main and the detail views. The fixed
+  `_ISOMETRIC` camera is used only as a fallback when the mesh is clean or
+  the defect sits at the bounding-box centre. Known limitation: on extremely
+  asymmetric meshes (long/thin, dumbbell-like) the defect-facing angle can
+  collapse the view-space bounding box and render the mesh small — deferred
+  to the v0.2 interactive 3D viewer.
 
 ### Changed
 
@@ -87,6 +70,15 @@ skips pre-releases, so the update checker stays on the stable channel.
   version, so a beta tester is offered the eventual stable release instead of
   being stuck on the beta. The `/tags` fallback also skips dashed (pre-release)
   tags so it can never surface a beta to a normal user.
+- **Extreme mode reports whole-object deletion distinctly.** When extreme
+  mode's `mincomponentsize=20` deletes a small connected component and the
+  mesh ends up with zero faces, the repair is no longer misreported as the
+  generic "all faces are degenerate" / `malformed` error. It now carries
+  `category=error` with the issue `extreme_removed_object` and the clear
+  message "Extreme mode removed all geometry (small connected component below
+  the size threshold); try a less aggressive mode (e.g. Auto)" — in `--human`
+  and, localized EN/TR, in the GUI. Genuine malformed inputs keep their
+  existing behaviour.
 
 ## [0.1.7] - 2026-08-22
 
