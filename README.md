@@ -71,7 +71,7 @@ Sutura and where you should still double-check the output.
 | STL repair (two-stage) | ~95% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs. Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and very large holes are closed with a flat patch, not a smart reconstruction. |
 | 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF can keep a few sub-millimetre cracks that slicers usually auto-heal. |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
-| GUI | ~85% | Native Qt batch repair, drag & drop, defect panel, heatmap, before/after comparison, repair-mode picker, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
+| GUI | ~87% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison, repair-mode picker, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--dry-run`, `--version`), the read-only `validate` subcommand, JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
 | Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
 | Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
@@ -324,6 +324,22 @@ marks the remaining files as cancelled. Drag & drop works on native Wayland
 sessions (the GUI is a Qt application, not XWayland). The GUI ships its own
 dark Fusion theme (teal accent), so it looks the same on every platform and
 Qt version regardless of the system desktop theme.
+
+#### Pre-repair analysis
+
+![Pre-repair analysis](assets/analyze-panel.png)
+
+Before repairing, **Analyze** runs the same read-only checks as the CLI's
+`validate` and `--dry-run` on every file, without writing anything: it
+reports the detected type and repair mode, the tuning status, the input's
+holes / self-intersections / non-manifold / debris counts, a watertight
+pre-verdict, and an **estimated confidence**
+(`Estimated confidence: X/100 (Label) — actual result may differ after
+repair`, because the post-repair signals are not known yet). Below that it
+lists a few **mode suggestions** (e.g. an aggressive/extreme step for
+scan-derived holes, or a caveat when extreme could delete small parts). The
+suggestions are **informational only and never change the mode
+automatically — the decision stays with the user.**
 
 #### Defect detail panel
 

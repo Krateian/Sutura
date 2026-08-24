@@ -73,7 +73,7 @@ söyler.
 | STL onarımı (iki aşamalı) | ~%95 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmıştır. %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve çok büyük delikler akıllı bir yeniden yapılandırma yerine düz bir yamayla kapatılır. |
 | 3MF çok nesneli | ~%90 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen köşeli bir 3MF, dilimleyicilerin genellikle otomatik iyileştirdiği birkaç milimetre-altı çatlak tutabilir. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
-| GUI | ~%85 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, ısı haritası, öncesi/sonrası karşılaştırma, onarım modu seçici, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
+| GUI | ~%87 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma, onarım modu seçici, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
 | CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--dry-run`, `--version`), salt-okunur `validate` alt komutu, JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
 | Batch işleme | ~%90 | Dosya başına sonuçları ve bir özeti olan çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) desteklenir; batch kaldığı yerden sürdürülemez ve başarısız bir dosya diğerlerini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL çağrıları segfault verir, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelenir ve çok nesneli 3MF'de yalnızca ilk nesne çizilir. |
@@ -329,6 +329,22 @@ kalan dosyaları iptal edilmiş olarak işaretler. Sürükle & bırak, yerel Way
 oturumlarında çalışır (GUI bir Qt uygulamasıdır, XWayland değildir). GUI,
 kendi koyu Fusion temasıyla gelir (teal vurgu rengi), böylece sistem masaüstü
 temasından bağımsız olarak her platformda ve Qt sürümünde aynı görünür.
+
+#### Onarım öncesi analiz
+
+![Onarım öncesi analiz](assets/analyze-panel.png)
+
+Onarımdan önce **Analiz Et**, CLI'daki `validate` ve `--dry-run` ile aynı
+salt-okunur kontrolleri her dosya için hiçbir şey yazmadan çalıştırır:
+tespit edilen türü ve onarım modunu, eşik ayarını, girdinin delik /
+self-intersection / non-manifold / döküntü sayılarını, watertight ön-kararını
+ve bir **tahmini güven** değerini bildirir
+(`Estimated confidence: X/100 (Label) — actual result may differ after
+repair`, çünkü onarım sonrası sinyaller henüz bilinmiyor). Altında birkaç
+**mod önerisi** listeler (ör. tarama kaynaklı delikler için agresif/extreme
+adımı veya extreme'un küçük parçaları silebileceğine dair bir çekince).
+Öneriler **yalnızca bilgilendirme amaçlıdır ve modu asla otomatik
+değiştirmez — karar kullanıcıda kalır.**
 
 #### Kusur detay paneli
 

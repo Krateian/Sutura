@@ -18,6 +18,10 @@ Outputs (overwrites in assets/):
   screenshot.png     - main GUI: batch summary strip + defect panel, a
                        broken mesh selected (shows mm diameters + type)
   defect-panel.png   - defect detail panel with the selected file's defects
+  analyze-panel.png  - pre-repair analysis: the new 3-row button layout plus
+                       the Analysis pane (type/mode/tuning, defect counts,
+                       watertight verdict, estimated confidence + warning,
+                       mode suggestions)
 
 The meshes used are generated into a temp dir and removed afterwards.
 """
@@ -122,6 +126,42 @@ def run(m, files, size, select_broken, out_path, show_heatmap=False):
     print('wrote', out_path)
 
 
+def run_analyze(m, files, size, select_broken, out_path):
+    """Drive the pre-repair Analyze flow and grab the window once it is done.
+
+    The Analysis pane shows per-file results; we then switch the selection to
+    the broken mesh (index 0) so the screenshot captures a meaningful case
+    with suggestions and an estimated confidence estimate."""
+    app = QApplication.instance() or QApplication([])
+    m.apply_dark_theme(app)
+    win = m.MainWindow()
+    win.resize(*size)
+    win.show()
+    for f in files:
+        win._add_path(f)
+
+    done = {}
+
+    def poll():
+        if win.worker is None:
+            app.processEvents()
+            if select_broken:
+                win.tree.setCurrentItem(win.tree.topLevelItem(0))
+                app.processEvents()
+            win.grab().save(out_path)
+            done['ok'] = True
+            app.quit()
+        else:
+            QTimer.singleShot(200, poll)
+
+    win.analyze()
+    QTimer.singleShot(200, poll)
+    app.exec()
+    if not done.get('ok'):
+        raise RuntimeError('analyze screenshot render did not finish: %s' % out_path)
+    print('wrote', out_path)
+
+
 def main():
     os.environ['SUTURA'] = _repo_cli_wrapper()
     m = load_gui()
@@ -132,6 +172,8 @@ def main():
             out_path=os.path.join(ASSETS, 'screenshot.png'))
         run(m, files, PANEL_SIZE, select_broken=True, show_heatmap=True,
             out_path=os.path.join(ASSETS, 'defect-panel.png'))
+        run_analyze(m, files, PANEL_SIZE, select_broken=True,
+                    out_path=os.path.join(ASSETS, 'analyze-panel.png'))
     print('done')
 
 
