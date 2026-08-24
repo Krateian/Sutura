@@ -14,12 +14,12 @@ import subprocess
 
 from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion
 from PySide6.QtGui import (
-    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon, QPalette)
+    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon, QPalette, QPen)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
-    QMessageBox, QDialog, QSlider)
+    QMessageBox, QDialog, QSlider, QStyle)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -127,6 +127,42 @@ STRINGS = {
                               'faces.'),
         'mode_ok': 'OK',
         'mode_cancel': 'Cancel',
+        'analyze': 'Analyze',
+        'analyze_tip': ('Run read-only analysis (validate + dry-run) on the '
+                        'selected files — never modifies the input.'),
+        'analyze_header': 'Analysis (selected file):',
+        'analyze_empty': 'No analysis yet — select files and press Analyze.',
+        'analyze_running': 'Analyzing…',
+        'analyze_n': 'Analyzing %d/%d',
+        'analyze_error': 'Analysis failed: %s',
+        'analyze_type': 'Detected: %s (%.2f) · Mode: %s · %s',
+        'analyze_counts': ('Holes: %d · Self-intersections: %d · '
+                           'Non-manifold: %d · Debris: %d'),
+        'analyze_watertight_yes': 'Watertight: YES',
+        'analyze_watertight_no': 'Watertight: NO',
+        'analyze_est': ('Estimated confidence: %d/100 (%s) — actual result '
+                        'may differ after repair'),
+        'tune_tuned': 'tuned thresholds',
+        'tune_default': 'default thresholds',
+        'add_files_tip': 'Add one or more mesh files',
+        'add_folder_tip': 'Add every STL/3MF in a folder',
+        'remove_tip': 'Remove the selected files',
+        'clear_tip': 'Clear the whole list',
+        'repair_tip': 'Repair all files',
+        'stop_tip': 'Stop the running batch',
+        'mode_tip': 'Choose the repair mode for the whole batch',
+        'sug_title': 'Suggestions:',
+        'sug_si_many': "Extreme mode's extra cleanup passes may help with these self-intersections.",
+        'sug_si_few': 'Extreme mode also tries to clean these up.',
+        'sug_holes_many': 'Probably scan-derived; Aggressive/Extreme close large holes more easily.',
+        'sug_holes_few': 'The current mode may be enough, but a step up can be tried if unsatisfied.',
+        'sug_nm': 'Complex geometry may leave a few micro-cracks.',
+        'sug_cc': "If this is an assembly-type model, note the current mode's debris cutoff may remove small parts.",
+        'sug_unknown': 'The type was not determined / stayed below the gate; default thresholds will be used.',
+        'sug_watertight': 'The input is already watertight — low mode is probably enough.',
+        'sug_low_conf': 'Trying the next mode up and comparing results could help.',
+        'sug_extreme_caveat': ('Extreme can delete parts with fewer than 20 faces '
+                               'entirely — be careful with assembly-type models.'),
     },
     'tr': {
         'app_title': 'Sutura',
@@ -210,6 +246,42 @@ STRINGS = {
                               'az olan tüm nesneyi silebilir.'),
         'mode_ok': 'Tamam',
         'mode_cancel': 'İptal',
+        'analyze': 'Analiz Et',
+        'analyze_tip': ('Seçili dosyalar için salt-okunur analiz çalıştır '
+                        '(validate + dry-run) — girdiyi asla değiştirmez.'),
+        'analyze_header': 'Analiz (seçili dosya):',
+        'analyze_empty': 'Henüz analiz yok — dosya seçip Analiz Et\u2019e bas.',
+        'analyze_running': 'Analiz ediliyor…',
+        'analyze_n': 'Analiz ediliyor %d/%d',
+        'analyze_error': 'Analiz başarısız: %s',
+        'analyze_type': 'Tespit edilen: %s (%.2f) · Mod: %s · %s',
+        'analyze_counts': ('Delik: %d · Self-intersection: %d · '
+                           'Non-manifold: %d · Döküntü: %d'),
+        'analyze_watertight_yes': 'Su geçirmez: EVET',
+        'analyze_watertight_no': 'Su geçirmez: HAYIR',
+        'analyze_est': ('Tahmini güven: %d/100 (%s) — sonuç onarımdan sonra '
+                        'farklı olabilir'),
+        'tune_tuned': 'ayarlanmış eşikler',
+        'tune_default': 'varsayılan eşikler',
+        'add_files_tip': 'Bir veya daha fazla mesh dosyası ekle',
+        'add_folder_tip': 'Bir klasördeki tüm STL/3MF dosyalarını ekle',
+        'remove_tip': 'Seçili dosyaları kaldır',
+        'clear_tip': 'Listeyi tamamen temizle',
+        'repair_tip': 'Tüm dosyaları onar',
+        'stop_tip': 'Çalışan batch\u2019i durdur',
+        'mode_tip': 'Batch geneli onarım modunu seç',
+        'sug_title': 'Öneriler:',
+        'sug_si_many': "Extreme modun ekstra temizleme adımları bu self-intersection'lara işe yarayabilir.",
+        'sug_si_few': 'Extreme mod bunları ayrıca temizlemeyi dener.',
+        'sug_holes_many': 'Muhtemelen tarama kaynaklı; Aggressive/Extreme büyük delikleri daha rahat kapatır.',
+        'sug_holes_few': 'Mevcut mod yeterli olabilir ama tatmin etmezse bir üst mod denenebilir.',
+        'sug_nm': 'Karmaşık geometri birkaç mikro-çatlak bırakabilir.',
+        'sug_cc': 'Montaj tipi bir modelse dikkat: mevcut modun döküntü eşiği küçük parçaları silebilir.',
+        'sug_unknown': 'Tip net belirlenemedi / eşik altı kaldı; varsayılan eşikler kullanılacak.',
+        'sug_watertight': 'Girdi zaten su geçirmez — düşük mod muhtemelen yeterli.',
+        'sug_low_conf': 'Bir üst mod denenip sonucu karşılaştırmak faydalı olabilir.',
+        'sug_extreme_caveat': ('Extreme, 20 yüzden küçük parçaları tamamen silebilir — '
+                               'montaj tipi modellerde dikkatli olun.'),
     },
 }
 
@@ -467,6 +539,96 @@ class RepairWorker(QThread):
         return parse_cli_output(out, err)
 
 
+class AnalyzeWorker(QThread):
+    """Runs a read-only pre-repair analysis (validate + --dry-run) for each
+    file, sequentially, in a background thread. Same subprocess pattern as
+    RepairWorker: the CLI does all the pymeshlab work, so the GUI process
+    never imports it. Never writes or modifies anything."""
+
+    file_done = Signal(str, object)      # path, analysis dict
+    progress = Signal(int, int)          # current, total
+    all_done = Signal(bool)              # cancelled
+
+    def __init__(self, files, mode='auto', parent=None):
+        super().__init__(parent)
+        self._files = list(files)
+        self._mode = mode
+        self._cancelled = False
+        self._proc = None
+
+    def cancel(self):
+        self._cancelled = True
+        if self._proc is not None and self._proc.poll() is None:
+            self._proc.terminate()
+
+    def run(self):
+        n = len(self._files)
+        for idx, path in enumerate(self._files, 1):
+            if self._cancelled:
+                self.file_done.emit(path, {})
+                continue
+            data = self._analyze_one(path)
+            self.file_done.emit(path, data)
+            self.progress.emit(idx, n)
+        self.all_done.emit(self._cancelled)
+
+    def _analyze_one(self, path):
+        if SUTURA_CMD is None:
+            return {'error': 'sutura not found: no $SUTURA, no '
+                             '~/.local/bin/sutura, and no repair.py next to '
+                             'the GUI'}
+        result = {}
+        # dry-run first: carries mode/tuning/defect counts/estimated_confidence
+        try:
+            self._proc = subprocess.Popen(
+                [*SUTURA_CMD, '--dry-run', '--mode', self._mode, path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            out, err = self._proc.communicate(timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            result['error'] = 'could not run dry-run: %s' % e
+            self._proc = None
+            return result
+        finally:
+            self._proc = None
+        dry = parse_cli_output(out, err)
+        if 'error' in dry:
+            result['error'] = dry['error']
+        else:
+            for k in ('repair_mode', 'detected_type', 'detected_confidence',
+                      'tuning_applied', 'would_apply', 'holes_found',
+                      'largest_hole_diameter', 'non_manifold_regions',
+                      'debris_faces_removable', 'self_intersections',
+                      'connected_components', 'stage2_bridge_available',
+                      'estimated_confidence', 'estimated_confidence_label',
+                      'estimated_confidence_factors'):
+                if k in dry:
+                    result[k] = dry[k]
+        # validate: adds the watertight pre-verdict + volume/orientation
+        try:
+            self._proc = subprocess.Popen(
+                [*SUTURA_CMD, 'validate', path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            out, err = self._proc.communicate(timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            self._proc = None
+            result.setdefault('error', 'could not run validate: %s' % e)
+            return result
+        finally:
+            self._proc = None
+        val = parse_cli_output(out, err)
+        v = val.get('validation')
+        if v:
+            result['watertight'] = bool(v.get('watertight'))
+            result['signed_volume'] = v.get('signed_volume')
+            result['surface_area'] = v.get('surface_area')
+            result['orientation'] = v.get('orientation')
+            result['validation_vertices'] = v.get('vertices')
+            result['validation_faces'] = v.get('faces')
+        elif 'error' in val and 'error' not in result:
+            result['error'] = val['error']
+        return result
+
+
 class HeatmapWorker(QThread):
     """Renders a mesh heatmap off the GUI thread and off the GUI process.
 
@@ -669,6 +831,7 @@ class MainWindow(QMainWindow):
         self._type_by_path = {}
         self._diff_by_path = {}
         self._output_by_path = {}
+        self._analysis_by_path = {}   # path -> analyze worker result dict
         self._heatmap_cache = {}      # path -> {size_key: QPixmap}
         self.heatmap_worker = None
         self._heatmap_zoom = None
@@ -696,12 +859,21 @@ class MainWindow(QMainWindow):
 
         buttons = QHBoxLayout()
         self.btn_add_files = QPushButton(_t('add_files'))
+        self.btn_add_files.setIcon(
+            self.style().standardIcon(QStyle.SP_DialogOpenButton))
+        self.btn_add_files.setToolTip(_t('add_files_tip'))
         self.btn_add_folder = QPushButton(_t('add_folder'))
+        self.btn_add_folder.setIcon(
+            self.style().standardIcon(QStyle.SP_FileDialogNewFolder))
+        self.btn_add_folder.setToolTip(_t('add_folder_tip'))
         self.btn_remove = QPushButton(_t('remove'))
+        self.btn_remove.setIcon(
+            self.style().standardIcon(QStyle.SP_DialogDiscardButton))
+        self.btn_remove.setToolTip(_t('remove_tip'))
         self.btn_clear = QPushButton(_t('clear'))
-        self.btn_repair = QPushButton(_t('repair'))
-        self.btn_repair.setObjectName('repairBtn')
-        self.btn_stop = QPushButton(_t('stop'))
+        self.btn_clear.setIcon(
+            self.style().standardIcon(QStyle.SP_TrashIcon))
+        self.btn_clear.setToolTip(_t('clear_tip'))
         # update indicator (top-right corner)
         self.update_btn = QToolButton()
         self.update_btn.setIcon(self._update_icon(active=False))
@@ -719,9 +891,31 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.btn_clear)
         buttons.addStretch(1)
         buttons.addWidget(self.update_btn)
-        buttons.addWidget(self.btn_repair)
-        buttons.addWidget(self.btn_stop)
         layout.addLayout(buttons)
+
+        # second row: analysis/actions — Analyze + Mode (prep) | Repair + Stop
+        actions = QHBoxLayout()
+        self.btn_analyze = QPushButton(_t('analyze'))
+        self.btn_analyze.setIcon(self._analyze_icon())
+        self.btn_analyze.setToolTip(_t('analyze_tip'))
+        self.btn_analyze.setEnabled(False)
+        self.btn_mode = QPushButton(
+            _t('mode_btn', _t('mode_name_' + self._repair_mode)))
+        self.btn_mode.setToolTip(_t('mode_tip'))
+        self.btn_repair = QPushButton(_t('repair'))
+        self.btn_repair.setIcon(self._repair_icon())
+        self.btn_repair.setObjectName('repairBtn')
+        self.btn_repair.setToolTip(_t('repair_tip'))
+        self.btn_stop = QPushButton(_t('stop'))
+        self.btn_stop.setIcon(
+            self.style().standardIcon(QStyle.SP_MediaStop))
+        self.btn_stop.setToolTip(_t('stop_tip'))
+        actions.addWidget(self.btn_analyze)
+        actions.addWidget(self.btn_mode)
+        actions.addStretch(1)
+        actions.addWidget(self.btn_repair)
+        actions.addWidget(self.btn_stop)
+        layout.addLayout(actions)
 
         row = QHBoxLayout()
         self.progress = QProgressBar()
@@ -749,6 +943,15 @@ class MainWindow(QMainWindow):
         self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         layout.addWidget(self.log, 1)
 
+        # read-only pre-repair analysis pane (validate + --dry-run)
+        self.analyze_label = QLabel(_t('analyze_empty'))
+        layout.addWidget(self.analyze_label)
+        self.analysis = QPlainTextEdit()
+        self.analysis.setReadOnly(True)
+        self.analysis.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.analysis.setFixedHeight(120)
+        layout.addWidget(self.analysis)
+
         # per-file defect detail panel (selected file's holes / non-manifold)
         self.defect_label = QLabel(_t('defects_header'))
         layout.addWidget(self.defect_label)
@@ -766,10 +969,6 @@ class MainWindow(QMainWindow):
         self.btn_before_after = QPushButton(_t('show_before_after'))
         self.btn_before_after.setEnabled(False)
         heat_row.addWidget(self.btn_before_after, 0, Qt.AlignTop)
-        # batch-wide repair mode picker (low/medium/auto/aggressive/extreme)
-        self.btn_mode = QPushButton(
-            _t('mode_btn', _t('mode_name_' + self._repair_mode)))
-        heat_row.addWidget(self.btn_mode, 0, Qt.AlignTop)
         self.heatmap_thumb = _ClickableLabel(_t('heatmap_failed'))
         self.heatmap_thumb.setAlignment(Qt.AlignCenter)
         self.heatmap_thumb.setFixedSize(220, 150)
@@ -787,6 +986,7 @@ class MainWindow(QMainWindow):
         self.btn_clear.clicked.connect(self.clear_files)
         self.btn_repair.clicked.connect(self.repair)
         self.btn_stop.clicked.connect(self.stop)
+        self.btn_analyze.clicked.connect(self.analyze)
         self.tree.currentItemChanged.connect(self._on_selection)
         self.btn_show_heatmap.clicked.connect(self._on_show_heatmap)
         self.heatmap_thumb.clicked.connect(self._on_heatmap_thumb_clicked)
@@ -831,6 +1031,37 @@ class MainWindow(QMainWindow):
         p.drawPolygon(QPolygon([QPoint(3, 10), QPoint(8, 4), QPoint(13, 10)]))
         p.setPen(color)
         p.drawLine(8, 4, 8, 13)
+        p.end()
+        return QIcon(pm)
+
+    def _repair_icon(self):
+        """Play-triangle icon, drawn dark so it is visible on the teal Repair
+        button (same QPainter technique as _update_icon)."""
+        size = 16
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor('#0b0f11')
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.drawPolygon(QPolygon([QPoint(5, 3), QPoint(14, 8), QPoint(5, 13)]))
+        p.end()
+        return QIcon(pm)
+
+    def _analyze_icon(self):
+        """Magnifying-glass icon in the teal accent, drawn with QPainter."""
+        size = 16
+        pm = QPixmap(size, size)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor('#14b8a6')
+        pen = QPen(color, 1.8)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(4, 3, 8, 8)
+        p.drawLine(10, 9, 14, 13)
         p.end()
         return QIcon(pm)
 
@@ -896,6 +1127,7 @@ class MainWindow(QMainWindow):
             return
         self.update_btn.setEnabled(False)
         self.btn_repair.setEnabled(False)
+        self.btn_analyze.setEnabled(False)
         self.status.setText(_t('updating'))
         self.update_worker = UpdateWorker(tag, parent=self)
         self.update_worker.progress_msg.connect(self.status.setText)
@@ -906,6 +1138,7 @@ class MainWindow(QMainWindow):
         self.update_worker = None
         self.update_btn.setEnabled(True)
         self.btn_repair.setEnabled(bool(self.files))
+        self.btn_analyze.setEnabled(bool(self.files))
         if ok:
             self.available_tag = None
             self.update_btn.setIcon(self._update_icon(active=False))
@@ -925,6 +1158,9 @@ class MainWindow(QMainWindow):
         item = QTreeWidgetItem([path, ''])
         self.tree.addTopLevelItem(item)
         self._item_by_path[path] = item
+        # select the newly added file so the analysis/defect panels update to
+        # it (QTreeWidget only auto-selects the FIRST item implicitly)
+        self.tree.setCurrentItem(item)
         return True
 
     def _add_meshes_from_folder(self, folder):
@@ -982,9 +1218,12 @@ class MainWindow(QMainWindow):
         self._item_by_path.clear()
         self._heatmap_cache.clear()
         self._output_by_path.clear()
+        self._analysis_by_path.clear()
         self.tree.clear()
         self._set_heatmap_thumb(None)
         self.btn_before_after.setEnabled(False)
+        self.analysis.clear()
+        self.analyze_label.setText(_t('analyze_empty'))
         self._refresh_buttons()
 
     # --- drag & drop (whole window) ----------------------------------------
@@ -1022,6 +1261,7 @@ class MainWindow(QMainWindow):
         self.summary.setVisible(False)
         self.summary.setText('')
         self.btn_repair.setEnabled(False)
+        self.btn_analyze.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.progress.setRange(0, len(self.files))
         self.progress.setValue(0)
@@ -1033,6 +1273,120 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self._on_progress)
         self.worker.all_done.connect(self._on_all_done)
         self.worker.start()
+
+    def analyze(self):
+        """Run the read-only pre-repair analysis (validate + --dry-run) on
+        every file. Never modifies anything; results are shown per selected
+        file in the analysis pane, separate from the repair confidence."""
+        if not self.files or self.worker is not None:
+            return
+        self._analysis_by_path = {}
+        self.analysis.clear()
+        self.analyze_label.setText(_t('analyze_header'))
+        self.btn_analyze.setEnabled(False)
+        self.btn_repair.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.progress.setRange(0, len(self.files))
+        self.progress.setValue(0)
+        self.status.setText(_t('analyze_running'))
+
+        self.worker = AnalyzeWorker(self.files, self._repair_mode, self)
+        self.worker.file_done.connect(self._on_analyze_done)
+        self.worker.progress.connect(self._on_analyze_progress)
+        self.worker.all_done.connect(self._on_analyze_all_done)
+        self.worker.start()
+
+    def _on_analyze_progress(self, current, total):
+        self.progress.setValue(current)
+        self.status.setText(_t('analyze_n', current, total))
+
+    def _on_analyze_done(self, path, data):
+        if data:
+            self._analysis_by_path[path] = data
+        if self._item_by_path.get(path) is self.tree.currentItem():
+            self._show_analysis(path)
+
+    def _on_analyze_all_done(self, cancelled):
+        self.status.setText(_t('done_stopped') if cancelled else _t('done'))
+        self.btn_stop.setEnabled(False)
+        self.btn_analyze.setEnabled(bool(self.files))
+        self.btn_repair.setEnabled(bool(self.files))
+        self.worker = None
+
+    def _show_analysis(self, path):
+        """Render the selected file's pre-repair analysis into its pane."""
+        a = self._analysis_by_path.get(path)
+        if a is None:
+            self.analysis.clear()
+            self.analyze_label.setText(_t('analyze_empty'))
+            return
+        self.analyze_label.setText(_t('analyze_header'))
+        if a.get('error'):
+            self.analysis.setPlainText(_t('analyze_error', a['error']))
+            return
+        lines = []
+        tuning = a.get('tuning_applied')
+        lines.append(_t('analyze_type',
+                        a.get('detected_type') or '?',
+                        a.get('detected_confidence') or 0.0,
+                        a.get('repair_mode') or 'auto',
+                        _t('tune_tuned') if tuning else _t('tune_default')))
+        lines.append(_t('analyze_counts',
+                        a.get('holes_found', 0),
+                        a.get('self_intersections', 0),
+                        a.get('non_manifold_regions', 0),
+                        a.get('debris_faces_removable', 0)))
+        wt = a.get('watertight')
+        if wt is not None:
+            lines.append(_t('analyze_watertight_yes') if wt
+                         else _t('analyze_watertight_no'))
+        ec = a.get('estimated_confidence')
+        if ec is not None:
+            lines.append(_t('analyze_est', ec,
+                            _t('confidence_' + (a.get('estimated_confidence_label')
+                                                or 'medium'))))
+        sugs = self._analysis_suggestions(a)
+        if sugs:
+            lines.append('')
+            lines.append(_t('sug_title'))
+            for key in sugs:
+                lines.append('  \u2022 %s' % _t(key))
+        self.analysis.setPlainText('\n'.join(lines))
+
+    def _analysis_suggestions(self, a):
+        """Mode suggestions for an analysis result, in priority order
+        a > b > c > d > e > f > g, capped at three lines (plus the extreme
+        caveat when a/b suggest extreme). Returns localized strings. Text
+        only — never changes the mode."""
+        s = []
+        extreme_fired = False
+        si = a.get('self_intersections', 0)
+        holes = a.get('holes_found', 0)
+        if si > 10:
+            s.append('sug_si_many')
+            extreme_fired = True
+        elif si >= 1:
+            s.append('sug_si_few')
+            extreme_fired = True
+        if holes > 10:
+            s.append('sug_holes_many')
+            extreme_fired = True
+        elif holes >= 3:
+            s.append('sug_holes_few')
+        if (a.get('non_manifold_regions') or 0) > 3:
+            s.append('sug_nm')
+        if (a.get('connected_components') or 1) > 1:
+            s.append('sug_cc')
+        if a.get('detected_type') == 'unknown' or a.get('tuning_applied') is False:
+            s.append('sug_unknown')
+        if a.get('watertight'):
+            s.append('sug_watertight')
+        if a.get('estimated_confidence_label') == 'low':
+            s.append('sug_low_conf')
+        s = s[:3]
+        if extreme_fired:
+            s.append('sug_extreme_caveat')
+        return s
 
     def stop(self):
         if self.worker is not None:
@@ -1073,10 +1427,13 @@ class MainWindow(QMainWindow):
 
     def _on_selection(self, current, _prev):
         if current is not None:
+            self._show_analysis(current.text(0))
             self._show_defects(current.text(0))
             self._refresh_heatmap_thumb(current.text(0))
             self._refresh_before_after_btn(current.text(0))
         else:
+            self.analysis.clear()
+            self.analyze_label.setText(_t('analyze_empty'))
             self.defects.clear()
             self._set_heatmap_thumb(None)
             self.btn_before_after.setEnabled(False)
@@ -1309,6 +1666,7 @@ class MainWindow(QMainWindow):
         self.status.setText(_t('done_stopped') if cancelled else _t('done'))
         self.btn_stop.setEnabled(False)
         self.btn_repair.setEnabled(bool(self.files))
+        self.btn_analyze.setEnabled(bool(self.files))
         self.worker = None
         if not cancelled:
             self._render_summary()
@@ -1350,6 +1708,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_buttons(self):
         self.btn_repair.setEnabled(bool(self.files) and self.worker is None)
+        self.btn_analyze.setEnabled(bool(self.files) and self.worker is None)
 
 
 def main():
