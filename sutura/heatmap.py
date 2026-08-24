@@ -97,19 +97,22 @@ def _shade_index(shade):
     return np.clip(idx, 0, _SHADE_LEVELS)
 
 
-def _project(verts, w, h, pad, frame=None):
+def _project(verts, w, h, pad, frame=None, rotation=None):
     """Orthographic projection of centered verts through the isometric view.
 
     ``frame`` is an optional ``(center, scale)`` tuple that forces the SAME
     camera for multiple meshes (used by the before/after comparison, so the
     original and the repaired mesh frame identically). When None, the camera
-    auto-fits this mesh alone.
+    auto-fits this mesh alone. ``rotation`` is an optional 3x3 row-based
+    camera basis (right/up/forward); when None the fixed isometric
+    ``_ISOMETRIC`` is used.
 
     Returns (px, py, z) screen pixel coordinates and view-space depth.
     """
+    rot = _ISOMETRIC if rotation is None else rotation
     if frame is not None:
         center, s = frame
-        v = (verts - center) @ _ISOMETRIC.T
+        v = (verts - center) @ rot.T
         x, y, z = v[:, 0], v[:, 1], v[:, 2]
         px = w * 0.5 + x * s
         py = h * 0.5 - y * s   # flip y (image origin top-left)
@@ -117,7 +120,7 @@ def _project(verts, w, h, pad, frame=None):
     lo = verts.min(axis=0)
     hi = verts.max(axis=0)
     center = (lo + hi) * 0.5
-    v = (verts - center) @ _ISOMETRIC.T
+    v = (verts - center) @ rot.T
     x, y, z = v[:, 0], v[:, 1], v[:, 2]
     x0, x1 = float(x.min()), float(x.max())
     y0, y1 = float(y.min()), float(y.max())
@@ -130,11 +133,15 @@ def _project(verts, w, h, pad, frame=None):
     return px, py, z
 
 
-def shared_frame(verts_list, w, h, pad):
+def shared_frame(verts_list, w, h, pad, rotation=None):
     """A (center, scale) camera frame that fits ALL meshes in ``verts_list``
     with the same projection, so before/after renders are directly
     comparable. Uses the combined bounding box and the combined view-space
-    extent for the scale."""
+    extent for the scale. ``rotation`` is an optional 3x3 row-based camera
+    basis (right/up/forward); when None the fixed isometric ``_ISOMETRIC`` is
+    used (the center stays the world-space bbox centre, independent of the
+    rotation)."""
+    rot = _ISOMETRIC if rotation is None else rotation
     lo = np.asarray(verts_list[0]).min(axis=0)
     hi = np.asarray(verts_list[0]).max(axis=0)
     for vs in verts_list[1:]:
@@ -143,7 +150,7 @@ def shared_frame(verts_list, w, h, pad):
     center = (lo + hi) * 0.5
     xs, ys = [], []
     for vs in verts_list:
-        v = (np.asarray(vs) - center) @ _ISOMETRIC.T
+        v = (np.asarray(vs) - center) @ rot.T
         xs.extend([float(v[:, 0].min()), float(v[:, 0].max())])
         ys.extend([float(v[:, 1].min()), float(v[:, 1].max())])
     span_x = (max(xs) - min(xs)) or 1.0
@@ -152,20 +159,23 @@ def shared_frame(verts_list, w, h, pad):
     return center, s
 
 
-def focus_frame(verts, verts_idx, w, h, pad, fill=0.75):
+def focus_frame(verts, verts_idx, w, h, pad, fill=0.75, rotation=None):
     """A (center, scale) camera frame zoomed in on a defect region.
 
     ``verts_idx`` lists the defect's vertices (from ``defects.detect`` with
     ``with_indices=True``). The frame centers on their mean and scales so the
     defect's view-space bounding box occupies ``fill`` of the viewport, so a
     ``render(..., frame=...)`` call with it frames exactly that region. A
-    defect with no vertices falls back to the mesh auto-fit camera."""
+    defect with no vertices falls back to the mesh auto-fit camera.
+    ``rotation`` is an optional 3x3 row-based camera basis; when None the
+    fixed isometric ``_ISOMETRIC`` is used (and forwarded to the fallback)."""
     verts = np.asarray(verts, dtype=np.float64)
     vs = verts[np.asarray(verts_idx, dtype=np.int64)]
     if len(vs) == 0:
-        return shared_frame([verts], w, h, pad)
+        return shared_frame([verts], w, h, pad, rotation=rotation)
+    rot = _ISOMETRIC if rotation is None else rotation
     center = vs.mean(axis=0)
-    v = (vs - center) @ _ISOMETRIC.T
+    v = (vs - center) @ rot.T
     xs, ys = v[:, 0], v[:, 1]
     span_x = float(xs.max() - xs.min()) or 1.0
     span_y = float(ys.max() - ys.min()) or 1.0
@@ -186,7 +196,7 @@ def _defect_vertex_set(holes, non_manifold):
 
 def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
            pad=24, bg=(18, 22, 26), mesh=(178, 186, 194), defect=(235, 60, 70),
-           healed=None, healed_color=(46, 204, 113), frame=None):
+           healed=None, healed_color=(46, 204, 113), frame=None, rotation=None):
     """Render a mesh heatmap to a QImage.
 
     verts: (N,3) float array; tris: (M,3) int array. ``holes``/``non_manifold``
@@ -196,9 +206,11 @@ def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
     entry per face); faces marked healed that are NOT defect faces are drawn
     in ``healed_color``. Precedence: defect faces first, then healed, then
     the neutral ``mesh`` colour. ``frame`` is an optional ``(center, scale)``
-    from ``shared_frame`` to force the same camera as another render. Returns
-    a QImage (RGB32). Never raises for empty/degenerate input: a blank image
-    is returned so callers can fall back gracefully.
+    from ``shared_frame`` to force the same camera as another render.
+    ``rotation`` is an optional 3x3 row-based camera basis (right/up/forward);
+    when None (or not given) the fixed isometric ``_ISOMETRIC`` camera is
+    used. Returns a QImage (RGB32). Never raises for empty/degenerate input:
+    a blank image is returned so callers can fall back gracefully.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
@@ -208,7 +220,7 @@ def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
         return img
 
     try:
-        px, py, z = _project(verts, w, h, pad, frame=frame)
+        px, py, z = _project(verts, w, h, pad, frame=frame, rotation=rotation)
     except Exception:
         return img
 

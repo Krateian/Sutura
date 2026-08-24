@@ -24,6 +24,7 @@ sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
 from heatmap import _ISOMETRIC, focus_frame, render, shared_frame  # noqa: E402
+from PySide6.QtGui import QImage  # noqa: E402
 
 
 def _grid_mesh(n=12, extent=10.0):
@@ -99,6 +100,110 @@ def test_shared_frame_fits_all():
         v = (vs - center) @ _ISOMETRIC.T
         assert v[:, 0].max() - v[:, 0].min() <= (w - 2 * pad) / scale + 1e-6
         assert v[:, 1].max() - v[:, 1].min() <= (h - 2 * pad) / scale + 1e-6
+
+
+def _flat_mesh(n=12, extent=10.0):
+    """A subdivided flat grid in the XY plane (all z=0) used by the
+    rotation-dependent scale test: its view-space extent changes with the
+    camera rotation while its world-space bbox centre is fixed."""
+    xs = np.linspace(-extent / 2, extent / 2, n)
+    ys = np.linspace(-extent / 2, extent / 2, n)
+    gx, gy = np.meshgrid(xs, ys)
+    verts = np.stack([gx.ravel(), gy.ravel(),
+                      np.zeros(gx.size, dtype=np.float64)], axis=1)
+    tris = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            tris.append((a, a + n, a + 1))
+            tris.append((a + 1, a + n, a + n + 1))
+    return verts, np.asarray(tris, dtype=np.int64)
+
+
+def _img_bytes(img):
+    """Raw RGB bytes of a QImage, so two images can be compared exactly."""
+    img = img.convertToFormat(QImage.Format_RGB888)
+    ptr = img.constBits()
+    if isinstance(ptr, memoryview):
+        ptr = ptr.tobytes()
+    return ptr
+
+
+def _red_count(img):
+    """Count clearly red-dominant pixels (the defect colour, however the
+    shading modulates it). Uses RGB888 to avoid the RGB32 BGR in-memory byte
+    order. A pixel is 'defect-red' when red clearly dominates green and blue
+    (rotation-independent, immune to the renderer's shade modulation)."""
+    img = img.convertToFormat(QImage.Format_RGB888)
+    w, h = img.width(), img.height()
+    ptr = img.constBits()
+    if isinstance(ptr, memoryview):
+        ptr = ptr.tobytes()
+    a = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 3)).astype(np.int16)
+    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
+    return int(((r - g > 40) & (r - b > 40)).sum())
+
+
+def test_render_with_identity_rotation_equals_default():
+    verts, tris = _grid_mesh()
+    w, h, pad = 240, 180, 24
+    a = render(verts, tris, w=w, h=h, pad=pad)
+    b = render(verts, tris, w=w, h=h, pad=pad, rotation=_ISOMETRIC)
+    assert _img_bytes(a) == _img_bytes(b)
+
+
+def test_shared_frame_scale_depends_on_rotation():
+    verts, _ = _flat_mesh()
+    w, h, pad = 200, 200, 20
+    center_eye, scale_eye = shared_frame([verts], w, h, pad, rotation=np.eye(3))
+    center_iso, scale_iso = shared_frame([verts], w, h, pad, rotation=_ISOMETRIC)
+    assert np.allclose(center_eye, center_iso, atol=1e-9)
+    assert not np.isclose(scale_eye, scale_iso), (scale_eye, scale_iso)
+
+
+def test_focus_frame_empty_forwards_rotation():
+    verts, _ = _grid_mesh()
+    w, h, pad = 240, 180, 24
+    R = np.eye(3)
+    f1 = focus_frame(verts, [], w, h, pad, rotation=R)
+    f2 = shared_frame([verts], w, h, pad, rotation=R)
+    assert np.allclose(f1[0], f2[0], atol=1e-9)
+    assert np.isclose(f1[1], f2[1])
+
+
+def test_render_custom_rotation_changes_visible_defect():
+    # a cube with the defect (hole) on the +Y top face
+    verts = np.array([
+        [1, 0, 0], [1, 0, 1], [1, 1, 0], [1, 1, 1],
+        [0, 0, 0], [0, 0, 1], [0, 1, 0], [0, 1, 1],
+    ], dtype=np.float64)
+    quads = [
+        (0, 1, 3, 2), (4, 6, 7, 5), (0, 2, 6, 4),
+        (1, 5, 7, 3), (0, 4, 5, 1), (2, 3, 7, 6),
+    ]
+    tris = []
+    for a, b, c, d in quads:
+        tris += [(a, b, c), (a, c, d)]
+    tris = [t for i, t in enumerate(tris) if i not in (4, 5)]  # drop +Y top face
+    tris = np.asarray(tris, dtype=np.int64)
+
+    # defect = the +Y top face vertices (indices 2,3,6,7)
+    defect_idx = [2, 3, 6, 7]
+    holes = [{'centroid': list(verts[np.asarray(defect_idx)].mean(axis=0)),
+              'verts_idx': defect_idx}]
+    w, h, pad = 240, 180, 24
+
+    # manual camera looking straight down from +Y: forward row = (0,1,0),
+    # up0 = least-aligned world axis (+Z), giving a proper right-handed basis
+    R_down = np.array([[-1.0, 0.0, 0.0],
+                       [0.0, 0.0, 1.0],
+                       [0.0, 1.0, 0.0]], dtype=np.float64)
+    assert abs(np.linalg.det(R_down) - 1.0) < 1e-9  # proper rotation
+
+    red_iso = _red_count(render(verts, tris, holes=holes, w=w, h=h, pad=pad))
+    red_down = _red_count(render(verts, tris, holes=holes, w=w, h=h, pad=pad,
+                                 rotation=R_down))
+    assert red_down > red_iso, (red_iso, red_down)
 
 
 def main():
