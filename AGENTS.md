@@ -90,10 +90,28 @@ the following in order, without being asked separately for each:
 7. Push (main + tag) via the HTTPS token method.
 8. Create the GitHub Release with a real written summary (not just a
    CHANGELOG link).
+9. Verify the release notes actually landed as written: after
+   `gh release create` / `gh release edit`, run
+   `gh release view <tag> --json body` and read the ACTUAL body back.
+   Confirm it contains the real highlights list for this version — not a
+   generic template blurb, not empty, not truncated. A `gh release
+   create`/`edit` call returning success is not proof the content is
+   correct; heredocs and multi-line --notes strings can silently get
+   mangled by shell quoting. If the body is wrong, edit it again and
+   re-verify — do not consider the release done until the displayed body
+   matches what was intended.
 
 This checklist is the release process — steps 5 and 6 are not optional
 extras to be reminded about separately; they are part of doing a release at
 all.
+
+General principle for this whole checklist: a command exiting 0 means
+the command ran, not that its output is correct. For every step that
+produces user-facing content (CHANGELOG entry, commit body, README
+section, GitHub Release notes), read back what was actually written
+before moving to the next step. This applies beyond releases too —
+whenever a tool call's success is being used as evidence that content is
+correct, verify the actual content instead of trusting the exit status.
 
 ## Cleanup discipline
 
