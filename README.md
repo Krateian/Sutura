@@ -80,6 +80,7 @@ Sutura and where you should still double-check the output.
 | Dry-run (`--dry-run`) | ~50% (beta) | New in 0.1.8-beta.1: reports the would-do plan (detected type, mode, Stage 1 thresholds, found holes / debris / self-intersections, stage 2 availability) and writes nothing. Beta quality: the plan is derived from the input analysis, so exact hole-close counts are not guaranteed to match a real run, and the extreme-mode extra passes are not simulated. It is covered by `tests/test_validate.py` (validate and dry-run share the suite). |
 | Repair modes (`--mode` ladder) | ~80% | Five-step aggressiveness ladder (`low`/`medium`/`auto`/`aggressive`/`extreme`) for the Stage 1 thresholds, exposed both as a CLI flag and a batch-wide GUI picker; `auto` keeps the historical classifier + confidence-gate behaviour byte-identical and is regression-tested (`tests/test_repair_mode.py`). Caveats: `extreme` can delete a small object (reported as the distinct `extreme_removed_object` error, not malformed input) and the per-type tuned threshold values are experimental. |
 | Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.55) and measured by a calibration harness (`scripts/calibrate_classifier.py`). Experimental: the per-type values are still estimated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
+| Repair confidence score | ~65% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Experimental: the weighting model is new and not yet validated against real user feedback. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
@@ -260,6 +261,15 @@ they did, `self_intersections_found`/`self_intersections_removed`; `--human`
 shows an "Extreme passes" line. The GUI exposes the same five modes through
 its **Mode** button (batch-wide, see the GUI section below).
 
+Every repair report also carries a **repair confidence score**: a single
+0–100 value (`repair_confidence` in JSON) with a High/Medium/Low label that
+combines the stage 2 outcome, remaining holes, classifier confidence, tuning
+status, repair mode, self-intersections and volume change; `--human` shows it
+as a `Confidence: X/100 (Label)` line. The read-only modes report an estimate
+instead, because the post-repair signals are not known yet: validate and
+`--dry-run` carry `estimated_confidence` and print
+`Estimated confidence: X/100 (Label) — actual result may differ after repair`.
+
 With multiple files, every input is repaired in turn and a summary is
 printed (`N watertight, M with warnings, K failed`), including a breakdown of
 the kinds of warnings/errors that occurred (volume change, Stage 2 skipped,
@@ -322,7 +332,9 @@ Qt version regardless of the system desktop theme.
 When a file is selected, the panel below the log lists the defects found in
 its input mesh: each hole's centroid and diameter (in mm) and each
 non-manifold region. This complements the batch summary strip above the log —
-the strip is a per-batch count, this panel is per-file detail.
+the strip is a per-batch count, this panel is per-file detail. After a repair,
+the panel header also shows the result's confidence as a
+`Confidence: X/100 — High/Medium/Low` segment.
 
 **Defect heatmap.** Below the defect list, **Show heatmap** renders the
 selected mesh with its defect regions (hole rims and non-manifold areas)

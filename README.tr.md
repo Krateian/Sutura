@@ -82,6 +82,7 @@ söyler.
 | Dry-run (`--dry-run`) | ~%50 (beta) | 0.1.8-beta.1'de yeni: yapılacak planı bildirir (tespit edilen tür, mod, Aşama 1 eşikleri, bulunan delik / döküntü / self-intersection, aşama 2 uygunluğu) ve hiçbir şey yazmaz. Beta kalitesi: plan girdi analizinden türetilir, bu yüzden tam delik kapatma sayıları gerçek bir çalışmayla birebir uyuşacağının garantisi değildir ve extreme modun ek geçişleri simüle edilmez. `tests/test_validate.py` tarafından kapsanır (validate ve dry-run aynı süiti paylaşır). |
 | Onarım modları (`--mode` merdiveni) | ~%80 | Aşama 1 eşikleri için beş kademeli agresiflik merdiveni (`low`/`medium`/`auto`/`aggressive`/`extreme`); hem CLI bayrağı hem batch geneli GUI seçici olarak sunulur; `auto`, tarihsel sınıflandırıcı + güven eşiği davranışını birebir korur ve regression testiyle doğrulanır (`tests/test_repair_mode.py`). Uyarılar: `extreme` küçük bir nesneyi silebilir (bu, bozuk girdi değil, ayrı `extreme_removed_object` hatası olarak raporlanır) ve tür başına ayarlı eşik değerleri deneyseldir. |
 | Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.55) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır ve eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
+| Onarım güven skoru | ~%65 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Eksikler: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
@@ -265,6 +266,16 @@ Seçilen mod her zaman raporlanır (`repair_mode` JSON'da, `Mode:` `--human`da;
 "Extreme passes" satırı gösterir. GUI, aynı beş modu **Mod** düğmesi üzerinden
 sunar (batch geneli; aşağıdaki GUI bölümüne bakın).
 
+Her onarım raporu ayrıca bir **onarım güven skoru** taşır: aşama 2 sonucunu,
+kalan delikleri, sınıflandırıcı güvenini, eşik ayarını, onarım modunu,
+self-intersection'ları ve hacim değişimini birleştiren tek bir 0–100 değer
+(`repair_confidence` JSON'da) ve Yüksek/Orta/Düşük etiketi; `--human` bunu bir
+`Confidence: X/100 (Label)` satırı olarak gösterir. Salt-okunur modlar bunun
+yerine bir tahmin bildirir (onarım sonrası sinyaller henüz bilinmediği için):
+validate ve `--dry-run` `estimated_confidence` taşır ve
+`Estimated confidence: X/100 (Label) — actual result may differ after repair`
+yazdırır.
+
 Birden çok dosyada her girdi sırayla onarılır ve bir özet yazdırılır (`N
 su geçirmez, M uyarılı, K başarısız`), oluşan uyarı/hata türlerinin dökümüyle
 (hacim değişimi, Stage 2 atlandı, kısmi onarım, bozuk girdi, extreme mod nesne silme). Herhangi bir
@@ -326,7 +337,9 @@ temasından bağımsız olarak her platformda ve Qt sürümünde aynı görünü
 Bir dosya seçildiğinde log'un altındaki panel, girdi meshinde bulunan
 kusurları listeler: her deliğin merkezi ve çapı (mm) ve her non-manifold
 bölge. Bu, log'un üstündeki batch özet şeridini tamamlar — şerit batch başına
-bir sayımdır, bu panel dosya başına detaydır.
+bir sayımdır, bu panel dosya başına detaydır. Onarımdan sonra panel başlığı
+ayrıca sonucun güvenini `Confidence: X/100 — Yüksek/Orta/Düşük` segmenti
+olarak gösterir.
 
 **Kusur ısı haritası.** Kusur listesinin altında **Isı haritası göster**,
 seçili meshi kusur bölgeleri (delik kenarları ve non-manifold alanlar) gri
