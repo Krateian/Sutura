@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
 from defects import detect
-from heatmap import render, shared_frame, focus_frame
+from heatmap import render, shared_frame, focus_frame, defect_camera
 from heatmap_render import load_mesh
 
 # Tri-state colour scheme for the after view. Red (235,60,70) stays the
@@ -187,28 +187,42 @@ def main():
         orig_defects = detect(verts, tris, with_indices=True)
         rep_defects = detect(rverts, rtris, with_indices=True)
 
-        frame = shared_frame([verts, rverts], w, h, pad=24)
+        # centre_frame just yields the combined world-space bbox centre
+        # (rotation-independent in shared_frame: centre = world bbox mid-point).
+        centre_frame = shared_frame([verts, rverts], w, h, pad=24)
+        center = centre_frame[0]
+        # Rotate the shared camera toward the worst ORIGINAL defect so it is
+        # never hidden behind the mesh (Adim 3). R is None for a clean mesh or
+        # a defect at the bbox centre -> every rotation= below then falls back
+        # to _ISOMETRIC.
+        worst = _worst_defect(verts, orig_defects)
+        R = defect_camera(center, worst['centroid']) if worst is not None else None
+        # recompute the REAL frame with the defect-facing rotation so the scale
+        # is fitted to R's view axes (otherwise the mesh could be clipped or
+        # leave excessive margin when rendered with R).
+        frame = shared_frame([verts, rverts], w, h, pad=24, rotation=R)
         # before: original defects red on the neutral grey body (unchanged).
         before = render(verts, tris, orig_defects['holes'], orig_defects['non_manifold'],
-                        w=w, h=h, frame=frame)
+                        w=w, h=h, frame=frame, rotation=R)
         # after: healed regions green, still-broken defects orange, everything
         # else grey (mesh keeps its default colour - no more all-teal body).
         healed = healed_face_mask(rverts, rtris, orig_defects, verts,
                                   rep_defects=rep_defects)
         after = render(rverts, rtris, rep_defects['holes'], rep_defects['non_manifold'],
                        w=w, h=h, frame=frame, defect=ORANGE, healed=healed,
-                       healed_color=GREEN)
+                       healed_color=GREEN, rotation=R)
 
         # detail close-up of the worst original defect, SAME zoomed camera for
         # both views so the before/after comparison is meaningful.
-        worst = _worst_defect(verts, orig_defects)
         if worst is not None:
-            dframe = focus_frame(verts, worst['verts_idx'], w, h, pad=24)
+            dframe = focus_frame(verts, worst['verts_idx'], w, h, pad=24, rotation=R)
             d_before = render(verts, tris, orig_defects['holes'],
-                              orig_defects['non_manifold'], w=w, h=h, frame=dframe)
+                              orig_defects['non_manifold'], w=w, h=h, frame=dframe,
+                              rotation=R)
             d_after = render(rverts, rtris, rep_defects['holes'],
                              rep_defects['non_manifold'], w=w, h=h, frame=dframe,
-                             defect=ORANGE, healed=healed, healed_color=GREEN)
+                             defect=ORANGE, healed=healed, healed_color=GREEN,
+                             rotation=R)
         else:
             # no defects to zoom: the detail views mirror the main views
             d_before, d_after = before, after
