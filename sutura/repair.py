@@ -23,6 +23,7 @@ import subprocess
 import numpy as np
 
 from classification import classify, issue_label, is_stage2_skipped
+from confidence import (estimate_confidence_pre_repair, repair_confidence)
 from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
 
@@ -611,6 +612,10 @@ def repair_3mf(src, out, tmpdir, mode='auto'):
             else:
                 rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
                 rep['defects'] = detect_defects(verts, tris)
+                _rc = repair_confidence(rep)
+                rep['repair_confidence'] = _rc['score']
+                rep['repair_confidence_label'] = _rc['label']
+                rep['repair_confidence_factors'] = _rc['factors']
                 reports.append(rep)
                 cache[key] = (new_v, new_t)
 
@@ -683,6 +688,7 @@ def validate_mesh_from_arrays(verts, tris):
     self_intersections = int(ms.current_mesh().face_selection_array().sum())
 
     vol = signed_volume(v, t)
+    bridge = bool(os.path.exists(BRIDGE))
     validation = {
         'vertices': int(v.shape[0]),
         'faces': int(t.shape[0]),
@@ -695,9 +701,21 @@ def validate_mesh_from_arrays(verts, tris):
         'surface_area': round(surface_area(v, t), 3),
         'orientation': 'inverted' if vol < 0 else 'consistent',
     }
+    est = estimate_confidence_pre_repair({
+        'detected_type': cls['type'],
+        'detected_confidence': cls['confidence'],
+        'stage2_bridge_available': bridge,
+        'holes': len(holes),
+        'non_manifold': len(nm),
+        'self_intersections': self_intersections,
+    })
     return {'validation': validation,
             'detected_type': cls['type'],
-            'detected_confidence': cls['confidence']}
+            'detected_confidence': cls['confidence'],
+            'stage2_bridge_available': bridge,
+            'estimated_confidence': est['score'],
+            'estimated_confidence_label': est['label'],
+            'estimated_confidence_factors': est['factors']}
 
 
 def validate_file(src):
@@ -765,6 +783,17 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
                     mincomponentsize=params['mincomponentsize'], removeunref=True)
     debris_faces = max(before_faces - ms.current_mesh().face_number(), 0)
 
+    est = estimate_confidence_pre_repair({
+        'detected_type': cls['type'],
+        'detected_confidence': cls['confidence'],
+        'tuning_applied': tuning,
+        'mode': mode,
+        'holes': len(holes),
+        'non_manifold': len(nm),
+        'self_intersections': self_intersections,
+        'stage2_bridge_available': bool(os.path.exists(BRIDGE)),
+    })
+
     return {
         'repair_mode': mode,
         'detected_type': cls['type'],
@@ -778,6 +807,9 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
         'self_intersections': self_intersections,
         'connected_components': int(topo.get('connected_components_number', 1)),
         'stage2_bridge_available': bool(os.path.exists(BRIDGE)),
+        'estimated_confidence': est['score'],
+        'estimated_confidence_label': est['label'],
+        'estimated_confidence_factors': est['factors'],
     }
 
 
@@ -847,6 +879,10 @@ def human_report(r, show_defects=False, show_diff=False):
         if tuning is not None:
             line += ' - tuned thresholds' if tuning else ' - default thresholds (below confidence gate)'
         lines.append(line)
+    rc = r.get('repair_confidence')
+    if rc is not None:
+        lines.append('Confidence: %d/100 (%s)'
+                     % (rc, str(r.get('repair_confidence_label', '?')).title()))
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))
@@ -927,6 +963,10 @@ def human_validate(r, show_defects=False):
     v = r.get('validation', {})
     lines.append('Type  : %s (confidence %.2f)' % (
         r.get('detected_type', '?'), r.get('detected_confidence', 0.0)))
+    ec = r.get('estimated_confidence')
+    if ec is not None:
+        lines.append('Estimated confidence: %d/100 (%s) — actual result may differ after repair'
+                     % (ec, str(r.get('estimated_confidence_label', '?')).title()))
     lines.append('')
     lines.append('Validation:')
     lines.append('  Vertices            : %d' % v.get('vertices', 0))
@@ -973,6 +1013,10 @@ def human_dry_run(r):
     pa = r.get('would_apply', {})
     tuning = 'tuned thresholds' if r.get('tuning_applied') else 'default thresholds'
     lines.append('Tuning: %s' % tuning)
+    ec = r.get('estimated_confidence')
+    if ec is not None:
+        lines.append('Estimated confidence: %d/100 (%s) — actual result may differ after repair'
+                     % (ec, str(r.get('estimated_confidence_label', '?')).title()))
     lines.append('Would apply: mincomponentsize=%d, maxholesize=%d' % (
         pa.get('mincomponentsize', 0), pa.get('maxholesize', 0)))
     lines.append('Found  : %d hole(s) (largest %.3f), %d non-manifold region(s), '
@@ -1013,6 +1057,15 @@ def process_file(src, human, mode='auto'):
     category, issues, _summary = classify(result)
     result['category'] = category
     result['issues'] = issues
+
+    # Post-repair confidence. Multi-object 3MF carries it per object (added
+    # in repair_3mf, mirroring the 'defects' field) — deliberately no
+    # top-level aggregate, consistent with the 3MF report contract.
+    if 'object_reports' not in result:
+        _rc = repair_confidence(result)
+        result['repair_confidence'] = _rc['score']
+        result['repair_confidence_label'] = _rc['label']
+        result['repair_confidence_factors'] = _rc['factors']
     return result, category
 
 

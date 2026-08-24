@@ -93,6 +93,8 @@ STRINGS = {
         'type_detected': 'Detected: %s (%.2f)',
         'type_tuned': ' — tuned thresholds',
         'type_default': ' — default thresholds (confidence below gate)',
+        'confidence_high': 'High', 'confidence_medium': 'Medium', 'confidence_low': 'Low',
+        'confidence_score': 'Confidence: %d/100 — %s',
         'diff_line': 'Volume: %s%% \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Show heatmap',
         'heatmap_rendering': 'Rendering heatmap…',
@@ -175,6 +177,8 @@ STRINGS = {
         'type_detected': 'Tespit edilen: %s (%.2f)',
         'type_tuned': ' — ayarlanmış eşikler',
         'type_default': ' — varsayılan eşikler (güven eşiğinin altında)',
+        'confidence_high': 'Yüksek', 'confidence_medium': 'Orta', 'confidence_low': 'Düşük',
+        'confidence_score': 'Güven: %d/100 — %s',
         'diff_line': 'Hacim: %s%% \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Isı haritası göster',
         'heatmap_rendering': 'Isı haritası çiziliyor…',
@@ -1052,7 +1056,9 @@ class MainWindow(QMainWindow):
             self._defects_by_path[path] = data.get('defects')
             self._type_by_path[path] = (data.get('detected_type'),
                                         data.get('detected_confidence'),
-                                        data.get('tuning_applied'))
+                                        data.get('tuning_applied'),
+                                        data.get('repair_confidence'),
+                                        data.get('repair_confidence_label'))
             self._diff_by_path[path] = data.get('stage1', {})
             self._output_by_path[path] = data.get('output')
             if self._item_by_path.get(path) is self.tree.currentItem():
@@ -1090,6 +1096,12 @@ class MainWindow(QMainWindow):
                 base += _t('type_tuned')
             elif tuning is False:
                 base += _t('type_default')
+            # post-repair confidence score (None for multi-object 3MF, which
+            # has no top-level aggregate)
+            rc = dt[3]
+            if rc is not None:
+                base += ' — ' + _t('confidence_score', rc,
+                                   _t('confidence_' + (dt[4] or 'medium')))
         self.defect_label.setText(base)
         lines = []
         # before/after geometry diff summary (from stage1)
