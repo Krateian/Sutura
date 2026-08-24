@@ -23,7 +23,8 @@ SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-from heatmap import _ISOMETRIC, focus_frame, render, shared_frame  # noqa: E402
+from heatmap import (_ISOMETRIC, defect_camera, focus_frame, render,  # noqa: E402
+                     shared_frame)
 from PySide6.QtGui import QImage  # noqa: E402
 
 
@@ -204,6 +205,53 @@ def test_render_custom_rotation_changes_visible_defect():
     red_down = _red_count(render(verts, tris, holes=holes, w=w, h=h, pad=pad,
                                  rotation=R_down))
     assert red_down > red_iso, (red_iso, red_down)
+
+
+def test_defect_camera_plus_x():
+    center = np.array([0.0, 0.0, 0.0])
+    R = defect_camera(center, center + np.array([1.0, 0.0, 0.0]))
+    assert R is not None
+    forward = R[2]
+    assert np.allclose(forward, [1.0, 0.0, 0.0], atol=1e-9)
+    # right-handed: right x up == forward
+    assert np.allclose(np.cross(R[0], R[1]), R[2], atol=1e-9)
+    assert abs(np.linalg.det(R) - 1.0) < 1e-9
+
+
+def test_defect_camera_plus_y_gimbal():
+    center = np.array([0.0, 0.0, 0.0])
+    R = defect_camera(center, center + np.array([0.0, 1.0, 0.0]))
+    assert R is not None
+    assert np.all(np.isfinite(R))
+    forward = R[2]
+    assert np.allclose(forward, [0.0, 1.0, 0.0], atol=1e-9)
+    # up0 falls to +Z, so right/up are horizontal (no (0,1,0) component)
+    assert abs(R[0, 1]) < 1e-9 and abs(R[1, 1]) < 1e-9
+    assert np.allclose(np.cross(R[0], R[1]), R[2], atol=1e-9)
+    assert abs(np.linalg.det(R) - 1.0) < 1e-9
+
+
+def test_defect_camera_near_center_returns_none():
+    center = np.array([5.0, -2.0, 3.0])
+    assert defect_camera(center, center) is None
+    assert defect_camera(center, center + np.array([1e-12, 0.0, 0.0])) is None
+
+
+def test_defect_camera_orthonormal_various_directions():
+    center = np.array([0.0, 0.0, 0.0])
+    dirs = [np.array([1.0, 0.0, 0.0]),
+            np.array([-1.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0]),
+            np.array([0.0, 0.0, -1.0]),
+            np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0),
+            np.array([1.0, -2.0, 3.0])]
+    for d in dirs:
+        R = defect_camera(center, center + d)
+        assert R is not None
+        assert np.all(np.isfinite(R))
+        assert np.allclose(R @ R.T, np.eye(3), atol=1e-9), d
+        assert abs(np.linalg.det(R) - 1.0) < 1e-9, d
+        assert np.allclose(R[2], d / np.linalg.norm(d), atol=1e-9), d
 
 
 def main():

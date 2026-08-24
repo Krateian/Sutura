@@ -29,6 +29,40 @@ _ISOMETRIC = np.array([
     [0.57735027, -0.57735027, 0.57735027],
 ], dtype=np.float64)
 
+
+def defect_camera(center, target, up_hint=None):
+    """Build a defect-facing camera basis for the before/after comparison.
+
+    ``center`` is the mesh's world-space bbox centre and ``target`` the world-
+    space centroid of the worst defect. Returns a (3,3) row-based orthonormal
+    rotation matrix with the same structure as ``_ISOMETRIC`` (rows =
+    [right, up, forward], right-handed, det = +1), where ``forward`` points
+    from the mesh centre toward the defect so the defect faces the camera.
+    Returns None when ``target`` is effectively at ``center`` (norm below a
+    small epsilon) so the caller can fall back to ``_ISOMETRIC``.
+
+    ``up_hint`` is reserved for a future explicit up preference and is
+    currently unused (the least-aligned world axis, tie-broken toward +Y,
+    is chosen automatically).
+    """
+    d = np.asarray(target, dtype=np.float64) - np.asarray(center, dtype=np.float64)
+    norm = np.linalg.norm(d)
+    if norm < 1e-9:
+        return None
+    forward = d / norm
+    # least-aligned world axis for the up; axis order [+Y, +Z, +X] so ties
+    # break toward +Y, and the +Y gimbal pole (forward == (0,1,0)) drops to
+    # +Z automatically (first zero-dot axis after +Y itself).
+    axes = np.array([[0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0],
+                     [1.0, 0.0, 0.0]])
+    up0 = axes[int(np.argmin(np.abs(axes @ forward)))]
+    right = np.cross(up0, forward)
+    right = right / np.linalg.norm(right)
+    up = np.cross(forward, right)
+    return np.array([right, up, forward], dtype=np.float64)
+
+
 # --- Three-point lighting model (world space, camera fixed at direction 1,1,1) ---
 # Light directions point from the surface toward the light source (so the
 # Lambertian term is dot(normal, dir), clamped at 0).
