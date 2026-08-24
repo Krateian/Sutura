@@ -58,6 +58,19 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
   `scripts/generate_screenshots.py` whenever a visible behaviour changes. The
   generator forces the English locale (`LANG=en_US.UTF-8`) regardless of the
   system locale — screenshots are always the English UI (standing rule).
+- Feature Status table audit: at every stable release (v0.1.x) AND every
+  minor-series transition (vX.Y.9 -> vX.(Y+1).0), compare the README.md /
+  README.tr.md Feature Status table and narrative sections against the
+  actual codebase (git log between the previous and current tag) — not
+  just for the version being released, but to catch any earlier version's
+  documentation debt too (a release can ship without its README catching
+  up; check for that gap explicitly). Bump percentages only when the
+  honest state changed (new tests, calibration, scope) — keep the
+  understated tone, never round up for optics. Also re-run
+  scripts/generate_screenshots.py and refresh assets/ if the GUI's visible
+  state changed since the screenshots were last generated (check via
+  git log --follow on the asset files). This audit runs automatically at
+  every release — the user does not need to ask or remind.
 
 ## Cleanup discipline
 
