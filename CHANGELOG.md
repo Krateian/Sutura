@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [0.2.0] - 2026-08-26
+## [Unreleased]
 
 The **interactive viewer** release: the biggest feature step since 0.1.0.
 A CPU-rendered interactive 3D view (rotate/zoom + surface-deviation diff)
