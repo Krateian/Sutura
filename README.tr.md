@@ -34,6 +34,20 @@ ve pull request'te CI tarafından otomatik doğrulanır.
 
 ![Sutura GUI](assets/screenshot.png)
 
+<!-- TEMP-NOTICE: remove this block after returning to active dev -->
+> **Aktif geliştirme hakkında bir not:** v0.2.0 yayınlandıktan
+> sonra geliştirme bir süre yavaşlayabilir — yeni bir ülkeye
+> taşınıyorum ve bir-iki ay, belki daha uzun bir süre boş zamanım
+> ciddi şekilde azalacak. Sutura terk edilmiş değil, sadece bir
+> süre daha yavaş ilerleyecek. Anlayışınız için teşekkürler.
+>
+> Ayrıca: v0.2 ile birlikte Sutura'nın lisansı Apache 2.0'dan, ticari
+> kullanım şartı içeren "source-available" bir lisansa geçecek (kişisel,
+> ticari olmayan kullanım ücretsiz kalacak). v0.1.9'a kadarki (dahil)
+> sürümler kalıcı olarak Apache 2.0 kalır — bu sadece bundan sonraki yeni
+> sürümleri etkiler.
+<!-- /TEMP-NOTICE -->
+
 ## Neden iki aşama
 
 * **Aşama 1 - PyMeshLab (VCG).** Yinelenen ve dejenere yüzleri kaldırır,
@@ -597,6 +611,13 @@ bu yüzden bir mesh bildirirken lütfen şunları ekleyin:
 
 Bu, kök nedeni bulmayı çok kolaylaştırır. Yapılandırılmış raporlar önerilir:
 `.github/ISSUE_TEMPLATE/bug_report.md`'ye bakın.
+
+## Destekçiler
+
+Sutura bir baskını ya da zamanını kurtardıysa,
+[GitHub üzerinden destek olabilirsin](https://github.com/sponsors/Krateian).
+
+(Henüz destekçi yok — ilk sen ol!)
 
 ## Lisans
 

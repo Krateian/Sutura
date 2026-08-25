@@ -33,6 +33,20 @@ CI on each push and pull request.
 
 ![Sutura GUI](assets/screenshot.png)
 
+<!-- TEMP-NOTICE: remove this block after returning to active dev -->
+> **A note on active development:** After v0.2.0 ships,
+> development will likely slow down for a while — I'm relocating
+> to a new country and expect to have much less free time for a
+> month or two, possibly longer. Sutura isn't abandoned; things
+> will just move slower for a bit. Thanks for your patience.
+>
+> Also: starting with v0.2, Sutura's license will change from Apache 2.0
+> to a source-available license with a commercial-use clause (personal,
+> non-commercial use stays free). Versions up to and including v0.1.9
+> remain Apache 2.0 permanently — this only affects new releases going
+> forward.
+<!-- /TEMP-NOTICE -->
+
 ## Why two stages
 
 * **Stage 1 - PyMeshLab (VCG).** Removes duplicate and degenerate faces,
@@ -588,6 +602,13 @@ report a mesh please include:
 
 This makes the root cause much easier to pin down. Structured reports are
 encouraged: see `.github/ISSUE_TEMPLATE/bug_report.md`.
+
+## Sponsors
+
+If Sutura has saved you time or a broken print, you can
+[sponsor its development on GitHub](https://github.com/sponsors/Krateian).
+
+(No sponsors yet — be the first!)
 
 ## License
 
