@@ -30,12 +30,20 @@ HEALED_HALO = 1.5
 
 
 def defect_vertex_set(defect_report):
-    """Union of all defect vertex indices (hole rims + non-manifold regions)."""
+    """Union of all defect vertex indices (hole rims + non-manifold regions).
+
+    Accepts plain Python lists and numpy arrays for the ``verts_idx``
+    entries; the truthiness check avoids ``or []`` (which would raise
+    ValueError on a multi-element numpy array)."""
     dv = set()
     for h in (defect_report.get('holes') or []):
-        dv.update(h.get('verts_idx') or [])
+        vs = h.get('verts_idx')
+        if vs is not None and len(vs):
+            dv.update(vs)
     for nm in (defect_report.get('non_manifold') or []):
-        dv.update(nm.get('verts_idx') or [])
+        vs = nm.get('verts_idx')
+        if vs is not None and len(vs):
+            dv.update(vs)
     return dv
 
 

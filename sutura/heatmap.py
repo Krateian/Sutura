@@ -227,12 +227,21 @@ def focus_frame(verts, verts_idx, w, h, pad, fill=0.75, rotation=None):
 
 
 def _defect_vertex_set(holes, non_manifold):
-    """Union of all defect vertex indices (hole rims + non-manifold regions)."""
+    """Union of all defect vertex indices (hole rims + non-manifold regions).
+
+    Accepts plain Python lists and numpy arrays for the ``verts_idx``
+    entries: ``dv.update`` takes any iterable, so the only requirement is a
+    safe truthiness check (``vs or []`` would raise ValueError on a
+    multi-element numpy array)."""
     dv = set()
     for h in holes or []:
-        dv.update(h.get('verts_idx') or [])
+        vs = h.get('verts_idx')
+        if vs is not None and len(vs):
+            dv.update(vs)
     for nm in non_manifold or []:
-        dv.update(nm.get('verts_idx') or [])
+        vs = nm.get('verts_idx')
+        if vs is not None and len(vs):
+            dv.update(vs)
     return dv
 
 

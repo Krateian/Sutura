@@ -325,6 +325,37 @@ def test_deviation_defect_wins():
     assert _red_count(with_d) > 0, 'defect colour must win over the ramp'
 
 
+def test_prepare_render_accepts_numpy_verts_idx():
+    # Regression: gui.py's interactive viewer passes np.asarray(vidx) as a
+    # hole's verts_idx (MeshViewport._build_contexts). heatmap._defect_vertex_set
+    # used ``vs or []``, which raises ValueError on a multi-element numpy
+    # array (ambiguous truth value) — so prepare_render crashed silently in
+    # the viewer, _build_contexts aborted, and the interactive view never
+    # rendered. prepare_render must accept plain lists AND numpy arrays.
+    from heatmap import prepare_render, _defect_vertex_set
+    verts, tris = _grid_mesh()
+    n = int(round(len(verts) ** 0.5))
+    multi = np.asarray([i for i in range(len(verts))
+                        if verts[i, 0] > 3.0 and verts[i, 2] > 3.0],
+                       dtype=np.int64)
+    assert multi.size > 1, 'test needs a multi-element defect cluster'
+    # multi-element numpy array (the gui.py case) must not raise
+    ctx = prepare_render(verts, tris, holes=[{'verts_idx': multi}],
+                         w=240, h=180, pad=24)
+    assert _defect_vertex_set([{'verts_idx': multi}], None) == set(multi.tolist())
+    assert ctx.is_defect_face.any()
+    # non_manifold with a numpy array must be tolerated too
+    assert _defect_vertex_set(None, [{'verts_idx': multi}]) == set(multi.tolist())
+    # single-element numpy array (never raised, but keep it covered)
+    one = np.asarray([0], dtype=np.int64)
+    assert _defect_vertex_set([{'verts_idx': one}], None) == {0}
+    ctx1 = prepare_render(verts, tris, holes=[{'verts_idx': one}],
+                          w=240, h=180, pad=24)
+    assert ctx1.is_defect_face.any()
+    # plain Python lists still work (the historical before/after path)
+    assert _defect_vertex_set([{'verts_idx': [0, 1, 2]}], None) == {0, 1, 2}
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):
