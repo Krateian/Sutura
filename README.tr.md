@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/github/commit-activity/y/Krateian/Sutura" alt="Commit etkinliği">
 </p>
 
-STL ve 3MF dosyaları için iki aşamalı mesh onarımı. Linux için geliştirildi,
+STL, OBJ ve 3MF dosyaları için iki aşamalı mesh onarımı. Linux için geliştirildi,
 macOS tam destekli.
 
 Linux'ta Windows'un sağ tık "Fix model" (3D Builder, Netfabb) ya da Bambu
@@ -85,9 +85,9 @@ söyler.
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Eksikler: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
-| Dolphin entegrasyonu | ~%85 | STL/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
+| Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%35 — deneysel | Tek başına çalışan betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ sürümlerinde bulunan bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux içindir. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
-| Test kapsamı | ~%88 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, güncelleyici, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+| Test kapsamı | ~%88 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, güncelleyici, obj onarımı, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
 
@@ -219,6 +219,7 @@ CLI:
 
 ```sh
 sutura model.stl            # model_fixed.stl yazar
+sutura model.obj            # model_fixed.obj yazar
 sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # insanın okuyabileceği rapor
 sutura model.stl --human --defects   # ayrıca girdi deliklerini / non-manifold bölgeleri listeler
@@ -229,6 +230,13 @@ sutura model.stl --dry-run  # onarımın ne yapacağını raporlar, HİÇBİR Ş
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
 sutura --version            # sürümü yazdırır ve çıkar
 ```
+
+OBJ notu: malzemeler/dokular (`mtllib`/`usemtl`) onarılmış çıktıda **korunmaz** —
+mesh yeniden kurulur (yalnızca köşeler + üçgenler), bu yüzden doku koordinatları
+taşınamaz. Girdi OBJ bunlara referans veriyorsa rapor bunu `material_discarded`
+(JSON) ve `Material:` satırıyla (`--human`) açıkça belirtir. 3D dilimleyiciler
+OBJ malzemelerini yok sayar, yani bu yalnızca onarılmış OBJ'yi doku işleme için
+saklarsan önemlidir.
 
 **Validate (`validate`).** `sutura validate model.stl` bir mesh'i onarmadan
 analiz eder ve raporlar — salt-okunur bir sağlık kontrolü, hiçbir şey yazmaz.
@@ -419,7 +427,7 @@ ettikçe canlı güncellenen tek cümlelik bir açıklamayla (Aşırı kademesi,
 (dosya başına değil) ve CLI'ya `--mode <mod>` olarak iletilir (CLI bayrağıyla
 aynı beş değer, varsayılan `auto`). Güncel mod her zaman düğmede görünür.
 
-Dolphin: bir STL/3MF dosyasına sağ tık -> **Sutura ile Onar**. Tek seçimde GUI
+Dolphin: bir STL/OBJ/3MF dosyasına sağ tık -> **Sutura ile Onar**. Tek seçimde GUI
 dosya yüklü olarak açılır; çoklu seçimde her dosya arka planda onarılır ve bir
 özet diyaloğu gösterilir.
 

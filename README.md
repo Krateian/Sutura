@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/github/commit-activity/y/Krateian/Sutura" alt="Commit activity">
 </p>
 
-Two-stage mesh repair for STL and 3MF files, built for Linux with full
+Two-stage mesh repair for STL, OBJ and 3MF files, built for Linux with full
 macOS support.
 
 Linux has no direct equivalent of Windows' right-click "Fix model" (3D Builder,
@@ -83,9 +83,9 @@ Sutura and where you should still double-check the output.
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
-| Dolphin integration | ~85% | Right-click service menu for STL/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
+| Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
-| Test coverage | ~88% | Plain-script suites (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, updater, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
+| Test coverage | ~88% | Plain-script suites (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, updater, obj repair, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
 
@@ -215,6 +215,7 @@ CLI:
 
 ```sh
 sutura model.stl            # writes model_fixed.stl
+sutura model.obj            # writes model_fixed.obj
 sutura model.3mf -o fixed.3mf
 sutura model.stl --human    # human-readable report
 sutura model.stl --human --defects   # also list input holes / non-manifold regions
@@ -225,6 +226,13 @@ sutura model.stl --dry-run  # report what a repair would do, write NOTHING
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
 sutura --version            # print the version and exit
 ```
+
+OBJ note: materials/textures (`mtllib`/`usemtl`) are **not preserved** in the
+repaired output — the mesh is rebuilt (vertices + triangles only), so texture
+coordinates cannot be carried over. The report flags this as
+`material_discarded` (JSON) and with a `Material:` line (`--human`) when the
+input OBJ references them. 3D slicers ignore OBJ materials, so this only
+matters if you keep the repaired OBJ for texturing.
 
 **Validate (`validate`).** `sutura validate model.stl` analyzes a mesh and
 reports it without repairing or writing anything — a read-only health check.
@@ -415,7 +423,7 @@ applies to the next Repair run for every file, not per file, and is passed to
 the CLI as `--mode <mode>` (the same five values as the CLI flag, default
 `auto`). The current mode is always shown on the button.
 
-Dolphin: right-click an STL/3MF file -> **Repair with Sutura**. With a single
+Dolphin: right-click an STL/OBJ/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each
 file is repaired headlessly and a summary dialog is shown.
 

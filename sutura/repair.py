@@ -516,6 +516,24 @@ def scan_bad_coordinates(path):
     return None
 
 
+def obj_has_material_refs(path):
+    """True when an OBJ file references materials/textures (mtllib/usemtl).
+
+    The repair pipeline rebuilds the mesh (verts + tris only), so any
+    material/texture references in the input are not preserved in the
+    repaired output. This lets the report surface that loss explicitly
+    instead of dropping it silently. Only meaningful for .obj inputs."""
+    try:
+        with open(path, errors='replace') as f:
+            for line in f:
+                s = line.lstrip().lower()
+                if s.startswith(('mtllib ', 'usemtl ')):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def repair_file(src, out, tmpdir, mode='auto'):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
@@ -531,6 +549,8 @@ def repair_file(src, out, tmpdir, mode='auto'):
 
     report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
     report['defects'] = detect_defects(verts, tris)
+    if os.path.splitext(src)[1].lower() == '.obj':
+        report['material_discarded'] = obj_has_material_refs(src)
 
     # stage 2 applies to watertight results; run_stage2 handles the fixed
     # venv, in-process, or an explicit "skipped" report.
@@ -885,6 +905,9 @@ def human_report(r, show_defects=False, show_diff=False):
     if rc is not None:
         lines.append('Confidence: %d/100 (%s)'
                      % (rc, str(r.get('repair_confidence_label', '?')).title()))
+    if r.get('material_discarded'):
+        lines.append('Material: input OBJ has mtllib/usemtl references which '
+                     'are not preserved in the repaired output.')
     lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed            : %d' % s1.get('holes_closed', 0))
@@ -1075,7 +1098,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(
         prog='sutura',
-        description='Repair one or more STL/3MF meshes. Output files get a "_fixed" suffix.')
+        description='Repair one or more STL/OBJ/3MF meshes. Output files get a "_fixed" suffix.')
     parser.add_argument('files', nargs='*', metavar='FILE',
                         help='input mesh file(s)')
     parser.add_argument('-o', '--output', metavar='OUTPUT',

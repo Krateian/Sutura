@@ -126,6 +126,6 @@ fi
 
 echo
 echo "Installed."
-echo "  CLI:       $BIN_DIR/sutura <file.stl|file.3mf>"
+echo "  CLI:       $BIN_DIR/sutura <file.stl|file.obj|file.3mf>"
 echo "  GUI:       $APP_DIR/gui.py"
-echo "  Dolphin:   right-click an STL/3MF -> Repair with Sutura"
+echo "  Dolphin:   right-click an STL/OBJ/3MF -> Repair with Sutura"
