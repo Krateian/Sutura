@@ -65,6 +65,18 @@ def test_cube_is_mechanical():
     assert r['type'] == 'mechanical', r
 
 
+def test_corrected_dihedral_metric_values():
+    # regression for the edge->face pairing bug (i % F, formerly i // 3): the
+    # box must read near90=66.67 (12 edge pairs at 90 deg) and flat=33.33 (6
+    # coplanar quad diagonals), NOT the buggy 72.22/11.11 the wrong pairing
+    # produced.
+    from mesh_classifier import _dihedral_stats
+    near90, flat, gentle = _dihedral_stats(*_cube())
+    assert round(near90, 2) == 66.67, near90
+    assert round(flat, 2) == 33.33, flat
+    assert round(gentle, 2) == 0.0, gentle
+
+
 def test_sphere_is_organic():
     from mesh_classifier import classify_mesh
     r = classify_mesh(*_icosphere(3))
@@ -77,6 +89,7 @@ def test_confidence_in_range():
         r = classify_mesh(v, t)
         assert 0.0 <= r['confidence'] <= 1.0, r
         assert 'metrics' in r and 'near90' in r['metrics'], r
+        assert 'flat' in r['metrics'] and 'gentle' in r['metrics'], r
         assert 'mechanical_score' in r['metrics'], r
         assert 'organic_score' in r['metrics'], r
 
@@ -108,38 +121,46 @@ def test_clean_boxes_get_high_confidence():
 
 
 def test_confidence_monotonic():
-    # the signed-margin score must be monotonic in the driving metric when the
-    # other is held constant: more near90 => not less mechanical, and fewer
-    # near90 => not less organic. Tested on the internal scoring function.
+    # the signed-margin score must be monotonic in each driving metric when
+    # the others are held constant: more near90 => not less mechanical and
+    # not more organic; more flat => not less mechanical and not more organic;
+    # more gentle => not less organic (mechanical is untouched by gentle).
     from mesh_classifier import _class_scores
-    mech, org = _class_scores(45.0, 0.0)
-    prev_mech, prev_org = mech, org
-    for near90 in np.linspace(45.0, 95.0, 26):
-        m, o = _class_scores(float(near90), 0.0)
-        assert m >= prev_mech - 1e-9, (near90, m, prev_mech)
-        assert o <= prev_org + 1e-9, (near90, o, prev_org)
-        prev_mech, prev_org = m, o
-    # and the reverse direction: coplanar drives the mechanical OR-signal too
-    m_low, _ = _class_scores(30.0, 0.0)
-    m_high, _ = _class_scores(30.0, 60.0)
-    assert m_high >= m_low, (m_low, m_high)
+    prev_m, prev_o = _class_scores(0.0, 0.0, 0.0)
+    for near90 in np.linspace(0.0, 95.0, 26):
+        m, o = _class_scores(float(near90), 0.0, 0.0)
+        assert m >= prev_m - 1e-9, (near90, m, prev_m)
+        assert o <= prev_o + 1e-9, (near90, o, prev_o)
+        prev_m, prev_o = m, o
+    prev_m, prev_o = _class_scores(0.0, 0.0, 0.0)
+    for flat in np.linspace(0.0, 100.0, 26):
+        m, o = _class_scores(0.0, float(flat), 0.0)
+        assert m >= prev_m - 1e-9, (flat, m, prev_m)
+        assert o <= prev_o + 1e-9, (flat, o, prev_o)
+        prev_m, prev_o = m, o
+    prev_m, prev_o = _class_scores(0.0, 0.0, 0.0)
+    for gentle in np.linspace(0.0, 100.0, 26):
+        m, o = _class_scores(0.0, 0.0, float(gentle))
+        assert o >= prev_o - 1e-9, (gentle, o, prev_o)
+        assert abs(m - prev_m) <= 1e-9, (gentle, m, prev_m)
+        prev_m, prev_o = m, o
 
 
 def test_tuning_gate_thresholds():
     # the repair confidence gate (Aşama 3): a classified mesh only gets its
     # tuned Stage 1 thresholds when confidence clears the class-specific gate
-    # (mechanical 0.75, organic 0.55); below it defaults are used. Unknown
+    # (mechanical 0.75, organic 0.70); below it defaults are used. Unknown
     # never tunes.
     from repair import (MECH_TUNE_GATE, ORG_TUNE_GATE, tuning_applied_for)
     assert MECH_TUNE_GATE == 0.75
-    assert ORG_TUNE_GATE == 0.55
+    assert ORG_TUNE_GATE == 0.70
     # exactly at the gate -> tuned (>=), just below -> defaults
     assert tuning_applied_for('mechanical', MECH_TUNE_GATE) == True
     assert tuning_applied_for('mechanical', MECH_TUNE_GATE - 0.001) == False
     assert tuning_applied_for('mechanical', 0.92) == True
     assert tuning_applied_for('organic', ORG_TUNE_GATE) == True
     assert tuning_applied_for('organic', ORG_TUNE_GATE - 0.001) == False
-    assert tuning_applied_for('organic', 0.62) == True
+    assert tuning_applied_for('organic', 0.71) == True
     # unknown and unclassified -> defaults, even at high confidence
     assert tuning_applied_for('unknown', 0.9) == False
     assert tuning_applied_for(None, 0.9) == False
@@ -148,15 +169,19 @@ def test_tuning_gate_thresholds():
 def test_tuning_gate_low_confidence_mesh_uses_defaults():
     # end-to-end: a real mesh classified below the gate must report
     # tuning_applied=False but keep its detected type (defaults used). The
-    # lattice sits at ~0.72 mechanical, below the 0.75 gate.
-    import trimesh
+    # 24k-tri smooth capsule reads ~0.69 organic, below the 0.70 gate.
     from mesh_classifier import classify_mesh
     from repair import tuning_applied_for
-    from make_classifier_set import _lattices
-    name, v, t, _label = _lattices()[0]
-    r = classify_mesh(v, t)
-    assert r['type'] == 'mechanical', r
-    assert r['confidence'] < 0.75, r
+    from make_classifier_set import iter_meshes
+    capsule = None
+    for m in iter_meshes():
+        if m['name'] == 'capsule_64':
+            capsule = m
+            break
+    assert capsule is not None, 'capsule_64 missing from calibration set'
+    r = classify_mesh(capsule['verts'], capsule['tris'])
+    assert r['type'] == 'organic', r
+    assert r['confidence'] < 0.70, r
     assert not tuning_applied_for(r['type'], r['confidence'])
 
 

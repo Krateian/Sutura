@@ -62,7 +62,8 @@ def main():
             'conf': r['confidence'],
             'tuning': tuning_applied(r['type'], r['confidence']),
             'near90': r['metrics']['near90'],
-            'coplanar': r['metrics']['coplanar'],
+            'flat': r['metrics']['flat'],
+            'gentle': r['metrics']['gentle'],
         })
 
     total = len(rows)
@@ -112,14 +113,14 @@ def main():
 
     # --- per-mesh detail ---------------------------------------------------
     print()
-    print('%-22s %-10s %-10s %-8s %-8s %-8s %s' %
-          ('name', 'truth', 'pred', 'conf', 'near90', 'coplanar', 'tuned'))
+    print('%-22s %-10s %-10s %-8s %-8s %-7s %-7s %s' %
+          ('name', 'truth', 'pred', 'conf', 'near90', 'flat', 'gentle', 'tuned'))
     for r in rows:
         flag = '' if r['truth'] == r['pred'] else '   <--'
         tuned = 'Y' if r['tuning'] else 'N'
-        print('%-22s %-10s %-10s %-8.3f %-8s %-8s %s%s' % (
+        print('%-22s %-10s %-10s %-8.3f %-8s %-7s %-7s %s%s' % (
             r['name'], r['truth'], r['pred'], r['conf'],
-            r['near90'], r['coplanar'], tuned, flag))
+            r['near90'], r['flat'], r['gentle'], tuned, flag))
     return 0
 
 

@@ -45,14 +45,16 @@ class ExtremeRemovedAllError(ValueError):
 # Confidence gate for mesh-type-aware Stage 1 tuning: a classified mesh only
 # gets its per-type thresholds (see _type_params in repair_mesh_from_arrays)
 # when the classifier is reasonably sure; below the gate we use the historical
-# default thresholds while still REPORTING the detected type. Class-specific
-# because the organic confidence is structurally capped at ~0.62 (sigmoid over
-# the coplanar metric), so the organic gate cannot be as high as mechanical.
-# Values from scripts/calibrate_classifier.py: 0.75 drops the 3 borderline
-# mechanical (lattice/damaged box at ~0.72), 0.55 drops the 2 noisiest
-# organic blobs; everything clearly mechanical/organic stays tuned.
+# default thresholds while still REPORTING the detected type.
+# Values derived from scripts/calibrate_classifier.py on the CORRECTED dihedral
+# metric (the organic confidence is no longer capped at ~0.62 -- that cap was
+# an artifact of a face-indexing bug in mesh_classifier._dihedral_stats, since
+# fixed): mechanical confidence bottoms out at 0.867, organic at 0.693. Both
+# gates sit just above the corresponding worst correct prediction, so the
+# single most-ambiguous organic (a 24k-tri smooth capsule, 0.693) stays on
+# defaults as a safety margin while everything else tunes.
 MECH_TUNE_GATE = 0.75
-ORG_TUNE_GATE = 0.55
+ORG_TUNE_GATE = 0.70
 
 
 def tuning_applied_for(mesh_type, confidence):

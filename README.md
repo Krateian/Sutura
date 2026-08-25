@@ -93,7 +93,7 @@ Sutura and where you should still double-check the output.
 | Validate (`sutura validate`) | ~55% (beta) | New in 0.1.8-beta.1: read-only analysis of holes / non-manifold regions / self-intersections / connected components / signed volume (orientation) / surface area with a watertight verdict — no repair, no output file. Beta quality: the combined metrics are new and not yet calibrated against real-world repair outcomes, and multi-object 3MF validates each object but keeps only a minimal aggregate report. It has a dedicated regression suite (`tests/test_validate.py`). |
 | Dry-run (`--dry-run`) | ~50% (beta) | New in 0.1.8-beta.1: reports the would-do plan (detected type, mode, Stage 1 thresholds, found holes / debris / self-intersections, stage 2 availability) and writes nothing. Beta quality: the plan is derived from the input analysis, so exact hole-close counts are not guaranteed to match a real run, and the extreme-mode extra passes are not simulated. It is covered by `tests/test_validate.py` (validate and dry-run share the suite). |
 | Repair modes (`--mode` ladder) | ~80% | Five-step aggressiveness ladder (`low`/`medium`/`auto`/`aggressive`/`extreme`) for the Stage 1 thresholds, exposed both as a CLI flag and a batch-wide GUI picker; `auto` keeps the historical classifier + confidence-gate behaviour byte-identical and is regression-tested (`tests/test_repair_mode.py`). Caveats: `extreme` can delete a small object (reported as the distinct `extreme_removed_object` error, not malformed input) and the per-type tuned threshold values are experimental. |
-| Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.55) and measured by a calibration harness (`scripts/calibrate_classifier.py`). Experimental: the per-type values are still estimated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
+| Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). Experimental: the per-type values are still estimated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
@@ -470,12 +470,14 @@ When classified, the type tunes two Stage 1 thresholds:
 > collected.
 
 A classified mesh only gets these tuned thresholds when its confidence clears
-a **per-class gate** (mechanical ≥ 0.75, organic ≥ 0.55). Below the gate the
+a **per-class gate** (mechanical ≥ 0.75, organic ≥ 0.70). Below the gate the
 type is still reported (`detected_type`) but the conservative default
 thresholds (`mincomponentsize=8`, `maxholesize=1000`) are used instead — the
 report and the GUI defect panel show this as `tuning_applied: false` /
-"default thresholds". The gate is class-specific because the organic
-confidence is structurally capped around 0.62.
+"default thresholds". (The organic gate used to sit lower because a classifier
+bug appeared to cap organic confidence at ~0.62; with that bug fixed the
+confidence is unbounded, so both gates sit just above the worst correct
+prediction on the calibration set.)
 
 ### Known limitation of the classifier
 

@@ -95,7 +95,7 @@ söyler.
 | Validate (`sutura validate`) | ~%55 (beta) | 0.1.8-beta.1'de yeni: delik / non-manifold bölgeler / self-intersection / bağlı bileşenler / işaretli hacim (yön) / yüzey alanı ve watertight kararının salt-okunur analizi — onarım yok, çıktı dosyası yok. Beta kalitesi: birleşik metrikler yeni ve gerçek dünya onarım sonuçlarına karşı henüz kalibre edilmemiştir; çok nesneli 3MF her nesneyi doğrular ama yalnızca asgari bir özet rapor tutar. Kendine özgü bir regression süiti vardır (`tests/test_validate.py`). |
 | Dry-run (`--dry-run`) | ~%50 (beta) | 0.1.8-beta.1'de yeni: yapılacak planı bildirir (tespit edilen tür, mod, Aşama 1 eşikleri, bulunan delik / döküntü / self-intersection, aşama 2 uygunluğu) ve hiçbir şey yazmaz. Beta kalitesi: plan girdi analizinden türetilir, bu yüzden tam delik kapatma sayıları gerçek bir çalışmayla birebir uyuşacağının garantisi değildir ve extreme modun ek geçişleri simüle edilmez. `tests/test_validate.py` tarafından kapsanır (validate ve dry-run aynı süiti paylaşır). |
 | Onarım modları (`--mode` merdiveni) | ~%80 | Aşama 1 eşikleri için beş kademeli agresiflik merdiveni (`low`/`medium`/`auto`/`aggressive`/`extreme`); hem CLI bayrağı hem batch geneli GUI seçici olarak sunulur; `auto`, tarihsel sınıflandırıcı + güven eşiği davranışını birebir korur ve regression testiyle doğrulanır (`tests/test_repair_mode.py`). Uyarılar: `extreme` küçük bir nesneyi silebilir (bu, bozuk girdi değil, ayrı `extreme_removed_object` hatası olarak raporlanır) ve tür başına ayarlı eşik değerleri deneyseldir. |
-| Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.55) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır ve eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
+| Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır ve eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Eksikler: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
@@ -474,12 +474,14 @@ Sınıflandırıldığında tür iki Aşama 1 eşiğini ayarlar:
 > `repair.py`'de ayarlanabilirler.
 
 Sınıflandırılan bir mesh, bu ayarlanmış eşikleri yalnızca confidence'ı bir
-**sınıf-özel eşiği** aştığında alır (mekanik ≥ 0.75, organik ≥ 0.55). Eşiğin
+**sınıf-özel eşiği** aştığında alır (mekanik ≥ 0.75, organik ≥ 0.70). Eşiğin
 altında tür yine raporlanır (`detected_type`), ama onun yerine ihtiyatlı
 varsayılan eşikler kullanılır (`mincomponentsize=8`, `maxholesize=1000`);
 rapor ve GUI kusur paneli bunu `tuning_applied: false` / "varsayılan eşikler"
-olarak gösterir. Eşik sınıf-özelidir çünkü organik confidence yapısal olarak
-~0.62'de tavanlanır.
+olarak gösterir. (Organik eşik eskiden daha düşüktü çünkü bir sınıflandırıcı
+bug'ı organik confidence'ı ~0.62'de tavanlanmış gibi gösteriyordu; bu bug
+düzeltildi ve güven artık tavanlı değil, dolayısıyla her iki eşik de
+kalibrasyon setindeki en zayıf doğru tahminin hemen üzerinde.)
 
 ### Sınıflandırıcının bilinen sınırlaması
 
