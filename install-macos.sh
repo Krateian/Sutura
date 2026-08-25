@@ -79,6 +79,7 @@ mkdir -p "$APP_DIR/sutura"
 for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/sutura/$f"
 done
+install -m 0644 "$REPO_DIR/LICENSE" "$APP_DIR/LICENSE"
 
 # 8) CLI wrapper ------------------------------------------------------------
 cat > "$BIN_DIR/sutura" <<EOF

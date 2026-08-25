@@ -441,11 +441,16 @@ is deliberately conservative: it only acts on high-confidence cases and
 reports `unknown` otherwise, in which case the historical default Stage 1
 parameters are used unchanged.
 
-The confidence is a **signed-margin score**: each metric (near-90° dihedral
-fraction, near-coplanar fraction) is mapped through a smooth sigmoid and the
-two signals are combined (mechanical = OR, organic = AND), so the decision is
-a soft margin rather than a single hard threshold — there is no sharp jump at
-the `[55,60]` near90 boundary. An `unknown` result still carries a non-zero
+The confidence is a **signed-margin score**: three dihedral bands are computed
+from adjacent-face angles — `near90` (`[60,120]°`, sharp edges), `flat` (`<1°`,
+true planar surfaces) and `gentle` (`[1,15)°`, slight curvature) — and each is
+mapped through a smooth sigmoid. The bands are combined as **mechanical =
+max(near90 signal, flat signal)** (either is enough) and **organic = min(low
+near90, low flat, high gentle)** (all three must hold), so the decision is a
+soft margin rather than a single hard threshold — there is no sharp jump at
+the `[55,60]` near90 boundary. The `flat`/`gentle` split is what keeps smooth
+high-poly organic meshes from reading mechanical: their dihedrals are ~2–5°,
+i.e. `gentle`, not `flat`. An `unknown` result still carries a non-zero
 proximity value (which class the mesh leans toward, and how close) instead of
 a flat 0, so even the fallback is informative.
 
@@ -520,11 +525,13 @@ Torture tests cover hard-but-printable geometry:
 python3 tests/torture_tests.py
 ```
 
-This runs four scenarios and reports the before/after for each: a 5M-triangle
+This runs five scenarios and reports the before/after for each: a 5M-triangle
 sphere (repair time), a 0.05 mm thin slab (feature-loss risk — it must survive
 intact), a multi-part assembly (the 8-face debris-removal threshold must not
-delete legitimate parts), and a rough scan-style mesh with many micro-cracks
-(residual-holes expectation).
+delete legitimate parts), a rough scan-style mesh with many micro-cracks
+(residual-holes expectation), and two interpenetrating spheres run in `--mode
+extreme`, where the extra self-intersection passes must remove every crossing
+face and report `extreme_passes_applied=True`.
 
 ## Robustness
 

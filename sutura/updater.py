@@ -306,21 +306,28 @@ def requirements_changed(src_dir, req_files):
 
 def _copy_python_files(src_dir):
     for f in ('repair.py', 'manifold_bridge.py', 'classification.py',
-              'defects.py', 'mesh_classifier.py', 'updater.py', 'gui.py',
-              'heatmap.py', 'heatmap_render.py', 'before_after_render.py',
-              'viewer_common.py', 'viewer_data_render.py', '__init__.py'):
+              'confidence.py', 'defects.py', 'mesh_classifier.py', 'updater.py',
+              'gui.py', 'heatmap.py', 'heatmap_render.py',
+              'before_after_render.py', 'viewer_common.py',
+              'viewer_data_render.py', '__init__.py'):
         shutil.copy2(os.path.join(src_dir, 'sutura', f), os.path.join(APP_DIR, f))
+    _license = os.path.join(src_dir, 'LICENSE')
+    if os.path.exists(_license):
+        shutil.copy2(_license, os.path.join(APP_DIR, 'LICENSE'))
 
 
 def _install_linux(src_dir, req_files):
     """install.sh-style copy + venv update only when requirements change."""
     sutura_src = os.path.join(src_dir, 'sutura')
     for f in ('repair.py', 'manifold_bridge.py', 'classification.py',
-              'defects.py', 'mesh_classifier.py', 'updater.py', 'gui.py',
-              'heatmap.py', 'heatmap_render.py', 'before_after_render.py',
-              'viewer_common.py', 'viewer_data_render.py',
-              '__init__.py', 'open.sh'):
+              'confidence.py', 'defects.py', 'mesh_classifier.py', 'updater.py',
+              'gui.py', 'heatmap.py', 'heatmap_render.py',
+              'before_after_render.py', 'viewer_common.py',
+              'viewer_data_render.py', '__init__.py', 'open.sh'):
         shutil.copy2(os.path.join(sutura_src, f), os.path.join(APP_DIR, f))
+    _license = os.path.join(src_dir, 'LICENSE')
+    if os.path.exists(_license):
+        shutil.copy2(_license, os.path.join(APP_DIR, 'LICENSE'))
     for f in ('install.sh', 'uninstall.sh'):
         src = os.path.join(src_dir, f)
         if os.path.exists(src):

@@ -445,13 +445,19 @@ Bu bir ML modeli *değildir* ve bilinçli olarak muhafazakârdır: yalnızca yü
 güvenli durumlarda harekete geçer, aksi halde `unknown` bildirir ve bu durumda
 tarihsel varsayılan Aşama 1 parametreleri olduğu gibi kullanılır.
 
-Güven skoru bir **işaretli-marj (signed-margin) değeridir**: her metrik (90°'ye
-yakın dihedral oranı, neredeyse eşdüzlem oranı) yumuşak bir sigmoidden
-geçirilir ve iki sinyal birleştirilir (mekanik = VEYA, organik = VE); böylece
-karar, tek bir sert eşik yerine yumuşak bir marjdır — `[55,60]` near90
-sınırında keskin bir sıçrama yoktur. Bir `unknown` sonucu, düz bir 0 yerine
-yine de sıfırdan farklı bir yakınlık değeri taşır (meshin hangi sınıfa
-yaklaştığı ve ne kadar yakın olduğu); böylece geri dönüş bile bilgilendiricidir.
+Güven skoru bir **işaretli-marj (signed-margin) değeridir**: bitişik yüz
+açılarından üç dihedral bandı hesaplanır — `near90` (`[60,120]°`, keskin
+kenarlar), `flat` (`<1°`, gerçek düz yüzeyler) ve `gentle` (`[1,15)°`, hafif
+eğrilik) — ve her biri yumuşak bir sigmoidden geçirilir. Bantlar şöyle
+birleştirilir: **mekanik = maks(near90 sinyali, flat sinyali)** (birinin
+yeterli olması) ve **organik = min(düşük near90, düşük flat, yüksek gentle)**
+(üçünün birden sağlanması); böylece karar, tek bir sert eşik yerine yumuşak
+bir marjdır — `[55,60]` near90 sınırında keskin bir sıçrama yoktur.
+`flat`/`gentle` ayrımı, yüksek poligonlu pürüzsüz organik mesh'lerin mekanik
+okunmasını engelleyen şeydir: dihedral açıları ~2–5°'dir, yani `flat` değil
+`gentle` bandına düşer. Bir `unknown` sonucu, düz bir 0 yerine yine de
+sıfırdan farklı bir yakınlık değeri taşır (meshin hangi sınıfa yaklaştığı ve
+ne kadar yakın olduğu); böylece geri dönüş bile bilgilendiricidir.
 
 Tespit edilen tür, GUI kusur panelinin başlığında (ör. `Tespit edilen:
 mechanical (0.92)`) ve `--human` raporunda bir `Type:` satırı olarak
@@ -524,11 +530,13 @@ lisanslarını korurlar; ayrıntılar ve her birinden beklenen onarım sonucu i�
 python3 tests/torture_tests.py
 ```
 
-Bu dört senaryoyu çalıştırır ve her biri için önce/sonra raporlar: bir 5M
+Bu beş senaryoyu çalıştırır ve her biri için önce/sonra raporlar: bir 5M
 üçgenli küre (onarım süresi), 0.05 mm ince levha (özellik kaybı riski — sağlam
 kalmalıdır), çok parçalı montaj (8 yüzlü döküntü kaldırma eşiği meşru
-parçaları silmemelidir) ve çok sayıda mikro çatlak içeren kaba bir tarama-tarzı
-mesh (kalan delik beklentisi).
+parçaları silmemelidir), çok sayıda mikro çatlak içeren kaba bir tarama-tarzı
+mesh (kalan delik beklentisi) ve `--mode extreme` ile çalıştırılan iç içe
+geçmiş iki küre — ek self-intersection geçişleri kesişen her yüzü kaldırmalı
+ve `extreme_passes_applied=True` bildirmelidir.
 
 ## Sağlamlık
 

@@ -67,6 +67,9 @@ echo "==> virtualenv (stage 2: manifold3d) [$VENV311_PY]"
 "$APP_DIR/venv311/bin/pip" install --quiet -r "$SRC/requirements-311.txt"
 
 echo "==> copying application files"
+# __init__.py is deliberately not copied: the installed layout is flat (no
+# package import), so repair.py/gui.py resolve their flat imports from APP_DIR
+# itself. The AppImage/macOS package layouts copy it separately.
 install -m 0755 "$SRC/sutura/repair.py"          "$APP_DIR/repair.py"
 install -m 0755 "$SRC/sutura/manifold_bridge.py" "$APP_DIR/manifold_bridge.py"
 install -m 0755 "$SRC/sutura/classification.py"  "$APP_DIR/classification.py"
@@ -81,6 +84,7 @@ install -m 0755 "$SRC/sutura/before_after_render.py" "$APP_DIR/before_after_rend
 install -m 0755 "$SRC/sutura/viewer_common.py"       "$APP_DIR/viewer_common.py"
 install -m 0755 "$SRC/sutura/viewer_data_render.py"  "$APP_DIR/viewer_data_render.py"
 install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
+install -m 0644 "$SRC/LICENSE"                   "$APP_DIR/LICENSE"
 
 echo "==> CLI wrapper"
 cat > "$BIN_DIR/sutura" <<EOF

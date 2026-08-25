@@ -71,6 +71,7 @@ for f in repair.py gui.py classification.py defects.py mesh_classifier.py \
 done
 install -m 0644 "$REPO_ROOT/requirements.txt" \
     "$REPO_ROOT/requirements-gui.txt" "$REPO_ROOT/requirements-311.txt" "$LIB/"
+install -m 0644 "$REPO_ROOT/LICENSE" "$LIB/LICENSE"
 
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'
