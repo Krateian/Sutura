@@ -33,20 +33,6 @@ CI on each push and pull request.
 
 ![Sutura GUI](assets/screenshot.png)
 
-<!-- TEMP-NOTICE: remove this block after returning to active dev -->
-> **A note on active development:** After v0.2.0 ships,
-> development will likely slow down for a while — I'm relocating
-> to a new country and expect to have much less free time for a
-> month or two, possibly longer. Sutura isn't abandoned; things
-> will just move slower for a bit. Thanks for your patience.
->
-> Also: starting with v0.2, Sutura's license will change from Apache 2.0
-> to a source-available license with a commercial-use clause (personal,
-> non-commercial use stays free). Versions up to and including v0.1.9
-> remain Apache 2.0 permanently — this only affects new releases going
-> forward.
-<!-- /TEMP-NOTICE -->
-
 ## Why two stages
 
 * **Stage 1 - PyMeshLab (VCG).** Removes duplicate and degenerate faces,
@@ -219,10 +205,11 @@ during repair, works without internet once installed.
 Sutura checks GitHub for updates only if you opt in (disabled by default).
 Updates back up the previous install automatically and roll back if the new
 version fails a self-check — no data beyond the update check itself is sent.
-Auto-update stops at v0.2.0: starting with v0.2 the license changes
-(source-available, commercial-use clause), so a v0.1.x install is never
-silently upgraded across that boundary — the new terms are shown first and the
-release must be installed manually from the releases page.
+Auto-update stops at v0.2.0: starting with v0.2 the license changes to the
+PolyForm Noncommercial 1.0.0 (commercial use requires a separate agreement),
+so a v0.1.x install is never silently upgraded across that boundary — the new
+terms are shown first and the release must be installed manually from the
+releases page.
 
 CLI:
 
@@ -632,7 +619,21 @@ If Sutura has saved you time or a broken print, you can
 
 ## License
 
-Apache License 2.0. See `LICENSE`.
+Starting with v0.2.0, Sutura is licensed under the
+[PolyForm Noncommercial 1.0.0](LICENSE). Personal, non-commercial use (hobby,
+research, education, personal 3D printing, etc.) will always remain free — this
+is a permanent commitment. For commercial use, please contact me.
 
-This project also includes a `NOTICE` file (Apache 2.0 §4d) preserving
-attribution; if you redistribute or build on Sutura, please keep it intact.
+Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
+[Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE).
+
+The reason for this change: Sutura was not born as a business plan or a
+startup — it came from my own need, and I pay the cost of the AI tools I use
+while developing it out of my own pocket. For personal, non-commercial use,
+Sutura will always remain free — this is not a marketing promise but a
+permanent commitment. But future development will require more time and
+resources, and having a company use it commercially for free does not feel fair
+to me; I am not a charity. That is why those who want commercial use will need
+to contact me. If at some point in the future I can no longer dedicate time to
+the project, I plan to turn Sutura fully open source and hand it to the
+community — but for now, it will continue like this.

@@ -34,20 +34,6 @@ ve pull request'te CI tarafından otomatik doğrulanır.
 
 ![Sutura GUI](assets/screenshot.png)
 
-<!-- TEMP-NOTICE: remove this block after returning to active dev -->
-> **Aktif geliştirme hakkında bir not:** v0.2.0 yayınlandıktan
-> sonra geliştirme bir süre yavaşlayabilir — yeni bir ülkeye
-> taşınıyorum ve bir-iki ay, belki daha uzun bir süre boş zamanım
-> ciddi şekilde azalacak. Sutura terk edilmiş değil, sadece bir
-> süre daha yavaş ilerleyecek. Anlayışınız için teşekkürler.
->
-> Ayrıca: v0.2 ile birlikte Sutura'nın lisansı Apache 2.0'dan, ticari
-> kullanım şartı içeren "source-available" bir lisansa geçecek (kişisel,
-> ticari olmayan kullanım ücretsiz kalacak). v0.1.9'a kadarki (dahil)
-> sürümler kalıcı olarak Apache 2.0 kalır — bu sadece bundan sonraki yeni
-> sürümleri etkiler.
-<!-- /TEMP-NOTICE -->
-
 ## Neden iki aşama
 
 * **Aşama 1 - PyMeshLab (VCG).** Yinelenen ve dejenere yüzleri kaldırır,
@@ -224,7 +210,8 @@ Sutura, güncellemeleri GitHub'dan yalnızca opt-in yaparsanız kontrol eder
 (varsayılan kapalıdır). Güncelleme önceki kurulumu otomatik olarak yedekler ve
 yeni sürüm kendi kendini kontrolü geçemezse geri alır — güncelleme kontrolünün
 ötesinde hiçbir veri gönderilmez. Otomatik güncelleme v0.2.0'da durur: v0.2'den
-itibaren lisans değişiyor (source-available, ticari kullanım şartı), bu yüzden
+itibaren lisans PolyForm Noncommercial 1.0.0'a geçiyor (ticari kullanım için
+ayrı bir anlaşma gerekiyor), bu yüzden
 v0.1.x bir kurulum o sınırın ötesine asla sessizce yükseltilmez — yeni şartlar
 önce gösterilir ve sürümün releases sayfasından elle kurulması gerekir.
 
@@ -640,8 +627,23 @@ Sutura bir baskını ya da zamanını kurtardıysa,
 
 ## Lisans
 
-Apache License 2.0. `LICENSE` dosyasına bakın.
+Sutura, v0.2.0'dan itibaren [PolyForm Noncommercial 1.0.0](LICENSE)
+ile lisanslanır. Kişisel, ticari olmayan kullanım (hobi, araştırma,
+eğitim, kişisel 3D baskı vb.) her zaman ücretsiz kalacak — bu kalıcı
+bir taahhüttür. Ticari kullanım için benimle iletişime geçin.
 
-Bu proje ayrıca atıfı koruyan bir `NOTICE` dosyası içerir (Apache 2.0 §4d);
-Sutura'yı yeniden dağıtır veya üzerine inşa ederseniz lütfen bu dosyayı
-olduğu gibi koruyun.
+v0.1.0 - v0.1.9 arası yayınlanmış sürümler kalıcı olarak
+[Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE)
+ile lisanslı kalır.
+
+Bu değişikliğin nedeni: Sutura bir iş planı ya da girişim olarak değil,
+kendi ihtiyacımdan doğdu — geliştirirken kullandığım yapay zeka
+araçlarının maliyetini kendi cebimden karşılıyorum. Kişisel, ticari
+olmayan kullanım için Sutura her zaman ücretsiz kalacak — bu bir
+pazarlama sözü değil, kalıcı bir taahhüt. Ama ilerleyen geliştirme daha
+fazla zaman ve kaynak gerektirecek, ve bunu bir şirketin ücretsiz
+şekilde ticari olarak kullanması bana adil gelmiyor; ben bir hayır
+kurumu değilim. Bu yüzden ticari kullanım isteyenlerin benimle
+iletişime geçmesi gerekecek. İleride bir noktada projeye zaman
+ayıramaz hale gelirsem, Sutura'yı tamamen açık kaynağa çevirip
+topluluğa bırakmayı düşünüyorum — ama şimdilik böyle devam.

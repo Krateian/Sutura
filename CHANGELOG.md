@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **License changed to PolyForm Noncommercial 1.0.0** starting with v0.2.0
+  (personal, non-commercial use stays free). The `LICENSE` file now carries
+  the official PolyForm text with a note that released v0.1.0–v0.1.9 versions
+  remain permanently licensed under Apache License 2.0 (see the LICENSE file
+  at each of those git tags). The Apache-required `NOTICE` file was removed —
+  PolyForm Noncommercial does not require it, and the v0.1.x tags keep their
+  own copy. The auto-update license-boundary dialog now names the new license
+  explicitly.
+
 ## [0.1.9] - 2026-08-25
 
 Repair Confidence Score, the GUI Analyze button with mode suggestions, a GUI

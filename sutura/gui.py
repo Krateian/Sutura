@@ -75,7 +75,8 @@ STRINGS = {
                                    'not applied automatically'),
         'license_block_title': 'License change',
         'license_block_msg': ('Sutura %s changes its license terms '
-                              '(source-available, commercial-use clause). This '
+                              '(PolyForm Noncommercial 1.0.0 — commercial use '
+                              'requires a separate agreement). This '
                               'update will not be applied automatically — if '
                               'you accept the new terms, download and install '
                               'it manually from the releases page.'),
@@ -213,7 +214,8 @@ STRINGS = {
                                    'güncelleme otomatik uygulanmıyor'),
         'license_block_title': 'Lisans değişikliği',
         'license_block_msg': ('Sutura %s lisans şartlarını değiştiriyor '
-                              '(source-available, ticari kullanım şartı). Bu '
+                              '(PolyForm Noncommercial 1.0.0 — ticari kullanım '
+                              'için ayrı bir anlaşma gerekiyor). Bu '
                               'güncelleme otomatik uygulanmayacak — yeni '
                               'şartları kabul ediyorsanız releases sayfasından '
                               'elle indirip kurabilirsiniz.'),

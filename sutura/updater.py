@@ -43,9 +43,10 @@ CHECK_INTERVAL_SECONDS = 7 * 24 * 60 * 60
 
 APPIMAGE_RELEASE_URL = 'https://github.com/Krateian/Sutura/releases'
 
-# First version that switches from Apache 2.0 to a source-available license
-# with a commercial-use clause. Auto-update must never silently jump an older
-# install across this line: the user has to see the new terms first.
+# First version that switches from Apache 2.0 to the PolyForm Noncommercial
+# 1.0.0 license (commercial use requires a separate agreement). Auto-update
+# must never silently jump an older install across this line: the user has to
+# see the new terms first.
 LICENSE_BOUNDARY_VERSION = '0.2.0'
 
 
@@ -462,8 +463,9 @@ def perform_update(tag, progress=None):
                 'AppImage from %s' % APPIMAGE_RELEASE_URL, VERSION)
     if crosses_license_boundary(VERSION, tag):
         return (False,
-                'Sutura %s changes the license terms (source-available, '
-                'commercial-use clause). This update will not be applied '
+                'Sutura %s changes the license terms (PolyForm Noncommercial '
+                '1.0.0 - commercial use requires a separate agreement). This '
+                'update will not be applied '
                 'automatically - download it manually from %s if you accept '
                 'the new terms.' % (tag, APPIMAGE_RELEASE_URL), VERSION)
     previous = VERSION
