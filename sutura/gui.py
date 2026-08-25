@@ -8,19 +8,25 @@ CLI, and read back what was fixed. Results are always written to new
 import os
 import sys
 import json
+import math
+import shutil
 import tempfile
+import threading
 import importlib.util
 import subprocess
 import webbrowser
 
-from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion
+import numpy as np
+
+from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion, QTimer
 from PySide6.QtGui import (
-    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon, QPalette, QPen)
+    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon, QPalette, QPen,
+    QImage)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
-    QMessageBox, QDialog, QSlider, QStyle)
+    QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -42,6 +48,10 @@ except ImportError:
 
 # result classification (stdlib-only single source shared with the CLI)
 import classification
+
+# interactive mesh rendering (numpy + QPainter only, no pymeshlab - it stays
+# in the subprocesses that load/render the meshes)
+from heatmap import _ISOMETRIC, draw_frame, prepare_render
 
 # --- i18n ---------------------------------------------------------------
 STRINGS = {
@@ -118,6 +128,15 @@ STRINGS = {
         'ba_original': 'Original',
         'ba_repaired': 'Repaired',
         'before_after_detail': 'Detail — worst defect region',
+        'viewer_static': 'Static',
+        'viewer_interactive': 'Interactive',
+        'viewer_ready': 'Preparing 3D view…',
+        'viewer_finalizing': 'Finalizing view…',
+        'viewer_ready_failed': 'Could not prepare the 3D view',
+        'viewer_status_mode': 'Repair status',
+        'viewer_deviation_mode': 'Surface deviation',
+        'viewer_max_dev': 'Max deviation: %.2f mm',
+        'viewer_hint': 'Drag to rotate · wheel to zoom',
         'mode_btn': 'Mode: %s',
         'mode_dialog_title': 'Repair mode',
         'mode_name_low': 'Low',
@@ -247,6 +266,15 @@ STRINGS = {
         'ba_original': 'Orijinal',
         'ba_repaired': 'Onarılmış',
         'before_after_detail': 'Detay — en yoğun bozukluk bölgesi',
+        'viewer_static': 'Statik',
+        'viewer_interactive': 'İnteraktif',
+        'viewer_ready': '3D görünüm hazırlanıyor…',
+        'viewer_finalizing': 'Görünüm sonlandırılıyor…',
+        'viewer_ready_failed': '3D görünüm hazırlanamadı',
+        'viewer_status_mode': 'Onarım durumu',
+        'viewer_deviation_mode': 'Yüzey sapması',
+        'viewer_max_dev': 'Maks. sapma: %.2f mm',
+        'viewer_hint': 'Sürükleyerek döndür · tekerlekle yakınlaştır',
         'mode_btn': 'Mod: %s',
         'mode_dialog_title': 'Onarım modu',
         'mode_name_low': 'Düşük',
@@ -707,7 +735,7 @@ class BeforeAfterWorker(QThread):
     detail_before, detail_after.
     """
 
-    done = Signal(str, bytes, bytes, bytes, bytes)  # path, before, after, detail_before, detail_after
+    done = Signal(str, str, bytes, bytes, bytes, bytes)  # path, repaired, before, after, detail_before, detail_after
     failed = Signal(str, str)            # path, message
 
     def __init__(self, path, repaired, w, h, parent=None):
@@ -758,7 +786,54 @@ class BeforeAfterWorker(QThread):
                 os.rmdir(tmpdir)
             except OSError:
                 pass
-        self.done.emit(self._path, before, after, dbefore, dafter)
+        self.done.emit(self._path, self._repaired, before, after, dbefore, dafter)
+
+
+class ViewerDataWorker(QThread):
+    """Builds the interactive-viewer dataset (.npz) in a subprocess.
+
+    Same isolation rule as ``HeatmapWorker``/``BeforeAfterWorker``: pymeshlab
+    stays out of the GUI process. Runs ``viewer_data_render.py`` on the
+    original + repaired meshes and loads the resulting npz (mesh arrays,
+    defect/healed masks, distances, the shared camera) back into a dict.
+    Spawned LAZILY the first time the user switches the before/after dialog
+    to the interactive view; the result is cached for the dialog's lifetime.
+    """
+
+    done = Signal(str, object)      # path, npz data dict
+    failed = Signal(str, str)       # path, message
+
+    def __init__(self, path, repaired, w, h, parent=None):
+        super().__init__(parent)
+        self._path = path
+        self._repaired = repaired
+        self._w = w
+        self._h = h
+
+    def run(self):
+        renderer = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'viewer_data_render.py')
+        tmpdir = tempfile.mkdtemp(prefix='sutura-vd-')
+        outfile = os.path.join(tmpdir, 'viewer.npz')
+        try:
+            proc = subprocess.run(
+                [sys.executable, renderer, self._path, self._repaired, outfile,
+                 str(self._w), str(self._h)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=900)
+            if proc.returncode != 0 or not os.path.getsize(outfile):
+                self.failed.emit(self._path, _t('viewer_ready_failed'))
+                return
+            with np.load(outfile) as d:
+                data = {k: d[k] for k in d.files}
+        except (OSError, subprocess.TimeoutExpired):
+            self.failed.emit(self._path, _t('viewer_ready_failed'))
+            return
+        finally:
+            try:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            except OSError:
+                pass
+        self.done.emit(self._path, data)
 
 
 class _ClickableLabel(QLabel):
@@ -770,6 +845,244 @@ class _ClickableLabel(QLabel):
         if event.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(event)
+
+
+def _orbit_basis(base, dyaw, dpitch):
+    """Rotate a 3x3 camera basis (rows = right/up/forward) by yaw (around
+    world +Y) then pitch (around world +X). Returns a new orthonormal basis."""
+    cy, sy = math.cos(dyaw), math.sin(dyaw)
+    cp, sp = math.cos(dpitch), math.sin(dpitch)
+    ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cp, -sp], [0.0, sp, cp]])
+    return (ry @ rx) @ np.asarray(base, dtype=np.float64)
+
+
+class _RenderThread(QThread):
+    """Background rasteriser for the interactive mesh view.
+
+    Consumes camera jobs (latest wins: a job submitted while one is drawing
+    replaces the pending one) and emits the resulting QImage. Pure numpy +
+    heatmap.draw_frame -- pymeshlab is never involved, so this thread is
+    safe alongside the QMainWindow (the documented heap corruption is
+    specific to pymeshlab inside a Qt thread).
+    """
+
+    frame_ready = Signal(object)    # QImage
+    stage_changed = Signal(str)     # 'drag' | 'final'
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lock = threading.Lock()
+        self._job = None
+        self._stopped = False
+
+    def stop(self):
+        with self._lock:
+            self._stopped = True
+
+    def submit(self, ctx, rotation, scale, stage='drag'):
+        with self._lock:
+            self._job = (ctx, np.asarray(rotation, dtype=np.float64), scale, stage)
+
+    def run(self):
+        while True:
+            with self._lock:
+                if self._stopped:
+                    return
+                job = self._job
+                self._job = None
+            if job is None:
+                self.msleep(5)
+                continue
+            ctx, rot, scale, stage = job
+            self.stage_changed.emit(stage)
+            img = draw_frame(ctx, rotation=rot, scale=scale)
+            self.frame_ready.emit(img)
+
+
+class MeshViewport(QWidget):
+    """Interactive before/after mesh view (drag to rotate, wheel to zoom).
+
+    Pure numpy + heatmap (no pymeshlab). Rendering runs on a ``_RenderThread``
+    with latest-wins frame dropping: while dragging/zooming the interactive
+    LOD is drawn; ~300 ms after the input stops the full-resolution mesh is
+    rendered once ("finalizing"). The camera starts at the same defect-facing
+    orientation the static comparison uses.
+    """
+
+    rendering_stage = Signal(str)   # '' (idle) | 'final'
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data = None
+        self._side = 'repaired'
+        self._deviation = False
+        self._rot = None            # 3x3 camera basis
+        self._scale = None          # zoom override (None = npz frame scale)
+        self._dragging = False
+        self._last_pos = None
+        self._current = None        # latest QImage (scaled on paint)
+        self._ctx = None            # active RenderContext
+        self._ctx_lod = {}
+        self._ctx_full = {}
+        self.setMouseTracking(True)
+        self._idle = QTimer(self)
+        self._idle.setSingleShot(True)
+        self._idle.setInterval(300)
+        self._idle.timeout.connect(self._request_final)
+        self._thread = _RenderThread(self)
+        self._thread.frame_ready.connect(self._on_frame_ready)
+        self._thread.stage_changed.connect(self._on_stage)
+        self._thread.start()
+
+    # --- public API -------------------------------------------------------
+
+    def set_data(self, data):
+        self._data = data
+        self._rot = (np.asarray(data['initial_rotation'], dtype=np.float64)
+                     if data['initial_rotation'].any() else _ISOMETRIC)
+        self._scale = None
+        self._build_contexts()
+        self._apply_mode()
+        self._request_frame(drag=True)
+        self._idle.start()
+
+    def set_side(self, side):
+        if side not in ('original', 'repaired'):
+            return
+        self._side = side
+        self._apply_mode()
+        self._request_frame(drag=True)
+        self._idle.start()
+
+    def set_view_mode(self, mode):
+        self._deviation = (mode == 'deviation')
+        self._apply_mode()
+        self._request_frame(drag=True)
+        self._idle.start()
+
+    def shutdown(self):
+        self._thread.stop()
+        self._thread.wait(2000)
+
+    # --- internals --------------------------------------------------------
+
+    def _build_contexts(self):
+        """Prepare status + deviation RenderContexts for LOD and full mesh of
+        both sides (deviation only exists on the repaired side)."""
+        d = self._data
+        w, h, pad = int(d['viewport_w']), int(d['viewport_h']), 24
+        frame = (np.asarray(d['frame_center'], dtype=np.float64),
+                 float(d['frame_scale']))
+
+        def prep(verts, tris, vidx, healed=None, deviation=None, defect_col=None):
+            holes = [{'verts_idx': np.asarray(vidx, dtype=np.int64)}] if len(vidx) else None
+            return prepare_render(verts, tris, holes=holes, healed=healed,
+                                  deviation=deviation, w=w, h=h, pad=pad,
+                                  frame=frame,
+                                  defect=(defect_col or (235, 60, 70)),
+                                  healed_color=(46, 204, 113))
+
+        # original side: defect red, no healed/deviation
+        self._ctx_lod['original'] = {
+            'status': prep(d['lverts'], d['ltris'], d['ldefect_vidx']),
+            'deviation': None}
+        self._ctx_full['original'] = {
+            'status': prep(d['verts'], d['tris'], d['defect_vidx']),
+            'deviation': None}
+        # repaired side: still-broken orange, healed green, deviation ramp
+        self._ctx_lod['repaired'] = {
+            'status': prep(d['rlverts'], d['rltris'], d['lbroken_vidx'],
+                           healed=d['lhealed'], defect_col=(255, 140, 60)),
+            'deviation': prep(d['rlverts'], d['rltris'], d['lbroken_vidx'],
+                              deviation=d['ldistance'], defect_col=(255, 140, 60))}
+        self._ctx_full['repaired'] = {
+            'status': prep(d['rverts'], d['rtris'], d['broken_vidx'],
+                           healed=d['healed'], defect_col=(255, 140, 60)),
+            'deviation': prep(d['rverts'], d['rtris'], d['broken_vidx'],
+                              deviation=d['distance'], defect_col=(255, 140, 60))}
+
+    def _apply_mode(self):
+        # deviation mode only recolors the repaired side; the original side
+        # keeps its status view.
+        mode = 'deviation' if (self._deviation and self._side == 'repaired') else 'status'
+        self._ctx = self._ctx_full[self._side][mode]
+
+    def _request_frame(self, drag=True):
+        if self._data is None or self._ctx is None:
+            return
+        lod = self._ctx_lod[self._side]
+        mode = 'deviation' if (self._deviation and self._side == 'repaired') else 'status'
+        ctx = lod[mode] if drag else self._ctx
+        self._thread.submit(ctx, self._rot, self._scale,
+                            'drag' if drag else 'final')
+
+    def _request_final(self):
+        if self._data is not None and self._ctx is not None:
+            self._request_frame(drag=False)
+
+    def _on_frame_ready(self, img):
+        self._current = img
+        self.update()
+
+    def _on_stage(self, stage):
+        self.rendering_stage.emit('final' if stage == 'final' else '')
+
+    # --- events -----------------------------------------------------------
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            self._last_pos = event.position().toPoint()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging or self._last_pos is None:
+            return
+        p = event.position().toPoint()
+        dx = p.x() - self._last_pos.x()
+        dy = p.y() - self._last_pos.y()
+        self._last_pos = p
+        self._rot = _orbit_basis(self._rot, math.radians(dx * 0.4),
+                                 math.radians(dy * 0.4))
+        self._request_frame(drag=True)
+        self._idle.start()
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = False
+            self._last_pos = None
+            self._idle.start()
+            event.accept()
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.pixelDelta().y()
+        if delta == 0:
+            return
+        base = float(self._data['frame_scale']) if self._data is not None else 1.0
+        self._scale = (self._scale if self._scale is not None else base)
+        self._scale *= (1.0 + 0.1 if delta > 0 else 1.0 - 0.1)
+        self._scale = max(self._scale, base * 0.02)
+        self._request_frame(drag=True)
+        self._idle.start()
+        event.accept()
+
+    def paintEvent(self, event):
+        if self._current is None:
+            return
+        p = QPainter(self)
+        scaled = self._current.scaled(self.size(), Qt.KeepAspectRatio,
+                                      Qt.SmoothTransformation)
+        p.drawImage((self.width() - scaled.width()) // 2,
+                    (self.height() - scaled.height()) // 2, scaled)
+        p.end()
+
+    def hideEvent(self, event):
+        self._idle.stop()
+        super().hideEvent(event)
 
 
 class RepairModeDialog(QDialog):
@@ -1643,7 +1956,7 @@ class MainWindow(QMainWindow):
         self.before_after_worker.failed.connect(self._on_before_after_failed)
         self.before_after_worker.start()
 
-    def _on_before_after_done(self, path, before_png, after_png, dbefore_png, dafter_png):
+    def _on_before_after_done(self, path, repaired, before_png, after_png, dbefore_png, dafter_png):
         self.before_after_worker = None
         before = QPixmap()
         after = QPixmap()
@@ -1656,7 +1969,7 @@ class MainWindow(QMainWindow):
             self._on_before_after_failed(path, _t('before_after_failed'))
             return
         if self._current_path() == path:
-            self._open_before_after(path, before, after, dbefore, dafter)
+            self._open_before_after(path, repaired, before, after, dbefore, dafter)
             self.status.setText(_t('ready'))
         self._refresh_before_after_btn(self._current_path())
 
@@ -1665,27 +1978,48 @@ class MainWindow(QMainWindow):
         self.status.setText(msg)
         self._refresh_before_after_btn(self._current_path())
 
-    def _open_before_after(self, path, before, after, dbefore, dafter):
-        """Modal dialog: the main image plus a smaller detail close-up of the
-        worst defect region, and ONE toggle button that flips both together
-        (original <-> repaired; no dragging, no slider — deliberately, the
-        CPU renderer is static)."""
+    def _open_before_after(self, path, repaired, before, after, dbefore, dafter):
+        """Modal dialog: the static before/after pair (main image + detail
+        close-up, toggled together) is always shown first, with a
+        Static/Interactive mode switch on top. The interactive 3D view
+        (drag to rotate, wheel to zoom, surface-deviation ramp) is built
+        LAZILY: the viewer_data_render.py subprocess runs the first time the
+        user picks Interactive, and its npz data is cached for the dialog's
+        lifetime."""
         if self._before_after_zoom is not None:
             self._before_after_zoom.close()
         dlg = QDialog(self)
         dlg.setWindowTitle(_t('before_after_title', os.path.basename(path)))
         lay = QVBoxLayout(dlg)
+
+        # --- Static/Interactive mode switch (static is the default) --------
+        mode_row = QHBoxLayout()
+        mode_group = QButtonGroup(dlg)
+        rad_static = QRadioButton(_t('viewer_static'))
+        rad_static.setChecked(True)
+        rad_inter = QRadioButton(_t('viewer_interactive'))
+        mode_group.addButton(rad_static)
+        mode_group.addButton(rad_inter)
+        mode_row.addWidget(rad_static)
+        mode_row.addWidget(rad_inter)
+        mode_row.addStretch(1)
+        lay.addLayout(mode_row)
+
+        # --- Static panel (unchanged behaviour) ----------------------------
+        static_panel = QWidget(dlg)
+        slay = QVBoxLayout(static_panel)
+        slay.setContentsMargins(0, 0, 0, 0)
         view = QLabel()
         view.setAlignment(Qt.AlignCenter)
-        lay.addWidget(view, 1)
+        slay.addWidget(view, 1)
         detail_lab = QLabel()
         detail_lab.setAlignment(Qt.AlignCenter)
         detail_lab.setStyleSheet('font-size: 11px; color: #8891a0;')
-        lay.addWidget(detail_lab)
+        slay.addWidget(detail_lab)
         detail_caption = QLabel(_t('before_after_detail'))
         detail_caption.setAlignment(Qt.AlignCenter)
         detail_caption.setStyleSheet('font-size: 10px; color: #5b6472;')
-        lay.addWidget(detail_caption)
+        slay.addWidget(detail_caption)
         btn = QPushButton(_t('ba_original'))
         btn.setCheckable(True)
         state = {'show_after': False}
@@ -1708,11 +2042,105 @@ class MainWindow(QMainWindow):
             show()
 
         btn.toggled.connect(toggle)
-        lay.addWidget(btn)
+        slay.addWidget(btn)
         show()
+        lay.addWidget(static_panel, 1)
+
+        # --- Interactive panel (hidden until first Interactive click) ------
+        inter_panel = QWidget(dlg)
+        ilay = QVBoxLayout(inter_panel)
+        ilay.setContentsMargins(0, 0, 0, 0)
+        viewport = MeshViewport(inter_panel)
+        ilay.addWidget(viewport, 1)
+        hint = QLabel(_t('viewer_hint'))
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet('font-size: 10px; color: #5b6472;')
+        ilay.addWidget(hint)
+        ctrl = QHBoxLayout()
+        side_group = QButtonGroup(inter_panel)
+        rad_orig = QRadioButton(_t('ba_original'))
+        rad_rep = QRadioButton(_t('ba_repaired'))
+        rad_rep.setChecked(True)
+        side_group.addButton(rad_orig)
+        side_group.addButton(rad_rep)
+        ctrl.addWidget(rad_orig)
+        ctrl.addWidget(rad_rep)
+        dev_group = QButtonGroup(inter_panel)
+        rad_status = QRadioButton(_t('viewer_status_mode'))
+        rad_status.setChecked(True)
+        rad_dev = QRadioButton(_t('viewer_deviation_mode'))
+        dev_group.addButton(rad_status)
+        dev_group.addButton(rad_dev)
+        ctrl.addWidget(rad_status)
+        ctrl.addWidget(rad_dev)
+        ctrl.addStretch(1)
+        maxdev = QLabel('')
+        maxdev.setStyleSheet('font-size: 11px; color: #8891a0;')
+        ctrl.addWidget(maxdev)
+        ilay.addLayout(ctrl)
+        status_lab = QLabel('')
+        status_lab.setAlignment(Qt.AlignCenter)
+        status_lab.setStyleSheet('font-size: 11px; color: #e8b86d;')
+        ilay.addWidget(status_lab)
+        lay.addWidget(inter_panel, 1)
+        inter_panel.hide()
+
+        # --- interactive lazy build + cache (dialog-lifetime) -------------
+        viewer = {'data': None, 'worker': None}
+
+        def _show_mode():
+            if rad_inter.isChecked():
+                static_panel.hide()
+                inter_panel.show()
+                if viewer['data'] is None:
+                    if viewer['worker'] is None:
+                        viewer['worker'] = ViewerDataWorker(
+                            path, repaired, 720, 540, dlg)
+                        viewer['worker'].done.connect(_on_viewer_done)
+                        viewer['worker'].failed.connect(_on_viewer_failed)
+                        viewer['worker'].start()
+                    status_lab.setText(_t('viewer_ready'))
+                else:
+                    viewport.set_data(viewer['data'])
+                    _apply_inter_state()
+                    status_lab.setText('')
+            else:
+                inter_panel.hide()
+                static_panel.show()
+                status_lab.setText('')
+
+        def _apply_inter_state():
+            side = 'repaired' if rad_rep.isChecked() else 'original'
+            viewport.set_side(side)
+            viewport.set_view_mode('deviation' if rad_dev.isChecked() else 'status')
+            maxdev.setText(_t('viewer_max_dev', viewer['data']['hausdorff'])
+                           if side == 'repaired' else '')
+
+        def _on_viewer_done(_p, data):
+            viewer['worker'] = None
+            viewer['data'] = data
+            status_lab.setText('')
+            viewport.set_data(data)
+            _apply_inter_state()
+
+        def _on_viewer_failed(_p, msg):
+            viewer['worker'] = None
+            status_lab.setText(msg)
+            rad_static.setChecked(True)
+            _show_mode()
+
+        def _on_rendering_stage(stage):
+            status_lab.setText(_t('viewer_finalizing') if stage == 'final' else '')
+
+        viewport.rendering_stage.connect(_on_rendering_stage)
+        side_group.buttonClicked.connect(lambda _b: _apply_inter_state())
+        dev_group.buttonClicked.connect(lambda _b: _apply_inter_state())
+        mode_group.buttonClicked.connect(lambda _b: _show_mode())
+
         dlg.resize(before.width() + 24, before.height() + 150)
         self._before_after_zoom = dlg
         dlg.exec()
+        viewport.shutdown()
 
     def _on_all_done(self, cancelled):
         self.status.setText(_t('done_stopped') if cancelled else _t('done'))

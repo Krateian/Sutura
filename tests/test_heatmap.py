@@ -254,6 +254,77 @@ def test_defect_camera_orthonormal_various_directions():
         assert np.allclose(R[2], d / np.linalg.norm(d), atol=1e-9), d
 
 
+def test_prepare_draw_matches_render():
+    # regression gate: render() == draw_frame(prepare_render(...)) byte-for-
+    # byte, so the interactive split never changes what the static path drew.
+    from heatmap import (prepare_render, draw_frame, render,
+                         deviation_quantile_index, _deviation_lut)
+    verts, tris = _grid_mesh()
+    holes = [{'verts_idx': [0, 1, 2]}]
+    healed = np.zeros(len(tris), dtype=bool)
+    healed[3] = True
+    rots = [None, _ISOMETRIC, np.eye(3),
+            np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])]
+    for R in rots:
+        a = render(verts, tris, holes=holes, healed=healed, w=240, h=180,
+                   pad=24, rotation=R)
+        ctx = prepare_render(verts, tris, holes=holes, healed=healed,
+                             w=240, h=180, pad=24)
+        b = draw_frame(ctx, rotation=R)
+        assert _img_bytes(a) == _img_bytes(b), R
+    # deviation mode must be identical through both paths too
+    dev = np.abs(verts[:, 0]) + np.abs(verts[:, 2])
+    for R in rots:
+        a = render(verts, tris, deviation=dev, w=240, h=180, pad=24, rotation=R)
+        ctx = prepare_render(verts, tris, deviation=dev, w=240, h=180, pad=24)
+        b = draw_frame(ctx, rotation=R)
+        assert _img_bytes(a) == _img_bytes(b), R
+
+
+def test_deviation_quantile_monotonic():
+    # larger distance -> not-smaller ramp index; flat/empty arrays -> 0.
+    from heatmap import deviation_quantile_index
+    d = np.linspace(0.0, 1.0, 11)
+    idx = deviation_quantile_index(d, qlo=0.0, qhi=1.0, n_levels=10)
+    assert idx.tolist() == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], idx
+    assert np.all(np.diff(idx) >= 0)
+    assert deviation_quantile_index(np.zeros(5)).tolist() == [0] * 5
+    assert deviation_quantile_index(np.array([])).size == 0
+    # a single huge outlier must not blow up the ramp (quantile-robust)
+    idx2 = deviation_quantile_index(np.array([0.0, 0.1, 0.2, 50.0]))
+    assert idx2.max() <= 256 and idx2.min() >= 0
+
+
+def test_deviation_ramp_endpoints_and_length():
+    # the ramp covers navy at index 0 and red at the top, all colours valid.
+    from heatmap import _deviation_lut
+    lut = _deviation_lut(64)
+    assert len(lut) == 65
+    c0, clast = lut[0], lut[-1]
+    assert (c0.red(), c0.green(), c0.blue()) == (10, 20, 80), c0
+    assert (clast.red(), clast.green(), clast.blue()) == (230, 40, 40), clast
+    for c in lut:
+        assert 0 <= c.red() <= 255 and 0 <= c.green() <= 255 and 0 <= c.blue() <= 255
+
+
+def test_deviation_defect_wins():
+    # defect faces must be drawn in the defect colour even in deviation mode:
+    # use a CONSTANT deviation (ramp collapses to navy everywhere) plus a
+    # defect cluster -> the cluster must still render defect-red.
+    from heatmap import render
+    verts, tris = _grid_mesh()
+    n = int(round(len(verts) ** 0.5))
+    defect_idx = [i for i in range(len(verts))
+                  if verts[i, 0] > 4.5 and verts[i, 2] > 4.5]
+    holes = [{'verts_idx': defect_idx}]
+    dev = np.full(len(verts), 5.0)   # constant -> all ramp index 0 (navy)
+    w, h, pad = 240, 180, 24
+    with_d = render(verts, tris, holes=holes, deviation=dev, w=w, h=h, pad=pad)
+    without = render(verts, tris, deviation=dev, w=w, h=h, pad=pad)
+    assert _red_count(without) == 0, 'constant deviation must be all-navy'
+    assert _red_count(with_d) > 0, 'defect colour must win over the ramp'
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):
