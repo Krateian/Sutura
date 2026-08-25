@@ -346,8 +346,9 @@ ve bir **tahmini güven** değerini bildirir
 (`Estimated confidence: X/100 (Label) — actual result may differ after
 repair`, çünkü onarım sonrası sinyaller henüz bilinmiyor). Altında birkaç
 **mod önerisi** listeler (ör. tarama kaynaklı delikler için agresif/extreme
-adımı veya extreme'un küçük parçaları silebileceğine dair bir çekince).
-Öneriler **yalnızca bilgilendirme amaçlıdır ve modu asla otomatik
+adımı, mod hâlâ düşük seviyedeyken bir üst mod denenebileceğine dair
+düşük-güven ipucu veya extreme'un küçük parçaları silebileceğine dair bir
+çekince). Öneriler **yalnızca bilgilendirme amaçlıdır ve modu asla otomatik
 değiştirmez — karar kullanıcıda kalır.**
 
 #### Kusur detay paneli

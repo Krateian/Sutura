@@ -342,8 +342,9 @@ pre-verdict, and an **estimated confidence**
 (`Estimated confidence: X/100 (Label) — actual result may differ after
 repair`, because the post-repair signals are not known yet). Below that it
 lists a few **mode suggestions** (e.g. an aggressive/extreme step for
-scan-derived holes, or a caveat when extreme could delete small parts). The
-suggestions are **informational only and never change the mode
+scan-derived holes, a low-confidence step-up tip only while the current
+mode is still gentle, or a caveat when extreme could delete small parts).
+The suggestions are **informational only and never change the mode
 automatically — the decision stays with the user.**
 
 #### Defect detail panel

@@ -1144,6 +1144,46 @@ class RepairModeDialog(QDialog):
         return self.MODES[self.slider.value()]
 
 
+def mode_suggestion_keys(a):
+    """Priority-ordered mode-suggestion keys for an analysis dict `a`
+    (AnalyzeWorker's validate + --dry-run result). Returns at most three
+    suggestion keys, plus one `sug_extreme_caveat` when extreme was
+    suggested AND the mesh is small enough (< 20 faces) that extreme could
+    actually delete it (the `extreme_removed_object` risk). Informational
+    only — never changes the mode."""
+    s = []
+    extreme_fired = False
+    si = a.get('self_intersections', 0)
+    holes = a.get('holes_found', 0)
+    if si > 10:
+        s.append('sug_si_many')
+        extreme_fired = True
+    elif si >= 1:
+        s.append('sug_si_few')
+        extreme_fired = True
+    if holes > 10:
+        s.append('sug_holes_many')
+        extreme_fired = True
+    elif holes >= 3:
+        s.append('sug_holes_few')
+    if (a.get('non_manifold_regions') or 0) > 3:
+        s.append('sug_nm')
+    if (a.get('connected_components') or 1) > 1:
+        s.append('sug_cc')
+    if a.get('detected_type') == 'unknown' or a.get('tuning_applied') is False:
+        s.append('sug_unknown')
+    if a.get('watertight'):
+        s.append('sug_watertight')
+    if (a.get('estimated_confidence_label') == 'low'
+            and (a.get('repair_mode') or 'auto') in ('low', 'medium', 'auto')):
+        s.append('sug_low_conf')
+    s = s[:3]
+    faces = a.get('validation_faces')
+    if extreme_fired and faces is not None and faces < 20:
+        s.append('sug_extreme_caveat')
+    return s
+
+
 class MainWindow(QMainWindow):
     MESH_EXTS = ('.stl', '.3mf')
 
@@ -1721,39 +1761,8 @@ class MainWindow(QMainWindow):
         self.analysis.setPlainText('\n'.join(lines))
 
     def _analysis_suggestions(self, a):
-        """Mode suggestions for an analysis result, in priority order
-        a > b > c > d > e > f > g, capped at three lines (plus the extreme
-        caveat when a/b suggest extreme). Returns localized strings. Text
-        only — never changes the mode."""
-        s = []
-        extreme_fired = False
-        si = a.get('self_intersections', 0)
-        holes = a.get('holes_found', 0)
-        if si > 10:
-            s.append('sug_si_many')
-            extreme_fired = True
-        elif si >= 1:
-            s.append('sug_si_few')
-            extreme_fired = True
-        if holes > 10:
-            s.append('sug_holes_many')
-            extreme_fired = True
-        elif holes >= 3:
-            s.append('sug_holes_few')
-        if (a.get('non_manifold_regions') or 0) > 3:
-            s.append('sug_nm')
-        if (a.get('connected_components') or 1) > 1:
-            s.append('sug_cc')
-        if a.get('detected_type') == 'unknown' or a.get('tuning_applied') is False:
-            s.append('sug_unknown')
-        if a.get('watertight'):
-            s.append('sug_watertight')
-        if a.get('estimated_confidence_label') == 'low':
-            s.append('sug_low_conf')
-        s = s[:3]
-        if extreme_fired:
-            s.append('sug_extreme_caveat')
-        return s
+        """Mode suggestions for an analysis result; see mode_suggestion_keys."""
+        return mode_suggestion_keys(a)
 
     def stop(self):
         if self.worker is not None:
