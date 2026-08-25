@@ -22,10 +22,20 @@ sys.path.insert(0, SUTURA)
 
 
 def test_stdlib_only():
-    import confidence  # noqa: F401
-    for heavy in ('numpy', 'pymeshlab', 'manifold3d'):
-        assert heavy not in sys.modules, (
-            'confidence import pulled in %s; it must stay stdlib-only' % heavy)
+    # import confidence in a fresh subprocess and assert it does not pull in
+    # any heavy third-party library (stdlib+numpy rule); must run in a
+    # subprocess because this module's own tests import repair (which pulls
+    # numpy) for the gate-consistency checks.
+    import subprocess
+    code = (
+        "import sys; sys.path.insert(0, %r); import confidence; "
+        "bad=[m for m in ('numpy','pymeshlab','manifold3d') if m in sys.modules]; "
+        "print('OK' if not bad else 'BAD:'+','.join(bad))" % SUTURA
+    )
+    out = subprocess.run([sys.executable, '-c', code],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert 'OK' in out.stdout, out.stdout + out.stderr
 
 
 def test_high_watertight():
@@ -171,6 +181,34 @@ def test_pre_repair_missing_keys_ok():
     empty = estimate_confidence_pre_repair({})
     assert empty['score'] == 70, empty
     assert empty['label'] == 'medium', empty
+
+
+def test_gates_match_repair():
+    # regression: confidence.py must source the class-specific tuning gates
+    # from repair.py (single source of truth). A stale hardcoded copy here
+    # silently diverged before (organic 0.55 vs repair's 0.70) and made
+    # dry-run/validate disagree with the real repair on 'below_confidence_gate';
+    # this test makes that impossible again.
+    from confidence import _tuning_gates
+    from repair import MECH_TUNE_GATE, ORG_TUNE_GATE
+    mech_gate, org_gate = _tuning_gates()
+    assert mech_gate == MECH_TUNE_GATE, (mech_gate, MECH_TUNE_GATE)
+    assert org_gate == ORG_TUNE_GATE, (org_gate, ORG_TUNE_GATE)
+
+
+def test_pre_repair_uses_repair_gates():
+    # behavioral: the below-gate penalty must kick in exactly at repair.py's
+    # ORG_TUNE_GATE (not at some stale hardcoded value).
+    from confidence import estimate_confidence_pre_repair
+    from repair import ORG_TUNE_GATE
+    below = estimate_confidence_pre_repair({
+        'detected_type': 'organic',
+        'detected_confidence': ORG_TUNE_GATE - 0.01})
+    assert 'below_confidence_gate' in below['factors'], below
+    at = estimate_confidence_pre_repair({
+        'detected_type': 'organic',
+        'detected_confidence': ORG_TUNE_GATE})
+    assert 'below_confidence_gate' not in at['factors'], at
 
 
 def main():

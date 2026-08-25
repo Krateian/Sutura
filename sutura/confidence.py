@@ -5,6 +5,11 @@ mesh_classifier.py): the CLI runs under the PyMeshLab venv while the GUI
 shells out to it, so both sides can import this module regardless of which
 interpreter is running. Keep it free of numpy/pymeshlab/manifold3d.
 
+Note: estimate_confidence_pre_repair() sources the class-specific tuning
+gates from repair.py at call time (see _tuning_gates) -- a lazy import, so
+`import confidence` stays stdlib-only; only calling that function pulls in
+repair (and numpy).
+
 Two entry points:
 
   repair_confidence(report)                 - post-repair score for a full
@@ -31,11 +36,21 @@ reasoning visible in the report so a surprising score can be traced.
 """
 from classification import classify
 
-# Class-specific tuning gates, mirroring repair.MECH_TUNE_GATE /
-# repair.ORG_TUNE_GATE (cannot import repair here: it pulls in numpy and the
-# PyMeshLab venv). Keep these in sync with repair.py.
-_MECH_GATE = 0.75
-_ORG_GATE = 0.55
+
+def _tuning_gates():
+    """The class-specific tuning gates, sourced from repair.py at call time.
+
+    repair.py is the single source of truth for these. A top-level
+    `from repair import ...` here would be a circular-import failure: repair
+    imports this module (around its line 26) BEFORE it defines the gates
+    (around line 56), so neither direction can resolve the names at module
+    load. By the time estimate_confidence_pre_repair runs, repair.py is fully
+    loaded, so the lazy import is safe. Never hardcode the values here: the
+    old _MECH_GATE/_ORG_GATE constants silently drifted from repair.py
+    (organic 0.55 vs 0.70) and had to be removed.
+    """
+    from repair import MECH_TUNE_GATE, ORG_TUNE_GATE
+    return MECH_TUNE_GATE, ORG_TUNE_GATE
 
 # Baseline for the post-repair score. Low enough that a bare warning report
 # (no stage 2, holes remaining) lands in medium/low without extra penalties.
@@ -211,7 +226,8 @@ def estimate_confidence_pre_repair(signals):
     conf = signals.get('detected_confidence')
     if conf is not None:
         c = min(max(float(conf), 0.0), 1.0)
-        gate = {'mechanical': _MECH_GATE, 'organic': _ORG_GATE}.get(mtype)
+        mech_gate, org_gate = _tuning_gates()
+        gate = {'mechanical': mech_gate, 'organic': org_gate}.get(mtype)
         if gate is not None and c < gate:
             score -= 5
             factors['below_confidence_gate'] = -5
