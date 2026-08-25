@@ -98,7 +98,7 @@ söyler.
 | Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.55) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır ve eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Eksikler: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur). |
-| Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
+| Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%35 — deneysel | Tek başına çalışan betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ sürümlerinde bulunan bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux içindir. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
 | Test kapsamı | ~%88 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, validate/dry-run, mesh sınıflandırıcı, onarım modu, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
@@ -223,7 +223,10 @@ ağ çağrısı yapılmaz, kurulduktan sonra internetsiz çalışır.
 Sutura, güncellemeleri GitHub'dan yalnızca opt-in yaparsanız kontrol eder
 (varsayılan kapalıdır). Güncelleme önceki kurulumu otomatik olarak yedekler ve
 yeni sürüm kendi kendini kontrolü geçemezse geri alır — güncelleme kontrolünün
-ötesinde hiçbir veri gönderilmez.
+ötesinde hiçbir veri gönderilmez. Otomatik güncelleme v0.2.0'da durur: v0.2'den
+itibaren lisans değişiyor (source-available, ticari kullanım şartı), bu yüzden
+v0.1.x bir kurulum o sınırın ötesine asla sessizce yükseltilmez — yeni şartlar
+önce gösterilir ve sürümün releases sayfasından elle kurulması gerekir.
 
 CLI:
 

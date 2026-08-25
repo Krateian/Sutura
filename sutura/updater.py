@@ -43,6 +43,11 @@ CHECK_INTERVAL_SECONDS = 7 * 24 * 60 * 60
 
 APPIMAGE_RELEASE_URL = 'https://github.com/Krateian/Sutura/releases'
 
+# First version that switches from Apache 2.0 to a source-available license
+# with a commercial-use clause. Auto-update must never silently jump an older
+# install across this line: the user has to see the new terms first.
+LICENSE_BOUNDARY_VERSION = '0.2.0'
+
 
 def is_appimage():
     """True when running inside an AppImage.
@@ -148,6 +153,21 @@ def is_newer(tag, current):
     return a > b
 
 
+def crosses_license_boundary(current, latest):
+    """True when 'latest' sits at/after the license boundary and 'current' is
+    strictly before it.
+
+    Compares the numeric (major, minor, patch) triple so a v0.2.0 prerelease
+    (which already carries the new license) also counts as crossing the line.
+    """
+    cur = parse_version(current)
+    lat = parse_version(latest)
+    bnd = parse_version(LICENSE_BOUNDARY_VERSION)
+    if not cur or not lat or not bnd:
+        return False
+    return cur[:3] < bnd[:3] <= lat[:3]
+
+
 # ---------------------------------------------------------------- github
 
 def fetch_latest_release():
@@ -195,30 +215,43 @@ def should_check(cfg):
 
 
 def check_for_update(force=False):
-    """Run the check if enabled and due (or forced). Returns (new_tag|None,
-    cfg). Marks last_check only when a check actually ran.
+    """Run the check if enabled and due (or forced).
+
+    Returns (status, tag, cfg) where status is:
+      * 'update'  - a newer release exists and may be auto-installed
+      * 'license' - a newer release exists but it crosses the license
+                    boundary (LICENSE_BOUNDARY_VERSION): auto-update is
+                    deliberately withheld so the user can see the new terms
+                    first; they must install manually from the releases page
+      * 'none'    - nothing newer (or the check did not run / failed)
+
+    Marks last_check only when a check actually ran.
 
     Disabled entirely for AppImage builds: the update flow cannot reinstall
     into a read-only AppImage payload."""
     cfg = load_config()
     if is_appimage():
-        return None, cfg
+        return 'none', None, cfg
     if not force and not should_check(cfg):
-        return None, cfg
+        return 'none', None, cfg
     try:
         latest = fetch_latest_release()
     except Exception:
         # transient network issue - don't nag, keep last_known_version
         cfg['last_check'] = time.time()
         save_config(cfg)
-        return None, cfg
+        return 'none', None, cfg
     cfg['last_check'] = time.time()
-    if latest and is_newer(latest, VERSION):
+    newer = latest and is_newer(latest, VERSION)
+    if newer:
         cfg['last_known_version'] = latest
+        if crosses_license_boundary(VERSION, latest):
+            save_config(cfg)
+            return 'license', latest, cfg
     else:
         cfg['last_known_version'] = None
     save_config(cfg)
-    return (latest if latest and is_newer(latest, VERSION) else None), cfg
+    return ('update' if newer else 'none'), (latest if newer else None), cfg
 
 
 # ---------------------------------------------------------------- download
@@ -426,6 +459,12 @@ def perform_update(tag, progress=None):
         return (False,
                 'The AppImage build cannot update itself. Download the latest '
                 'AppImage from %s' % APPIMAGE_RELEASE_URL, VERSION)
+    if crosses_license_boundary(VERSION, tag):
+        return (False,
+                'Sutura %s changes the license terms (source-available, '
+                'commercial-use clause). This update will not be applied '
+                'automatically - download it manually from %s if you accept '
+                'the new terms.' % (tag, APPIMAGE_RELEASE_URL), VERSION)
     previous = VERSION
     if progress:
         progress('backing up')

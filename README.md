@@ -96,7 +96,7 @@ Sutura and where you should still double-check the output.
 | Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.55) and measured by a calibration harness (`scripts/calibrate_classifier.py`). Experimental: the per-type values are still estimated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
-| Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
+| Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
 | Test coverage | ~88% | Plain-script suites (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, validate/dry-run, mesh classifier, repair mode, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
@@ -219,6 +219,10 @@ during repair, works without internet once installed.
 Sutura checks GitHub for updates only if you opt in (disabled by default).
 Updates back up the previous install automatically and roll back if the new
 version fails a self-check — no data beyond the update check itself is sent.
+Auto-update stops at v0.2.0: starting with v0.2 the license changes
+(source-available, commercial-use clause), so a v0.1.x install is never
+silently upgraded across that boundary — the new terms are shown first and the
+release must be installed manually from the releases page.
 
 CLI:
 

@@ -11,6 +11,7 @@ import json
 import tempfile
 import importlib.util
 import subprocess
+import webbrowser
 
 from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion
 from PySide6.QtGui import (
@@ -60,6 +61,15 @@ STRINGS = {
         'added_drag': 'Added %d file(s) (drag)',
         'update_btn_tooltip_idle': 'Check for updates',
         'update_btn_tooltip': 'Update available: v%s',
+        'license_update_tooltip': ('v%s changes the license terms — update '
+                                   'not applied automatically'),
+        'license_block_title': 'License change',
+        'license_block_msg': ('Sutura %s changes its license terms '
+                              '(source-available, commercial-use clause). This '
+                              'update will not be applied automatically — if '
+                              'you accept the new terms, download and install '
+                              'it manually from the releases page.'),
+        'license_block_open': 'Open releases page…',
         'appimage_update_msg': ('You are running the AppImage build. Sutura '
                                'cannot update itself in this mode.\nPlease '
                                'download the latest AppImage from:\n'
@@ -180,6 +190,15 @@ STRINGS = {
         'added_drag': 'Sürüklenen %d dosya eklendi',
         'update_btn_tooltip_idle': 'Güncellemeleri kontrol et',
         'update_btn_tooltip': 'Güncelleme var: v%s',
+        'license_update_tooltip': ('v%s lisans şartlarını değiştiriyor — '
+                                   'güncelleme otomatik uygulanmıyor'),
+        'license_block_title': 'Lisans değişikliği',
+        'license_block_msg': ('Sutura %s lisans şartlarını değiştiriyor '
+                              '(source-available, ticari kullanım şartı). Bu '
+                              'güncelleme otomatik uygulanmayacak — yeni '
+                              'şartları kabul ediyorsanız releases sayfasından '
+                              'elle indirip kurabilirsiniz.'),
+        'license_block_open': 'Releases sayfasını aç…',
         'appimage_update_msg': ('AppImage derlemesini kullanıyorsun. Bu modda '
                                'Sutura kendini güncelleyemez.\nEn son AppImage\'ı '
                                'şuradan indir:\n'
@@ -454,7 +473,7 @@ def format_report(data):
 
 
 class UpdateCheckWorker(QThread):
-    """Background check for a newer release. Emits found(new_tag|None)."""
+    """Background check for a newer release. Emits found((status, tag))."""
 
     finished_check = Signal(object)
 
@@ -463,8 +482,8 @@ class UpdateCheckWorker(QThread):
         self.force = force
 
     def run(self):
-        new_tag, _cfg = updater.check_for_update(force=self.force)
-        self.finished_check.emit(new_tag)
+        status, tag, _cfg = updater.check_for_update(force=self.force)
+        self.finished_check.emit((status, tag))
 
 
 class UpdateWorker(QThread):
@@ -827,6 +846,7 @@ class MainWindow(QMainWindow):
         self.update_check = None
         self.update_worker = None
         self.available_tag = None
+        self.license_tag = None
         self._defects_by_path = {}
         self._type_by_path = {}
         self._diff_by_path = {}
@@ -1096,8 +1116,19 @@ class MainWindow(QMainWindow):
         self.update_check.finished_check.connect(self._on_update_check_done)
         self.update_check.start()
 
-    def _on_update_check_done(self, new_tag):
+    def _on_update_check_done(self, result):
         self.update_check = None
+        status, new_tag = result
+        if status == 'license':
+            self.available_tag = None
+            self.license_tag = new_tag
+            self.update_btn.setIcon(self._update_icon(active=True))
+            self.update_btn.setToolTip(_t('license_update_tooltip', new_tag))
+            self.update_btn.setEnabled(True)
+            self.update_btn.setVisible(True)
+            if not updater.load_config().get('license_boundary_seen'):
+                self._show_license_notice(new_tag)
+            return
         if new_tag:
             self.available_tag = new_tag
             self.update_btn.setIcon(self._update_icon(active=True))
@@ -1105,10 +1136,30 @@ class MainWindow(QMainWindow):
             self.update_btn.setEnabled(True)
             self.update_btn.setVisible(True)
 
+    def _show_license_notice(self, tag):
+        """Warn that the new version crosses the license boundary and open the
+        releases page on request. Shown once per install from a background
+        check; every manual click of the update button also shows it."""
+        cfg = updater.load_config()
+        cfg['license_boundary_seen'] = True
+        updater.save_config(cfg)
+        box = QMessageBox(self)
+        box.setWindowTitle(_t('license_block_title'))
+        box.setIcon(QMessageBox.Information)
+        box.setText(_t('license_block_msg', tag))
+        open_btn = box.addButton(_t('license_block_open'), QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Close)
+        box.exec_()
+        if box.clickedButton() is open_btn:
+            webbrowser.open(updater.APPIMAGE_RELEASE_URL)
+
     def _on_update_clicked(self):
         if updater.is_appimage():
             QMessageBox.information(
                 self, _t('app_title'), _t('appimage_update_msg'))
+            return
+        if self.license_tag is not None:
+            self._show_license_notice(self.license_tag)
             return
         if self.available_tag is None:
             # manual check (idle icon click)
@@ -1141,6 +1192,7 @@ class MainWindow(QMainWindow):
         self.btn_analyze.setEnabled(bool(self.files))
         if ok:
             self.available_tag = None
+            self.license_tag = None
             self.update_btn.setIcon(self._update_icon(active=False))
             self.update_btn.setToolTip(_t('update_btn_tooltip_idle'))
             QMessageBox.information(self, _t('app_title'), _t('update_success', msg.split()[-1]))
