@@ -2,18 +2,92 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.2.0] - 2026-08-26
+
+The **interactive viewer** release: the biggest feature step since 0.1.0.
+A CPU-rendered interactive 3D view (rotate/zoom + surface-deviation diff)
+joins the static before/after comparison, the mesh classifier gets a
+correctness fix with recalibrated thresholds, auto-update learns to respect
+the new license, and the project switches to the **PolyForm Noncommercial
+1.0.0** license.
+
+### Added
+
+- **Interactive 3D viewer (v0.2).** The before/after dialog now has a
+  **Static / Interactive** switch: **drag** rotates the mesh, the **mouse
+  wheel** zooms, a low-poly LOD is rasterized per frame while dragging
+  (background thread, latest frame wins, no pymeshlab in the GUI process)
+  and a full-resolution frame lands ~300 ms after you stop. The interactive
+  view opens at the same defect-facing camera as the static comparison. A
+  second toggle switches the repaired side between the **Repair status**
+  colour map and a **Surface deviation** map: each face is coloured by the
+  distance of the repaired surface to the original surface (quantile-scaled
+  navy → cyan → yellow → red ramp), still-broken defects stay drawn on top
+  in orange, and the global Hausdorff max is shown in the dialog. The
+  dataset is built lazily by a new subprocess
+  (`sutura/viewer_data_render.py`) on first use and cached for the dialog's
+  lifetime; it decimates both meshes to an ~8k-triangle LOD and computes the
+  per-vertex distance with pymeshlab's nearest-surface-point filter — no new
+  dependencies (no scipy/rtree). `sutura/viewer_common.py` (pure
+  numpy+Qt) shares the camera/defect helpers between the static renderer and
+  the viewer. Regression-tested (`tests/test_viewer_data.py`,
+  `tests/test_heatmap.py`).
+- **Auto-update license boundary.** Auto-update no longer silently crosses
+  the v0.2.0 license boundary: `crosses_license_boundary()` stops a v0.1.x
+  install from jumping to a license-changed release, shows the new terms in
+  an informational dialog instead of installing, and offers the releases
+  page (shown once for background checks, every time on a manual click).
+  Covered by `tests/test_updater.py`.
+- **Sponsor section.** `README.md`/`README.tr.md` gain a permanent Sponsors
+  section and the repo gets a `.github/FUNDING.yml`.
+
+### Fixed
+
+- **mesh_classifier edge-pairing bug + recalibration.** The dihedral-angle
+  edge→face pairing used `i // 3` but the concatenated edge array is
+  block-stacked per index, so the wrong faces were paired and produced
+  garbage near90/coplanar signals. Fixed to `i % F` (verified 7680/7680
+  against trimesh) and split the old `coplanar` band into a true `flat`
+  (<1°) and a `gentle` (1–15°) curvature band so smooth high-poly organics
+  never read mechanical. Thresholds recalibrated on the labeled set
+  (accuracy 0.893 → 1.000, organic recall 0.812 → 1.000, unknown-rate
+  0.107 → 0); `ORG_TUNE_GATE` moved 0.55 → 0.70 (the old "organic
+  confidence tops out at ~0.62" claim was a bug artifact).
+- **confidence.py tuning-gate divergence.** The hardcoded
+  `_MECH_GATE`/`_ORG_GATE` mirrors in `sutura/confidence.py` were replaced
+  with a call-time import from `repair.py` (`_tuning_gates()`), so the
+  confidence score can never drift from the real repair thresholds again.
+  This produced a real inconsistency before: for organic confidence in
+  `[0.55, 0.70)` validate/`--dry-run` applied a `below_confidence_gate`
+  penalty while a real repair reported `tuning_applied: true`.
+- **Distribution gaps found in the pre-release audit.** `LICENSE` was not
+  being shipped by any installer (`install.sh`, `install-macos.sh`,
+  `updater.py`, `scripts/build_appimage.sh`) — now distributed everywhere,
+  satisfying PolyForm's terms-or-URL requirement. The AppImage bundle was
+  missing `confidence.py` and `before_after_render.py` (a latent bug that
+  would have broken the CLI entirely since `repair.py` imports
+  `confidence` at top level); all new modules are now in every module list.
+  `updater.py`'s confidence.py gap could have left a stale copy of the
+  gate-sync fix behind on update.
 
 ### Changed
 
 - **License changed to PolyForm Noncommercial 1.0.0** starting with v0.2.0
   (personal, non-commercial use stays free). The `LICENSE` file now carries
-  the official PolyForm text with a note that released v0.1.0–v0.1.9 versions
-  remain permanently licensed under Apache License 2.0 (see the LICENSE file
-  at each of those git tags). The Apache-required `NOTICE` file was removed —
-  PolyForm Noncommercial does not require it, and the v0.1.x tags keep their
-  own copy. The auto-update license-boundary dialog now names the new license
-  explicitly.
+  the official PolyForm text with a note that released v0.1.0–v0.1.9
+  versions remain permanently licensed under Apache License 2.0 (see the
+  LICENSE file at each of those git tags). The Apache-required `NOTICE` file
+  was removed — PolyForm Noncommercial does not require it, and the v0.1.x
+  tags keep their own copy. The auto-update license-boundary dialog now
+  names the new license explicitly.
+
+### Documentation
+
+- README.md / README.tr.md: interactive viewer usage, auto-update boundary
+  note, classifier narrative rewritten for the 3-band model, Feature Status
+  before/after row re-scored (~60% → ~75%), torture-test description
+  corrected (five scenarios, including the extreme-mode self-intersecting
+  pair).
 
 ## [0.1.9] - 2026-08-25
 

@@ -31,7 +31,7 @@ SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sut
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
-VERSION = "0.1.9"
+VERSION = "0.2.0"
 
 
 class ExtremeRemovedAllError(ValueError):
