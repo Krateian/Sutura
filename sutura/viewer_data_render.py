@@ -34,7 +34,7 @@ from viewer_common import (defect_vertex_set,
 # decimation with a threshold in the 1-4% range lands near this on typical
 # meshes (measured: 2% -> ~7k on a 460k sphere). Meshes already at or below
 # the target are used as-is (LOD == full).
-LOD_TARGET = 8000
+LOD_TARGET = 3500
 
 
 def _defect_vertex_list(defect_report):
@@ -55,7 +55,7 @@ def _decimate_lod(verts, tris, target=LOD_TARGET):
     if len(tris) == 0 or len(tris) <= target:
         return verts, tris
     best = None   # (face_count, lverts, ltris)
-    for pct in (1.0, 2.0, 4.0, 8.0, 15.0):
+    for pct in (0.5, 1.0, 2.0, 4.0, 8.0):
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=verts, face_matrix=tris.astype(np.int32)))
         ms.apply_filter('meshing_decimation_clustering',
