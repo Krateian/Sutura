@@ -4,12 +4,16 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-26
+
 The **interactive viewer** release: the biggest feature step since 0.1.0.
 A CPU-rendered interactive 3D view (rotate/zoom + surface-deviation diff)
 joins the static before/after comparison, the mesh classifier gets a
-correctness fix with recalibrated thresholds, auto-update learns to respect
-the new license, and the project switches to the **PolyForm Noncommercial
-1.0.0** license.
+correctness fix with recalibrated thresholds, `.obj` files become
+first-class citizens (Dolphin + CLI) with an explicit material-loss
+warning, the stage-1 repair pipeline gets a measured hole-closing
+overhaul, auto-update learns to respect the new license, and the project
+switches to the **PolyForm Noncommercial 1.0.0** license.
 
 ### Added
 
@@ -26,12 +30,23 @@ the new license, and the project switches to the **PolyForm Noncommercial
   in orange, and the global Hausdorff max is shown in the dialog. The
   dataset is built lazily by a new subprocess
   (`sutura/viewer_data_render.py`) on first use and cached for the dialog's
-  lifetime; it decimates both meshes to an ~8k-triangle LOD and computes the
-  per-vertex distance with pymeshlab's nearest-surface-point filter — no new
-  dependencies (no scipy/rtree). `sutura/viewer_common.py` (pure
-  numpy+Qt) shares the camera/defect helpers between the static renderer and
-  the viewer. Regression-tested (`tests/test_viewer_data.py`,
-  `tests/test_heatmap.py`).
+  lifetime; it decimates both meshes to a ~3.5k-triangle interactive LOD
+  (`LOD_TARGET=3500`, tuned against the 75-model corpus: median ~71 FPS,
+  no model under 30 FPS at 720×540) and computes the per-vertex distance
+  with pymeshlab's nearest-surface-point filter — no new dependencies (no
+  scipy/rtree). `sutura/viewer_common.py` (pure numpy+Qt) shares the
+  camera/defect helpers between the static renderer and the viewer.
+  Regression-tested (`tests/test_viewer_data.py`, `tests/test_heatmap.py`).
+- **`.obj` support.** The Dolphin right-click menu (`model/obj` MIME) and
+  the CLI now accept `.obj` files. Because the repair rebuilds the mesh
+  (vertices + triangles only), material/texture references (`mtllib` /
+  `usemtl`) are not preserved: instead of dropping them silently the report
+  carries `material_discarded` (JSON) and a `Material:` line (`--human`) —
+  a cosmetic field that never changes the category. WRL/PLY/OFF/DAE are
+  deliberately NOT added (low real demand; PLY/OFF have no MIME
+  registration on this system and need a format-specific
+  `scan_bad_coordinates` fix; DAE loses its triangles in pymeshlab).
+  Tests: `tests/make_broken_obj.py`, `tests/test_obj_repair.py`.
 - **Auto-update license boundary.** Auto-update no longer silently crosses
   the v0.2.0 license boundary: `crosses_license_boundary()` stops a v0.1.x
   install from jumping to a license-changed release, shows the new terms in
@@ -69,6 +84,43 @@ the new license, and the project switches to the **PolyForm Noncommercial
   `confidence` at top level); all new modules are now in every module list.
   `updater.py`'s confidence.py gap could have left a stale copy of the
   gate-sync fix behind on update.
+- **Mode suggestions are now mode- and size-aware.** The suggestion logic
+  moved into a pure `mode_suggestion_keys()` (was `_analysis_suggestions`):
+  the low-confidence step-up tip only fires while the mode is still
+  low/medium/auto (no point suggesting a step up on aggressive/extreme),
+  and the extreme caveat only fires when extreme is suggested AND the mesh
+  is small enough (< 20 faces) for extreme to actually delete it. Tested by
+  `tests/test_suggestions.py`.
+- **Interactive viewer never rendered (crash fix).** `heatmap._defect_vertex_set`
+  used `verts_idx or []`, which raises ValueError on a multi-element numpy
+  array. gui.py passes `np.asarray` defect indices into `prepare_render`,
+  so `set_data` aborted silently in the viewer and the viewport stayed
+  black for every repaired mesh. Now safe for plain lists AND numpy arrays
+  in `heatmap.py` + `viewer_common.py` (regression test in
+  `tests/test_heatmap.py`).
+- **Stage 1 chain reordering.** `meshing_repair_non_manifold_vertices` now
+  runs BEFORE hole closing (closing a hole on a mesh with non-manifold
+  vertices fan-fills it and can create new non-manifold edges), and a final
+  `close_holes` pass re-closes anything the debris removal re-opened. Applied
+  to both `stage1_chain` and `delete_fallback_chain`.
+- **Mesh-sensitive `maxholesize`.** The fixed value (1000) skipped any input
+  boundary loop longer than that (VCG counts each hole edge twice), leaving
+  large scan holes open. The effective value is now
+  `max(mode/type base, 2 × longest input boundary loop)` — shared by the
+  real repair and `--dry-run` (the plan reports the effective value). Validated
+  on the 75-model corpus: 0 regressions, every partial case's residual loops
+  dropped (e.g. thingi10k_117959 2757→2, Goethe_Lifemask 1059→1, Athena
+  683→3), one case (penelope) gained two-manifold.
+- **Interactive-viewer FPS + LOD overshoot.** The interactive LOD target
+  was lowered 8000 → 3500 and the clustering threshold steps refined based
+  on a measured 75-model corpus run: median 71 FPS, minimum 43.8 FPS, no
+  model under 30 FPS at 720×540 (a 2.05M-face scan was ~20 FPS before).
+  A QPainterPath color-group batching experiment was tried and reverted —
+  it measured ~1.8× slower than the per-face path everywhere.
+  `_decimate_lod` now picks the result at-or-below target that is closest
+  to it (never above target, never over-collapsed when a step jumps far
+  below); 17 corpus models that previously landed at 4.5–5.5k tris now land
+  at 1.6–3.4k.
 
 ### Changed
 
@@ -88,29 +140,15 @@ the new license, and the project switches to the **PolyForm Noncommercial
   tags keep their own copy. The auto-update license-boundary dialog now
   names the new license explicitly.
 
-### Fixed
-
-- **Stage 1 chain reordering.** `meshing_repair_non_manifold_vertices` now
-  runs BEFORE hole closing (closing a hole on a mesh with non-manifold
-  vertices fan-fills it and can create new non-manifold edges), and a final
-  `close_holes` pass re-closes anything the debris removal re-opened. Applied
-  to both `stage1_chain` and `delete_fallback_chain`.
-- **Mesh-sensitive `maxholesize`.** The fixed value (1000) skipped any input
-  boundary loop longer than that (VCG counts each hole edge twice), leaving
-  large scan holes open. The effective value is now
-  `max(mode/type base, 2 × longest input boundary loop)` — shared by the
-  real repair and `--dry-run` (the plan reports the effective value). Validated
-  on the 75-model corpus: 0 regressions, every partial case's residual loops
-  dropped (e.g. thingi10k_117959 2757→2, Goethe_Lifemask 1059→1, Athena
-  683→3), one case (penelope) gained two-manifold.
-
 ### Documentation
 
 - README.md / README.tr.md: interactive viewer usage, auto-update boundary
   note, classifier narrative rewritten for the 3-band model, Feature Status
   before/after row re-scored (~60% → ~75%), torture-test description
   corrected (five scenarios, including the extreme-mode self-intersecting
-  pair).
+  pair). `.obj` support and the material-loss note added; the layered-3MF
+  "13 and 26 micro-holes" example updated to the current behavior (0 and 0,
+  fully closed but `stage2_skipped` for multi-object 3MF).
 
 ## [0.1.9] - 2026-08-25
 
