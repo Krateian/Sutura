@@ -1,1 +1,1 @@
-PySide6-Essentials==6.11.1
+PySide6-Essentials==6.11.2
