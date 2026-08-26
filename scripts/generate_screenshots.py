@@ -22,6 +22,10 @@ Outputs (overwrites in assets/):
                        the Analysis pane (type/mode/tuning, defect counts,
                        watertight verdict, estimated confidence + warning,
                        mode suggestions)
+  before-after-panel.png - the before/after dialog (static view): the
+                       Static/Interactive mode switch, the main
+                       original/repaired image, the worst-defect detail
+                       close-up and the toggle button
 
 The meshes used are generated into a temp dir and removed afterwards.
 """
@@ -162,6 +166,58 @@ def run_analyze(m, files, size, select_broken, out_path):
     print('wrote', out_path)
 
 
+def run_before_after(m, files, size, out_path):
+    """Drive the before/after dialog and grab it (static view).
+
+    Repairs the batch, selects the broken mesh (index 0), triggers
+    ``_on_show_before_after`` (which spawns the BeforeAfterWorker subprocess)
+    and grabs the modal dialog once it is open. The modal ``dlg.exec()``
+    keeps running its own event loop, so the QTimer poll can fire while it
+    is shown."""
+    app = QApplication.instance() or QApplication([])
+    m.apply_dark_theme(app)
+    win = m.MainWindow()
+    win.resize(*size)
+    win.show()
+    for f in files:
+        win._add_path(f)
+
+    done = {}
+
+    def grab_dialog():
+        dlg = win._before_after_zoom
+        if (dlg is not None and dlg.isVisible()
+                and win.before_after_worker is None):
+            QTimer.singleShot(150, do_grab)
+            return
+        QTimer.singleShot(100, grab_dialog)
+
+    def do_grab():
+        dlg = win._before_after_zoom
+        dlg.grab().save(out_path)
+        done['ok'] = True
+        dlg.close()
+        app.quit()
+
+    def poll():
+        if win.worker is None:
+            app.processEvents()
+            win.tree.setCurrentItem(win.tree.topLevelItem(0))
+            app.processEvents()
+            win._on_show_before_after()
+            QTimer.singleShot(200, grab_dialog)
+        else:
+            QTimer.singleShot(200, poll)
+
+    win.repair()
+    QTimer.singleShot(200, poll)
+    app.exec()
+    if not done.get('ok'):
+        raise RuntimeError('before/after screenshot render did not finish: %s'
+                           % out_path)
+    print('wrote', out_path)
+
+
 def main():
     os.environ['SUTURA'] = _repo_cli_wrapper()
     m = load_gui()
@@ -174,6 +230,8 @@ def main():
             out_path=os.path.join(ASSETS, 'defect-panel.png'))
         run_analyze(m, files, PANEL_SIZE, select_broken=True,
                     out_path=os.path.join(ASSETS, 'analyze-panel.png'))
+        run_before_after(m, files, MAIN_SIZE,
+                         out_path=os.path.join(ASSETS, 'before-after-panel.png'))
     print('done')
 
 

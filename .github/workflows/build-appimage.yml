@@ -34,14 +34,14 @@ jobs:
         run: ./scripts/build_appimage.sh
 
       - name: Publish to GitHub Release
-        uses: softprops/action-gh-release@v2
+        # v3 (v2 is EOL: Node 20 runtime deprecated). We deliberately do NOT
+        # pass name/body: softprops retains the original release info when the
+        # tag already has a release, so a manually written release body (with
+        # screenshots) is never clobbered — the step only uploads the AppImage
+        # asset. When no release exists yet (e.g. a backfill onto an old tag)
+        # a release is created with the tag as title and an empty body.
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.tag.outputs.ref }}
           files: dist/Sutura-x86_64.AppImage
-          name: ${{ steps.tag.outputs.ref }}
-          body: |
-            Sutura ${{ steps.tag.outputs.ref }}
-
-            This release's AppImage is built automatically from the
-            `scripts/build_appimage.sh` pipeline. The `install.sh` (git clone)
-            flow remains fully supported.
+          overwrite_files: true

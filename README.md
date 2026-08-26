@@ -398,6 +398,8 @@ with thousands of micro-cracks stays fast. The close-up uses the same zoomed
 camera for both sides, so the original vs repaired comparison is
 apples-to-apples. It is a static click-toggle, deliberately not an
 interactive 3D slider — same CPU-renderer constraint as the heatmap — and
+
+![Before/after comparison dialog](assets/before-after-panel.png)
 runs in a subprocess on-demand, so it never slows a batch.
 
 A **Static / Interactive** switch at the top of the dialog adds the

@@ -404,6 +404,8 @@ birebir tutarlıdır. Isı haritasıyla aynı CPU-çizici kısıtı yüzünden b
 olarak etkileşimli bir 3D kaydırıcı değil, statik bir tıkla-geçiştir; alt
 süreçte çalışır ve isteğe bağlıdır, bu yüzden bir batch'i asla yavaşlatmaz.
 
+![Öncesi/sonrası karşılaştırma diyaloğu](assets/before-after-panel.png)
+
 Diyalogun üstündeki **Statik / İnteraktif** anahtarı, etkileşimli 3D
 görünümü ekler (ilk kez seçildiğinde tembel üretilir, sonra diyaloğun ömrü
 boyunca önbellekte tutulur): **sürükleyerek** mesh döndürülür, **fare
