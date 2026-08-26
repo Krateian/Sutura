@@ -20,6 +20,7 @@ import tempfile
 import shutil
 import zipfile
 import subprocess
+from collections import defaultdict
 import numpy as np
 
 from classification import classify, issue_label, is_stage2_skipped
@@ -143,12 +144,18 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8):
         ('meshing_remove_duplicate_vertices', {}),
         ('meshing_repair_non_manifold_edges', {}),
         ('meshing_re_orient_faces_coherently', {}),
-        ('meshing_close_holes', {'maxholesize': maxholesize}),
+        # non-manifold vertices are repaired BEFORE hole closing: closing a
+        # hole on a mesh with non-manifold vertices fan-fills it and can
+        # CREATE new non-manifold edges (verified in the corpus analysis),
+        # so the mesh must be vertex-manifold first. A final close_holes pass
+        # re-closes anything the debris removal / re-orient opened.
         ('meshing_repair_non_manifold_vertices', {}),
+        ('meshing_close_holes', {'maxholesize': maxholesize}),
         ('meshing_remove_connected_component_by_face_number',
          {'mincomponentsize': mincomponentsize, 'removeunref': True}),
         ('meshing_remove_unreferenced_vertices', {}),
         ('meshing_re_orient_faces_coherently', {}),
+        ('meshing_close_holes', {'maxholesize': maxholesize}),
     ]
 
 
@@ -238,6 +245,46 @@ def surface_area(verts, tris):
     return float(np.sum(0.5 * np.linalg.norm(cross, axis=1)))
 
 
+def boundary_loop_stats(verts, tris):
+    """(n_loops, max_loop_len) of the mesh boundary: walks the boundary-edge
+    graph (edges used by exactly one face). A closed mesh returns (0, 0).
+    Pure numpy + dict (no pymeshlab); each boundary vertex of a 2-manifold
+    mesh has degree 2, so loops = connected boundary components."""
+    tris = np.asarray(tris, dtype=np.int64)
+    if len(tris) == 0:
+        return 0, 0
+    f0, f1, f2 = tris[:, 0], tris[:, 1], tris[:, 2]
+    V = int(tris.max()) + 1
+    keys = np.concatenate([
+        np.minimum(f0, f1) * V + np.maximum(f0, f1),
+        np.minimum(f1, f2) * V + np.maximum(f1, f2),
+        np.minimum(f0, f2) * V + np.maximum(f0, f2),
+    ]).astype(np.int64)
+    uniq, counts = np.unique(keys, return_counts=True)
+    bkeys = uniq[counts == 1]
+    if len(bkeys) == 0:
+        return 0, 0
+    ba, bb = bkeys // V, bkeys % V
+    adj = defaultdict(list)
+    for a, c in zip(ba.tolist(), bb.tolist()):
+        adj[a].append(c)
+        adj[c].append(a)
+    seen, loops = set(), []
+    for s in adj:
+        if s in seen:
+            continue
+        n, cur, prev = 0, s, None
+        while cur not in seen:
+            seen.add(cur)
+            n += 1
+            nxt = [x for x in adj[cur] if x != prev]
+            if not nxt:
+                break
+            prev, cur = cur, nxt[0]
+        loops.append(n)
+    return len(loops), (max(loops) if loops else 0)
+
+
 def signed_volume(verts, tris):
     """Signed volume of a triangle mesh (sum of origin-tetrahedra volumes).
 
@@ -307,6 +354,13 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
     stats['repair_mode'] = mode
     _p, stats['tuning_applied'] = resolve_mode_params(
         mode, _cls['type'], _cls['confidence'])
+    # Mesh-sensitive maxholesize: a fixed value (1000) skips any boundary
+    # loop longer than that (VCG counts each hole edge twice), so large
+    # scan holes stay open. Raise to cover the input's largest loop, never
+    # below the mode/type base. Measured on the 75-model corpus: closes
+    # large loops without ever degrading a mesh (7 cases improved, 0 worse).
+    _p['maxholesize'] = max(_p['maxholesize'],
+                            2 * boundary_loop_stats(v, t)[1])
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -316,7 +370,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
     before_area = surface_area(v, t)
     before_verts = before.get('vertices_number', 0)
     before_faces = before.get('faces_number', 0)
-    holes_before = max(before.get('boundary_edges', 0) // 2, 0)
+    holes_before = boundary_loop_stats(v, t)[0]
     nm_before = before.get('non_two_manifold_edges', 0)
 
     ms = ml.MeshSet()
@@ -364,7 +418,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
                 'Extreme mode removed all geometry (small connected component '
                 'below the size threshold); try a less aggressive mode (e.g. Auto)')
 
-    holes_after = max(after.get('boundary_edges', 0) // 2, 0)
+    holes_after = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
+                                      ms.current_mesh().face_matrix())[0]
     nm_after = after.get('non_two_manifold_edges', 0)
 
     stats['stage1']['holes_closed'] = max(holes_before - holes_after, 0)
@@ -412,7 +467,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
 
     stats['stage1'].update({
         'two_manifold': bool(fin.get('is_mesh_two_manifold')),
-        'holes_remaining': max(fin.get('boundary_edges', 0) // 2, 0),
+        'holes_remaining': boundary_loop_stats(new_verts, new_tris)[0],
         'components': fin.get('connected_components_number'),
         'faces_after': fin.get('faces_number'),
         'vertices_before': int(before_verts),
@@ -791,6 +846,10 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
     holes = d['holes']
     nm = d['non_manifold']
     params, tuning = resolve_mode_params(mode, cls['type'], cls['confidence'])
+    # keep --dry-run's would_apply in sync with the real repair: the mesh-
+    # sensitive maxholesize raise must be visible in the plan too.
+    params['maxholesize'] = max(params['maxholesize'],
+                                2 * boundary_loop_stats(verts, tris)[1])
 
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))

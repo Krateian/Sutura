@@ -69,7 +69,7 @@ Sutura and where you should still double-check the output.
 | Area | Maturity | What is solid / where to be careful |
 |---|---|---|
 | STL repair (two-stage) | ~95% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs. Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and very large holes are closed with a flat patch, not a smart reconstruction. |
-| 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF can keep a few sub-millimetre cracks that slicers usually auto-heal. |
+| 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF repairs fully closed (0 holes remaining) but is still reported as `stage2_skipped` (warning) because per-object stage 2 never runs. |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
 | GUI | ~88% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison (static + interactive 3D viewer with surface deviation), repair-mode picker, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--dry-run`, `--version`), the read-only `validate` subcommand, JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
@@ -602,12 +602,15 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 * **Layered/duplicated-vertex 3MF exports.** Some slicers (Bambu Studio
   included) write 3MFs whose objects repeat every vertex position ~15x as
   separate vertex entries, and whose surfaces are folded (several faces
-  coincident on one edge). VCG can turn such meshes into valid 2-manifolds,
-  but a few sub-millimetre cracks may remain that `close_holes` refuses to
-  fill (the fill patch would be degenerate). The result is two-manifold but
-  not always fully watertight; most slicers auto-heal cracks this small on
-  import. Example from development: a 2-object Bambu export ended with 13
-  and 26 remaining micro-holes per object after the best possible VCG pass.
+  coincident on one edge). VCG can turn such meshes into valid 2-manifolds;
+  with the reordered Stage 1 chain (non-manifold vertices repaired before
+  hole closing, plus a final close pass) the test exports now repair fully
+  closed — 0 holes remaining (reported as a real boundary-loop count, not
+  half the boundary edges). Per-object stage 2 is still deliberately
+  skipped for multi-object 3MFs, so the category stays `warning`
+  (`stage2_skipped`), but the geometry is closed. Example from development:
+  a 2-object Bambu export that previously reported 13 and 26 micro-holes
+  now reports 0 and 0.
 * **All objects are preserved.** Multi-object 3MFs are repaired object by
   object and written back, so no object is lost. The per-object result is
   reported in the CLI output and the GUI.

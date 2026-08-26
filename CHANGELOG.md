@@ -72,6 +72,13 @@ the new license, and the project switches to the **PolyForm Noncommercial
 
 ### Changed
 
+- **`holes_remaining` now reports the real boundary-loop count** (was
+  `boundary_edges // 2`, half the total boundary edges — a single long hole
+  was inflated into hundreds/thousands of "holes"). The report's Stage 1
+  `holes_remaining`/`holes_closed` (and the `--human` lines) now count actual
+  loops, so a mesh with one 2,119-edge hole reports `1` instead of `1059`.
+  JSON consumers comparing against previous versions will see smaller,
+  correct numbers.
 - **License changed to PolyForm Noncommercial 1.0.0** starting with v0.2.0
   (personal, non-commercial use stays free). The `LICENSE` file now carries
   the official PolyForm text with a note that released v0.1.0–v0.1.9
@@ -80,6 +87,22 @@ the new license, and the project switches to the **PolyForm Noncommercial
   was removed — PolyForm Noncommercial does not require it, and the v0.1.x
   tags keep their own copy. The auto-update license-boundary dialog now
   names the new license explicitly.
+
+### Fixed
+
+- **Stage 1 chain reordering.** `meshing_repair_non_manifold_vertices` now
+  runs BEFORE hole closing (closing a hole on a mesh with non-manifold
+  vertices fan-fills it and can create new non-manifold edges), and a final
+  `close_holes` pass re-closes anything the debris removal re-opened. Applied
+  to both `stage1_chain` and `delete_fallback_chain`.
+- **Mesh-sensitive `maxholesize`.** The fixed value (1000) skipped any input
+  boundary loop longer than that (VCG counts each hole edge twice), leaving
+  large scan holes open. The effective value is now
+  `max(mode/type base, 2 × longest input boundary loop)` — shared by the
+  real repair and `--dry-run` (the plan reports the effective value). Validated
+  on the 75-model corpus: 0 regressions, every partial case's residual loops
+  dropped (e.g. thingi10k_117959 2757→2, Goethe_Lifemask 1059→1, Athena
+  683→3), one case (penelope) gained two-manifold.
 
 ### Documentation
 

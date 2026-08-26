@@ -71,7 +71,7 @@ söyler.
 | Alan | Olgunluk | Ne sağlam / Nerede dikkatli |
 |---|---|---|
 | STL onarımı (iki aşamalı) | ~%95 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmıştır. %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve çok büyük delikler akıllı bir yeniden yapılandırma yerine düz bir yamayla kapatılır. |
-| 3MF çok nesneli | ~%90 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen köşeli bir 3MF, dilimleyicilerin genellikle otomatik iyileştirdiği birkaç milimetre-altı çatlak tutabilir. |
+| 3MF çok nesneli | ~%90 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen köşeli bir 3MF tam kapalı onarılır (0 kalan delik) ama nesne başına aşama 2 hiç çalışmadığı için yine de `stage2_skipped` (warning) olarak raporlanır. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
 | GUI | ~%88 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), onarım modu seçici, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
 | CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--dry-run`, `--version`), salt-okunur `validate` alt komutu, JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
@@ -611,12 +611,14 @@ güvenilir şekilde algılayabilir.
   (Bambu Studio dahil) nesnelerinin her köşe konumunu ~15 kez ayrı köşe girişi
   olarak tekrarlayan ve yüzeyleri katlanmış (bir kenarda birkaç yüz çakışık)
   olan 3MF'ler yazar. VCG bu tür meshleri geçerli 2-manifoldlara
-  dönüştürebilir, ama `close_holes`'un doldurmayı reddettiği birkaç
-  milimetre-altı çatlak kalabilir (dolgu yaması dejenere olurdu). Sonuç
-  iki-manifolddur ama her zaman tam su geçirmez değildir; çoğu dilimleyici bu
-  kadar küçük çatlakları içe aktarırken otomatik iyileştirir. Geliştirme
-  sırasındaki bir örnek: 2 nesneli bir Bambu dışa aktarımı, mümkün olan en
-  iyi VCG geçişinden sonra nesne başına 13 ve 26 kalan mikro delikle sonuçlandı.
+  dönüştürebilir; yeniden düzenlenen Aşama 1 zinciriyle (non-manifold köşeler
+  delik kapatmadan önce onarılır, sonda bir ek kapatma geçişi daha) test
+  dışa aktarımları artık tam kapalı onarılıyor — 0 kalan delik (boundary
+  kenarlarının yarısı değil, gerçek boundary-loop sayısı olarak raporlanır).
+  Nesne başına aşama 2, çok nesneli 3MF'lerde hâlâ bilinçli olarak atlanır, bu
+  yüzden kategori `warning` (`stage2_skipped`) kalır ama geometri kapalıdır.
+  Geliştirme sırasındaki bir örnek: daha önce 13 ve 26 mikro delik bildiren 2
+  nesneli bir Bambu dışa aktarımı artık 0 ve 0 bildiriyor.
 * **Tüm nesneler korunur.** Çok nesneli 3MF'ler nesne nesne onarılır ve geri
   yazılır, böylece hiçbir nesne kaybolmaz. Nesne başına sonuç CLI çıktısında ve
   GUI'de raporlanır.
