@@ -26,17 +26,6 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 
 ## Backlog (v0.3 notes — diagnosed, NOT fixed yet)
 
-- **LOD overshoot on ~17/74 corpus models.** `_decimate_lod`'s fixed percentage
-  steps (`(0.5, 1.0, 2.0, 4.0, 8.0)`) land above `LOD_TARGET=3500` for some
-  meshes (measured up to ~5.5k tris: Horse_Head, fandisk, nefertiti,
-  alligator, Dragon_2, thingi10k_103354/376252, ...). Two patterns: (a) small
-  originals where even the coarsest step barely decimates (fandisk 42% ->
-  5468, alligator 89% -> 5345 — LOD ≈ original, but those are already tiny
-  meshes, harmless); (b) large meshes where the "closest to target" step
-  stays above target (2.4-2.7M faces -> ~4.6-5.5k). Fix idea (deferred):
-  add a `0.25%` step for large meshes, or pick the first step that lands at
-  or below target. Deferred deliberately — current default path is already
-  ≥44 FPS on every corpus model.
 - **Extreme mode can WORSEN heavy-self-intersection scans.** 75-model corpus:
   for scan-derived meshes with thousands of self-intersections (e.g.
   thingi10k_804302 has 14,730 SI; Ephebe 2,491 SI + 327 non-manifold),
@@ -47,6 +36,18 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
   `sug_holes_many`/`sug_si_*` on exactly these meshes — the suggestion text
   may over-promise extreme's value on heavy-SI scans. Revisit the suggestion
   wording/conditions for v0.3; do not attempt to fix now.
+
+## Backlog resolved
+
+- **LOD overshoot on ~17/74 corpus models — FIXED.** `_decimate_lod` used a
+  "closest to target" selection that could pick an ABOVE-target step when
+  the next step overshot below by a similar margin (measured up to 5.5k tris
+  vs target 3500). It now picks the result AT OR BELOW the target that is
+  closest to it (never above, never over-collapsing when a step jumps far
+  below), with a finer ascending step list `(1.0, 1.5, 2.0, 3.0, 5.0, 8.0)`.
+  Verified on all 17 overshoot models (now 1,616-3,368 tris, all <= target)
+  and 5 of them re-timed (FPS 44-46 -> 64-98, all >= 64 FPS). Small meshes
+  at or below the target are returned unchanged.
 
 ## Tests (no framework — plain scripts, need the venvs installed)
 

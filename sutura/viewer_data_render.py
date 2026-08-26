@@ -31,9 +31,11 @@ from viewer_common import (defect_vertex_set,
                            healed_face_mask, initial_view_camera)
 
 # Interactive-LOD triangle target for the drag preview. Clustering
-# decimation with a threshold in the 1-4% range lands near this on typical
-# meshes (measured: 2% -> ~7k on a 460k sphere). Meshes already at or below
-# the target are used as-is (LOD == full).
+# decimation with a percentage threshold is non-linear and mesh-dependent
+# (larger pct -> fewer triangles; on a 2.5M-face mesh 2% -> ~5.5k, 3% -> ~2.4k,
+# 5% -> ~3.4k), so _decimate_lod tries ascending steps and picks the result
+# AT OR BELOW the target that is closest to it (never above). Meshes already
+# at or below the target are used as-is (LOD == full).
 LOD_TARGET = 3500
 
 
@@ -43,19 +45,23 @@ def _defect_vertex_list(defect_report):
 
 
 def _decimate_lod(verts, tris, target=LOD_TARGET):
-    """Cluster-decimate to roughly ``target`` triangles (fast, topology-free).
+    """Cluster-decimate to AT MOST ``target`` triangles (fast, topology-free).
 
-    Returns (lverts, ltris) in the same dtypes as the input. Meshes at or
-    below the target are returned unchanged. Picks the threshold whose
-    result is closest to the target (first threshold that already lands at
-    or below it wins). Never raises for empty input.
+    Returns (lverts, ltris) in the same dtypes as the input. Meshes already
+    at or below the target are returned unchanged. Tries the threshold steps
+    in ascending order (larger pct -> fewer triangles) and picks the result
+    that lands AT OR BELOW the target and is CLOSEST to it, so the LOD never
+    stays above the target and never over-collapses when a step jumps far
+    below it. If no step reaches the target, the most aggressive (smallest)
+    result is used. Never raises for empty input.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
     if len(tris) == 0 or len(tris) <= target:
         return verts, tris
-    best = None   # (face_count, lverts, ltris)
-    for pct in (0.5, 1.0, 2.0, 4.0, 8.0):
+    best_below = None   # (face_count, lverts, ltris) closest to target from below
+    fallback = None     # (face_count, lverts, ltris) smallest result overall
+    for pct in (1.0, 1.5, 2.0, 3.0, 5.0, 8.0):
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=verts, face_matrix=tris.astype(np.int32)))
         ms.apply_filter('meshing_decimation_clustering',
@@ -63,15 +69,19 @@ def _decimate_lod(verts, tris, target=LOD_TARGET):
         m = ms.current_mesh()
         lv = np.asarray(m.vertex_matrix(), dtype=np.float64)
         lt = np.asarray(m.face_matrix(), dtype=np.int64)
-        if len(lt) == 0:
+        n = len(lt)
+        if n == 0:
             continue
-        if best is None or abs(len(lt) - target) < abs(best[0] - target):
-            best = (len(lt), lv, lt)
-        if len(lt) <= target:
-            break
-    if best is None:
-        return verts, tris
-    return best[1], best[2]
+        if fallback is None or n < fallback[0]:
+            fallback = (n, lv, lt)
+        if n <= target:
+            if best_below is None or abs(n - target) < abs(best_below[0] - target):
+                best_below = (n, lv, lt)
+    if best_below is not None:
+        return best_below[1], best_below[2]
+    if fallback is not None:
+        return fallback[1], fallback[2]
+    return verts, tris
 
 
 def _surface_distance(measure_verts, measure_tris, ref_verts, ref_tris):
