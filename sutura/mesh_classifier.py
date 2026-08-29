@@ -84,7 +84,6 @@ def _dihedral_stats(verts, tris):
     faces and produced garbage near90/coplanar values. Verified against
     trimesh's face_adjacency_angles (matches exactly after the fix).
     """
-    from collections import defaultdict
     v = np.asarray(verts, dtype=np.float64)
     f = np.asarray(tris, dtype=np.int64)
     a = v[f[:, 0]]
@@ -98,21 +97,27 @@ def _dihedral_stats(verts, tris):
     edges = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]], axis=0)
     keys = np.min(edges, axis=1) * (10 ** 7) + np.max(edges, axis=1)
     F = len(f)
-    edge_to_faces = defaultdict(list)
-    for i, k in enumerate(keys):
-        edge_to_faces[int(k)].append(i % F)
 
-    dihedrals = []
-    for faces in edge_to_faces.values():
-        if len(faces) != 2:
-            continue
-        i, j = faces
-        cos = float(np.clip(np.dot(n[i], n[j]), -1.0, 1.0))
-        dihedrals.append(np.degrees(np.arccos(cos)))
-
-    if not dihedrals:
+    # Vectorized edge->face pairing: sort the 3F directed edges by their
+    # undirected key and group equal keys into runs; only runs of exactly 2
+    # faces (one interior edge, two adjacent faces) produce a dihedral.
+    # Boundary (1 face) and non-manifold (3+) edges are skipped, as before.
+    order = np.argsort(keys, kind="stable")
+    sorted_keys = keys[order]
+    sorted_face = order % F
+    boundaries = np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]) + 1
+    starts = np.concatenate(([0], boundaries)).astype(np.int64)
+    ends = np.concatenate((boundaries, [sorted_keys.shape[0]])).astype(np.int64)
+    run_len = ends - starts
+    sel = np.flatnonzero(run_len == 2)
+    if sel.shape[0] == 0:
         return 0.0, 0.0, 0.0
-    d = np.array(dihedrals)
+
+    i_face = sorted_face[starts[sel]]
+    j_face = sorted_face[starts[sel] + 1]
+    cos_all = np.sum(n[i_face] * n[j_face], axis=1)
+    d = np.degrees(np.arccos(np.clip(cos_all, -1.0, 1.0)))
+
     near90 = float(np.mean((d >= 60) & (d <= 120))) * 100.0
     flat = float(np.mean(d < 1.0)) * 100.0
     gentle = float(np.mean((d >= 1.0) & (d < 15.0))) * 100.0
