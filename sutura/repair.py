@@ -563,13 +563,23 @@ def scan_bad_coordinates(path):
         size = os.path.getsize(path)
         if size != 84 + n * 50:
             return 'malformed STL (declared %d triangles, file size mismatch)' % n
-        for _ in range(n):
-            buf = f.read(50)
-            if len(buf) < 50:
-                return 'malformed STL (truncated data)'
-            for i in range(12, 48, 12):
-                if not all(math.isfinite(x) for x in struct.unpack('<3f', buf[i:i + 12])):
-                    return 'NaN or infinite coordinates'
+        return _scan_bin_stl(f, n)
+    return None
+
+
+def _scan_bin_stl(f, n):
+    """Bulk-read the n 50-byte binary STL records after the 84-byte header and
+    report the FIRST non-finite vertex coordinate (only the 3 vertex vectors,
+    offsets 12..48 — normals and the 2-byte attribute are not checked, exactly
+    as before). Returns an error message string or None."""
+    dt = np.dtype([('normal', '<f4', (3,)),
+                   ('verts', '<f4', (3, 3)),
+                   ('attr', '<u2')])
+    data = np.fromfile(f, dtype=dt, count=n)
+    if data.shape[0] != n:
+        return 'malformed STL (truncated data)'
+    if not np.isfinite(data['verts']).all():
+        return 'NaN or infinite coordinates'
     return None
 
 
