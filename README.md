@@ -29,6 +29,16 @@ malformed files, adversarial inputs and torture scenarios (huge meshes, thin
 walls, multi-part assemblies) — and every change is verified automatically by
 CI on each push and pull request.
 
+**A note from the maintainer**
+
+I'm building Sutura entirely on my own — my day job is aircraft maintenance
+engineering, and Sutura happens in the evenings and on weekends. I'm going
+through a big personal change soon, and the time I can put into this project
+will drop significantly for a while.
+
+I'm not abandoning it. Just a pause — I'll pick it back up. Thanks to everyone
+who's used it, reported bugs, and contributed so far.
+
 ## Screenshot
 
 ![Sutura GUI](assets/screenshot.png)
