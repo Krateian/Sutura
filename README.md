@@ -627,6 +627,28 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
   object and written back, so no object is lost. The per-object result is
   reported in the CLI output and the GUI.
 
+## Usage history (anonymous, opt-out)
+
+Sutura records a *technical usage history* of repairs so the community can
+steer the engine (mesh_classifier + stage-1/2 tuning) toward the cases it
+actually meets.
+
+* **What is recorded:** mesh size (vertex/face counts), defect counts (holes,
+  non-manifold, self-intersections), classifier result (type + confidence),
+  repair mode, applied filter count, final category, repair-confidence score,
+  repair timing, and a geometry-only fingerprint for deduplication.
+* **What is NEVER recorded:** file names, file paths, user names, IP
+  addresses, machine identifiers, environment variables, or any personal
+  data. The fingerprint is derived from mesh geometry only.
+* **Default:** on. Disable from the CLI with `sutura --no-history ...`, or
+  uncheck the box in the first-run dialog (GUI). The preference lives in
+  `~/.config/sutura/config.json` (`history_enabled`).
+* **Sharing:** `sutura export-history` prints an anonymous summary plus the
+  full JSON records in one command, ready to paste into a GitHub issue. Use
+  `--summary-only` for just the summary, `--last N` to limit to the most
+  recent records, and `--clear` to wipe the file. Nothing is ever uploaded
+  automatically.
+
 ## Contributing
 
 Missing a feature? Found a mesh that won't repair? Open an issue. A good

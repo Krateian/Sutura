@@ -20,6 +20,7 @@ import tempfile
 import shutil
 import zipfile
 import subprocess
+import time
 from collections import defaultdict
 import numpy as np
 
@@ -27,6 +28,7 @@ from classification import classify, issue_label, is_stage2_skipped
 from confidence import (estimate_confidence_pre_repair, repair_confidence)
 from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
+import history
 
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
@@ -603,6 +605,7 @@ def repair_file(src, out, tmpdir, mode='auto'):
     tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
     report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
+    report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
         report['material_discarded'] = obj_has_material_refs(src)
@@ -689,6 +692,7 @@ def repair_3mf(src, out, tmpdir, mode='auto'):
             else:
                 rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
                 rep['defects'] = detect_defects(verts, tris)
+                rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 _rc = repair_confidence(rep)
                 rep['repair_confidence'] = _rc['score']
                 rep['repair_confidence_label'] = _rc['label']
@@ -1115,7 +1119,7 @@ def human_dry_run(r):
     return '\n'.join(lines)
 
 
-def process_file(src, human, mode='auto'):
+def process_file(src, human, mode='auto', no_history=False):
     """Repair one file. Returns (result_dict, category)."""
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -1125,6 +1129,7 @@ def process_file(src, human, mode='auto'):
 
     tmpdir = tempfile.mkdtemp(prefix='sutura-')
     result = {'input': src, 'output': out}
+    t0 = time.perf_counter()
     try:
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
             result.update(repair_3mf(src, out, tmpdir, mode=mode))
@@ -1137,6 +1142,7 @@ def process_file(src, human, mode='auto'):
         result['error'] = 'repair failed: %s' % e
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     category, issues, _summary = classify(result)
     result['category'] = category
@@ -1150,6 +1156,14 @@ def process_file(src, human, mode='auto'):
         result['repair_confidence'] = _rc['score']
         result['repair_confidence_label'] = _rc['label']
         result['repair_confidence_factors'] = _rc['factors']
+
+    # Transient geometry fingerprints are always consumed so they never leak
+    # into the JSON stdout report; written to the anonymous history only when
+    # enabled (history.write swallows its own errors — recording must never
+    # break a repair).
+    _fps = history.pop_fingerprints(result)
+    if not no_history:
+        history.write(result, VERSION, elapsed_ms, _fps)
     return result, category
 
 
@@ -1175,6 +1189,16 @@ def main():
                         help='repair mode: low/medium/aggressive/extreme use '
                              'fixed Stage 1 thresholds; auto (default) uses '
                              'the mesh classifier + confidence gate.')
+    parser.add_argument('--no-history', action='store_true',
+                        help='do not write the anonymous usage history record '
+                             '(mesh geometry + repair results only, never file '
+                             'names or paths)')
+    parser.add_argument('--last', type=int, default=0, metavar='N',
+                        help='export-history: only the last N records')
+    parser.add_argument('--clear', action='store_true',
+                        help='export-history: clear the history file')
+    parser.add_argument('--summary-only', action='store_true',
+                        help='export-history: print only the summary')
     parser.add_argument('--dry-run', action='store_true',
                         help='do not repair: report what would be done and '
                              'write no output file')
@@ -1191,6 +1215,19 @@ def main():
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
         sys.exit(1)
+
+    # 'export-history' as the first positional argument prints the anonymous
+    # usage history (summary + full JSON array) instead of repairing.
+    if files and files[0] == 'export-history':
+        if len(files) > 1 or out is not None or human or dry_run:
+            print(json.dumps({'error': 'export-history takes no positional '
+                                       'arguments (flags: --last N, --clear, '
+                                       '--summary-only)'}))
+            sys.exit(1)
+        history.export_history(last=args.last,
+                               summary_only=args.summary_only,
+                               clear=args.clear)
+        sys.exit(0)
 
     # 'validate' as the first positional argument switches to validate-only
     # mode: analyze the mesh(es) without repairing or writing anything.
@@ -1244,7 +1281,8 @@ def main():
             print(json.dumps({'files': results}, ensure_ascii=False))
         sys.exit(0 if nerr == 0 else 1)
 
-    results = [process_file(f, human, mode=mode) for f in files]
+    results = [process_file(f, human, mode=mode, no_history=args.no_history)
+               for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

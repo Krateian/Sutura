@@ -66,7 +66,7 @@ echo "==> copying application modules"
 for f in repair.py gui.py classification.py defects.py mesh_classifier.py \
          manifold_bridge.py updater.py heatmap.py heatmap_render.py \
          before_after_render.py viewer_common.py viewer_data_render.py \
-         confidence.py open.sh __init__.py; do
+         confidence.py history.py open.sh __init__.py; do
     install -m 0755 "$REPO_ROOT/sutura/$f" "$LIB/"
 done
 install -m 0644 "$REPO_ROOT/requirements.txt" \

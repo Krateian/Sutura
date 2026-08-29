@@ -26,7 +26,8 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
-    QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton)
+    QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
+    QCheckBox)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -88,6 +89,15 @@ STRINGS = {
         'first_run_title': 'Enable update checks?',
         'first_run_msg': ("Should Sutura check for new versions once a week? "
                           "(One request to GitHub, no other data sent)"),
+        'first_run_history_checkbox': ('Share anonymous usage history (mesh '
+                                       'geometry and repair results only — '
+                                       'never file names or paths)'),
+        'first_run_history_title': 'Share anonymous usage history?',
+        'first_run_history_msg': ('Sutura records anonymous technical repair '
+                                  'data (mesh size, defect counts, classifier '
+                                  'result, timing) so the community can '
+                                  'improve the engine. No file names, paths '
+                                  'or personal data are ever stored.'),
         'update_confirm_title': 'Update available',
         'update_confirm_msg': ('Update to v%s? The current version will be '
                                'backed up and a rollback guarantee provided.'),
@@ -227,6 +237,15 @@ STRINGS = {
         'first_run_title': 'Güncelleme kontrolü açılsın mı?',
         'first_run_msg': ('Sutura haftada bir yeni sürüm kontrol etsin mi? '
                           '(GitHub\'a tek istek, başka veri gönderilmez)'),
+        'first_run_history_checkbox': ('Anonim kullanım geçmişini paylaş '
+                                       '(sadece mesh geometrisi ve onarım '
+                                       'sonuçları — dosya adı/yolu asla)'),
+        'first_run_history_title': 'Anonim kullanım geçmişi paylaşılsın mı?',
+        'first_run_history_msg': ('Sutura anonim teknik onarım verisini kaydeder '
+                                  '(mesh boyutu, kusur sayıları, sınıflandırıcı '
+                                  'sonucu, süre) böylece topluluk motoru '
+                                  'geliştirebilir. Dosya adı, yol veya kişisel '
+                                  'veri asla saklanmaz.'),
         'update_confirm_title': 'Güncelleme var',
         'update_confirm_msg': ('v%s sürümüne güncellensin mi? Mevcut sürüm '
                                'yedeklenip geri dönüş garantisi sağlanacak.'),
@@ -545,6 +564,8 @@ class RepairWorker(QThread):
         self._mode = mode
         self._cancelled = False
         self._proc = None
+        cfg = updater.load_config()
+        self._no_history = not bool(cfg.get('history_enabled', True))
 
     def cancel(self):
         self._cancelled = True
@@ -571,8 +592,12 @@ class RepairWorker(QThread):
             return {'error': 'sutura not found: no $SUTURA, no ~/.local/bin/sutura, '
                              'and no repair.py next to the GUI'}
         try:
+            args = [*SUTURA_CMD, '--mode', self._mode]
+            if self._no_history:
+                args.append('--no-history')
+            args.append(path)
             self._proc = subprocess.Popen(
-                [*SUTURA_CMD, '--mode', self._mode, path],
+                args,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         except OSError as e:
             # e.g. FileNotFoundError - never crash the worker thread silently.
@@ -1441,20 +1466,29 @@ class MainWindow(QMainWindow):
         return QIcon(pm)
 
     def _maybe_ask_update_on_first_run(self):
-        """Ask once (on first run, no config) whether to enable update checks.
-
-        Skipped for AppImage builds: self-update is not available there."""
-        if updater.is_appimage():
-            return
+        """Ask once (on first run, no config) about update checks and the
+        anonymous usage history. The update question is skipped for AppImage
+        builds (no self-update there); the history preference is always asked
+        and defaults to enabled."""
         if updater.config_exists():
             return
-        ret = QMessageBox.question(
-            self, _t('first_run_title'), _t('first_run_msg'),
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ret == QMessageBox.Yes:
+        ask_updates = not updater.is_appimage()
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle(_t('first_run_title') if ask_updates
+                           else _t('first_run_history_title'))
+        dlg.setText(_t('first_run_msg') if ask_updates
+                    else _t('first_run_history_msg'))
+        dlg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        dlg.setDefaultButton(QMessageBox.No)
+        hist = QCheckBox(_t('first_run_history_checkbox'), dlg)
+        hist.setChecked(True)
+        dlg.setCheckBox(hist)
+        ret = dlg.exec()
+        cfg = updater.load_config()
+        cfg['history_enabled'] = bool(hist.isChecked())
+        updater.save_config(cfg)  # record the history decision
+        if ret == QMessageBox.Yes and ask_updates:
             updater.opt_in_check_updates()
-        else:
-            updater.save_config(updater.load_config())  # record the decision
 
     def _maybe_check_updates(self):
         """Start a background check if enabled and due.

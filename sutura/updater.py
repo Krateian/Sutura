@@ -84,6 +84,7 @@ DEFAULT_CONFIG = {
     'check_for_updates': False,
     'last_check': None,
     'last_known_version': None,
+    'history_enabled': True,
 }
 
 
