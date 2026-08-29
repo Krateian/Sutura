@@ -1,0 +1,5 @@
+tests/
+*.stl
+*.3mf
+docs/screenshots/
+*.png

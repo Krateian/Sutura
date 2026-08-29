@@ -1,0 +1,158 @@
+{
+  ".opencode/opencode.json": {
+    "mtime": 1788041484.1733756,
+    "seen": 1788041498.7328458,
+    "ast_hash": "abcc8b9dcd80bca5f9dde6d9f0c3ae79",
+    "semantic_hash": "abcc8b9dcd80bca5f9dde6d9f0c3ae79"
+  },
+  ".opencode/plugins/graphify.js": {
+    "mtime": 1788041484.1733096,
+    "seen": 1788041498.7328491,
+    "ast_hash": "3ea725724bc8ebe483c9f13d6aa1124f",
+    "semantic_hash": "3ea725724bc8ebe483c9f13d6aa1124f"
+  },
+  "bin/sutura": {
+    "mtime": 1786915704.5573788,
+    "seen": 1788041498.732851,
+    "ast_hash": "eb937cc2404116c43c4fa74dff39cf75",
+    "semantic_hash": "eb937cc2404116c43c4fa74dff39cf75"
+  },
+  "install-macos.sh": {
+    "mtime": 1787690963.589745,
+    "seen": 1788041498.732852,
+    "ast_hash": "0574c06617c8298e8f300fb0f31af99b",
+    "semantic_hash": "0574c06617c8298e8f300fb0f31af99b"
+  },
+  "install.sh": {
+    "mtime": 1787696191.4833202,
+    "seen": 1788041498.732853,
+    "ast_hash": "0a90a296280996c2ebfe73dc15f18ea3",
+    "semantic_hash": "0a90a296280996c2ebfe73dc15f18ea3"
+  },
+  "orcaslicer-plugin/sutura_repair_linux_x86_64.py": {
+    "mtime": 1787171333.705174,
+    "seen": 1788041498.7328537,
+    "ast_hash": "17bc30becca0bdf57dd522772e43e816",
+    "semantic_hash": "17bc30becca0bdf57dd522772e43e816"
+  },
+  "scripts/build_appimage.sh": {
+    "mtime": 1787690964.3857434,
+    "seen": 1788041498.7328546,
+    "ast_hash": "ba97a42028f90d67e85f1f9d1fb1255a",
+    "semantic_hash": "ba97a42028f90d67e85f1f9d1fb1255a"
+  },
+  "scripts/calibrate_classifier.py": {
+    "mtime": 1787685898.6167965,
+    "seen": 1788041498.732855,
+    "ast_hash": "6e93f9e65bf4b66cba1bc59ee4c0e0ef",
+    "semantic_hash": "6e93f9e65bf4b66cba1bc59ee4c0e0ef"
+  },
+  "scripts/generate_screenshots.py": {
+    "mtime": 1787745833.27117,
+    "seen": 1788041498.7328558,
+    "ast_hash": "8fec0cafa9a7cbed6db0cc1eb5e082c7",
+    "semantic_hash": "8fec0cafa9a7cbed6db0cc1eb5e082c7"
+  },
+  "scripts/verify_before_after_dialog.py": {
+    "mtime": 1787435069.3874145,
+    "seen": 1788041498.7328563,
+    "ast_hash": "27a5b4103e393efca3b7b7efa1e0826d",
+    "semantic_hash": "27a5b4103e393efca3b7b7efa1e0826d"
+  },
+  "sutura/__init__.py": {
+    "mtime": 1786990187.8141425,
+    "seen": 1788041498.732857,
+    "ast_hash": "dfc1d8d9f1e19b62e26e206843f3ead4",
+    "semantic_hash": "dfc1d8d9f1e19b62e26e206843f3ead4"
+  },
+  "sutura/before_after_render.py": {
+    "mtime": 1787688195.5172503,
+    "seen": 1788041498.732858,
+    "ast_hash": "0564c9c3006506432102a38b07764a15",
+    "semantic_hash": "0564c9c3006506432102a38b07764a15"
+  },
+  "sutura/classification.py": {
+    "mtime": 1787597015.7617095,
+    "seen": 1788041498.7328587,
+    "ast_hash": "db71695acf2768206241a7af1944a4b6",
+    "semantic_hash": "db71695acf2768206241a7af1944a4b6"
+  },
+  "sutura/confidence.py": {
+    "mtime": 1787687159.748443,
+    "seen": 1788041498.7328591,
+    "ast_hash": "1b598c91ef88223c6bd16c0c9db564bb",
+    "semantic_hash": "1b598c91ef88223c6bd16c0c9db564bb"
+  },
+  "sutura/defects.py": {
+    "mtime": 1787174129.7143204,
+    "seen": 1788041498.7328598,
+    "ast_hash": "e432789b71e1bdd52aa0c99e85da1119",
+    "semantic_hash": "e432789b71e1bdd52aa0c99e85da1119"
+  },
+  "sutura/gui.py": {
+    "mtime": 1787727677.7715666,
+    "seen": 1788041498.7328606,
+    "ast_hash": "5109b35f961e1296e1f731b4d67a2d43",
+    "semantic_hash": "5109b35f961e1296e1f731b4d67a2d43"
+  },
+  "sutura/heatmap.py": {
+    "mtime": 1787727696.0144992,
+    "seen": 1788041498.7328615,
+    "ast_hash": "662ec134f8188b44185ce2f99b241b99",
+    "semantic_hash": "662ec134f8188b44185ce2f99b241b99"
+  },
+  "sutura/heatmap_render.py": {
+    "mtime": 1787176697.4258058,
+    "seen": 1788041498.732862,
+    "ast_hash": "fc26085a92fddb30af66965ff634cfac",
+    "semantic_hash": "fc26085a92fddb30af66965ff634cfac"
+  },
+  "sutura/manifold_bridge.py": {
+    "mtime": 1786996989.000415,
+    "seen": 1788041498.7328627,
+    "ast_hash": "a682a00174e52a10ee394f951b2f3eb7",
+    "semantic_hash": "a682a00174e52a10ee394f951b2f3eb7"
+  },
+  "sutura/mesh_classifier.py": {
+    "mtime": 1787685890.6418958,
+    "seen": 1788041498.7328634,
+    "ast_hash": "c771debba9a7d6e82b3bec587048bd17",
+    "semantic_hash": "c771debba9a7d6e82b3bec587048bd17"
+  },
+  "sutura/open.sh": {
+    "mtime": 1786964031.7104595,
+    "seen": 1788041498.732864,
+    "ast_hash": "7c0f8ba9f7765e55213d1ce8160fa0c7",
+    "semantic_hash": "7c0f8ba9f7765e55213d1ce8160fa0c7"
+  },
+  "sutura/repair.py": {
+    "mtime": 1787738607.5188155,
+    "seen": 1788041498.7328649,
+    "ast_hash": "1c0b6189900b3cfb2eebe0e47fbf7fcf",
+    "semantic_hash": "1c0b6189900b3cfb2eebe0e47fbf7fcf"
+  },
+  "sutura/updater.py": {
+    "mtime": 1787690956.6097615,
+    "seen": 1788041498.7328656,
+    "ast_hash": "2ecbc7f5e8e6218493ede6f1d417d3ae",
+    "semantic_hash": "2ecbc7f5e8e6218493ede6f1d417d3ae"
+  },
+  "sutura/viewer_common.py": {
+    "mtime": 1787693573.6431139,
+    "seen": 1788041498.7328663,
+    "ast_hash": "61bdeb5a5fdab98ec825ea688cb836e4",
+    "semantic_hash": "61bdeb5a5fdab98ec825ea688cb836e4"
+  },
+  "sutura/viewer_data_render.py": {
+    "mtime": 1787728913.1435986,
+    "seen": 1788041498.7328668,
+    "ast_hash": "4f8490ff983959134cc3a5b9d2648307",
+    "semantic_hash": "4f8490ff983959134cc3a5b9d2648307"
+  },
+  "uninstall.sh": {
+    "mtime": 1786963219.9411962,
+    "seen": 1788041498.7328675,
+    "ast_hash": "72eea3bdcef4ba4b54a8b99faa4510c6",
+    "semantic_hash": "72eea3bdcef4ba4b54a8b99faa4510c6"
+  }
+}
