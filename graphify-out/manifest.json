@@ -18,16 +18,16 @@
     "semantic_hash": "eb937cc2404116c43c4fa74dff39cf75"
   },
   "install-macos.sh": {
-    "mtime": 1787690963.589745,
-    "seen": 1788041498.732852,
-    "ast_hash": "0574c06617c8298e8f300fb0f31af99b",
-    "semantic_hash": "0574c06617c8298e8f300fb0f31af99b"
+    "mtime": 1788048687.2693486,
+    "seen": 1788048792.6517413,
+    "ast_hash": "30196282aebf0f2ae2dba5a5476c79a9",
+    "semantic_hash": ""
   },
   "install.sh": {
-    "mtime": 1787696191.4833202,
-    "seen": 1788041498.732853,
-    "ast_hash": "0a90a296280996c2ebfe73dc15f18ea3",
-    "semantic_hash": "0a90a296280996c2ebfe73dc15f18ea3"
+    "mtime": 1788048681.1413784,
+    "seen": 1788048792.6517427,
+    "ast_hash": "a8fa18e96e32cf2a5b0edc9ebcd4ec80",
+    "semantic_hash": ""
   },
   "orcaslicer-plugin/sutura_repair_linux_x86_64.py": {
     "mtime": 1787171333.705174,
@@ -36,10 +36,10 @@
     "semantic_hash": "17bc30becca0bdf57dd522772e43e816"
   },
   "scripts/build_appimage.sh": {
-    "mtime": 1787690964.3857434,
-    "seen": 1788041498.7328546,
-    "ast_hash": "ba97a42028f90d67e85f1f9d1fb1255a",
-    "semantic_hash": "ba97a42028f90d67e85f1f9d1fb1255a"
+    "mtime": 1788044352.338643,
+    "seen": 1788048792.6517448,
+    "ast_hash": "e3370dc5d373b7308fcf3847da09db7e",
+    "semantic_hash": ""
   },
   "scripts/calibrate_classifier.py": {
     "mtime": 1787685898.6167965,
@@ -66,10 +66,10 @@
     "semantic_hash": "dfc1d8d9f1e19b62e26e206843f3ead4"
   },
   "sutura/before_after_render.py": {
-    "mtime": 1787688195.5172503,
-    "seen": 1788041498.732858,
-    "ast_hash": "0564c9c3006506432102a38b07764a15",
-    "semantic_hash": "0564c9c3006506432102a38b07764a15"
+    "mtime": 1788047406.4262261,
+    "seen": 1788048792.6517513,
+    "ast_hash": "2c4fe317aedeceae1ab2d1fc74b6e93d",
+    "semantic_hash": ""
   },
   "sutura/classification.py": {
     "mtime": 1787597015.7617095,
@@ -84,16 +84,16 @@
     "semantic_hash": "1b598c91ef88223c6bd16c0c9db564bb"
   },
   "sutura/defects.py": {
-    "mtime": 1787174129.7143204,
-    "seen": 1788041498.7328598,
-    "ast_hash": "e432789b71e1bdd52aa0c99e85da1119",
-    "semantic_hash": "e432789b71e1bdd52aa0c99e85da1119"
+    "mtime": 1788047413.5131977,
+    "seen": 1788048792.651754,
+    "ast_hash": "bebb9ece1554d0db4b4545d45cf1e074",
+    "semantic_hash": ""
   },
   "sutura/gui.py": {
-    "mtime": 1787727677.7715666,
-    "seen": 1788041498.7328606,
-    "ast_hash": "5109b35f961e1296e1f731b4d67a2d43",
-    "semantic_hash": "5109b35f961e1296e1f731b4d67a2d43"
+    "mtime": 1788047419.8931718,
+    "seen": 1788048792.6517549,
+    "ast_hash": "35eab7123b4359041ee3a4d945f9687d",
+    "semantic_hash": ""
   },
   "sutura/heatmap.py": {
     "mtime": 1787727696.0144992,
@@ -114,28 +114,28 @@
     "semantic_hash": "a682a00174e52a10ee394f951b2f3eb7"
   },
   "sutura/mesh_classifier.py": {
-    "mtime": 1787685890.6418958,
-    "seen": 1788041498.7328634,
-    "ast_hash": "c771debba9a7d6e82b3bec587048bd17",
-    "semantic_hash": "c771debba9a7d6e82b3bec587048bd17"
+    "mtime": 1788043361.0189102,
+    "seen": 1788048792.6517594,
+    "ast_hash": "0b6d075bb959d8a0595564fa91cac151",
+    "semantic_hash": ""
   },
   "sutura/open.sh": {
-    "mtime": 1786964031.7104595,
-    "seen": 1788041498.732864,
-    "ast_hash": "7c0f8ba9f7765e55213d1ce8160fa0c7",
-    "semantic_hash": "7c0f8ba9f7765e55213d1ce8160fa0c7"
+    "mtime": 1788047381.0383272,
+    "seen": 1788048792.65176,
+    "ast_hash": "6d5cf90d71eb4867cdcc59359f6aeae6",
+    "semantic_hash": ""
   },
   "sutura/repair.py": {
-    "mtime": 1787738607.5188155,
-    "seen": 1788041498.7328649,
-    "ast_hash": "1c0b6189900b3cfb2eebe0e47fbf7fcf",
-    "semantic_hash": "1c0b6189900b3cfb2eebe0e47fbf7fcf"
+    "mtime": 1788048161.005871,
+    "seen": 1788048792.651761,
+    "ast_hash": "9adfb1e1e682548f00589846d4efd234",
+    "semantic_hash": ""
   },
   "sutura/updater.py": {
-    "mtime": 1787690956.6097615,
-    "seen": 1788041498.7328656,
-    "ast_hash": "2ecbc7f5e8e6218493ede6f1d417d3ae",
-    "semantic_hash": "2ecbc7f5e8e6218493ede6f1d417d3ae"
+    "mtime": 1788044286.0399957,
+    "seen": 1788048792.651762,
+    "ast_hash": "a4a1d61ec90029057fb0d072318e49cd",
+    "semantic_hash": ""
   },
   "sutura/viewer_common.py": {
     "mtime": 1787693573.6431139,
@@ -192,27 +192,27 @@
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1787729600.2167206,
-    "seen": 1788042192.0780945,
-    "ast_hash": "1d3ec8745f19442c691ffed653523943",
+    "mtime": 1788044798.5762568,
+    "seen": 1788048792.6517763,
+    "ast_hash": "bac5dc0f4fad1980060f5a6bff515d93",
     "semantic_hash": ""
   },
   "CHANGELOG.md": {
-    "mtime": 1787744727.4566994,
-    "seen": 1788042192.0780954,
-    "ast_hash": "92427a2a88a7b2f49402e4c987237190",
+    "mtime": 1788048168.9748335,
+    "seen": 1788048792.651777,
+    "ast_hash": "16f0082782c92d98afc42fed162006d0",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1787745858.8790333,
-    "seen": 1788042192.0780962,
-    "ast_hash": "c622faffb53bddd72269430bbe83ee2d",
+    "mtime": 1788048293.6232424,
+    "seen": 1788048792.6517777,
+    "ast_hash": "280e6e730df21400cf4f6a77e45de141",
     "semantic_hash": ""
   },
   "README.tr.md": {
-    "mtime": 1787745879.6689234,
-    "seen": 1788042192.0780969,
-    "ast_hash": "59c52d57c2c98859a8cb8baab9126a6f",
+    "mtime": 1788048297.0012264,
+    "seen": 1788048792.6517785,
+    "ast_hash": "d4bc5c993a137d1f24d4ef1863aad97c",
     "semantic_hash": ""
   },
   "SECURITY.md": {
@@ -243,6 +243,18 @@
     "mtime": 1786987453.7277598,
     "seen": 1788042192.0781007,
     "ast_hash": "3638d42cc85ed01ea7c87c6818ae7fc9",
+    "semantic_hash": ""
+  },
+  "scripts/pre-push-security-check.sh": {
+    "mtime": 1788048631.5086188,
+    "seen": 1788048792.6517482,
+    "ast_hash": "10f9a971af9d56aee55c4b39e7beeeb7",
+    "semantic_hash": ""
+  },
+  "sutura/history.py": {
+    "mtime": 1788044430.8872244,
+    "seen": 1788048792.6517572,
+    "ast_hash": "b06fceacedbcb74b1b9034b0980ab41e",
     "semantic_hash": ""
   }
 }

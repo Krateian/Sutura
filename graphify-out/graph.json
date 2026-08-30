@@ -4,17 +4,17 @@
   "graph": {},
   "nodes": [
     {
-      "id": "sutura_gui_beforeafterworker",
-      "label": "BeforeAfterWorker",
+      "id": "sutura_gui_clickablelabel",
+      "label": "_ClickableLabel",
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
       "community": 0,
       "community_name": "MainWindow",
       "file_type": "code",
-      "norm_label": "beforeafterworker",
+      "norm_label": "_clickablelabel",
       "source_file": "sutura/gui.py",
-      "source_location": "L730"
+      "source_location": "L841"
     },
     {
       "id": "sutura_gui_mainwindow",
@@ -49,11 +49,24 @@
       "_callable_class": true,
       "_origin": "ast",
       "community": 10,
-      "community_name": "UpdateCheckWorker",
+      "community_name": "QThread",
       "file_type": "code",
       "norm_label": "updatecheckworker",
       "source_file": "sutura/gui.py",
       "source_location": "L505"
+    },
+    {
+      "id": "sutura_gui_updateworker",
+      "label": "UpdateWorker",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 10,
+      "community_name": "QThread",
+      "file_type": "code",
+      "norm_label": "updateworker",
+      "source_file": "sutura/gui.py",
+      "source_location": "L519"
     },
     {
       "id": "sutura_gui_renderthread",
@@ -121,17 +134,17 @@
       "source_location": "L591"
     },
     {
-      "id": "sutura_gui_updateworker",
-      "label": "UpdateWorker",
+      "id": "sutura_gui_beforeafterworker",
+      "label": "BeforeAfterWorker",
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
       "community": 22,
-      "community_name": "UpdateWorker",
+      "community_name": "BeforeAfterWorker",
       "file_type": "code",
-      "norm_label": "updateworker",
+      "norm_label": "beforeafterworker",
       "source_file": "sutura/gui.py",
-      "source_location": "L519"
+      "source_location": "L730"
     },
     {
       "id": "sutura_gui_heatmapworker",
@@ -139,8 +152,8 @@
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
-      "community": 25,
-      "community_name": "QThread",
+      "community": 24,
+      "community_name": "HeatmapWorker",
       "file_type": "code",
       "norm_label": "heatmapworker",
       "source_file": "sutura/gui.py",
@@ -153,7 +166,7 @@
       "_callable_class": true,
       "_origin": "ast",
       "community": 25,
-      "community_name": "QThread",
+      "community_name": "ViewerDataWorker",
       "file_type": "code",
       "norm_label": "viewerdataworker",
       "source_file": "sutura/gui.py",
@@ -171,19 +184,6 @@
       "norm_label": "rendercontext",
       "source_file": "sutura/heatmap.py",
       "source_location": "L248"
-    },
-    {
-      "id": "sutura_gui_clickablelabel",
-      "label": "_ClickableLabel",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": "_clickablelabel",
-      "source_file": "sutura/gui.py",
-      "source_location": "L841"
     },
     {
       "id": "sutura_gui_meshviewport",
@@ -212,28 +212,16 @@
       "source_location": "L534"
     },
     {
-      "id": "sutura_gui_beforeafterworker_init",
-      "label": ".__init__()",
+      "id": "sutura_gui_clickablelabel_mousepressevent",
+      "label": ".mousePressEvent()",
       "_callable": true,
       "_origin": "ast",
       "community": 0,
       "community_name": "MainWindow",
       "file_type": "code",
-      "norm_label": ".__init__()",
+      "norm_label": ".mousepressevent()",
       "source_file": "sutura/gui.py",
-      "source_location": "L743"
-    },
-    {
-      "id": "sutura_gui_beforeafterworker_run",
-      "label": ".run()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 0,
-      "community_name": "MainWindow",
-      "file_type": "code",
-      "norm_label": ".run()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L750"
+      "source_location": "L846"
     },
     {
       "id": "sutura_gui_mainwindow_add_files",
@@ -318,6 +306,30 @@
       "norm_label": ".analyze()",
       "source_file": "sutura/gui.py",
       "source_location": "L1684"
+    },
+    {
+      "id": "sutura_gui_mainwindow_analyze_icon",
+      "label": "._analyze_icon()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "code",
+      "norm_label": "._analyze_icon()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1427"
+    },
+    {
+      "id": "sutura_gui_mainwindow_build_ui",
+      "label": "._build_ui()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "code",
+      "norm_label": "._build_ui()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1223"
     },
     {
       "id": "sutura_gui_mainwindow_clear_files",
@@ -560,18 +572,6 @@
       "source_location": "L1804"
     },
     {
-      "id": "sutura_gui_mainwindow_on_show_before_after",
-      "label": "._on_show_before_after()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 0,
-      "community_name": "MainWindow",
-      "file_type": "code",
-      "norm_label": "._on_show_before_after()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1958"
-    },
-    {
       "id": "sutura_gui_mainwindow_on_show_heatmap",
       "label": "._on_show_heatmap()",
       "_callable": true,
@@ -630,6 +630,18 @@
       "norm_label": "._on_update_done()",
       "source_file": "sutura/gui.py",
       "source_location": "L1543"
+    },
+    {
+      "id": "sutura_gui_mainwindow_open_before_after",
+      "label": "._open_before_after()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "code",
+      "norm_label": "._open_before_after()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1992"
     },
     {
       "id": "sutura_gui_mainwindow_open_heatmap_zoom",
@@ -702,6 +714,18 @@
       "norm_label": "._render_summary()",
       "source_file": "sutura/gui.py",
       "source_location": "L2165"
+    },
+    {
+      "id": "sutura_gui_mainwindow_repair_icon",
+      "label": "._repair_icon()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "code",
+      "norm_label": "._repair_icon()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1412"
     },
     {
       "id": "sutura_gui_mainwindow_set_heatmap_thumb",
@@ -786,6 +810,18 @@
       "norm_label": "._update_icon()",
       "source_file": "sutura/gui.py",
       "source_location": "L1396"
+    },
+    {
+      "id": "sutura_gui_meshviewport_mousepressevent",
+      "label": ".mousePressEvent()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "code",
+      "norm_label": ".mousepressevent()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1035"
     },
     {
       "id": "sutura_gui_repairmodedialog_init",
@@ -930,18 +966,6 @@
       "norm_label": "_loop_geometry()",
       "source_file": "sutura/defects.py",
       "source_location": "L76"
-    },
-    {
-      "id": "sutura_heatmap_defect_camera",
-      "label": "defect_camera()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 1,
-      "community_name": "defects.py",
-      "file_type": "code",
-      "norm_label": "defect_camera()",
-      "source_file": "sutura/heatmap.py",
-      "source_location": "L41"
     },
     {
       "id": "sutura_heatmap_focus_frame",
@@ -1129,23 +1153,11 @@
       "_callable": true,
       "_origin": "ast",
       "community": 10,
-      "community_name": "UpdateCheckWorker",
+      "community_name": "QThread",
       "file_type": "code",
       "norm_label": "._maybe_check_updates()",
       "source_file": "sutura/gui.py",
       "source_location": "L1459"
-    },
-    {
-      "id": "sutura_gui_updatecheckworker_init",
-      "label": ".__init__()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 10,
-      "community_name": "UpdateCheckWorker",
-      "file_type": "code",
-      "norm_label": ".__init__()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L510"
     },
     {
       "id": "sutura_gui_updatecheckworker_run",
@@ -1153,11 +1165,35 @@
       "_callable": true,
       "_origin": "ast",
       "community": 10,
-      "community_name": "UpdateCheckWorker",
+      "community_name": "QThread",
       "file_type": "code",
       "norm_label": ".run()",
       "source_file": "sutura/gui.py",
       "source_location": "L514"
+    },
+    {
+      "id": "sutura_gui_updateworker_init",
+      "label": ".__init__()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 10,
+      "community_name": "QThread",
+      "file_type": "code",
+      "norm_label": ".__init__()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L525"
+    },
+    {
+      "id": "sutura_gui_updateworker_run",
+      "label": ".run()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 10,
+      "community_name": "QThread",
+      "file_type": "code",
+      "norm_label": ".run()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L529"
     },
     {
       "id": "sutura_gui_apply_dark_theme",
@@ -1220,18 +1256,6 @@
       "source_location": "L1147"
     },
     {
-      "id": "sutura_gui_orbit_basis",
-      "label": "_orbit_basis()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 11,
-      "community_name": "gui.py",
-      "file_type": "code",
-      "norm_label": "_orbit_basis()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L852"
-    },
-    {
       "id": "sutura_gui_system_qt_matches_bundle",
       "label": "_system_qt_matches_bundle()",
       "_callable": true,
@@ -1242,18 +1266,6 @@
       "norm_label": "_system_qt_matches_bundle()",
       "source_file": "sutura/gui.py",
       "source_location": "L375"
-    },
-    {
-      "id": "sutura_gui_heatmapworker_init",
-      "label": ".__init__()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 12,
-      "community_name": ".__init__",
-      "file_type": "code",
-      "norm_label": ".__init__()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L695"
     },
     {
       "id": "sutura_gui_mainwindow_apply_accent",
@@ -1338,6 +1350,18 @@
       "norm_label": ".submit()",
       "source_file": "sutura/gui.py",
       "source_location": "L885"
+    },
+    {
+      "id": "sutura_gui_updatecheckworker_init",
+      "label": ".__init__()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 12,
+      "community_name": ".__init__",
+      "file_type": "code",
+      "norm_label": ".__init__()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L510"
     },
     {
       "id": "sutura_repair_apply_chain",
@@ -2072,28 +2096,40 @@
       "source_location": "L742"
     },
     {
-      "id": "sutura_gui_updateworker_init",
+      "id": "sutura_gui_beforeafterworker_init",
       "label": ".__init__()",
       "_callable": true,
       "_origin": "ast",
       "community": 22,
-      "community_name": "UpdateWorker",
+      "community_name": "BeforeAfterWorker",
       "file_type": "code",
       "norm_label": ".__init__()",
       "source_file": "sutura/gui.py",
-      "source_location": "L525"
+      "source_location": "L743"
     },
     {
-      "id": "sutura_gui_updateworker_run",
+      "id": "sutura_gui_beforeafterworker_run",
       "label": ".run()",
       "_callable": true,
       "_origin": "ast",
       "community": 22,
-      "community_name": "UpdateWorker",
+      "community_name": "BeforeAfterWorker",
       "file_type": "code",
       "norm_label": ".run()",
       "source_file": "sutura/gui.py",
-      "source_location": "L529"
+      "source_location": "L750"
+    },
+    {
+      "id": "sutura_gui_mainwindow_on_show_before_after",
+      "label": "._on_show_before_after()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 22,
+      "community_name": "BeforeAfterWorker",
+      "file_type": "code",
+      "norm_label": "._on_show_before_after()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1958"
     },
     {
       "id": "scripts_verify_before_after_dialog_load_gui",
@@ -2132,12 +2168,24 @@
       "source_location": "L35"
     },
     {
+      "id": "sutura_gui_heatmapworker_init",
+      "label": ".__init__()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 24,
+      "community_name": "HeatmapWorker",
+      "file_type": "code",
+      "norm_label": ".__init__()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L695"
+    },
+    {
       "id": "sutura_gui_heatmapworker_run",
       "label": ".run()",
       "_callable": true,
       "_origin": "ast",
-      "community": 25,
-      "community_name": "QThread",
+      "community": 24,
+      "community_name": "HeatmapWorker",
       "file_type": "code",
       "norm_label": ".run()",
       "source_file": "sutura/gui.py",
@@ -2149,7 +2197,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 25,
-      "community_name": "QThread",
+      "community_name": "ViewerDataWorker",
       "file_type": "code",
       "norm_label": ".__init__()",
       "source_file": "sutura/gui.py",
@@ -2161,7 +2209,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 25,
-      "community_name": "QThread",
+      "community_name": "ViewerDataWorker",
       "file_type": "code",
       "norm_label": ".run()",
       "source_file": "sutura/gui.py",
@@ -2214,6 +2262,18 @@
       "norm_label": ".run()",
       "source_file": "sutura/gui.py",
       "source_location": "L889"
+    },
+    {
+      "id": "sutura_heatmap_defect_camera",
+      "label": "defect_camera()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 3,
+      "community_name": "heatmap.py",
+      "file_type": "code",
+      "norm_label": "defect_camera()",
+      "source_file": "sutura/heatmap.py",
+      "source_location": "L41"
     },
     {
       "id": "sutura_heatmap_defect_vertex_set",
@@ -2456,66 +2516,6 @@
       "source_location": "L40"
     },
     {
-      "id": "sutura_gui_clickablelabel_mousepressevent",
-      "label": ".mousePressEvent()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": ".mousepressevent()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L846"
-    },
-    {
-      "id": "sutura_gui_mainwindow_analyze_icon",
-      "label": "._analyze_icon()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": "._analyze_icon()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1427"
-    },
-    {
-      "id": "sutura_gui_mainwindow_build_ui",
-      "label": "._build_ui()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": "._build_ui()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1223"
-    },
-    {
-      "id": "sutura_gui_mainwindow_open_before_after",
-      "label": "._open_before_after()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": "._open_before_after()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1992"
-    },
-    {
-      "id": "sutura_gui_mainwindow_repair_icon",
-      "label": "._repair_icon()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": "._repair_icon()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1412"
-    },
-    {
       "id": "sutura_gui_meshviewport_apply_mode",
       "label": "._apply_mode()",
       "_callable": true,
@@ -2562,18 +2562,6 @@
       "norm_label": ".mousemoveevent()",
       "source_file": "sutura/gui.py",
       "source_location": "L1041"
-    },
-    {
-      "id": "sutura_gui_meshviewport_mousepressevent",
-      "label": ".mousePressEvent()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": ".mousepressevent()",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1035"
     },
     {
       "id": "sutura_gui_meshviewport_mousereleaseevent",
@@ -2706,6 +2694,18 @@
       "norm_label": ".wheelevent()",
       "source_file": "sutura/gui.py",
       "source_location": "L1061"
+    },
+    {
+      "id": "sutura_gui_orbit_basis",
+      "label": "_orbit_basis()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 5,
+      "community_name": "MeshViewport",
+      "file_type": "code",
+      "norm_label": "_orbit_basis()",
+      "source_file": "sutura/gui.py",
+      "source_location": "L852"
     },
     {
       "id": "scripts_calibrate_classifier_conf_summary",
@@ -3067,6 +3067,17 @@
       "source_location": ""
     },
     {
+      "id": "qlabel",
+      "label": "QLabel",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "code",
+      "norm_label": "qlabel",
+      "source_file": "",
+      "source_location": ""
+    },
+    {
       "id": "qmainwindow",
       "label": "QMainWindow",
       "_origin": "ast",
@@ -3074,6 +3085,17 @@
       "community_name": "MainWindow",
       "file_type": "code",
       "norm_label": "qmainwindow",
+      "source_file": "",
+      "source_location": ""
+    },
+    {
+      "id": "qwidget",
+      "label": "QWidget",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "code",
+      "norm_label": "qwidget",
       "source_file": "",
       "source_location": ""
     },
@@ -3098,6 +3120,28 @@
       "norm_label": "small up-arrow icon; teal when an update is available.",
       "source_file": "sutura/gui.py",
       "source_location": "L1397"
+    },
+    {
+      "id": "sutura_gui_rationale_1413",
+      "label": "Play-triangle icon, drawn dark so it is visible on the teal Repair button (same\u2026",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "rationale",
+      "norm_label": "play-triangle icon, drawn dark so it is visible on the teal repair button (same...",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1413"
+    },
+    {
+      "id": "sutura_gui_rationale_1428",
+      "label": "Magnifying-glass icon in the teal accent, drawn with QPainter.",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "rationale",
+      "norm_label": "magnifying-glass icon in the teal accent, drawn with qpainter.",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1428"
     },
     {
       "id": "sutura_gui_rationale_1444",
@@ -3199,6 +3243,17 @@
       "source_location": "L1953"
     },
     {
+      "id": "sutura_gui_rationale_1993",
+      "label": "Modal dialog: the static before/after pair (main image + detail close-up,\u2026",
+      "_origin": "ast",
+      "community": 0,
+      "community_name": "MainWindow",
+      "file_type": "rationale",
+      "norm_label": "modal dialog: the static before/after pair (main image + detail close-up,...",
+      "source_file": "sutura/gui.py",
+      "source_location": "L1993"
+    },
+    {
       "id": "sutura_gui_rationale_2166",
       "label": "Build the batch summary strip: counts + clickable issue detail.",
       "_origin": "ast",
@@ -3210,15 +3265,15 @@
       "source_location": "L2166"
     },
     {
-      "id": "sutura_gui_rationale_731",
-      "label": "Renders the original vs repaired comparison in a subprocess. Same isolation\u2026",
+      "id": "sutura_gui_rationale_842",
+      "label": "QLabel that emits ``clicked`` on a left mouse press.",
       "_origin": "ast",
       "community": 0,
       "community_name": "MainWindow",
       "file_type": "rationale",
-      "norm_label": "renders the original vs repaired comparison in a subprocess. same isolation...",
+      "norm_label": "qlabel that emits ``clicked`` on a left mouse press.",
       "source_file": "sutura/gui.py",
-      "source_location": "L731"
+      "source_location": "L842"
     },
     {
       "id": "sutura_before_after_render",
@@ -3386,17 +3441,6 @@
       "source_location": "L205"
     },
     {
-      "id": "sutura_heatmap_rationale_42",
-      "label": "Build a defect-facing camera basis for the before/after comparison. ``center``\u2026",
-      "_origin": "ast",
-      "community": 1,
-      "community_name": "defects.py",
-      "file_type": "rationale",
-      "norm_label": "build a defect-facing camera basis for the before/after comparison. ``center``...",
-      "source_file": "sutura/heatmap.py",
-      "source_location": "L42"
-    },
-    {
       "id": "sutura_heatmap_render_rationale_1",
       "label": "CLI entry for the on-demand defect heatmap render. Runs as a SEPARATE PROCESS\u2026",
       "_origin": "ast",
@@ -3551,11 +3595,22 @@
       "source_location": "L88"
     },
     {
+      "id": "qthread",
+      "label": "QThread",
+      "_origin": "ast",
+      "community": 10,
+      "community_name": "QThread",
+      "file_type": "code",
+      "norm_label": "qthread",
+      "source_file": "",
+      "source_location": ""
+    },
+    {
       "id": "sutura_gui_rationale_1460",
       "label": "Start a background check if enabled and due. Skipped for AppImage builds: self-\u2026",
       "_origin": "ast",
       "community": 10,
-      "community_name": "UpdateCheckWorker",
+      "community_name": "QThread",
       "file_type": "rationale",
       "norm_label": "start a background check if enabled and due. skipped for appimage builds: self-...",
       "source_file": "sutura/gui.py",
@@ -3566,41 +3621,22 @@
       "label": "Background check for a newer release. Emits found((status, tag)).",
       "_origin": "ast",
       "community": 10,
-      "community_name": "UpdateCheckWorker",
+      "community_name": "QThread",
       "file_type": "rationale",
       "norm_label": "background check for a newer release. emits found((status, tag)).",
       "source_file": "sutura/gui.py",
       "source_location": "L506"
     },
     {
-      "id": "bin_sutura",
-      "label": "sutura",
+      "id": "sutura_gui_rationale_520",
+      "label": "Background update: backup, download, install, health check, rollback.",
       "_origin": "ast",
-      "community": 11,
-      "community_name": "gui.py",
-      "file_type": "code",
-      "metadata": {
-        "language": "bash",
-        "kind": "file"
-      },
-      "norm_label": "sutura",
-      "source_file": "bin/sutura",
-      "source_location": "L1"
-    },
-    {
-      "id": "bin_sutura__entry",
-      "label": "sutura script",
-      "_origin": "ast",
-      "community": 11,
-      "community_name": "gui.py",
-      "file_type": "code",
-      "metadata": {
-        "language": "bash",
-        "kind": "bash_entrypoint"
-      },
-      "norm_label": "sutura script",
-      "source_file": "bin/sutura",
-      "source_location": "L1"
+      "community": 10,
+      "community_name": "QThread",
+      "file_type": "rationale",
+      "norm_label": "background update: backup, download, install, health check, rollback.",
+      "source_file": "sutura/gui.py",
+      "source_location": "L520"
     },
     {
       "id": "sutura_gui",
@@ -3645,17 +3681,6 @@
       "norm_label": "apply the self-contained fusion dark theme to a qapplication. used by...",
       "source_file": "sutura/gui.py",
       "source_location": "L439"
-    },
-    {
-      "id": "sutura_gui_rationale_853",
-      "label": "Rotate a 3x3 camera basis (rows = right/up/forward) by yaw (around world +Y)\u2026",
-      "_origin": "ast",
-      "community": 11,
-      "community_name": "gui.py",
-      "file_type": "rationale",
-      "norm_label": "rotate a 3x3 camera basis (rows = right/up/forward) by yaw (around world +y)...",
-      "source_file": "sutura/gui.py",
-      "source_location": "L853"
     },
     {
       "id": "sutura_gui_rationale_863",
@@ -3911,6 +3936,36 @@
       "source_location": "L592"
     },
     {
+      "id": "bin_sutura",
+      "label": "sutura",
+      "_origin": "ast",
+      "community": 2,
+      "community_name": "updater.py",
+      "file_type": "code",
+      "metadata": {
+        "language": "bash",
+        "kind": "file"
+      },
+      "norm_label": "sutura",
+      "source_file": "bin/sutura",
+      "source_location": "L1"
+    },
+    {
+      "id": "bin_sutura__entry",
+      "label": "sutura script",
+      "_origin": "ast",
+      "community": 2,
+      "community_name": "updater.py",
+      "file_type": "code",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_entrypoint"
+      },
+      "norm_label": "sutura script",
+      "source_file": "bin/sutura",
+      "source_location": "L1"
+    },
+    {
       "id": "sutura_updater",
       "label": "updater.py",
       "_origin": "ast",
@@ -4120,15 +4175,15 @@
       "source_location": "L743"
     },
     {
-      "id": "sutura_gui_rationale_520",
-      "label": "Background update: backup, download, install, health check, rollback.",
+      "id": "sutura_gui_rationale_731",
+      "label": "Renders the original vs repaired comparison in a subprocess. Same isolation\u2026",
       "_origin": "ast",
       "community": 22,
-      "community_name": "UpdateWorker",
+      "community_name": "BeforeAfterWorker",
       "file_type": "rationale",
-      "norm_label": "background update: backup, download, install, health check, rollback.",
+      "norm_label": "renders the original vs repaired comparison in a subprocess. same isolation...",
       "source_file": "sutura/gui.py",
-      "source_location": "L520"
+      "source_location": "L731"
     },
     {
       "id": "scripts_verify_before_after_dialog",
@@ -4142,22 +4197,11 @@
       "source_location": "L1"
     },
     {
-      "id": "qthread",
-      "label": "QThread",
-      "_origin": "ast",
-      "community": 25,
-      "community_name": "QThread",
-      "file_type": "code",
-      "norm_label": "qthread",
-      "source_file": "",
-      "source_location": ""
-    },
-    {
       "id": "sutura_gui_rationale_682",
       "label": "Renders a mesh heatmap off the GUI thread and off the GUI process. The render\u2026",
       "_origin": "ast",
-      "community": 25,
-      "community_name": "QThread",
+      "community": 24,
+      "community_name": "HeatmapWorker",
       "file_type": "rationale",
       "norm_label": "renders a mesh heatmap off the gui thread and off the gui process. the render...",
       "source_file": "sutura/gui.py",
@@ -4168,7 +4212,7 @@
       "label": "Builds the interactive-viewer dataset (.npz) in a subprocess. Same isolation\u2026",
       "_origin": "ast",
       "community": 25,
-      "community_name": "QThread",
+      "community_name": "ViewerDataWorker",
       "file_type": "rationale",
       "norm_label": "builds the interactive-viewer dataset (.npz) in a subprocess. same isolation...",
       "source_file": "sutura/gui.py",
@@ -4475,6 +4519,17 @@
       "source_location": "L417"
     },
     {
+      "id": "sutura_heatmap_rationale_42",
+      "label": "Build a defect-facing camera basis for the before/after comparison. ``center``\u2026",
+      "_origin": "ast",
+      "community": 3,
+      "community_name": "heatmap.py",
+      "file_type": "rationale",
+      "norm_label": "build a defect-facing camera basis for the before/after comparison. ``center``...",
+      "source_file": "sutura/heatmap.py",
+      "source_location": "L42"
+    },
+    {
       "id": "sutura_heatmap_rationale_95",
       "label": "Vectorized Lambertian 3-point diffuse per face normal -> shade in [0,1].\u2026",
       "_origin": "ast",
@@ -4543,6 +4598,51 @@
       },
       "norm_label": "uninstall.sh script",
       "source_file": "uninstall.sh",
+      "source_location": "L1"
+    },
+    {
+      "id": "scripts_pre_push_security_check",
+      "label": "pre-push-security-check.sh",
+      "_origin": "ast",
+      "community": 32,
+      "community_name": "pre-push-security-check.sh",
+      "file_type": "code",
+      "metadata": {
+        "language": "bash",
+        "kind": "file"
+      },
+      "norm_label": "pre-push-security-check.sh",
+      "source_file": "scripts/pre-push-security-check.sh",
+      "source_location": "L1"
+    },
+    {
+      "id": "scripts_pre_push_security_check_scan_range",
+      "label": "scan_range()",
+      "_origin": "ast",
+      "community": 32,
+      "community_name": "pre-push-security-check.sh",
+      "file_type": "code",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_function"
+      },
+      "norm_label": "scan_range()",
+      "source_file": "scripts/pre-push-security-check.sh",
+      "source_location": "L22"
+    },
+    {
+      "id": "scripts_pre_push_security_check_sh__entry",
+      "label": "pre-push-security-check.sh script",
+      "_origin": "ast",
+      "community": 32,
+      "community_name": "pre-push-security-check.sh",
+      "file_type": "code",
+      "metadata": {
+        "language": "bash",
+        "kind": "bash_entrypoint"
+      },
+      "norm_label": "pre-push-security-check.sh script",
+      "source_file": "scripts/pre-push-security-check.sh",
       "source_location": "L1"
     },
     {
@@ -4667,70 +4767,15 @@
       "source_location": "L80"
     },
     {
-      "id": "qlabel",
-      "label": "QLabel",
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": "qlabel",
-      "source_file": "",
-      "source_location": ""
-    },
-    {
-      "id": "qwidget",
-      "label": "QWidget",
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "code",
-      "norm_label": "qwidget",
-      "source_file": "",
-      "source_location": ""
-    },
-    {
-      "id": "sutura_gui_rationale_1413",
-      "label": "Play-triangle icon, drawn dark so it is visible on the teal Repair button (same\u2026",
+      "id": "sutura_gui_rationale_853",
+      "label": "Rotate a 3x3 camera basis (rows = right/up/forward) by yaw (around world +Y)\u2026",
       "_origin": "ast",
       "community": 5,
       "community_name": "MeshViewport",
       "file_type": "rationale",
-      "norm_label": "play-triangle icon, drawn dark so it is visible on the teal repair button (same...",
+      "norm_label": "rotate a 3x3 camera basis (rows = right/up/forward) by yaw (around world +y)...",
       "source_file": "sutura/gui.py",
-      "source_location": "L1413"
-    },
-    {
-      "id": "sutura_gui_rationale_1428",
-      "label": "Magnifying-glass icon in the teal accent, drawn with QPainter.",
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "rationale",
-      "norm_label": "magnifying-glass icon in the teal accent, drawn with qpainter.",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1428"
-    },
-    {
-      "id": "sutura_gui_rationale_1993",
-      "label": "Modal dialog: the static before/after pair (main image + detail close-up,\u2026",
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "rationale",
-      "norm_label": "modal dialog: the static before/after pair (main image + detail close-up,...",
-      "source_file": "sutura/gui.py",
-      "source_location": "L1993"
-    },
-    {
-      "id": "sutura_gui_rationale_842",
-      "label": "QLabel that emits ``clicked`` on a left mouse press.",
-      "_origin": "ast",
-      "community": 5,
-      "community_name": "MeshViewport",
-      "file_type": "rationale",
-      "norm_label": "qlabel that emits ``clicked`` on a left mouse press.",
-      "source_file": "sutura/gui.py",
-      "source_location": "L842"
+      "source_location": "L853"
     },
     {
       "id": "sutura_gui_rationale_906",
@@ -5130,6 +5175,18 @@
       "context": "call",
       "source_file": "scripts/generate_screenshots.py",
       "source_location": "L233",
+      "weight": 1.0
+    },
+    {
+      "source": "scripts_pre_push_security_check_sh__entry",
+      "target": "scripts_pre_push_security_check_scan_range",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "scripts/pre-push-security-check.sh",
+      "source_location": "L80",
       "weight": 1.0
     },
     {
@@ -8762,6 +8819,17 @@
       "weight": 1.0
     },
     {
+      "source": "scripts_pre_push_security_check",
+      "target": "scripts_pre_push_security_check_sh__entry",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "scripts/pre-push-security-check.sh",
+      "source_location": "L1",
+      "weight": 1.0
+    },
+    {
       "source": "scripts_verify_before_after_dialog",
       "target": "scripts_verify_before_after_dialog_load_gui",
       "relation": "contains",
@@ -10310,6 +10378,17 @@
       "confidence_score": 1.0,
       "source_file": "scripts/build_appimage.sh",
       "source_location": "L32",
+      "weight": 1.0
+    },
+    {
+      "source": "scripts_pre_push_security_check",
+      "target": "scripts_pre_push_security_check_scan_range",
+      "relation": "defines",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "scripts/pre-push-security-check.sh",
+      "source_location": "L22",
       "weight": 1.0
     },
     {
@@ -13311,5 +13390,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "7ece1f76964dd4bb5feb8848049b43b1af0581bd"
+  "built_at_commit": "49564f4969c3aad39eff877345f4d37095921c92"
 }
