@@ -70,7 +70,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     [ -z "$local_ref" ] && continue
     if [ "$remote_sha" = "$ZERO" ]; then
         # new branch: scan from the branch root commit
-        local base
         base=$(git rev-list --max-parents=0 "$local_sha" 2>/dev/null | tail -1)
         range="$base..$local_sha"
     else
