@@ -87,6 +87,12 @@ install -m 0755 "$SRC/sutura/viewer_data_render.py"  "$APP_DIR/viewer_data_rende
 install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
 install -m 0644 "$SRC/LICENSE"                   "$APP_DIR/LICENSE"
 
+# developer/security: when installing from a git checkout, install the
+# pre-push secret scan hook (harmless no-op for end-user installs)
+if [ -d "$SRC/.git/hooks" ] && [ -f "$SRC/scripts/pre-push-security-check.sh" ]; then
+    install -m 0755 "$SRC/scripts/pre-push-security-check.sh" "$SRC/.git/hooks/pre-push"
+fi
+
 echo "==> CLI wrapper"
 cat > "$BIN_DIR/sutura" <<EOF
 #!/usr/bin/env bash

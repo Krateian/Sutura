@@ -81,6 +81,12 @@ for f in repair.py manifold_bridge.py classification.py confidence.py defects.py
 done
 install -m 0644 "$REPO_DIR/LICENSE" "$APP_DIR/LICENSE"
 
+# developer/security: when installing from a git checkout, install the
+# pre-push secret scan hook (harmless no-op for end-user installs)
+if [ -d "$REPO_DIR/.git/hooks" ] && [ -f "$REPO_DIR/scripts/pre-push-security-check.sh" ]; then
+    install -m 0755 "$REPO_DIR/scripts/pre-push-security-check.sh" "$REPO_DIR/.git/hooks/pre-push"
+fi
+
 # 8) CLI wrapper ------------------------------------------------------------
 cat > "$BIN_DIR/sutura" <<EOF
 #!/bin/bash
