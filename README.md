@@ -651,6 +651,11 @@ actually meets.
 
 ## Contributing
 
+Sutura is a one-person effort, but it doesn't have to stay that way. Found a
+bug? Open an issue. Something unclear or wrong? Say so. Have an idea that
+touches the repair engine? Send a PR. Small contributions — a typo fix, a
+clearer README line, a new test case — matter just as much as big features.
+
 Missing a feature? Found a mesh that won't repair? Open an issue. A good
 bug report is worth far more than a bare "it doesn't work", so when you
 report a mesh please include:

@@ -660,6 +660,12 @@ göre yönlendirebilir.
 
 ## Katkı
 
+Sutura tek kişilik bir emek, ama tek kişilik kalmak zorunda değil. Bug
+bulursan issue aç, bir şey eksik/yanlış görüyorsan söyle, mesh onarım
+motoruna dokunacak bir fikrin varsa PR gönder. Küçük katkılar (typo
+düzeltme, README netleştirme, test case eklemek) de en az büyük özellikler
+kadar değerli.
+
 Eksik bir özellik mi var? Onarılmayan bir mesh mi buldunuz? Bir issue açın.
 İyi bir hata raporu, kuru bir "çalışmıyor" cümlesinden çok daha değerlidir;
 bu yüzden bir mesh bildirirken lütfen şunları ekleyin:
