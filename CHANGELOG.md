@@ -4,6 +4,50 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-30
+
+A maintenance release that hardens the repair pipeline and the community
+loop. The two dominant measured bottlenecks on large meshes are gone
+(mesh classifier ~24x, bad-coordinate scan ~160x — a 325k-face mesh now
+repairs in ~5.2s instead of ~9.7s), the engine records an anonymous usage
+history for community-driven tuning, the graphify knowledge graph is wired
+in for AI-assisted development, and the `-o` output flag — documented but
+previously dead — now actually works.
+
+### Performance
+
+- **Mesh classifier vectorized (~24x).** `_dihedral_stats` (edge→face
+  pairing + per-edge scalar numpy) is now a single argsort-based bulk
+  numpy pass; bit-identical results verified on an 18-scenario regression.
+- **Bad-coordinate scan vectorized (~160x).** Binary STL records are read
+  in one `np.fromfile` bulk read instead of a per-record Python loop; all
+  error messages and the ASCII/OBJ/3MF branches are unchanged.
+- Combined on a 325k-face scan mesh: total repair 9.72s → 5.24s (~46%).
+
+### Added
+
+- **Anonymous usage history (opt-out).** `sutura/history.py` records purely
+  technical repair data (mesh sizes, defect counts, classifier outcome,
+  mode, timing, geometry-only fingerprint) to
+  `~/.local/share/sutura/history.jsonl`. No file names, paths, user data.
+  CLI `--no-history`, GUI first-run checkbox, `sutura export-history`
+  (summary + full JSON in one command).
+- **Graphify knowledge graph integration.** OpenCode plugin nudges toward
+  the graph (`graphify-out/`), post-commit/post-checkout git hooks keep it
+  fresh, plus a graph.json merge driver.
+- **Contributing section + maintainer note** in the README (EN/TR).
+
+### Fixed
+
+- **`-o/--output` flag now works.** It was parsed but never passed to the
+  repair path, so output always went to `<input>_fixed`; documented README
+  behavior now matches reality (including multi-object 3MF → the given path).
+- **Dolphin multi-file history consistency.** `open.sh` now honors the GUI's
+  `history_enabled` config for its direct CLI path.
+- **Dead-code cleanup** (no behavior change): duplicate `faces_after` key,
+  unused `tri_idx`, unused imports (`is_stage2_skipped`, `numpy`, `QAction`,
+  `QImage`).
+
 ## [0.2.0] - 2026-08-26
 
 The **interactive viewer** release: the biggest feature step since 0.1.0.
