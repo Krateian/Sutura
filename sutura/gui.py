@@ -20,8 +20,7 @@ import numpy as np
 
 from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion, QTimer
 from PySide6.QtGui import (
-    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QAction, QPolygon, QPalette, QPen,
-    QImage)
+    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QPolygon, QPalette, QPen)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,

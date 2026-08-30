@@ -3,6 +3,14 @@ SUTURA="$HOME/.local/bin/sutura"
 GUI_PY="$HOME/.local/share/sutura/gui.py"
 VENV_PY="$HOME/.local/share/sutura/venv/bin/python"
 
+# Multi-file repairs go straight to the CLI, bypassing the GUI, so honor the
+# GUI's history preference (default on) explicitly here.
+HISTORY_FLAG=""
+if [ -f "$HOME/.config/sutura/config.json" ] && \
+   grep -q '"history_enabled"[[:space:]]*:[[:space:]]*false' "$HOME/.config/sutura/config.json"; then
+    HISTORY_FLAG="--no-history"
+fi
+
 if [ "$#" -eq 1 ]; then
     exec "$VENV_PY" "$GUI_PY" "$1"
 fi
@@ -22,7 +30,7 @@ for f in "$@"; do
     qdbus $dbus org.kde.kdialog.ProgressDialog.value "$i" >/dev/null 2>&1
     report+="--------------------------------\n"
     report+="$(basename "$f")\n"
-    report+="$("$SUTURA" "$f" --human 2>/dev/null || echo 'repair failed')\n"
+    report+="$("$SUTURA" "$f" --human $HISTORY_FLAG 2>/dev/null || echo 'repair failed')\n"
     if qdbus $dbus org.kde.kdialog.ProgressDialog.wasCancelled 2>/dev/null | grep -qi true; then
         report+="(cancelled)\n"
         break

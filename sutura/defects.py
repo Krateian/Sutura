@@ -26,7 +26,6 @@ def _boundary_edges(tris):
     vertices it connects to via a boundary edge.
     """
     tris = np.asarray(tris, dtype=np.int64)
-    tri_idx = np.repeat(np.arange(len(tris)), 3)
     edges = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0)
     keys = _edge_keys(edges)
     uniq, counts = np.unique(keys, return_counts=True)

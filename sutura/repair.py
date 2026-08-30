@@ -24,7 +24,7 @@ import time
 from collections import defaultdict
 import numpy as np
 
-from classification import classify, issue_label, is_stage2_skipped
+from classification import classify, issue_label
 from confidence import (estimate_confidence_pre_repair, repair_confidence)
 from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
@@ -471,7 +471,6 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
         'two_manifold': bool(fin.get('is_mesh_two_manifold')),
         'holes_remaining': boundary_loop_stats(new_verts, new_tris)[0],
         'components': fin.get('connected_components_number'),
-        'faces_after': fin.get('faces_number'),
         'vertices_before': int(before_verts),
         'vertices_after': int(after_verts),
         'faces_before': int(before_faces),
@@ -1129,13 +1128,14 @@ def human_dry_run(r):
     return '\n'.join(lines)
 
 
-def process_file(src, human, mode='auto', no_history=False):
+def process_file(src, human, mode='auto', no_history=False, out=None):
     """Repair one file. Returns (result_dict, category)."""
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
 
     stem, ext = os.path.splitext(src)
-    out = stem + '_fixed' + ext
+    if out is None:
+        out = stem + '_fixed' + ext
 
     tmpdir = tempfile.mkdtemp(prefix='sutura-')
     result = {'input': src, 'output': out}
@@ -1291,8 +1291,8 @@ def main():
             print(json.dumps({'files': results}, ensure_ascii=False))
         sys.exit(0 if nerr == 0 else 1)
 
-    results = [process_file(f, human, mode=mode, no_history=args.no_history)
-               for f in files]
+    results = [process_file(f, human, mode=mode, no_history=args.no_history,
+                           out=out) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')
