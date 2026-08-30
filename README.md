@@ -631,7 +631,9 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 
 Sutura records a *technical usage history* of repairs so the community can
 steer the engine (mesh_classifier + stage-1/2 tuning) toward the cases it
-actually meets.
+actually meets. Every shared history helps make the repair engine smarter
+over time — more real-world meshes means better classifier tuning and
+fewer edge cases missed.
 
 * **What is recorded:** mesh size (vertex/face counts), defect counts (holes,
   non-manifold, self-intersections), classifier result (type + confidence),

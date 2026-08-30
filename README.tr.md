@@ -640,7 +640,9 @@ güvenilir şekilde algılayabilir.
 
 Sutura, onarımların *teknik kullanım geçmişini* kaydeder; böylece topluluk,
 motoru (mesh_classifier + aşama 1/2 ayarları) gerçekte karşılaştığı vakalara
-göre yönlendirebilir.
+göre yönlendirebilir. Paylaşılan her kullanım geçmişi motoru zamanla daha
+akıllı hale getiriyor — daha fazla gerçek dünya mesh'i, daha iyi classifier
+ayarı ve daha az kaçırılan uç durum demek.
 
 * **Ne kaydedilir:** mesh boyutu (köşe/yüz sayıları), kusur sayıları (delik,
   non-manifold, self-intersection), sınıflandırıcı sonucu (tür + güven),
