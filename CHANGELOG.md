@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mode suggestions now cover simple hole defects.** The gentle
+  "a step up can be tried if unsatisfied" tip (`sug_holes_few`) fired only
+  for 3+ holes, so a classic broken cube with a single missing face
+  (1-2 holes) got **no** suggestions at all after Analyze. It now fires
+  for any input with at least one hole. Regression-covered in
+  `tests/test_suggestions.py`.
+
 ## [0.2.1] - 2026-08-30
 
 A maintenance release that hardens the repair pipeline and the community

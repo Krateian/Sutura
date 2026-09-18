@@ -134,6 +134,24 @@ def test_priority_order():
     assert keys == ['sug_si_few', 'sug_holes_few', 'sug_nm']
 
 
+def test_single_hole_suggests_few():
+    # a classic broken cube (one missing face) must still get guidance
+    keys = mode_suggestion_keys(_analysis(holes_found=1))
+    assert keys == ['sug_holes_few']
+
+
+def test_two_holes_suggests_few():
+    keys = mode_suggestion_keys(_analysis(holes_found=2))
+    assert keys == ['sug_holes_few']
+
+
+def test_single_hole_no_extreme_caveat():
+    # holes_few never flags extreme; caveat must not fire on a tiny mesh
+    keys = mode_suggestion_keys(_analysis(holes_found=1, validation_faces=13))
+    assert 'sug_holes_few' in keys
+    assert 'sug_extreme_caveat' not in keys
+
+
 def test_watertight_suggestion():
     keys = mode_suggestion_keys(_analysis(watertight=True))
     assert keys == ['sug_watertight']

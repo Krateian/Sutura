@@ -1188,7 +1188,7 @@ def mode_suggestion_keys(a):
     if holes > 10:
         s.append('sug_holes_many')
         extreme_fired = True
-    elif holes >= 3:
+    elif holes >= 1:
         s.append('sug_holes_few')
     if (a.get('non_manifold_regions') or 0) > 3:
         s.append('sug_nm')
