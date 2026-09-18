@@ -17,7 +17,7 @@ GREEN=$'\033[1;32m'
 YELLOW=$'\033[1;33m'
 NC=$'\033[0m'
 
-SEARCH_PATTERNS='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[a-zA-Z0-9]{10,}|AKIA[0-9A-Z]{10,}|BEGIN (RSA |OPENSSH |EC |DSA |)PRIVATE KEY|Bearer [a-zA-Z0-9]'
+SEARCH_PATTERNS='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[a-zA-Z0-9]{10,}|AKIA[0-9A-Z]{10,}|BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY|Bearer [a-zA-Z0-9]'
 
 scan_range() {
     local range="$1"

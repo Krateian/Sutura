@@ -2,10 +2,17 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.2.2] - 2026-09-18
 
 ### Fixed
 
+- **Pre-push security scan now actually scans on macOS.** The hook's
+  `SEARCH_PATTERNS` used `BEGIN (RSA |OPENSSH |EC |DSA |)PRIVATE KEY`, whose
+  trailing empty alternation branch (`|)`) is rejected by BSD grep
+  ("empty (sub)expression"), so on macOS every grep invocation failed and
+  the secret-scan step silently reported "clean" without scanning anything.
+  The group is now optional (`BEGIN (RSA |OPENSSH |EC |DSA )?PRIVATE KEY`),
+  a valid POSIX ERE that matches identically on both BSD and GNU grep.
 - **Mode suggestions now cover simple hole defects.** The gentle
   "a step up can be tried if unsatisfied" tip (`sug_holes_few`) fired only
   for 3+ holes, so a classic broken cube with a single missing face
