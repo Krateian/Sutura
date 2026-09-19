@@ -78,7 +78,7 @@ söyler.
 | Alan | Olgunluk | Ne sağlam / Nerede dikkatli |
 |---|---|---|
 | STL onarımı (iki aşamalı) | ~%96 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmış ve 75 modellik gerçek dünya korpusunda (0 sert hata; Aşama 1 zinciri yeniden düzenlendi ve `maxholesize` mesh-duyarlı hale getirildi, böylece büyük tarama delikleri kapanıyor) ayrıca 115 mesh'lik gerçek-dünya tarama korpusunda doğrulanmıştır (elle macOS çalıştırması: 0 çökme, ~%90 tam su geçirmez). %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve tarama mesh'lerindeki son birkaç inatçı delik / ağır non-manifold yapı gerçek bir VCG sınırıdır. |
-| 3MF çok nesneli | ~%90 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen köşeli bir 3MF tam kapalı onarılır (0 kalan delik) ama nesne başına aşama 2 hiç çalışmadığı için yine de `stage2_skipped` (warning) olarak raporlanır. |
+| 3MF çok nesneli | ~%92 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Aşama 1'in kapattığı her nesne artık tek-mesh dosyalarıyla aynı paylaşılan yardımcı aracılığıyla **nesne başına aşama 2** (manifold3d su geçirmez yeniden kurma) alır: nesne başına `stage2` raporları, `objects_watertight` / `objects_stage2_ok` özetleri ve dosya düzeyi karar TÜM nesneleri dikkate alır (yalnızca nesne 0'ı değil). Bayt bayt özdeş nesneler tek onarımı paylaşır ama her biri yine kendi raporunu alır. Katmanlı/yinelenen köşeli (Bambu tarzı) bir 3MF, Aşama 1'de düzeltilir (köşe tekilleştirmesinden sonra ikinci bir yinelenen-yüz geçişi) ve nesne başına 12 yüz / 0 deliğe onarılır, nesne başına aşama 2 ile su geçirmez doğrulanır. Regression testiyle doğrulanır (`tests/test_stage2_3mf.py`). Bilinen sınırlar: nesne başına aşama 2 yalnızca Aşama 1'in gerçekten kapattığı nesnelere uygulanır (açık nesneler aşama 1 çıktısı olarak kalır), nesne 0'ın `stage1`/`stage2` üst düzey alanları geriye dönük uyumluluk için korunur ve `<vertex>` ayrıştırıcısı x,y,z öznitelik sırasını varsayar. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
 | GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), onarım modu seçici + onarım profili açılır listesi, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS'ta Finder sağ tık onarımı GUI'nin kendisi yerine ayrı Quick Action ile sağlanır. |
 | CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--dry-run`, `--version`), salt-okunur `validate` alt komutu, JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
@@ -92,11 +92,13 @@ söyler.
 | Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Varsayılan (classic) motor değişmedi. Opt-in bir **experimental** motor (`--classifier-engine experimental` / `SUTURA_CLASSIFIER_ENGINE=experimental`, `sutura/mesh_classifier_v2.py`) RANSAC düzlem segmentasyonu + küçük bir eğitilmiş başlık ekler ve belgelenmiş tarayıcı yanlılığını gerçek dünya korpusunda düzeltir (mekanik isabet 2/7 → 6/7, organik gerilemesi yok) — ~40 etiketli mesh üzerinde deneysel, istisna/geçersiz sonuçta classic'e otomatik geri dönüşlü. Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır, eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz ve classic motor taranmış mekanik parçaları (vida, dişli, krank mili) hâlâ **organik** okur — tarama kaynaklı girdide tespit edilen türü temkinli yorumlayın. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Onarım Sağlığı / Riski | ~%60 (yeni) | Klasik güvenin üzerine ayrı, eklemeli bir skorlama sistemi: `repair_health` (0–100, final mesh sağlamlığı: su geçirmez + non-manifold/self-intersection/delik yok) ve `repair_risk` (0–100, onarımın mesh'i ne kadar değiştirdiği: yüz/vertex/bileşen/hacim deltaları), ayrıca bir config lookup tablosundan türetilen iki-eksenli status etiketi (`safe`/`review`/`caution`/`failed`/`unavailable`). Ağırlıklar/eşikler kodda değil `sutura/repair_score_config.json`'da; fail-silent (onarımı asla bozmaz); regression testiyle doğrulanır (`tests/test_repair_score.py`). Deneysel: ağırlık değerleri ve tier sınırları başlangıç noktalarıdır. |
+| Onarım bütçesi (`--max-geometry-change` / `--max-risk` / `--force`) | ~%60 (yeni) | İsteğe bağlı güvenlik sınırları: gerçek geometri değişimi (max \|hacim\|/\|yüzey\| değişim %) veya `repair_risk` skoru bütçeyi aşarsa çıktı asla sessizce kaydedilmez — TTY'de etkileşimli `[y/N]` istemi, aksi halde kayıt açık `"status": "budget_declined"` işaretiyle (sorun `budget_exceeded`, çıkış 1) reddedilir ve `--force` sormadan kaydeder. Bütçe içindeyken sayılar yine bildirilir (`budget` bloğu). Mevcut hacim/yüzey/risk metriklerini yeniden kullanır (yeniden hesaplamaz); GUI aynı bütçeleri sunar ve onay sonrası reddedilen dosyaları `--force` ile yeniden çalıştırır. Regression testiyle doğrulanır (`tests/test_budget.py`). Deneysel: 0 = sınır yok ve reddedilen kayıt, dosyanın hiç yazılmaması anlamına gelir. |
+| Birim algılama uyarısı | ~%60 (yeni) | Milimetre yerine inç/santimetre cinsinden modellenmiş olabilecek modelleri işaretleyen, engelleyici olmayan bir bounding-box sezgisel kuralı (`unit_warning` + `unit_hint` JSON'da, `--human`'da bir `WARNING:` satırı, GUI log / analiz paneli / kusur panelinde gösterilir). 3MF `<model unit="...">` bildirimleri dikkate alınır: bildirilen inç/santimetre birimi aynen raporlanır, bildirilen milimetre birimi (spec varsayılanı) güvenilir ve sezgisel kural bastırılır. Onarımı asla değiştirmez — yalnızca bilgilendirmedir. Regression testiyle doğrulanır (`tests/test_units.py`). Deneysel: 25–400 mm "makul yazdırılabilir parça" aralığı ve inç-önce-santimetre sıralaması sezgiseldir, kalibrasyon değildir. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar; her sürümde ayrıca imzasız bir macOS `.dmg` de yayınlanır (`Build macOS .app/.dmg` workflow'u) ve macOS kurulumları yerel bir `~/Applications/Sutura.app` alır — GUI Spotlight'tan açılır (Cmd+Space → "Sutura"), ayrıca Finder'da bir **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) sağ tıkla onarım için. Eksikler: AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur), .dmg notarize edilmemiştir (Gatekeeper "unidentified developer" uyarısı gösterir) ve macOS için ayrı bir kaldırma betiği yoktur (aşağıdaki "macOS kurulumunu kaldırma" bölümüne bakın). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%35 — deneysel | Tek başına çalışan betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ sürümlerinde bulunan bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux içindir. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
-| Test kapsamı | ~%88 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+| Test kapsamı | ~%89 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
 
@@ -296,6 +298,8 @@ sutura model.stl --human --defects   # ayrıca girdi deliklerini / non-manifold 
 sutura model.stl --human --diff      # ayrıca önce/sonra geometri farkını yazdırır
 sutura model.stl --mode aggressive   # agresif onarım modunu kullan
 sutura model.stl --classifier-engine experimental  # opt-in sınıflandırıcı motoru
+sutura model.stl --max-geometry-change 10 --max-risk 40   # onarım bütçeleri (aşağıya bakın)
+sutura model.stl --max-risk 30 --force                    # bütçe aşılsa da sorunsuz kaydet
 sutura validate model.stl   # onarmadan ANALİZ (salt-okunur rapor)
 sutura model.stl --dry-run  # onarımın ne yapacağını raporlar, HİÇBİR ŞEY yazmaz
 sutura a.stl b.3mf c.stl    # batch: her dosya bir _fixed çıktı alır
@@ -367,6 +371,43 @@ Seçilen profil raporlanır (`repair_profile` JSON'da, `Profile:` `--human`da).
 Varsayılan (no `--profile`) eskisiyle bayt-birebir aynıdır. GUI, aynı
 profilleri bir **Profil** açılır listesiyle sunar (batch geneli).
 
+**Birim uyarısı.** STL/OBJ dosyaları birim meta verisi taşımaz ve boyut
+temelli onarım eşikleri (delik boyutu, döküntü kesimi) milimetreyi varsayar.
+Bir mesh yüklendikten sonra Sutura bounding box'unu hesaplar ve boyutlar
+yalnızca inç veya santimetreden milimetreye ölçeklendiğinde makul görünüyorsa,
+modelin mm olmayabileceğini söyleyen ENGELLEYİCİ OLMAYAN bir uyarı yayımlar
+(`unit_warning` + `unit_hint` JSON'da, `--human`'da bir `WARNING:` satırı,
+GUI'de görünür bir uyarı) — yazdırmadan önce ölçeği doğrulayın. 3MF dosyaları
+birimlerini `<model unit="...">` özniteliğinde bildirir: bildirilen bir
+inç/santimetre birimi aynen raporlanır, bildirilen milimetre birimi (spec
+varsayılanı) güvenilir ve sezgisel kural bastırılır. Uyarı onarımın kendisini
+asla değiştirmez.
+
+**Onarım bütçesi (`--max-geometry-change` / `--max-risk` / `--force`).** Bir
+onarımın mesh'i ne kadar değiştirmesine izin verileceğine dair iki isteğe
+bağlı güvenlik sınırı; ikisi de onarımın zaten hesapladığı metrikleri kullanır:
+- `--max-geometry-change PCT` — gerçek geometri değişimi
+  `max(|hacim değişimi %|, |yüzey alanı değişimi %|)`'dir; bütçe bu değerin
+  altındaysa aşılmıştır.
+- `--max-risk SCORE` — `repair_risk` skoru (0–100); bütçe gerçek skorun
+  altındaysa aşılmıştır.
+- `0` (veya bayrağın verilmemesi) bir bütçeyi devre dışı bırakır; varsayılan
+  hiç bütçe yoktur, yani mevcut davranış değişmez.
+
+Bütçe aşıldığında çıktı **asla sessizce kaydedilmez**: etkileşimli bir
+terminalde size sorulur (`Yine de kaydedilsin mi? [y/N]`), etkileşimli
+olmayan çalıştırmalar (GUI alt süreci, betikler, dosya yöneticisi
+entegrasyonu) kaydetmeyi reddeder ve çıkış kodu 1 olur. Rapor o zaman açık,
+üst düzey `"status": "budget_declined"` işaretini (artı gerçek sayıları ve
+bütçeleri içeren bir `budget` bloğu ve `budget_exceeded` sorun kodunu) taşır
+— genel bir onarım hatasından ayrı, makine tarafından algılanabilir bir
+sonuç. `--force` sormadan kaydeder (bütçe yine raporlanır). Onarım bütçe
+içindeyse kayıt normal sürer ve `budget` bloğu gerçek sayıları bildirir.
+Çok nesneli 3MF'de en KÖTÜ nesne karşılaştırmayı belirler. GUI aynı iki
+bütçeyi onarım seçenekleri iletişim kutusunda sunar ve batch'ten sonra,
+açık bir onayın ardından bütçe-reddedilen dosyaları `--force` ile yeniden
+çalıştırmayı önerir.
+
 Her onarım raporu ayrıca bir **onarım güven skoru** taşır: aşama 2 sonucunu,
 kalan delikleri, sınıflandırıcı güvenini, eşik ayarını, onarım modunu,
 self-intersection'ları ve hacim değişimini birleştiren tek bir 0–100 değer
@@ -411,7 +452,8 @@ dosyayla geçerlidir. JSON modda her dosyanın raporu ayrıca girdinin delikleri
 `--human` modda bu liste yalnızca `--defects` verildiğinde gösterilir, böylece
 varsayılan rapor kısa kalır. Çap değerleri, yaygın STL/3MF kuralı olarak
 milimetreyi varsayar; dosyanız farklı bir birim kullanıyorsa yorumu buna göre
-ölçeklendirin.
+ölçeklendirin (Sutura ayrıca muhtemel mm-olmayan modelleri bir birim uyarısıyla
+işaretler — yukarıdaki Birim uyarısı bölümüne bakın).
 
 Her rapor ayrıca önce/sonra geometrisini `stage1` içinde kaydeder:
 `volume_change_percent` (işaretli), `surface_area_before`/`after` ve
@@ -427,11 +469,19 @@ verir veya hiç çalışmazsa (ör. macOS/conda yerinde geri dönüşün kullan�
 dosya su geçirmez değil, uyarı olarak raporlanır.
 
 Çok nesneli 3MF dosyaları yerel olarak işlenir: her nesne meshi bağımsız
-onarılır ve arşive geri yazılır, böylece hiçbir nesne kaybolmaz. Rapor sonucu
-nesne başına listeler (kalan delik, iki-manifold). Kusurlar da nesne başına
-hesaplanır (`object_reports[i].defects`); 3MF için üst düzey toplu bir
-`defects` alanı yoktur. Not: batch raporunda olduğu gibi, bayt bayt özdeş
-geometriye sahip nesneler tekilleştirilir: yalnızca ilk görülen raporlanır.
+onarılır ve arşive geri yazılır, böylece hiçbir nesne kaybolmaz. Aşama 1'in
+kapattığı (iki-manifold, kalan delik yok) her nesne, tek-mesh dosyalarıyla aynı
+aşama 2 yardımcısından geçer, böylece manifold3d su geçirmez yeniden kurmasını
+ve nesne başına `stage2` raporunu alır. Rapor sonucu nesne başına listeler
+(kalan delik, iki-manifold, aşama 2 kararı) ve `objects_watertight` /
+`objects_stage2_ok` özetlerini taşır; dosyanın kategorisi TÜM nesnelerden
+türetilir, bu yüzden tek bir hâlâ-açık nesne tüm dosyanın su geçirmez
+raporlanmasını engeller. Kusurlar da nesne başına hesaplanır
+(`object_reports[i].defects`); 3MF için üst düzey toplu bir `defects` alanı
+yoktur. Bayt bayt özdeş geometriye sahip nesneler tek onarımı paylaşır ama her
+biri yine kendi nesne başına raporunu alır (aşama 2 sonucu geometrinin saf bir
+fonksiyonudur, bu yüzden önbellekteki nesnenin raporu kopyalar için de
+geçerlidir).
 
 GUI:
 
@@ -471,7 +521,8 @@ tatmin etmezse bir üst mod denenebilir" yönünde yumuşak bir ipucu, mod hâl�
 düşük seviyedeyken bir üst mod denenebileceğine dair
 düşük-güven ipucu veya extreme'un küçük parçaları silebileceğine dair bir
 çekince). Öneriler **yalnızca bilgilendirme amaçlıdır ve modu asla otomatik
-değiştirmez — karar kullanıcıda kalır.**
+değiştirmez — karar kullanıcıda kalır.** Sezgisel kural tetiklenirse engelleyici
+olmayan bir birim uyarısı (model inç/cm cinsinden olabilir) da gösterilir.
 
 #### Kusur detay paneli
 
@@ -482,7 +533,9 @@ kusurları listeler: her deliğin merkezi ve çapı (mm) ve her non-manifold
 bölge. Bu, log'un üstündeki batch özet şeridini tamamlar — şerit batch başına
 bir sayımdır, bu panel dosya başına detaydır. Onarımdan sonra panel başlığı
 ayrıca sonucun güvenini `Confidence: X/100 — Yüksek/Orta/Düşük` segmenti
-olarak gösterir.
+olarak gösterir. Model milimetre cinsinden olmayabilirse, log'da ve bu panelin
+başında engelleyici olmayan bir birim uyarısı görünür (yukarıdaki Birim
+uyarısı bölümüne bakın).
 
 **Kusur ısı haritası.** Kusur listesinin altında **Isı haritası göster**,
 seçili meshi kusur bölgeleri (delik kenarları ve non-manifold alanlar) gri
@@ -541,7 +594,15 @@ ettikçe canlı güncellenen tek cümlelik bir açıklamayla (Aşırı kademesi,
 20'den az yüzlü nesneleri silebileceği konusunda dürüstçe uyarır). Mod,
 **batch geneli** bir ayardır: sonraki Onar çalışmasında tüm dosyalara uygulanır
 (dosya başına değil) ve CLI'ya `--mode <mod>` olarak iletilir (CLI bayrağıyla
-aynı beş değer, varsayılan `auto`). Güncel mod her zaman düğmede görünür.
+aynı beş değer, varsayılan `auto`). Aynı diyalog ayrıca iki **onarım bütçesini**
+(maks. geometri değişimi %, maks. onarım riski 0–100; 0 = sınır yok) taşır.
+Güncel mod her zaman düğmede görünür.
+
+Bir onarım bir bütçeyi aştığında CLI kaydetmeyi reddeder (çıktı dosyası
+yazılmaz) ve `"status": "budget_declined"` bildirir; batch'ten sonra GUI,
+etkilenen dosyaları ve gerçek sayılarını listeleyen bir onay diyaloğu gösterir;
+**Yine de kaydedilsin mi?** tam olarak bu dosyaları `--force` ile yeniden
+çalıştırır (reddedilen satırlar zorlanmış sonuçlarla güncellenir).
 
 Dolphin: bir STL/OBJ/3MF dosyasına sağ tık -> **Sutura ile Onar**. Tek seçimde GUI
 dosya yüklü olarak açılır; çoklu seçimde her dosya arka planda onarılır ve bir
@@ -772,18 +833,21 @@ güvenilir şekilde algılayabilir.
 * **Katmanlı/yinelenen köşeli 3MF dışa aktarımları.** Bazı dilimleyiciler
   (Bambu Studio dahil) nesnelerinin her köşe konumunu ~15 kez ayrı köşe girişi
   olarak tekrarlayan ve yüzeyleri katlanmış (bir kenarda birkaç yüz çakışık)
-  olan 3MF'ler yazar. VCG bu tür meshleri geçerli 2-manifoldlara
-  dönüştürebilir; yeniden düzenlenen Aşama 1 zinciriyle (non-manifold köşeler
-  delik kapatmadan önce onarılır, sonda bir ek kapatma geçişi daha) test
-  dışa aktarımları artık tam kapalı onarılıyor — 0 kalan delik (boundary
-  kenarlarının yarısı değil, gerçek boundary-loop sayısı olarak raporlanır).
-  Nesne başına aşama 2, çok nesneli 3MF'lerde hâlâ bilinçli olarak atlanır, bu
-  yüzden kategori `warning` (`stage2_skipped`) kalır ama geometri kapalıdır.
-  Geliştirme sırasındaki bir örnek: daha önce 13 ve 26 mikro delik bildiren 2
-  nesneli bir Bambu dışa aktarımı artık 0 ve 0 bildiriyor.
+  olan 3MF'ler yazar. VCG bu tür meshleri geçerli 2-manifoldlara dönüştürebilir:
+  Aşama 1 zinciri köşe tekilleştirmesinden SONRA yüzleri yeniden tekilleştirir
+  (köşe tekilleştirmesi, katmanlı bir mesh üzerinde yinelenen yüzleri aslında
+  *oluşturan* adımdır), sonra non-manifold köşeleri delik kapatmadan önce
+  onarır ve sonda bir ek kapatma geçişi daha yapar; test dışa aktarımları artık
+  tam kapalı onarılıyor — 0 kalan delik (boundary kenarlarının yarısı değil,
+  gerçek boundary-loop sayısı olarak raporlanır). Kapalı katmanlı nesneler ayrıca
+  nesne başına aşama 2 su geçirmez yeniden kurması alır, bu yüzden
+  `stage2_skipped` değil su geçirmez raporlanırlar. Geliştirme sırasındaki bir
+  örnek: daha önce 13 ve 26 mikro delik bildiren (veya yinelenen-yüz
+  düzeltmesinden önce bazı platformlarda 0 yüze indirilen) 2 nesneli bir Bambu
+  dışa aktarımı artık 0 ve 0 bildiriyor, ikisi de aşama 2 doğrulamalı.
 * **Tüm nesneler korunur.** Çok nesneli 3MF'ler nesne nesne onarılır ve geri
-  yazılır, böylece hiçbir nesne kaybolmaz. Nesne başına sonuç CLI çıktısında ve
-  GUI'de raporlanır.
+  yazılır, böylece hiçbir nesne kaybolmaz. Nesne başına sonuç (her nesnenin
+  aşama 2 kararı dahil) CLI çıktısında ve GUI'de raporlanır.
 
 ## Kullanım geçmişi (anonim, isteğe bağlı kapatılabilir)
 

@@ -111,7 +111,7 @@ def _resolve_bridge():
 
 BRIDGE = _resolve_bridge()
 
-VERSION = "0.2.6"
+VERSION = "0.2.7"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -249,6 +249,13 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8):
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
         ('meshing_remove_duplicate_vertices', {}),
+        # layered/duplicated-vertex meshes (e.g. Bambu/Orca exports) collapse
+        # onto few unique vertices here; the faces become duplicates only
+        # AFTER vertex dedup, so a second duplicate-faces pass is required or
+        # meshing_repair_non_manifold_edges sees a per-edge face soup and
+        # deletes the mesh (the layered-3MF macOS failure, see
+        # docs/stage2-3mf-per-object.md Investigation A).
+        ('meshing_remove_duplicate_faces', {}),
         ('meshing_repair_non_manifold_edges', {}),
         ('meshing_re_orient_faces_coherently', {}),
         # non-manifold vertices are repaired BEFORE hole closing: closing a
@@ -271,6 +278,9 @@ def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8):
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
         ('meshing_remove_duplicate_vertices', {}),
+        # same layered-mesh fix as stage1_chain: faces become duplicates only
+        # after vertex dedup, so dedup them again before the non-manifold pass.
+        ('meshing_remove_duplicate_faces', {}),
         ('compute_selection_by_non_manifold_edges_per_face', {}),
         ('meshing_remove_selected_faces', {}),
         ('set_selection_none', {}),
@@ -409,6 +419,77 @@ def signed_volume(verts, tris):
     return float(np.sum(np.einsum('ij,ij->i', a, np.cross(b, c))) / 6.0)
 
 
+def check_units(verts, declared_unit=None):
+    """Return a unit warning dict or None.
+
+    A mesh whose bounding-box dimensions only become plausible when scaled
+    from inches or centimetres to millimetres was probably not authored in
+    millimetres. This matters because the size-based repair logic
+    (maxholesize, hole diameter, volume-change thresholds) assumes mm, so a
+    wrong-scale mesh is worth a visible, NON-BLOCKING warning -- it never
+    changes the repair itself.
+
+    ``declared_unit``: the <model unit="..."> attribute for 3MF inputs (None
+    for STL/OBJ, which carry no unit metadata). A declared non-millimetre
+    unit is definitive and reported as-is; ``'millimeter'`` (the 3MF spec
+    default) is trusted and suppresses the heuristic. With no declared unit
+    the heuristic below is used.
+
+    Heuristic: a plausible printable part spans ~25-400 mm on its longest
+    axis. If the mesh's longest axis only lands in that range after scaling
+    by 25.4 (inches) or 10 (centimetres), flag it. Inches is checked first
+    (the most common alternate CAD/export default); in the overlapping
+    ~2.5-16-unit band the hint names both.
+
+    Returns ``{'unit_warning': True, 'unit_hint': '...'}`` or None.
+    """
+    if declared_unit is not None and declared_unit != 'millimeter':
+        return {'unit_warning': True,
+                'unit_hint': ('The 3MF model declares its unit as "%s"; '
+                              'size-based repair thresholds assume millimetres.'
+                              % declared_unit)}
+    if declared_unit == 'millimeter':
+        return None
+    if verts is None or len(verts) == 0:
+        return None
+    v = np.asarray(verts, dtype=np.float32)
+    if len(v) == 0 or not np.isfinite(v).all():
+        return None
+    L = float(np.max(v.max(axis=0) - v.min(axis=0)))
+    if not (L > 0.0):
+        return None
+    if not (25.0 <= 25.4 * L <= 400.0) and not (25.0 <= 10.0 * L <= 400.0):
+        return None
+    return {'unit_warning': True,
+            'unit_hint': ('Model may not be in millimetres: the longest '
+                          'bounding-box axis is %.3g units (as inches '
+                          '≈ %.1f mm, as centimetres ≈ %.1f mm). Size-based '
+                          'repair thresholds assume millimetres.'
+                          % (L, 25.4 * L, 10.0 * L))}
+
+
+def read_3mf_units(path):
+    """Return {model_name: declared_unit} for every .model file in a 3MF.
+
+    The 3MF spec defaults the <model> unit attribute to ``millimeter`` when
+    absent; allowed values are micron/millimeter/centimeter/inch. STL/OBJ
+    carry no unit metadata, so this only applies to .3mf inputs. Never
+    raises: a broken archive yields an empty dict (the caller's own 3MF
+    parsing will report the real error)."""
+    out = {}
+    try:
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():
+                if not name.endswith('.model'):
+                    continue
+                xml = z.read(name).decode('utf-8', errors='replace')
+                m = re.search(r'<model\b[^>]*\bunit="([^"]+)"', xml)
+                out[name] = m.group(1) if m else 'millimeter'
+    except Exception:
+        return {}
+    return out
+
+
 def read_obj(path):
     verts = []
     tris = []
@@ -436,7 +517,7 @@ def stl_write_binary(path, verts, tris):
 
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
-                            engine='classic'):
+                            engine='classic', declared_unit=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -444,7 +525,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     (low/medium/aggressive/extreme) use the MODE_PARAMS thresholds directly.
     ``profile`` (optional, only effective when mode is 'auto') selects a
     named threshold preset (see PROFILES). ``engine`` selects the classifier
-    engine ('classic' default, 'experimental' opt-in).
+    engine ('classic' default, 'experimental' opt-in). ``declared_unit`` is
+    the 3MF <model unit="..."> attribute (None for STL/OBJ) fed to the
+    non-blocking unit-warning heuristic.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -456,6 +539,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
     stats = {'stage1': {}}
+
+    # Non-blocking unit warning: the size-based Stage 1 thresholds assume
+    # millimetres, so a mesh that was probably authored in inches/cm deserves
+    # a visible warning (reported, never changes the repair).
+    _u = check_units(v, declared_unit)
+    if _u:
+        stats['unit_warning'] = True
+        stats['unit_hint'] = _u['unit_hint']
 
     # Mesh-type-aware Stage 1 tuning (organic vs mechanical): resolved through
     # the shared resolve_mode_params so repair and --dry-run stay in sync.
@@ -642,12 +733,139 @@ def run_stage2(inter, out_obj):
     return {'error': 'Stage 2 skipped: manifold3d not available in this environment.'}, False
 
 
+def maybe_run_stage2(report, verts, tris, tmpdir):
+    """Run stage 2 (manifold3d) when the mesh is watertight and the bridge is
+    available; shared by the single-mesh path and per-object 3MF repair.
+
+    The gate mirrors the historical single-mesh behaviour: stage 2 only
+    applies to a mesh that stage 1 closed (two-manifold with no remaining
+    holes) AND the bridge exists. ``run_stage2`` itself handles the fixed
+    venv subprocess, the in-process fallback, or an explicit "skipped"
+    report. Sets ``report['stage2']`` when stage 2 was attempted and returns
+    ``(new_verts, new_tris)`` — the manifold3d-rebuilt mesh when it produced
+    output, the input arrays unchanged otherwise."""
+    if (report.get('stage1', {}).get('two_manifold')
+            and report.get('stage1', {}).get('holes_remaining', 0) == 0
+            and os.path.exists(BRIDGE)):
+        inter = os.path.join(tmpdir, 'stage1.obj')
+        out_obj = os.path.join(tmpdir, 'stage2.obj')
+        write_obj(inter, verts, tris)
+        mrep, _ = run_stage2(inter, out_obj)
+        if mrep is not None:
+            report['stage2'] = mrep
+            if 'error' not in mrep and os.path.exists(out_obj):
+                return read_obj(out_obj)
+    return verts, tris
+
+
 def save_mesh(out_path, verts, tris):
     import pymeshlab as ml
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
                         face_matrix=np.asarray(tris, np.int32)))
     ms.save_current_mesh(out_path)
+
+
+def _geom_change_pct(s1):
+    """Geometry-change magnitude % for a stage1 dict, or None.
+
+    ``max(|volume_change_percent|, |surface_area_change_percent|)`` — the
+    worst geometric distortion. Reuses metrics the repair already computed
+    (no recomputation)."""
+    vals = []
+    for key in ('volume_change_percent', 'surface_area_change_percent'):
+        v = s1.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            vals.append(abs(float(v)))
+    return max(vals) if vals else None
+
+
+def _budget_message(budget):
+    """Human-readable 'metric value (budget)' list for an exceeded budget."""
+    parts = []
+    for e in budget.get('exceeded', []):
+        if e['metric'] == 'geometry_change':
+            parts.append('geometry change %.2f%% (budget %.2f%%)'
+                         % (e['value'], e['budget']))
+        elif e['metric'] == 'risk':
+            parts.append('risk %d (budget %d)' % (e['value'], e['budget']))
+    return '; '.join(parts)
+
+
+def budget_check(result, max_geom_change=None, max_risk=None):
+    """Compare the repair's actual geometry change / risk against budgets.
+
+    Both metrics are reused, never recomputed:
+      - geometry change % = max(|volume|, |surface area|) change (stage1)
+      - repair risk score (0-100) = repair_score.compute_scores() output
+    For multi-object 3MF the WORST object drives each metric (per-object
+    stage1 / repair_risk values); the report still carries the full per-object
+    numbers.
+
+    Returns None when no budget is set (no behaviour change); otherwise:
+      {'geometry_change_pct': float|None, 'risk_score': int|None,
+       'max_geometry_change_pct': float|None, 'max_risk_score': float|None,
+       'within_budget': bool, 'exceeded': [{metric, value, budget}, ...]}.
+    """
+    if max_geom_change is None and max_risk is None:
+        return None
+    reports = result.get('object_reports')
+    if reports:
+        geoms, risks = [], []
+        for rep in reports:
+            g = _geom_change_pct(rep.get('stage1') or {})
+            if g is not None:
+                geoms.append(g)
+            r = rep.get('repair_risk')
+            if isinstance(r, (int, float)) and not isinstance(r, bool):
+                risks.append(float(r))
+        geom = max(geoms) if geoms else None
+        risk = max(risks) if risks else None
+    else:
+        geom = _geom_change_pct(result.get('stage1') or {})
+        risk = result.get('repair_risk')
+        if not isinstance(risk, (int, float)) or isinstance(risk, bool):
+            risk = None
+        elif risk is not None:
+            risk = float(risk)
+
+    exceeded = []
+    if max_geom_change is not None and geom is not None \
+            and geom > float(max_geom_change):
+        exceeded.append({'metric': 'geometry_change',
+                         'value': round(geom, 2),
+                         'budget': float(max_geom_change)})
+    if max_risk is not None and risk is not None and risk > float(max_risk):
+        exceeded.append({'metric': 'risk',
+                         'value': int(round(risk)),
+                         'budget': float(max_risk)})
+    return {
+        'geometry_change_pct': None if geom is None else round(geom, 2),
+        'risk_score': None if risk is None else int(round(risk)),
+        'max_geometry_change_pct':
+            float(max_geom_change) if max_geom_change is not None else None,
+        'max_risk_score': float(max_risk) if max_risk is not None else None,
+        'within_budget': not exceeded,
+        'exceeded': exceeded,
+    }
+
+
+def _confirm_budget_save(budget):
+    """Prompt the user to confirm saving despite an exceeded budget.
+
+    Only prompts on an interactive terminal (stdin is a TTY). Non-interactive
+    callers (the GUI subprocess, scripts, file-manager integration) never
+    hang and return False so the output is declined instead of saved
+    silently."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        print('WARNING: the repair exceeded your budget (%s).'
+              % _budget_message(budget), file=sys.stderr)
+        answer = input('Save anyway? [y/N] ').strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ('y', 'yes')
 
 
 def scan_bad_coordinates(path):
@@ -743,24 +961,24 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
     verts = np.asarray(load_ms.current_mesh().vertex_matrix(), dtype=np.float32)
     tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
-    report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile, engine=engine)
+    declared_unit = None
+    if os.path.splitext(src)[1].lower() == '.3mf':
+        units = read_3mf_units(src)
+        if units:
+            declared_unit = next(iter(units.values()))
+
+    report, new_v, new_t = repair_mesh_from_arrays(
+        verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
+        declared_unit=declared_unit)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
         report['material_discarded'] = obj_has_material_refs(src)
 
-    # stage 2 applies to watertight results; run_stage2 handles the fixed
-    # venv, in-process, or an explicit "skipped" report.
-    if (report['stage1'].get('two_manifold') and report['stage1'].get('holes_remaining', 0) == 0
-            and os.path.exists(BRIDGE)):
-        inter = os.path.join(tmpdir, 'stage1.obj')
-        out_obj = os.path.join(tmpdir, 'stage2.obj')
-        write_obj(inter, new_v, new_t)
-        mrep, _ = run_stage2(inter, out_obj)
-        if mrep is not None:
-            report['stage2'] = mrep
-            if 'error' not in mrep and os.path.exists(out_obj):
-                new_v, new_t = read_obj(out_obj)
+    # Stage 2 applies to watertight results; shared helper keeps the single-
+    # mesh path and per-object 3MF repair on the same code (same gate, same
+    # OBJ round-trip, same explicit skip reporting).
+    new_v, new_t = maybe_run_stage2(report, new_v, new_t, tmpdir)
 
     save_mesh(out, new_v, new_t)
     return report
@@ -806,32 +1024,45 @@ def build_mesh_block(verts, tris):
 
 
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
-    """Repair every object mesh in a 3MF archive, preserving structure."""
+    """Repair every object mesh in a 3MF archive, preserving structure.
+
+    Per-object Stage 2: any object that stage 1 closes (two-manifold with no
+    remaining holes) is passed through the shared ``maybe_run_stage2`` helper,
+    so a closed object gets a manifold3d watertight rebuild exactly like a
+    single-mesh file (the helper sets the per-object ``stage2`` report and
+    returns the rebuilt arrays). Objects that remain open after stage 1 are
+    written as stage-1 output, mirroring the single-mesh behaviour.
+    """
     meshes = parse_3mf_meshes(src)
     if not meshes:
         return {'error': 'no mesh objects found in 3MF'}
 
-    # TODO(stage2): if an object ever comes out of stage 1 fully closed
-    # (two-manifold with no boundary edges), manifold3d could be applied to
-    # that object individually to guarantee a watertight solid. Currently
-    # every layered/folded Bambu-style object we have seen remains open after
-    # stage 1, so the manifold3d bridge (which rejects open meshes) is
-    # skipped for all objects and no per-object stage 2 is attempted.
-
     with zipfile.ZipFile(src) as z:
         items = [(i, z.read(i)) for i in z.namelist()]
 
+    units = read_3mf_units(src)
     reports = []
     cache = {}
     for model_name, blocks in meshes.items():
+        declared = units.get(model_name, 'millimeter')
         for idx, (verts, tris, span) in enumerate(blocks):
             key = (verts.tobytes(), tris.tobytes())
             if key in cache:
-                new_v, new_t = cache[key]
+                # byte-identical geometry -> reuse the repair AND its report;
+                # each object still gets its own per-object report (incl. the
+                # stage2 outcome, which is a pure function of the geometry).
+                new_v, new_t, rep = cache[key]
+                reports.append(dict(rep))
             else:
-                rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile, engine=engine)
+                rep, new_v, new_t = repair_mesh_from_arrays(
+                    verts, tris, tmpdir, mode=mode, profile=profile,
+                    engine=engine, declared_unit=declared)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
+                # Per-object stage 2 first: closed objects get a watertight
+                # rebuild (same helper/gate as the single-mesh path), and the
+                # confidence/health/risk below then see the stage2 outcome.
+                new_v, new_t = maybe_run_stage2(rep, new_v, new_t, tmpdir)
                 _rc = repair_confidence(rep)
                 rep['repair_confidence'] = _rc['score']
                 rep['repair_confidence_label'] = _rc['label']
@@ -844,7 +1075,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
                 rep['repair_status'] = _rs['status']
                 rep['repair_status_code'] = _rs['status_code']
                 reports.append(rep)
-                cache[key] = (new_v, new_t)
+                cache[key] = (new_v, new_t, rep)
 
             for i, (fname, fdata) in enumerate(items):
                 if fname != model_name:
@@ -860,7 +1091,16 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
 
     agg = {'objects': len(meshes), 'object_reports': reports}
     if reports:
+        # backward compat: the top-level stage1 stays object-0's (classification
+        # now evaluates object_reports directly for multi-object files).
         agg['stage1'] = reports[0].get('stage1', {})
+        agg['objects_watertight'] = sum(
+            1 for r in reports
+            if r.get('stage1', {}).get('two_manifold')
+            and r.get('stage1', {}).get('holes_remaining', 0) == 0
+            and bool(r.get('stage2', {}).get('ok')))
+        agg['objects_stage2_ok'] = sum(
+            1 for r in reports if bool(r.get('stage2', {}).get('ok')))
         s2 = next((r['stage2'] for r in reports if 'stage2' in r), None)
         if s2 is not None:
             agg['stage2'] = s2
@@ -889,12 +1129,13 @@ def load_meshes(src):
              np.asarray(m.face_matrix(), dtype=np.int32))]
 
 
-def validate_mesh_from_arrays(verts, tris, engine='classic'):
+def validate_mesh_from_arrays(verts, tris, engine='classic', declared_unit=None):
     """Analyze one mesh WITHOUT repairing it.
 
     Combines defects.detect(), the mesh classifier and cheap pymeshlab
     measures (self-intersecting faces, connected components) into a
-    read-only report. Never writes anything."""
+    read-only report. Never writes anything. ``declared_unit`` feeds the
+    non-blocking unit-warning heuristic (3MF only)."""
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -928,6 +1169,10 @@ def validate_mesh_from_arrays(verts, tris, engine='classic'):
         'surface_area': round(surface_area(v, t), 3),
         'orientation': 'inverted' if vol < 0 else 'consistent',
     }
+    _u = check_units(v, declared_unit)
+    if _u:
+        validation['unit_warning'] = True
+        validation['unit_hint'] = _u['unit_hint']
     est = estimate_confidence_pre_repair({
         'detected_type': cls['type'],
         'detected_confidence': cls['confidence'],
@@ -959,9 +1204,11 @@ def validate_file(src, engine='classic'):
         meshes = load_meshes(src)
         if not meshes:
             raise ValueError('no mesh objects found in 3MF')
+        units = read_3mf_units(src) if os.path.splitext(src)[1].lower() == '.3mf' else {}
         reports = []
         for name, vs, ts in meshes:
-            rep = validate_mesh_from_arrays(vs, ts, engine)
+            declared = units.get(name) if name is not None else None
+            rep = validate_mesh_from_arrays(vs, ts, engine, declared_unit=declared)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -977,13 +1224,16 @@ def validate_file(src, engine='classic'):
     return result
 
 
-def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='classic'):
+def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='classic',
+                             declared_unit=None):
     """Report what a repair WOULD do for one mesh, without doing it.
 
     Detects the type, resolves the mode/thresholds and counts the holes /
     debris / self-intersections. The debris count reuses the same
     meshing_remove_connected_component_by_face_number filter the repair
-    chain runs, applied to an in-memory scratch mesh - nothing is written."""
+    chain runs, applied to an in-memory scratch mesh - nothing is written.
+    ``declared_unit`` feeds the non-blocking unit-warning heuristic
+    (3MF only)."""
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -1027,7 +1277,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='cla
         'stage2_bridge_available': bool(os.path.exists(BRIDGE)),
     })
 
-    return {
+    result = {
         'repair_mode': mode,
         'repair_profile': profile,
         'detected_type': cls['type'],
@@ -1046,6 +1296,11 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='cla
         'estimated_confidence_label': est['label'],
         'estimated_confidence_factors': est['factors'],
     }
+    _u = check_units(v, declared_unit)
+    if _u:
+        result['unit_warning'] = True
+        result['unit_hint'] = _u['unit_hint']
+    return result
 
 
 def dry_run_file(src, mode='auto', profile=None, engine='classic'):
@@ -1061,9 +1316,12 @@ def dry_run_file(src, mode='auto', profile=None, engine='classic'):
         meshes = load_meshes(src)
         if not meshes:
             raise ValueError('no mesh objects found in 3MF')
+        units = read_3mf_units(src) if os.path.splitext(src)[1].lower() == '.3mf' else {}
         reports = []
         for name, vs, ts in meshes:
-            rep = dry_run_mesh_from_arrays(vs, ts, mode, profile, engine)
+            declared = units.get(name) if name is not None else None
+            rep = dry_run_mesh_from_arrays(vs, ts, mode, profile, engine,
+                                           declared_unit=declared)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -1106,6 +1364,10 @@ def human_report(r, show_defects=False, show_diff=False):
     lines.append('Input : %s' % r.get('input'))
     lines.append('Output: %s' % r.get('output'))
     lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
+    if r.get('unit_warning'):
+        lines.append('WARNING: %s' % r.get('unit_hint'))
+    if r.get('status') == 'budget_declined':
+        lines.append('ERROR: %s' % r.get('error'))
     if r.get('classifier_engine') is not None:
         lines.append('Classifier: %s' % r['classifier_engine'])
     if r.get('repair_profile'):
@@ -1129,6 +1391,20 @@ def human_report(r, show_defects=False, show_diff=False):
             'n/a' if rh is None else rh,
             'n/a' if rk is None else rk,
             r.get('repair_status', 'n/a')))
+    b = r.get('budget')
+    if b is not None:
+        lines.append('Budget: geometry change %s%% (limit %s) · risk %s '
+                     '(limit %s) · %s' % (
+                         'n/a' if b.get('geometry_change_pct') is None
+                         else b.get('geometry_change_pct'),
+                         'n/a' if b.get('max_geometry_change_pct') is None
+                         else b.get('max_geometry_change_pct'),
+                         'n/a' if b.get('risk_score') is None
+                         else b.get('risk_score'),
+                         'n/a' if b.get('max_risk_score') is None
+                         else b.get('max_risk_score'),
+                         'EXCEEDED' if not b.get('within_budget')
+                         else 'within budget'))
     if r.get('material_discarded'):
         lines.append('Material: input OBJ has mtllib/usemtl references which '
                      'are not preserved in the repaired output.')
@@ -1172,12 +1448,25 @@ def human_report(r, show_defects=False, show_diff=False):
     if 'objects' in r:
         lines.append('')
         lines.append('3MF objects repaired: %d' % r['objects'])
+        if r.get('objects_watertight') is not None:
+            lines.append('Objects watertight: %d/%d' % (
+                r.get('objects_watertight'), len(r.get('object_reports', []))))
         for i, rep in enumerate(r.get('object_reports', [])):
             s1o = rep.get('stage1', {})
-            ok = s1o.get('two_manifold') and s1o.get('holes_remaining', 0) == 0
+            s2o = rep.get('stage2') or {}
+            if s2o.get('ok'):
+                label = 'watertight'
+            elif s1o.get('two_manifold') and s1o.get('holes_remaining', 0) == 0:
+                label = ('stage 2 skipped'
+                         if s2o.get('error', '').startswith('Stage 2 skipped')
+                         else 'stage 2 error')
+            else:
+                label = 'partial'
             lines.append('  object %d: %s (%d hole(s) remaining, two-manifold=%s)' % (
-                i, 'watertight' if ok else 'partial',
+                i, label,
                 s1o.get('holes_remaining', 0), 'YES' if s1o.get('two_manifold') else 'NO'))
+            if rep.get('unit_warning'):
+                lines.append('    WARNING: %s' % rep.get('unit_hint'))
             if show_diff:
                 lines.append('    vertices %s -> %s, faces %s -> %s, surface %s%%' % (
                     s1o.get('vertices_before', 0), s1o.get('vertices_after', 0),
@@ -1208,8 +1497,12 @@ def human_validate(r, show_defects=False):
                 i, rep.get('model', '?'), v.get('vertices', 0), v.get('faces', 0),
                 len(v.get('holes', [])), len(v.get('non_manifold', [])),
                 v.get('self_intersections', 0), 'YES' if v.get('watertight') else 'NO'))
+            if v.get('unit_warning'):
+                lines.append('    WARNING: %s' % v.get('unit_hint'))
         return '\n'.join(lines)
     v = r.get('validation', {})
+    if v.get('unit_warning'):
+        lines.append('WARNING: %s' % v.get('unit_hint'))
     lines.append('Type  : %s (confidence %.2f)' % (
         r.get('detected_type', '?'), r.get('detected_confidence', 0.0)))
     if r.get('classifier_engine') is not None:
@@ -1257,8 +1550,12 @@ def human_dry_run(r):
                 rep.get('detected_type', '?'), rep.get('holes_found', 0),
                 rep.get('non_manifold_regions', 0), rep.get('debris_faces_removable', 0),
                 rep.get('self_intersections', 0)))
+            if rep.get('unit_warning'):
+                lines.append('    WARNING: %s' % rep.get('unit_hint'))
         return '\n'.join(lines)
     lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
+    if r.get('unit_warning'):
+        lines.append('WARNING: %s' % r.get('unit_hint'))
     lines.append('Type  : %s (confidence %.2f)' % (
         r.get('detected_type', '?'), r.get('detected_confidence', 0.0)))
     if r.get('classifier_engine') is not None:
@@ -1285,8 +1582,16 @@ def human_dry_run(r):
 
 
 def process_file(src, human, mode='auto', profile=None, no_history=False,
-                 out=None, engine='classic'):
-    """Repair one file. Returns (result_dict, category)."""
+                 out=None, engine='classic', max_geom_change=None,
+                 max_risk=None, force=False):
+    """Repair one file. Returns (result_dict, category).
+
+    ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
+    when the actual geometry change % / repair risk exceeds a budget, the
+    temp output is only moved into place after explicit confirmation (an
+    interactive ``[y/N]`` prompt on a TTY) or ``force``. Without a budget or
+    within budget the save is unconditional (reporting the numbers).
+    """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
 
@@ -1295,13 +1600,62 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         out = stem + '_fixed' + ext
 
     tmpdir = tempfile.mkdtemp(prefix='sutura-')
+    tmp_out = os.path.join(tmpdir, 'out' + ext)
     result = {'input': src, 'output': out}
     t0 = time.perf_counter()
     try:
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
-            result.update(repair_3mf(src, out, tmpdir, mode=mode, profile=profile, engine=engine))
+            result.update(repair_3mf(src, tmp_out, tmpdir, mode=mode,
+                                     profile=profile, engine=engine))
         else:
-            result.update(repair_file(src, out, tmpdir, mode=mode, profile=profile, engine=engine))
+            result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
+                                      profile=profile, engine=engine))
+
+        # Post-repair confidence + Health/Risk scores (needed for the budget
+        # gating below). Multi-object 3MF carries these per object already.
+        # Fail-silent: repair_score.compute_scores never raises.
+        if 'object_reports' not in result:
+            _rc = repair_confidence(result)
+            result['repair_confidence'] = _rc['score']
+            result['repair_confidence_label'] = _rc['label']
+            result['repair_confidence_factors'] = _rc['factors']
+            try:
+                _rs = repair_score.compute_scores(result)
+                result['repair_health'] = _rs['health']
+                result['repair_health_factors'] = _rs['health_factors']
+                result['repair_risk'] = _rs['risk']
+                result['repair_risk_factors'] = _rs['risk_factors']
+                result['repair_status'] = _rs['status']
+                result['repair_status_code'] = _rs['status_code']
+            except Exception:
+                pass
+
+        # Repair budget: compare actual geometry change + risk against the
+        # user's budgets; an exceeded budget requires confirmation before the
+        # temp output is moved into place (or --force). Never saved silently.
+        budget = budget_check(result, max_geom_change, max_risk)
+        if budget is not None:
+            result['budget'] = budget
+        if budget is not None and not budget['within_budget']:
+            if force or _confirm_budget_save(budget):
+                os.replace(tmp_out, out)
+            else:
+                # Unambiguous, machine-detectable outcome: distinct from a
+                # generic 'error' (corrupt file, crash) so the GUI can offer
+                # a --force re-run without wrongly offering it for other
+                # hard failures.
+                result['status'] = 'budget_declined'
+                result['error'] = (
+                    'Save declined: the repair exceeded your budget (%s). '
+                    'No output was written; re-run with --force to save '
+                    'anyway.' % _budget_message(budget))
+                if 'object_reports' not in result:
+                    _rc = repair_confidence(result)
+                    result['repair_confidence'] = _rc['score']
+                    result['repair_confidence_label'] = _rc['label']
+                    result['repair_confidence_factors'] = _rc['factors']
+        elif os.path.exists(tmp_out):
+            os.replace(tmp_out, out)
     except ExtremeRemovedAllError as e:
         result['error'] = str(e)
         result['extreme_removed_object'] = True
@@ -1315,34 +1669,6 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     result['category'] = category
     result['issues'] = issues
 
-    # Post-repair confidence. Multi-object 3MF carries it per object (added
-    # in repair_3mf, mirroring the 'defects' field) — deliberately no
-    # top-level aggregate, consistent with the 3MF report contract.
-    if 'object_reports' not in result:
-        _rc = repair_confidence(result)
-        result['repair_confidence'] = _rc['score']
-        result['repair_confidence_label'] = _rc['label']
-        result['repair_confidence_factors'] = _rc['factors']
-
-        # Repair Health / Repair Risk (separate from the classic confidence).
-        # Fail-silent: repair_score.compute_scores never raises (it returns
-        # None scores + 'unavailable' on any problem), and this outer guard
-        # makes sure scoring can never break a repair.
-        try:
-            _rs = repair_score.compute_scores(result)
-            result['repair_health'] = _rs['health']
-            result['repair_health_factors'] = _rs['health_factors']
-            result['repair_risk'] = _rs['risk']
-            result['repair_risk_factors'] = _rs['risk_factors']
-            result['repair_status'] = _rs['status']
-            result['repair_status_code'] = _rs['status_code']
-        except Exception:
-            pass
-
-    # Transient geometry fingerprints are always consumed so they never leak
-    # into the JSON stdout report; written to the anonymous history only when
-    # enabled (history.write swallows its own errors — recording must never
-    # break a repair).
     _fps = history.pop_fingerprints(result)
     if not no_history:
         history.write(result, VERSION, elapsed_ms, _fps)
@@ -1385,6 +1711,21 @@ def main():
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
                              'names or paths)')
+    parser.add_argument('--max-geometry-change', type=float, default=None,
+                        metavar='PCT',
+                        help='repair budget: warn/block when the actual geometry '
+                             'change (max of |volume| and |surface area| change '
+                             '%%) exceeds PCT. On a TTY you are prompted to '
+                             'confirm; non-interactive runs decline the save '
+                             'unless --force is given (0 disables the budget)')
+    parser.add_argument('--max-risk', type=float, default=None, metavar='SCORE',
+                        help='repair budget: warn/block when the repair risk '
+                             'score (0-100) exceeds SCORE. Same confirmation '
+                             'behaviour as --max-geometry-change (0 disables)')
+    parser.add_argument('--force', action='store_true',
+                        help='with --max-geometry-change/--max-risk: save the '
+                             'output even when the budget is exceeded, without '
+                             'asking')
     parser.add_argument('--last', type=int, default=0, metavar='N',
                         help='export-history: only the last N records')
     parser.add_argument('--clear', action='store_true',
@@ -1404,6 +1745,17 @@ def main():
     mode = args.mode
     dry_run = args.dry_run
     engine = resolve_classifier_engine(args.classifier_engine)
+
+    # Repair budgets: validate the ranges, then 0 / unset both mean "no
+    # budget" (disabled), matching the GUI's 0 = no limit convention.
+    if args.max_geometry_change is not None and args.max_geometry_change < 0:
+        print(json.dumps({'error': '--max-geometry-change must be >= 0'}))
+        sys.exit(1)
+    if args.max_risk is not None and not (0 <= args.max_risk <= 100):
+        print(json.dumps({'error': '--max-risk must be between 0 and 100'}))
+        sys.exit(1)
+    max_geom_change = args.max_geometry_change or None
+    max_risk = args.max_risk or None
 
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
@@ -1476,7 +1828,8 @@ def main():
 
     results = [process_file(f, human, mode=mode, profile=args.profile,
                             no_history=args.no_history, engine=engine,
-                            out=out) for f in files]
+                            out=out, max_geom_change=max_geom_change,
+                            max_risk=max_risk, force=args.force) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

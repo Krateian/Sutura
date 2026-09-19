@@ -56,6 +56,22 @@ CUBE_FULL_T = [
     (3, 0, 4), (3, 4, 7),          # left
 ]
 
+# a clean CLOSED cube for the third object (single copy, no layering, no
+# defects): it is already watertight at input, so per-object stage 2 has a
+# guaranteed closed mesh to rebuild regardless of the layered objects.
+CUBE_CLEAN_V = [
+    (-1, -1, -1), (1, -1, -1), (1, 1, -1), (-1, 1, -1),
+    (-1, -1, 1), (1, -1, 1), (1, 1, 1), (-1, 1, 1),
+]
+CUBE_CLEAN_T = [
+    (0, 2, 1), (0, 3, 2),          # bottom
+    (4, 5, 6), (4, 6, 7),          # top
+    (0, 1, 5), (0, 5, 4),          # back
+    (1, 2, 6), (1, 6, 5),          # right
+    (2, 3, 7), (2, 7, 6),          # front
+    (3, 0, 4), (3, 4, 7),          # left
+]
+
 
 def layer_mesh(verts, tris):
     """Duplicate a mesh N times as overlapping vertex layers."""
@@ -86,6 +102,7 @@ MODEL_RELS = """<?xml version="1.0" encoding="UTF-8"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
  <Relationship Target="/3D/Objects/object_1.model" Id="rel-1" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
  <Relationship Target="/3D/Objects/object_2.model" Id="rel-2" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+ <Relationship Target="/3D/Objects/object_3.model" Id="rel-3" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
 </Relationships>
 """
 
@@ -102,10 +119,16 @@ MAIN_MODEL = """<?xml version="1.0" encoding="UTF-8"?>
     <component p:path="/3D/Objects/object_2.model" objectid="3" transform="1 0 0 0 1 0 0 0 1 20 0 0"/>
    </components>
   </object>
+  <object id="6" type="model">
+   <components>
+    <component p:path="/3D/Objects/object_3.model" objectid="5" transform="1 0 0 0 1 0 0 0 1 40 0 0"/>
+   </components>
+  </object>
  </resources>
  <build>
   <item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 0" printable="1"/>
   <item objectid="4" transform="1 0 0 0 1 0 0 0 1 0 0 0" printable="1"/>
+  <item objectid="6" transform="1 0 0 0 1 0 0 0 1 0 0 0" printable="1"/>
  </build>
 </model>
 """
@@ -133,7 +156,7 @@ def object_model(obj_id, verts, tris):
     return '\n'.join(lines) + '\n'
 
 
-def write_3mf(path, obj1_v, obj1_t, obj2_v, obj2_t):
+def write_3mf(path, obj1_v, obj1_t, obj2_v, obj2_t, obj3_v, obj3_t):
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('[Content_Types].xml', CONTENT_TYPES)
         z.writestr('_rels/.rels', RELS)
@@ -141,6 +164,7 @@ def write_3mf(path, obj1_v, obj1_t, obj2_v, obj2_t):
         z.writestr('3D/3dmodel.model', MAIN_MODEL)
         z.writestr('3D/Objects/object_1.model', object_model(1, obj1_v, obj1_t))
         z.writestr('3D/Objects/object_2.model', object_model(3, obj2_v, obj2_t))
+        z.writestr('3D/Objects/object_3.model', object_model(5, obj3_v, obj3_t))
 
 
 # ---------------------------------------------------------------- checking
@@ -161,7 +185,7 @@ def edge_multiplicity(path, model_name):
 
 def check(output):
     """Repair the generated 3MF with sutura and validate the result."""
-    sutura = os.path.expanduser('~/.local/bin/sutura')
+    sutura = os.environ.get('SUTURA', os.path.expanduser('~/.local/bin/sutura'))
     fixed = output[:-4] + '_fixed' + output[-4:]
     r = subprocess.run([sutura, output], capture_output=True, text=True, timeout=600)
     try:
@@ -173,13 +197,14 @@ def check(output):
 
     fails = []
     objects = rep.get('object_reports', [])
-    if len(objects) != 2:
-        fails.append('expected 2 objects, got %d' % len(objects))
+    if len(objects) != 3:
+        fails.append('expected 3 objects, got %d' % len(objects))
 
     if not zipfile.ZipFile(fixed).testzip() is None:
         fails.append('output 3MF is not a valid zip')
 
-    for name in ('3D/Objects/object_1.model', '3D/Objects/object_2.model'):
+    for name in ('3D/Objects/object_1.model', '3D/Objects/object_2.model',
+                 '3D/Objects/object_3.model'):
         if name not in zipfile.ZipFile(fixed).namelist():
             fails.append('output missing %s' % name)
             continue
@@ -197,7 +222,7 @@ def check(output):
         for f in fails:
             print('  - %s' % f)
         return 1
-    print('PASS: 2 objects, both two-manifold, no soup corruption')
+    print('PASS: 3 objects, all two-manifold, no soup corruption')
     for i, obj in enumerate(objects):
         s1 = obj.get('stage1', {})
         print('  object %d: %d hole(s) remaining' % (i, s1.get('holes_remaining', 0)))
@@ -213,8 +238,9 @@ def main():
 
     write_3mf(out,
               *layer_mesh(CUBE_V, CUBE_T),
-              *layer_mesh(CUBE_FULL_V, CUBE_FULL_T))
-    print('wrote %s (2 objects, %d vertex layers each)' % (out, LAYERS))
+              *layer_mesh(CUBE_FULL_V, CUBE_FULL_T),
+              CUBE_CLEAN_V, CUBE_CLEAN_T)
+    print('wrote %s (3 objects, 2 layered + 1 clean closed cube)' % out)
 
     if check_mode:
         return check(out)

@@ -76,7 +76,7 @@ Sutura and where you should still double-check the output.
 | Area | Maturity | What is solid / where to be careful |
 |---|---|---|
 | STL repair (two-stage) | ~96% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs and validated on a 75-model real-world corpus (0 hard failures; the stage-1 chain was reordered and `maxholesize` made mesh-sensitive so large scan holes close) plus a 115-mesh real-world scan corpus (manual macOS run: 0 crashes, ~90% fully watertight). Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and the last few stubborn holes / heavy non-manifold structures on scan meshes are a genuine VCG limit. |
-| 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF repairs fully closed (0 holes remaining) but is still reported as `stage2_skipped` (warning) because per-object stage 2 never runs. |
+| 3MF multi-object | ~92% | Every object is repaired independently in memory and written back, so no object is lost. An object that stage 1 closes now gets a **per-object stage 2** (manifold3d watertight rebuild) through the same shared helper as single-mesh files: per-object `stage2` reports, `objects_watertight` / `objects_stage2_ok` aggregates, and the file-level verdict considers ALL objects (not just object 0). Byte-identical objects reuse one repair but each still gets its own report. A layered/duplicated-vertex (Bambu-style) 3MF is fixed at Stage 1 (a second duplicate-faces pass after vertex dedup) and repairs to 12 faces / 0 holes per object, confirmed watertight by per-object stage 2. Regression-tested (`tests/test_stage2_3mf.py`). Known limits: per-object stage 2 only applies to objects that stage 1 actually closes (open objects are stage-1 output), the object-0 `stage1`/`stage2` top-level fields are kept for backward compatibility, and the `<vertex>` parser assumes the x,y,z attribute order. |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
 | GUI | ~89% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison (static + interactive 3D viewer with surface deviation), repair-mode picker + repair-profile dropdown, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and on macOS Finder right-click repair is provided by the separate Quick Action rather than the GUI itself. |
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--dry-run`, `--version`), the read-only `validate` subcommand, JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
@@ -90,11 +90,13 @@ Sutura and where you should still double-check the output.
 | Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). The default (classic) engine is unchanged. An opt-in **experimental** engine (`--classifier-engine experimental` / `SUTURA_CLASSIFIER_ENGINE=experimental`, `sutura/mesh_classifier_v2.py`) adds RANSAC plane segmentation + a small trained head that fixes the documented scanner bias on the real-world corpus (mechanical recall 2/7 → 6/7, no organic regression) — experimental on ~40 labeled meshes, with automatic fallback to classic on exceptions/invalid results. Experimental: the per-type values are still estimated starting points, curved-but-mechanical parts (cylinders, fillets) are not classified at all, and the classic engine still reads scanned mechanical parts (screws, gears, crankshafts) as **organic** — treat the detected type on scan-derived input with caution. |
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
 | Repair Health / Risk | ~60% (new) | A separate, additive scoring system on top of the classic confidence: `repair_health` (0–100, final-mesh soundness: watertight + no non-manifold/self-intersections/holes) and `repair_risk` (0–100, how much the repair altered the mesh: face/vertex/component/volume deltas), plus a two-axis status label (`safe`/`review`/`caution`/`failed`/`unavailable`) derived from a config lookup table. Weights/thresholds live in `sutura/repair_score_config.json`, not code; fail-silent (never breaks a repair); regression-tested (`tests/test_repair_score.py`). Experimental: the weight values and tier boundaries are starting points. |
+| Repair budget (`--max-geometry-change` / `--max-risk` / `--force`) | ~60% (new) | Optional guard-rails: when the actual geometry change (max of \|volume\|/\|surface\| change %) or the `repair_risk` score exceeds the budget, the output is never saved silently — interactive `[y/N]` prompt on a TTY, else the save is declined with the explicit `"status": "budget_declined"` marker (issue `budget_exceeded`, exit 1), and `--force` saves without asking. Within budget the numbers are still reported (`budget` block). Reuses the existing volume/surface/risk metrics (no recomputation); the GUI offers the same budgets and re-runs declined files with `--force` after confirmation. Regression-tested (`tests/test_budget.py`). Experimental: 0 = no limit, and a declined save means the file is simply not written. |
+| Unit detection warning | ~60% (new) | Non-blocking bounding-box heuristic that flags models probably authored in inches/centimetres instead of millimetres (`unit_warning` + `unit_hint` in JSON, a `WARNING:` line in `--human`, and shown in the GUI log / analysis pane / defect panel). 3MF `<model unit="...">` declarations are honoured: a declared inch/centimetre unit is reported as-is, a declared millimetre unit (the spec default) is trusted and suppresses the heuristic. Never changes the repair — informational only. Regression-tested (`tests/test_units.py`). Experimental: the 25–400 mm "plausible printable part" range and the inches-before-centimetres ordering are heuristics, not calibration. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow) and macOS installs get a native `~/Applications/Sutura.app` so the GUI launches from Spotlight (Cmd+Space → "Sutura"), plus a Finder **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) for right-click repair. Gaps: the AppImage/GUI cannot self-update in place (read-only squashfs), the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning), and macOS has no standalone uninstall script (see "Removing a macOS install" below). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
-| Test coverage | ~88% | Plain-script suites (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
+| Test coverage | ~89% | Plain-script suites (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
 
@@ -293,6 +295,8 @@ sutura model.stl --human --defects   # also list input holes / non-manifold regi
 sutura model.stl --human --diff      # also print the before/after geometry diff
 sutura model.stl --mode aggressive   # use the aggressive repair mode
 sutura model.stl --classifier-engine experimental  # opt-in classifier engine
+sutura model.stl --max-geometry-change 10 --max-risk 40   # repair budgets (see below)
+sutura model.stl --max-risk 30 --force                    # save even past the budget, no prompt
 sutura validate model.stl   # analyze WITHOUT repairing (read-only report)
 sutura model.stl --dry-run  # report what a repair would do, write NOTHING
 sutura a.stl b.3mf c.stl    # batch: each file gets a _fixed output
@@ -366,6 +370,42 @@ exposes the same profiles through a **Profile** dropdown (batch-wide).
 `sutura model.stl --profile scan` is equivalent to the old
 `--mode aggressive`-style scan handling but keeps the mode at `auto`.
 
+**Unit warning.** STL/OBJ files carry no unit metadata, and the size-based
+repair thresholds (hole size, debris cutoff) assume millimetres. After
+loading a mesh, Sutura computes its bounding box and, when the dimensions are
+only plausible when scaled from inches or centimetres to millimetres, emits a
+NON-BLOCKING warning (`unit_warning` + `unit_hint` in JSON, a `WARNING:` line
+in `--human`, and a visible warning in the GUI) that the model may not be in
+mm — verify the scale before printing. 3MF files declare their unit in the
+`<model unit="...">` attribute: a declared inch/centimetre unit is reported
+as-is, a declared millimetre unit (the spec default) is trusted and
+suppresses the heuristic. The warning never changes the repair itself.
+
+**Repair budget (`--max-geometry-change` / `--max-risk` / `--force`).** Two
+optional guard-rails on how much a repair is allowed to alter a mesh, both
+reusing metrics the repair already computes:
+- `--max-geometry-change PCT` — the actual geometry change is
+  `max(|volume change %|, |surface area change %|)`; a budget above this
+  value is exceeded.
+- `--max-risk SCORE` — the `repair_risk` score (0–100); a budget below the
+  actual score is exceeded.
+- `0` (or omitting the flag) disables a budget; the default is no budget at
+  all, so existing behaviour is unchanged.
+
+When a budget is exceeded the output is **never saved silently**: on an
+interactive terminal you are prompted (`Save anyway? [y/N]`), and
+non-interactive runs (the GUI subprocess, scripts, file-manager integration)
+decline the save with exit 1. The report then carries the explicit top-level
+`"status": "budget_declined"` marker (plus a `budget` block with the actual
+numbers vs. the budgets, and the issue `budget_exceeded`) — a distinct,
+machine-detectable outcome, separate from a generic repair error. `--force`
+saves without prompting (the budget is still reported). When the repair is
+within budget, saving proceeds normally and the `budget` block reports the
+actual numbers so you can see they stayed inside the budget. For multi-object
+3MF the WORST object drives the comparison. The GUI exposes the same two
+budgets in its repair-options dialog and, after a batch, offers to re-run
+budget-declined files with `--force` after an explicit confirmation.
+
 Every repair report also carries a **repair confidence score**: a single
 0–100 value (`repair_confidence` in JSON) with a High/Medium/Low label that
 combines the stage 2 outcome, remaining holes, classifier confidence, tuning
@@ -409,7 +449,9 @@ mode each file's report also includes a `defects` list describing the input's
 holes (centroid, diameter) and non-manifold regions; in `--human` mode this
 list is shown only when `--defects` is passed, so the default report stays
 concise. Diameter values assume millimetres, the common STL/3MF convention;
-if your file uses a different unit, scale the interpretation accordingly.
+if your file uses a different unit, scale the interpretation accordingly
+(Sutura also flags likely non-millimetre models with a unit warning — see the
+Unit warning section above).
 
 Every report also records the before/after geometry in `stage1`:
 `volume_change_percent` (signed), `surface_area_before`/`after` and
@@ -425,12 +467,19 @@ errors, or never runs (for example the macOS/conda in-process fallback being
 unavailable), the file is reported as a warning, not watertight.
 
 Multi-object 3MF files are handled natively: every object mesh is repaired
-independently and written back into the archive, so no object is lost. The
-report lists the result per object (holes remaining, two-manifold). Defects
-are also computed per object (`object_reports[i].defects`); there is no
-top-level aggregate `defects` field for a 3MF. Note that, as in the batch
-report, objects with byte-identical geometry are deduplicated: only the first
-occurrence is reported.
+independently and written back into the archive, so no object is lost. An
+object that stage 1 closes (two-manifold, no holes remaining) is then passed
+through the same stage 2 helper as single-mesh files, so it gets a manifold3d
+watertight rebuild and a per-object `stage2` report. The report lists the
+result per object (holes remaining, two-manifold, stage-2 verdict) and carries
+the aggregates `objects_watertight` / `objects_stage2_ok`; the file's category
+is derived from **all** objects, so a single still-open object prevents the
+whole file being reported watertight. Defects are also computed per object
+(`object_reports[i].defects`); there is no top-level aggregate `defects` field
+for a 3MF. Objects with byte-identical geometry reuse one repair, but each
+still gets its own per-object report (the stage-2 outcome is a pure function
+of the geometry, so the cached object's report is valid for the duplicates
+too).
 
 GUI:
 
@@ -470,7 +519,9 @@ up can be tried if unsatisfied" tip whenever the input has at least one
 hole, a low-confidence step-up tip only while the current mode is still
 gentle, or a caveat when extreme could delete small parts).
 The suggestions are **informational only and never change the mode
-automatically — the decision stays with the user.**
+automatically — the decision stays with the user.** A non-blocking unit
+warning (model may be authored in inches/cm) is also shown when the heuristic
+fires.
 
 #### Defect detail panel
 
@@ -481,7 +532,9 @@ its input mesh: each hole's centroid and diameter (in mm) and each
 non-manifold region. This complements the batch summary strip above the log —
 the strip is a per-batch count, this panel is per-file detail. After a repair,
 the panel header also shows the result's confidence as a
-`Confidence: X/100 — High/Medium/Low` segment.
+`Confidence: X/100 — High/Medium/Low` segment. If the model may not be in
+millimetres, a non-blocking unit warning appears in the log and at the top of
+this panel (see the Unit warning section above).
 
 **Defect heatmap.** Below the defect list, **Show heatmap** renders the
 selected mesh with its defect regions (hole rims and non-manifold areas)
@@ -537,10 +590,18 @@ distance) shown in the dialog.
 buttons opens a small dialog with a five-step slider —
 **Low / Medium / Auto / Aggressive / Extreme** — and a one-line description
 that updates live as the slider moves (the Extreme step warns it can delete
-objects smaller than 20 faces). The mode is a **batch-wide** setting: it
+objects smaller than 20 faces). The same dialog also carries the two
+**repair budgets** (max geometry change %, max repair risk 0–100; 0 = no
+limit). The mode is a **batch-wide** setting: it
 applies to the next Repair run for every file, not per file, and is passed to
 the CLI as `--mode <mode>` (the same five values as the CLI flag, default
 `auto`). The current mode is always shown on the button.
+
+When a repair exceeds a budget, the CLI declines the save (no output file)
+and reports `"status": "budget_declined"`; after the batch the GUI shows a
+confirmation dialog listing the affected files and their actual numbers, and
+**Save anyway?** re-runs exactly those files with `--force` (the declined
+rows are then overwritten by the forced results).
 
 Dolphin: right-click an STL/OBJ/3MF file -> **Repair with Sutura**. With a single
 selection the GUI opens with the file loaded; with multiple selections each
@@ -766,18 +827,21 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 * **Layered/duplicated-vertex 3MF exports.** Some slicers (Bambu Studio
   included) write 3MFs whose objects repeat every vertex position ~15x as
   separate vertex entries, and whose surfaces are folded (several faces
-  coincident on one edge). VCG can turn such meshes into valid 2-manifolds;
-  with the reordered Stage 1 chain (non-manifold vertices repaired before
-  hole closing, plus a final close pass) the test exports now repair fully
-  closed — 0 holes remaining (reported as a real boundary-loop count, not
-  half the boundary edges). Per-object stage 2 is still deliberately
-  skipped for multi-object 3MFs, so the category stays `warning`
-  (`stage2_skipped`), but the geometry is closed. Example from development:
-  a 2-object Bambu export that previously reported 13 and 26 micro-holes
-  now reports 0 and 0.
+  coincident on one edge). VCG can turn such meshes into valid 2-manifolds:
+  the Stage 1 chain dedups faces again after the vertex dedup (vertex dedup
+  is what *creates* the duplicate faces on a layered mesh), then repairs
+  non-manifold vertices before hole closing and finishes with a close pass,
+  so the test exports now repair fully closed — 0 holes remaining (reported
+  as a real boundary-loop count, not half the boundary edges). Closed
+  layered objects also get a per-object stage 2 watertight rebuild, so they
+  are reported watertight rather than `stage2_skipped`. Example from
+  development: a 2-object Bambu export that previously reported 13 and 26
+  micro-holes (or was destroyed to 0 faces on some platforms before the
+  duplicate-faces fix) now reports 0 and 0, both stage-2 confirmed.
 * **All objects are preserved.** Multi-object 3MFs are repaired object by
-  object and written back, so no object is lost. The per-object result is
-  reported in the CLI output and the GUI.
+  object and written back, so no object is lost. The per-object result
+  (including each object's stage-2 verdict) is reported in the CLI output
+  and the GUI.
 
 ## Usage history (anonymous, opt-out)
 

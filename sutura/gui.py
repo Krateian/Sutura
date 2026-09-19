@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
-    QCheckBox)
+    QCheckBox, QDoubleSpinBox, QSpinBox)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -120,6 +120,7 @@ STRINGS = {
         'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm',
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
+        'unit_warning': 'WARNING: %s',
         'type_detected': 'Detected: %s (%.2f)',
         'type_tuned': ' — tuned thresholds',
         'type_default': ' — default thresholds (confidence below gate)',
@@ -170,6 +171,18 @@ STRINGS = {
                               'faces.'),
         'mode_ok': 'OK',
         'mode_cancel': 'Cancel',
+        'budget_geom_label': 'Max geometry change (%):',
+        'budget_risk_label': 'Max repair risk (0-100):',
+        'budget_hint': ('0 = no limit. When the repair exceeds a budget, the '
+                        'output is not saved without your confirmation.'),
+        'budget_confirm_title': 'Repair budget exceeded',
+        'budget_confirm_msg': ('%d file(s) exceeded your repair budget and '
+                               'were NOT saved:\n%s\n\nSave them anyway? '
+                               '(re-runs the repair with --force)'),
+        'budget_status_exceeded': 'EXCEEDED',
+        'budget_status_within': 'within budget',
+        'res_budget_declined': 'budget declined',
+        'issue_budget_exceeded': 'Repair budget exceeded',
         'analyze': 'Analyze',
         'analyze_tip': ('Run read-only analysis (validate + dry-run) on the '
                         'selected files — never modifies the input.'),
@@ -280,6 +293,7 @@ STRINGS = {
         'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f mm',
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
+        'unit_warning': 'UYARI: %s',
         'type_detected': 'Tespit edilen: %s (%.2f)',
         'type_tuned': ' — ayarlanmış eşikler',
         'type_default': ' — varsayılan eşikler (güven eşiğinin altında)',
@@ -329,6 +343,18 @@ STRINGS = {
                               'az olan tüm nesneyi silebilir.'),
         'mode_ok': 'Tamam',
         'mode_cancel': 'İptal',
+        'budget_geom_label': 'Maks. geometri değişimi (%):',
+        'budget_risk_label': 'Maks. onarım riski (0-100):',
+        'budget_hint': ('0 = sınır yok. Onarım bir bütçeyi aşarsa, sizin '
+                        'onayınız olmadan çıktı kaydedilmez.'),
+        'budget_confirm_title': 'Onarım bütçesi aşıldı',
+        'budget_confirm_msg': ('%d dosya onarım bütçenizi aştı ve '
+                               'KAYDEDİLMEDİ:\n%s\n\nYine de kaydedilsin mi? '
+                               '(--force ile onarımı yeniden çalıştırır)'),
+        'budget_status_exceeded': 'AŞILDI',
+        'budget_status_within': 'bütçe içinde',
+        'res_budget_declined': 'bütçe reddedildi',
+        'issue_budget_exceeded': 'Onarım bütçesi aşıldı',
         'analyze': 'Analiz Et',
         'analyze_tip': ('Seçili dosyalar için salt-okunur analiz çalıştır '
                         '(validate + dry-run) — girdiyi asla değiştirmez.'),
@@ -554,6 +580,12 @@ def format_report(data):
     lines = []
     lines.append('Output file: %s' % data.get('output'))
     lines.append('')
+    if data.get('unit_warning'):
+        lines.append(_t('unit_warning', data.get('unit_hint', '')))
+        lines.append('')
+    if data.get('status') == 'budget_declined':
+        lines.append('ERROR: %s' % data.get('error'))
+        lines.append('')
     lines.append('Stage 1 (MeshLab):')
     lines.append('  Holes closed              : %d' % s1.get('holes_closed', 0))
     lines.append('  Holes remaining           : %d' % s1.get('holes_remaining', 0))
@@ -561,6 +593,15 @@ def format_report(data):
     lines.append('  Faces removed             : %d' % s1.get('faces_removed', 0))
     lines.append('  Connected components      : %d' % s1.get('components', 0))
     lines.append('  Two-manifold              : %s' % ('YES' if s1.get('two_manifold') else 'NO'))
+    b = data.get('budget')
+    if b is not None:
+        lines.append('  Budget                   : geometry change %s%% (limit %s) · risk %s (limit %s) · %s' % (
+            'n/a' if b.get('geometry_change_pct') is None else b.get('geometry_change_pct'),
+            'n/a' if b.get('max_geometry_change_pct') is None else b.get('max_geometry_change_pct'),
+            'n/a' if b.get('risk_score') is None else b.get('risk_score'),
+            'n/a' if b.get('max_risk_score') is None else b.get('max_risk_score'),
+            _t('budget_status_exceeded') if not b.get('within_budget')
+            else _t('budget_status_within')))
     if 'stage2' in data:
         s2 = data['stage2']
         lines.append('')
@@ -579,12 +620,26 @@ def format_report(data):
     if 'objects' in data:
         lines.append('')
         lines.append('3MF objects repaired: %d' % data.get('objects', 0))
+        if data.get('objects_watertight') is not None:
+            lines.append('Objects watertight: %d/%d' % (
+                data.get('objects_watertight'),
+                len(data.get('object_reports', []))))
         for i, rep in enumerate(data.get('object_reports', [])):
             s1o = rep.get('stage1', {})
-            ok = s1o.get('two_manifold') and s1o.get('holes_remaining', 0) == 0
+            s2o = rep.get('stage2') or {}
+            if s2o.get('ok'):
+                label = 'watertight'
+            elif s1o.get('two_manifold') and s1o.get('holes_remaining', 0) == 0:
+                label = ('stage 2 skipped'
+                         if s2o.get('error', '').startswith('Stage 2 skipped')
+                         else 'stage 2 error')
+            else:
+                label = 'partial'
             lines.append('  object %d: %s (%d hole(s) remaining, two-manifold=%s)' % (
-                i, 'watertight' if ok else 'partial',
+                i, label,
                 s1o.get('holes_remaining', 0), 'YES' if s1o.get('two_manifold') else 'NO'))
+            if rep.get('unit_warning'):
+                lines.append('    WARNING: %s' % rep.get('unit_hint'))
     return '\n'.join(lines)
 
 
@@ -625,11 +680,15 @@ class RepairWorker(QThread):
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
 
-    def __init__(self, files, mode='auto', profile=None, parent=None):
+    def __init__(self, files, mode='auto', profile=None, force=False,
+                 max_geom_change=None, max_risk=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
         self._profile = profile
+        self._force = force
+        self._max_geom_change = max_geom_change
+        self._max_risk = max_risk
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -663,6 +722,12 @@ class RepairWorker(QThread):
             args = [*SUTURA_CMD, '--mode', self._mode]
             if self._profile:
                 args += ['--profile', self._profile]
+            if self._max_geom_change:
+                args += ['--max-geometry-change', str(self._max_geom_change)]
+            if self._max_risk:
+                args += ['--max-risk', str(self._max_risk)]
+            if self._force:
+                args.append('--force')
             if self._no_history:
                 args.append('--no-history')
             args.append(path)
@@ -749,7 +814,7 @@ class AnalyzeWorker(QThread):
                       'debris_faces_removable', 'self_intersections',
                       'connected_components', 'stage2_bridge_available',
                       'estimated_confidence', 'estimated_confidence_label',
-                      'estimated_confidence_factors'):
+                      'estimated_confidence_factors', 'unit_warning', 'unit_hint'):
                 if k in dry:
                     result[k] = dry[k]
         # validate: adds the watertight pre-verdict + volume/orientation
@@ -773,6 +838,8 @@ class AnalyzeWorker(QThread):
             result['orientation'] = v.get('orientation')
             result['validation_vertices'] = v.get('vertices')
             result['validation_faces'] = v.get('faces')
+            result['unit_warning'] = v.get('unit_warning')
+            result['unit_hint'] = v.get('unit_hint')
         elif 'error' in val and 'error' not in result:
             result['error'] = val['error']
         return result
@@ -1198,7 +1265,8 @@ class RepairModeDialog(QDialog):
 
     MODES = ('low', 'medium', 'auto', 'aggressive', 'extreme')
 
-    def __init__(self, current='auto', parent=None):
+    def __init__(self, current='auto', max_geom_change=None, max_risk=None,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle(_t('mode_dialog_title'))
         self.setModal(True)
@@ -1223,6 +1291,27 @@ class RepairModeDialog(QDialog):
         self.desc.setWordWrap(True)
         lay.addWidget(self.desc)
 
+        # repair budget (batch-wide): max acceptable geometry change % and
+        # max acceptable repair risk score; 0 = no limit (disabled).
+        budget_row = QHBoxLayout()
+        budget_row.addWidget(QLabel(_t('budget_geom_label')))
+        self.geom_spin = QDoubleSpinBox()
+        self.geom_spin.setRange(0.0, 1000.0)
+        self.geom_spin.setDecimals(1)
+        self.geom_spin.setSuffix(' %')
+        self.geom_spin.setValue(float(max_geom_change or 0.0))
+        budget_row.addWidget(self.geom_spin)
+        budget_row.addSpacing(12)
+        budget_row.addWidget(QLabel(_t('budget_risk_label')))
+        self.risk_spin = QSpinBox()
+        self.risk_spin.setRange(0, 100)
+        self.risk_spin.setValue(int(max_risk or 0))
+        budget_row.addWidget(self.risk_spin)
+        lay.addLayout(budget_row)
+        self.budget_hint = QLabel(_t('budget_hint'))
+        self.budget_hint.setWordWrap(True)
+        lay.addWidget(self.budget_hint)
+
         btns = QHBoxLayout()
         btns.addStretch(1)
         ok = QPushButton(_t('mode_ok'))
@@ -1242,6 +1331,12 @@ class RepairModeDialog(QDialog):
 
     def selected_mode(self):
         return self.MODES[self.slider.value()]
+
+    def selected_budget(self):
+        """Return (max_geom_change, max_risk); 0/None both mean no limit."""
+        g = self.geom_spin.value()
+        r = self.risk_spin.value()
+        return (g if g > 0 else None, r if r > 0 else None)
 
 
 def mode_suggestion_keys(a):
@@ -1306,6 +1401,7 @@ class MainWindow(QMainWindow):
         self._type_by_path = {}
         self._score_by_path = {}
         self._diff_by_path = {}
+        self._unit_by_path = {}       # path -> (unit_warning, unit_hint)
         self._output_by_path = {}
         self._analysis_by_path = {}   # path -> analyze worker result dict
         self._heatmap_cache = {}      # path -> {size_key: QPixmap}
@@ -1315,6 +1411,10 @@ class MainWindow(QMainWindow):
         self._before_after_zoom = None
         self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
         self._repair_profile = None   # batch-wide repair profile (not per file)
+        self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
+        self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
+        self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
+        self._rerun = False           # True while re-running declined files with --force
 
         self._build_ui()
         self._apply_accent()
@@ -1736,6 +1836,7 @@ class MainWindow(QMainWindow):
             self._item_by_path.pop(path, None)
             self._heatmap_cache.pop(path, None)
             self._output_by_path.pop(path, None)
+            self._unit_by_path.pop(path, None)
             self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
         self._refresh_buttons()
         if not self.tree.currentItem():
@@ -1747,6 +1848,7 @@ class MainWindow(QMainWindow):
         self._item_by_path.clear()
         self._heatmap_cache.clear()
         self._output_by_path.clear()
+        self._unit_by_path.clear()
         self._analysis_by_path.clear()
         self.tree.clear()
         self._set_heatmap_thumb(None)
@@ -1779,6 +1881,8 @@ class MainWindow(QMainWindow):
     def repair(self):
         if not self.files or self.worker is not None:
             return
+        self._declined_by_path = {}
+        self._rerun = False
         for i in range(self.tree.topLevelItemCount()):
             self.tree.topLevelItem(i).setText(1, '')
         self._batch_results = []
@@ -1786,20 +1890,29 @@ class MainWindow(QMainWindow):
         self._type_by_path = {}
         self._score_by_path = {}
         self._diff_by_path = {}
+        self._unit_by_path = {}
         self.defects.clear()
         self.defect_label.setText(_t('defects_header'))
         self.summary.setVisible(False)
         self.summary.setText('')
+        self.log.clear()
+        self._run_batch(self.files, force=False)
+
+    def _run_batch(self, files, force=False):
+        """Start a repair batch on ``files`` (optionally forced past the
+        repair budget). Shared by the main batch and the declined-file
+        re-run."""
         self.btn_repair.setEnabled(False)
         self.btn_analyze.setEnabled(False)
         self.btn_stop.setEnabled(True)
-        self.progress.setRange(0, len(self.files))
+        self.progress.setRange(0, len(files))
         self.progress.setValue(0)
         self.status.setText(_t('repairing'))
-        self.log.clear()
 
-        self.worker = RepairWorker(self.files, self._repair_mode,
-                                  self._repair_profile, self)
+        self.worker = RepairWorker(files, self._repair_mode,
+                                   self._repair_profile, force=force,
+                                   max_geom_change=self._max_geom_change,
+                                   max_risk=self._max_risk, parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
         self.worker.all_done.connect(self._on_all_done)
@@ -1858,6 +1971,8 @@ class MainWindow(QMainWindow):
             return
         lines = []
         tuning = a.get('tuning_applied')
+        if a.get('unit_warning'):
+            lines.append(_t('unit_warning', a.get('unit_hint') or ''))
         lines.append(_t('analyze_type',
                         a.get('detected_type') or '?',
                         a.get('detected_confidence') or 0.0,
@@ -1899,10 +2014,13 @@ class MainWindow(QMainWindow):
         self._repair_profile = self.profile_combo.itemData(index)
 
     def _on_choose_repair_mode(self):
-        """Open the repair-mode dialog; apply the chosen mode to the next batch."""
-        dlg = RepairModeDialog(self._repair_mode, self)
+        """Open the repair-mode dialog (mode + repair budgets); apply to the
+        next batch."""
+        dlg = RepairModeDialog(self._repair_mode, self._max_geom_change,
+                               self._max_risk, self)
         if dlg.exec() == QDialog.Accepted:
             self._repair_mode = dlg.selected_mode()
+            self._max_geom_change, self._max_risk = dlg.selected_budget()
             self.btn_mode.setText(
                 _t('mode_btn', _t('mode_name_' + self._repair_mode)))
 
@@ -1923,7 +2041,11 @@ class MainWindow(QMainWindow):
                                          data.get('repair_status'),
                                          data.get('repair_status_code'))
             self._diff_by_path[path] = data.get('stage1', {})
+            self._unit_by_path[path] = (data.get('unit_warning'),
+                                        data.get('unit_hint'))
             self._output_by_path[path] = data.get('output')
+            if data.get('status') == 'budget_declined':
+                self._declined_by_path[path] = data
             if self._item_by_path.get(path) is self.tree.currentItem():
                 self._show_defects(path)
                 self._refresh_before_after_btn(path)
@@ -1978,6 +2100,10 @@ class MainWindow(QMainWindow):
                                _t('status_' + (sc[3] or 'unavailable')))
         self.defect_label.setText(base)
         lines = []
+        # non-blocking unit warning (model may be authored in inches/cm)
+        uw = self._unit_by_path.get(path)
+        if uw and uw[0]:
+            lines.append(_t('unit_warning', uw[1] or ''))
         # before/after geometry diff summary (from stage1)
         diff = self._diff_by_path.get(path)
         if diff and ('vertices_before' in diff or 'surface_area_change_percent' in diff):
@@ -2300,8 +2426,42 @@ class MainWindow(QMainWindow):
         self.btn_repair.setEnabled(bool(self.files))
         self.btn_analyze.setEnabled(bool(self.files))
         self.worker = None
+        was_rerun = self._rerun
+        self._rerun = False
         if not cancelled:
-            self._render_summary()
+            # a forced re-run overwrites the same rows; keep the original
+            # batch summary rather than replacing it with the re-run subset
+            if not was_rerun:
+                self._render_summary()
+            if self._declined_by_path:
+                self._ask_budget_rerun()
+
+    def _ask_budget_rerun(self):
+        """Offer to re-run the budget-declined files with --force.
+
+        The CLI already declined these saves (no output was written); the
+        user's explicit confirmation here is what authorises saving them.
+        The re-run is a fresh batch with --force, so the declined rows are
+        overwritten by the forced results."""
+        files = sorted(self._declined_by_path)
+        if not files:
+            return
+        lines = []
+        for p in files:
+            b = (self._declined_by_path[p].get('budget') or {})
+            lines.append('  %s — geometry change %s%%, risk %s' % (
+                os.path.basename(p),
+                'n/a' if b.get('geometry_change_pct') is None
+                else b.get('geometry_change_pct'),
+                'n/a' if b.get('risk_score') is None else b.get('risk_score')))
+        ret = QMessageBox.question(
+            self, _t('budget_confirm_title'),
+            _t('budget_confirm_msg', len(files), '\n'.join(lines)),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        self._declined_by_path = {}
+        if ret == QMessageBox.Yes:
+            self._rerun = True
+            self._run_batch(files, force=True)
 
     def _render_summary(self):
         """Build the batch summary strip: counts + clickable issue detail."""

@@ -113,8 +113,8 @@ def test_validate_multi_object_3mf(tmp):
     assert r.returncode == 0, r.stderr
     d = _json(r)
     assert 'error' not in d, d.get('error')
-    assert d.get('objects') == 2, d
-    assert len(d.get('object_reports', [])) == 2, d
+    assert d.get('objects') == 3, d
+    assert len(d.get('object_reports', [])) == 3, d
     for rep in d['object_reports']:
         assert 'validation' in rep, rep
         assert 'model' in rep, rep

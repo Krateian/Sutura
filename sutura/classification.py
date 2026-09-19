@@ -20,12 +20,57 @@ ISSUE_LABELS = {
     'partial': 'Partial repair (holes remaining)',
     'malformed': 'Malformed input',
     'error': 'Error',
+    'budget_exceeded': 'Repair budget exceeded',
 }
 
 # Stable summary keys returned by classify(); the GUI maps these to localized
 # strings, the CLI (single-file) doesn't use the short summary.
 SUMMARY_KEYS = ('watertight', 'stage2_skipped', 'stage2_error',
-                'holes', 'partial', 'error')
+                'holes', 'partial', 'error', 'budget_declined')
+
+
+def _obj_closed(r):
+    """True when one object's stage-1 output is a closed manifold."""
+    s1 = r.get('stage1', {})
+    return bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0
+
+
+def _classify_objects(reports, issues):
+    """Classify a multi-object 3MF result considering EVERY object.
+
+    The whole file is only 'watertight' when every object is stage-1 closed
+    AND confirmed by stage 2. If all objects close but stage 2 is missing/
+    skipped/errored on some, it is the stage2 warning. If any object remains
+    open, the file is a partial repair. A volume_warning from any object is
+    surfaced too."""
+    n = len(reports)
+    closed = [_obj_closed(r) for r in reports]
+    all_closed = n > 0 and all(closed)
+
+    outcomes = []
+    for r in reports:
+        s2 = r.get('stage2') or {}
+        if 'error' not in s2:
+            outcomes.append('none')
+        elif isinstance(s2.get('error'), str) and s2['error'].startswith('Stage 2 skipped'):
+            outcomes.append('skipped')
+        else:
+            outcomes.append('error')
+    all_s2_ok = n > 0 and all(out == 'none' for out in outcomes) \
+        and all(bool(r.get('stage2', {}).get('ok')) for r in reports)
+    any_error = 'error' in outcomes
+    any_skipped = 'skipped' in outcomes
+
+    if all_closed and all_s2_ok:
+        return 'watertight', issues, 'watertight'
+    if all_closed:
+        code = 'stage2_error' if any_error else 'stage2_skipped'
+        issues.append(code)
+        return 'warning', issues, code
+    issues.append('partial')
+    if any(r.get('stage1', {}).get('volume_warning') for r in reports):
+        issues.append('volume_warning')
+    return 'warning', issues, 'partial'
 
 
 def classify(data):
@@ -50,9 +95,24 @@ def classify(data):
         issues.append('extreme_removed_object')
         return 'error', issues, 'extreme_removed_object'
 
+    # A declined save (repair budget exceeded, user did not confirm): the
+    # repair itself ran but no output was written. Carries the explicit
+    # top-level 'status': 'budget_declined' marker (set by process_file) so
+    # callers can distinguish it from a generic hard failure and offer a
+    # --force re-run.
+    if data.get('status') == 'budget_declined':
+        issues.append('budget_exceeded')
+        return 'error', issues, 'budget_declined'
+
     if data.get('error') and 'stage1' not in data:
         issues.append('malformed')
         return 'error', issues, 'error'
+
+    # Multi-object 3MF: the verdict comes from ALL objects, not just object-0
+    # (object-0's stage1 is still kept top-level for backward compatibility).
+    reports = data.get('object_reports')
+    if reports:
+        return _classify_objects(reports, issues)
 
     s1 = data.get('stage1', {})
     watertight_s1 = bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0
