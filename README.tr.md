@@ -80,7 +80,7 @@ söyler.
 | STL onarımı (iki aşamalı) | ~%96 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmış ve 75 modellik gerçek dünya korpusunda (0 sert hata; Aşama 1 zinciri yeniden düzenlendi ve `maxholesize` mesh-duyarlı hale getirildi, böylece büyük tarama delikleri kapanıyor) ayrıca 115 mesh'lik gerçek-dünya tarama korpusunda doğrulanmıştır (elle macOS çalıştırması: 0 çökme, ~%90 tam su geçirmez). %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve tarama mesh'lerindeki son birkaç inatçı delik / ağır non-manifold yapı gerçek bir VCG sınırıdır. |
 | 3MF çok nesneli | ~%90 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen köşeli bir 3MF tam kapalı onarılır (0 kalan delik) ama nesne başına aşama 2 hiç çalışmadığı için yine de `stage2_skipped` (warning) olarak raporlanır. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
-| GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), onarım modu seçici + onarım profili açılır listesi, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
+| GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), onarım modu seçici + onarım profili açılır listesi, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS'ta Finder sağ tık onarımı GUI'nin kendisi yerine ayrı Quick Action ile sağlanır. |
 | CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--dry-run`, `--version`), salt-okunur `validate` alt komutu, JSON raporları, batch özeti, çıkış kodları. `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
 | Batch işleme | ~%90 | Dosya başına sonuçları ve bir özeti olan çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) desteklenir; batch kaldığı yerden sürdürülemez ve başarısız bir dosya diğerlerini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL çağrıları segfault verir, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelenir ve çok nesneli 3MF'de yalnızca ilk nesne çizilir. |
@@ -729,10 +729,19 @@ güvenilir şekilde algılayabilir.
 
 ## Bilinen sınırlamalar
 
-* **macOS'ta henüz sağ tık / Finder entegrasyonu yok.** macOS'ta yalnızca CLI
-  ve GUI mevcuttur; Linux'un Dolphin servis menüsünün ("Sutura ile Onar") bir
-  karşılığı yoktur. macOS kullanıcıları terminalden `sutura-gui` veya
-  `sutura <dosya>` çalıştırır.
+* **macOS'ta sağ tık, Dolphin tarzı menü değil Quick Action gerektirir.**
+  macOS'ta ServiceMenu karşılığı yoktur; kurulumcu bunun yerine
+  `~/Library/Services/` içine bir Finder **Quick Action** ("Sutura — Repair")
+  ekler ve seçili STL/3MF dosyaları için sağ tık → Quick Actions altında
+  kullanılabilir. Quick Action, bir PyInstaller `Sutura.app` içindeki paketli
+  `sutura-cli`'yi çağırır; bu yüzden yalnızca böyle bir uygulama mevcutsa
+  (`/Applications` veya `~/Applications` içinde) onarım yapar — dev kurulum
+  sarmalayıcı uygulaması tek başına paketli CLI içermez. İndirilmiş (karantinalı)
+  bir `Sutura.app`, Quick Action onu çalıştırmadan önce bir kez sağ tık → Aç
+  ile açılmalıdır (Gatekeeper; bildirim size bunu söyler).
+* **macOS kaldırma betiği yok.** Linux `uninstall.sh`'inin macOS karşılığı
+  yoktur; macOS kurulumunu kaldırmak elle yapılır (macOS kurulum bölümündeki
+  "macOS kurulumunu kaldırma" bölümüne bakın).
 * **Yerel KDE dosya diyaloğu.** GUI, QFileDialog'un yerel KDE diyaloğunu
   (lastik bant dikdörtgen seçimi dahil) kullanması için
   `QT_QPA_PLATFORMTHEME=kde` ayarlar ve `QT_PLUGIN_PATH`'i

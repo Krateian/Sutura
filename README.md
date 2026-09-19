@@ -78,7 +78,7 @@ Sutura and where you should still double-check the output.
 | STL repair (two-stage) | ~96% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs and validated on a 75-model real-world corpus (0 hard failures; the stage-1 chain was reordered and `maxholesize` made mesh-sensitive so large scan holes close) plus a 115-mesh real-world scan corpus (manual macOS run: 0 crashes, ~90% fully watertight). Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and the last few stubborn holes / heavy non-manifold structures on scan meshes are a genuine VCG limit. |
 | 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF repairs fully closed (0 holes remaining) but is still reported as `stage2_skipped` (warning) because per-object stage 2 never runs. |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
-| GUI | ~89% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison (static + interactive 3D viewer with surface deviation), repair-mode picker + repair-profile dropdown, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
+| GUI | ~89% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison (static + interactive 3D viewer with surface deviation), repair-mode picker + repair-profile dropdown, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and on macOS Finder right-click repair is provided by the separate Quick Action rather than the GUI itself. |
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--dry-run`, `--version`), the read-only `validate` subcommand, JSON reports, batch summary, exit codes. The `--human` report is English-only (localization is a GUI concern). |
 | Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
 | Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
@@ -725,10 +725,19 @@ Pinned in `requirements.txt` and `requirements-311.txt`.
 
 ## Known limitations
 
-* **macOS has no right-click / Finder integration yet.** On macOS only the
-  CLI and the GUI are available; there is no equivalent of Linux's Dolphin
-  service menu ("Repair with Sutura"). macOS users run `sutura-gui` or
-  `sutura <file>` from a terminal.
+* **macOS right-click needs a Quick Action, not a Dolphin-style menu.**
+  macOS has no ServiceMenu equivalent; instead the installer adds a Finder
+  **Quick Action** ("Sutura — Repair") in `~/Library/Services/`, available
+  under right-click → Quick Actions for selected STL/3MF files. It calls the
+  bundled `sutura-cli` inside a PyInstaller `Sutura.app`, so it only repairs
+  when such an app is present (in `/Applications` or `~/Applications`) — the
+  dev-install wrapper app alone has no bundled CLI. A downloaded
+  (quarantined) `Sutura.app` must be opened once via right-click → Open
+  before the Quick Action can run it (Gatekeeper; the notification tells you
+  to do this).
+* **No macOS uninstall script.** There is no macOS equivalent of the Linux
+  `uninstall.sh`; removing a macOS install is manual (see "Removing a macOS
+  install" under the macOS install section).
 * **Native KDE file dialog.** The GUI sets `QT_QPA_PLATFORMTHEME=kde` and
   points `QT_PLUGIN_PATH` at `/usr/lib/qt6/plugins` so QFileDialog uses the
   native KDE dialog (rubber-band rectangle selection included). This works
