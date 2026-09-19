@@ -33,6 +33,62 @@ import history
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 
+# Classifier engines. 'classic' is the shipped, unchanged mesh_classifier and
+# the default. 'experimental' is the opt-in mesh_classifier_v2 (RANSAC plane
+# features + a small trained head), selected via --classifier-engine or the
+# SUTURA_CLASSIFIER_ENGINE env var. Experimental is NOT protected against a
+# confident-but-wrong prediction -- the fallback below only covers exceptions
+# and invalid results. That is an accepted risk because the engine is fully
+# opt-in; classic remains the default for everyone who does not ask.
+CLASSIFIER_ENGINES = ('classic', 'experimental')
+
+
+def resolve_classifier_engine(cli_value=None):
+    """Resolve the requested classifier engine.
+
+    Precedence: explicit ``--classifier-engine`` flag > the
+    ``SUTURA_CLASSIFIER_ENGINE`` env var > ``'classic'``. An invalid value in
+    the env var (not classic/experimental) falls back to classic -- the env
+    var is ambient and must never crash the pipeline; an invalid CLI value is
+    rejected by argparse instead.
+    """
+    value = cli_value
+    if value is None:
+        value = os.environ.get('SUTURA_CLASSIFIER_ENGINE')
+    if value not in CLASSIFIER_ENGINES:
+        if cli_value is not None:
+            raise ValueError('unknown classifier engine: %r' % cli_value)
+        return 'classic'
+    return value
+
+
+def classify_with_engine(verts, tris, engine='classic'):
+    """Run classify_mesh with the selected engine. Returns ``(result, used)``
+    where ``used`` is the engine that actually produced the result.
+
+    ``classic`` (default): mesh_classifier, unchanged. ``experimental``:
+    mesh_classifier_v2; if it raises OR returns an invalid/incomplete result
+    (missing keys, NaN/non-finite confidence, unexpected type), it silently
+    falls back to classic with a warning logged -- never a crash.
+    """
+    if engine != 'experimental':
+        return classify_mesh(verts, tris), 'classic'
+    try:
+        import mesh_classifier_v2 as v2_engine
+        r = v2_engine.classify_mesh(verts, tris)
+        if not isinstance(r, dict):
+            raise ValueError('classifier result is not a dict')
+        if r.get('type') not in ('mechanical', 'organic', 'unknown'):
+            raise ValueError('unexpected classifier type: %r' % r.get('type'))
+        conf = r.get('confidence')
+        if not isinstance(conf, (int, float)) or not np.isfinite(conf):
+            raise ValueError('invalid classifier confidence: %r' % conf)
+        return r, 'experimental'
+    except Exception as e:
+        print('warning: experimental classifier failed (%s); '
+              'falling back to classic' % e, file=sys.stderr)
+        return classify_mesh(verts, tris), 'classic'
+
 
 def _resolve_bridge():
     """Locate manifold_bridge.py.
@@ -378,14 +434,16 @@ def stl_write_binary(path, verts, tris):
             f.write(struct.pack('<H', 0))
 
 
-def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None):
+def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
+                            engine='classic'):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
     classifier + confidence gate exactly as before; the fixed modes
     (low/medium/aggressive/extreme) use the MODE_PARAMS thresholds directly.
     ``profile`` (optional, only effective when mode is 'auto') selects a
-    named threshold preset (see PROFILES).
+    named threshold preset (see PROFILES). ``engine`` selects the classifier
+    engine ('classic' default, 'experimental' opt-in).
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -400,7 +458,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None):
 
     # Mesh-type-aware Stage 1 tuning (organic vs mechanical): resolved through
     # the shared resolve_mode_params so repair and --dry-run stay in sync.
-    _cls = classify_mesh(verts, tris)
+    _cls, stats['classifier_engine'] = classify_with_engine(verts, tris, engine)
     stats['detected_type'] = _cls['type']
     stats['detected_confidence'] = _cls['confidence']
     stats['repair_mode'] = mode
@@ -652,7 +710,7 @@ def obj_has_material_refs(path):
     return False
 
 
-def repair_file(src, out, tmpdir, mode='auto', profile=None):
+def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -665,7 +723,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None):
     verts = np.asarray(load_ms.current_mesh().vertex_matrix(), dtype=np.float32)
     tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
-    report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile)
+    report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile, engine=engine)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -727,7 +785,7 @@ def build_mesh_block(verts, tris):
     return '\n'.join(lines)
 
 
-def repair_3mf(src, out, tmpdir, mode='auto', profile=None):
+def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
     """Repair every object mesh in a 3MF archive, preserving structure."""
     meshes = parse_3mf_meshes(src)
     if not meshes:
@@ -751,7 +809,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None):
             if key in cache:
                 new_v, new_t = cache[key]
             else:
-                rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile)
+                rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile, engine=engine)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 _rc = repair_confidence(rep)
@@ -804,7 +862,7 @@ def load_meshes(src):
              np.asarray(m.face_matrix(), dtype=np.int32))]
 
 
-def validate_mesh_from_arrays(verts, tris):
+def validate_mesh_from_arrays(verts, tris, engine='classic'):
     """Analyze one mesh WITHOUT repairing it.
 
     Combines defects.detect(), the mesh classifier and cheap pymeshlab
@@ -818,7 +876,7 @@ def validate_mesh_from_arrays(verts, tris):
     if not np.isfinite(v).all():
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
-    cls = classify_mesh(verts, tris)
+    cls, classifier_engine = classify_with_engine(verts, tris, engine)
     d = detect_defects(verts, tris)
     holes = d['holes']
     nm = d['non_manifold']
@@ -854,13 +912,14 @@ def validate_mesh_from_arrays(verts, tris):
     return {'validation': validation,
             'detected_type': cls['type'],
             'detected_confidence': cls['confidence'],
+            'classifier_engine': classifier_engine,
             'stage2_bridge_available': bridge,
             'estimated_confidence': est['score'],
             'estimated_confidence_label': est['label'],
             'estimated_confidence_factors': est['factors']}
 
 
-def validate_file(src):
+def validate_file(src, engine='classic'):
     """Validate a mesh file without repairing it. Returns the report dict;
     a hard error (missing/malformed input) is a dict with an 'error' key."""
     result = {'input': src}
@@ -875,7 +934,7 @@ def validate_file(src):
             raise ValueError('no mesh objects found in 3MF')
         reports = []
         for name, vs, ts in meshes:
-            rep = validate_mesh_from_arrays(vs, ts)
+            rep = validate_mesh_from_arrays(vs, ts, engine)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -891,7 +950,7 @@ def validate_file(src):
     return result
 
 
-def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None):
+def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='classic'):
     """Report what a repair WOULD do for one mesh, without doing it.
 
     Detects the type, resolves the mode/thresholds and counts the holes /
@@ -906,7 +965,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None):
     if not np.isfinite(v).all():
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
-    cls = classify_mesh(verts, tris)
+    cls, classifier_engine = classify_with_engine(verts, tris, engine)
     d = detect_defects(verts, tris)
     holes = d['holes']
     nm = d['non_manifold']
@@ -946,6 +1005,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None):
         'repair_profile': profile,
         'detected_type': cls['type'],
         'detected_confidence': cls['confidence'],
+        'classifier_engine': classifier_engine,
         'tuning_applied': tuning,
         'would_apply': params,
         'holes_found': len(holes),
@@ -961,7 +1021,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None):
     }
 
 
-def dry_run_file(src, mode='auto', profile=None):
+def dry_run_file(src, mode='auto', profile=None, engine='classic'):
     """Dry-run one mesh file. Returns the report dict; a hard error is a
     dict with an 'error' key. Never writes any output file."""
     result = {'input': src}
@@ -976,7 +1036,7 @@ def dry_run_file(src, mode='auto', profile=None):
             raise ValueError('no mesh objects found in 3MF')
         reports = []
         for name, vs, ts in meshes:
-            rep = dry_run_mesh_from_arrays(vs, ts, mode, profile)
+            rep = dry_run_mesh_from_arrays(vs, ts, mode, profile, engine)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -1019,6 +1079,8 @@ def human_report(r, show_defects=False, show_diff=False):
     lines.append('Input : %s' % r.get('input'))
     lines.append('Output: %s' % r.get('output'))
     lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
+    if r.get('classifier_engine') is not None:
+        lines.append('Classifier: %s' % r['classifier_engine'])
     if r.get('repair_profile'):
         lines.append('Profile: %s' % r['repair_profile'])
     dt = r.get('detected_type')
@@ -1116,6 +1178,8 @@ def human_validate(r, show_defects=False):
     v = r.get('validation', {})
     lines.append('Type  : %s (confidence %.2f)' % (
         r.get('detected_type', '?'), r.get('detected_confidence', 0.0)))
+    if r.get('classifier_engine') is not None:
+        lines.append('Classifier: %s' % r['classifier_engine'])
     ec = r.get('estimated_confidence')
     if ec is not None:
         lines.append('Estimated confidence: %d/100 (%s) — actual result may differ after repair'
@@ -1163,6 +1227,8 @@ def human_dry_run(r):
     lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
     lines.append('Type  : %s (confidence %.2f)' % (
         r.get('detected_type', '?'), r.get('detected_confidence', 0.0)))
+    if r.get('classifier_engine') is not None:
+        lines.append('Classifier: %s' % r['classifier_engine'])
     pa = r.get('would_apply', {})
     tuning = 'tuned thresholds' if r.get('tuning_applied') else 'default thresholds'
     lines.append('Tuning: %s' % tuning)
@@ -1184,7 +1250,8 @@ def human_dry_run(r):
     return '\n'.join(lines)
 
 
-def process_file(src, human, mode='auto', profile=None, no_history=False, out=None):
+def process_file(src, human, mode='auto', profile=None, no_history=False,
+                 out=None, engine='classic'):
     """Repair one file. Returns (result_dict, category)."""
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -1198,9 +1265,9 @@ def process_file(src, human, mode='auto', profile=None, no_history=False, out=No
     t0 = time.perf_counter()
     try:
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
-            result.update(repair_3mf(src, out, tmpdir, mode=mode, profile=profile))
+            result.update(repair_3mf(src, out, tmpdir, mode=mode, profile=profile, engine=engine))
         else:
-            result.update(repair_file(src, out, tmpdir, mode=mode, profile=profile))
+            result.update(repair_file(src, out, tmpdir, mode=mode, profile=profile, engine=engine))
     except ExtremeRemovedAllError as e:
         result['error'] = str(e)
         result['extreme_removed_object'] = True
@@ -1255,6 +1322,12 @@ def main():
                         help='repair mode: low/medium/aggressive/extreme use '
                              'fixed Stage 1 thresholds; auto (default) uses '
                              'the mesh classifier + confidence gate.')
+    parser.add_argument('--classifier-engine', choices=CLASSIFIER_ENGINES,
+                        default=None,
+                        help='mesh classifier engine: classic (default) is the '
+                             'shipped heuristic; experimental (opt-in) adds '
+                             'RANSAC plane features + a small trained head. '
+                             'Also selectable via SUTURA_CLASSIFIER_ENGINE.')
     parser.add_argument('--profile', choices=REPAIR_PROFILES, default=None,
                         help='named Stage 1 threshold preset: mechanical, '
                              'organic, scan, miniature or fast. Only effective '
@@ -1281,6 +1354,7 @@ def main():
     show_diff = args.diff
     mode = args.mode
     dry_run = args.dry_run
+    engine = resolve_classifier_engine(args.classifier_engine)
 
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
@@ -1312,7 +1386,7 @@ def main():
         if dry_run:
             print(json.dumps({'error': '--dry-run is not valid with validate'}))
             sys.exit(1)
-        results = [validate_file(f) for f in targets]
+        results = [validate_file(f, engine) for f in targets]
         nerr = sum(1 for r in results if 'error' in r)
         if len(targets) == 1:
             result = results[0]
@@ -1334,7 +1408,7 @@ def main():
         if out is not None:
             print(json.dumps({'error': '-o is not valid with --dry-run'}))
             sys.exit(1)
-        results = [dry_run_file(f, mode=mode, profile=args.profile) for f in files]
+        results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine) for f in files]
         nerr = sum(1 for r in results if 'error' in r)
         if len(files) == 1:
             result = results[0]
@@ -1352,8 +1426,8 @@ def main():
         sys.exit(0 if nerr == 0 else 1)
 
     results = [process_file(f, human, mode=mode, profile=args.profile,
-                            no_history=args.no_history,
-                           out=out) for f in files]
+                            no_history=args.no_history, engine=engine,
+                            out=out) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

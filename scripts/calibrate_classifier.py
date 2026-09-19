@@ -11,10 +11,17 @@ set from ``tests/make_classifier_set.py`` and reports:
 
 Usage (needs the venv, trimesh is used to build the set):
     ~/.local/share/sutura/venv/bin/python scripts/calibrate_classifier.py
+    ~/.local/share/sutura/venv/bin/python scripts/calibrate_classifier.py --engine experimental
+
+The default engine is ``classic`` (the shipped mesh_classifier). ``--engine
+experimental`` runs the opt-in mesh_classifier_v2 (RANSAC + trained head) so
+both engines can be compared on the same synthetic set. The classic mode must
+stay at ~100% -- that is the no-regression gate for the v2 experiment.
 
 No files are written and the classifier itself is never modified -- this is a
 read-only measurement tool for baseline and post-change comparison.
 """
+import argparse
 import os
 import sys
 
@@ -27,11 +34,18 @@ for p in (SUTURA, TESTS):
 
 import numpy as np  # noqa: E402
 
-from mesh_classifier import classify_mesh  # noqa: E402
+import mesh_classifier as classic  # noqa: E402
 from make_classifier_set import iter_meshes  # noqa: E402
 from repair import MECH_TUNE_GATE, ORG_TUNE_GATE  # noqa: E402
 
 CLASSES = ('mechanical', 'organic')
+
+
+def _get_engine(name):
+    if name == 'experimental':
+        import mesh_classifier_v2 as eng  # noqa: E402
+        return eng
+    return classic
 
 
 def tuning_applied(pred, conf):
@@ -52,9 +66,15 @@ def _conf_summary(confs):
 
 
 def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--engine', choices=('classic', 'experimental'),
+                    default='classic')
+    args = ap.parse_args()
+    engine = _get_engine(args.engine)
+
     rows = []
     for m in iter_meshes():
-        r = classify_mesh(m['verts'], m['tris'])
+        r = engine.classify_mesh(m['verts'], m['tris'])
         rows.append({
             'name': m['name'],
             'truth': m['label'],
@@ -67,7 +87,8 @@ def main():
         })
 
     total = len(rows)
-    print('=== mesh classifier calibration (n=%d meshes) ===' % total)
+    print('=== mesh classifier calibration (n=%d meshes, engine=%s) ===' % (
+        total, args.engine))
     print()
 
     # --- per-class precision / recall -------------------------------------
