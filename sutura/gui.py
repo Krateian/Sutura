@@ -125,6 +125,10 @@ STRINGS = {
         'type_default': ' — default thresholds (confidence below gate)',
         'confidence_high': 'High', 'confidence_medium': 'Medium', 'confidence_low': 'Low',
         'confidence_score': 'Confidence: %d/100 — %s',
+        'status_safe': 'Safe to inspect', 'status_review': 'Review recommended',
+        'status_caution': 'Caution advised', 'status_failed': 'Failed / inspect',
+        'status_unavailable': 'Scoring unavailable',
+        'health_risk_line': 'Health: %s/100 · Risk: %s/100 · %s',
         'diff_line': 'Volume: %s%% \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Show heatmap',
         'heatmap_rendering': 'Rendering heatmap…',
@@ -281,6 +285,10 @@ STRINGS = {
         'type_default': ' — varsayılan eşikler (güven eşiğinin altında)',
         'confidence_high': 'Yüksek', 'confidence_medium': 'Orta', 'confidence_low': 'Düşük',
         'confidence_score': 'Güven: %d/100 — %s',
+        'status_safe': 'Kontrol için güvenli', 'status_review': 'İnceleme önerilir',
+        'status_caution': 'Dikkatli olunmalı', 'status_failed': 'Başarısız / incele',
+        'status_unavailable': 'Skorlama kullanılamıyor',
+        'health_risk_line': 'Sağlık: %s/100 · Risk: %s/100 · %s',
         'diff_line': 'Hacim: %s%% \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Isı haritası göster',
         'heatmap_rendering': 'Isı haritası çiziliyor…',
@@ -1296,6 +1304,7 @@ class MainWindow(QMainWindow):
         self.license_tag = None
         self._defects_by_path = {}
         self._type_by_path = {}
+        self._score_by_path = {}
         self._diff_by_path = {}
         self._output_by_path = {}
         self._analysis_by_path = {}   # path -> analyze worker result dict
@@ -1775,6 +1784,7 @@ class MainWindow(QMainWindow):
         self._batch_results = []
         self._defects_by_path = {}
         self._type_by_path = {}
+        self._score_by_path = {}
         self._diff_by_path = {}
         self.defects.clear()
         self.defect_label.setText(_t('defects_header'))
@@ -1908,6 +1918,10 @@ class MainWindow(QMainWindow):
                                         data.get('tuning_applied'),
                                         data.get('repair_confidence'),
                                         data.get('repair_confidence_label'))
+            self._score_by_path[path] = (data.get('repair_health'),
+                                         data.get('repair_risk'),
+                                         data.get('repair_status'),
+                                         data.get('repair_status_code'))
             self._diff_by_path[path] = data.get('stage1', {})
             self._output_by_path[path] = data.get('output')
             if self._item_by_path.get(path) is self.tree.currentItem():
@@ -1954,6 +1968,14 @@ class MainWindow(QMainWindow):
             if rc is not None:
                 base += ' — ' + _t('confidence_score', rc,
                                    _t('confidence_' + (dt[4] or 'medium')))
+        # Repair Health / Risk / Status (separate from classic confidence;
+        # localized via the status_code, like the issue_* codes)
+        sc = self._score_by_path.get(path)
+        if sc is not None and (sc[0] is not None or sc[1] is not None):
+            base += ' — ' + _t('health_risk_line',
+                               'n/a' if sc[0] is None else sc[0],
+                               'n/a' if sc[1] is None else sc[1],
+                               _t('status_' + (sc[3] or 'unavailable')))
         self.defect_label.setText(base)
         lines = []
         # before/after geometry diff summary (from stage1)

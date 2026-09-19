@@ -28,6 +28,7 @@ from classification import classify, issue_label
 from confidence import (estimate_confidence_pre_repair, repair_confidence)
 from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
+import repair_score
 import history
 
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
@@ -482,6 +483,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     before_area = surface_area(v, t)
     before_verts = before.get('vertices_number', 0)
     before_faces = before.get('faces_number', 0)
+    components_before = before.get('connected_components_number', 0)
     holes_before = boundary_loop_stats(v, t)[0]
     nm_before = before.get('non_two_manifold_edges', 0)
 
@@ -581,11 +583,29 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         'two_manifold': bool(fin.get('is_mesh_two_manifold')),
         'holes_remaining': boundary_loop_stats(new_verts, new_tris)[0],
         'components': fin.get('connected_components_number'),
+        'components_before': int(components_before),
         'vertices_before': int(before_verts),
         'vertices_after': int(after_verts),
         'faces_before': int(before_faces),
         'faces_after': int(after_faces),
     })
+
+    # Self-intersection count on the FINAL stage-1 output (repair_score.py's
+    # health metric). We reuse the existing `ms` MeshSet: ms.current_mesh()
+    # IS the repaired mesh right now (new_verts/new_tris were pulled from it
+    # above), so building a fresh MeshSet and reloading arrays would be wasted
+    # work on large meshes. The filter only sets the face-selection array and
+    # does not alter geometry, so this cannot disturb anything downstream.
+    #
+    # Assumption (documented, not silent): stage 2 (manifold3d) only runs on a
+    # watertight closed mesh and REBUILDS the watertight solid, so its output
+    # is assumed free of self-intersections by construction -- therefore stage
+    # 2's output is NOT re-measured here. When stage 2 runs and writes the
+    # final mesh, this value is a conservative stage-1-based upper bound on
+    # the health signal, which is fine for scoring.
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    stats['stage1']['self_intersections_remaining'] = int(
+        ms.current_mesh().face_selection_array().sum())
     return stats, new_verts, new_tris
 
 
@@ -816,6 +836,13 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
                 rep['repair_confidence'] = _rc['score']
                 rep['repair_confidence_label'] = _rc['label']
                 rep['repair_confidence_factors'] = _rc['factors']
+                _rs = repair_score.compute_scores(rep)
+                rep['repair_health'] = _rs['health']
+                rep['repair_health_factors'] = _rs['health_factors']
+                rep['repair_risk'] = _rs['risk']
+                rep['repair_risk_factors'] = _rs['risk_factors']
+                rep['repair_status'] = _rs['status']
+                rep['repair_status_code'] = _rs['status_code']
                 reports.append(rep)
                 cache[key] = (new_v, new_t)
 
@@ -1095,6 +1122,13 @@ def human_report(r, show_defects=False, show_diff=False):
     if rc is not None:
         lines.append('Confidence: %d/100 (%s)'
                      % (rc, str(r.get('repair_confidence_label', '?')).title()))
+    rh = r.get('repair_health')
+    rk = r.get('repair_risk')
+    if rh is not None or rk is not None:
+        lines.append('Health: %s/100   Risk: %s/100   Status: %s' % (
+            'n/a' if rh is None else rh,
+            'n/a' if rk is None else rk,
+            r.get('repair_status', 'n/a')))
     if r.get('material_discarded'):
         lines.append('Material: input OBJ has mtllib/usemtl references which '
                      'are not preserved in the repaired output.')
@@ -1289,6 +1323,21 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         result['repair_confidence'] = _rc['score']
         result['repair_confidence_label'] = _rc['label']
         result['repair_confidence_factors'] = _rc['factors']
+
+        # Repair Health / Repair Risk (separate from the classic confidence).
+        # Fail-silent: repair_score.compute_scores never raises (it returns
+        # None scores + 'unavailable' on any problem), and this outer guard
+        # makes sure scoring can never break a repair.
+        try:
+            _rs = repair_score.compute_scores(result)
+            result['repair_health'] = _rs['health']
+            result['repair_health_factors'] = _rs['health_factors']
+            result['repair_risk'] = _rs['risk']
+            result['repair_risk_factors'] = _rs['risk_factors']
+            result['repair_status'] = _rs['status']
+            result['repair_status_code'] = _rs['status_code']
+        except Exception:
+            pass
 
     # Transient geometry fingerprints are always consumed so they never leak
     # into the JSON stdout report; written to the anonymous history only when

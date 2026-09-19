@@ -2,6 +2,54 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Repair Health / Repair Risk scoring (`sutura/repair_score.py`).** A new,
+  additive scoring system independent of the classic confidence score.
+  `repair_health` (0–100) measures final-mesh soundness (watertight + no
+  non-manifold edges + no self-intersections + no remaining holes) and
+  `repair_risk` (0–100) measures how much the repair altered the mesh
+  (face/vertex/component/volume deltas). A two-axis status label
+  (`safe` / `review` / `caution` / `failed` / `unavailable`) is derived from
+  the Health/Risk tier combination via a config lookup table, so the two axes
+  never collapse to a single threshold. Weights and thresholds live in
+  `sutura/repair_score_config.json` (shipped; optional user override via the
+  same mechanism as `updater.py`'s config). Scoring is fail-silent — any
+  missing/invalid metric is skipped (weight redistributed) and scoring never
+  breaks a repair. Reported as `repair_health` / `repair_risk` /
+  `repair_status` (+ `*_factors`) in JSON, a `Health:/Risk:/Status:` line in
+  `--human`, and localized (EN/TR) in the GUI defect-panel header. Volume
+  delta reuses the existing stage-1 `volume_change_percent` (no new
+  computation); `components_before` and final self-intersection count were
+  added to the stage-1 report. Self-intersections are measured on the stage-1
+  output by reusing the existing `ms` MeshSet (no reload); stage-2 output is
+  assumed self-intersection-free by construction (documented in code).
+  Regression-tested (`tests/test_repair_score.py`); the module is shipped by
+  `install.sh`, `install-macos.sh`, `scripts/build_appimage.sh` and the
+  self-update path (`updater.py`).
+- **macOS Finder Quick Action (Dolphin ServiceMenu eşdeğeri).**
+  `install-macos.sh` now installs a **"Sutura — Repair"** Quick Action
+  (`~/Library/Services/Sutura Quick Action.workflow`) that appears under
+  Finder's right-click → *Quick Actions* for selected STL/3MF files. It calls
+  the **bundled `sutura-cli`** inside a PyInstaller `Sutura.app` (found in
+  `/Applications` or `~/Applications`), so it works independently of the conda
+  dev environment. Feedback is a native macOS notification (no windows): a
+  single file shows `Health: X/100  Risk: Y/100  Status: <label>` (the
+  Repair-Health/Risk fields above), a batch shows one summary
+  (`N/M repaired, K failed — see log`). Per-run logs go to
+  `~/Library/Logs/Sutura/sutura-<timestamp>.log`. Non-STL/3MF files are
+  skipped and reported. A Gatekeeper guard checks `com.apple.quarantine` on
+  the `.app` bundle root and the binary; if present it tells the user to
+  right-click → Open `Sutura.app` once first (it never strips the attribute
+  itself). The workflow is registered with `pbs -update` — `lsregister`
+  refuses workflow bundles (`kLSNotAnApplicationErr`). Idempotent (re-runs
+  re-copy the workflow and rescan). Note: there is still **no macOS
+  uninstall script** (the Linux `uninstall.sh` covers only KDE/Linux); the
+  README documents the manual removal steps, including
+  `~/Library/Services/Sutura Quick Action.workflow`.
+
 ## [0.2.5] - 2026-09-19
 
 ### Added

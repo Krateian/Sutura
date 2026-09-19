@@ -81,12 +81,12 @@ QT_PLUGIN_PATH="$(conda run -n "$ENV_NAME" python -c \
 
 # 7) copy the application files --------------------------------------------
 mkdir -p "$APP_DIR" "$BIN_DIR"
-for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py __init__.py; do
+for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py repair_score_config.json __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/$f"
 done
 # the importable package layout (for 'from sutura import ...' and __init__)
 mkdir -p "$APP_DIR/sutura"
-for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py __init__.py; do
+for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py repair_score_config.json __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/sutura/$f"
 done
 install -m 0644 "$REPO_DIR/LICENSE" "$APP_DIR/LICENSE"
@@ -144,6 +144,25 @@ EOF
 # refresh the Launch Services + Spotlight index so the app is findable
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" 2>/dev/null || true
 mdimport "$APP" 2>/dev/null || true
+
+# 9c) Finder Quick Action (Dolphin ServiceMenu eşdeğeri) --------------------
+# A Finder right-click integration equivalent to the KDE Dolphin ServiceMenu:
+# an Automator .workflow installed into ~/Library/Services that appears under
+# Finder's "Quick Actions" and calls the BUNDLED sutura-cli inside a
+# PyInstaller Sutura.app (independent of this conda dev environment). The
+# helper script lives in $APP_DIR (like open.sh) so it can be updated without
+# re-installing the workflow; the workflow only points at it. Idempotent:
+# re-running removes and re-copies the workflow and refreshes LaunchServices.
+install -m 0755 "$REPO_DIR/share/macos-quick-action.sh" "$APP_DIR/macos-quick-action.sh"
+SERVICES_DIR="$HOME/Library/Services"
+mkdir -p "$SERVICES_DIR"
+rm -rf "$SERVICES_DIR/Sutura Quick Action.workflow"
+cp -R "$REPO_DIR/share/Sutura Quick Action.workflow" "$SERVICES_DIR/"
+# Automator workflow bundles are NOT applications: lsregister refuses them
+# (kLSNotAnApplicationErr, -10811) and registers nothing. The Services menu
+# is owned by the pbs agent; pbs -update rescans changed Services and applies
+# them immediately to all running apps. Idempotent (re-running just rescans).
+/System/Library/CoreServices/pbs -update 2>/dev/null || true
 
 # 10) summary ---------------------------------------------------------------
 echo

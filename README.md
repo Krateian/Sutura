@@ -89,7 +89,8 @@ Sutura and where you should still double-check the output.
 | Repair profiles (`--profile`) | ~70% (new) | Five named Stage 1 threshold presets (`mechanical`/`organic`/`scan`/`miniature`/`fast`), opt-in via CLI or a batch-wide GUI dropdown; only effective while the mode is `auto` (an explicit fixed mode wins). Default (no profile) is byte-identical to before. Caveat: `miniature` lowers `mincomponentsize` to 1 (a deliberate opt-in that preserves tiny parts; the default path keeps it `>= 8`). |
 | Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). The default (classic) engine is unchanged. An opt-in **experimental** engine (`--classifier-engine experimental` / `SUTURA_CLASSIFIER_ENGINE=experimental`, `sutura/mesh_classifier_v2.py`) adds RANSAC plane segmentation + a small trained head that fixes the documented scanner bias on the real-world corpus (mechanical recall 2/7 → 6/7, no organic regression) — experimental on ~40 labeled meshes, with automatic fallback to classic on exceptions/invalid results. Experimental: the per-type values are still estimated starting points, curved-but-mechanical parts (cylinders, fillets) are not classified at all, and the classic engine still reads scanned mechanical parts (screws, gears, crankshafts) as **organic** — treat the detected type on scan-derived input with caution. |
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
-| Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow) and macOS installs get a native `~/Applications/Sutura.app` so the GUI launches from Spotlight (Cmd+Space → "Sutura"). Gaps: macOS has no Finder integration, the AppImage/GUI cannot self-update in place (read-only squashfs), and the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning). |
+| Repair Health / Risk | ~60% (new) | A separate, additive scoring system on top of the classic confidence: `repair_health` (0–100, final-mesh soundness: watertight + no non-manifold/self-intersections/holes) and `repair_risk` (0–100, how much the repair altered the mesh: face/vertex/component/volume deltas), plus a two-axis status label (`safe`/`review`/`caution`/`failed`/`unavailable`) derived from a config lookup table. Weights/thresholds live in `sutura/repair_score_config.json`, not code; fail-silent (never breaks a repair); regression-tested (`tests/test_repair_score.py`). Experimental: the weight values and tier boundaries are starting points. |
+| Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow) and macOS installs get a native `~/Applications/Sutura.app` so the GUI launches from Spotlight (Cmd+Space → "Sutura"), plus a Finder **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) for right-click repair. Gaps: the AppImage/GUI cannot self-update in place (read-only squashfs), the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning), and macOS has no standalone uninstall script (see "Removing a macOS install" below). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
@@ -228,6 +229,30 @@ It also creates a native **`~/Applications/Sutura.app`** so you can launch the
 GUI straight from **Spotlight** (press `Cmd+Space`, type *Sutura*, Enter) —
 no terminal needed. It is macOS-only and re-runnable.
 
+The installer also adds a Finder **Quick Action** ("Sutura — Repair"): select
+one or more STL/3MF files in Finder, right-click → *Quick Actions* → *Sutura —
+Repair*. Each file is repaired with the bundled CLI and a native macOS
+notification reports the result — a single file shows `Health: X/100  Risk:
+Y/100  Status: <label>`, a batch shows one summary (`N/M repaired, K failed —
+see log`). The log for each run is written to
+`~/Library/Logs/Sutura/sutura-<timestamp>.log`. Non-STL/3MF files are skipped
+and reported. The Quick Action locates a PyInstaller `Sutura.app` in
+`/Applications` or `~/Applications`; if it is a downloaded (quarantined) copy,
+the notification tells you to right-click → Open `Sutura.app` once first.
+Because the Quick Action calls the bundled `sutura-cli`, it does not need this
+conda environment to be installed.
+
+**Removing a macOS install (manual):** there is no macOS uninstall script —
+the Linux `uninstall.sh` only covers the KDE/Linux artifacts. To remove a macOS
+installation manually, delete:
+- `~/Applications/Sutura.app` (the Spotlight wrapper) and/or the `.app` in
+  `/Applications`
+- `~/.local/share/sutura/` (app files, including `macos-quick-action.sh`)
+- `~/.local/bin/sutura` and `~/.local/bin/sutura-gui`
+- `~/Library/Services/Sutura Quick Action.workflow` (the Finder Quick Action)
+- `~/Library/Logs/Sutura/` (repair logs)
+- optionally the `sutura-env` conda environment (`conda env remove -n sutura-env`)
+
 Note: conda can be initialized non-interactively; if the script asks you to
 restart the terminal for `conda init` to take effect, do so and re-run it.
 
@@ -349,6 +374,29 @@ as a `Confidence: X/100 (Label)` line. The read-only modes report an estimate
 instead, because the post-repair signals are not known yet: validate and
 `--dry-run` carry `estimated_confidence` and print
 `Estimated confidence: X/100 (Label) — actual result may differ after repair`.
+
+Every repair report also carries **Repair Health / Repair Risk** — a separate
+scoring system (independent of the classic confidence score, configurable via
+`sutura/repair_score_config.json`):
+- `repair_health` (0–100) — how geometrically sound the final mesh is: a
+  weighted sum of watertight (stage 2 confirmed), no non-manifold edges, no
+  self-intersections, no remaining holes.
+- `repair_risk` (0–100) — how much the repair altered the mesh: face/vertex
+  delta %, component changes, and volume delta %.
+- `repair_status` / `repair_status_code` — a two-axis label derived from the
+  Health/Risk tier combination via a config lookup table: `safe` ("Safe to
+  inspect"), `review` ("Review recommended"), `caution` ("Caution advised"),
+  `failed` ("Failed / inspect"), or `unavailable`. Health and Risk are
+  independent axes, so a high-health + low-risk repair (`safe`) never
+  collapses to the same status as a mid-health + high-risk one (`caution`).
+  The per-factor contributions are also reported
+  (`repair_health_factors` / `repair_risk_factors`).
+
+`--human` shows them as `Health: X/100   Risk: Y/100   Status: <label>`.
+Scoring is fail-silent: any missing/invalid metric is skipped (its weight
+redistributed), and scoring never breaks a repair. Multi-object 3MF reports
+carry these per object. The GUI defect panel shows them in the selected
+file's header line.
 
 With multiple files, every input is repaired in turn and a summary is
 printed (`N watertight, M with warnings, K failed`), including a breakdown of

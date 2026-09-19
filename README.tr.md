@@ -91,7 +91,8 @@ söyler.
 | Onarım profilleri (`--profile`) | ~%70 (yeni) | Beş adlandırılmış Aşama 1 eşik preseti (`mechanical`/`organic`/`scan`/`miniature`/`fast`), CLI veya batch geneli GUI açılır listesiyle devreye girer; yalnızca mod `auto` iken etkilidir (açık sabit mod kazanır). Varsayılan (profil yok) eskisiyle bayt-birebir aynıdır. Uyarı: `miniature` `mincomponentsize`'ı 1'e indirir (bilinçli bir opt-in; varsayılan yol `>= 8` tutar). |
 | Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Varsayılan (classic) motor değişmedi. Opt-in bir **experimental** motor (`--classifier-engine experimental` / `SUTURA_CLASSIFIER_ENGINE=experimental`, `sutura/mesh_classifier_v2.py`) RANSAC düzlem segmentasyonu + küçük bir eğitilmiş başlık ekler ve belgelenmiş tarayıcı yanlılığını gerçek dünya korpusunda düzeltir (mekanik isabet 2/7 → 6/7, organik gerilemesi yok) — ~40 etiketli mesh üzerinde deneysel, istisna/geçersiz sonuçta classic'e otomatik geri dönüşlü. Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır, eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz ve classic motor taranmış mekanik parçaları (vida, dişli, krank mili) hâlâ **organik** okur — tarama kaynaklı girdide tespit edilen türü temkinli yorumlayın. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
-| Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar; her sürümde ayrıca imzasız bir macOS `.dmg` de yayınlanır (`Build macOS .app/.dmg` workflow'u) ve macOS kurulumları yerel bir `~/Applications/Sutura.app` alır — GUI Spotlight'tan açılır (Cmd+Space → "Sutura"). Eksikler: macOS'ta Finder entegrasyonu yoktur, AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur) ve .dmg notarize edilmemiştir (Gatekeeper "unidentified developer" uyarısı gösterir). |
+| Onarım Sağlığı / Riski | ~%60 (yeni) | Klasik güvenin üzerine ayrı, eklemeli bir skorlama sistemi: `repair_health` (0–100, final mesh sağlamlığı: su geçirmez + non-manifold/self-intersection/delik yok) ve `repair_risk` (0–100, onarımın mesh'i ne kadar değiştirdiği: yüz/vertex/bileşen/hacim deltaları), ayrıca bir config lookup tablosundan türetilen iki-eksenli status etiketi (`safe`/`review`/`caution`/`failed`/`unavailable`). Ağırlıklar/eşikler kodda değil `sutura/repair_score_config.json`'da; fail-silent (onarımı asla bozmaz); regression testiyle doğrulanır (`tests/test_repair_score.py`). Deneysel: ağırlık değerleri ve tier sınırları başlangıç noktalarıdır. |
+| Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar; her sürümde ayrıca imzasız bir macOS `.dmg` de yayınlanır (`Build macOS .app/.dmg` workflow'u) ve macOS kurulumları yerel bir `~/Applications/Sutura.app` alır — GUI Spotlight'tan açılır (Cmd+Space → "Sutura"), ayrıca Finder'da bir **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) sağ tıkla onarım için. Eksikler: AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur), .dmg notarize edilmemiştir (Gatekeeper "unidentified developer" uyarısı gösterir) ve macOS için ayrı bir kaldırma betiği yoktur (aşağıdaki "macOS kurulumunu kaldırma" bölümüne bakın). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%35 — deneysel | Tek başına çalışan betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ sürümlerinde bulunan bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux içindir. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
@@ -232,6 +233,29 @@ oluşturur. Ayrıca yerel bir **`~/Applications/Sutura.app`** oluşturur — GUI
 doğrudan **Spotlight**'tan açabilirsiniz (`Cmd+Space`, *Sutura* yazın, Enter)
 — terminal gerekmez. Yalnızca macOS içindir ve yeniden çalıştırılabilir.
 
+Kurulumcu ayrıca Finder'a bir **Quick Action** ("Sutura — Repair") ekler:
+Finder'da bir veya daha fazla STL/3MF dosyası seçin, sağ tık → *Quick Actions*
+→ *Sutura — Repair*. Her dosya paketlenmiş CLI ile onarılır ve sonuç yerel bir
+macOS bildirimiyle raporlanır — tek dosyada `Health: X/100  Risk: Y/100
+Status: <label>`, çoklu dosyada tek özet (`N/M onarıldı, K başarısız — log: ...`).
+Her çalıştırmanın log'u `~/Library/Logs/Sutura/sutura-<timestamp>.log`'a
+yazılır. STL/3MF olmayan dosyalar atlanır ve bildirilir. Quick Action,
+`/Applications` veya `~/Applications` içinde bir PyInstaller `Sutura.app`
+arar; indirilmiş (karantinalı) bir kopyaysa bildirim, önce `Sutura.app`'e sağ
+tık → Aç demenizi söyler. Quick Action paketlenmiş `sutura-cli`'yi çağırdığı
+için bu conda ortamının kurulu olması gerekmez.
+
+**macOS kurulumunu kaldırma (elle):** macOS için ayrı bir kaldırma betiği
+yoktur — Linux `uninstall.sh` yalnızca KDE/Linux artıklarını kapsar. macOS
+kurulumunu elle kaldırmak için şunları silin:
+- `~/Applications/Sutura.app` (Spotlight sarmalayıcısı) ve/veya `/Applications`
+  içindeki `.app`
+- `~/.local/share/sutura/` (uygulama dosyaları, `macos-quick-action.sh` dahil)
+- `~/.local/bin/sutura` ve `~/.local/bin/sutura-gui`
+- `~/Library/Services/Sutura Quick Action.workflow` (Finder Quick Action'ı)
+- `~/Library/Logs/Sutura/` (onarım logları)
+- isteğe bağlı: `sutura-env` conda ortamı (`conda env remove -n sutura-env`)
+
 Not: conda etkileşimsiz başlatılabilir; betik `conda init` için terminali
 yeniden başlatmanızı isterse öyle yapın ve betiği yeniden çalıştırın.
 
@@ -352,6 +376,29 @@ yerine bir tahmin bildirir (onarım sonrası sinyaller henüz bilinmediği için
 validate ve `--dry-run` `estimated_confidence` taşır ve
 `Estimated confidence: X/100 (Label) — actual result may differ after repair`
 yazdırır.
+
+Her onarım raporu ayrıca **Onarım Sağlığı / Onarım Riski** taşır — klasik güven
+skorundan bağımsız, ayrı bir skorlama sistemi (`sutura/repair_score_config.json`
+ile yapılandırılabilir):
+- `repair_health` (0–100) — final mesh'in geometrik sağlamlığı: su geçirmezlik
+  (aşama 2 doğruladı), non-manifold kenar yok, self-intersection yok, kalan
+  delik yok faktörlerinin ağırlıklı toplamı.
+- `repair_risk` (0–100) — onarımın mesh'i ne kadar değiştirdiği: yüz/vertex
+  delta %, bileşen değişimi ve hacim delta %.
+- `repair_status` / `repair_status_code` — Sağlık/Risk tier kombinasyonundan
+  bir config lookup tablosuyla türetilen iki-eksenli etiket: `safe`
+  ("Kontrol için güvenli"), `review` ("İnceleme önerilir"), `caution`
+  ("Dikkatli olunmalı"), `failed` ("Başarısız / incele") veya `unavailable`.
+  Sağlık ve Risk bağımsız eksenlerdir; yüksek-sağlık + düşük-risk (`safe`) bir
+  onarım, orta-sağlık + yüksek-risk (`caution`) ile asla aynı statüye
+  çökmez. Faktör başına katkılar da raporlanır
+  (`repair_health_factors` / `repair_risk_factors`).
+
+`--human` bunları `Health: X/100   Risk: Y/100   Status: <label>` olarak
+gösterir. Skorlama fail-silent'tir: eksik/geçersiz metrik atlanır (ağırlığı
+diğerlerine dağıtılır) ve skorlama onarımı asla bozmaz. Çok nesneli 3MF
+raporları bunları nesne başına taşır. GUI kusur paneli seçili dosyanın başlık
+satırında gösterir.
 
 Birden çok dosyada her girdi sırayla onarılır ve bir özet yazdırılır (`N
 su geçirmez, M uyarılı, K başarısız`), oluşan uyarı/hata türlerinin dökümüyle

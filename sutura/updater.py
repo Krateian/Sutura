@@ -310,11 +310,14 @@ def _copy_python_files(src_dir):
               'confidence.py', 'defects.py', 'mesh_classifier.py', 'updater.py',
               'gui.py', 'heatmap.py', 'heatmap_render.py',
               'before_after_render.py', 'viewer_common.py',
-              'viewer_data_render.py', '__init__.py'):
+              'viewer_data_render.py', 'repair_score.py', '__init__.py'):
         shutil.copy2(os.path.join(src_dir, 'sutura', f), os.path.join(APP_DIR, f))
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):
         shutil.copy2(_license, os.path.join(APP_DIR, 'LICENSE'))
+    _score_cfg = os.path.join(src_dir, 'sutura', 'repair_score_config.json')
+    if os.path.exists(_score_cfg):
+        shutil.copy2(_score_cfg, os.path.join(APP_DIR, 'repair_score_config.json'))
 
 
 def _install_linux(src_dir, req_files):
@@ -324,11 +327,14 @@ def _install_linux(src_dir, req_files):
               'confidence.py', 'defects.py', 'mesh_classifier.py', 'updater.py',
               'gui.py', 'heatmap.py', 'heatmap_render.py',
               'before_after_render.py', 'viewer_common.py',
-              'viewer_data_render.py', '__init__.py', 'open.sh'):
+              'viewer_data_render.py', 'repair_score.py', '__init__.py', 'open.sh'):
         shutil.copy2(os.path.join(sutura_src, f), os.path.join(APP_DIR, f))
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):
         shutil.copy2(_license, os.path.join(APP_DIR, 'LICENSE'))
+    _score_cfg = os.path.join(sutura_src, 'repair_score_config.json')
+    if os.path.exists(_score_cfg):
+        shutil.copy2(_score_cfg, os.path.join(APP_DIR, 'repair_score_config.json'))
     for f in ('install.sh', 'uninstall.sh'):
         src = os.path.join(src_dir, f)
         if os.path.exists(src):

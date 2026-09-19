@@ -1,0 +1,36 @@
+{
+  "health": {
+    "weights": {
+      "watertight": 39,
+      "no_non_manifold": 22,
+      "no_self_intersections": 22,
+      "no_holes": 17
+    }
+  },
+  "risk": {
+    "weights": {
+      "face_delta": 30,
+      "vertex_delta": 20,
+      "component_change": 25,
+      "volume_delta": 25
+    },
+    "delta_scale_percent": 25,
+    "component_loss_penalty": 30
+  },
+  "status": {
+    "health_tiers": { "high": 80, "mid": 60 },
+    "risk_tiers": { "high": 70, "mid": 40 },
+    "labels": {
+      "safe": "Safe to inspect",
+      "review": "Review recommended",
+      "caution": "Caution advised",
+      "failed": "Failed / inspect",
+      "unavailable": "Scoring unavailable"
+    },
+    "table": {
+      "high_low": "safe", "high_mid": "review", "high_high": "review",
+      "mid_low": "review", "mid_mid": "review", "mid_high": "caution",
+      "low_low": "failed", "low_mid": "failed", "low_high": "failed"
+    }
+  }
+}
