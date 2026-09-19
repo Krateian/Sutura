@@ -89,7 +89,7 @@ söyler.
 | Dry-run (`--dry-run`) | ~%50 (beta) | 0.1.8-beta.1'de yeni: yapılacak planı bildirir (tespit edilen tür, mod, Aşama 1 eşikleri, bulunan delik / döküntü / self-intersection, aşama 2 uygunluğu) ve hiçbir şey yazmaz. Beta kalitesi: plan girdi analizinden türetilir, bu yüzden tam delik kapatma sayıları gerçek bir çalışmayla birebir uyuşacağının garantisi değildir ve extreme modun ek geçişleri simüle edilmez. `tests/test_validate.py` tarafından kapsanır (validate ve dry-run aynı süiti paylaşır). |
 | Onarım modları (`--mode` merdiveni) | ~%80 | Aşama 1 eşikleri için beş kademeli agresiflik merdiveni (`low`/`medium`/`auto`/`aggressive`/`extreme`); hem CLI bayrağı hem batch geneli GUI seçici olarak sunulur; `auto`, tarihsel sınıflandırıcı + güven eşiği davranışını birebir korur ve regression testiyle doğrulanır (`tests/test_repair_mode.py`). Mod, taban `maxholesize`'ı belirler ve bu değer daha sonra mesh-duyarlı şekilde yukarı çekilir (`max(taban, 2 × en uzun girdi loop'u)`, asla düşürülmez) böylece büyük tarama delikleri her modda kapanır. Uyarılar: `extreme` küçük bir nesneyi silebilir (bu, bozuk girdi değil, ayrı `extreme_removed_object` hatası olarak raporlanır) ve tür başına ayarlı eşik değerleri deneyseldir. |
 | Onarım profilleri (`--profile`) | ~%70 (yeni) | Beş adlandırılmış Aşama 1 eşik preseti (`mechanical`/`organic`/`scan`/`miniature`/`fast`), CLI veya batch geneli GUI açılır listesiyle devreye girer; yalnızca mod `auto` iken etkilidir (açık sabit mod kazanır). Varsayılan (profil yok) eskisiyle bayt-birebir aynıdır. Uyarı: `miniature` `mincomponentsize`'ı 1'e indirir (bilinçli bir opt-in; varsayılan yol `>= 8` tutar). |
-| Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Varsayılan (classic) motor değişmedi. Opt-in bir **experimental** motor (`--classifier-engine experimental` / `SUTURA_CLASSIFIER_ENGINE=experimental`, `sutura/mesh_classifier_v2.py`) RANSAC düzlem segmentasyonu + küçük bir eğitilmiş başlık ekler ve belgelenmiş tarayıcı yanlılığını gerçek dünya korpusunda düzeltir (mekanik isabet 2/7 → 6/7, organik gerilemesi yok) — ~40 etiketli mesh üzerinde deneysel, istisna/geçersiz sonuçta classic'e otomatik geri dönüşlü. Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır, eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz ve classic motor taranmış mekanik parçaları (vida, dişli, krank mili) hâlâ **organik** okur — tarama kaynaklı girdide tespit edilen türü temkinli yorumlayın. |
+| Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). **Varsayılan** motor **experimental**'dir (`sutura/mesh_classifier_v2.py`): belgelenmiş tarayıcı yanlılığını gerçek dünya korpusunda düzeltir (mekanik isabet 2/7 → 6/7, organik gerilemesi yok); istisna/geçersiz sonuçta classic'e sessizce geri döner ve orijinal classic motor `--classifier-engine classic` / `SUTURA_CLASSIFIER_ENGINE=classic` ile seçilebilir kalır. Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır, eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz ve kendinden emin ama yanlış bir v2 tahmini classic'e karşı yeniden kontrol edilmez — tarama kaynaklı girdide tespit edilen türü temkinli yorumlayın. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Onarım Sağlığı / Riski | ~%60 (yeni) | Klasik güvenin üzerine ayrı, eklemeli bir skorlama sistemi: `repair_health` (0–100, final mesh sağlamlığı: su geçirmez + non-manifold/self-intersection/delik yok) ve `repair_risk` (0–100, onarımın mesh'i ne kadar değiştirdiği: yüz/vertex/bileşen/hacim deltaları), ayrıca bir config lookup tablosundan türetilen iki-eksenli status etiketi (`safe`/`review`/`caution`/`failed`/`unavailable`). Ağırlıklar/eşikler kodda değil `sutura/repair_score_config.json`'da; fail-silent (onarımı asla bozmaz); regression testiyle doğrulanır (`tests/test_repair_score.py`). Deneysel: ağırlık değerleri ve tier sınırları başlangıç noktalarıdır. |
 | Onarım bütçesi (`--max-geometry-change` / `--max-risk` / `--force`) | ~%60 (yeni) | İsteğe bağlı güvenlik sınırları: gerçek geometri değişimi (max \|hacim\|/\|yüzey\| değişim %) veya `repair_risk` skoru bütçeyi aşarsa çıktı asla sessizce kaydedilmez — TTY'de etkileşimli `[y/N]` istemi, aksi halde kayıt açık `"status": "budget_declined"` işaretiyle (sorun `budget_exceeded`, çıkış 1) reddedilir ve `--force` sormadan kaydeder. Bütçe içindeyken sayılar yine bildirilir (`budget` bloğu). Mevcut hacim/yüzey/risk metriklerini yeniden kullanır (yeniden hesaplamaz); GUI aynı bütçeleri sunar ve onay sonrası reddedilen dosyaları `--force` ile yeniden çalıştırır. Regression testiyle doğrulanır (`tests/test_budget.py`). Deneysel: 0 = sınır yok ve reddedilen kayıt, dosyanın hiç yazılmaması anlamına gelir. |
@@ -297,7 +297,7 @@ sutura model.stl --human    # insanın okuyabileceği rapor
 sutura model.stl --human --defects   # ayrıca girdi deliklerini / non-manifold bölgeleri listeler
 sutura model.stl --human --diff      # ayrıca önce/sonra geometri farkını yazdırır
 sutura model.stl --mode aggressive   # agresif onarım modunu kullan
-sutura model.stl --classifier-engine experimental  # opt-in sınıflandırıcı motoru
+sutura model.stl --classifier-engine classic  # classic sınıflandırıcı motorunu zorla
 sutura model.stl --max-geometry-change 10 --max-risk 40   # onarım bütçeleri (aşağıya bakın)
 sutura model.stl --max-risk 30 --force                    # bütçe aşılsa da sorunsuz kaydet
 sutura validate model.stl   # onarmadan ANALİZ (salt-okunur rapor)
@@ -684,13 +684,19 @@ parametreleri korur. Bu bilinçli bir ödünleşimdir: sınıflandırıcı yaln�
 açıkça düz/keskin mekanik veya açıkça pürüzsüz organik meshlerde devreye girer
 ve yanlış bir parametre seti uygulamaktansa hiçbir şey yapmamayı tercih eder.
 
-### Deneysel sınıflandırıcı motoru (`--classifier-engine`)
+### Sınıflandırıcı motorları (`--classifier-engine`)
 
-Yukarıdaki sezgisel yaklaşım **classic** motordur; varsayılan ve geri dönüş
-motorudur — hiçbir şeyi değişmez. Opt-in bir **experimental** motor iki yeni
-sinyal ekler ve `--classifier-engine experimental` bayrağıyla veya
-`SUTURA_CLASSIFIER_ENGINE=experimental` ortam değişkeniyle seçilir (onarım,
-validate ve `--dry-run` için aynı şekilde geçerlidir):
+**experimental** motor (`sutura/mesh_classifier_v2.py`) artık **varsayılandır**:
+etiketli sentetik sette ve 16 mesh'lik gerçek dünya korpusunda classic
+sezgiselden ölçülebilir biçimde iyidir (mekanik isabet 2/7 → 6/7, organik
+gerilemesi yok; sentetik sette LOO-CV 37/40'a karşı classic 35/40). Orijinal
+**classic** motor (`mesh_classifier`) kullanılabilir kalır — `--classifier-engine
+classic` bayrağıyla veya `SUTURA_CLASSIFIER_ENGINE=classic` ortam değişkeniyle
+seçilir (onarım, validate ve `--dry-run` için aynı şekilde geçerlidir). Her iki
+motor da fiilen kullanılanı `classifier_engine` (JSON) ve bir `Classifier:`
+satırı (`--human`) olarak bildirir.
+
+Experimental motor, classic özelliklere iki sinyal ekler:
 
 1. **RANSAC düzlem segmentasyonu** — mesh alanının ≥%1'ini kaplayan sağlam
    düzlemsel yamalar bir RANSAC döngüsüyle tespit edilir (örnek birim: yüz
@@ -702,24 +708,20 @@ validate ve `--dry-run` için aynı şekilde geçerlidir):
    gömülüdür; eğitim + leave-one-out çapraz doğrulaması
    `scripts/train_classifier_v2.py`'de yaşar.
 
-Etiketli korpusta experimental motor belgelenmiş tarayıcı sınırlamasını
-giderir (mekanik isabeti 2/7 → 6/7'ye çıkar, **organik gerilemesi yok**;
-sentetik set %100 kalır), bu yüzden taranmış mekanik parçalar için umut verici
-bir gelişmedir. Uyarılar: opt-indir, eğitilmiş başlık ~40 mesh üzerinde zayıf
-bir sinyaldir (LOO-CV 0.925'e karşı classic 0.875 — fark beklenir) ve
-otomatik geri dönüş yalnızca **istisnaları / geçersiz sonuçları** kapsar
-(NaN, eksik anahtar) — kendinden emin ama yanlış bir experimental tahmini
-classic'e karşı yeniden kontrol edilmez. Experimental motor çökerse veya
-geçersiz bir şey döndürürse stderr'de bir uyarıyla sessizce classic'e düşer;
-rapor, fiilen kullanılan motoru `classifier_engine` (JSON) ve bir `Classifier:`
-satırı (`--human`) olarak taşır.
+Uyarılar: eğitilmiş başlık ~40 mesh üzerinde zayıf bir sinyaldir (LOO-CV
+0.925'e karşı classic 0.875 — fark beklenir) ve otomatik geri dönüş yalnızca
+**istisnaları / geçersiz sonuçları** kapsar (NaN, eksik anahtar) — kendinden
+emin ama yanlış bir experimental tahmini classic'e karşı yeniden kontrol
+edilmez. Experimental motor çökerse veya geçersiz bir şey döndürürse stderr'de
+bir uyarıyla sessizce classic'e düşer, böylece bozuk bir v2 onarımı
+çökertmek yerine classic'e geriler.
 
 v2 motoru `sutura/mesh_classifier_v2.py`'de classic motorun birebir kopyası
 artı eklemeler olarak durur, böylece classic modülü el değmeden kalır.
-`scripts/compare_classifier_engines.py` gerçek dünya korpusunda öncesi/sonrası
-karışıklık tablosunu basar; `tests/test_mesh_classifier_v2.py` değişmezleri
-korur (yalnızca stdlib+numpy, başlık devre dışıyken classic geri dönüşü,
-sentetik set %100).
+`scripts/calibrate_classifier.py` (varsayılan motor = experimental) ve
+`scripts/compare_classifier_engines.py` ikisini de aynı setlerde karşılaştırır;
+`tests/test_mesh_classifier_v2.py` değişmezleri korur (yalnızca stdlib+numpy,
+başlık devre dışıyken classic geri dönüşü, sentetik set %100).
 
 ## Test
 

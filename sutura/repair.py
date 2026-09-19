@@ -34,13 +34,15 @@ import history
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
 
-# Classifier engines. 'classic' is the shipped, unchanged mesh_classifier and
-# the default. 'experimental' is the opt-in mesh_classifier_v2 (RANSAC plane
-# features + a small trained head), selected via --classifier-engine or the
-# SUTURA_CLASSIFIER_ENGINE env var. Experimental is NOT protected against a
-# confident-but-wrong prediction -- the fallback below only covers exceptions
-# and invalid results. That is an accepted risk because the engine is fully
-# opt-in; classic remains the default for everyone who does not ask.
+# Classifier engines. 'experimental' is mesh_classifier_v2 (RANSAC plane
+# features + a small trained head) and is the DEFAULT: on the labeled
+# synthetic set (scripts/calibrate_classifier.py) and a 16-mesh real corpus
+# it is measurably better than the classic heuristic (mechanical recall
+# 2/7 -> 6/7, no organic regression). 'classic' (mesh_classifier) stays
+# selectable via --classifier-engine classic or SUTURA_CLASSIFIER_ENGINE.
+# Experimental is NOT protected against a confident-but-wrong prediction --
+# the fallback below only covers exceptions and invalid results. That is an
+# accepted risk because classic remains a one-flag escape hatch.
 CLASSIFIER_ENGINES = ('classic', 'experimental')
 
 
@@ -48,10 +50,10 @@ def resolve_classifier_engine(cli_value=None):
     """Resolve the requested classifier engine.
 
     Precedence: explicit ``--classifier-engine`` flag > the
-    ``SUTURA_CLASSIFIER_ENGINE`` env var > ``'classic'``. An invalid value in
-    the env var (not classic/experimental) falls back to classic -- the env
-    var is ambient and must never crash the pipeline; an invalid CLI value is
-    rejected by argparse instead.
+    ``SUTURA_CLASSIFIER_ENGINE`` env var > ``'experimental'`` (the default).
+    An invalid value in the env var (not classic/experimental) falls back to
+    the default engine -- the env var is ambient and must never crash the
+    pipeline; an invalid CLI value is rejected by argparse instead.
     """
     value = cli_value
     if value is None:
@@ -59,18 +61,18 @@ def resolve_classifier_engine(cli_value=None):
     if value not in CLASSIFIER_ENGINES:
         if cli_value is not None:
             raise ValueError('unknown classifier engine: %r' % cli_value)
-        return 'classic'
+        return 'experimental'
     return value
 
 
-def classify_with_engine(verts, tris, engine='classic'):
+def classify_with_engine(verts, tris, engine='experimental'):
     """Run classify_mesh with the selected engine. Returns ``(result, used)``
     where ``used`` is the engine that actually produced the result.
 
-    ``classic`` (default): mesh_classifier, unchanged. ``experimental``:
-    mesh_classifier_v2; if it raises OR returns an invalid/incomplete result
-    (missing keys, NaN/non-finite confidence, unexpected type), it silently
-    falls back to classic with a warning logged -- never a crash.
+    ``experimental`` (default): mesh_classifier_v2; if it raises OR returns
+    an invalid/incomplete result (missing keys, NaN/non-finite confidence,
+    unexpected type), it silently falls back to classic with a warning
+    logged -- never a crash. ``classic``: mesh_classifier, unchanged.
     """
     if engine != 'experimental':
         return classify_mesh(verts, tris), 'classic'
@@ -111,7 +113,7 @@ def _resolve_bridge():
 
 BRIDGE = _resolve_bridge()
 
-VERSION = "0.2.7"
+VERSION = "0.2.8"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -517,7 +519,7 @@ def stl_write_binary(path, verts, tris):
 
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
-                            engine='classic', declared_unit=None):
+                            engine='experimental', declared_unit=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -525,7 +527,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     (low/medium/aggressive/extreme) use the MODE_PARAMS thresholds directly.
     ``profile`` (optional, only effective when mode is 'auto') selects a
     named threshold preset (see PROFILES). ``engine`` selects the classifier
-    engine ('classic' default, 'experimental' opt-in). ``declared_unit`` is
+    engine ('experimental' default; 'classic' opt-in). ``declared_unit`` is
     the 3MF <model unit="..."> attribute (None for STL/OBJ) fed to the
     non-blocking unit-warning heuristic.
     """
@@ -948,7 +950,7 @@ def obj_has_material_refs(path):
     return False
 
 
-def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
+def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental'):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -1023,7 +1025,7 @@ def build_mesh_block(verts, tris):
     return '\n'.join(lines)
 
 
-def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='classic'):
+def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental'):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -1129,7 +1131,7 @@ def load_meshes(src):
              np.asarray(m.face_matrix(), dtype=np.int32))]
 
 
-def validate_mesh_from_arrays(verts, tris, engine='classic', declared_unit=None):
+def validate_mesh_from_arrays(verts, tris, engine='experimental', declared_unit=None):
     """Analyze one mesh WITHOUT repairing it.
 
     Combines defects.detect(), the mesh classifier and cheap pymeshlab
@@ -1191,7 +1193,7 @@ def validate_mesh_from_arrays(verts, tris, engine='classic', declared_unit=None)
             'estimated_confidence_factors': est['factors']}
 
 
-def validate_file(src, engine='classic'):
+def validate_file(src, engine='experimental'):
     """Validate a mesh file without repairing it. Returns the report dict;
     a hard error (missing/malformed input) is a dict with an 'error' key."""
     result = {'input': src}
@@ -1224,7 +1226,7 @@ def validate_file(src, engine='classic'):
     return result
 
 
-def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='classic',
+def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='experimental',
                              declared_unit=None):
     """Report what a repair WOULD do for one mesh, without doing it.
 
@@ -1303,7 +1305,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='cla
     return result
 
 
-def dry_run_file(src, mode='auto', profile=None, engine='classic'):
+def dry_run_file(src, mode='auto', profile=None, engine='experimental'):
     """Dry-run one mesh file. Returns the report dict; a hard error is a
     dict with an 'error' key. Never writes any output file."""
     result = {'input': src}
@@ -1582,7 +1584,7 @@ def human_dry_run(r):
 
 
 def process_file(src, human, mode='auto', profile=None, no_history=False,
-                 out=None, engine='classic', max_geom_change=None,
+                 out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False):
     """Repair one file. Returns (result_dict, category).
 
@@ -1699,10 +1701,10 @@ def main():
                              'the mesh classifier + confidence gate.')
     parser.add_argument('--classifier-engine', choices=CLASSIFIER_ENGINES,
                         default=None,
-                        help='mesh classifier engine: classic (default) is the '
-                             'shipped heuristic; experimental (opt-in) adds '
-                             'RANSAC plane features + a small trained head. '
-                             'Also selectable via SUTURA_CLASSIFIER_ENGINE.')
+                        help='mesh classifier engine: experimental (default) '
+                             'is the RANSAC + trained-head engine; classic '
+                             'selects the original heuristic. Also selectable '
+                             'via SUTURA_CLASSIFIER_ENGINE.')
     parser.add_argument('--profile', choices=REPAIR_PROFILES, default=None,
                         help='named Stage 1 threshold preset: mechanical, '
                              'organic, scan, miniature or fast. Only effective '

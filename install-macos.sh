@@ -81,12 +81,12 @@ QT_PLUGIN_PATH="$(conda run -n "$ENV_NAME" python -c \
 
 # 7) copy the application files --------------------------------------------
 mkdir -p "$APP_DIR" "$BIN_DIR"
-for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py repair_score_config.json __init__.py; do
+for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py mesh_classifier_v2.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py repair_score_config.json __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/$f"
 done
 # the importable package layout (for 'from sutura import ...' and __init__)
 mkdir -p "$APP_DIR/sutura"
-for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py repair_score_config.json __init__.py; do
+for f in repair.py manifold_bridge.py classification.py confidence.py defects.py mesh_classifier.py mesh_classifier_v2.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py repair_score_config.json __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/sutura/$f"
 done
 install -m 0644 "$REPO_DIR/LICENSE" "$APP_DIR/LICENSE"

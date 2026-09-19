@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Calibration harness for the mesh classifier.
 
-Runs the current ``mesh_classifier.classify_mesh`` over the labeled synthetic
+Runs the current default mesh classifier over the labeled synthetic
 set from ``tests/make_classifier_set.py`` and reports:
   * per-class precision / recall (unknown counts as a miss)
   * the overall unknown rate
@@ -11,12 +11,11 @@ set from ``tests/make_classifier_set.py`` and reports:
 
 Usage (needs the venv, trimesh is used to build the set):
     ~/.local/share/sutura/venv/bin/python scripts/calibrate_classifier.py
-    ~/.local/share/sutura/venv/bin/python scripts/calibrate_classifier.py --engine experimental
+    ~/.local/share/sutura/venv/bin/python scripts/calibrate_classifier.py --engine classic
 
-The default engine is ``classic`` (the shipped mesh_classifier). ``--engine
-experimental`` runs the opt-in mesh_classifier_v2 (RANSAC + trained head) so
-both engines can be compared on the same synthetic set. The classic mode must
-stay at ~100% -- that is the no-regression gate for the v2 experiment.
+The default engine is ``experimental`` (mesh_classifier_v2, the shipped
+default since the v2 flip). ``--engine classic`` runs the original
+mesh_classifier so both engines can be compared on the same synthetic set.
 
 No files are written and the classifier itself is never modified -- this is a
 read-only measurement tool for baseline and post-change comparison.
@@ -68,7 +67,7 @@ def _conf_summary(confs):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--engine', choices=('classic', 'experimental'),
-                    default='classic')
+                    default='experimental')
     args = ap.parse_args()
     engine = _get_engine(args.engine)
 
