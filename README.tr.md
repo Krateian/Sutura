@@ -32,14 +32,10 @@ ve pull request'te CI tarafından otomatik doğrulanır.
 
 **Bir not (maintainer'dan)**
 
-Sutura'yı sıfırdan tek başıma yazıyorum — gündüz işim uçak bakım
-mühendisliği, Sutura akşamları ve hafta sonları ortaya çıkan bir emek. Bir
-süre hayatımda büyük bir değişiklik oluyor ve projeye ayırdığım zaman bir
-müddet ciddi şekilde azalacak.
-
-Projeyi terk etmiyorum. Sadece bir mola — sonra kaldığım yerden devam
-edeceğim. O zamana kadar sabırlı olan, kullanan, hata bildiren, katkı sunan
-herkese teşekkürler.
+Sutura'yı, önde gelen bir havayolu şirketinde surdurdugum gunduz
+havacilik muhendisligi isimin yaninda tek basima gelistiriyorum.
+Onumuzdeki donemde surumler eskisi kadar sik gelmeyebilir - proje
+terk edilmis degil, sadece tempo yavaslayacak.
 
 ## Ekran Görüntüsü
 
