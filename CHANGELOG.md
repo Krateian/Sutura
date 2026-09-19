@@ -4,6 +4,48 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-09-19
+
+### Changed
+
+- **`mesh_classifier_v2` (experimental) is now the default classifier engine**, replacing `classic`.
+  Measured on the 16-mesh real-world corpus: experimental scores 11/12 correct vs classic's 7/12
+  (mechanical recall 2/7 -> 6/7, organic 5/5, no regression; leave-one-out CV 37/40 vs 35/40).
+  `--classifier-engine classic` (or `SUTURA_CLASSIFIER_ENGINE=classic`) still forces the old engine;
+  an invalid engine value or any exception/invalid result from the experimental engine still falls
+  back to classic silently, as before -- only the default direction changed.
+- Install scripts (`install.sh`, `install-macos.sh` flat and package layouts, `scripts/build_appimage.sh`)
+  now ship `mesh_classifier_v2.py`, which was previously missing from all three -- without this fix the
+  default flip would have been a silent no-op on installed copies.
+- `scripts/calibrate_classifier.py`'s own default engine flipped to match; its synthetic 28-mesh
+  calibration set shows no regression either way (28/28 both engines).
+
+## [0.2.7] - 2026-09-19
+
+### Added
+
+- **Unit-mismatch detection.** Warns when a mesh's scale suggests non-millimeter units (inch/cm) or
+  a degenerate/empty mesh, with 3MF `<model unit="...">` declared-unit precedence over the heuristic.
+  Surfaced as a `WARNING:` line in `--human` output and in the GUI report.
+- **Repair budget.** `--max-geometry-change` (%) and `--max-risk` (0-100 score) gate whether a repair
+  is saved: exceeding either threshold produces a `budget_declined` status instead of silently saving,
+  with an interactive TTY confirmation prompt or `--force` to save anyway. The worst object drives each
+  metric on multi-object 3MF. GUI adds budget spinboxes to the repair-mode dialog and a re-run-with-force
+  prompt for declined files in the batch summary.
+- **Per-object Stage 2 for multi-object 3MF.** Every closed object in a multi-object 3MF now gets its
+  own manifold3d watertight pass, not just object 0. New aggregates `objects_watertight` /
+  `objects_stage2_ok`; classification now considers every object's outcome, not just object 0's;
+  `--human` and the GUI report per-object Stage 2 verdicts.
+
+### Fixed
+
+- **Layered/duplicated-vertex 3MF objects (e.g. Bambu/Orca exports) no longer get destroyed by Stage 1
+  on macOS.** `stage1_chain` and `delete_fallback_chain` now run a second `meshing_remove_duplicate_faces`
+  pass immediately after `meshing_remove_duplicate_vertices`: vertex dedup on a layered mesh is what
+  *creates* the duplicate faces, and without the second pass `meshing_repair_non_manifold_edges` saw a
+  per-edge face soup and deleted the mesh entirely (`"all faces are degenerate"`). See
+  `docs/stage2-3mf-per-object.md` (Investigation A) for the full root-cause trace.
+
 ## [0.2.6] - 2026-09-19
 
 ### Added
