@@ -32,9 +32,29 @@ import history
 
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
-BRIDGE = os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
-VERSION = "0.2.2"
+
+def _resolve_bridge():
+    """Locate manifold_bridge.py.
+
+    Prefers a copy bundled next to the executable in a PyInstaller bundle
+    (onefile: ``<dir>/manifold_bridge.py``; onedir: ``<dir>/<tool>/``), so a
+    standalone .app can run stage 2 in-process with no system install. Falls
+    back to the standard ``SUTURA_DIR`` layout (unchanged) outside bundles.
+    """
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        for cand in (os.path.join(base, 'manifold_bridge.py'),
+                     os.path.join(base, '..', 'manifold_bridge.py')):
+            cand = os.path.abspath(cand)
+            if os.path.isfile(cand):
+                return cand
+    return os.path.join(SUTURA_DIR, 'manifold_bridge.py')
+
+
+BRIDGE = _resolve_bridge()
+
+VERSION = "0.2.3"
 
 
 class ExtremeRemovedAllError(ValueError):

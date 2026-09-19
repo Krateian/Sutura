@@ -2,6 +2,41 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.3] - 2026-09-19
+
+### Added
+
+- **Bundle-aware path resolution for a standalone macOS `.app`.** The GUI
+  now resolves the CLI and the heatmap/before-after/viewer renderers to
+  sibling executables in a PyInstaller bundle (`gui.py` `_bundle_tool` /
+  `_script_cmd`, active only under `sys.frozen`), and `repair.py` resolves
+  `manifold_bridge.py` next to the bundled CLI first so **stage 2
+  (manifold3d) runs from a self-contained app** with no system install
+  (`_resolve_bridge`). Outside bundles the historical behaviour is
+  unchanged. Proven with a frozen-GUI spike under an empty `HOME`/`SUTURA`:
+  `stage2_bridge_available=True`, watertight repair, confidence 93/100.
+- **macOS `.dmg` packaging (unsigned).** A `Build macOS .app/.dmg` workflow
+  builds a self-contained `SuturaGUI.app` and an UDZO
+  `Sutura-vX.Y.Z.dmg` on each `v*` tag. The .dmg is **unsigned** (no Apple
+  Developer Program / notarization yet): first open shows macOS's
+  *"unidentified developer"* warning — use right-click → Open or
+  `xattr -dr com.apple.quarantine SuturaGUI.app`.
+
+### Changed
+
+- **Mesh type-aware repair — scan-corpus validation + documented
+  limitation.** Validated on a 115-mesh real-world scan corpus (52 Artec
+  STL scans, 60 Thingi10K, 3 repo samples): 0 crashes, ~90% fully
+  watertight. The README now documents that scanned **mechanical** parts
+  (screws, gears, crankshafts) are frequently read as **organic** with
+  high confidence because scan noise reads as gentle curvature — a known
+  heuristic limitation, not a defect.
+
+### Dependency
+
+- manifold3d 3.5.3, trimesh 5.1.0 (Dependabot PRs #6/#5, already merged to
+  main; the v0.2.2 pins were 3.5.2 / 5.0.0).
+
 ## [0.2.2] - 2026-09-18
 
 ### Fixed

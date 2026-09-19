@@ -78,7 +78,7 @@ Sutura and where you should still double-check the output.
 
 | Area | Maturity | What is solid / where to be careful |
 |---|---|---|
-| STL repair (two-stage) | ~96% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs and validated on a 75-model real-world corpus (0 hard failures; the stage-1 chain was reordered and `maxholesize` made mesh-sensitive so large scan holes close). Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and the last few stubborn holes / heavy non-manifold structures on scan meshes are a genuine VCG limit. |
+| STL repair (two-stage) | ~96% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs and validated on a 75-model real-world corpus (0 hard failures; the stage-1 chain was reordered and `maxholesize` made mesh-sensitive so large scan holes close) plus a 115-mesh real-world scan corpus (manual macOS run: 0 crashes, ~90% fully watertight). Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and the last few stubborn holes / heavy non-manifold structures on scan meshes are a genuine VCG limit. |
 | 3MF multi-object | ~90% | Every object is repaired independently in memory and written back, so no object is lost. Known limits: per-object stage 2 is deliberately skipped, byte-identical objects are deduplicated, and a layered/duplicated-vertex 3MF repairs fully closed (0 holes remaining) but is still reported as `stage2_skipped` (warning) because per-object stage 2 never runs. |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
 | GUI | ~89% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison (static + interactive 3D viewer with surface deviation), repair-mode picker, status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and there is no macOS Finder integration. |
@@ -89,9 +89,9 @@ Sutura and where you should still double-check the output.
 | Validate (`sutura validate`) | ~55% (beta) | New in 0.1.8-beta.1: read-only analysis of holes / non-manifold regions / self-intersections / connected components / signed volume (orientation) / surface area with a watertight verdict — no repair, no output file. Beta quality: the combined metrics are new and not yet calibrated against real-world repair outcomes, and multi-object 3MF validates each object but keeps only a minimal aggregate report. It has a dedicated regression suite (`tests/test_validate.py`). |
 | Dry-run (`--dry-run`) | ~50% (beta) | New in 0.1.8-beta.1: reports the would-do plan (detected type, mode, Stage 1 thresholds, found holes / debris / self-intersections, stage 2 availability) and writes nothing. Beta quality: the plan is derived from the input analysis, so exact hole-close counts are not guaranteed to match a real run, and the extreme-mode extra passes are not simulated. It is covered by `tests/test_validate.py` (validate and dry-run share the suite). |
 | Repair modes (`--mode` ladder) | ~80% | Five-step aggressiveness ladder (`low`/`medium`/`auto`/`aggressive`/`extreme`) for the Stage 1 thresholds, exposed both as a CLI flag and a batch-wide GUI picker; `auto` keeps the historical classifier + confidence-gate behaviour byte-identical and is regression-tested (`tests/test_repair_mode.py`). The mode fixes the BASE `maxholesize`, which is then raised mesh-sensitively (`max(base, 2 × longest input loop)`, never lowered) so large scan holes close in every mode. Caveats: `extreme` can delete a small object (reported as the distinct `extreme_removed_object` error, not malformed input) and the per-type tuned threshold values are experimental. |
-| Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). Experimental: the per-type values are still estimated starting points, and curved-but-mechanical parts (cylinders, fillets) are not classified at all. |
+| Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). Experimental: the per-type values are still estimated starting points, curved-but-mechanical parts (cylinders, fillets) are not classified at all, and a manual scan-corpus check shows a bias — scanned mechanical parts (screws, gears, crankshafts) are frequently read as **organic** with high confidence because scan noise reads as gentle curvature. Treat the detected type on scan-derived input with caution. |
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
-| Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both. Gaps: macOS has no Finder integration, and the AppImage/GUI cannot self-update in place (read-only squashfs). |
+| Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow). Gaps: macOS has no Finder integration, the AppImage/GUI cannot self-update in place (read-only squashfs), and the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
@@ -141,6 +141,30 @@ needed.
   and a system Qt version that matches PySide6's. If the rubber-band selection
   is missing, Qt falls back to its embedded dialog — Ctrl/Shift+click still
   work for multi-selection.
+* **macOS: `pip install pymeshlab` fails or pulls an Intel build.** PyMeshLab
+  has no Apple Silicon PyPI wheel — install from conda-forge
+  (`conda install -n sutura-env -c conda-forge pymeshlab`, see
+  `install-macos.sh`). The install is a directory of native VCG plugins
+  (`pmeshlab.*.so`, `PlugIns/*.so`, `lib/*.so`, `Frameworks/*.dylib`)
+  loaded at import; if a filter reports "not loaded", the `PlugIns/` dir is
+  missing next to the package. When bundling with PyInstaller you need
+  `--collect-data pymeshlab`, not just a hidden import.
+* **Headless GUI "hangs" right after launch.** The first run (no config at
+  `~/.config/sutura/config.json`) opens a **modal** update/usage-history
+  dialog and blocks until answered. To run headless, pre-seed the config,
+  e.g. `{"check_for_updates": false, "history_enabled": true}`. The update
+  prompt is skipped for AppImage builds; the history prompt is always asked
+  on first run.
+* **macOS: `grep: empty (sub)expression` on every `git push`.** The pre-push
+  security hook's secret pattern used an empty alternation branch that BSD
+  grep rejects, so the secret scan silently never ran. Fixed in
+  `scripts/pre-push-security-check.sh` (optional group) — reinstall the hook
+  with `./install.sh` / `./install-macos.sh`.
+* **Standalone .app: stage 2 reports skipped / low confidence.** Stage 2
+  (manifold3d) needs `manifold_bridge.py` next to the bundled CLI (e.g.
+  `SuturaGUI.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) with
+  `manifold3d`/`trimesh` bundled; otherwise `stage2_bridge_available=false`
+  and confidence drops ~25 points.
 
 ## Install
 
@@ -206,6 +230,17 @@ It is macOS-only and re-runnable.
 
 Note: conda can be initialized non-interactively; if the script asks you to
 restart the terminal for `conda init` to take effect, do so and re-run it.
+
+Each tagged release also ships a **macOS .dmg** (`Sutura-vX.Y.Z.dmg`, built
+by the `Build macOS .app/.dmg` workflow) — a self-contained
+`SuturaGUI.app`. The .dmg is **unsigned** (no Apple Developer Program /
+notarization applied yet), so the first open shows macOS's *"unidentified
+developer"* warning. Open it with **right-click → Open**, or clear the
+quarantine attribute first:
+
+```sh
+xattr -dr com.apple.quarantine SuturaGUI.app
+```
 
 ## Usage
 

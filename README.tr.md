@@ -81,7 +81,7 @@ söyler.
 
 | Alan | Olgunluk | Ne sağlam / Nerede dikkatli |
 |---|---|---|
-| STL onarımı (iki aşamalı) | ~%96 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmış ve 75 modellik gerçek dünya korpusunda doğrulanmıştır (0 sert hata; Aşama 1 zinciri yeniden düzenlendi ve `maxholesize` mesh-duyarlı hale getirildi, böylece büyük tarama delikleri kapanıyor). %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve tarama mesh'lerindeki son birkaç inatçı delik / ağır non-manifold yapı gerçek bir VCG sınırıdır. |
+| STL onarımı (iki aşamalı) | ~%96 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmış ve 75 modellik gerçek dünya korpusunda (0 sert hata; Aşama 1 zinciri yeniden düzenlendi ve `maxholesize` mesh-duyarlı hale getirildi, böylece büyük tarama delikleri kapanıyor) ayrıca 115 mesh'lik gerçek-dünya tarama korpusunda doğrulanmıştır (elle macOS çalıştırması: 0 çökme, ~%90 tam su geçirmez). %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve tarama mesh'lerindeki son birkaç inatçı delik / ağır non-manifold yapı gerçek bir VCG sınırıdır. |
 | 3MF çok nesneli | ~%90 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Bilinen sınırlar: nesne başına aşama 2 bilinçli olarak atlanır, bayt bayt özdeş nesneler tekilleştirilir ve katmanlı/yinelenen köşeli bir 3MF tam kapalı onarılır (0 kalan delik) ama nesne başına aşama 2 hiç çalışmadığı için yine de `stage2_skipped` (warning) olarak raporlanır. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
 | GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), onarım modu seçici, durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS Finder entegrasyonu yoktur. |
@@ -92,9 +92,9 @@ söyler.
 | Validate (`sutura validate`) | ~%55 (beta) | 0.1.8-beta.1'de yeni: delik / non-manifold bölgeler / self-intersection / bağlı bileşenler / işaretli hacim (yön) / yüzey alanı ve watertight kararının salt-okunur analizi — onarım yok, çıktı dosyası yok. Beta kalitesi: birleşik metrikler yeni ve gerçek dünya onarım sonuçlarına karşı henüz kalibre edilmemiştir; çok nesneli 3MF her nesneyi doğrular ama yalnızca asgari bir özet rapor tutar. Kendine özgü bir regression süiti vardır (`tests/test_validate.py`). |
 | Dry-run (`--dry-run`) | ~%50 (beta) | 0.1.8-beta.1'de yeni: yapılacak planı bildirir (tespit edilen tür, mod, Aşama 1 eşikleri, bulunan delik / döküntü / self-intersection, aşama 2 uygunluğu) ve hiçbir şey yazmaz. Beta kalitesi: plan girdi analizinden türetilir, bu yüzden tam delik kapatma sayıları gerçek bir çalışmayla birebir uyuşacağının garantisi değildir ve extreme modun ek geçişleri simüle edilmez. `tests/test_validate.py` tarafından kapsanır (validate ve dry-run aynı süiti paylaşır). |
 | Onarım modları (`--mode` merdiveni) | ~%80 | Aşama 1 eşikleri için beş kademeli agresiflik merdiveni (`low`/`medium`/`auto`/`aggressive`/`extreme`); hem CLI bayrağı hem batch geneli GUI seçici olarak sunulur; `auto`, tarihsel sınıflandırıcı + güven eşiği davranışını birebir korur ve regression testiyle doğrulanır (`tests/test_repair_mode.py`). Mod, taban `maxholesize`'ı belirler ve bu değer daha sonra mesh-duyarlı şekilde yukarı çekilir (`max(taban, 2 × en uzun girdi loop'u)`, asla düşürülmez) böylece büyük tarama delikleri her modda kapanır. Uyarılar: `extreme` küçük bir nesneyi silebilir (bu, bozuk girdi değil, ayrı `extreme_removed_object` hatası olarak raporlanır) ve tür başına ayarlı eşik değerleri deneyseldir. |
-| Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır ve eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz. |
+| Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). Deneysel: tür başına değerler hâlâ tahmini başlangıç noktalarıdır, eğrisel ama mekanik parçalar (silindirler, yuvarlatmalar) hiç sınıflandırılmaz ve elle yapılan bir tarama-korpusu kontrolü bir eğilim gösterir — taranmış mekanik parçalar (vida, dişli, krank mili) tarama gürültüsü hafif eğrilik olarak okunduğu için yüksek güvenle sıklıkla **organik** okunur. Tarama kaynaklı girdide tespit edilen türü temkinli yorumlayın. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
-| Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar. Eksikler: macOS'ta Finder entegrasyonu yoktur ve AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur). |
+| Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar; her sürümde ayrıca imzasız bir macOS `.dmg` de yayınlanır (`Build macOS .app/.dmg` workflow'u). Eksikler: macOS'ta Finder entegrasyonu yoktur, AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur) ve .dmg notarize edilmemiştir (Gatekeeper "unidentified developer" uyarısı gösterir). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%35 — deneysel | Tek başına çalışan betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ sürümlerinde bulunan bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux içindir. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
@@ -146,6 +146,30 @@ Diğer dağıtımlarda, varsayılan `python3` *3.11 ise* ek kurulum gerekmez.
   PySide6'nın Qt'siyle eşleşen bir sistem Qt sürümü gerektirir. Lastik bant
   seçimi yoksa Qt, gömülü diyaloğuna geri döner — çoklu seçim için Ctrl/Shift+tık
   yine de çalışır.
+* **macOS: `pip install pymeshlab` başarısız veya Intel derlemesi çekiyor.**
+  PyMeshLab'ın Apple Silicon PyPI wheel'i yok — conda-forge'dan kurun
+  (`conda install -n sutura-env -c conda-forge pymeshlab`, bkz.
+  `install-macos.sh`). Kurulum, import sırasında yüklenen yerel VCG
+  eklentilerinden oluşan bir dizindir (`pmeshlab.*.so`, `PlugIns/*.so`,
+  `lib/*.so`, `Frameworks/*.dylib`); bir filter "not loaded" derse paketin
+  yanında `PlugIns/` eksiktir. PyInstaller ile paketlerken yalnızca hidden
+  import değil `--collect-data pymeshlab` gerekir.
+* **Headless GUI "açılışta takılıyor".** İlk çalıştırmada (config yok,
+  `~/.config/sutura/config.json`) **modal** güncelleme/kullanım-geçmişi
+  diyaloğu açılır ve yanıtlanana kadar engeller. Headless çalıştırmak için
+  config'i önceden oluşturun, ör. `{"check_for_updates": false,
+  "history_enabled": true}`. Güncelleme sorusu AppImage build'lerinde
+  atlanır; geçmiş sorusu ilk çalıştırmada her zaman sorulur.
+* **macOS: her `git push`'ta `grep: empty (sub)expression`.** Pre-push
+  güvenlik hook'unun secret deseni, BSD grep'in reddettiği boş bir alternation
+  dalı içeriyordu; secret taraması sessizce hiç çalışmıyordu.
+  `scripts/pre-push-security-check.sh`'te düzeltildi (opsiyonel grup) — hook'u
+  `./install.sh` / `./install-macos.sh` ile yeniden kurun.
+* **Standalone .app: stage 2 atlandı / düşük güven.** Aşama 2 (manifold3d)
+  bundled CLI'nin yanında `manifold_bridge.py` ister (ör.
+  `SuturaGUI.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) ve
+  `manifold3d`/`trimesh` bundle içinde olmalı; aksi halde
+  `stage2_bridge_available=false` olur ve güven ~25 puan düşer.
 
 ## Kurulum
 
@@ -211,6 +235,17 @@ oluşturur. Yalnızca macOS içindir ve yeniden çalıştırılabilir.
 
 Not: conda etkileşimsiz başlatılabilir; betik `conda init` için terminali
 yeniden başlatmanızı isterse öyle yapın ve betiği yeniden çalıştırın.
+
+Her etiketli sürümde ayrıca bir **macOS .dmg** de yayınlanır
+(`Sutura-vX.Y.Z.dmg`, `Build macOS .app/.dmg` workflow'uyla derlenir) —
+kendi kendine yeten bir `SuturaGUI.app` içerir. .dmg **imzasızdır**
+(henüz Apple Developer Program / notarization uygulanmadı), bu yüzden ilk
+açılışta macOS *"unidentified developer"* uyarısı gösterir. **Sağ tık → Aç**
+ile açın veya karantina özniteliğini önceden temizleyin:
+
+```sh
+xattr -dr com.apple.quarantine SuturaGUI.app
+```
 
 ## Kullanım
 

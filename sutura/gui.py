@@ -360,9 +360,52 @@ def _t(key, *args):
     return s % args if args else s
 
 
+def _bundle_tool(name):
+    """Path of a sibling executable in a PyInstaller bundle, or None.
+
+    In a PyInstaller ``.app`` each Python entry point is bundled as its own
+    executable placed next to the app binary (``Contents/MacOS``), so the
+    GUI can spawn the CLI and the heatmap/before-after/viewer renderers
+    without a system Python. Both layouts are resolved: a onefile binary
+    (``<dir>/<name>``) or a onedir tool (``<dir>/<name>/<name>``). Outside a
+    bundle (normal installs, source checkouts) ``sys.frozen`` is absent and
+    this returns None so callers keep the historical
+    ``[sys.executable, script.py]`` behaviour.
+    """
+    if not getattr(sys, 'frozen', False):
+        return None
+    base = os.path.dirname(sys.executable)
+    onefile = os.path.join(base, name)
+    if os.path.isfile(onefile):
+        return onefile
+    onedir = os.path.join(base, name, name)
+    if os.path.isfile(onedir):
+        return onedir
+    return None
+
+
+def _script_cmd(script_name, script_path=None):
+    """Command for a Python entry-point script.
+
+    Inside a PyInstaller bundle this is the sibling ``script_name``
+    executable; outside it is ``[sys.executable, script_path]`` exactly as
+    before. ``script_path`` defaults to the script next to this file.
+    """
+    exe = _bundle_tool(script_name)
+    if exe:
+        return [exe]
+    path = script_path or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), script_name)
+    return [sys.executable, path]
+
+
 def _find_sutura_cmd():
-    """Resolve the CLI: $SUTURA env, the Linux wrapper, or the bundled
-    repair.py run with the current interpreter (uninstalled/macOS case)."""
+    """Resolve the CLI: the bundled ``sutura-cli`` (PyInstaller .app), the
+    $SUTURA env, the Linux wrapper, or the bundled repair.py run with the
+    current interpreter (uninstalled/macOS case)."""
+    exe = _bundle_tool('sutura-cli')
+    if exe:
+        return [exe]
     env = os.environ.get('SUTURA')
     if env:
         return [env]
@@ -731,7 +774,7 @@ class HeatmapWorker(QThread):
         tmp.close()
         try:
             proc = subprocess.run(
-                [sys.executable, renderer, self._path, outfile,
+                [*_script_cmd('heatmap-render', renderer), self._path, outfile,
                  str(self._w), str(self._h)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 timeout=300)
@@ -782,9 +825,9 @@ class BeforeAfterWorker(QThread):
         dafter_file = prefix + '_detail_after.png'
         try:
             proc = subprocess.run(
-                [sys.executable, renderer, self._path, self._repaired,
-                 before_file, after_file, dbefore_file, dafter_file,
-                 str(self._w), str(self._h)],
+                [*_script_cmd('before-after-render', renderer), self._path,
+                 self._repaired, before_file, after_file, dbefore_file,
+                 dafter_file, str(self._w), str(self._h)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
             if (proc.returncode != 0 or not os.path.getsize(before_file)
                     or not os.path.getsize(after_file)
@@ -843,8 +886,8 @@ class ViewerDataWorker(QThread):
         outfile = os.path.join(tmpdir, 'viewer.npz')
         try:
             proc = subprocess.run(
-                [sys.executable, renderer, self._path, self._repaired, outfile,
-                 str(self._w), str(self._h)],
+                [*_script_cmd('viewer-data-render', renderer), self._path,
+                 self._repaired, outfile, str(self._w), str(self._h)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=900)
             if proc.returncode != 0 or not os.path.getsize(outfile):
                 self.failed.emit(self._path, _t('viewer_ready_failed'))

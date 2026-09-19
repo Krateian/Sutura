@@ -1,0 +1,138 @@
+name: Build macOS .app/.dmg
+
+# Builds the macOS standalone app from the proven onedir recipe: PyMeshLab
+# from conda-forge (no Apple Silicon PyPI wheel), the CLI + render tools as
+# onedir PyInstaller executables (onefile children hang under a Qt GUI
+# parent), manifold_bridge.py shipped beside sutura-cli so stage 2 works
+# self-contained, a windowed GUI .app with the tools in Contents/MacOS, and
+# an UDZO .dmg. Runs on tag pushes (v*.*.*) like the AppImage workflow.
+#
+# The .dmg is UNSIGNED (no Apple Developer ID / notarization yet) - the
+# release body written manually for each tag carries that note; this
+# workflow deliberately does NOT pass name/body to softprops so a manually
+# written release body is never clobbered (same pattern as build-appimage.yml).
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish under (e.g. v0.2.3). The .dmg is built from the current default branch; use this to backfill a .dmg onto an existing git tag that predates the build pipeline.'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # create/update a GitHub Release and upload the .dmg asset
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash -el {0}   # login shell so conda's base env is active
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Miniforge (conda base, Python 3.11)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-variant: Miniforge3
+          python-version: "3.11"
+          use-only-tar-bz2: true
+
+      - name: Install PyMeshLab (conda-forge) + pip dependencies
+        run: |
+          conda install -y -c conda-forge pymeshlab
+          pip install --quiet \
+            manifold3d trimesh PySide6-Essentials pyinstaller numpy scipy
+          python -c \
+            "import pymeshlab, manifold3d, trimesh, PySide6; print('deps OK')"
+
+      # --- shared PyInstaller flags (proven recipe) -----------------------
+      # - hidden imports for sutura's flat modules (repair.py imports them
+      #   as top-level `from classification import ...`)
+      # - --collect-data pymeshlab carries the VCG PlugIns/lib/Frameworks
+      - name: Build onedir tool executables
+        run: |
+          set -e
+          PYS=("--noconfirm" "--log-level" "WARN"
+            "--paths" "sutura"
+            "--hidden-import" "pymeshlab" "--hidden-import" "manifold3d"
+            "--hidden-import" "trimesh"
+            "--hidden-import" "classification" "--hidden-import" "confidence"
+            "--hidden-import" "defects" "--hidden-import" "mesh_classifier"
+            "--hidden-import" "history" "--hidden-import" "heatmap"
+            "--hidden-import" "heatmap_render" "--hidden-import" "viewer_common"
+            "--hidden-import" "updater" "--hidden-import" "numpy"
+            "--hidden-import" "scipy"
+            "--collect-data" "pymeshlab" "--collect-data" "manifold3d")
+          for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
+                     before-after-render:before_after_render.py \
+                     viewer-data-render:viewer_data_render.py; do
+            name="${t%%:*}"; entry="sutura/${t#*:}"
+            python -m PyInstaller "${PYS[@]}" --name "$name" --onedir "$entry"
+          done
+          # ship manifold_bridge.py beside sutura-cli so the bundle-aware
+          # _resolve_bridge() in repair.py finds it (stage 2, in-process)
+          cp sutura/manifold_bridge.py dist/sutura-cli/
+
+      - name: Build GUI .app (windowed onedir)
+        run: |
+          set -e
+          python -m PyInstaller \
+            --noconfirm --log-level WARN \
+            --paths . --paths sutura \
+            --hidden-import sutura \
+            --hidden-import pymeshlab --hidden-import manifold3d \
+            --hidden-import trimesh \
+            --hidden-import classification --hidden-import confidence \
+            --hidden-import defects --hidden-import mesh_classifier \
+            --hidden-import history --hidden-import heatmap \
+            --hidden-import heatmap_render --hidden-import viewer_common \
+            --hidden-import updater --hidden-import numpy --hidden-import scipy \
+            --collect-data pymeshlab --collect-data manifold3d \
+            --name SuturaGUI --windowed sutura/gui.py
+
+      - name: Assemble .app (copy tools into Contents/MacOS)
+        run: |
+          set -e
+          MACOS="dist/SuturaGUI.app/Contents/MacOS"
+          for t in sutura-cli heatmap-render before-after-render viewer-data-render; do
+            cp -R "dist/$t" "$MACOS/"
+          done
+          ls -la "$MACOS"
+
+      - name: Create .dmg (UDZO, versioned name)
+        run: |
+          set -e
+          VERSION="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' sutura/repair.py | head -1)"
+          echo "VERSION=$VERSION"
+          test -n "$VERSION"
+          hdiutil create -volname "Sutura" -srcfolder dist/SuturaGUI.app \
+            -ov -format UDZO "dist/Sutura-v${VERSION}.dmg"
+          ls -lh "dist/Sutura-v${VERSION}.dmg"
+          echo "dmg_path=dist/Sutura-v${VERSION}.dmg" >> "$GITHUB_ENV"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish .dmg to GitHub Release
+        # v3 (v2 is EOL). Deliberately NO name/body: softprops retains the
+        # original release info when the tag already has a release, so a
+        # manually written release body (with the unsigned-build note) is
+        # never clobbered - this step only uploads the .dmg asset.
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.tag.outputs.ref }}
+          files: ${{ env.dmg_path }}
+          overwrite_files: true
