@@ -78,6 +78,7 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - Input files are never overwritten — output always gets a `_fixed` suffix (or `-o`).
 - Robustness is a hard requirement: truncated files, wrong-ext-mismatched content, NaN/Inf coordinates, empty/degenerate meshes must return a clear JSON `error` and exit 1, never a crash or a silent "clean" report.
 - VCG chain lives in `stage1_chain`; `delete_fallback_chain` is tried only when the main chain leaves non-manifold edges/vertices, and is kept only if it improves them.
+- **Git commit identity:** user.name `Krateian`, user.email `arifgokdas@gmail.com` (bu Sutura repo'su icin local git config'te ayarli). Gecmis commit'lerde bazi `Arif GÖKDAŞ <krateian@MacBook-Air-2.local>` girdileri var (eski/yanlislikla) - gecmis duzeltilmedi, bundan sonraki TUM commit'ler Krateian kimligiyle atilmali. Yeni bir makinede/ortamda calisirken once `git config --get user.name` / `user.email` kontrol edilmeli, yanlissa yukarida verilen degerlerle duzeltilmeli.
 
 ## README upkeep
 
