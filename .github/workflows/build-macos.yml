@@ -79,7 +79,7 @@ jobs:
           # _resolve_bridge() in repair.py finds it (stage 2, in-process)
           cp sutura/manifold_bridge.py dist/sutura-cli/
 
-- name: Build GUI .app (windowed onedir)
+      - name: Build GUI .app (windowed onedir)
         run: |
           set -e
           python -m PyInstaller \
