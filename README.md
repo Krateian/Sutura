@@ -87,7 +87,7 @@ Sutura and where you should still double-check the output.
 | Dry-run (`--dry-run`) | ~50% (beta) | New in 0.1.8-beta.1: reports the would-do plan (detected type, mode, Stage 1 thresholds, found holes / debris / self-intersections, stage 2 availability) and writes nothing. Beta quality: the plan is derived from the input analysis, so exact hole-close counts are not guaranteed to match a real run, and the extreme-mode extra passes are not simulated. It is covered by `tests/test_validate.py` (validate and dry-run share the suite). |
 | Repair modes (`--mode` ladder) | ~80% | Five-step aggressiveness ladder (`low`/`medium`/`auto`/`aggressive`/`extreme`) for the Stage 1 thresholds, exposed both as a CLI flag and a batch-wide GUI picker; `auto` keeps the historical classifier + confidence-gate behaviour byte-identical and is regression-tested (`tests/test_repair_mode.py`). The mode fixes the BASE `maxholesize`, which is then raised mesh-sensitively (`max(base, 2 × longest input loop)`, never lowered) so large scan holes close in every mode. Caveats: `extreme` can delete a small object (reported as the distinct `extreme_removed_object` error, not malformed input) and the per-type tuned threshold values are experimental. |
 | Repair profiles (`--profile`) | ~70% (new) | Five named Stage 1 threshold presets (`mechanical`/`organic`/`scan`/`miniature`/`fast`), opt-in via CLI or a batch-wide GUI dropdown; only effective while the mode is `auto` (an explicit fixed mode wins). Default (no profile) is byte-identical to before. Caveat: `miniature` lowers `mincomponentsize` to 1 (a deliberate opt-in that preserves tiny parts; the default path keeps it `>= 8`). |
-| Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). The **default** engine is the **experimental** one (`sutura/mesh_classifier_v2.py`): RANSAC plane segmentation + a small trained head that fixes the documented scanner bias on the real-world corpus (mechanical recall 2/7 → 6/7, no organic regression); it falls back to classic silently on exceptions/invalid results, and the original classic engine stays selectable via `--classifier-engine classic` / `SUTURA_CLASSIFIER_ENGINE=classic`. Experimental: the per-type values are still estimated starting points, curved-but-mechanical parts (cylinders, fillets) are not classified at all, and a confident-but-wrong v2 prediction is not re-checked against classic — treat the detected type on scan-derived input with caution. |
+| Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). The **default** engine is the **experimental** one (`sutura/mesh_classifier_v2.py`): RANSAC plane segmentation + a curvature developability signal + a small trained head that fixes the documented scanner bias on the real-world corpus (mechanical recall 2/7 → 6/7, no organic regression) and classifies curved-but-mechanical parts (cylinders, tubes, fillets) that classic reads as unknown. Calibration on the 35-mesh synthetic set: 35/35, LOO-CV 46/47. It falls back to classic silently on exceptions/invalid results, and the original classic engine stays selectable via `--classifier-engine classic` / `SUTURA_CLASSIFIER_ENGINE=classic`. Experimental: the per-type values are still estimated starting points, a bent pipe (doubly-curved tube) is still missed, and a confident-but-wrong v2 prediction is not re-checked against classic — treat the detected type on scan-derived input with caution. |
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
 | Repair Health / Risk | ~60% (new) | A separate, additive scoring system on top of the classic confidence: `repair_health` (0–100, final-mesh soundness: watertight + no non-manifold/self-intersections/holes) and `repair_risk` (0–100, how much the repair altered the mesh: face/vertex/component/volume deltas), plus a two-axis status label (`safe`/`review`/`caution`/`failed`/`unavailable`) derived from a config lookup table. Weights/thresholds live in `sutura/repair_score_config.json`, not code; fail-silent (never breaks a repair); regression-tested (`tests/test_repair_score.py`). Experimental: the weight values and tier boundaries are starting points. |
 | Repair budget (`--max-geometry-change` / `--max-risk` / `--force`) | ~60% (new) | Optional guard-rails: when the actual geometry change (max of \|volume\|/\|surface\| change %) or the `repair_risk` score exceeds the budget, the output is never saved silently — interactive `[y/N]` prompt on a TTY, else the save is declined with the explicit `"status": "budget_declined"` marker (issue `budget_exceeded`, exit 1), and `--force` saves without asking. Within budget the numbers are still reported (`budget` block). Reuses the existing volume/surface/risk metrics (no recomputation); the GUI offers the same budgets and re-runs declined files with `--force` after confirmation. Regression-tested (`tests/test_budget.py`). Experimental: 0 = no limit, and a declined save means the file is simply not written. |
@@ -677,36 +677,52 @@ prediction on the calibration set.)
 ### Known limitation of the classifier
 
 Curved-but-mechanical parts (e.g. a cylinder, shaft, or filleted geometry) are
-**not** classified — they fall into the `unknown` bucket and keep the default
-parameters. This is a deliberate trade-off: the classifier only fires on
-clearly flat/sharp mechanical or clearly smooth organic meshes, and prefers to
-do nothing over applying a wrong parameter set.
+**not** classified by the classic engine — they fall into the `unknown` bucket
+and keep the default parameters. This is a deliberate trade-off of classic: it
+only fires on clearly flat/sharp mechanical or clearly smooth organic meshes,
+and prefers to do nothing over applying a wrong parameter set. The **default
+(experimental) engine now handles these shapes**: its curvature
+developability signal (the area fraction of the surface whose normals lie on
+a common great circle, the geometric signature of a cylinder/fillet/pipe)
+plus the trained head classifies cylinders, tubes and fillets as mechanical,
+including damaged variants. A genuinely doubly-curved mechanical part (a bent
+pipe) is still missed — it is geometrically closer to a torus than to a
+cylinder.
 
 ### Classifier engines (`--classifier-engine`)
 
 The **experimental** engine (`sutura/mesh_classifier_v2.py`) is the **default**:
 on the labeled synthetic set and a 16-mesh real-world corpus it is measurably
 better than the classic heuristic (mechanical recall 2/7 → 6/7, no organic
-regression; LOO-CV 37/40 vs classic 35/40 on the synthetic set). The original
+regression; on the 35-mesh synthetic set it scores 35/35 with LOO-CV 46/47 vs
+classic 37/47). The original
 **classic** engine (`mesh_classifier`) remains available — select it with
 `--classifier-engine classic` or the `SUTURA_CLASSIFIER_ENGINE=classic` env var
 (valid for repair, validate and `--dry-run` alike). Both engines report the
 engine actually used as `classifier_engine` (JSON) and a `Classifier:` line
 (`--human`).
 
-The experimental engine adds two signals to the classic features:
+The experimental engine adds three things to the classic features:
 
 1. **RANSAC plane segmentation** — robust planar patches covering ≥1% of the
    mesh area are detected with a RANSAC loop (face centroid + normal as the
    sample unit); the patch **count** and **area fraction** join the features.
-2. **A small trained logistic-regression head** (pure numpy) over
-   `[near90, flat, gentle, plane_count, plane_area]`, trained on the 28-mesh
-   synthetic set plus the real-world corpus (`tests/real-world-samples/`, the
-   mechanical-but-organic scans labeled correctly). The weights are baked in;
+2. **Curvature developability signal** (`developable_fraction`) — the
+   area-weighted fraction of the surface whose normals lie on a common great
+   circle, the geometric signature of a developable (zero-Gaussian-curvature)
+   surface: cylinders, tubes, fillets and other ruled curved mechanical parts.
+   Doubly-curved organic forms (spheres, blobs, torus) only ever have a thin
+   band perpendicular to any single axis, so they score low. This is what a
+   plane-only RANSAC cannot see — a cylinder has no planar patches.
+3. **A small trained logistic-regression head** (pure numpy) over
+   `[near90, flat, gentle, plane_count, plane_area, developable_fraction]`,
+   trained on the 35-mesh synthetic set plus the real-world corpus
+   (`tests/real-world-samples/`, the mechanical-but-organic scans labeled
+   correctly). The weights are baked in;
    training + leave-one-out CV live in `scripts/train_classifier_v2.py`.
 
-Caveats: the trained head is a weak signal on ~40 meshes (LOO-CV 0.925 vs
-classic 0.875 — expect variance), and the automatic fallback only covers
+Caveats: the trained head is a weak signal on ~47 labeled meshes (LOO-CV 0.979
+— expect variance), and the automatic fallback only covers
 **exceptions / invalid results** (NaN, missing keys) — a confident-but-wrong
 experimental prediction is not re-checked against classic. If the experimental
 engine crashes or returns something invalid it silently falls back to classic

@@ -11,9 +11,10 @@ features and a small trained head. This test guards the invariants:
   3. With the head disabled (V2_WEIGHTS = None) the decision is byte-identical
      to classic -- the "v2 is a superset until the head is baked" invariant.
   4. The trained head (when baked) keeps the synthetic set at 100%: mechanical
-     boxes/gears/lattices/extrusions and organic spheres/torus/capsule/blob.
-  5. The head reports the RANSAC metrics (plane_count, plane_area) alongside
-     the classic ones.
+     boxes/gears/lattices/extrusions/cylinders/tubes/fillets and organic
+     spheres/torus/capsule/blob.
+  5. The head reports the RANSAC + curvature metrics (plane_count, plane_area,
+     developable_fraction) alongside the classic ones.
 
 Usage: python3 tests/test_mesh_classifier_v2.py  (needs the venv for trimesh)
 """
@@ -73,7 +74,8 @@ def test_return_shape_and_metrics():
         assert set(r) == {'type', 'confidence', 'metrics'}, r
         assert r['type'] in ('mechanical', 'organic', 'unknown'), r
         assert 0.0 <= r['confidence'] <= 1.0, r
-        for k in ('near90', 'flat', 'gentle', 'plane_count', 'plane_area'):
+        for k in ('near90', 'flat', 'gentle', 'plane_count', 'plane_area',
+                  'developable_fraction'):
             assert k in r['metrics'], (m['name'], k, r['metrics'])
 
 

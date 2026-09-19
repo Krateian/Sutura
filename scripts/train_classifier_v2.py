@@ -2,14 +2,15 @@
 """Train + evaluate the v2 classifier head (RANSAC + logistic regression).
 
 Builds a labeled feature matrix from:
-  * the 28-mesh synthetic set (tests/make_classifier_set.py, labels as-is)
+  * the 35-mesh synthetic set (tests/make_classifier_set.py, labels as-is)
   * the 16-mesh real-world corpus (tests/real-world-samples/, mechanical
     scans correctly labeled mechanical -- the documented known-limitation
     files; unlabeled/unknown meshes are EXCLUDED from training but shown in
     the comparison table)
 
-Features per mesh: [near90, flat, gentle, plane_count, plane_area] where the
-last two come from mesh_classifier_v2's RANSAC plane segmentation.
+Features per mesh: [near90, flat, gentle, plane_count, plane_area,
+developable_fraction] where plane_* come from mesh_classifier_v2's RANSAC
+plane segmentation and developable_fraction from its curvature signal.
 
 Reports:
   1. classic engine confusion on the labeled set (baseline)
@@ -65,7 +66,8 @@ REAL_LABELS = {
 TRAIN_EXCLUDED = ('thingi10k_100045.stl', 'thingi10k_100827.stl',
                   'thingi10k_224108.stl', 'thingi10k_502009.stl')
 
-FEATURES = ('near90', 'flat', 'gentle', 'plane_count', 'plane_area')
+FEATURES = ('near90', 'flat', 'gentle', 'plane_count', 'plane_area',
+            'developable_fraction')
 
 
 def load_stl(path):
@@ -80,7 +82,8 @@ def features_of(verts, tris, engine):
     r = engine.classify_mesh(verts, tris)
     m = r['metrics']
     return np.array([m['near90'], m['flat'], m['gentle'],
-                     m['plane_count'], m['plane_area']], dtype=np.float64)
+                     m['plane_count'], m['plane_area'],
+                     m['developable_fraction']], dtype=np.float64)
 
 
 def build_dataset():

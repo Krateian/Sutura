@@ -2,9 +2,10 @@
 """Labeled synthetic mesh generator for the mesh classifier.
 
 Produces a deterministic set of (verts, tris, ground_truth_label) meshes:
-clearly mechanical primitives (boxes, gears, lattices, extruded profiles)
-and clearly organic ones (UV/ico spheres, torus, capsule, noisy blobs),
-each at a few levels of detail, plus damaged variants (holes + debris).
+clearly mechanical primitives (boxes, gears, lattices, extruded profiles,
+cylinders, thin-walled tubes, a filleted bracket) and clearly organic ones
+(UV/ico spheres, torus, capsule, noisy blobs), each at a few levels of
+detail, plus damaged variants (holes + debris).
 
 Everything is built in memory with numpy (+ trimesh for a few primitives);
 no files are written and no network is used, so tests and the calibration
@@ -162,6 +163,59 @@ def _extruded_profiles():
     return out
 
 
+# ------------------------------------------------- curved mechanical
+
+def _quarter_cylinder_along_x(radius, height, sections, cy=0.0, cz=0.0):
+    """A quarter-cylinder (90-degree fillet band) with its axis along X.
+
+    Builds a cylinder, translates it to ``(0, cy, cz)`` and keeps only the
+    faces whose centroid lies in the +y/+z quadrant -- the curved transition
+    of a fillet between a vertical wall and a horizontal base."""
+    m = trimesh.creation.cylinder(
+        radius=radius, height=height, sections=sections,
+        transform=np.array([[0, 0, 1, 0], [0, 1, 0, 0],
+                            [-1, 0, 0, 0], [0, 0, 0, 1]], dtype=np.float64))
+    v = np.asarray(m.vertices, dtype=np.float64) + np.array([0.0, cy, cz])
+    f = np.asarray(m.faces, dtype=np.int64)
+    cen = v[f].mean(axis=1)
+    keep = (cen[:, 1] >= cy + 1e-6) & (cen[:, 2] >= cz + 1e-6)
+    return np.asarray(v, dtype=np.float32), np.asarray(f[keep], dtype=np.int32)
+
+
+def _filleted_bracket():
+    """A mechanical bracket: two perpendicular plates joined by a 90-degree
+    fillet (quarter-cylinder). Flat faces PLUS a curved developable
+    transition -- the classic 'curved-but-mechanical' shape."""
+    wall = trimesh.creation.box(extents=(1.0, 0.06, 0.5))
+    wall.apply_translation([0, 0, 0.25])          # y in [-0.03, 0.03], z in [0, 0.5]
+    base = trimesh.creation.box(extents=(1.0, 0.5, 0.06))
+    base.apply_translation([0, 0.25, 0])          # y in [0, 0.5], z in [-0.03, 0.03]
+    wall_v, wall_t = _as_arrays(wall)
+    base_v, base_t = _as_arrays(base)
+    fil_v, fil_t = _quarter_cylinder_along_x(0.15, 1.0, 16, cy=0.03, cz=0.03)
+    off = len(wall_v) + len(base_v)
+    v = np.vstack([wall_v, base_v, fil_v])
+    t = np.vstack([wall_t, base_t, fil_t + off])
+    return v, t
+
+
+def _curved_mechanical():
+    """Cylinders, thin-walled tubes and a filleted bracket -- mechanical
+    parts whose surfaces are curved (developable) rather than planar. These
+    are the documented 'curved-but-mechanical' gap: a plane-only RANSAC
+    cannot see them, so they need the curvature signal."""
+    out = []
+    for sections in (16, 32):
+        m = trimesh.creation.cylinder(radius=0.5, height=2.0, sections=sections)
+        out.append(('cylinder_%d' % sections, *_as_arrays(m), 'mechanical'))
+    for sections in (12, 24):
+        m = trimesh.creation.annulus(r_min=0.4, r_max=0.5, height=2.0,
+                                     sections=sections)
+        out.append(('tube_%d' % sections, *_as_arrays(m), 'mechanical'))
+    out.append(('fillet_bracket', *_filleted_bracket(), 'mechanical'))
+    return out
+
+
 # ------------------------------------------------------------- organic
 
 def _uv_sphere(count):
@@ -210,12 +264,17 @@ def _organic():
 
 def iter_meshes():
     """Yield dicts: {'name', 'verts', 'tris', 'label'} for every mesh."""
-    mechanical = _boxes() + _gears() + _lattices() + _extruded_profiles()
+    curved = _curved_mechanical()
+    mechanical = _boxes() + _gears() + _lattices() + _extruded_profiles() + curved
     organic = _organic()
 
-    # damaged variants: one mechanical, one organic
+    # damaged variants: one planar mechanical, one curved mechanical, one organic
     _name, bv, bt, _label = _boxes()[0]
     damaged_mech = _damage(bv, bt)
+    _name, cv, ct, _label = curved[0]  # cylinder_16
+    damaged_cyl = _damage(cv, ct)
+    _name, fv, ft, _label = curved[-1]  # fillet_bracket
+    damaged_fil = _damage(fv, ft)
     _name, sv, st, _label = _organic()[0]  # uv_sphere_16
     damaged_org = _damage(sv, st)
 
@@ -225,6 +284,8 @@ def iter_meshes():
     for name, v, t, label in organic:
         rows.append((name, v, t, label))
     rows.append(('damaged_box', *damaged_mech, 'mechanical'))
+    rows.append(('damaged_cylinder', *damaged_cyl, 'mechanical'))
+    rows.append(('damaged_fillet_bracket', *damaged_fil, 'mechanical'))
     rows.append(('damaged_uv_sphere', *damaged_org, 'organic'))
 
     for name, v, t, label in rows:

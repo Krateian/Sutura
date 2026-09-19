@@ -16,13 +16,23 @@ A) **RANSAC plane segmentation** (robust, noise-tolerant): instead of the
    do not retry those; RANSAC is the new approach.
 
 B) **Small trained classifier head**: a logistic regression (pure numpy, no
-   scipy/sklearn) over ``[near90, flat, gentle, plane_count, plane_area]``,
-   trained on the 28-mesh synthetic set + the real-world corpus
-   (``tests/real-world-samples/``, mechanical-but-organic scans correctly
-   labeled mechanical). The weights are baked in as constants; training +
-   leave-one-out CV lives in ``scripts/train_classifier_v2.py``. With only ~40
-   labeled meshes the model is small and overfitting risk is real -- see that
-   script's report before trusting the head.
+   scipy/sklearn) over ``[near90, flat, gentle, plane_count, plane_area,
+   developable_fraction]``, trained on the 35-mesh synthetic set + the
+   real-world corpus (``tests/real-world-samples/``, mechanical-but-organic
+   scans correctly labeled mechanical). The weights are baked in as
+   constants; training + leave-one-out CV lives in
+   ``scripts/train_classifier_v2.py``. With only ~45 labeled meshes the model
+   is small and overfitting risk is real -- see that script's report before
+   trusting the head.
+
+C) **Curvature developability signal** (``_curvature_developable_fraction``):
+   the plane-only RANSAC cannot see cylinders/fillets/pipes (they have no
+   planar patches), which is the documented "curved-but-mechanical" gap. A
+   cylinder is *developable* (zero Gaussian curvature -> its normal field is
+   1-dimensional); a sphere/blob/torus is doubly-curved (2-dimensional
+   normal field). The signal measures the area fraction whose per-face
+   neighbour-normal spread is 1-D, i.e. exactly the geometric signature of
+   curved-but-mechanical surfaces.
 
 The public return shape ``{'type', 'confidence', 'metrics'}`` is identical to
 classic so the engine is a drop-in. If ``V2_WEIGHTS`` is None (not baked yet)
@@ -236,32 +246,85 @@ def _ransac_plane_features(verts, tris):
     return plane_count, round(frac, 4)
 
 
+# Curvature / developability signal tuning (experimental).
+_CURV_AXIS_TOL_DEG = 8.0       # |normal . axis| <= sin(tol) counts as on the
+#                              #   great circle perpendicular to the axis
+
+
+def _curvature_developable_fraction(verts, tris):
+    """Area-weighted fraction of the surface whose normals lie on a common
+    great circle -- the signature of a developable surface (a cylinder, pipe,
+    fillet or other ruled curved part).
+
+    A developable surface has zero Gaussian curvature, so its normal field
+    (the Gauss map) is 1-dimensional: all side-face normals of a cylinder are
+    perpendicular to its axis and lie on one great circle of the unit sphere.
+    Doubly-curved organic forms (spheres, blobs, torus) have normals spread
+    over a 2-D region of the Gauss sphere and only a thin band is ever
+    perpendicular to any single axis. The plane-based RANSAC cannot see any
+    of this (a cylinder has no planar patches), so this signal is the
+    principled discriminator for "curved-but-mechanical" parts.
+
+    The best-fit common axis is the smallest-eigenvalue eigenvector of the
+    area-weighted face-normal covariance; a face counts when its normal is
+    within ``_CURV_AXIS_TOL_DEG`` of perpendicular to that axis. A global
+    area statistic (not a per-face differential estimate) so it is robust to
+    damage and scan noise. Pure numpy, deterministic, O(faces).
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    f = np.asarray(tris, dtype=np.int64)
+    if len(f) < 3:
+        return 0.0  # a common axis needs at least a few faces
+    a = v[f[:, 0]]
+    b = v[f[:, 1]]
+    c = v[f[:, 2]]
+    cr = np.cross(b - a, c - a)
+    mag = np.linalg.norm(cr, axis=1)
+    mag[mag == 0] = 1.0
+    n = cr / mag[:, None]
+    areas = mag * 0.5
+    total = float(areas.sum())
+    if total <= 0:
+        return 0.0
+    try:
+        cov = np.cov(n, rowvar=False, aweights=areas / total)
+        # smallest-eigenvalue eigenvector = best-fit common axis for the normals
+        u = np.linalg.eigh(cov)[1][:, 0]
+    except (np.linalg.LinAlgError, FloatingPointError):
+        return 0.0  # degenerate/NaN normals: never crash the classifier
+    npar = np.abs(n @ u)
+    sin_tol = np.sin(np.radians(_CURV_AXIS_TOL_DEG))
+    frac = float((areas * (npar <= sin_tol)).sum() / total)
+    return round(min(1.0, frac), 4)
+
+
 # --------------------------------------------------------------------------
 # (B) Trained logistic head (experimental, numpy-only).
 # --------------------------------------------------------------------------
 # Baked weights from scripts/train_classifier_v2.py. Format (matches the
 # trainer exactly: it builds Xb = hstack([ones, Xs])):
 #   w[0]    : bias
-#   w[1:]   : weights for the 5 standardized features
-#              [near90, flat, gentle, plane_count, plane_area]
-#   V2_MEAN : feature means (5-feature order)
-#   V2_STD  : feature stds (5-feature order, 1.0 where 0)
+#   w[1:]   : weights for the 6 standardized features
+#              [near90, flat, gentle, plane_count, plane_area, developable]
+#   V2_MEAN : feature means (6-feature order)
+#   V2_STD  : feature stds (6-feature order, 1.0 where 0)
 # Set V2_WEIGHTS to None to disable the head and make classify_mesh behave
-# exactly like classic (metrics still include the RANSAC features).
-V2_WEIGHTS = [2.1311, 3.6305, -1.5379, -0.0756, 0.4233, 4.5686]
-V2_MEAN = [22.2668, 25.0580, 39.9385, 4.3250, 0.2576]
-V2_STD = [29.2791, 15.1275, 33.3247, 5.6142, 0.3205]
+# exactly like classic (metrics still include the RANSAC + curvature features).
+V2_WEIGHTS = [2.8604, 2.6639, -2.2499, -0.6524, 0.5539, 3.8095, 1.7295]
+V2_MEAN = [24.7311, 28.3521, 34.4855, 5.8085, 0.3104, 0.5297]
+V2_STD = [27.8310, 16.1076, 33.4674, 7.3300, 0.3507, 0.3008]
 
 
-def _head_p_mechanical(near90, flat, gentle, plane_count, plane_area):
+def _head_p_mechanical(near90, flat, gentle, plane_count, plane_area,
+                       developable):
     """Return p(mechanical) in [0,1] from the trained head, or None if no
     weights are baked."""
     if V2_WEIGHTS is None:
         return None
-    x = np.array([near90, flat, gentle, plane_count, plane_area],
+    x = np.array([near90, flat, gentle, plane_count, plane_area, developable],
                  dtype=np.float64)
     xs = (x - np.asarray(V2_MEAN, dtype=np.float64)) / np.asarray(V2_STD,
-                                                                  dtype=np.float64)
+                                                                   dtype=np.float64)
     w = np.asarray(V2_WEIGHTS, dtype=np.float64)
     # w[0] is the bias, w[1:] are the feature weights (trainer layout).
     z = float(w[0] + np.dot(xs, w[1:]))
@@ -284,6 +347,7 @@ def classify_mesh(verts, tris):
     """
     near90, flat, gentle = _dihedral_stats(verts, tris)
     plane_count, plane_area = _ransac_plane_features(verts, tris)
+    developable = _curvature_developable_fraction(verts, tris)
     mechanical, organic = _class_scores(near90, flat, gentle)
 
     metrics = {
@@ -294,9 +358,11 @@ def classify_mesh(verts, tris):
         'organic_score': round(organic, 3),
         'plane_count': plane_count,
         'plane_area': plane_area,
+        'developable_fraction': developable,
     }
 
-    p_mech = _head_p_mechanical(near90, flat, gentle, plane_count, plane_area)
+    p_mech = _head_p_mechanical(near90, flat, gentle, plane_count, plane_area,
+                                developable)
 
     if p_mech is None:
         # no trained head baked yet -> classic decision
