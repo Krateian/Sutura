@@ -68,6 +68,16 @@ if ! conda run -n "$ENV_NAME" python -c \
     die "import check failed - dependencies not usable in $ENV_NAME"
 fi
 ENV_PY="$(conda run -n "$ENV_NAME" which python)"
+# Qt plugin path must be pinned to PySide6's OWN Qt6 plugins. The conda env
+# also carries a Qt5 stack (qt-main) whose plugins live under $ENV/plugins;
+# when a GUI app is launched from Finder/Spotlight (minimal environment, no
+# shell rc sourced) the Qt6 runtime can resolve the plugin search path to the
+# Qt5 directory, fail to load its cocoa plugin ("Could not find the Qt platform
+# plugin cocoa") and abort. Terminal launches work only because PySide6 happens
+# to find its own path first. Pin it so the .app and sutura-gui work everywhere.
+QT_PLUGIN_PATH="$(conda run -n "$ENV_NAME" python -c \
+    'from PySide6.QtCore import QLibraryInfo; \
+     print(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath))')"
 
 # 7) copy the application files --------------------------------------------
 mkdir -p "$APP_DIR" "$BIN_DIR"
@@ -97,6 +107,7 @@ chmod 0755 "$BIN_DIR/sutura"
 # 9) GUI launcher -----------------------------------------------------------
 cat > "$BIN_DIR/sutura-gui" <<EOF
 #!/bin/bash
+export QT_PLUGIN_PATH="$QT_PLUGIN_PATH"
 exec "$ENV_PY" "$APP_DIR/gui.py" "\$@"
 EOF
 chmod 0755 "$BIN_DIR/sutura-gui"
@@ -110,6 +121,7 @@ APP="$APPLICATIONS_DIR/Sutura.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cat > "$APP/Contents/MacOS/Sutura" <<EOF
 #!/bin/bash
+export QT_PLUGIN_PATH="$QT_PLUGIN_PATH"
 exec "$BIN_DIR/sutura-gui" "\$@"
 EOF
 chmod 0755 "$APP/Contents/MacOS/Sutura"
