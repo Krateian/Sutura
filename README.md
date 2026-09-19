@@ -159,7 +159,7 @@ needed.
   with `./install.sh` / `./install-macos.sh`.
 * **Standalone .app: stage 2 reports skipped / low confidence.** Stage 2
   (manifold3d) needs `manifold_bridge.py` next to the bundled CLI (e.g.
-  `SuturaGUI.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) with
+  `Sutura.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) with
   `manifold3d`/`trimesh` bundled; otherwise `stage2_bridge_available=false`
   and confidence drops ~25 points.
 
@@ -223,20 +223,23 @@ conda is missing, creates a `sutura-env` conda environment (Python 3.11),
 installs pymeshlab from conda-forge and manifold3d/trimesh/PySide6 from pip,
 verifies the imports, copies the app files to `~/.local/share/sutura/`, and
 creates `~/.local/bin/sutura` (CLI) and `~/.local/bin/sutura-gui` launchers.
-It is macOS-only and re-runnable.
+It also creates a native **`~/Applications/Sutura.app`** so you can launch the
+GUI straight from **Spotlight** (press `Cmd+Space`, type *Sutura*, Enter) —
+no terminal needed. It is macOS-only and re-runnable.
 
 Note: conda can be initialized non-interactively; if the script asks you to
 restart the terminal for `conda init` to take effect, do so and re-run it.
 
 Each tagged release also ships a **macOS .dmg** (`Sutura-vX.Y.Z.dmg`, built
 by the `Build macOS .app/.dmg` workflow) — a self-contained
-`SuturaGUI.app`. The .dmg is **unsigned** (no Apple Developer Program /
-notarization applied yet), so the first open shows macOS's *"unidentified
-developer"* warning. Open it with **right-click → Open**, or clear the
+`Sutura.app`. Drag it to `/Applications` (or double-click to open) and launch
+from Spotlight the same way. The .dmg is **unsigned** (no Apple Developer
+Program / notarization applied yet), so the first open shows macOS's
+*"unidentified developer"* warning. Open it with **right-click → Open**, or clear the
 quarantine attribute first:
 
 ```sh
-xattr -dr com.apple.quarantine SuturaGUI.app
+xattr -dr com.apple.quarantine Sutura.app
 ```
 
 ## Usage

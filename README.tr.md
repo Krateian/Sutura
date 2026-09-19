@@ -163,7 +163,7 @@ Diğer dağıtımlarda, varsayılan `python3` *3.11 ise* ek kurulum gerekmez.
   `./install.sh` / `./install-macos.sh` ile yeniden kurun.
 * **Standalone .app: stage 2 atlandı / düşük güven.** Aşama 2 (manifold3d)
   bundled CLI'nin yanında `manifold_bridge.py` ister (ör.
-  `SuturaGUI.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) ve
+  `Sutura.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) ve
   `manifold3d`/`trimesh` bundle içinde olmalı; aksi halde
   `stage2_bridge_available=false` olur ve güven ~25 puan düşer.
 
@@ -227,20 +227,23 @@ Miniforge kurar, `sutura-env` conda ortamını oluşturur (Python 3.11),
 pymeshlab'ı conda-forge'dan, manifold3d/trimesh/PySide6'yı pip'ten kurar,
 import'ları doğrular, uygulama dosyalarını `~/.local/share/sutura/`'ya kopyalar
 ve `~/.local/bin/sutura` (CLI) ile `~/.local/bin/sutura-gui` başlatıcılarını
-oluşturur. Yalnızca macOS içindir ve yeniden çalıştırılabilir.
+oluşturur. Ayrıca yerel bir **`~/Applications/Sutura.app`** oluşturur — GUI'yi
+doğrudan **Spotlight**'tan açabilirsiniz (`Cmd+Space`, *Sutura* yazın, Enter)
+— terminal gerekmez. Yalnızca macOS içindir ve yeniden çalıştırılabilir.
 
 Not: conda etkileşimsiz başlatılabilir; betik `conda init` için terminali
 yeniden başlatmanızı isterse öyle yapın ve betiği yeniden çalıştırın.
 
 Her etiketli sürümde ayrıca bir **macOS .dmg** de yayınlanır
 (`Sutura-vX.Y.Z.dmg`, `Build macOS .app/.dmg` workflow'uyla derlenir) —
-kendi kendine yeten bir `SuturaGUI.app` içerir. .dmg **imzasızdır**
+kendi kendine yeten bir `Sutura.app` içerir. `/Applications`'a sürükleyin
+(veya çift tıklayın) ve aynı şekilde Spotlight'tan açın. .dmg **imzasızdır**
 (henüz Apple Developer Program / notarization uygulanmadı), bu yüzden ilk
 açılışta macOS *"unidentified developer"* uyarısı gösterir. **Sağ tık → Aç**
 ile açın veya karantina özniteliğini önceden temizleyin:
 
 ```sh
-xattr -dr com.apple.quarantine SuturaGUI.app
+xattr -dr com.apple.quarantine Sutura.app
 ```
 
 ## Kullanım
