@@ -48,7 +48,7 @@ jobs:
         run: |
           conda install -y -c conda-forge pymeshlab
           pip install --quiet \
-            manifold3d trimesh PySide6-Essentials pyinstaller numpy scipy
+            manifold3d trimesh PySide6-Essentials pyinstaller numpy
           python -c \
             "import pymeshlab, manifold3d, trimesh, PySide6; print('deps OK')"
 
@@ -68,7 +68,6 @@ jobs:
             "--hidden-import" "history" "--hidden-import" "heatmap"
             "--hidden-import" "heatmap_render" "--hidden-import" "viewer_common"
             "--hidden-import" "updater" "--hidden-import" "numpy"
-            "--hidden-import" "scipy"
             "--collect-data" "pymeshlab" "--collect-data" "manifold3d")
           for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
                      before-after-render:before_after_render.py \
@@ -80,7 +79,7 @@ jobs:
           # _resolve_bridge() in repair.py finds it (stage 2, in-process)
           cp sutura/manifold_bridge.py dist/sutura-cli/
 
-      - name: Build GUI .app (windowed onedir)
+- name: Build GUI .app (windowed onedir)
         run: |
           set -e
           python -m PyInstaller \
@@ -93,17 +92,25 @@ jobs:
             --hidden-import defects --hidden-import mesh_classifier \
             --hidden-import history --hidden-import heatmap \
             --hidden-import heatmap_render --hidden-import viewer_common \
-            --hidden-import updater --hidden-import numpy --hidden-import scipy \
+            --hidden-import updater --hidden-import numpy \
             --collect-data pymeshlab --collect-data manifold3d \
-            --name SuturaGUI --windowed sutura/gui.py
+            --name Sutura --windowed --icon assets/icon/Sutura.icns \
+            sutura/gui.py
 
       - name: Assemble .app (copy tools into Contents/MacOS)
         run: |
           set -e
-          MACOS="dist/SuturaGUI.app/Contents/MacOS"
+          MACOS="dist/Sutura.app/Contents/MacOS"
           for t in sutura-cli heatmap-render before-after-render viewer-data-render; do
             cp -R "dist/$t" "$MACOS/"
           done
+          # native-launch metadata: the app is named "Sutura" so Spotlight
+          # finds it by name, with the teal icon in the bundle
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName Sutura" \
+            -c "Set :CFBundleDisplayName Sutura" \
+            -c "Set :CFBundleIconFile Sutura.icns" \
+            dist/Sutura.app/Contents/Info.plist
+          cp assets/icon/Sutura.icns "dist/Sutura.app/Contents/Resources/"
           ls -la "$MACOS"
 
       - name: Create .dmg (UDZO, versioned name)
@@ -112,7 +119,7 @@ jobs:
           VERSION="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' sutura/repair.py | head -1)"
           echo "VERSION=$VERSION"
           test -n "$VERSION"
-          hdiutil create -volname "Sutura" -srcfolder dist/SuturaGUI.app \
+          hdiutil create -volname "Sutura" -srcfolder dist/Sutura.app \
             -ov -format UDZO "dist/Sutura-v${VERSION}.dmg"
           ls -lh "dist/Sutura-v${VERSION}.dmg"
           echo "dmg_path=dist/Sutura-v${VERSION}.dmg" >> "$GITHUB_ENV"

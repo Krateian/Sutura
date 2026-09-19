@@ -54,7 +54,7 @@ def _resolve_bridge():
 
 BRIDGE = _resolve_bridge()
 
-VERSION = "0.2.3"
+VERSION = "0.2.5"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -108,6 +108,29 @@ MODE_PARAMS = {
 }
 REPAIR_MODES = ('low', 'medium', 'auto', 'aggressive', 'extreme')
 
+# Repair profiles: named Stage 1 threshold presets for a repair character.
+# They are OPT-IN (via --profile / the GUI dropdown) and only take effect
+# when the mode is 'auto' -- an explicit fixed mode always wins (it is the
+# more specific aggressiveness control). Auto + profile bypasses the mesh
+# classifier for parameter selection (it still runs for the informative
+# detected_type/confidence). Default behaviour (no --profile) is unchanged.
+#
+#   mechanical : precise parts, modest hole fill (same as the auto
+#                mechanical type values).
+#   organic    : drop scan debris harder, close large regions.
+#   scan       : aggressive debris + huge hole fill for scan meshes.
+#   miniature  : keep tiny parts (mincomponentsize=1, an explicit opt-in --
+#                the default path deliberately keeps >= 8).
+#   fast       : quick pass, small holes only.
+PROFILES = {
+    'mechanical': {'mincomponentsize': 8, 'maxholesize': 300},
+    'organic': {'mincomponentsize': 12, 'maxholesize': 1000},
+    'scan': {'mincomponentsize': 4, 'maxholesize': 10000},
+    'miniature': {'mincomponentsize': 1, 'maxholesize': 50},
+    'fast': {'mincomponentsize': 8, 'maxholesize': 200},
+}
+REPAIR_PROFILES = tuple(PROFILES)
+
 # Mesh-type-aware Stage 1 thresholds (organic vs mechanical).
 #
 # These per-type values are ESTIMATED starting points, not calibrated on
@@ -132,7 +155,7 @@ _TYPE_PARAMS = {
 }
 
 
-def resolve_mode_params(mode, mesh_type, confidence):
+def resolve_mode_params(mode, mesh_type, confidence, profile=None):
     """Resolve the Stage 1 thresholds for a repair/dry-run run.
 
     Single source of truth shared by the real repair chain and --dry-run so
@@ -142,10 +165,15 @@ def resolve_mode_params(mode, mesh_type, confidence):
     ``mode`` is one of REPAIR_MODES: the fixed modes (low/medium/aggressive/
     extreme) use MODE_PARAMS directly (the classifier still runs for the
     informative detected_type/confidence, but does not drive parameters);
-    ``auto`` uses the mesh classifier + the class-specific confidence gate.
+    ``auto`` uses the mesh classifier + the class-specific confidence gate,
+    UNLESS a ``profile`` is given, in which case the profile's thresholds are
+    used (classifier still runs for info). An explicit fixed ``mode`` always
+    wins over a profile.
     """
     if mode != 'auto':
         return dict(MODE_PARAMS[mode]), False
+    if profile is not None:
+        return dict(PROFILES[profile]), False
     applied = tuning_applied_for(mesh_type, confidence)
     if not applied:
         return dict(_TYPE_PARAMS['unknown']), False
@@ -350,12 +378,14 @@ def stl_write_binary(path, verts, tris):
             f.write(struct.pack('<H', 0))
 
 
-def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
+def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
     classifier + confidence gate exactly as before; the fixed modes
     (low/medium/aggressive/extreme) use the MODE_PARAMS thresholds directly.
+    ``profile`` (optional, only effective when mode is 'auto') selects a
+    named threshold preset (see PROFILES).
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -374,8 +404,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto'):
     stats['detected_type'] = _cls['type']
     stats['detected_confidence'] = _cls['confidence']
     stats['repair_mode'] = mode
+    if profile is not None:
+        stats['repair_profile'] = profile
     _p, stats['tuning_applied'] = resolve_mode_params(
-        mode, _cls['type'], _cls['confidence'])
+        mode, _cls['type'], _cls['confidence'], profile=profile)
     # Mesh-sensitive maxholesize: a fixed value (1000) skips any boundary
     # loop longer than that (VCG counts each hole edge twice), so large
     # scan holes stay open. Raise to cover the input's largest loop, never
@@ -620,7 +652,7 @@ def obj_has_material_refs(path):
     return False
 
 
-def repair_file(src, out, tmpdir, mode='auto'):
+def repair_file(src, out, tmpdir, mode='auto', profile=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -633,7 +665,7 @@ def repair_file(src, out, tmpdir, mode='auto'):
     verts = np.asarray(load_ms.current_mesh().vertex_matrix(), dtype=np.float32)
     tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
-    report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
+    report, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -695,7 +727,7 @@ def build_mesh_block(verts, tris):
     return '\n'.join(lines)
 
 
-def repair_3mf(src, out, tmpdir, mode='auto'):
+def repair_3mf(src, out, tmpdir, mode='auto', profile=None):
     """Repair every object mesh in a 3MF archive, preserving structure."""
     meshes = parse_3mf_meshes(src)
     if not meshes:
@@ -719,7 +751,7 @@ def repair_3mf(src, out, tmpdir, mode='auto'):
             if key in cache:
                 new_v, new_t = cache[key]
             else:
-                rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode)
+                rep, new_v, new_t = repair_mesh_from_arrays(verts, tris, tmpdir, mode=mode, profile=profile)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 _rc = repair_confidence(rep)
@@ -859,7 +891,7 @@ def validate_file(src):
     return result
 
 
-def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
+def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None):
     """Report what a repair WOULD do for one mesh, without doing it.
 
     Detects the type, resolves the mode/thresholds and counts the holes /
@@ -878,7 +910,8 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
     d = detect_defects(verts, tris)
     holes = d['holes']
     nm = d['non_manifold']
-    params, tuning = resolve_mode_params(mode, cls['type'], cls['confidence'])
+    params, tuning = resolve_mode_params(mode, cls['type'], cls['confidence'],
+                                         profile=profile)
     # keep --dry-run's would_apply in sync with the real repair: the mesh-
     # sensitive maxholesize raise must be visible in the plan too.
     params['maxholesize'] = max(params['maxholesize'],
@@ -910,6 +943,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
 
     return {
         'repair_mode': mode,
+        'repair_profile': profile,
         'detected_type': cls['type'],
         'detected_confidence': cls['confidence'],
         'tuning_applied': tuning,
@@ -927,7 +961,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto'):
     }
 
 
-def dry_run_file(src, mode='auto'):
+def dry_run_file(src, mode='auto', profile=None):
     """Dry-run one mesh file. Returns the report dict; a hard error is a
     dict with an 'error' key. Never writes any output file."""
     result = {'input': src}
@@ -942,7 +976,7 @@ def dry_run_file(src, mode='auto'):
             raise ValueError('no mesh objects found in 3MF')
         reports = []
         for name, vs, ts in meshes:
-            rep = dry_run_mesh_from_arrays(vs, ts, mode)
+            rep = dry_run_mesh_from_arrays(vs, ts, mode, profile)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -985,6 +1019,8 @@ def human_report(r, show_defects=False, show_diff=False):
     lines.append('Input : %s' % r.get('input'))
     lines.append('Output: %s' % r.get('output'))
     lines.append('Mode  : %s' % r.get('repair_mode', 'auto'))
+    if r.get('repair_profile'):
+        lines.append('Profile: %s' % r['repair_profile'])
     dt = r.get('detected_type')
     if dt:
         conf = r.get('detected_confidence', 0.0)
@@ -1148,7 +1184,7 @@ def human_dry_run(r):
     return '\n'.join(lines)
 
 
-def process_file(src, human, mode='auto', no_history=False, out=None):
+def process_file(src, human, mode='auto', profile=None, no_history=False, out=None):
     """Repair one file. Returns (result_dict, category)."""
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -1162,9 +1198,9 @@ def process_file(src, human, mode='auto', no_history=False, out=None):
     t0 = time.perf_counter()
     try:
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
-            result.update(repair_3mf(src, out, tmpdir, mode=mode))
+            result.update(repair_3mf(src, out, tmpdir, mode=mode, profile=profile))
         else:
-            result.update(repair_file(src, out, tmpdir, mode=mode))
+            result.update(repair_file(src, out, tmpdir, mode=mode, profile=profile))
     except ExtremeRemovedAllError as e:
         result['error'] = str(e)
         result['extreme_removed_object'] = True
@@ -1219,6 +1255,10 @@ def main():
                         help='repair mode: low/medium/aggressive/extreme use '
                              'fixed Stage 1 thresholds; auto (default) uses '
                              'the mesh classifier + confidence gate.')
+    parser.add_argument('--profile', choices=REPAIR_PROFILES, default=None,
+                        help='named Stage 1 threshold preset: mechanical, '
+                             'organic, scan, miniature or fast. Only effective '
+                             'with mode auto; an explicit fixed mode wins.')
     parser.add_argument('--no-history', action='store_true',
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
@@ -1294,7 +1334,7 @@ def main():
         if out is not None:
             print(json.dumps({'error': '-o is not valid with --dry-run'}))
             sys.exit(1)
-        results = [dry_run_file(f, mode=mode) for f in files]
+        results = [dry_run_file(f, mode=mode, profile=args.profile) for f in files]
         nerr = sum(1 for r in results if 'error' in r)
         if len(files) == 1:
             result = results[0]
@@ -1311,7 +1351,8 @@ def main():
             print(json.dumps({'files': results}, ensure_ascii=False))
         sys.exit(0 if nerr == 0 else 1)
 
-    results = [process_file(f, human, mode=mode, no_history=args.no_history,
+    results = [process_file(f, human, mode=mode, profile=args.profile,
+                            no_history=args.no_history,
                            out=out) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')

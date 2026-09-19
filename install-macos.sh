@@ -101,6 +101,38 @@ exec "$ENV_PY" "$APP_DIR/gui.py" "\$@"
 EOF
 chmod 0755 "$BIN_DIR/sutura-gui"
 
+# 9b) Native macOS app (Spotlight: Cmd+Space -> "Sutura") -------------------
+# Minimal .app wrapper around the sutura-gui launcher: a real .app bundle in
+# ~/Applications so Spotlight finds it by name and launches the GUI without a
+# terminal. Idempotent (re-running recreates it cleanly).
+APPLICATIONS_DIR="$HOME/Applications"
+APP="$APPLICATIONS_DIR/Sutura.app"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+cat > "$APP/Contents/MacOS/Sutura" <<EOF
+#!/bin/bash
+exec "$BIN_DIR/sutura-gui" "\$@"
+EOF
+chmod 0755 "$APP/Contents/MacOS/Sutura"
+cp "$REPO_DIR/assets/icon/Sutura.icns" "$APP/Contents/Resources/AppIcon.icns"
+cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>Sutura</string>
+    <key>CFBundleIdentifier</key><string>com.krateian.sutura</string>
+    <key>CFBundleName</key><string>Sutura</string>
+    <key>CFBundleDisplayName</key><string>Sutura</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$REPO_DIR/sutura/repair.py" | head -1)</string>
+</dict>
+</plist>
+EOF
+# refresh the Launch Services + Spotlight index so the app is findable
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" 2>/dev/null || true
+mdimport "$APP" 2>/dev/null || true
+
 # 10) summary ---------------------------------------------------------------
 echo
 echo "Installed."
@@ -109,6 +141,7 @@ echo "  python    : $ENV_PY"
 echo "  files     : $APP_DIR/"
 echo "  CLI       : $BIN_DIR/sutura <file.stl|file.3mf>"
 echo "  GUI       : $BIN_DIR/sutura-gui"
+echo "  macOS app : $APP  (Spotlight: press Cmd+Space and type Sutura)"
 echo
 echo "Usage:"
 echo "  sutura model.stl --human"

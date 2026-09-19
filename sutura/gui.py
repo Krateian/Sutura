@@ -190,6 +190,14 @@ STRINGS = {
         'repair_tip': 'Repair all files',
         'stop_tip': 'Stop the running batch',
         'mode_tip': 'Choose the repair mode for the whole batch',
+        'profile_tip': 'Repair profile (whole batch): Auto uses the classifier; '
+                       'named profiles opt in to fixed Stage 1 thresholds.',
+        'profile_auto': 'Profile: Auto',
+        'profile_name_mechanical': 'Mechanical',
+        'profile_name_organic': 'Organic',
+        'profile_name_scan': 'Scan',
+        'profile_name_miniature': 'Miniature',
+        'profile_name_fast': 'Fast',
         'sug_title': 'Suggestions:',
         'sug_si_many': "Extreme mode's extra cleanup passes may help with these self-intersections.",
         'sug_si_few': 'Extreme mode also tries to clean these up.',
@@ -337,6 +345,15 @@ STRINGS = {
         'repair_tip': 'Tüm dosyaları onar',
         'stop_tip': 'Çalışan batch\u2019i durdur',
         'mode_tip': 'Batch geneli onarım modunu seç',
+        'profile_tip': 'Onarım profili (batch geneli): Auto sınıflandırıcıyı '
+                       'kullanır; adlandırılmış profiller sabit Aşama 1 '
+                       'eşiklerine geçer.',
+        'profile_auto': 'Profil: Auto',
+        'profile_name_mechanical': 'Mekanik',
+        'profile_name_organic': 'Organik',
+        'profile_name_scan': 'Tarama',
+        'profile_name_miniature': 'Miniatür',
+        'profile_name_fast': 'Hızlı',
         'sug_title': 'Öneriler:',
         'sug_si_many': "Extreme modun ekstra temizleme adımları bu self-intersection'lara işe yarayabilir.",
         'sug_si_few': 'Extreme mod bunları ayrıca temizlemeyi dener.',
@@ -600,10 +617,11 @@ class RepairWorker(QThread):
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
 
-    def __init__(self, files, mode='auto', parent=None):
+    def __init__(self, files, mode='auto', profile=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
+        self._profile = profile
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -635,6 +653,8 @@ class RepairWorker(QThread):
                              'and no repair.py next to the GUI'}
         try:
             args = [*SUTURA_CMD, '--mode', self._mode]
+            if self._profile:
+                args += ['--profile', self._profile]
             if self._no_history:
                 args.append('--no-history')
             args.append(path)
@@ -665,10 +685,11 @@ class AnalyzeWorker(QThread):
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
 
-    def __init__(self, files, mode='auto', parent=None):
+    def __init__(self, files, mode='auto', profile=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
+        self._profile = profile
         self._cancelled = False
         self._proc = None
 
@@ -696,8 +717,12 @@ class AnalyzeWorker(QThread):
         result = {}
         # dry-run first: carries mode/tuning/defect counts/estimated_confidence
         try:
+            _args = [*SUTURA_CMD, '--dry-run', '--mode', self._mode]
+            if self._profile:
+                _args += ['--profile', self._profile]
+            _args.append(path)
             self._proc = subprocess.Popen(
-                [*SUTURA_CMD, '--dry-run', '--mode', self._mode, path],
+                _args,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             out, err = self._proc.communicate(timeout=600)
         except (OSError, subprocess.TimeoutExpired) as e:
@@ -710,7 +735,7 @@ class AnalyzeWorker(QThread):
         if 'error' in dry:
             result['error'] = dry['error']
         else:
-            for k in ('repair_mode', 'detected_type', 'detected_confidence',
+            for k in ('repair_mode', 'repair_profile', 'detected_type', 'detected_confidence',
                       'tuning_applied', 'would_apply', 'holes_found',
                       'largest_hole_diameter', 'non_manifold_regions',
                       'debris_faces_removable', 'self_intersections',
@@ -1280,6 +1305,7 @@ class MainWindow(QMainWindow):
         self.before_after_worker = None
         self._before_after_zoom = None
         self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
+        self._repair_profile = None   # batch-wide repair profile (not per file)
 
         self._build_ui()
         self._apply_accent()
@@ -1354,6 +1380,17 @@ class MainWindow(QMainWindow):
         self.btn_stop.setToolTip(_t('stop_tip'))
         actions.addWidget(self.btn_analyze)
         actions.addWidget(self.btn_mode)
+        # repair profile dropdown (batch-wide, like the mode): "Auto" = the
+        # current classifier-driven default; the named profiles opt in to a
+        # fixed Stage 1 threshold preset (see repair.PROFILES).
+        from PySide6.QtWidgets import QComboBox as _QComboBox
+        self.profile_combo = _QComboBox()
+        self.profile_combo.addItem(_t('profile_auto'), None)
+        for name in ('mechanical', 'organic', 'scan', 'miniature', 'fast'):
+            self.profile_combo.addItem(_t('profile_name_' + name), name)
+        self.profile_combo.setToolTip(_t('profile_tip'))
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        actions.addWidget(self.profile_combo)
         actions.addStretch(1)
         actions.addWidget(self.btn_repair)
         actions.addWidget(self.btn_stop)
@@ -1751,7 +1788,8 @@ class MainWindow(QMainWindow):
         self.status.setText(_t('repairing'))
         self.log.clear()
 
-        self.worker = RepairWorker(self.files, self._repair_mode, self)
+        self.worker = RepairWorker(self.files, self._repair_mode,
+                                  self._repair_profile, self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
         self.worker.all_done.connect(self._on_all_done)
@@ -1773,7 +1811,8 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.status.setText(_t('analyze_running'))
 
-        self.worker = AnalyzeWorker(self.files, self._repair_mode, self)
+        self.worker = AnalyzeWorker(self.files, self._repair_mode,
+                                   self._repair_profile, self)
         self.worker.file_done.connect(self._on_analyze_done)
         self.worker.progress.connect(self._on_analyze_progress)
         self.worker.all_done.connect(self._on_analyze_all_done)
@@ -1844,6 +1883,10 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             self.worker.cancel()
             self.btn_stop.setEnabled(False)
+
+    def _on_profile_changed(self, index):
+        """Batch-wide repair profile selection (None = auto/classifier)."""
+        self._repair_profile = self.profile_combo.itemData(index)
 
     def _on_choose_repair_mode(self):
         """Open the repair-mode dialog; apply the chosen mode to the next batch."""

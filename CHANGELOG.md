@@ -2,6 +2,49 @@
 
 All notable changes to this project are documented here.
 
+## [0.2.5] - 2026-09-19
+
+### Added
+
+- **Repair profiles (`--profile` / GUI Profile dropdown).** Named Stage 1
+  threshold presets — `mechanical`, `organic`, `scan`, `miniature`, `fast` —
+  opt-in via the CLI flag or a batch-wide GUI dropdown. Only effective while
+  the mode is `auto`; an explicit fixed mode wins. Default behaviour
+  (`auto`, no profile) is byte-identical to before. Reported as
+  `repair_profile` (JSON) and `Profile:` (`--human`).
+- **macOS native launch (Spotlight).** `install-macos.sh` now creates a
+  `~/Applications/Sutura.app` wrapper (launch the GUI from Spotlight with
+  `Cmd+Space` → *Sutura*, no terminal), and the `Build macOS .app/.dmg`
+  workflow builds the app as **`Sutura.app`** with a teal icon and proper
+  `CFBundleName`/`CFBundleDisplayName`/`CFBundleIconFile` so Spotlight finds
+  it by name. Idempotent.
+- **Real-world calibration corpus.** `tests/real-world-samples/` grew from 3
+  to 16 meshes (8 decimated Artec scans + 8 Thingi10K) with an
+  `ATTRIBUTION.md` (Artec CC BY 4.0, Thingi10K varying licenses) and a
+  crash-regression harness `tests/test_real_world_corpus.py` (16 meshes,
+  0 crashes).
+
+### Fixed
+
+- **macOS .dmg was 70 MB bigger than necessary.** The CI build bundled
+  `scipy` (~34 MB × 4 tools) although nothing imports it — removed from the
+  workflow's pip install and the PyInstaller hidden imports.
+- **`Build macOS .app/.dmg` Info.plist step would fail.** `Add
+  :CFBundleIconFile` errored ("Entry Already Exists") because PyInstaller's
+  `--icon` already sets it — now a `Set`.
+
+### Changed
+
+- **Mesh type-aware repair — classifier bias investigated (no fix).** A
+  4th "planar_fraction" signal was measured on the corpus but does **not**
+  separate scanned mechanical parts from organic scans (organic statues
+  carry large flat bases → higher planar fraction than the mechanical parts;
+  the dihedral `flat` band overlaps and a threshold would regress low-poly
+  synthetic organics). Documented as a hard geometry-only limitation; the
+  16-mesh corpus keeps the behaviour visible for future classifier work.
+- **SuturaGUI → Sutura naming.** Current docs/UI refer to the app as
+  `Sutura` (the v0.2.3 release historically shipped `SuturaGUI.app`).
+
 ## [0.2.3] - 2026-09-19
 
 ### Added
