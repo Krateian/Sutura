@@ -683,6 +683,25 @@ users are now offered this release on the stable channel.
 
 ### Added
 
+- **SECURITY.md** with a vulnerability reporting policy.
+
+### Fixed
+
+- **Dolphin service menu submenu (`X-KDE-Submenu=Sutura`)** prevented the
+  action from appearing for `.stl` files on some KDE/Plasma versions; the
+  submenu was removed and the action now shows at the top level for both
+  `.stl` and `.3mf`.
+- **Mesh classifier regression.** The `mechanical` class initially lowered
+  Stage 1's `mincomponentsize` to 4, which let small/degenerate meshes (e.g.
+  the 2-triangle case in `tests/test_adversarial.py`) survive the debris
+  cutoff and be "repaired" instead of rejected — a CI regression (the
+  `degenerate` adversarial scenario). `mincomponentsize` is now kept at the
+  default 8 for `mechanical`; the type still tunes `maxholesize` (300).
+
+## [0.1.4] - 2026-08-19
+
+### Added
+
 - **Batch repair summary.** When more than one file is repaired in one run,
   the CLI and GUI now show a breakdown of how many files came out watertight,
   with warnings, or failed, and which kinds of warnings/errors occurred
@@ -714,27 +733,6 @@ users are now offered this release on the stable channel.
 - `README.tr.md`: Turkish translation of the README (new, kept in sync with
   README.md).
 
-### Fixed
-
-- `install.sh` was not copying `classification.py` (and `updater.py`) into
-  the installed `~/.local/share/sutura/` directory, so the installed CLI and
-  GUI failed with `ModuleNotFoundError` right after install. Both modules are
-  now copied with the rest of the application files.
-- **Mesh classifier regression.** The `mechanical` class initially lowered
-  Stage 1's `mincomponentsize` to 4, which let small/degenerate meshes (e.g.
-  the 2-triangle case in `tests/test_adversarial.py`) survive the debris
-  cutoff and be "repaired" instead of rejected — a CI regression (the
-  `degenerate` adversarial scenario). `mincomponentsize` is now kept at the
-  default 8 for `mechanical`; the type still tunes `maxholesize` (300).
-- `install-macos.sh` had the same gap (it only copied `repair.py`,
-  `manifold_bridge.py`, `gui.py`, `__init__.py`), so a macOS install was also
-  missing `classification.py` and `updater.py`. Both are now copied in the
-  flat layout and the importable package layout.
-- **Dolphin service menu submenu (`X-KDE-Submenu=Sutura`)** prevented the
-  action from appearing for `.stl` files on some KDE/Plasma versions; the
-  submenu was removed and the action now shows at the top level for both
-  `.stl` and `.3mf`.
-
 ### Changed
 
 - **Breaking:** a mesh that stage 1 closes but stage 2 does not confirm (Stage
@@ -746,6 +744,28 @@ users are now offered this release on the stable channel.
   error - the stage 1 output is still written, so a stage 2 error should not
   hard-fail a batch. `stage2_skipped` and `stage2_error` remain distinct issue
   codes and are counted separately in `summary.issue_counts`.
+
+### Fixed
+
+- `install.sh` was not copying `classification.py` (and `updater.py`) into
+  the installed `~/.local/share/sutura/` directory, so the installed CLI and
+  GUI failed with `ModuleNotFoundError` right after install. Both modules are
+  now copied with the rest of the application files.
+- `install-macos.sh` had the same gap (it only copied `repair.py`,
+  `manifold_bridge.py`, `gui.py`, `__init__.py`), so a macOS install was also
+  missing `classification.py` and `updater.py`. Both are now copied in the
+  flat layout and the importable package layout.
+
+## [0.1.3] - 2026-08-19
+
+### Added
+
+- **Opt-in update checker.** Sutura checks GitHub releases for newer versions
+  once a week when enabled (one request to GitHub, no other data sent); the
+  GUI shows an update arrow when a newer release exists.
+- **Self-update with automatic backup and rollback.** Updating backs up the
+  current installation first and provides a rollback guarantee if the update
+  fails.
 
 ## [0.1.2] - 2026-08-18
 
