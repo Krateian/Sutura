@@ -3,7 +3,7 @@
 
 Builds a labeled feature matrix from:
   * the 35-mesh synthetic set (tests/make_classifier_set.py, labels as-is)
-  * the 16-mesh real-world corpus (tests/real-world-samples/, mechanical
+  * the 40-mesh real-world corpus (tests/real-world-samples/, mechanical
     scans correctly labeled mechanical -- the documented known-limitation
     files; unlabeled/unknown meshes are EXCLUDED from training but shown in
     the comparison table)
@@ -62,6 +62,33 @@ REAL_LABELS = {
     'thingi10k_1038439.stl': 'mechanical',
     'thingi10k_100173.stl': 'organic',
     'thingi10k_1038441.stl': 'organic',
+    # Phase 2 additions (Thingi10K, CC-BY/CC0 -- see
+    # tests/real-world-samples/ATTRIBUTION.md). A deliberately hard mix:
+    # curved/free-form mechanical parts and free-form organics.
+    'thingi10k_55772.stl': 'mechanical',    # Spiral Panpipes (curved)
+    'thingi10k_71691.stl': 'mechanical',    # Pirate Hook (curved)
+    'thingi10k_235725.stl': 'mechanical',   # Threadless Ball Screw
+    'thingi10k_81221.stl': 'mechanical',    # Nautilus Gears (curved shells)
+    'thingi10k_228302.stl': 'mechanical',   # Geared Coffee Sleeve
+    'thingi10k_248395.stl': 'mechanical',   # HingeBox
+    'thingi10k_42844.stl': 'mechanical',    # Ring Adapter
+    'thingi10k_60916.stl': 'mechanical',    # Gear O'Clock
+    'thingi10k_59226.stl': 'mechanical',    # Exploded Planetary Gear Set
+    'thingi10k_70561.stl': 'mechanical',    # Tiny Planetary Gears (CC0)
+    'thingi10k_57854.stl': 'mechanical',    # Panasonic Bracket
+    'thingi10k_475828.stl': 'mechanical',   # Fennec Fox Head Drawer Handle
+    'thingi10k_145065.stl': 'mechanical',   # Eiffel Tower (engineered lattice)
+    'thingi10k_260537.stl': 'organic',      # Great White Skull
+    'thingi10k_313444.stl': 'organic',      # Waving Cat
+    'thingi10k_39507.stl': 'organic',       # Roal The Bratty Dragon
+    'thingi10k_55280.stl': 'organic',       # Dragon (Artec scan)
+    'thingi10k_40886.stl': 'organic',       # Fist Sculpture
+    'thingi10k_100281.stl': 'organic',      # Holed Christmas Ornament
+    'thingi10k_63785.stl': 'organic',       # Mouse skull (micro-CT)
+    'thingi10k_136634.stl': 'organic',      # Decorative Cat Bowls
+    'thingi10k_1356633.stl': 'organic',     # Gowanus Monster
+    'thingi10k_331105.stl': 'organic',      # Angel Candle Holder
+    'thingi10k_46012.stl': 'organic',       # Earth Shot
 }
 TRAIN_EXCLUDED = ('thingi10k_100045.stl', 'thingi10k_100827.stl',
                   'thingi10k_224108.stl', 'thingi10k_502009.stl')

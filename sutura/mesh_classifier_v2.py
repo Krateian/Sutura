@@ -310,9 +310,9 @@ def _curvature_developable_fraction(verts, tris):
 #   V2_STD  : feature stds (6-feature order, 1.0 where 0)
 # Set V2_WEIGHTS to None to disable the head and make classify_mesh behave
 # exactly like classic (metrics still include the RANSAC + curvature features).
-V2_WEIGHTS = [2.8604, 2.6639, -2.2499, -0.6524, 0.5539, 3.8095, 1.7295]
-V2_MEAN = [24.7311, 28.3521, 34.4855, 5.8085, 0.3104, 0.5297]
-V2_STD = [27.8310, 16.1076, 33.4674, 7.3300, 0.3507, 0.3008]
+V2_WEIGHTS = [2.3823, 2.9866, -0.9694, -0.5230, 0.5083, 2.2289, 1.0432]
+V2_MEAN = [20.9532, 30.5532, 35.5085, 4.9296, 0.2917, 0.5122]
+V2_STD = [24.1622, 17.6785, 30.5004, 6.4313, 0.3129, 0.2819]
 
 
 def _head_p_mechanical(near90, flat, gentle, plane_count, plane_area,

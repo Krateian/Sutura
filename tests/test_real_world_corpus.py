@@ -6,7 +6,7 @@ asserts the pipeline never crashes (every phase must exit 0 with a clean JSON
 report; partial repairs are fine, hard errors/crashes are not). Also prints a
 compact result table so the expected outcomes stay visible.
 
-The corpus is deliberately small (<50 MB): Artec scan decimations (CC BY 4.0,
+The corpus is deliberately bounded (97 MB, 40 meshes): Artec scan decimations (CC BY 4.0,
 decimated with preservetopology so defect counts stay close to the originals)
 plus Thingi10K meshes (varying original licenses). Several files are
 scanned-mechanical parts that the mesh classifier currently reads as organic
