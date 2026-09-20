@@ -246,8 +246,8 @@ TOPOMETRICS = [
 ]
 
 
-def stage1_chain(ml, maxholesize=1000, mincomponentsize=8):
-    return [
+def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
+    chain = [
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
         ('meshing_remove_duplicate_vertices', {}),
@@ -267,16 +267,23 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8):
         # re-closes anything the debris removal / re-orient opened.
         ('meshing_repair_non_manifold_vertices', {}),
         ('meshing_close_holes', {'maxholesize': maxholesize}),
+        # --experimental-join-components replaces this removal step with a
+        # join (small components are moved onto the nearest larger component
+        # instead of being deleted) -- prototype, flag-gated, see
+        # join_small_components.
         ('meshing_remove_connected_component_by_face_number',
          {'mincomponentsize': mincomponentsize, 'removeunref': True}),
         ('meshing_remove_unreferenced_vertices', {}),
         ('meshing_re_orient_faces_coherently', {}),
         ('meshing_close_holes', {'maxholesize': maxholesize}),
     ]
+    if join_components:
+        chain = [s for s in chain if s[0] != 'meshing_remove_connected_component_by_face_number']
+    return chain
 
 
-def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8):
-    return [
+def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
+    chain = [
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
         ('meshing_remove_duplicate_vertices', {}),
@@ -294,6 +301,9 @@ def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8):
         ('meshing_re_orient_faces_coherently', {}),
         ('meshing_close_holes', {'maxholesize': maxholesize}),
     ]
+    if join_components:
+        chain = [s for s in chain if s[0] != 'meshing_remove_connected_component_by_face_number']
+    return chain
 
 
 def apply_chain(ms, chain):
@@ -336,6 +346,100 @@ def extreme_extra_passes(ms, ml, params):
     ms.apply_filter('meshing_remove_unreferenced_vertices')
     applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
     return True, found, removed, applied2, skipped2
+
+
+def join_small_components(ms, ml, mincomponentsize, maxholesize):
+    """Prototype (flag-gated): join small components onto the nearest larger
+    one instead of deleting them.
+
+    Every connected component with fewer than ``mincomponentsize`` faces is
+    translated so its closest vertex coincides with the nearest vertex of the
+    nearest larger component, then duplicate vertices are merged and holes
+    re-closed. This is a deliberate geometry change (small debris is MOVED,
+    not dropped) so it must stay behind ``--experimental-join-components`` and
+    is NOT part of the default chain.
+
+    Returns ``(moved, remaining_small)`` -- moved = number of small components
+    joined, remaining_small = small components that could not be joined (no
+    larger component to move onto, or the mesh has only small components).
+    """
+    v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
+    t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
+    if len(t) == 0:
+        return 0, 0
+
+    # connected components via union-find over faces sharing a vertex
+    parent = list(range(len(t)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    vertex_faces = {}
+    for fi, tri in enumerate(t):
+        for vi in tri:
+            vertex_faces.setdefault(int(vi), []).append(fi)
+    for faces in vertex_faces.values():
+        first = faces[0]
+        for fi in faces[1:]:
+            union(first, fi)
+
+    comps = np.array([find(i) for i in range(len(t))], dtype=np.int64)
+    comp_ids, counts = np.unique(comps, return_counts=True)
+    large = [c for c, n in zip(comp_ids, counts) if n >= mincomponentsize]
+    small = [c for c, n in zip(comp_ids, counts) if n < mincomponentsize]
+    if not large or not small:
+        return 0, len(small)
+
+    # per-component vertex index sets (component id -> sorted vertex ids)
+    comp_verts = {}
+    for fi, ci in enumerate(comps):
+        comp_verts.setdefault(int(ci), set()).update(int(x) for x in t[fi])
+    comp_verts = {c: np.array(sorted(s), dtype=np.int64) for c, s in comp_verts.items()}
+
+    v_new = v.copy()
+    moved = 0
+    for sc in small:
+        sv = comp_verts[sc]
+        sv3 = v[sv]
+        # nearest larger component + closest vertex pair (small comps are tiny,
+        # so the O(|small| * |large|) scan is cheap in practice)
+        best_dist = np.inf
+        best_translate = None
+        for lc in large:
+            lv3 = v[comp_verts[lc]]
+            d = np.linalg.norm(sv3[:, None, :] - lv3[None, :, :], axis=2)
+            i, j = np.unravel_index(np.argmin(d), d.shape)
+            if d[i, j] < best_dist:
+                best_dist = float(d[i, j])
+                best_translate = lv3[j] - sv3[i]
+        if best_translate is None:
+            continue
+        # move the whole small component onto the nearest larger component
+        v_new[sv] = v[sv] + best_translate
+        moved += 1
+
+    # fuse the coincident vertices and re-close what the move opened
+    # (add_mesh makes the rebuilt mesh current)
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v_new, dtype=np.float32),
+                        face_matrix=np.asarray(t, dtype=np.int32)))
+    for name, params in (('meshing_remove_duplicate_vertices', {}),
+                         ('meshing_repair_non_manifold_vertices', {}),
+                         ('meshing_remove_duplicate_faces', {}),
+                         ('meshing_close_holes', {'maxholesize': maxholesize}),
+                         ('meshing_remove_unreferenced_vertices', {})):
+        try:
+            ms.apply_filter(name, **params)
+        except Exception:
+            pass
+    return moved, max(len(small) - moved, 0)
 
 
 def write_obj(path, verts, tris):
@@ -519,7 +623,8 @@ def stl_write_binary(path, verts, tris):
 
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
-                            engine='experimental', declared_unit=None):
+                            engine='experimental', declared_unit=None,
+                            join_components=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -529,7 +634,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     named threshold preset (see PROFILES). ``engine`` selects the classifier
     engine ('experimental' default; 'classic' opt-in). ``declared_unit`` is
     the 3MF <model unit="..."> attribute (None for STL/OBJ) fed to the
-    non-blocking unit-warning heuristic.
+    non-blocking unit-warning heuristic. ``join_components`` enables the
+    experimental join-small-components prototype (flag-gated; NOT the default).
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -583,18 +689,29 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     applied, skipped = apply_chain(
-        ms, stage1_chain(ml, **_p))
+        ms, stage1_chain(ml, **_p, join_components=join_components))
     after = ms.apply_filter('get_topological_measures')
 
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
         fb = ml.MeshSet()
         fb.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         fapplied, fskipped = apply_chain(
-            fb, delete_fallback_chain(ml, **_p))
+            fb, delete_fallback_chain(ml, **_p, join_components=join_components))
         fafter = fb.apply_filter('get_topological_measures')
         if (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0)):
             ms, after, applied, skipped = fb, fafter, fapplied, fskipped
+
+    # --experimental-join-components prototype: instead of deleting small
+    # components (the mincomponentsize filter was dropped from the chain
+    # above), move them onto the nearest larger component and re-close.
+    stats['experimental_join_components'] = False
+    if join_components:
+        moved, remaining = join_small_components(
+            ms, ml, _p['mincomponentsize'], _p['maxholesize'])
+        stats['experimental_join_components'] = {'moved': moved,
+                                                 'remaining_small': remaining}
+        after = ms.apply_filter('get_topological_measures')
 
     if after.get('faces_number', 0) == 0:
         if mode == 'extreme':
@@ -950,7 +1067,8 @@ def obj_has_material_refs(path):
     return False
 
 
-def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental'):
+def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
+                join_components=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -971,7 +1089,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
 
     report, new_v, new_t = repair_mesh_from_arrays(
         verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
-        declared_unit=declared_unit)
+        declared_unit=declared_unit, join_components=join_components)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -1025,7 +1143,8 @@ def build_mesh_block(verts, tris):
     return '\n'.join(lines)
 
 
-def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental'):
+def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
+               join_components=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -1058,7 +1177,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
             else:
                 rep, new_v, new_t = repair_mesh_from_arrays(
                     verts, tris, tmpdir, mode=mode, profile=profile,
-                    engine=engine, declared_unit=declared)
+                    engine=engine, declared_unit=declared,
+                    join_components=join_components)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -1585,7 +1705,7 @@ def human_dry_run(r):
 
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
-                 max_risk=None, force=False):
+                 max_risk=None, force=False, join_components=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -1593,6 +1713,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     temp output is only moved into place after explicit confirmation (an
     interactive ``[y/N]`` prompt on a TTY) or ``force``. Without a budget or
     within budget the save is unconditional (reporting the numbers).
+    ``join_components`` enables the experimental join-small-components
+    prototype (flag-gated).
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -1608,10 +1730,12 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     try:
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
             result.update(repair_3mf(src, tmp_out, tmpdir, mode=mode,
-                                     profile=profile, engine=engine))
+                                     profile=profile, engine=engine,
+                                     join_components=join_components))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
-                                      profile=profile, engine=engine))
+                                      profile=profile, engine=engine,
+                                      join_components=join_components))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -1737,6 +1861,11 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                         help='do not repair: report what would be done and '
                              'write no output file')
+    parser.add_argument('--experimental-join-components', action='store_true',
+                        help='experimental prototype: move small connected '
+                             'components onto the nearest larger component '
+                             'instead of deleting them (changes geometry; '
+                             'NOT the default behaviour, evaluation only)')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
     files = args.files
@@ -1831,7 +1960,8 @@ def main():
     results = [process_file(f, human, mode=mode, profile=args.profile,
                             no_history=args.no_history, engine=engine,
                             out=out, max_geom_change=max_geom_change,
-                            max_risk=max_risk, force=args.force) for f in files]
+                            max_risk=max_risk, force=args.force,
+                            join_components=args.experimental_join_components) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')
