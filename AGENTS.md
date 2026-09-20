@@ -28,6 +28,16 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 
 ## Backlog (v0.3 notes — diagnosed, NOT fixed yet)
 
+- **Pre-v0.3 security audit (2026-09, FAZ12):** `docs/security-audit-2026-09.md`
+  records the on-release scan. Result: dependencies (pip-audit), shell/
+  subprocess patterns, 3MF XML (XXE — regex parser, no XML lib, so safe by
+  construction), ZIP (no extract → no zip-slip), path traversal, and hardcoded
+  secrets are all CLEAN. Three LOW recommendations deferred to the maintainer:
+  checksum/signature verification for install-script downloads (install.sh
+  tarball, build_appimage.sh python-build-standalone/appimagetool), GitHub
+  Actions commit-SHA pinning (currently major-version pins), and a 3MF
+  zip-bomb decompressed-entry size cap (theoretical memory-DoS, judgment call).
+
 - **Extreme mode can WORSEN heavy-self-intersection scans.** 75-model corpus:
   for scan-derived meshes with thousands of self-intersections (e.g.
   thingi10k_804302 has 14,730 SI; Ephebe 2,491 SI + 327 non-manifold),
