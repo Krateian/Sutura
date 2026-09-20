@@ -29,6 +29,16 @@ malformed files, adversarial inputs and torture scenarios (huge meshes, thin
 walls, multi-part assemblies) — and every change is verified automatically by
 CI on each push and pull request.
 
+**What you can rely on.** The two-stage STL repair pipeline (VCG + manifold3d)
+is validated on a 115-mesh real-world scan corpus with a strict
+`defects.detect()` closed-loop check: 103/115 (~90%) genuinely watertight, 0
+crashes, every pipeline claim confirmed 1:1, and an independent manifold3d
+re-check agrees on all 115 meshes. Defect detection is a single
+stdlib+numpy source of truth, unit-tested on clean and broken meshes. The
+mesh-type classifier (default engine) is calibrated on a 71-mesh labeled set
+and measurably beats the classic heuristic. These are the features to trust
+first; the experimental/opt-in items are clearly labelled as such below.
+
 **A note from the maintainer**
 
 I develop Sutura on my own, alongside my day job as an aircraft
@@ -1134,6 +1144,41 @@ is a permanent commitment. For commercial use, please contact me.
 
 Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 [Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE).
+
+## Version history
+
+Only versions that added user-facing features are listed (bug-fix-only
+versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
+
+- **v0.3.0 — 2026-09-20** — curved-but-mechanical classifier signal
+  (`developable_fraction`) + 40-mesh real-world corpus; 115-mesh
+  strict-watertight benchmark + corpus release asset + manifold3d
+  cross-validation; GUI color-coded defect view + "what changed" repair log;
+  opt-in edge-tiebreak classifier head and join-components options (CLI + GUI
+  checkboxes); synthetic defect injection tool; 3MF zip-bomb guard.
+- **v0.2.7 — 2026-09-19** — unit-mismatch detection; repair budgets; per-object
+  Stage 2 for multi-object 3MF.
+- **v0.2.6 — 2026-09-19** — Repair Health/Risk scoring; macOS Finder Quick
+  Action.
+- **v0.2.5 — 2026-09-19** — repair profiles (`--profile` / GUI dropdown);
+  macOS native launch (Spotlight); real-world calibration corpus.
+- **v0.2.3 — 2026-09-19** — bundle-aware path resolution for a standalone
+  macOS `.app`; unsigned macOS `.dmg` packaging.
+- **v0.2.1 — 2026-08-30** — anonymous usage history (opt-out); graphify
+  knowledge-graph integration; contributing section.
+- **v0.2.0 — 2026-08-26** — interactive 3D viewer (rotate/zoom + surface
+  deviation); `.obj` support; auto-update license boundary; sponsor section.
+- **v0.1.9 — 2026-08-25** — Repair Confidence Score; GUI Analyze button +
+  analysis pane; mode suggestions.
+- **v0.1.8 — 2026-08-24** — `validate` subcommand; `--dry-run`; before/after
+  comparison with worst-defect zoom.
+- **v0.1.7 — 2026-08-22** — repair modes (`--mode` + GUI picker); extreme
+  extra passes; before/after mesh comparison (GUI).
+- **v0.1.6 — 2026-08-20** — before/after geometry diff in reports; `--diff`.
+- **v0.1.4 — 2026-08-19** — batch repair summary; defect detection
+  (`sutura/defects.py`); mesh type-aware repair; Turkish README.
+- **v0.1.3 — 2026-08-19** — opt-in update checker; self-update with backup
+  and rollback.
 
 The reason for this change: Sutura was not born as a business plan or a
 startup — it came from my own need, and I pay the cost of the AI tools I use

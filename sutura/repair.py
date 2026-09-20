@@ -115,7 +115,7 @@ def _resolve_bridge():
 
 BRIDGE = _resolve_bridge()
 
-VERSION = "0.2.8"
+VERSION = "0.3.0"
 
 
 class ExtremeRemovedAllError(ValueError):

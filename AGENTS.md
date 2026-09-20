@@ -133,15 +133,20 @@ the following in order, without being asked separately for each:
 2. Update CHANGELOG.md with a real entry for this version.
 3. Commit the version bump with a summary body.
 4. Tag the release (vX.Y.Z).
-5. Feature Status table audit (README.md/tr.md) against the actual commits
+5. **Version-history standing rule (FAZ15):** if this version ADDS a
+   user-facing feature/capability, add a short entry to the "Version history"
+   ("Sürüm geçmişi") section in README.md AND README.tr.md (one line, what
+   came in, based on the CHANGELOG Added/Changed user-visible items). Fix-only
+   versions do NOT touch that section.
+6. Feature Status table audit (README.md/tr.md) against the actual commits
    since the previous tag — bump percentages only when the honest state
    changed; check the test-suite list in the 'Test coverage' row is current.
-6. Re-run scripts/generate_screenshots.py if the GUI's visible state changed
+7. Re-run scripts/generate_screenshots.py if the GUI's visible state changed
    since assets/ was last generated (check via git log --follow).
-7. Push (main + tag) via the HTTPS token method.
-8. Create the GitHub Release with a real written summary (not just a
+8. Push (main + tag) via the HTTPS token method.
+9. Create the GitHub Release with a real written summary (not just a
    CHANGELOG link).
-9. Verify the release notes actually landed as written: after
+10. Verify the release notes actually landed as written: after
    `gh release create` / `gh release edit`, run
    `gh release view <tag> --json body` and read the ACTUAL body back.
    Confirm it contains the real highlights list for this version — not a

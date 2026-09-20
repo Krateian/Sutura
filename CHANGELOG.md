@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-20
 
 ### Added
 
@@ -13,49 +13,75 @@ All notable changes to this project are documented here.
   pipe, fillet or other ruled curved part). The plane-only RANSAC could not
   see cylinders/fillets/pipes; this signal is what lets the head classify
   curved-but-mechanical parts that classic reads as `unknown`. The synthetic
-  calibration set grew from 28 to 35 meshes (`cylinder_*`, `tube_*`,
-  `fillet_bracket` + damaged variants).
+  calibration set grew from 28 to 35 meshes.
 - **Real-world classifier corpus grown 16 → 40 meshes.** `tests/real-world-samples/`
-  gained 24 Thingi10K meshes (CC0/CC-BY, see `docs/ATTRIBUTION.md` and
-  `tests/real-world-samples/ATTRIBUTION.md` for per-file attribution) with a
-  deliberately hard curved/free-form mix, and the v2 head was retrained on it.
-  Measured on the labeled set: experimental 29/36 vs classic 16/36 (mechanical
-  recall 16/20 vs 2/20); LOO-CV on the 71-mesh labeled set (35 synthetic + 36
-  real) 0.845 vs classic 0.648. Repo size grew to ~97 MB (corpus STLs) — see
-  `docs/v0.3.0-readiness.md`.
-- **115-mesh strict-watertight repair benchmark + harness.** New reproducible
-  harness `scripts/benchmark_repair_corpus.py` runs the current pipeline over
-  the 115-mesh real-world scan corpus and measures the **final output
-  geometry** with a strict `defects.detect()` closed-loop check (`holes == 0
-  AND non_manifold == 0`), recording the pipeline verdict alongside so any
-  claim-vs-check discrepancy is visible. Result on the current pipeline:
-  103/115 (~90%) strictly watertight, 0 crashes, every pipeline claim
-  confirmed 1:1. Report: `docs/repair-benchmark-strict-watertight-2026-09.md`
-  (methodology, metric clarification — pymeshlab `boundary_edges` counts
-  edges, not holes — and per-mesh failure reasons).
-- **Experimental join-closest-components prototype (`--experimental-join-components`).**
-  CLI-only, evaluation only, NOT in the default chain: instead of deleting
-  connected components below `mincomponentsize`, `repair.join_small_components`
-  moves each small component onto the nearest larger one (translate so the
-  closest vertex pair coincides, then merge duplicates and re-close). A
-  deliberate geometry change (debris is moved, not dropped), so it stays
-  behind the flag; the report carries `experimental_join_components`
-  (`{moved, remaining_small}`). Not tested in CI.
+  gained 24 Thingi10K meshes (CC0/CC-BY; per-file attribution in
+  `docs/ATTRIBUTION.md`), and the v2 head was retrained on it. On the labeled
+  set experimental scores 29/36 vs classic 16/36 (mechanical recall 16/20 vs
+  2/20); LOO-CV on the 71-mesh labeled set 0.845 vs classic 0.648.
+- **115-mesh strict-watertight repair benchmark + harness.**
+  `scripts/benchmark_repair_corpus.py` measures the final output geometry
+  with a strict `defects.detect()` closed-loop check; result 103/115 (~90%)
+  strictly watertight, 0 crashes, every pipeline claim confirmed 1:1. Report:
+  `docs/repair-benchmark-strict-watertight-2026-09.md`.
+- **Repair benchmark corpus published as a release asset.** The ~6 GB 115-mesh
+  corpus is now downloadable via `scripts/fetch_benchmark_corpus.sh` (split
+  `.tar.gz` on the `benchmark-corpus-v1` GitHub release), so a fresh machine
+  can reproduce the benchmark without re-scraping Thingi10K.
+- **Optional manifold3d cross-validation layer.** The benchmark harness
+  independently re-checks each repaired mesh with manifold3d next to
+  `defects.detect()` (115/115 agreement on the corpus); the verdict is `n/a`
+  when manifold3d is unavailable. `tests/test_manifold3d_watertight.py`.
+- **GUI repair preview/UX.** A color-coded defect view (red = non-manifold,
+  orange = flipped winding, yellow = degenerate face) in the interactive
+  before/after viewer, and a "What changed" repair-log panel (holes closed,
+  non-manifold edges fixed, faces removed, components, stage 2).
+- **Opt-in experimental options.** `--experimental-edge-tiebreak` (11-feature
+  classifier head — base features + the five strongest scan signals) and
+  `--experimental-join-components` (moves small components onto the nearest
+  larger one instead of deleting them) are available from the CLI and the GUI
+  (batch-wide checkboxes). Both are opt-in; the default behaviour is
+  unchanged.
+- **Synthetic defect injection tool.** `scripts/defect_injector.py` corrupts a
+  mesh with selectable defect types (`--hole`, `--non-manifold`,
+  `--self-intersect`, `--flipped-normal`, `--degenerate`) and writes a broken
+  copy; validated by `tests/test_defect_injector.py`.
+
+### Changed
+
+- The v2 (experimental) classifier is the default engine, and the per-type
+  Stage 1 tuning now uses a **near-boundary classic-agreement confidence
+  fallback**: a coin-flip head decision with a strong agreeing classic
+  inherits classic's confidence so the tuning gate is not silently disabled.
 
 ### Fixed
 
-- **`artec_metal-nut.stl` scan-corpus regression (103 → 102 → 103).** The FAZ 2
-  retrained classifier head collapsed this organic scan's confidence from
-  0.987 to 0.022 (`p_mech=0.489`, a coin-flip), which put it below `ORG_TUNE_GATE`
-  and silently disabled organic tuning — leaving the mesh open. New
-  near-boundary classic-agreement fallback in `mesh_classifier_v2.py`: when
-  the head is a coin-flip (`|p_mech − 0.5|·2 < 0.15`) and classic strongly
-  agrees with the barely-chosen class (class-score ≥ 0.70), the head keeps its
-  class but reports classic's confidence, so the tuning gate sees the strong
-  signal. Confident head decisions are never overridden (no classic veto).
-  Re-measured on the 115-mesh corpus: 103/115 strictly watertight, warning set
-  identical to the pre-regression run, zero new regressions; the fallback
-  fires on exactly one mesh.
+- **`artec_metal-nut.stl` scan-corpus regression (103 → 102 → 103).** The
+  retrained head collapsed this organic scan's confidence to 0.022 (a
+  coin-flip below `ORG_TUNE_GATE`), disabling organic tuning; the fallback
+  restored it to watertight (103/115, zero new regressions).
+- **`defect_type_colors` false positives on clean meshes.** Perpendicular
+  neighbours (e.g. a cube) were wrongly flagged as flipped; the test is now a
+  normalized cosine against self-consistent neighbours, so a consistently
+  wound closed mesh has zero coloured faces.
+
+### Security
+
+- **3MF zip-bomb guard.** Every 3MF archive entry is read through a bounded
+  helper that checks the zip header's declared uncompressed size (cap: 1 GiB)
+  before reading, so a crafted archive fails with a controlled error instead
+  of exhausting memory.
+- **python-build-standalone downloads now SHA-256-verified** in
+  `scripts/build_appimage.sh`. See `docs/security-audit-2026-09.md` for the
+  full scan and the remaining low recommendations.
+
+### Experimental evaluations (documented, NOT integrated)
+
+Feature experiments that measured negatively are documented in the README
+"Classifier methodology" section and the corresponding docs — Weinmann et al.
+(2015) eigenvalue descriptors, local roughness/geometrical/statistical
+tie-breakers, and MeshCNN edge features — the default classifier is unchanged
+by them.
 
 ## [0.2.8] - 2026-09-19
 

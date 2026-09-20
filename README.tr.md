@@ -27,7 +27,17 @@ dokunulmadan onarılmış bir kopya üretilsin.
 
 Sutura, gerçek dünya girdilerine karşı sürekli sağlamlaştırılır — Thingi10K
 modelleri, bozuk dosyalar, düşmanca girdiler ve işkence senaryoları (devasa
-mesh'ler, ince duvarlar, çok parçalı montajlar) — ve her değişiklik, her push
+mesh'ler, ince duvarlar, çok parçalı montajlar) — ve her
+
+**Güvenebileceğiniz kısım.** İki aşamalı STL onarım hattı (VCG + manifold3d),
+sıkı bir `defects.detect()` kapalı-döngü kontrolüyle 115 mesh'lik gerçek dünya
+tarama corpus'unda doğrulanmıştır: 103/115 (~%90) gerçekten su geçirmez, 0
+çökme, her hat iddiası birebir doğrulandı ve bağımsız manifold3d kontrolü 115
+mesh'in tamamında uyumlu. Kusur tespiti, tek doğruluk kaynağı (stdlib+numpy),
+temiz ve bozuk mesh'lerde birim testlerle doğrulanır. Mesh-tipi sınıflandırıcı
+(varsayılan motor) 71 mesh'lik etiketli sette kalibre edilmiştir ve classic
+sezgiseli ölçülebilir biçimde geçer. Önce bunlara güvenin; deneysel/opt-in
+öğeler aşağıda açıkça işaretlidir. değişiklik, her push
 ve pull request'te CI tarafından otomatik doğrulanır.
 
 **Bir not (maintainer'dan)**
@@ -1135,3 +1145,40 @@ kurumu değilim. Bu yüzden ticari kullanım isteyenlerin benimle
 iletişime geçmesi gerekecek. İleride bir noktada projeye zaman
 ayıramaz hale gelirsem, Sutura'yı tamamen açık kaynağa çevirip
 topluluğa bırakmayı düşünüyorum — ama şimdilik böyle devam.
+
+## Sürüm geçmişi
+
+Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
+düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
+
+- **v0.3.0 — 2026-09-20** — kavisli-mekanik sınıflandırıcı sinyali
+  (`developable_fraction`) + 40 mesh'lik gerçek dünya corpus'u; 115 mesh'lik
+  strict-watertight benchmark + corpus release asset'i + manifold3d
+  çapraz-doğrulama; GUI renk-kodlu kusur görünümü + "ne değişti" onarım
+  günlüğü; opt-in edge-tiebreak sınıflandırıcı kafası ve join-components
+  seçenekleri (CLI + GUI kutuları); sentetik defekt enjeksiyon aracı; 3MF
+  zip-bomb koruması.
+- **v0.2.7 — 2026-09-19** — birim-uyuşmazlığı tespiti; onarım bütçeleri; çok
+  nesneli 3MF için nesne başına Aşama 2.
+- **v0.2.6 — 2026-09-19** — Onarım Sağlık/Risk skorlaması; macOS Finder Quick
+  Action.
+- **v0.2.5 — 2026-09-19** — onarım profilleri (`--profile` / GUI açılır
+  listesi); macOS yerel başlatma (Spotlight); gerçek dünya kalibrasyon corpus'u.
+- **v0.2.3 — 2026-09-19** — bağımsız macOS `.app` için bundle-aware yol
+  çözümü; imzasız macOS `.dmg` paketleme.
+- **v0.2.1 — 2026-08-30** — anonim kullanım geçmişi (opt-out); graphify bilgi
+  grafiği entegrasyonu; katkı bölümü.
+- **v0.2.0 — 2026-08-26** — interaktif 3D görüntüleyici (döndürme/yakınlaştırma
+  + yüzey sapması); `.obj` desteği; otomatik güncelleme lisans sınırı; sponsor
+  bölümü.
+- **v0.1.9 — 2026-08-25** — Onarım Güven Skoru; GUI Analyze düğmesi + analiz
+  bölmesi; mod önerileri.
+- **v0.1.8 — 2026-08-24** — `validate` alt komutu; `--dry-run`; en-kötü-kusur
+  yakınlaştırmalı öncesi/sonrası karşılaştırma.
+- **v0.1.7 — 2026-08-22** — onarım modları (`--mode` + GUI seçici); extreme ek
+  geçişler; öncesi/sonrası mesh karşılaştırması (GUI).
+- **v0.1.6 — 2026-08-20** — raporlarda öncesi/sonrası geometri farkı; `--diff`.
+- **v0.1.4 — 2026-08-19** — batch onarım özeti; kusur tespiti
+  (`sutura/defects.py`); mesh-tipi farkında onarım; Türkçe README.
+- **v0.1.3 — 2026-08-19** — opt-in güncelleme denetçisi; yedek ve geri
+  dönüşlü kendi-kendine güncelleme.
