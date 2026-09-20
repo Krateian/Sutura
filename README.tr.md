@@ -42,10 +42,10 @@ ve pull request'te CI tarafından otomatik doğrulanır.
 
 **Bir not (maintainer'dan)**
 
-Sutura'yı, önde gelen bir havayolu şirketinde surdurdugum gunduz
-havacilik muhendisligi isimin yaninda tek basima gelistiriyorum.
-Onumuzdeki donemde surumler eskisi kadar sik gelmeyebilir - proje
-terk edilmis degil, sadece tempo yavaslayacak.
+Sutura, önde gelen bir havayolu şirketinde tam zamanlı bir havacılık bakım
+rolünün yanı sıra tek bir maintainer tarafından geliştirilmektedir.
+Önümüzdeki dönemde sürümler eskisi kadar sık gelmeyebilir — proje terk
+edilmiş değil, sadece tempo yavaşlayacak.
 
 ## Ekran Görüntüsü
 
@@ -1128,23 +1128,23 @@ Sutura bir baskını ya da zamanını kurtardıysa,
 Sutura, v0.2.0'dan itibaren [PolyForm Noncommercial 1.0.0](LICENSE)
 ile lisanslanır. Kişisel, ticari olmayan kullanım (hobi, araştırma,
 eğitim, kişisel 3D baskı vb.) her zaman ücretsiz kalacak — bu kalıcı
-bir taahhüttür. Ticari kullanım için benimle iletişime geçin.
+bir taahhüttür. Ticari kullanım için maintainer ile iletişime geçin.
 
 v0.1.0 - v0.1.9 arası yayınlanmış sürümler kalıcı olarak
 [Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE)
 ile lisanslı kalır.
 
 Bu değişikliğin nedeni: Sutura bir iş planı ya da girişim olarak değil,
-kendi ihtiyacımdan doğdu — geliştirirken kullandığım yapay zeka
-araçlarının maliyetini kendi cebimden karşılıyorum. Kişisel, ticari
-olmayan kullanım için Sutura her zaman ücretsiz kalacak — bu bir
-pazarlama sözü değil, kalıcı bir taahhüt. Ama ilerleyen geliştirme daha
-fazla zaman ve kaynak gerektirecek, ve bunu bir şirketin ücretsiz
-şekilde ticari olarak kullanması bana adil gelmiyor; ben bir hayır
-kurumu değilim. Bu yüzden ticari kullanım isteyenlerin benimle
-iletişime geçmesi gerekecek. İleride bir noktada projeye zaman
-ayıramaz hale gelirsem, Sutura'yı tamamen açık kaynağa çevirip
-topluluğa bırakmayı düşünüyorum — ama şimdilik böyle devam.
+kişisel bir ihtiyaçtan doğdu — geliştirme sırasında kullanılan yapay zeka
+araçlarının maliyeti maintainer tarafından kendi cebinden karşılanıyor.
+Kişisel, ticari olmayan kullanım için Sutura her zaman ücretsiz kalacak —
+bu bir pazarlama sözü değil, kalıcı bir taahhüt. Ama ilerleyen geliştirme
+daha fazla zaman ve kaynak gerektirecek ve bir şirketin ücretsiz şekilde
+ticari olarak kullanması maintainer için adil olmayacaktır; proje bir
+hayır kurumu değildir. Bu yüzden ticari kullanım isteyenlerin maintainer
+ile iletişime geçmesi gerekecek. İleride bir noktada projeye zaman
+ayıramaz hale gelinirse, plan Sutura'yı tamamen açık kaynağa çevirip
+topluluğa bırakmaktır — ama şimdilik böyle devam.
 
 ## Sürüm geçmişi
 

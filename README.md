@@ -41,10 +41,9 @@ first; the experimental/opt-in items are clearly labelled as such below.
 
 **A note from the maintainer**
 
-I develop Sutura on my own, alongside my day job as an aircraft
-maintenance engineer at a major airline. Releases may come less
-frequently for a while going forward — the project isn't abandoned,
-just slower-paced.
+Sutura is developed by a single maintainer alongside a full-time aircraft
+maintenance role at a major airline. Releases may come less frequently for
+a while going forward — the project is not abandoned, only slower-paced.
 
 ## Screenshot
 
@@ -105,7 +104,7 @@ Sutura and where you should still double-check the output.
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow) and macOS installs get a native `~/Applications/Sutura.app` so the GUI launches from Spotlight (Cmd+Space → "Sutura"), plus a Finder **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) for right-click repair. Gaps: the AppImage/GUI cannot self-update in place (read-only squashfs), the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning), and macOS has no standalone uninstall script (see "Removing a macOS install" below). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
-| OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds we have not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
+| OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds the project has not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
 | Test coverage | ~89% | Plain-script suites (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
@@ -471,7 +470,7 @@ multi-object 3MF files; `--human --diff` prints them too, and the GUI defect
 panel shows a one-line summary ("Volume: +0.12% · Surface: -2.37% · Vertex:
 12→9").
 
-A mesh is only counted as **watertight** when stage 2 actually ran and
+A mesh is only counted as **watertight** when stage 2 ran and
 validated the closed solid. If stage 1 closes a mesh but stage 2 is skipped,
 errors, or never runs (for example the macOS/conda in-process fallback being
 unavailable), the file is reported as a warning, not watertight.
@@ -627,7 +626,8 @@ under `orcaslicer-plugin/` that repairs a file straight from the slicer by
 shelling out to the installed Sutura CLI. It is offered as a starting point
 and is **untested in a real OrcaSlicer**: the Python plugin system it targets
 only exists in OrcaSlicer **nightly builds / releases newer than 2.4.2**,
-which we do not run, so we have not been able to verify it end-to-end. See the
+which the project does not run, so it has not been possible to verify it
+end-to-end. See the
 [plugin README](orcaslicer-plugin/README.md) for install steps and its
 limitations.
 
@@ -1140,7 +1140,7 @@ If Sutura has saved you time or a broken print, you can
 Starting with v0.2.0, Sutura is licensed under the
 [PolyForm Noncommercial 1.0.0](LICENSE). Personal, non-commercial use (hobby,
 research, education, personal 3D printing, etc.) will always remain free — this
-is a permanent commitment. For commercial use, please contact me.
+is a permanent commitment. For commercial use, please contact the maintainer.
 
 Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 [Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE).
@@ -1181,12 +1181,13 @@ versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
   and rollback.
 
 The reason for this change: Sutura was not born as a business plan or a
-startup — it came from my own need, and I pay the cost of the AI tools I use
-while developing it out of my own pocket. For personal, non-commercial use,
-Sutura will always remain free — this is not a marketing promise but a
-permanent commitment. But future development will require more time and
-resources, and having a company use it commercially for free does not feel fair
-to me; I am not a charity. That is why those who want commercial use will need
-to contact me. If at some point in the future I can no longer dedicate time to
-the project, I plan to turn Sutura fully open source and hand it to the
+startup — it began as a personal need, and the cost of the AI tooling used
+to develop it is paid by the maintainer out of pocket. For personal,
+non-commercial use, Sutura will always remain free — this is not a marketing
+promise but a permanent commitment. Future development will require more
+time and resources, and allowing a company to use it commercially for free
+would not be fair to the maintainer; the project is not a charity.
+Commercial use therefore requires contacting the maintainer. If the
+maintainer can no longer dedicate time to the project at some point in the
+future, the plan is to release Sutura fully open source and hand it to the
 community — but for now, it will continue like this.

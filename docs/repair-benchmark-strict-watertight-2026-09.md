@@ -42,7 +42,7 @@ Three different "boundary" numbers exist and are **not** interchangeable:
    hole mesh with a 1144-edge rim reports 1144 while the real hole count is 1.
    The historical `//2` shortcut (`boundary_edges // 2`) **undercounts** and is
    not a hole count either. This is the known "1144 vs 1" behaviour — both
-   numbers are correct, they just measure different quantities.
+   numbers are correct, they measure different quantities.
 2. **`repair.boundary_loop_stats`** (numpy) walks the boundary edges into
    connected loops and returns `(n_holes, max_loop_len)`. This is the metric
    behind the pipeline's `stage1.holes_remaining` and is the same loop-walking

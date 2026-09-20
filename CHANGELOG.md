@@ -817,7 +817,7 @@ users are now offered this release on the stable channel.
   the slicer by shelling out to the installed Sutura CLI in a background
   thread. It is offered as a starting point and is **untested in a real
   OrcaSlicer**: the Python plugin system it targets exists only in OrcaSlicer
-  nightly builds / releases newer than 2.4.2, which we have not run, so it has
+  nightly builds / releases newer than 2.4.2, which the project has not run, so it has
   only been stub-tested against the documented API. It repairs a configured
   target file (not the selected model — `execute()` takes no selection) and is
   Linux-only (relies on the `install.sh` CLI path `~/.local/bin/sutura`).

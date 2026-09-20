@@ -221,7 +221,7 @@ objects claim `watertight` instead of `stage2_skipped`.
    scale, a note for high-tolerance parts.
 4. **Per-vertex attributes** are already dropped by the mesh rebuild (Stage 1
    and Stage 2 both rebuild pure verts/tris); per-vertex color/texcoord in a
-   3MF mesh block would be lost. Same limitation as today, just worth stating.
+   3MF mesh block would be lost. Same limitation as today, worth stating.
 5. **Aggregate/classification semantics are object-0-centric**: `repair_3mf`
    sets `agg['stage1']` from `object_reports[0]`, and `classification.classify`
    evaluates the top-level `stage1` — i.e. object 0's outcome drives the whole
@@ -256,7 +256,7 @@ objects claim `watertight` instead of `stage2_skipped`.
 - Verification: the real uncertainty is whether *any* real-world multi-object
   file has a closed object after Stage 1 (on macOS: not until A is fixed).
   Needs a small sample of genuine Bambu/Orca multi-object exports to confirm
-  the feature actually fires in practice.
+  the feature fires in practice.
 - Effort estimate: ~1–2 focused sessions (code + tests + sample validation).
 
 ### B.7 Step-by-step implementation plan
