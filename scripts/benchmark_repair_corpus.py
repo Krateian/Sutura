@@ -34,6 +34,7 @@ import classification  # noqa: E402
 import defects  # noqa: E402
 
 import repair  # noqa: E402
+import manifold_bridge  # noqa: E402  (optional manifold3d cross-validation)
 
 
 def load_input(path):
@@ -86,6 +87,14 @@ def run_one(src, tmpdir):
         entry['strict_non_manifold'] = len(out_det['non_manifold'])
         entry['strict_watertight'] = bool(
             entry['strict_holes'] == 0 and entry['strict_non_manifold'] == 0)
+        # Optional manifold3d cross-validation (independent verdict; None when
+        # manifold3d is unavailable -> column reported as n/a).
+        m3_ok, m3_status = manifold_bridge.watertight_check(new_v, new_t)
+        entry['manifold3d_watertight'] = m3_ok
+        entry['manifold3d_status'] = m3_status
+        entry['m3d_consistent'] = (
+            None if m3_ok is None
+            else bool(m3_ok == entry['strict_watertight']))
         entry['output_verts'] = int(len(new_v))
         entry['output_faces'] = int(len(new_t))
         return entry, None
@@ -121,9 +130,11 @@ def main():
             print('[%3d/%d] %-48s ERROR %s' % (i, len(files), f[:48], err['error'][:60]), flush=True)
         else:
             results[f] = entry
-            print('[%3d/%d] %-48s cat=%-10s strict=%s (holes=%d nm=%d)' % (
+            m3 = entry.get('manifold3d_watertight')
+            m3s = 'WT' if m3 is True else ('OPEN' if m3 is False else 'n/a')
+            print('[%3d/%d] %-48s cat=%-10s strict=%s m3d=%s (holes=%d nm=%d)' % (
                 i, len(files), f[:48], str(entry.get('category')),
-                entry['strict_watertight'], entry['strict_holes'],
+                entry['strict_watertight'], m3s, entry['strict_holes'],
                 entry['strict_non_manifold']), flush=True)
         del entry, err
         gc.collect()
@@ -157,6 +168,31 @@ def main():
     for f, r in claim_gap:
         print('   %-45s cat=%s s2=%s s2err=%s' % (
             f, r.get('category'), r.get('stage2_ok'), (r.get('stage2_error') or '')[:50]))
+
+    # manifold3d cross-validation consistency (independent verdict vs the
+    # defects.detect() strict check). 'n/a' meshes = manifold3d unavailable
+    # in this environment (Linux py3.14 pymeshlab venv has no wheel).
+    m3_res = [r for r in results.values() if r.get('manifold3d_watertight') is not None]
+    m3_none = sum(1 for r in results.values() if r.get('manifold3d_watertight') is None)
+    if m3_res:
+        agree = sum(1 for r in m3_res if r.get('m3d_consistent'))
+        disagree = [(f, r) for f, r in results.items()
+                    if r.get('m3d_consistent') is False]
+        print()
+        print('=== manifold3d cross-validation (independent watertight check) ===')
+        print('checked meshes        : %d (n/a when manifold3d absent: %d)' % (
+            len(m3_res), m3_none))
+        print('agreement with strict : %d (%.1f%%)' % (
+            agree, 100.0 * agree / len(m3_res)))
+        print('disagreements         : %d' % len(disagree))
+        for f, r in disagree:
+            print('   %-45s strict=%s m3d=%s (%s)' % (
+                f, r.get('strict_watertight'), r.get('manifold3d_watertight'),
+                r.get('manifold3d_status')))
+    else:
+        print()
+        print('=== manifold3d cross-validation ===')
+        print('manifold3d unavailable in this environment; column is n/a (%d meshes)' % m3_none)
     print('wrote %s' % out_path)
 
 

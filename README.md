@@ -867,6 +867,32 @@ same bar as FAZ 6/FAZ 8 applies: **NOT integrated** — no
 `--experimental-edge-features` flag and no GUI toggle. The default classifier
 is unchanged; the exact numbers above are the honest record.
 
+### Retrospective single-feature scan (FAZ 10)
+
+Per the maintainer's standing rule (always report per-feature correlations on
+rejected experiments), the three rejected families (Weinmann FAZ 6, local
+roughness/geometrical/statistical FAZ 8, MeshCNN edge FAZ 9) were re-scanned
+on the **full 71-mesh labeled set** (not just the boundary subsets). The top
+signals are **real** — above the n=71 noise bar of |r| ≈ 0.4, and sign-stable
+across 30 bootstrap subsamples (std ≈ 0.04):
+
+| Feature | r (full 71-set) | family |
+|---|---|---|
+| `oppmax_std` (MeshCNN ratio-max std) | +0.718 | FAZ 9 |
+| `don_mean` (Difference of Normals) | +0.673 | FAZ 8 |
+| `dihed_mean` (MeshCNN dihedral mean) | −0.633 | FAZ 9 |
+| `rmin_mean` (MeshCNN ratio-min mean) | +0.563 | FAZ 9 |
+| `gc_mean` (Gaussian-curvature roughness) | +0.480 | FAZ 8 |
+
+But as **single** features they add almost nothing to the head: standalone
+LOO-CV gain is ≤ +0.007 mean accuracy (5-fold×20; deterministic LOO 0.845 →
+0.859 = one mesh) and a final-model fit flips **zero** verdicts. These strong
+correlates are largely **redundant** with the existing dihedral-based features
+(`near90`/`flat`/`gentle` + `developable_fraction`). **None cleared the
+very-high standalone-integration bar** — flagged as "interesting sub-pieces,
+revisit only via a proper feature-selection framework or with new data", not
+integrated.
+
 ## Test
 
 Synthetic broken mesh:
@@ -913,6 +939,16 @@ and extracts them, so a fresh machine (e.g. a future Linux box) can reproduce
 the benchmark without re-scraping Thingi10K. See the script header and
 `docs/ATTRIBUTION.md` for provenance and how to re-package/re-upload the
 corpus when new meshes are added.
+
+The benchmark harness (`scripts/benchmark_repair_corpus.py`) also carries an
+**optional manifold3d cross-validation column** (FAZ 10): each repaired mesh's
+final geometry is independently checked with manifold3d (a Manifold constructs
+with `Error.NoError` and is non-empty ⇒ watertight) next to the pymeshlab-based
+`defects.detect()` strict check, and the two verdicts are compared. It never
+changes the strict result or the pipeline — when manifold3d is unavailable the
+column is reported as `n/a`. manifold3d is an optional/heavy dependency (prebuilt
+wheels only up to Python 3.13; already declared in `requirements-311.txt` and the
+macOS conda env — see the comment in `requirements.txt`).
 
 Torture tests cover hard-but-printable geometry:
 

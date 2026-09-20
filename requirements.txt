@@ -1,2 +1,8 @@
 pymeshlab==2025.7.post1
 numpy>=2.4.0,<2.6
+# Optional/heavy cross-validation dependency (FAZ10): manifold3d powers the
+# independent watertight check in scripts/benchmark_repair_corpus.py (and stage
+# 2). It ships prebuilt wheels only up to Python 3.13, so it CANNOT be added to
+# this Linux py3.14 venv -- it lives in requirements-311.txt (the py3.11 stage-2
+# venv) and the macOS single conda env. The benchmark harness degrades to 'n/a'
+# for that column when manifold3d is absent; no code requires it at runtime.

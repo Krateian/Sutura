@@ -865,6 +865,32 @@ bir negatif ve Test B sağlam bir kazanç değil, bu yüzden FAZ 6/FAZ 8 ile ayn
 ve GUI toggle'ı yok. Varsayılan sınıflandırıcı değişmedi; yukarıdaki kesin
 sayılar dürüst kayıttır.
 
+### Geriye dönük tek-özellik taraması (FAZ 10)
+
+Maintainer'ın standing kuralı gereği (reddedilen deneylerde özellik-başına
+korelasyonları her zaman rapor et), üç reddedilen aile (Weinmann FAZ 6, lokal
+roughness/geometrik/istatistiksel FAZ 8, MeshCNN kenar FAZ 9) **tam 71-mesh
+etiketli sette** (yalnızca sınır alt-kümeleri değil) yeniden tarandı. En güçlü
+sinyaller **gerçek** — n=71 gürültü çıtasının (|r| ≈ 0.4) üstünde ve 30
+bootstrap alt-örnekleminde işaret-sabit (std ≈ 0.04):
+
+| Özellik | r (tam 71-set) | aile |
+|---|---|---|
+| `oppmax_std` (MeshCNN ratio-max std) | +0.718 | FAZ 9 |
+| `don_mean` (Normal Farkı) | +0.673 | FAZ 8 |
+| `dihed_mean` (MeshCNN dihedral ort.) | −0.633 | FAZ 9 |
+| `rmin_mean` (MeshCNN ratio-min ort.) | +0.563 | FAZ 9 |
+| `gc_mean` (Gauss eğriliği roughness) | +0.480 | FAZ 8 |
+
+Ama **tek** özellik olarak başlığa neredeyse hiçbir şey katmıyorlar: tek başına
+LOO-CV kazancı ≤ +0.007 ortalama doğruluk (5-fold×20; deterministik LOO 0.845 →
+0.859 = bir mesh) ve son-model uyumu **sıfır** karar değişimi veriyor. Bu güçlü
+korelasyonlar mevcut dihedral tabanlı özelliklerle (`near90`/`flat`/`gentle` +
+`developable_fraction`) büyük ölçüde **örtüşüyor**. **Hiçbiri çok yüksek
+tek-başına-entegrasyon barını geçmedi** — "ilginç alt-parça, yalnızca uygun bir
+özellik-seçimi çerçevesiyle ya da yeni veriyle yeniden bakılmalı" olarak
+işaretlendi, entegre edilmedi.
+
 ## Test
 
 Sentetik kırık mesh:
@@ -910,6 +936,16 @@ açar — böylece yeni bir makine (örneğin gelecekteki bir Linux kutusu)
 Thingi10K'yı yeniden taramadan benchmark'ı yeniden üretebilir. Betik başlığı
 ve `docs/ATTRIBUTION.md` kaynak kökenini ve yeni mesh'ler eklendiğinde
 corpus'un nasıl yeniden paketlenip/yeniden yükleneceğini açıklar.
+
+Benchmark harness'i (`scripts/benchmark_repair_corpus.py`) ayrıca **opsiyonel
+bir manifold3d çapraz-doğrulama sütunu** taşır (FAZ 10): onarılan her mesh'in
+nihai geometrisi, pymeshlab tabanlı `defects.detect()` sıkı kontrolünün yanında
+manifold3d ile bağımsız olarak kontrol edilir (bir Manifold `Error.NoError` ile
+kurulur ve boş değilse ⇒ su geçirmez) ve iki sonuç karşılaştırılır. Sıkı sonucu
+ya da hattı asla değiştirmez — manifold3d yoksa sütun `n/a` bildirilir.
+manifold3d opsiyonel/ağır bir bağımlılıktır (önceden derlenmiş wheel'ler yalnızca
+Python 3.13'e kadar; `requirements-311.txt` ve macOS conda env'sinde zaten
+bildiriliyor — `requirements.txt` içindeki yoruma bakın).
 
 İşkence testleri zor ama basılabilir geometriyi kapsar:
 

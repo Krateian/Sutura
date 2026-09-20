@@ -70,6 +70,36 @@ def run_bridge(src, dst):
     return report
 
 
+def watertight_check(verts, tris):
+    """Independent manifold3d watertight/manifold verdict for a triangle mesh.
+
+    Cross-validation layer (FAZ10) that sits NEXT TO the pymeshlab-based
+    defects.detect() strict check (holes==0 AND non_manifold==0); it never
+    replaces it. A mesh is watertight iff a Manifold can be constructed with
+    Error.NoError AND the result is non-empty (an open or non-manifold mesh
+    produces Error.NotManifold and an empty Manifold).
+
+    Returns ``(ok, status)`` where ``ok`` is True/False/None (None when
+    manifold3d is unavailable in this environment) and ``status`` is the
+    str(Error) or the reason. Never raises for bad input.
+    """
+    try:
+        import numpy as np
+        import manifold3d as m3d
+        v = np.asarray(verts, dtype=np.float32)
+        t = np.asarray(tris, dtype=np.int32)
+        if len(v) == 0 or len(t) == 0:
+            return False, 'empty'
+        man = m3d.Manifold(m3d.Mesh(vert_properties=v, tri_verts=t))
+        status = man.status()
+        ok = bool(status == m3d.Error.NoError) and not man.is_empty()
+        return ok, str(status)
+    except ImportError:
+        return None, 'manifold3d unavailable'
+    except Exception as e:  # noqa: BLE001 - a bad mesh must never crash the check
+        return False, '%s: %s' % (type(e).__name__, e)
+
+
 def main():
     src, dst = sys.argv[1], sys.argv[2]
     report = run_bridge(src, dst)
