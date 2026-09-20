@@ -788,6 +788,44 @@ sees the curvature/planarity structure), so adding the descriptors creates new
 errors without a net gain. Per the "only integrate when it genuinely helps"
 rule, they stay out; the classifier code is unchanged by this evaluation.
 
+### Local roughness / geometrical / statistical features as a tie-breaker (NOT integrated)
+
+Follow-up evaluation (FAZ 8): the source repositories were re-read in full and
+the remaining feature categories were reimplemented **from scratch** from their
+academic references (GPL-3.0 code is never copied — only the public formulas):
+**roughness** (Gaussian-curvature roughness, Wang et al. 2012; Difference of
+Normals, Ioannou et al. 2012; local density, Rabbani et al. 2006 — local
+intensity entropy is N/A because STL has no vertex colour), **geometrical**
+(local density, farthest distance, maximum height, height std dev, Blomley /
+Jutzi / Weinmann 2016) and **statistical shape distribution** (point-to-centroid
+distance, pairwise point distance, sqrt triangle area — D1/D2/D3). The
+`timzhang642/3D-Machine-Learning` repo was checked again: it is a paper/course
+**link list, no code**, so it adds no reference implementation.
+
+**Methodology — tie-breaker, not feature fusion.** Unlike FAZ 6 (which blended
+new features into the head's vector and LOO-CV'd the whole corpus), FAZ 8
+identified the **boundary/disagreement subset** first — meshes where the head's
+confidence is low (< 0.5) or the classic and experimental engines predict
+different real classes — and measured the new features **only as a secondary
+signal on that subset** (leave-one-out logistic over the new local-feature
+aggregates). This is the intended "extra hint when the engines are unsure"
+role, not a change to the default decision.
+
+| Boundary subset | n | Baseline (head) | Tie-breaker (new features, LOO) |
+|---|---|---|---|
+| low confidence OR any disagreement | 27 | 0.778 (21/27) | 0.741 (20/27) |
+| low confidence OR real-class disagreement (refined) | 14 | 0.643 (9/14) | 0.429 (6/14) |
+
+Per-feature correlation with the truth label on the refined subset tops out at
+|r| ≈ 0.36 (`gc_std`); almost every feature sits at |r| ≤ 0.2. The tie-breaker
+**does not improve** the boundary-subset accuracy (0.778 → 0.741 and 0.643 →
+0.429) — with ~14–27 samples and 18 features a LOO logistic overfits, and no
+single local feature carries enough separation signal to disambiguate the
+genuinely-ambiguous cases. **Decision: NOT integrated** — no
+`--experimental-tiebreaker-features` flag and no GUI toggle. The default
+classifier is unchanged; this is a documented negative result with the same
+honesty bar as FAZ 6.
+
 ## Test
 
 Synthetic broken mesh:

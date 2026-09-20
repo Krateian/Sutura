@@ -790,6 +790,42 @@ descriptor'lar net kazanç olmadan yeni hatalar üretiyor. "Yalnızca gerçekten
 katkı sağlıyorsa entegre et" kuralı gereği dışarıda kalıyor; sınıflandırıcı kodu
 bu değerlendirmeden değişmedi.
 
+### Lokal roughness / geometrik / istatistiksel özellikler tie-breaker olarak (ENTEGRE EDİLMEDİ)
+
+İzleme değerlendirmesi (FAZ 8): kaynak depolar baştan sona yeniden okundu ve
+kalan özellik kategorileri **sıfırdan** akademik referanslarından yeniden
+uygulandı (GPL-3.0 kod asla kopyalanmaz — yalnızca herkese açık formüller):
+**roughness** (Gauss eğriliği roughness'u, Wang et al. 2012; Normal Farkı,
+Ioannou et al. 2012; lokal yoğunluk, Rabbani et al. 2006 — lokal yoğunluk
+entropisi N/A çünkü STL'de köşe rengi yok), **geometrik** (lokal yoğunluk, en
+uzak mesafe, maksimum yükseklik, yükseklik std sapması, Blomley / Jutzi /
+Weinmann 2016) ve **istatistiksel şekil dağılımı** (noktadan-merkeze mesafe,
+ikili nokta mesafesi, sqrt üçgen alanı — D1/D2/D3). `timzhang642/3D-Machine-Learning`
+deposu yeniden kontrol edildi: makale/ders **link listesi, kod yok**, bu yüzden
+kullanılabilir bir referans uygulama eklemiyor.
+
+**Metodoloji — tie-breaker, feature fusion değil.** FAZ 6'dan (yeni özellikleri
+başlık vektörüne karıştırıp tüm corpus'ta LOO-CV) farklı olarak FAZ 8 önce
+**sınır/uyuşmazlık alt-kümesini** belirledi — head güveni düşük (< 0.5) ya da
+classic ile experimental motorların farklı gerçek sınıf tahmin ettiği mesh'ler —
+ve yeni özellikleri **yalnızca bu alt-kümede ikincil bir sinyal olarak** ölçtü
+(yeni lokal özellik özetleri üzerinde bırak-bir-dışarı lojistik). Amaçlanan rol
+"motorlar emin değilken ekstra ipucu", varsayılan kararın değişmesi değil.
+
+| Sınır alt-kümesi | n | Temel (head) | Tie-breaker (yeni özellikler, LOO) |
+|---|---|---|---|
+| düşük güven VEYA herhangi uyuşmazlık | 27 | 0.778 (21/27) | 0.741 (20/27) |
+| düşük güven VEYA gerçek-sınıf uyuşmazlığı (rafine) | 14 | 0.643 (9/14) | 0.429 (6/14) |
+
+Rafine alt-kümede özellik-başına doğruluk-etiketi korelasyonu en fazla |r| ≈ 0.36
+(`gc_std`); hemen her özellik |r| ≤ 0.2'de. Tie-breaker sınır alt-kümesi
+doğruluğunu **iyileştirmiyor** (0.778 → 0.741 ve 0.643 → 0.429) — ~14–27 örnek
+ve 18 özellikle LOO lojistik aşırı uyum yapıyor ve hiçbir lokal özellik
+gerçekten-belirsiz vakaları ayıracak kadar ayırma sinyali taşımıyor. **Karar:
+ENTEGRE EDİLMEDİ** — `--experimental-tiebreaker-features` bayrağı ve GUI
+toggle'ı yok. Varsayılan sınıflandırıcı değişmedi; bu, FAZ 6 ile aynı dürüstlük
+çıtasında belgelenmiş bir negatif sonuçtur.
+
 ## Test
 
 Sentetik kırık mesh:
