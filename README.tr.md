@@ -817,6 +817,25 @@ eklemeleri model başına CC BY / CC0; tam dosya-başına atıf için
 `docs/ATTRIBUTION.md`'ye bakın) ve her birinden beklenen onarım sonucu
 `tests/real-world-samples/README.md`'dedir.
 
+### Benchmark corpus'u (115 mesh)
+
+Büyük **onarım benchmark corpus'u** (52 Artec STL taraması + 63 Thingi10K
+STL, sıkıştırılmamış ~6 GB — `docs/repair-benchmark-strict-watertight-2026-09.md`'nin
+arkasındaki corpus) git deposunda **değildir** (depo boyutunu ~100× büyütür).
+GitHub'daki **`benchmark-corpus-v1`** sürümünde parçalı bir `.tar.gz` olarak
+yayımlanır. Şununla indirip doğrulayın:
+
+```sh
+scripts/fetch_benchmark_corpus.sh            # -> /tmp/sutura_corpus_100
+scripts/fetch_benchmark_corpus.sh /some/dir  # özel hedef
+```
+
+Betik sürüm parçalarını indirir, SHA-256'larını doğrular, birleştirir ve
+açar — böylece yeni bir makine (örneğin gelecekteki bir Linux kutusu)
+Thingi10K'yı yeniden taramadan benchmark'ı yeniden üretebilir. Betik başlığı
+ve `docs/ATTRIBUTION.md` kaynak kökenini ve yeni mesh'ler eklendiğinde
+corpus'un nasıl yeniden paketlenip/yeniden yükleneceğini açıklar.
+
 İşkence testleri zor ama basılabilir geometriyi kapsar:
 
 ```sh

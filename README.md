@@ -815,6 +815,26 @@ licenses (per-model CC BY / CC0 for the Phase 2 additions; see
 `docs/ATTRIBUTION.md` for the full per-file attribution) and the repair
 result expected from each is in `tests/real-world-samples/README.md`.
 
+### Benchmark corpus (115-mesh)
+
+The large **repair benchmark corpus** (52 Artec STL scans + 63 Thingi10K
+STLs, ~6 GB uncompressed — the corpus behind
+`docs/repair-benchmark-strict-watertight-2026-09.md`) is **not** in the git
+repo (it would multiply the repo size ~100×). It is published as a split
+`.tar.gz` on the GitHub release **`benchmark-corpus-v1`**. Download and
+verify it with:
+
+```sh
+scripts/fetch_benchmark_corpus.sh            # -> /tmp/sutura_corpus_100
+scripts/fetch_benchmark_corpus.sh /some/dir  # custom destination
+```
+
+The script downloads the release parts, verifies their SHA-256, recombines
+and extracts them, so a fresh machine (e.g. a future Linux box) can reproduce
+the benchmark without re-scraping Thingi10K. See the script header and
+`docs/ATTRIBUTION.md` for provenance and how to re-package/re-upload the
+corpus when new meshes are added.
+
 Torture tests cover hard-but-printable geometry:
 
 ```sh
