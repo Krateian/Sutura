@@ -75,6 +75,19 @@ _RANSAC_DIST_FRAC = 0.02         # centroid-plane distance tol = 2% of diag
 # classic engine stays the fallback when the head is not baked.
 _HEAD_MECH_FLOOR = 0.50          # p(mechanical) >= 0.50 -> mechanical, else organic
 
+# Near-boundary classic-agreement fallback (FAZ4 regression fix). The head's
+# confidence is the margin from the 0.50 boundary, so p_mech near 0.5 is "no
+# opinion". The metal-nut scan sits at p_mech=0.489 -> conf 0.022, below
+# ORG_TUNE_GATE, which silently disabled organic tuning and left the mesh
+# open (the 103 -> 102 FAZ2 corpus regression). When the head is a coin-flip
+# AND classic strongly agrees with the barely-chosen class, keep the head's
+# class but inherit classic's confidence, so a strong agreeing signal is
+# never lost to the repair tuning gate just because the head sat exactly on
+# its decision boundary. Confident head decisions are NEVER overridden (no
+# classic veto -- that was tried and reverted as counterproductive).
+_HEAD_MARGIN = 0.15              # |p_mech - 0.5| below this counts as no opinion
+_CLASSIC_STRONG = 0.70           # classic class-score floor for the fallback
+
 
 def _sigmoid(x):
     """Stable logistic sigmoid."""
@@ -377,6 +390,14 @@ def classify_mesh(verts, tris):
         head_type = 'organic'
     head_conf = abs(p_mech - 0.5) * 2.0  # 0..1 margin
 
+    # FAZ4 near-boundary fallback: a coin-flip head with a strongly agreeing
+    # classic keeps its class but inherits classic's confidence (see the
+    # _HEAD_MARGIN comment). Never changes a confident head decision.
+    if head_conf < _HEAD_MARGIN:
+        classic_type, classic_score = _classic_verdict(mechanical, organic)
+        if classic_type == head_type and classic_score >= _CLASSIC_STRONG:
+            head_conf = classic_score
+
     return {'type': head_type,
             'confidence': round(head_conf, 3),
             'metrics': metrics}
@@ -396,3 +417,16 @@ def _classic_decision(mechanical, organic, metrics):
     return {'type': 'unknown',
             'confidence': round(max(mechanical, organic), 3),
             'metrics': metrics}
+
+
+def _classic_verdict(mechanical, organic):
+    """The classic engine's (type, class-score) WITHOUT mutating ``metrics``.
+
+    Unlike ``_classic_decision`` (which writes the ``leaning`` key on
+    unknown), this is a pure read used by the near-boundary fallback so the
+    reported ``metrics`` dict is never polluted by the fallback path."""
+    if mechanical >= _MECH_FLOOR:
+        return 'mechanical', mechanical
+    if organic >= _ORG_FLOOR:
+        return 'organic', organic
+    return 'unknown', max(mechanical, organic)

@@ -165,3 +165,22 @@ not fixed here (this session is measurement-only).
   sets, holes re-opened by the repair chain) and low-confidence classifier
   gates — consistent with the README's existing "~90% fully watertight, not
   100%" claim, which does not need to change.
+
+## Addendum (FAZ 4) — metal-nut regression fixed, corpus back to 103/115
+
+The `artec_metal-nut.stl` regression was fixed with a **near-boundary
+classic-agreement confidence fallback** in `mesh_classifier_v2.py` (see the
+README "Mesh type-aware repair" row): when the head is a coin-flip
+(`|p_mech − 0.5|·2 < 0.15`) and classic strongly agrees with the barely-chosen
+class (class-score ≥ 0.70), the head keeps its class but reports classic's
+confidence, so the tuning gate sees the strong agreeing signal. Confident head
+decisions are never overridden.
+
+Re-run of the full 115-mesh corpus with the fix (same harness, same auto
+mode): **103/115 (89.6%) strict watertight**, 0 crashes, 0 claim-vs-check
+discrepancies — the warning set is now **identical** to the original pre-FAZ 2
+run (the same 12 meshes; `artec_metal-nut` restored, **zero new regressions**).
+The fallback fires on exactly one mesh (metal-nut, head confidence restored
+0.022 → 0.987 organic); the three near-boundary DISAGREEMENT cases
+(`crankshaft`, `motorcycle-engine-cover-hd`, `plaster-cast-teeth`) keep their
+low confidence → no tuning → conservative defaults, the intended behaviour.
