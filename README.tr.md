@@ -727,10 +727,12 @@ Experimental motor, classic özelliklere üç şey ekler:
    doğrulaması `scripts/train_classifier_v2.py`'de yaşar.
 
 Uyarılar: eğitilmiş başlık ~71 etiketli mesh üzerinde zayıf bir sinyaldir
-(LOO-CV 0.845 — fark beklenir) ve otomatik geri dönüş yalnızca
-**istisnaları / geçersiz sonuçları** kapsar (NaN, eksik anahtar) — kendinden
-emin ama yanlış bir experimental tahmini classic'e karşı yeniden kontrol
-edilmez. Experimental motor çökerse veya geçersiz bir şey döndürürse stderr'de
+(LOO-CV 0.845 — fark beklenir) ve kendinden emin ama yanlış bir experimental
+tahmini classic'e karşı yeniden kontrol edilmez (yalnızca sınır-yakını durum
+kontrol edilir: başlık yazı-tura olduğunda — `|p_mech − 0.5|·2 < 0.15` — ve
+classic seçilen sınıfla güçlü biçimde hemfikirse, başlık sınıfını korur ama
+classic'in güvenini bildirir, böylece ince ayar eşiği güçlü sinyali görür).
+Experimental motor çökerse veya geçersiz bir şey döndürürse stderr'de
 bir uyarıyla sessizce classic'e düşer, böylece bozuk bir v2 onarımı
 çökertmek yerine classic'e geriler.
 

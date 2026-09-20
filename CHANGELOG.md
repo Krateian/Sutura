@@ -4,6 +4,59 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Curved-but-mechanical classifier signal (`developable_fraction`).** The
+  experimental `mesh_classifier_v2` engine gained a curvature-developability
+  signal: the area fraction whose per-face normals lie on a common great
+  circle (the geometric signature of a developable surface — a cylinder,
+  pipe, fillet or other ruled curved part). The plane-only RANSAC could not
+  see cylinders/fillets/pipes; this signal is what lets the head classify
+  curved-but-mechanical parts that classic reads as `unknown`. The synthetic
+  calibration set grew from 28 to 35 meshes (`cylinder_*`, `tube_*`,
+  `fillet_bracket` + damaged variants).
+- **Real-world classifier corpus grown 16 → 40 meshes.** `tests/real-world-samples/`
+  gained 24 Thingi10K meshes (CC0/CC-BY, see `docs/ATTRIBUTION.md` and
+  `tests/real-world-samples/ATTRIBUTION.md` for per-file attribution) with a
+  deliberately hard curved/free-form mix, and the v2 head was retrained on it.
+  Measured on the labeled set: experimental 29/36 vs classic 16/36 (mechanical
+  recall 16/20 vs 2/20); LOO-CV on the 71-mesh labeled set (35 synthetic + 36
+  real) 0.845 vs classic 0.648. Repo size grew to ~97 MB (corpus STLs) — see
+  `docs/v0.3.0-readiness.md`.
+- **115-mesh strict-watertight repair benchmark + harness.** New reproducible
+  harness `scripts/benchmark_repair_corpus.py` runs the current pipeline over
+  the 115-mesh real-world scan corpus and measures the **final output
+  geometry** with a strict `defects.detect()` closed-loop check (`holes == 0
+  AND non_manifold == 0`), recording the pipeline verdict alongside so any
+  claim-vs-check discrepancy is visible. Result on the current pipeline:
+  103/115 (~90%) strictly watertight, 0 crashes, every pipeline claim
+  confirmed 1:1. Report: `docs/repair-benchmark-strict-watertight-2026-09.md`
+  (methodology, metric clarification — pymeshlab `boundary_edges` counts
+  edges, not holes — and per-mesh failure reasons).
+- **Experimental join-closest-components prototype (`--experimental-join-components`).**
+  CLI-only, evaluation only, NOT in the default chain: instead of deleting
+  connected components below `mincomponentsize`, `repair.join_small_components`
+  moves each small component onto the nearest larger one (translate so the
+  closest vertex pair coincides, then merge duplicates and re-close). A
+  deliberate geometry change (debris is moved, not dropped), so it stays
+  behind the flag; the report carries `experimental_join_components`
+  (`{moved, remaining_small}`). Not tested in CI.
+
+### Fixed
+
+- **`artec_metal-nut.stl` scan-corpus regression (103 → 102 → 103).** The FAZ 2
+  retrained classifier head collapsed this organic scan's confidence from
+  0.987 to 0.022 (`p_mech=0.489`, a coin-flip), which put it below `ORG_TUNE_GATE`
+  and silently disabled organic tuning — leaving the mesh open. New
+  near-boundary classic-agreement fallback in `mesh_classifier_v2.py`: when
+  the head is a coin-flip (`|p_mech − 0.5|·2 < 0.15`) and classic strongly
+  agrees with the barely-chosen class (class-score ≥ 0.70), the head keeps its
+  class but reports classic's confidence, so the tuning gate sees the strong
+  signal. Confident head decisions are never overridden (no classic veto).
+  Re-measured on the 115-mesh corpus: 103/115 strictly watertight, warning set
+  identical to the pre-regression run, zero new regressions; the fallback
+  fires on exactly one mesh.
+
 ## [0.2.8] - 2026-09-19
 
 ### Changed

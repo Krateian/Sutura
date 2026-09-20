@@ -725,12 +725,14 @@ The experimental engine adds three things to the classic features:
     training + leave-one-out CV live in `scripts/train_classifier_v2.py`.
 
 Caveats: the trained head is a weak signal on ~71 labeled meshes (LOO-CV 0.845
-— expect variance), and the automatic fallback only covers
-**exceptions / invalid results** (NaN, missing keys) — a confident-but-wrong
-experimental prediction is not re-checked against classic. If the experimental
-engine crashes or returns something invalid it silently falls back to classic
-with a warning on stderr, so a broken v2 degrades to classic instead of
-crashing a repair.
+— expect variance), and a confident-but-wrong experimental prediction is not
+re-checked against classic (only the near-boundary case is: when the head is a
+coin-flip — `|p_mech − 0.5|·2 < 0.15` — and classic strongly agrees with the
+barely-chosen class, the head keeps its class but reports classic's confidence
+so the tuning gate sees the strong signal; see the Feature Status row). If the
+experimental engine crashes or returns something invalid it silently falls back
+to classic with a warning on stderr, so a broken v2 degrades to classic instead
+of crashing a repair.
 
 The v2 engine lives in `sutura/mesh_classifier_v2.py` as a full copy of the
 classic engine plus the additions, so the classic module stays untouched.
