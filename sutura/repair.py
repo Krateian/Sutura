@@ -65,7 +65,7 @@ def resolve_classifier_engine(cli_value=None):
     return value
 
 
-def classify_with_engine(verts, tris, engine='experimental'):
+def classify_with_engine(verts, tris, engine='experimental', extra_features=False):
     """Run classify_mesh with the selected engine. Returns ``(result, used)``
     where ``used`` is the engine that actually produced the result.
 
@@ -73,12 +73,14 @@ def classify_with_engine(verts, tris, engine='experimental'):
     an invalid/incomplete result (missing keys, NaN/non-finite confidence,
     unexpected type), it silently falls back to classic with a warning
     logged -- never a crash. ``classic``: mesh_classifier, unchanged.
+    ``extra_features`` enables the opt-in edge-tiebreak head (v2 only;
+    ignored by classic).
     """
     if engine != 'experimental':
         return classify_mesh(verts, tris), 'classic'
     try:
         import mesh_classifier_v2 as v2_engine
-        r = v2_engine.classify_mesh(verts, tris)
+        r = v2_engine.classify_mesh(verts, tris, extra_features=extra_features)
         if not isinstance(r, dict):
             raise ValueError('classifier result is not a dict')
         if r.get('type') not in ('mechanical', 'organic', 'unknown'):
@@ -624,7 +626,7 @@ def stl_write_binary(path, verts, tris):
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
-                            join_components=False):
+                            join_components=False, extra_features=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -636,6 +638,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     the 3MF <model unit="..."> attribute (None for STL/OBJ) fed to the
     non-blocking unit-warning heuristic. ``join_components`` enables the
     experimental join-small-components prototype (flag-gated; NOT the default).
+    ``extra_features`` enables the opt-in edge-tiebreak classifier head.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -658,7 +661,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     # Mesh-type-aware Stage 1 tuning (organic vs mechanical): resolved through
     # the shared resolve_mode_params so repair and --dry-run stay in sync.
-    _cls, stats['classifier_engine'] = classify_with_engine(verts, tris, engine)
+    _cls, stats['classifier_engine'] = classify_with_engine(verts, tris, engine, extra_features=extra_features)
     stats['detected_type'] = _cls['type']
     stats['detected_confidence'] = _cls['confidence']
     stats['repair_mode'] = mode
@@ -1068,7 +1071,7 @@ def obj_has_material_refs(path):
 
 
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
-                join_components=False):
+                join_components=False, extra_features=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -1089,7 +1092,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
 
     report, new_v, new_t = repair_mesh_from_arrays(
         verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
-        declared_unit=declared_unit, join_components=join_components)
+        declared_unit=declared_unit, join_components=join_components,
+        extra_features=extra_features)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -1144,7 +1148,7 @@ def build_mesh_block(verts, tris):
 
 
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
-               join_components=False):
+               join_components=False, extra_features=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -1178,7 +1182,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                 rep, new_v, new_t = repair_mesh_from_arrays(
                     verts, tris, tmpdir, mode=mode, profile=profile,
                     engine=engine, declared_unit=declared,
-                    join_components=join_components)
+                    join_components=join_components,
+                    extra_features=extra_features)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -1705,7 +1710,8 @@ def human_dry_run(r):
 
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
-                 max_risk=None, force=False, join_components=False):
+                 max_risk=None, force=False, join_components=False,
+                 extra_features=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -1731,11 +1737,13 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
             result.update(repair_3mf(src, tmp_out, tmpdir, mode=mode,
                                      profile=profile, engine=engine,
-                                     join_components=join_components))
+                                     join_components=join_components,
+                                     extra_features=extra_features))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
                                       profile=profile, engine=engine,
-                                      join_components=join_components))
+                                      join_components=join_components,
+                                      extra_features=extra_features))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -1866,6 +1874,11 @@ def main():
                              'components onto the nearest larger component '
                              'instead of deleting them (changes geometry; '
                              'NOT the default behaviour, evaluation only)')
+    parser.add_argument('--experimental-edge-tiebreak', action='store_true',
+                        help='experimental opt-in: use the 11-feature '
+                             'classifier head (base features + the five strong '
+                             'FAZ10 scan signals). NOT the default; the gain is '
+                             'marginal (1 mesh on the 71-mesh labeled set).')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
     files = args.files
@@ -1961,7 +1974,8 @@ def main():
                             no_history=args.no_history, engine=engine,
                             out=out, max_geom_change=max_geom_change,
                             max_risk=max_risk, force=args.force,
-                            join_components=args.experimental_join_components) for f in files]
+                            join_components=args.experimental_join_components,
+                            extra_features=args.experimental_edge_tiebreak) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

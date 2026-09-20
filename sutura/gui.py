@@ -117,6 +117,26 @@ STRINGS = {
                                          '(component below size threshold) — try '
                                          'a less aggressive mode'),
         'defects_header': 'Input defects (selected file):',
+        'repair_log_header': 'What changed (repair log):',
+        'repair_log_empty': 'Repair a file to see the operations applied.',
+        'repair_log_closed': 'Closed %d hole(s)',
+        'repair_log_holes_left': '%d hole(s) remain',
+        'repair_log_nm_fixed': 'Fixed %d non-manifold edge(s)',
+        'repair_log_nm_left': '%d non-manifold edge(s) remain',
+        'repair_log_faces_removed': 'Removed %d face(s) (debris / degenerate)',
+        'repair_log_components': 'Connected components: %d -> %d',
+        'repair_log_two_manifold_yes': 'Two-manifold: YES',
+        'repair_log_two_manifold_no': 'Two-manifold: NO',
+        'repair_log_stage2_ok': 'Stage 2: watertight rebuild (manifold3d)',
+        'repair_log_stage2_merged': '  %d shell(s) merged',
+        'repair_log_stage2_skip': 'Stage 2 skipped (manifold3d unavailable)',
+        'repair_log_stage2_err': 'Stage 2 error',
+        'repair_log_extreme': 'Extreme extra passes applied (%d self-intersection(s) removed)',
+        'repair_log_objects': '3MF: %d/%d object(s) watertight',
+        'edge_tiebreak_label': 'Experimental: edge-tiebreak classifier',
+        'edge_tiebreak_tip': 'Opt-in 11-feature classifier head (base + 5 '
+                             'strong scan signals). NOT the default; the gain is '
+                             'marginal (1 mesh on the 71-mesh labeled set).',
         'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm',
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
@@ -150,6 +170,7 @@ STRINGS = {
         'viewer_ready_failed': 'Could not prepare the 3D view',
         'viewer_status_mode': 'Repair status',
         'viewer_deviation_mode': 'Surface deviation',
+        'viewer_defects_mode': 'Defect colours',
         'viewer_max_dev': 'Max deviation: %.2f mm',
         'viewer_hint': 'Drag to rotate · wheel to zoom',
         'mode_btn': 'Mode: %s',
@@ -290,6 +311,26 @@ STRINGS = {
                                          '(bileşen boyut eşiğinin altında) — '
                                          'daha az agresif bir mod deneyin'),
         'defects_header': 'Girdi kusurları (seçili dosya):',
+        'repair_log_header': 'Ne değişti (onarım günlüğü):',
+        'repair_log_empty': 'Uygulanan işlemleri görmek için bir dosya onarın.',
+        'repair_log_closed': '%d delik kapatıldı',
+        'repair_log_holes_left': '%d delik kaldı',
+        'repair_log_nm_fixed': '%d non-manifold kenar düzeltildi',
+        'repair_log_nm_left': '%d non-manifold kenar kaldı',
+        'repair_log_faces_removed': '%d yüz silindi (artık / dejenere)',
+        'repair_log_components': 'Bağlı bileşenler: %d -> %d',
+        'repair_log_two_manifold_yes': 'İki-manifold: EVET',
+        'repair_log_two_manifold_no': 'İki-manifold: HAYIR',
+        'repair_log_stage2_ok': 'Aşama 2: su geçirmez yeniden kurma (manifold3d)',
+        'repair_log_stage2_merged': '  %d kabuk birleştirildi',
+        'repair_log_stage2_skip': 'Aşama 2 atlandı (manifold3d yok)',
+        'repair_log_stage2_err': 'Aşama 2 hatası',
+        'repair_log_extreme': 'Extreme ek geçişler uygulandı (%d kendisiyle-kesişim silindi)',
+        'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
+        'edge_tiebreak_label': 'Deneysel: edge-tiebreak sınıflandırıcı',
+        'edge_tiebreak_tip': '11-özellikli sınıflandırıcı kafası (temel + 5 güçlü '
+                             'tarama sinyali). Varsayılan değil; kazanç marjinal '
+                             '(71 etiketli mesh setinde 1 mesh).',
         'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f mm',
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
@@ -323,6 +364,7 @@ STRINGS = {
         'viewer_ready_failed': '3D görünüm hazırlanamadı',
         'viewer_status_mode': 'Onarım durumu',
         'viewer_deviation_mode': 'Yüzey sapması',
+        'viewer_defects_mode': 'Kusur renkleri',
         'viewer_max_dev': 'Maks. sapma: %.2f mm',
         'viewer_hint': 'Sürükleyerek döndür · tekerlekle yakınlaştır',
         'mode_btn': 'Mod: %s',
@@ -681,7 +723,8 @@ class RepairWorker(QThread):
     all_done = Signal(bool)              # cancelled
 
     def __init__(self, files, mode='auto', profile=None, force=False,
-                 max_geom_change=None, max_risk=None, parent=None):
+                 max_geom_change=None, max_risk=None, edge_tiebreak=False,
+                 parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
@@ -689,6 +732,7 @@ class RepairWorker(QThread):
         self._force = force
         self._max_geom_change = max_geom_change
         self._max_risk = max_risk
+        self._edge_tiebreak = edge_tiebreak
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -730,6 +774,8 @@ class RepairWorker(QThread):
                 args.append('--force')
             if self._no_history:
                 args.append('--no-history')
+            if self._edge_tiebreak:
+                args.append('--experimental-edge-tiebreak')
             args.append(path)
             self._proc = subprocess.Popen(
                 args,
@@ -1086,6 +1132,7 @@ class MeshViewport(QWidget):
         self._data = None
         self._side = 'repaired'
         self._deviation = False
+        self._defects = False
         self._rot = None            # 3x3 camera basis
         self._scale = None          # zoom override (None = npz frame scale)
         self._dragging = False
@@ -1126,6 +1173,7 @@ class MeshViewport(QWidget):
 
     def set_view_mode(self, mode):
         self._deviation = (mode == 'deviation')
+        self._defects = (mode == 'defects')
         self._apply_mode()
         self._request_frame(drag=True)
         self._idle.start()
@@ -1144,20 +1192,26 @@ class MeshViewport(QWidget):
         frame = (np.asarray(d['frame_center'], dtype=np.float64),
                  float(d['frame_scale']))
 
-        def prep(verts, tris, vidx, healed=None, deviation=None, defect_col=None):
+        def prep(verts, tris, vidx, healed=None, deviation=None, defect_col=None,
+             face_colors=None):
             holes = [{'verts_idx': np.asarray(vidx, dtype=np.int64)}] if len(vidx) else None
             return prepare_render(verts, tris, holes=holes, healed=healed,
                                   deviation=deviation, w=w, h=h, pad=pad,
                                   frame=frame,
                                   defect=(defect_col or (235, 60, 70)),
-                                  healed_color=(46, 204, 113))
+                                  healed_color=(46, 204, 113),
+                                  face_colors=face_colors)
 
-        # original side: defect red, no healed/deviation
+        # original side: defect red, no healed/deviation (+ defect-type colors)
         self._ctx_lod['original'] = {
             'status': prep(d['lverts'], d['ltris'], d['ldefect_vidx']),
+            'defects': prep(d['lverts'], d['ltris'], d['ldefect_vidx'],
+                            face_colors=d['ldefect_colors']),
             'deviation': None}
         self._ctx_full['original'] = {
             'status': prep(d['verts'], d['tris'], d['defect_vidx']),
+            'defects': prep(d['verts'], d['tris'], d['defect_vidx'],
+                            face_colors=d['defect_colors']),
             'deviation': None}
         # repaired side: still-broken orange, healed green, deviation ramp
         self._ctx_lod['repaired'] = {
@@ -1172,13 +1226,22 @@ class MeshViewport(QWidget):
                               deviation=d['distance'], defect_col=(255, 140, 60))}
 
     def _apply_mode(self):
-        # deviation mode only recolors the repaired side; the original side
-        # keeps its status view.
+        # defects mode shows the ORIGINAL side with per-type defect colours;
+        # deviation mode recolors the repaired side only.
+        if self._defects:
+            self._side = 'original'
+            self._ctx = self._ctx_full['original']['defects']
+            return
         mode = 'deviation' if (self._deviation and self._side == 'repaired') else 'status'
         self._ctx = self._ctx_full[self._side][mode]
 
     def _request_frame(self, drag=True):
         if self._data is None or self._ctx is None:
+            return
+        if self._defects:
+            ctx = self._ctx_lod['original']['defects'] if drag else self._ctx
+            self._thread.submit(ctx, self._rot, self._scale,
+                                'drag' if drag else 'final')
             return
         lod = self._ctx_lod[self._side]
         mode = 'deviation' if (self._deviation and self._side == 'repaired') else 'status'
@@ -1403,6 +1466,7 @@ class MainWindow(QMainWindow):
         self._diff_by_path = {}
         self._unit_by_path = {}       # path -> (unit_warning, unit_hint)
         self._output_by_path = {}
+        self._repair_log_by_path = {} # path -> repair result dict (FAZ11 log)
         self._analysis_by_path = {}   # path -> analyze worker result dict
         self._heatmap_cache = {}      # path -> {size_key: QPixmap}
         self.heatmap_worker = None
@@ -1411,6 +1475,7 @@ class MainWindow(QMainWindow):
         self._before_after_zoom = None
         self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
         self._repair_profile = None   # batch-wide repair profile (not per file)
+        self._edge_tiebreak = False   # batch-wide opt-in edge-tiebreak head (FAZ11)
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -1489,6 +1554,12 @@ class MainWindow(QMainWindow):
         self.btn_stop.setToolTip(_t('stop_tip'))
         actions.addWidget(self.btn_analyze)
         actions.addWidget(self.btn_mode)
+        # opt-in experimental edge-tiebreak classifier head (FAZ11, batch-wide)
+        self.chk_edge_tiebreak = QCheckBox(_t('edge_tiebreak_label'))
+        self.chk_edge_tiebreak.setToolTip(_t('edge_tiebreak_tip'))
+        self.chk_edge_tiebreak.toggled.connect(
+            lambda on: setattr(self, '_edge_tiebreak', on))
+        actions.addWidget(self.chk_edge_tiebreak)
         # repair profile dropdown (batch-wide, like the mode): "Auto" = the
         # current classifier-driven default; the named profiles opt in to a
         # fixed Stage 1 threshold preset (see repair.PROFILES).
@@ -1548,6 +1619,16 @@ class MainWindow(QMainWindow):
         self.defects.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.defects.setFixedHeight(110)
         layout.addWidget(self.defects)
+
+        # "what changed" repair log panel (FAZ11): operations applied in repair
+        self.repair_log_label = QLabel(_t('repair_log_header'))
+        layout.addWidget(self.repair_log_label)
+        self.repair_log = QPlainTextEdit()
+        self.repair_log.setReadOnly(True)
+        self.repair_log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.repair_log.setFixedHeight(90)
+        self.repair_log.setPlainText(_t('repair_log_empty'))
+        layout.addWidget(self.repair_log)
 
         # on-demand defect heatmap: render button + clickable thumbnail
         heat_row = QHBoxLayout()
@@ -1912,7 +1993,9 @@ class MainWindow(QMainWindow):
         self.worker = RepairWorker(files, self._repair_mode,
                                    self._repair_profile, force=force,
                                    max_geom_change=self._max_geom_change,
-                                   max_risk=self._max_risk, parent=self)
+                                   max_risk=self._max_risk,
+                                   edge_tiebreak=self._edge_tiebreak,
+                                   parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
         self.worker.all_done.connect(self._on_all_done)
@@ -2044,10 +2127,12 @@ class MainWindow(QMainWindow):
             self._unit_by_path[path] = (data.get('unit_warning'),
                                         data.get('unit_hint'))
             self._output_by_path[path] = data.get('output')
+            self._repair_log_by_path[path] = data
             if data.get('status') == 'budget_declined':
                 self._declined_by_path[path] = data
             if self._item_by_path.get(path) is self.tree.currentItem():
                 self._show_defects(path)
+                self._render_repair_log(path, data)
                 self._refresh_before_after_btn(path)
         if report:
             self._log('%s\n%s' % (path, report))
@@ -2060,12 +2145,14 @@ class MainWindow(QMainWindow):
         if current is not None:
             self._show_analysis(current.text(0))
             self._show_defects(current.text(0))
+            self._render_repair_log(current.text(0))
             self._refresh_heatmap_thumb(current.text(0))
             self._refresh_before_after_btn(current.text(0))
         else:
             self.analysis.clear()
             self.analyze_label.setText(_t('analyze_empty'))
             self.defects.clear()
+            self.repair_log.clear()
             self._set_heatmap_thumb(None)
             self.btn_before_after.setEnabled(False)
 
@@ -2128,6 +2215,50 @@ class MainWindow(QMainWindow):
         if not lines:
             lines.append(_t('defect_empty'))
         self.defects.setPlainText('\n'.join(lines))
+
+    def _render_repair_log(self, path, data=None):
+        """Fill the 'what changed' repair-log panel from a repair result dict."""
+        if data is None:
+            data = self._repair_log_by_path.get(path)
+        if not data or data.get('status') == 'budget_declined' or data.get('error'):
+            self.repair_log.setPlainText('')
+            return
+        s1 = data.get('stage1', {})
+        lines = []
+        hc = s1.get('holes_closed', 0)
+        hr = s1.get('holes_remaining', 0)
+        lines.append(_t('repair_log_closed', hc))
+        if hr:
+            lines.append(_t('repair_log_holes_left', hr))
+        nf = s1.get('non_manifold_edges_fixed', 0)
+        nr = s1.get('non_manifold_edges_remaining', 0)
+        lines.append(_t('repair_log_nm_fixed', nf))
+        if nr:
+            lines.append(_t('repair_log_nm_left', nr))
+        fr = s1.get('faces_removed', 0)
+        if fr:
+            lines.append(_t('repair_log_faces_removed', fr))
+        cb = s1.get('components_before')
+        ca = s1.get('components')
+        if cb is not None and ca is not None:
+            lines.append(_t('repair_log_components', cb, ca))
+        lines.append(_t('repair_log_two_manifold_yes' if s1.get('two_manifold')
+                        else 'repair_log_two_manifold_no'))
+        if data.get('extreme_passes_applied') and data.get('self_intersections_removed'):
+            lines.append(_t('repair_log_extreme', data['self_intersections_removed']))
+        s2 = data.get('stage2')
+        if s2 is not None:
+            if 'error' in s2:
+                lines.append(_t('repair_log_stage2_skip' if s2['error'].startswith(
+                    'Stage 2 skipped') else 'repair_log_stage2_err'))
+            else:
+                lines.append(_t('repair_log_stage2_ok'))
+                if s2.get('shells_merged'):
+                    lines.append(_t('repair_log_stage2_merged', s2['shells_merged']))
+        if data.get('objects') is not None and data.get('objects_watertight') is not None:
+            lines.append(_t('repair_log_objects', data['objects_watertight'],
+                            data.get('objects')))
+        self.repair_log.setPlainText('\n'.join(lines))
 
     # --- heatmap -----------------------------------------------------------
     def _refresh_heatmap_thumb(self, path):
@@ -2347,10 +2478,13 @@ class MainWindow(QMainWindow):
         rad_status = QRadioButton(_t('viewer_status_mode'))
         rad_status.setChecked(True)
         rad_dev = QRadioButton(_t('viewer_deviation_mode'))
+        rad_defects = QRadioButton(_t('viewer_defects_mode'))
         dev_group.addButton(rad_status)
         dev_group.addButton(rad_dev)
+        dev_group.addButton(rad_defects)
         ctrl.addWidget(rad_status)
         ctrl.addWidget(rad_dev)
+        ctrl.addWidget(rad_defects)
         ctrl.addStretch(1)
         maxdev = QLabel('')
         maxdev.setStyleSheet('font-size: 11px; color: #8891a0;')
@@ -2388,6 +2522,12 @@ class MainWindow(QMainWindow):
                 status_lab.setText('')
 
         def _apply_inter_state():
+            if rad_defects.isChecked():
+                # defect-colour mode shows the ORIGINAL mesh's defect types
+                viewport.set_side('original')
+                viewport.set_view_mode('defects')
+                maxdev.setText('')
+                return
             side = 'repaired' if rad_rep.isChecked() else 'original'
             viewport.set_side(side)
             viewport.set_view_mode('deviation' if rad_dev.isChecked() else 'status')

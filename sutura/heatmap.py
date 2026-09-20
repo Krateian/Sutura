@@ -256,7 +256,7 @@ class RenderContext:
     """
 
     __slots__ = ('verts', 'tris', 'w', 'h', 'pad', 'frame', 'bg',
-                 'is_defect_face', 'is_healed_face',
+                 'is_defect_face', 'is_healed_face', 'face_colors',
                  'grey_shade', 'red_shade', 'green_shade', 'dev_idx',
                  'grey_lut', 'red_lut', 'green_lut', 'dev_lut')
 
@@ -295,7 +295,7 @@ def _deviation_lut(n=256):
 def prepare_render(verts, tris, holes=None, non_manifold=None, healed=None,
                    deviation=None, w=240, h=180, pad=24, frame=None,
                    bg=(18, 22, 26), mesh=(178, 186, 194), defect=(235, 60, 70),
-                   healed_color=(46, 204, 113)):
+                   healed_color=(46, 204, 113), face_colors=None):
     """One-time render preparation: build a ``RenderContext``.
 
     Computes everything that does NOT depend on the camera: face normals,
@@ -305,7 +305,10 @@ def prepare_render(verts, tris, holes=None, non_manifold=None, healed=None,
     ``draw_frame(prepare_render(...), rotation=...)``.
 
     Parameters mirror ``render``; ``deviation`` with a length that does not
-    match ``len(verts)`` is ignored (no crash). Never raises for
+    match ``len(verts)`` is ignored (no crash). ``face_colors`` is an
+    optional (M,3) uint8 per-face colour array (FAZ11 color-coded defects);
+    faces with a non-zero colour are drawn in that colour (shaded), taking
+    precedence over the single-red defect mask. Never raises for
     empty/degenerate input.
     """
     verts = np.asarray(verts, dtype=np.float64)
@@ -317,6 +320,7 @@ def prepare_render(verts, tris, holes=None, non_manifold=None, healed=None,
     if len(verts) == 0 or len(tris) == 0:
         ctx.is_defect_face = np.zeros(len(tris), dtype=bool)
         ctx.is_healed_face = np.zeros(len(tris), dtype=bool)
+        ctx.face_colors = None
         ctx.grey_shade = np.zeros(len(tris), dtype=np.int64)
         ctx.red_shade = np.zeros(len(tris), dtype=np.int64)
         ctx.green_shade = np.zeros(len(tris), dtype=np.int64)
@@ -348,6 +352,14 @@ def prepare_render(verts, tris, holes=None, non_manifold=None, healed=None,
     ctx.grey_lut = _shade_lut(mesh)
     ctx.red_lut = _shade_lut(defect)
     ctx.green_lut = _shade_lut(healed_color)
+
+    # per-face defect-type colours (FAZ11): shaded once, zeros = no type colour
+    if face_colors is not None and len(np.asarray(face_colors)) == len(tris):
+        fc = np.asarray(face_colors, dtype=np.float64).reshape(-1, 3)
+        shade3 = (0.55 + 0.45 * shade)[:, None]
+        ctx.face_colors = np.clip(fc * shade3, 0, 255).astype(np.uint8)
+    else:
+        ctx.face_colors = None
 
     if deviation is not None and len(np.asarray(deviation)) == len(verts):
         d_face = np.asarray(deviation, dtype=np.float64)[tris].mean(axis=1)
@@ -397,7 +409,10 @@ def draw_frame(ctx, rotation=None, scale=None):
             QPoint(int(px[t[1]]), int(py[t[1]])),
             QPoint(int(px[t[2]]), int(py[t[2]])),
         ])
-        if ctx.is_defect_face[i]:
+        if ctx.face_colors is not None and ctx.face_colors[i].any():
+            fc = ctx.face_colors[i]
+            p.setBrush(QColor(int(fc[0]), int(fc[1]), int(fc[2])))
+        elif ctx.is_defect_face[i]:
             p.setBrush(ctx.red_lut[ctx.red_shade[i]])
         elif ctx.dev_idx is not None:
             p.setBrush(ctx.dev_lut[ctx.dev_idx[i]])
@@ -413,7 +428,7 @@ def draw_frame(ctx, rotation=None, scale=None):
 def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
            pad=24, bg=(18, 22, 26), mesh=(178, 186, 194), defect=(235, 60, 70),
            healed=None, healed_color=(46, 204, 113), frame=None, rotation=None,
-           deviation=None):
+           deviation=None, face_colors=None):
     """Render a mesh heatmap to a QImage.
 
     Equivalent to ``draw_frame(prepare_render(...), rotation=rotation)``.
@@ -436,5 +451,5 @@ def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
     ctx = prepare_render(verts, tris, holes=holes, non_manifold=non_manifold,
                          healed=healed, deviation=deviation, w=w, h=h, pad=pad,
                          frame=frame, bg=bg, mesh=mesh, defect=defect,
-                         healed_color=healed_color)
+                         healed_color=healed_color, face_colors=face_colors)
     return draw_frame(ctx, rotation=rotation)

@@ -179,3 +179,74 @@ def detect(verts, tris, with_indices=False):
     return {'holes': detect_holes(verts, tris, with_indices=with_indices),
             'non_manifold': detect_non_manifold(verts, tris,
                                                 with_indices=with_indices)}
+
+
+# Defect-type colours used by the GUI's color-coded mesh view (FAZ11).
+_COLOR_DEGENERATE = (250, 210, 60)   # yellow  : degenerate / zero-area face
+_COLOR_NON_MANIFOLD = (235, 60, 70)  # red     : non-manifold edge
+_COLOR_FLIPPED = (255, 140, 60)      # orange  : flipped (inverted) winding
+
+
+def defect_type_colors(verts, tris):
+    """Per-face defect-type colour array (M,3) uint8 for the input mesh.
+
+    Used by the GUI's color-coded mesh view (FAZ11). Classification:
+      yellow  = degenerate (near-zero area, NaN/Inf vertex, repeated indices)
+      red     = non-manifold (touches an edge shared by more than two faces)
+      orange  = flipped (face normal opposite to its edge-neighbours)
+    A face keeps its most severe class (degenerate > non-manifold > flipped);
+    (0,0,0) means no defect colour (rendered normally). Pure numpy, stdlib-free,
+    does not change ``detect()``'s contract."""
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    F = len(t)
+    colors = np.zeros((F, 3), dtype=np.uint8)
+    if F == 0 or len(v) == 0:
+        return colors
+    a = v[t[:, 0]]; b = v[t[:, 1]]; c = v[t[:, 2]]
+    cross = np.cross(b - a, c - a)
+    areas = 0.5 * np.linalg.norm(cross, axis=1)
+    diag = float(np.linalg.norm(v.max(axis=0) - v.min(axis=0))) if len(v) else 1.0
+    deg_thresh = 1e-9 * max(diag * diag, 1e-12)
+    degenerate = ((areas <= deg_thresh) |
+                  ~np.isfinite(areas) |
+                  (t[:, 0] == t[:, 1]) | (t[:, 1] == t[:, 2]) |
+                  (t[:, 0] == t[:, 2]))
+
+    # non-manifold faces: incident to an edge shared by > 2 faces
+    edges = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]], axis=0)
+    face_of = np.concatenate([np.arange(F), np.arange(F), np.arange(F)])
+    emin = np.minimum(edges[:, 0], edges[:, 1])
+    emax = np.maximum(edges[:, 0], edges[:, 1])
+    V = int(v.shape[0])
+    keys = emin * (V + 1) + emax
+    uniq, counts = np.unique(keys, return_counts=True)
+    nm_keys = set(int(k) for k in uniq[counts > 2])
+    nm_face = np.zeros(F, dtype=bool)
+    for i in range(len(edges)):
+        if keys[i] in nm_keys:
+            nm_face[face_of[i]] = True
+
+    # flipped: face normal opposite to the average of its edge-neighbour normals
+    mag = np.linalg.norm(cross, axis=1)
+    mag[mag == 0] = 1.0
+    n = cross / mag[:, None]
+    n_deg = np.isfinite(n).all(axis=1)
+    n = np.where(n_deg[:, None], n, np.zeros_like(n))
+    edge_faces = {}
+    for i in range(len(edges)):
+        edge_faces.setdefault(int(keys[i]), []).append(int(face_of[i]))
+    adj_sum = np.zeros((F, 3))
+    adj_cnt = np.zeros(F)
+    for faces in edge_faces.values():
+        for f1 in faces:
+            for f2 in faces:
+                if f1 != f2:
+                    adj_sum[f1] += n[f2]
+                    adj_cnt[f1] += 1
+    flipped = (adj_cnt > 0) & (np.sum(n * adj_sum, axis=1) < 0) & ~degenerate & ~nm_face
+
+    colors[degenerate] = _COLOR_DEGENERATE
+    colors[nm_face & ~degenerate] = _COLOR_NON_MANIFOLD
+    colors[flipped] = _COLOR_FLIPPED
+    return colors

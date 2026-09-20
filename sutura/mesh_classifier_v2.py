@@ -327,6 +327,133 @@ V2_WEIGHTS = [2.3823, 2.9866, -0.9694, -0.5230, 0.5083, 2.2289, 1.0432]
 V2_MEAN = [20.9532, 30.5532, 35.5085, 4.9296, 0.2917, 0.5122]
 V2_STD = [24.1622, 17.6785, 30.5004, 6.4313, 0.3129, 0.2819]
 
+# Opt-in 'edge-tiebreak' head (FAZ11, --experimental-edge-tiebreak): the 6 base
+# features PLUS the five strongest single signals from the FAZ10 retrospective
+# scan (all |r| > 0.4 on the 71-mesh labeled set, sign-stable over 30 bootstrap
+# subsamples): [oppmax_std, don_mean, dihed_mean, rmin_mean, gc_mean]. Trained
+# on the same 71 labeled meshes. LOO-CV is neutral vs the base head (0.845;
+# 5-fold x20 mean 0.852 vs 0.850) -- the strong correlates are largely
+# redundant with the dihedral features, so this stays an explicit opt-in, NEVER
+# the default. OFF by default; enabled only via classify_mesh(extra_features=True).
+V2_EXTRA_WEIGHTS = [2.3710, 1.2358, -0.7830, 0.0135, 0.5777, 2.1649, 1.1438,
+                    0.2955, 1.9530, 0.0802, 0.0848, 0.2433]
+V2_EXTRA_MEAN = [20.9532, 30.5532, 35.5085, 4.9296, 0.2917, 0.5122,
+                 8880301.1344, 0.2947, 2.6936, 286513.4431, 0.5724]
+V2_EXTRA_STD = [24.1622, 17.6785, 30.5004, 6.4313, 0.3129, 0.2819,
+                44317875.2737, 0.2680, 0.3578, 1277023.6886, 0.8934]
+
+
+def _edge_extra_features(verts, tris):
+    """The five strongest single signals from the FAZ10 retrospective scan,
+    as a 5-vector [oppmax_std, don_mean, dihed_mean, rmin_mean, gc_mean].
+
+    - ``oppmax_std`` / ``dihed_mean`` / ``rmin_mean``: MeshCNN per-edge
+      statistics (dihedral = pi - arccos(n1.n2); the sorted apex-height/base
+      ratios' max-std and min-mean), implemented from the formula (FAZ9).
+    - ``don_mean``: Difference of Normals mean over the 1-ring (Ioannou 2012,
+      FAZ8).
+    - ``gc_mean``: mean Gaussian-curvature roughness from the per-vertex angle
+      deficit (Wang 2012, FAZ8).
+
+    Pure numpy, 1-ring/edge-connectivity only. Returns zeros for degenerate
+    input. Used ONLY when the opt-in edge-tiebreak head is enabled."""
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    V = len(v); F = len(t)
+    if F == 0 or V == 0:
+        return np.zeros(5)
+    a = v[t[:, 0]]; b = v[t[:, 1]]; c = v[t[:, 2]]
+    cr = np.cross(b - a, c - a)
+    mag = np.linalg.norm(cr, axis=1, keepdims=True)
+    mag[mag == 0] = 1.0
+    n = cr / mag
+    areas = 0.5 * np.linalg.norm(cr, axis=1)
+    edge_len = np.linalg.norm(b - a, axis=1) + np.linalg.norm(c - b, axis=1) + \
+        np.linalg.norm(a - c, axis=1)
+
+    # --- MeshCNN per-edge stats -------------------------------------------
+    edges = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]], axis=0)
+    face_of = np.concatenate([np.arange(F), np.arange(F), np.arange(F)])
+    emin = np.minimum(edges[:, 0], edges[:, 1])
+    emax = np.maximum(edges[:, 0], edges[:, 1])
+    keys = emin * (V + 1) + emax
+    order = np.argsort(keys, kind='stable')
+    sk = keys[order]; sf = face_of[order]
+    bd = np.flatnonzero(sk[1:] != sk[:-1]) + 1
+    st = np.concatenate(([0], bd)).astype(np.int64)
+    en = np.concatenate((bd, [len(sk)])).astype(np.int64)
+    interior = np.flatnonzero(en - st == 2)
+    if interior.size == 0:
+        dihed_mean = oppmax_std = rmin_mean = 0.0
+    else:
+        f1 = sf[st[interior]]; f2 = sf[st[interior] + 1]
+        ei = sk[st[interior]] // (V + 1); ej = sk[st[interior]] % (V + 1)
+        dihed = np.pi - np.arccos(np.clip(np.sum(n[f1] * n[f2], axis=1), -1, 1))
+        def _apex(f, i, j):
+            tri = t[f]
+            msk = (tri != i[:, None]) & (tri != j[:, None])
+            col = np.argmax(msk, axis=1)
+            vp = v[np.take_along_axis(tri, col[:, None], 1)[:, 0]]
+            e1 = v[i] - vp; e2 = v[j] - vp
+            nn1 = np.linalg.norm(e1, axis=1); nn2 = np.linalg.norm(e2, axis=1)
+            base = np.linalg.norm(v[j] - v[i], axis=1)
+            hgt = 2.0 * areas[f] / (base + 1e-12)
+            return hgt / (base + 1e-12)
+        r1 = _apex(f1, ei, ej); r2 = _apex(f2, ei, ej)
+        rr = np.sort(np.stack([r1, r2], axis=1), axis=1)
+        dihed_mean = float(dihed.mean())
+        rmin_mean = float(rr[:, 0].mean())
+        oppmax_std = float(rr[:, 1].std())
+
+    # --- DON + GC roughness (FAZ8) -----------------------------------------
+    adj = [[] for _ in range(V)]
+    for f in range(F):
+        x, y, z = int(t[f][0]), int(t[f][1]), int(t[f][2])
+        for p, q in ((x, y), (y, z), (z, x)):
+            adj[p].append(q); adj[q].append(p)
+    vn = np.zeros((V, 3)); vcnt = np.zeros(V)
+    for f in range(F):
+        for vi in (int(t[f][0]), int(t[f][1]), int(t[f][2])):
+            vn[vi] += n[f]; vcnt[vi] += 1
+    vcnt[vcnt == 0] = 1
+    vn /= vcnt[:, None]
+    vmag = np.linalg.norm(vn, axis=1, keepdims=True)
+    vmag[vmag == 0] = 1.0
+    vn = vn / vmag
+    don = np.zeros(V)
+    gc = np.zeros(V)
+    for i in range(V):
+        nb = adj[i]
+        if len(nb) >= 1:
+            don[i] = float(np.linalg.norm(vn[i] - vn[nb].mean(axis=0)))
+    # Gaussian curvature via angle deficit
+    asum = np.zeros(V)
+    for f in range(F):
+        x, y, z = int(t[f][0]), int(t[f][1]), int(t[f][2])
+        for (p, q, r) in ((x, y, z), (y, z, x), (z, x, y)):
+            e1 = v[q] - v[p]; e2 = v[r] - v[p]
+            n1 = np.linalg.norm(e1); n2 = np.linalg.norm(e2)
+            if n1 and n2:
+                asum[p] += np.arccos(np.clip(np.dot(e1, e2) / (n1 * n2), -1, 1))
+    gc = np.abs(2.0 * np.pi - asum)
+    don_mean = float(don.mean()) if len(don) else 0.0
+    gc_mean = float(gc.mean()) if len(gc) else 0.0
+
+    return np.array([oppmax_std, don_mean, dihed_mean, rmin_mean, gc_mean])
+
+
+def _head_p_mechanical_extra(base, extra):
+    """p(mechanical) from the opt-in 11-feature head (base 6 + 5 extras)."""
+    if V2_EXTRA_WEIGHTS is None:
+        return None
+    x = np.concatenate([np.asarray(base, dtype=np.float64),
+                        np.asarray(extra, dtype=np.float64)])
+    xs = (x - np.asarray(V2_EXTRA_MEAN, dtype=np.float64)) / np.asarray(
+        V2_EXTRA_STD, dtype=np.float64)
+    w = np.asarray(V2_EXTRA_WEIGHTS, dtype=np.float64)
+    z = float(w[0] + np.dot(xs, w[1:]))
+    return float(_sigmoid(z))
+
 
 def _head_p_mechanical(near90, flat, gentle, plane_count, plane_area,
                        developable):
@@ -347,7 +474,7 @@ def _head_p_mechanical(near90, flat, gentle, plane_count, plane_area,
 # --------------------------------------------------------------------------
 # Public API (drop-in for mesh_classifier.classify_mesh).
 # --------------------------------------------------------------------------
-def classify_mesh(verts, tris):
+def classify_mesh(verts, tris, extra_features=False):
     """Return {'type', 'confidence', 'metrics'} with the same shape as classic.
 
     Decision (when the trained head is baked): the head's p(mechanical) drives
@@ -355,8 +482,10 @@ def classify_mesh(verts, tris):
     opinion (>= _STRONG_CLASSIC) forces a classic-side verdict on the
     opposite-category call, guarding against organic regression.
 
-    Without baked weights: the classic decision verbatim (metrics gain the
-    RANSAC features).
+    ``extra_features=True`` enables the OPT-IN 'edge-tiebreak' 11-feature head
+    (base 6 + the five strong FAZ10 scan signals); NEVER the default. Without
+    baked weights: the classic decision verbatim (metrics gain the RANSAC
+    features).
     """
     near90, flat, gentle = _dihedral_stats(verts, tris)
     plane_count, plane_area = _ransac_plane_features(verts, tris)
@@ -374,8 +503,20 @@ def classify_mesh(verts, tris):
         'developable_fraction': developable,
     }
 
+    extra = None
+    if extra_features:
+        extra = _edge_extra_features(verts, tris)
+        metrics['edge_oppmax_std'] = round(float(extra[0]), 4)
+        metrics['edge_don_mean'] = round(float(extra[1]), 4)
+        metrics['edge_dihed_mean'] = round(float(extra[2]), 4)
+        metrics['edge_rmin_mean'] = round(float(extra[3]), 4)
+        metrics['edge_gc_mean'] = round(float(extra[4]), 4)
+
     p_mech = _head_p_mechanical(near90, flat, gentle, plane_count, plane_area,
                                 developable)
+    if extra is not None:
+        p_mech = _head_p_mechanical_extra(
+            [near90, flat, gentle, plane_count, plane_area, developable], extra)
 
     if p_mech is None:
         # no trained head baked yet -> classic decision

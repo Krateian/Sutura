@@ -44,6 +44,7 @@ EXPECTED_KEYS = {
     'lverts', 'ltris', 'rlverts', 'rltris',
     'defect_vidx', 'broken_vidx', 'ldefect_vidx', 'lbroken_vidx',
     'healed', 'lhealed', 'distance', 'ldistance',
+    'defect_colors', 'ldefect_colors',
     'hausdorff', 'frame_center', 'frame_scale', 'initial_rotation',
     'viewport_w', 'viewport_h',
 }

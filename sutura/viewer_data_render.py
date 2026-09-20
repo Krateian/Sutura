@@ -25,7 +25,7 @@ import numpy as np
 
 import pymeshlab as ml
 
-from defects import detect
+from defects import detect, defect_type_colors
 from heatmap_render import load_mesh
 from viewer_common import (defect_vertex_set,
                            healed_face_mask, initial_view_camera)
@@ -165,6 +165,8 @@ def main():
                  healed=healed.astype(np.bool_), lhealed=lhealed.astype(np.bool_),
                  distance=distance, ldistance=ldistance,
                  hausdorff=hausdorff,
+                 defect_colors=defect_type_colors(verts, tris),
+                 ldefect_colors=defect_type_colors(lverts, ltris),
                  frame_center=center, frame_scale=scale,
                  initial_rotation=(R if R is not None else np.zeros((3, 3), np.float64)),
                  viewport_w=w, viewport_h=h)
