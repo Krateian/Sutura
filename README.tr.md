@@ -826,6 +826,45 @@ ENTEGRE EDİLMEDİ** — `--experimental-tiebreaker-features` bayrağı ve GUI
 toggle'ı yok. Varsayılan sınıflandırıcı değişmedi; bu, FAZ 6 ile aynı dürüstlük
 çıtasında belgelenmiş bir negatif sonuçtur.
 
+### MeshCNN kenar özellikleri fusion ve tie-breaker olarak (ENTEGRE EDİLMEDİ)
+
+İzleme değerlendirmesi (FAZ 9): **MeshCNN** 5-B kenar-değişmez özelliği
+(Hanoeka et al. 2019, MIT lisanslı; formülden temizce yeniden uygulandı, kod
+kopyalanmadı) sıfırdan saf numpy ile implemente edildi. Reddedilen Weinmann
+kovaryans descriptor'larından kavramsal olarak farklıdır: nokta-bulutu komşuluk
+kovaryansı değil, mesh bağlantılılığına dayanan **kenar-başına** bir özellik.
+Her iç kenar (tam iki üçgene ait) için: `dihedral` = iki komşu yüz düzlemi
+arasındaki açı (`π − arccos(n₁·n₂)`), `symmetric_opposite_angles` (2 değer) =
+her üçgende kenara bakan tepe açısı (sıralı) ve `symmetric_ratios` (2 değer) =
+her üçgende tepe-yüksekliği/kenar-uzunluğu oranı (sıralı). 5 kenar-başına değer
+**10 global istatistiğe** (her boyut için mean + std) özetlendi. Kanonik
+şekillerde doğrulandı: küp (π/2 katlanmaları + eşdüzlemli köşegenler karışımı)
+dihedral ort. ≈ 2.09, pürüzsüz küre ≈ 2.97 (π'ye yakın).
+
+**Test A — feature fusion (FAZ 6 stili).** 71 etiketli mesh üzerinde LOO-CV:
+
+| Özellik vektörü | LOO-CV doğruluğu | mekanik | organik |
+|---|---|---|---|
+| temel 6 (mevcut) | **0.845** (60/71) | 32/39 | 28/32 |
+| temel 6 + 10 kenar özelliği | 0.831 (59/71) | 33/39 | 26/32 |
+
+Fusion doğruluğu **kötüleştiriyor**. **Test B — tie-breaker (FAZ 8 stili)**, aynı
+sınır/uyuşmazlık alt-kümesi tanımı:
+
+| Sınır alt-kümesi | n | Temel (head) | Tie-breaker (kenar özellikleri) |
+|---|---|---|---|
+| düşük güven VEYA herhangi uyuşmazlık | 27 | 0.778 (21/27) | 0.741 (20/27, LOO lojistik) |
+| düşük güven VEYA gerçek-sınıf uyuşmazlığı (rafine) | 14 | 0.643 (9/14) | 0.857 (12/14, LOO) — ama 3-fold×20 tekrar: tüm-10 = 0.733, en-iyi-3 = 0.902 |
+
+Birleşim alt-kümesinde özellik-etiket korelasyonları |r| ≈ 0.44'e ulaşıyor
+(`opp_angle_min_mean`); rafine sayılar umut verici görünüyor ama n = 14 "belirgin"
+kanıt için fazla küçük, "en-iyi-3 özellik" tahmini seçim yanlılığı taşıyor ve
+daha büyük (n = 27) birleşim alt-kümesi **iyileşme göstermiyor**. Test A temiz
+bir negatif ve Test B sağlam bir kazanç değil, bu yüzden FAZ 6/FAZ 8 ile aynı
+çıta uygulanıyor: **ENTEGRE EDİLMEDİ** — `--experimental-edge-features` bayrağı
+ve GUI toggle'ı yok. Varsayılan sınıflandırıcı değişmedi; yukarıdaki kesin
+sayılar dürüst kayıttır.
+
 ## Test
 
 Sentetik kırık mesh:

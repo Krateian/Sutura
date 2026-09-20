@@ -826,6 +826,47 @@ genuinely-ambiguous cases. **Decision: NOT integrated** — no
 classifier is unchanged; this is a documented negative result with the same
 honesty bar as FAZ 6.
 
+### MeshCNN edge features as fusion and tie-breaker (NOT integrated)
+
+Follow-up evaluation (FAZ 9): the **MeshCNN** 5-D edge-invariant feature
+(Hanoeka et al. 2019, MIT-licensed; reimplemented here cleanly from the
+formula, no code copied) was implemented from scratch in pure numpy. It is
+conceptually different from the rejected Weinmann covariance descriptors: not
+a point-cloud neighbourhood covariance, but a **per-edge** feature defined by
+mesh connectivity. For every interior edge (shared by exactly two triangles):
+`dihedral` = the angle between the two adjacent face planes
+(`π − arccos(n₁·n₂)`), `symmetric_opposite_angles` (2 values) = the apex angle
+at the vertex opposite the edge in each triangle (sorted), and
+`symmetric_ratios` (2 values) = the apex-height-to-edge-length ratio in each
+triangle (sorted). The 5 per-edge values were aggregated to **10 global
+statistics** (mean + std per dimension). Verified on canonical shapes: a cube
+(a mix of π/2 folds and coplanar diagonals) gives dihedral mean ≈ 2.09, a
+smooth sphere ≈ 2.97 (near π).
+
+**Test A — feature fusion (FAZ 6 style).** LOO-CV on the 71 labeled meshes:
+
+| Feature vector | LOO-CV accuracy | mechanical | organic |
+|---|---|---|---|
+| base 6 (current) | **0.845** (60/71) | 32/39 | 28/32 |
+| base 6 + 10 edge features | 0.831 (59/71) | 33/39 | 26/32 |
+
+Fusion **worsens** accuracy. **Test B — tie-breaker (FAZ 8 style)**, same
+boundary/disagreement subset definition:
+
+| Boundary subset | n | Baseline (head) | Tie-breaker (edge features) |
+|---|---|---|---|
+| low confidence OR any disagreement | 27 | 0.778 (21/27) | 0.741 (20/27, LOO logistic) |
+| low confidence OR real-class disagreement (refined) | 14 | 0.643 (9/14) | 0.857 (12/14, LOO) — but 3-fold×20 repeats: all-10 = 0.733, best-3 = 0.902 |
+
+Per-feature correlations with the truth on the union subset reach |r| ≈ 0.44
+(`opp_angle_min_mean`); the refined-subset numbers look promising but n = 14
+is far too small to be **clear** evidence, the "best-3 features" estimate
+carries selection bias, and the larger (n = 27) union subset shows **no**
+improvement. Test A is a clean negative and Test B is not a robust win, so the
+same bar as FAZ 6/FAZ 8 applies: **NOT integrated** — no
+`--experimental-edge-features` flag and no GUI toggle. The default classifier
+is unchanged; the exact numbers above are the honest record.
+
 ## Test
 
 Synthetic broken mesh:
