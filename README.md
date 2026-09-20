@@ -741,6 +741,53 @@ classic engine plus the additions, so the classic module stays untouched.
 `tests/test_mesh_classifier_v2.py` guards the invariants (stdlib+numpy only,
 classic fallback when the head is disabled, synthetic set at 100%).
 
+### Classifier methodology
+
+The experimental engine's features are:
+
+| Feature | Source | What it captures |
+|---|---|---|
+| `near90` | dihedral statistics (numpy) | sharp `[60,120]°` edges — mechanical |
+| `flat` | dihedral statistics | true planar surfaces (`<1°`) |
+| `gentle` | dihedral statistics | slight curvature `[1,15)°` — organic hint |
+| `plane_count` | RANSAC plane segmentation | number of robust planar patches |
+| `plane_area` | RANSAC plane segmentation | area fraction of those patches |
+| `developable_fraction` | curvature Gauss-map signal | normals on a common great circle (cylinder/pipe/fillet) |
+
+**Candidate evaluated — eigenvalue shape descriptors (NOT integrated).** We
+tested the standard point-set eigenvalue descriptors of **Weinmann, Jutzi &
+Mallet (2015)** — *"Feature relevance assessment for the semantic
+interpretation of 3D point cloud data"*, ISPRS Annals of the Photogrammetry,
+Remote Sensing and Spatial Information Sciences II-3/W5 (academic reference;
+the formulas are public-domain-standard, no code was taken from any
+implementation). These are computed from the eigenvalues
+`λ1 ≥ λ2 ≥ λ3` of the 3×3 covariance matrix of the **vertex positions** (not
+normals): `Linearity = (λ1−λ2)/λ1`, `Planarity = (λ2−λ3)/λ1`,
+`Sphericity = λ3/λ1`, `Omnivariance = (λ1·λ2·λ3)^(1/3)`,
+`Anisotropy = (λ1−λ3)/λ1`, `Eigentropy = −Σ(λi/s·ln(λi/s))`,
+`Surface Variation = λ3/(λ1+λ2+λ3)`. The hypothesis was that long/thin
+mechanical parts have high Linearity and round organic forms high Sphericity
+— a signal orthogonal to the normal-based features. The descriptors were
+implemented from the formulas in numpy and verified on canonical shapes
+(sphere → Sphericity≈1; 100×1×1 box → Linearity≈1; flat plate → Planarity≈1).
+
+**Result — the descriptors do NOT help on the labeled set, so they were NOT
+integrated.** Leave-one-out CV on the 71 labeled meshes (35 synthetic + 36
+real), floor 0.50:
+
+| Feature set | LOO-CV accuracy | mechanical | organic |
+|---|---|---|---|
+| base 6 (current) | **0.845** (60/71) | 32/39 | 28/32 |
+| + `linearity`, `sphericity` | 0.831 (59/71) | 33/39 | 26/32 |
+| + all 7 descriptors | 0.817 (58/71) | 32/39 | 26/32 |
+
+The conclusion is robust across decision floors 0.50–0.65. Mechanical recall
+gains at most 1 while organic recall loses 2 — the global eigenvalue shape is
+largely redundant with the existing features on this corpus (the head already
+sees the curvature/planarity structure), so adding the descriptors creates new
+errors without a net gain. Per the "only integrate when it genuinely helps"
+rule, they stay out; the classifier code is unchanged by this evaluation.
+
 ## Test
 
 Synthetic broken mesh:

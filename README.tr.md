@@ -743,6 +743,53 @@ artı eklemeler olarak durur, böylece classic modülü el değmeden kalır.
 `tests/test_mesh_classifier_v2.py` değişmezleri korur (yalnızca stdlib+numpy,
 başlık devre dışıyken classic geri dönüşü, sentetik set %100).
 
+### Sınıflandırıcı metodolojisi
+
+Experimental motorun özellikleri:
+
+| Özellik | Kaynak | Ne yakalar |
+|---|---|---|
+| `near90` | dihedral istatistikleri (numpy) | keskin `[60,120]°` kenarlar — mekanik |
+| `flat` | dihedral istatistikleri | gerçek düzlemsel yüzeyler (`<1°`) |
+| `gentle` | dihedral istatistikleri | hafif eğrilik `[1,15)°` — organik ipucu |
+| `plane_count` | RANSAC düzlem segmentasyonu | sağlam düzlemsel yamaların sayısı |
+| `plane_area` | RANSAC düzlem segmentasyonu | bu yamaların alan kesri |
+| `developable_fraction` | eğrilik Gauss-haritası sinyali | ortak büyük çemberdeki normaller (silindir/boru/yuvarlatma) |
+
+**Değerlendirilen aday — özdeğer şekil descriptor'ları (ENTEGRE EDİLMEDİ).**
+**Weinmann, Jutzi & Mallet (2015)**'in — *"Feature relevance assessment for
+the semantic interpretation of 3D point cloud data"*, ISPRS Annals of the
+Photogrammetry, Remote Sensing and Spatial Information Sciences II-3/W5
+(akademik atıf; formüller herkese açık standarttır, hiçbir uygulamadan kod
+alınmadı) — standart nokta-kümesi özdeğer descriptor'larını test ettik. Bunlar
+**köşe konumlarının** (normal değil) 3×3 kovaryans matrisinin
+`λ1 ≥ λ2 ≥ λ3` özdeğerlerinden hesaplanır: `Linearity = (λ1−λ2)/λ1`,
+`Planarity = (λ2−λ3)/λ1`, `Sphericity = λ3/λ1`,
+`Omnivariance = (λ1·λ2·λ3)^(1/3)`, `Anisotropy = (λ1−λ3)/λ1`,
+`Eigentropy = −Σ(λi/s·ln(λi/s))`, `Surface Variation = λ3/(λ1+λ2+λ3)`.
+Hipotez şuydu: uzun/ince mekanik parçalar yüksek Linearity, yuvarlak organik
+formlar yüksek Sphericity taşır — normal-tabanlı sinyallere dik bir bilgi.
+Descriptor'lar numpy ile formüllerden uygulandı ve kanonik şekillerde
+doğrulandı (küre → Sphericity≈1; 100×1×1 kutu → Linearity≈1; düz plaka →
+Planarity≈1).
+
+**Sonuç — descriptor'lar etiketli sette YARDIMCI OLMUYOR, bu yüzden ENTEGRE
+EDİLMEDİ.** 71 etiketli mesh üzerinde (35 sentetik + 36 gerçek) bırak-bir-dışarı
+(LOO-CV), eşik 0.50:
+
+| Özellik seti | LOO-CV doğruluğu | mekanik | organik |
+|---|---|---|---|
+| temel 6 (mevcut) | **0.845** (60/71) | 32/39 | 28/32 |
+| + `linearity`, `sphericity` | 0.831 (59/71) | 33/39 | 26/32 |
+| + 7 descriptor'ın tümü | 0.817 (58/71) | 32/39 | 26/32 |
+
+Sonuç 0.50–0.65 karar eşiklerinde sağlamdır. Mekanik isabet en fazla 1 kazanırken
+organik isabet 2 kaybediyor — global özdeğer şekli, mevcut özelliklerle büyük
+ölçüde örtüşüyor (başlık eğrilik/düzlemsellik yapısını zaten görüyor); bu yüzden
+descriptor'lar net kazanç olmadan yeni hatalar üretiyor. "Yalnızca gerçekten
+katkı sağlıyorsa entegre et" kuralı gereği dışarıda kalıyor; sınıflandırıcı kodu
+bu değerlendirmeden değişmedi.
+
 ## Test
 
 Sentetik kırık mesh:
