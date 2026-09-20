@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## [0.3.1] - 2026-09-20
+
+### Added
+
+- **OrcaSlicer plugin revision.** The plugin now repairs the **currently
+  selected model** by reading it in memory through the `orca.host` API
+  (`model() -> objects() -> volumes() -> mesh()`, numpy arrays) instead of a
+  fixed configured file. Repair is attempted in-process (importing the sutura
+  modules) and falls back to the subprocess CLI; the repaired result is
+  written with a **unique per-run filename** (`<stem>_fixed_<timestamp>_<uuid>`)
+  so consecutive runs never overwrite a previous output, and loaded back via
+  `--single-instance` (Linux) / `open -a OrcaSlicer` (macOS). The OrcaSlicer
+  plugin system requires nightly / releases newer than 2.4.2 (stable 2.4.2 has
+  no Plugins menu). Primary target is Linux; the same file is also verified on
+  macOS (the CLI is at the same `~/.local/bin/sutura` path on both platforms).
+  Stub-tested against a mock `orca.host` (`tests/test_orca_plugin.py`); the
+  real-instance GUI run is performed separately (user / computer-use).
+
 ## [0.3.0] - 2026-09-20
 
 ### Added

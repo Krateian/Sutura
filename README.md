@@ -1150,6 +1150,10 @@ Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.3.1 — 2026-09-20** — OrcaSlicer plugin revision: repairs the selected
+  model in-memory via `orca.host`, with unique per-run output names;
+  nightly/>2.4.2 required; primary target Linux, verified on macOS nightly
+  2.5.0-dev.
 - **v0.3.0 — 2026-09-20** — curved-but-mechanical classifier signal
   (`developable_fraction`) + 40-mesh real-world corpus; 115-mesh
   strict-watertight benchmark + corpus release asset + manifold3d

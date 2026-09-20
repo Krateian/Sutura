@@ -1151,6 +1151,7 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.3.1 — 2026-09-20** — OrcaSlicer eklentisi revizyonu: secili modeli bellekten onarma (orca.host), calistirma basina benzersiz cikti adlari; nightly/>2.4.2 gerekli; birincil hedef Linux, macOS nightly 2.5.0-dev'de dogrulandi.
 - **v0.3.0 — 2026-09-20** — kavisli-mekanik sınıflandırıcı sinyali
   (`developable_fraction`) + 40 mesh'lik gerçek dünya corpus'u; 115 mesh'lik
   strict-watertight benchmark + corpus release asset'i + manifold3d

@@ -1,51 +1,71 @@
 # Sutura × OrcaSlicer plugin
 
-Repair STL/3MF meshes straight from OrcaSlicer. This plugin shells out to the
-[separately-installed Sutura CLI](https://github.com/Krateian/Sutura) in a
-background thread and shows the repair result in the slicer — it does not
-bundle pymeshlab/manifold3d into OrcaSlicer's embedded Python.
+Repair the **currently selected model** straight from OrcaSlicer: the mesh is
+read in memory through the `orca.host` API, repaired with the
+[separately-installed Sutura CLI](https://github.com/Krateian/Sutura), and the
+repaired result is loaded back into the slicer. The plugin does not bundle
+pymeshlab/manifold3d into OrcaSlicer's embedded Python.
 
-## ⚠️ EXPERIMENTAL — untested in a real OrcaSlicer instance
+## ⚠️ Version requirement — nightly / newer than 2.4.2 REQUIRED
 
-Please read this before installing. The OrcaSlicer Python plugin system was
-introduced in **nightly builds / releases newer than 2.4.2**, which the
-developer of this plugin does not have installed yet. As a result this plugin
-has **never been run inside a real OrcaSlicer** — only its logic and API usage
-have been validated with stub tests against the documented API. It may work,
-it may need a small fix or two; if you hit an issue, please report it (see
-"Feedback" below). It is offered in good faith as a starting point, not a
-guaranteed-working product.
+The OrcaSlicer Python plugin system exists **only in nightly builds / releases
+newer than 2.4.2**. The stable **2.4.2 release has no "Plugins" menu** — this
+plugin will not work there. Use a nightly (or a release newer than 2.4.2)
+build.
 
-## ⚠️ Does NOT repair the currently selected model
+## ⚠️ EXPERIMENTAL — API-verified, real-instance GUI test pending
 
-OrcaSlicer's script plugin `execute()` takes **no arguments**, and there is no
-documented API to get the currently-selected model. This plugin therefore
-repairs a **fixed/configured target file** (set via the `SUTURA_TARGET`
-environment variable), not whatever you have selected in the slicer. Real
-"repair the selected model" support is future work.
+The plugin logic and `orca.host` API usage are validated with stub tests
+against the documented API, and a real-instance GUI run is verified
+separately (the author's macOS OrcaSlicer 2.5.0-dev install is the test bed;
+the GUI interaction itself is performed by a user / an automated computer-use
+tool). If you hit an issue, please report it (see "Feedback" below). It is
+offered in good faith as a starting point, not a guaranteed-working product.
 
-## ⚠️ Linux only
+## Platform: Linux primary, macOS bonus verification
 
-Sutura's default CLI path (`~/.local/bin/sutura`) is the Linux `install.sh`
-layout. On macOS the CLI lives elsewhere (a different directory from the
-`install-macos.sh` conda setup), and on Windows Sutura is not supported at
-all. On Linux, this plugin should work.
+**Primary target is Linux** (Sutura's main platform; the design follows the
+Linux `install.sh` layout). The same single file is also verified on macOS as
+a bonus real-device layer:
+
+- On **both** Linux and macOS the Sutura CLI is installed at the **same path,
+  `~/.local/bin/sutura`** (`install.sh` on Linux, `install-macos.sh` on macOS;
+  only the Python interpreter behind the wrapper differs). The old claim that
+  "macOS uses a different directory" was incorrect.
+- Windows is not supported.
+- macOS-specific behaviour: the repaired file is loaded back with the native
+  `open -a OrcaSlicer <path>`; Linux uses `OrcaSlicer --single-instance <path>`.
+
+## Unique output files — no overwrites
+
+Every run writes a **unique** repaired file
+`<stem>_fixed_<timestamp>_<short-uuid>.stl` under OrcaSlicer's `data_dir()`
+audit-allowed root. Consecutive runs **never overwrite** a previous result; a
+temporary input staging file (`<uuid>.stl`) is written per run and removed
+afterwards.
 
 ## How it works
 
-- `sutura_repair_linux_x86_64.py` is a single-file OrcaSlicer plugin (PEP 723 metadata +
-  `@orca.plugin` registration), placed as one entry file in a plugin folder.
-- On "Run", `execute()` (on the UI thread) returns immediately and spawns a
-  daemon `threading.Thread`, so the repair never freezes the slicer.
-- The thread calls `~/.local/bin/sutura <file> --human` via `subprocess` and
-  reports success/failure plus the `_fixed` output path through
+- `sutura_repair_linux_x86_64.py` is a single-file OrcaSlicer plugin (PEP 723
+  metadata + `@orca.plugin` registration), placed as one entry file in a
+  plugin folder.
+- On "Run", `execute()` (on the UI thread) reads the selected model in memory
+  (`orca.host.model() -> objects() -> volumes() -> mesh()`, numpy arrays),
+  returns immediately and spawns a daemon `threading.Thread` so the repair
+  never freezes the slicer.
+- Repair is attempted **in-process** first (importing the installed sutura
+  modules), falling back to the **subprocess CLI**
+  (`~/.local/bin/sutura <stage> -o <unique_out>`) when the embedded Python
+  cannot run the pipeline (e.g. pymeshlab unavailable). Each subprocess spawn
+  may trigger an OrcaSlicer audit-hook permission prompt.
+- The repaired file is loaded back via `--single-instance` (Linux) /
+  `open -a OrcaSlicer` (macOS), and the result path is reported through
   `orca.host.ui.message(...)`.
 
-## Install (OrcaSlicer 2.4.2+ / nightly)
+## Install (nightly / OrcaSlicer > 2.4.2)
 
-1. Install Sutura on Linux first (`./install.sh` from the
-   [Sutura repo](https://github.com/Krateian/Sutura)), so `~/.local/bin/sutura`
-   exists.
+1. Install Sutura first: `./install.sh` (Linux) or `install-macos.sh` (macOS),
+   so `~/.local/bin/sutura` exists.
 2. Copy the plugin folder into OrcaSlicer's plugin dir:
 
    ```sh
@@ -53,14 +73,15 @@ all. On Linux, this plugin should work.
    cp sutura_repair_linux_x86_64.py ~/.config/OrcaSlicer/orca_plugins/SuturaRepair/
    ```
 
+   (macOS: `~/Library/Application Support/OrcaSlicer/orca_plugins/`.)
 3. Enable it in the OrcaSlicer Plugins dialog, then run it.
 
 ## Configuration
 
 - `SUTURA_CLI` env var — override the CLI path (default
-  `~/.local/bin/sutura`).
-- `SUTURA_TARGET` env var — target mesh file to repair. Otherwise the
-  prototype falls back to a sample path.
+  `~/.local/bin/sutura`, the same path on Linux and macOS).
+- `ORCA_BIN` env var — override the OrcaSlicer binary used for
+  `--single-instance` (default `orca-slicer`).
 
 ## Feedback
 
