@@ -49,9 +49,18 @@ curl -fL --retry 3 -o "$DL/$(basename "$PBS_311")" "$PBS_311"
 # release (FAZ14): the two tarballs must both verify OK, else abort. The
 # checksum file itself is fetched over HTTPS from the same release URL -- the
 # standard trust anchor for open-source downloads.
+#
+# --ignore-missing is REQUIRED: SHA256SUMS lists ~1000 artifacts but we only
+# download two, and sha256sum -c exits non-zero when entries are missing --
+# under `set -o pipefail` + `set -e` that non-zero exit killed the script at
+# the assignment (FAZ17: CI died silently without the die() message). With
+# --ignore-missing it verifies only the present files and exits 0 when they
+# are all OK. The `|| true` additionally decouples the assignment from `set -e`
+# so a wrong hash (or an unexpected sha256sum behaviour) always reaches the
+# explicit `[ "$pbs_ok" -eq 2 ]` check and produces a real error message.
 echo "==> verifying python-build-standalone SHA-256"
 curl -fL --retry 3 -o "$DL/SHA256SUMS" "$PBS_BASE/SHA256SUMS"
-pbs_ok=$(cd "$DL" && sha256sum -c SHA256SUMS 2>/dev/null | grep -c ': OK')
+pbs_ok=$(cd "$DL" && sha256sum -c --ignore-missing SHA256SUMS 2>/dev/null | grep -c ': OK') || true
 [ "$pbs_ok" -eq 2 ] || die "SHA-256 verification failed for python-build-standalone (got $pbs_ok/2 OK)"
 
 echo "==> installing Python 3.14 runtime (stage 1 + GUI)"
