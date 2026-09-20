@@ -969,6 +969,19 @@ Torture tests cover hard-but-printable geometry:
 python3 tests/torture_tests.py
 ```
 
+### Developer tooling — synthetic defect injection
+
+`scripts/defect_injector.py` is a developer tool that corrupts a mesh on
+purpose: it injects selected defect types (`--hole`, `--non-manifold`,
+`--self-intersect`, `--flipped-normal`, `--degenerate`, any combination;
+`--count N`, `--seed N`) and writes a broken copy to a new file — the input
+is never modified. It is used to generate synthetic broken meshes for the
+repair pipeline and the defect detectors, and can extend future synthetic
+training/test sets. Each injected type is validated by
+`tests/test_defect_injector.py` against the corresponding detector
+(`defects.detect()` for holes/non-manifold, `defect_type_colors()` for
+flipped/degenerate, pymeshlab self-intersection for self-intersect).
+
 This runs five scenarios and reports the before/after for each: a 5M-triangle
 sphere (repair time), a 0.05 mm thin slab (feature-loss risk — it must survive
 intact), a multi-part assembly (the 8-face debris-removal threshold must not

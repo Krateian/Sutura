@@ -953,6 +953,19 @@ bildiriliyor — `requirements.txt` içindeki yoruma bakın).
 python3 tests/torture_tests.py
 ```
 
+### Geliştirici aracı — sentetik defekt enjeksiyonu
+
+`scripts/defect_injector.py` bir geliştirici aracıdır: bir mesh'i bilerek
+bozar — seçilen defekt tiplerini (`--hole`, `--non-manifold`, `--self-intersect`,
+`--flipped-normal`, `--degenerate`, herhangi bir kombinasyon; `--count N`,
+`--seed N`) enjekte eder ve bozuk kopyayı yeni bir dosyaya yazar — girdi asla
+değiştirilmez. Onarım hattı ve defekt algılayıcıları için sentetik bozuk
+mesh'ler üretmekte ve gelecekteki sentetik eğitim/test setlerini genişletmekte
+kullanılabilir. Her enjekte edilen tip, `tests/test_defect_injector.py`
+tarafından ilgili algılayıcıya karşı doğrulanır (`defects.detect()` delikler/
+non-manifold için, `defect_type_colors()` flipped/dejenere için, pymeshlab
+self-intersection self-intersect için).
+
 Bu beş senaryoyu çalıştırır ve her biri için önce/sonra raporlar: bir 5M
 üçgenli küre (onarım süresi), 0.05 mm ince levha (özellik kaybı riski — sağlam
 kalmalıdır), çok parçalı montaj (8 yüzlü döküntü kaldırma eşiği meşru

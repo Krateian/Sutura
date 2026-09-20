@@ -244,7 +244,14 @@ def defect_type_colors(verts, tris):
                 if f1 != f2:
                     adj_sum[f1] += n[f2]
                     adj_cnt[f1] += 1
-    flipped = (adj_cnt > 0) & (np.sum(n * adj_sum, axis=1) < 0) & ~degenerate & ~nm_face
+    # flipped: normal clearly OPPOSITE to the neighbours' average, and only
+    # when the neighbours are self-consistent (perpendicular neighbours -- e.g.
+    # the four faces around a cube face -- average to ~0 and must NOT flag).
+    adj_mag = np.linalg.norm(adj_sum, axis=1)
+    safe = np.where(adj_mag > 1e-9, 1.0, 1.0)
+    cosang = np.sum(n * adj_sum, axis=1) / (adj_mag + 1e-9)
+    flipped = ((adj_cnt > 0) & (adj_mag > 1e-6) & (cosang < -0.3) &
+               ~degenerate & ~nm_face)
 
     colors[degenerate] = _COLOR_DEGENERATE
     colors[nm_face & ~degenerate] = _COLOR_NON_MANIFOLD
