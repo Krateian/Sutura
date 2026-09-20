@@ -137,6 +137,10 @@ STRINGS = {
         'edge_tiebreak_tip': 'Opt-in 11-feature classifier head (base + 5 '
                              'strong scan signals). NOT the default; the gain is '
                              'marginal (1 mesh on the 71-mesh labeled set).',
+        'join_components_label': 'Experimental: join small components',
+        'join_components_tip': 'Instead of deleting small connected components, '
+                               'move them onto the nearest larger component '
+                               '(changes geometry; NOT the default).',
         'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm',
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
@@ -331,6 +335,10 @@ STRINGS = {
         'edge_tiebreak_tip': '11-özellikli sınıflandırıcı kafası (temel + 5 güçlü '
                              'tarama sinyali). Varsayılan değil; kazanç marjinal '
                              '(71 etiketli mesh setinde 1 mesh).',
+        'join_components_label': 'Deneysel: küçük parçaları birleştir',
+        'join_components_tip': 'Küçük bağlı bileşenleri silmek yerine en yakın '
+                               'büyük bileşene taşır (geometriyi değiştirir; '
+                               'varsayılan değil).',
         'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f mm',
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
@@ -724,7 +732,7 @@ class RepairWorker(QThread):
 
     def __init__(self, files, mode='auto', profile=None, force=False,
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
-                 parent=None):
+                 join_components=False, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
@@ -733,6 +741,7 @@ class RepairWorker(QThread):
         self._max_geom_change = max_geom_change
         self._max_risk = max_risk
         self._edge_tiebreak = edge_tiebreak
+        self._join_components = join_components
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -776,6 +785,8 @@ class RepairWorker(QThread):
                 args.append('--no-history')
             if self._edge_tiebreak:
                 args.append('--experimental-edge-tiebreak')
+            if self._join_components:
+                args.append('--experimental-join-components')
             args.append(path)
             self._proc = subprocess.Popen(
                 args,
@@ -1476,6 +1487,7 @@ class MainWindow(QMainWindow):
         self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
         self._repair_profile = None   # batch-wide repair profile (not per file)
         self._edge_tiebreak = False   # batch-wide opt-in edge-tiebreak head (FAZ11)
+        self._join_components = False # batch-wide opt-in join-components (FAZ14)
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -1560,6 +1572,12 @@ class MainWindow(QMainWindow):
         self.chk_edge_tiebreak.toggled.connect(
             lambda on: setattr(self, '_edge_tiebreak', on))
         actions.addWidget(self.chk_edge_tiebreak)
+        # opt-in experimental join-components prototype (FAZ14, batch-wide)
+        self.chk_join_components = QCheckBox(_t('join_components_label'))
+        self.chk_join_components.setToolTip(_t('join_components_tip'))
+        self.chk_join_components.toggled.connect(
+            lambda on: setattr(self, '_join_components', on))
+        actions.addWidget(self.chk_join_components)
         # repair profile dropdown (batch-wide, like the mode): "Auto" = the
         # current classifier-driven default; the named profiles opt in to a
         # fixed Stage 1 threshold preset (see repair.PROFILES).
@@ -1995,6 +2013,7 @@ class MainWindow(QMainWindow):
                                    max_geom_change=self._max_geom_change,
                                    max_risk=self._max_risk,
                                    edge_tiebreak=self._edge_tiebreak,
+                                   join_components=self._join_components,
                                    parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)

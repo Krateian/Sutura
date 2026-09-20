@@ -590,7 +590,7 @@ def read_3mf_units(path):
             for name in z.namelist():
                 if not name.endswith('.model'):
                     continue
-                xml = z.read(name).decode('utf-8', errors='replace')
+                xml = _read_zip_entry(z, name).decode('utf-8', errors='replace')
                 m = re.search(r'<model\b[^>]*\bunit="([^"]+)"', xml)
                 out[name] = m.group(1) if m else 'millimeter'
     except Exception:
@@ -1115,7 +1115,7 @@ def parse_3mf_meshes(path):
         for name in z.namelist():
             if not name.endswith('.model'):
                 continue
-            xml = z.read(name).decode('utf-8', errors='replace')
+            xml = _read_zip_entry(z, name).decode('utf-8', errors='replace')
             blocks = []
             for m in re.finditer(r'<mesh>.*?</mesh>', xml, re.S):
                 block = m.group(0)
@@ -1147,6 +1147,28 @@ def build_mesh_block(verts, tris):
     return '\n'.join(lines)
 
 
+# Decompressed-size cap for any single 3MF archive entry (FAZ14 zip-bomb
+# guard). A crafted 3MF can declare a tiny compressed size with a huge
+# uncompressed size; we check zipfile's header `file_size` BEFORE reading the
+# entry, so a bomb fails with a controlled error instead of exhausting memory.
+_3MF_MAX_ENTRY_BYTES = 1 << 30  # 1 GiB
+
+
+def _read_zip_entry(z, name):
+    """Read one 3MF zip entry, bounded by the decompressed-size cap.
+
+    Checks the zip header's declared ``file_size`` BEFORE reading so a crafted
+    entry (tiny compressed, huge declared uncompressed) fails with a controlled
+    ValueError instead of exhausting memory (FAZ14 zip-bomb guard)."""
+    info = z.getinfo(name)
+    if info.file_size > _3MF_MAX_ENTRY_BYTES:
+        raise ValueError(
+            '3MF entry "%s" declares %d bytes uncompressed '
+            '(> %d): suspicious compression ratio / oversized input.'
+            % (name, info.file_size, _3MF_MAX_ENTRY_BYTES))
+    return z.read(name)
+
+
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                join_components=False, extra_features=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
@@ -1163,7 +1185,9 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
         return {'error': 'no mesh objects found in 3MF'}
 
     with zipfile.ZipFile(src) as z:
-        items = [(i, z.read(i)) for i in z.namelist()]
+        items = []
+        for name in z.namelist():
+            items.append((name, _read_zip_entry(z, name)))
 
     units = read_3mf_units(src)
     reports = []

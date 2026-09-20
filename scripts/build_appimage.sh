@@ -42,15 +42,24 @@ LIB="$APP_DIR/usr/lib/sutura"
 mkdir -p "$DL" "$LIB" "$APP_DIR/usr/bin" "$OUT_DIR"
 
 echo "==> downloading python-build-standalone ($PBS_TAG)"
-curl -fL --retry 3 -o "$DL/pbs314.tar.gz" "$PBS_314"
-curl -fL --retry 3 -o "$DL/pbs311.tar.gz" "$PBS_311"
+curl -fL --retry 3 -o "$DL/$(basename "$PBS_314")" "$PBS_314"
+curl -fL --retry 3 -o "$DL/$(basename "$PBS_311")" "$PBS_311"
+
+# Verify SHA-256 against the SHA256SUMS the project publishes on the same
+# release (FAZ14): the two tarballs must both verify OK, else abort. The
+# checksum file itself is fetched over HTTPS from the same release URL -- the
+# standard trust anchor for open-source downloads.
+echo "==> verifying python-build-standalone SHA-256"
+curl -fL --retry 3 -o "$DL/SHA256SUMS" "$PBS_BASE/SHA256SUMS"
+pbs_ok=$(cd "$DL" && sha256sum -c SHA256SUMS 2>/dev/null | grep -c ': OK')
+[ "$pbs_ok" -eq 2 ] || die "SHA-256 verification failed for python-build-standalone (got $pbs_ok/2 OK)"
 
 echo "==> installing Python 3.14 runtime (stage 1 + GUI)"
-tar xzf "$DL/pbs314.tar.gz" -C "$WORK"
+tar xzf "$DL/$(basename "$PBS_314")" -C "$WORK"
 mv "$WORK/python" "$LIB/venv"
 
 echo "==> installing Python 3.11 runtime (stage 2)"
-tar xzf "$DL/pbs311.tar.gz" -C "$WORK"
+tar xzf "$DL/$(basename "$PBS_311")" -C "$WORK"
 mv "$WORK/python" "$LIB/venv311"
 
 echo "==> pip install: stage 1 (pymeshlab + PySide6)"
@@ -127,6 +136,10 @@ chmod 0755 "$APP_DIR/sutura.desktop"
 cp "$REPO_ROOT/assets/icon/sutura-256.png" "$APP_DIR/sutura.png"
 
 echo "==> downloading appimagetool"
+# NOTE (FAZ14): the appimagetool 'continuous' release publishes NO SHA-256
+# checksum or signature asset (verified 2026-09), so the AppImage cannot be
+# checksum-verified here -- documented in docs/security-audit-2026-09.md. It is
+# fetched over HTTPS from the official AppImage/appimagetool repo.
 curl -fL --retry 3 -o "$DL/appimagetool.AppImage" "$APPIMAGETOOL_URL"
 chmod +x "$DL/appimagetool.AppImage"
 

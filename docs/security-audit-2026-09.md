@@ -49,13 +49,11 @@ a shell string, and no user-controlled path is interpolated into a shell.
 - **ZIP:** `zipfile.ZipFile` is used read-only (`read`, `namelist`,
   `writestr`) — there is no `extract`/`extractall`, so **zip-slip (path
   traversal via `../` archive entries) is not possible.** No fix needed.
-- **Low note — zip-bomb memory:** `repair_3mf` reads every archive entry into
-  memory (`z.read(i)` for all entries). A crafted 3MF with a highly-compressed
-  huge entry could cause a memory DoS on an interactive run. This is a
-  theoretical low-severity concern (3MF is a user-trusted local file, and the
-  CLI also loads the full mesh via pymeshlab anyway). Recommendation: cap the
-  decompressed entry size (e.g. `read()` in bounded chunks) — deferred, since
-  it changes error-handling behaviour and is a judgment call.
+- **Zip-bomb memory — FIXED in FAZ 14:** `repair_3mf` read every archive
+  entry fully into memory. It now checks the zip header's declared
+  `file_size` against `_3MF_MAX_ENTRY_BYTES` (1 GiB) BEFORE reading each
+  entry, so a crafted 3MF with a huge declared uncompressed size fails with a
+  controlled error message instead of exhausting memory.
 
 ## 4. Path traversal / output writes
 
@@ -77,6 +75,27 @@ tools and is reasonable, but pinned SHA-256 checksums (or the AppImage
 signature) would harden supply-chain risk. **Not fixed now** (maintainer
 decision): adding hashes means maintaining them across version bumps, and it
 is a recommendation, not a defect in current behaviour.
+
+**FAZ 14 update (implemented):**
+
+- **python-build-standalone — now verified.** `scripts/build_appimage.sh`
+  downloads the project's `SHA256SUMS` from the same release and verifies both
+  Python tarballs before extraction (`sha256sum -c`, must get 2 OK, else the
+  build aborts). The checksum file itself is fetched over HTTPS from the same
+  release — the standard trust anchor.
+- **appimagetool — no official checksum exists (verified 2026-09).** The
+  `continuous` release publishes only the AppImage binaries, no SHA-256 /
+  signature asset, so there is nothing legitimate to pin to. The script now
+  documents this explicitly (comment) and continues to fetch over HTTPS from
+  the official repo. If AppImage ever publishes a checksum/signature, wire it
+  up here.
+- **install.sh repo tarball — not pinned (documented).** `install.sh` fetches
+  the repo tarball from a **live git reference** (the current default branch /
+  latest commit), whose content changes on every commit, so a fixed SHA-256
+  pin is architecturally impossible without moving to a tagged/checksummed
+  release artifact. This is left as-is and recorded as a known limitation of
+  the live-branch install path (the official HTTPS GitHub tarball remains the
+  trust anchor).
 
 ## 6. Hardcoded secrets
 
@@ -101,8 +120,13 @@ No workflow `run:` step echoes secrets or environment variables, and no
 
 ## Decisions
 
-- **Fixed now:** none — the audit found no cheap, safe, low-risk code fix.
-- **Reported for the maintainer:** install-script download checksums (low),
-  GitHub-Actions commit-SHA pinning (low), 3MF zip-bomb memory cap (low,
-  theoretical).
+- **Fixed in FAZ 14:** 3MF zip-bomb decompressed-size cap (`repair_3mf` checks
+  the zip header `file_size` against `_3MF_MAX_ENTRY_BYTES` = 1 GiB before
+  reading each entry; a bomb fails with a controlled error, never a crash);
+  python-build-standalone downloads now SHA-256-verified in
+  `scripts/build_appimage.sh`.
+- **Reported for the maintainer (unchanged):** GitHub-Actions commit-SHA
+  pinning (low, suggestion only), 3MF zip-bomb entry cap already done above,
+  install.sh live-branch tarball pin (architecturally impossible — documented
+  above), appimagetool checksum (no official asset exists — documented above).
 - All five code-scan areas (deps, shell, XML/ZIP, paths, secrets) are clean.
