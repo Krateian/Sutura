@@ -1,5 +1,11 @@
 pymeshlab==2025.7.post1
 numpy>=2.4.0,<2.6
+# Experimental autorefine self-intersection resolution (FAZ16): Shewchuk-style
+# exact 3D orientation predicates (Unlicense / public domain). Pure-python
+# wheel, installable on both the py3.14 and py3.11 venvs (also added to the
+# macOS conda env). Only imported by sutura/autorefine.py behind
+# --experimental-autorefine; the default repair path does not require it.
+pyrobust-predicates==0.1.0
 # Optional/heavy cross-validation dependency (FAZ10): manifold3d powers the
 # independent watertight check in scripts/benchmark_repair_corpus.py (and stage
 # 2). It ships prebuilt wheels only up to Python 3.13, so it CANNOT be added to

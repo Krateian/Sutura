@@ -101,6 +101,9 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
         'extreme_passes_applied': result.get('extreme_passes_applied'),
         'self_intersections_found': result.get('self_intersections_found'),
         'self_intersections_removed': result.get('self_intersections_removed'),
+        'autorefine_applied': bool(result.get('experimental_autorefine')
+                                   and result.get('experimental_autorefine')
+                                   .get('adopted')),
     }
 
 

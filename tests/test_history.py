@@ -37,7 +37,7 @@ SCHEMA_KEYS = {
     'stage2_status', 'category', 'issues', 'repair_confidence',
     'repair_confidence_label', 'volume_change_percent',
     'extreme_passes_applied', 'self_intersections_found',
-    'self_intersections_removed',
+    'self_intersections_removed', 'autorefine_applied',
 }
 
 

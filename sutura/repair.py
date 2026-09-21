@@ -626,7 +626,8 @@ def stl_write_binary(path, verts, tris):
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
-                            join_components=False, extra_features=False):
+                            join_components=False, autorefine=False,
+                            extra_features=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -638,6 +639,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     the 3MF <model unit="..."> attribute (None for STL/OBJ) fed to the
     non-blocking unit-warning heuristic. ``join_components`` enables the
     experimental join-small-components prototype (flag-gated; NOT the default).
+    ``autorefine`` enables the experimental self-intersection subdivision
+    prototype (Lazard & Valque 2025; flag-gated; NEVER deletes input faces).
     ``extra_features`` enables the opt-in edge-tiebreak classifier head.
     """
     import pymeshlab as ml
@@ -691,9 +694,52 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
+
     applied, skipped = apply_chain(
         ms, stage1_chain(ml, **_p, join_components=join_components))
     after = ms.apply_filter('get_topological_measures')
+
+    # --experimental-autorefine prototype: resolve self-intersections on the
+    # INPUT mesh by subdividing the intersecting triangles along their
+    # intersection segments (Lazard & Valque 2025), NEVER deleting input faces.
+    # When enabled, the SAME chain is re-run on the autorefine-preprocessed
+    # input and the better final result is adopted (adopt/fallback guard:
+    # autorefine is only used when its final output has holes AND non-manifold
+    # regions no worse than the baseline chain — its float64 construction can
+    # leave non-manifold edges on dense-SI scans, see
+    # docs/alpha-wrap-feasibility-2026-09.md section 4a). Flag-gated, NOT the
+    # default.
+    stats['experimental_autorefine'] = False
+    if autorefine and len(t) > 0:
+        import autorefine
+        ar_v = np.asarray(v, dtype=np.float64)
+        ar_t = np.asarray(t, dtype=np.int64)
+        ar_rep = {'skipped': False}
+        try:
+            ar_v, ar_t, ar_info = autorefine.autorefine(ar_v, ar_t)
+            ar_rep.update(ar_info)
+            if len(ar_t) > 0:
+                ms_cand = ml.MeshSet()
+                ms_cand.add_mesh(ml.Mesh(vertex_matrix=np.asarray(ar_v, np.float32),
+                                         face_matrix=np.asarray(ar_t, np.int32)))
+                apply_chain(ms_cand, stage1_chain(ml, **_p, join_components=join_components))
+                cand_after = ms_cand.apply_filter('get_topological_measures')
+                cand_holes = boundary_loop_stats(
+                    ms_cand.current_mesh().vertex_matrix(),
+                    ms_cand.current_mesh().face_matrix())[0]
+                cand_nm = cand_after.get('non_two_manifold_edges', 0)
+                base_holes = boundary_loop_stats(
+                    ms.current_mesh().vertex_matrix(),
+                    ms.current_mesh().face_matrix())[0]
+                base_nm = after.get('non_two_manifold_edges', 0)
+                adopted = bool(cand_holes <= base_holes and cand_nm <= base_nm)
+                ar_rep['adopted'] = adopted
+                if adopted:
+                    ms = ms_cand
+                    after = cand_after
+        except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
+            ar_rep['error'] = str(e)
+        stats['experimental_autorefine'] = ar_rep
 
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
         fb = ml.MeshSet()
@@ -1071,7 +1117,7 @@ def obj_has_material_refs(path):
 
 
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
-                join_components=False, extra_features=False):
+                join_components=False, autorefine=False, extra_features=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -1093,7 +1139,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
     report, new_v, new_t = repair_mesh_from_arrays(
         verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
         declared_unit=declared_unit, join_components=join_components,
-        extra_features=extra_features)
+        autorefine=autorefine, extra_features=extra_features)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -1170,7 +1216,7 @@ def _read_zip_entry(z, name):
 
 
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
-               join_components=False, extra_features=False):
+               join_components=False, autorefine=False, extra_features=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -1207,6 +1253,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     verts, tris, tmpdir, mode=mode, profile=profile,
                     engine=engine, declared_unit=declared,
                     join_components=join_components,
+                    autorefine=autorefine,
                     extra_features=extra_features)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
@@ -1572,6 +1619,19 @@ def human_report(r, show_defects=False, show_diff=False):
                      % r.get('self_intersections_removed', 0))
     elif r.get('repair_mode') == 'extreme':
         lines.append('  Extreme passes          : none needed (no self-intersections)')
+    ar_r = r.get('experimental_autorefine')
+    if ar_r:
+        if ar_r.get('skipped'):
+            lines.append('  Autorefine (experiment) : skipped (no triangles)')
+        elif 'error' in ar_r:
+            lines.append('  Autorefine (experiment) : error (%s)' % ar_r['error'][:60])
+        else:
+            conv = 'yes' if ar_r.get('converged') else ('no (capped)' if ar_r.get('capped') else 'no')
+            adopted = ' adopted' if ar_r.get('adopted') else ' NOT adopted (kept stage-1 output)'
+            lines.append('  Autorefine (experiment) : SI pairs %d -> %d, %d pass(es), '
+                         'converged=%s%s' % (ar_r.get('si_before', 0),
+                                             ar_r.get('si_after', 0),
+                                             ar_r.get('iterations', 0), conv, adopted))
     if show_diff:
         lines.append('  Vertices                : %s -> %s' % (
             s1.get('vertices_before', 0), s1.get('vertices_after', 0)))
@@ -1735,7 +1795,7 @@ def human_dry_run(r):
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
-                 extra_features=False):
+                 autorefine=False, extra_features=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -1744,7 +1804,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     interactive ``[y/N]`` prompt on a TTY) or ``force``. Without a budget or
     within budget the save is unconditional (reporting the numbers).
     ``join_components`` enables the experimental join-small-components
-    prototype (flag-gated).
+    prototype (flag-gated). ``autorefine`` enables the experimental
+    self-intersection subdivision prototype (flag-gated).
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -1762,11 +1823,13 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             result.update(repair_3mf(src, tmp_out, tmpdir, mode=mode,
                                      profile=profile, engine=engine,
                                      join_components=join_components,
+                                     autorefine=autorefine,
                                      extra_features=extra_features))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
                                       profile=profile, engine=engine,
                                       join_components=join_components,
+                                      autorefine=autorefine,
                                       extra_features=extra_features))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
@@ -1898,6 +1961,16 @@ def main():
                              'components onto the nearest larger component '
                              'instead of deleting them (changes geometry; '
                              'NOT the default behaviour, evaluation only)')
+    parser.add_argument('--experimental-autorefine', action='store_true',
+                        help='experimental prototype: resolve self-'
+                             'intersections by subdividing the intersecting '
+                             'triangles along their intersection segments '
+                             '(Lazard & Valque 2025) instead of deleting '
+                             'faces. NEVER deletes input faces; on moderate-'
+                             'SI meshes it reduces SI, on dense-SI scans it '
+                             'is limited by float64 construction (see '
+                             'docs/alpha-wrap-feasibility-2026-09.md). NOT '
+                             'the default behaviour, evaluation only')
     parser.add_argument('--experimental-edge-tiebreak', action='store_true',
                         help='experimental opt-in: use the 11-feature '
                              'classifier head (base features + the five strong '
@@ -1999,6 +2072,7 @@ def main():
                             out=out, max_geom_change=max_geom_change,
                             max_risk=max_risk, force=args.force,
                             join_components=args.experimental_join_components,
+                            autorefine=args.experimental_autorefine,
                             extra_features=args.experimental_edge_tiebreak) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')

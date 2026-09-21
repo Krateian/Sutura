@@ -141,6 +141,13 @@ STRINGS = {
         'join_components_tip': 'Instead of deleting small connected components, '
                                'move them onto the nearest larger component '
                                '(changes geometry; NOT the default).',
+        'autorefine_label': 'Experimental: autorefine self-intersections',
+        'autorefine_tip': 'Resolve self-intersections by subdividing the '
+                          'intersecting triangles along their intersection '
+                          'segments instead of deleting faces (Lazard & Valque '
+                          '2025). NEVER deletes input faces; adopted only when '
+                          'the result is not worse than the default chain '
+                          '(NOT the default).',
         'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm',
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
@@ -339,6 +346,13 @@ STRINGS = {
         'join_components_tip': 'Küçük bağlı bileşenleri silmek yerine en yakın '
                                'büyük bileşene taşır (geometriyi değiştirir; '
                                'varsayılan değil).',
+        'autorefine_label': 'Deneysel: self-intersection autorefine',
+        'autorefine_tip': "Self-intersection'ları yüz silmek yerine kesişen "
+                          'üçgenleri kesişim doğruları boyunca alt üçgenlere '
+                          'bölerek çözer (Lazard & Valque 2025). Girdi '
+                          'yüzeylerini ASLA silmez; yalnızca sonuç varsayılan '
+                          'zincirden daha kötü değilse uygulanır (varsayılan '
+                          'değil).',
         'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f mm',
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
@@ -732,7 +746,7 @@ class RepairWorker(QThread):
 
     def __init__(self, files, mode='auto', profile=None, force=False,
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
-                 join_components=False, parent=None):
+                 join_components=False, autorefine=False, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
@@ -742,6 +756,7 @@ class RepairWorker(QThread):
         self._max_risk = max_risk
         self._edge_tiebreak = edge_tiebreak
         self._join_components = join_components
+        self._autorefine = autorefine
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -787,6 +802,8 @@ class RepairWorker(QThread):
                 args.append('--experimental-edge-tiebreak')
             if self._join_components:
                 args.append('--experimental-join-components')
+            if self._autorefine:
+                args.append('--experimental-autorefine')
             args.append(path)
             self._proc = subprocess.Popen(
                 args,
@@ -1488,6 +1505,7 @@ class MainWindow(QMainWindow):
         self._repair_profile = None   # batch-wide repair profile (not per file)
         self._edge_tiebreak = False   # batch-wide opt-in edge-tiebreak head (FAZ11)
         self._join_components = False # batch-wide opt-in join-components (FAZ14)
+        self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -1578,6 +1596,13 @@ class MainWindow(QMainWindow):
         self.chk_join_components.toggled.connect(
             lambda on: setattr(self, '_join_components', on))
         actions.addWidget(self.chk_join_components)
+        # opt-in experimental autorefine self-intersection resolution (FAZ16,
+        # batch-wide)
+        self.chk_autorefine = QCheckBox(_t('autorefine_label'))
+        self.chk_autorefine.setToolTip(_t('autorefine_tip'))
+        self.chk_autorefine.toggled.connect(
+            lambda on: setattr(self, '_autorefine', on))
+        actions.addWidget(self.chk_autorefine)
         # repair profile dropdown (batch-wide, like the mode): "Auto" = the
         # current classifier-driven default; the named profiles opt in to a
         # fixed Stage 1 threshold preset (see repair.PROFILES).
@@ -2014,6 +2039,7 @@ class MainWindow(QMainWindow):
                                    max_risk=self._max_risk,
                                    edge_tiebreak=self._edge_tiebreak,
                                    join_components=self._join_components,
+                                   autorefine=self._autorefine,
                                    parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
