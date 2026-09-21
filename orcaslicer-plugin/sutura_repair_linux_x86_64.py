@@ -176,14 +176,36 @@ def _run_subprocess(src, out_path):
         return False, 'Sutura CLI not found at %s (install with install.sh)' % SUTURA_CLI
 
 
+def _running_orca_processes():
+    """Number of distinct OrcaSlicer processes running (pgrep -f). Returns
+    None when the check itself fails (treated as 'cannot verify' -> a reopen
+    is still attempted)."""
+    try:
+        r = subprocess.run(['pgrep', '-f', 'OrcaSlicer'],
+                           capture_output=True, text=True)
+        pids = [l.strip() for l in (r.stdout or '').splitlines() if l.strip()]
+        return len(pids)
+    except Exception:
+        return None
+
+
 def _load_back(out_path):
     """Best-effort: reload the repaired file into the slicer.
 
-    Linux: OrcaSlicer --single-instance <path> (proven method). macOS: the
-    native `open -a OrcaSlicer <path>`. Never crashes the worker."""
+    Linux: OrcaSlicer --single-instance <path> (path-based binary, no name
+    ambiguity). macOS: `open -b com.orcaslicer.OrcaSlicer <path>` -- BUNDLE-ID
+    matching prefers the running process, unlike name-based `open -a`, which
+    can launch an unrelated copy when several apps share the name (e.g. an
+    installed "OrcaSlicer 2.app" plus a mounted nightly DMG). Before reopening,
+    pgrep counts running OrcaSlicer processes: if MORE THAN ONE is running the
+    reopen is SKIPPED (ambiguous) and the caller still shows the repaired path
+    in its message. Never crashes the worker."""
     try:
         if os.sys.platform == 'darwin':
-            subprocess.Popen(['open', '-a', 'OrcaSlicer', out_path])
+            n = _running_orca_processes()
+            if n is not None and n > 1:
+                return  # ambiguous -- skip auto-reopen, path already reported
+            subprocess.Popen(['open', '-b', 'com.orcaslicer.OrcaSlicer', out_path])
         else:
             subprocess.Popen([ORCA_BIN, '--single-instance', out_path])
     except Exception:
