@@ -98,6 +98,24 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - **Documentation tone (standing rule):** documentation — README.md, README.tr.md, CHANGELOG.md, `docs/*` and AGENTS.md included — is written in an academic/professional, third-person, neutral engineering-report tone. Casual or first-person narration ("I did", "we tried", "yaptim", "denedim") and real personal names or nicknames are not used; the same tone is kept when adding a new FAZ/section.
 - **Git commit identity:** user.name `Krateian`, user.email `arifgokdas@gmail.com` (bu Sutura repo'su icin local git config'te ayarli). Gecmis commit'lerde bazi yanlis/eskimis kimlik girdileri var (ornegin `<krateian@MacBook-Air-2.local>`; eskiden gercek isimle atilanlar da dahil) - gecmis duzeltilmedi, bundan sonraki TUM commit'ler Krateian kimligiyle atilmali. Yeni bir makinede/ortamda calisirken once `git config --get user.name` / `user.email` kontrol edilmeli, yanlissa yukarida verilen degerlerle duzeltilmeli.
 
+## Process discipline
+
+- **Codebase exploration:** prefer `graphify query <question>` over raw
+  grep/file-crawling to understand the codebase (a repo-local OpenCode
+  plugin at `.opencode/plugins/graphify.js`, output in `graphify-out/`).
+  After any change, run `graphify update .` to keep the graph current.
+  This only works as a convention inside an OpenCode session in this repo,
+  not as a standalone shell command.
+- **Plan before touching files (standing rule — needs re-enforcing, it
+  slips):** for any non-trivial task, present a plan and get explicit
+  approval before making file changes. Do not start editing on a task's
+  first pass without that approval step.
+- **Push/commit discipline:** do not commit and push each small fix
+  individually. Batch small fixes together and ship them under one
+  version bump/release (see Release checklist below).
+- **Test/corpus output location:** corpus and test-run files always go to
+  `/tmp`, never committed to the repo (see also Cleanup discipline below).
+
 ## README upkeep
 
 - If a user-visible behaviour is added or changed in this session (CLI flag,
@@ -157,6 +175,21 @@ the following in order, without being asked separately for each:
    mangled by shell quoting. If the body is wrong, edit it again and
    re-verify — do not consider the release done until the displayed body
    matches what was intended.
+
+11. **OrcaCloud plugin auto-publish (standing, automatic since 2026-09):**
+   every published GitHub Release triggers
+   `.github/workflows/publish-orcacloud.yml` via OIDC trusted publishing.
+   The plugin's OrcaCloud version is NOT tracked independently anymore -- it
+   follows this release's own tag (`GITHUB_REF_NAME`), and the changelog
+   field is this release's own body text. The workflow diffs
+   `orcaslicer-plugin/` between this tag and the previous one and SKIPS the
+   OrcaCloud publish step entirely if the plugin file did not change -- so a
+   release with no plugin changes does not spam a new, unrelated Cloud
+   version. No manual Cloud upload/paste step is needed anymore; do not
+   revert to doing it by hand out of habit. If the plugin file DID change,
+   verify after the fact that the new version actually appears on the Orca
+   Cloud listing page (Actions tab -> workflow run -> check the "Publish
+   release to OrcaCloud" step didn't get skipped and returned 2xx).
 
 This checklist is the release process — steps 5 and 6 are not optional
 extras to be reminded about separately; they are part of doing a release at

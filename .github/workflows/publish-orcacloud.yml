@@ -1,5 +1,9 @@
 name: Publish to OrcaCloud
 
+# Fires on EVERY GitHub Release, not just plugin-specific ones -- this repo's
+# standing release checklist already tags + publishes a Release for every
+# Sutura version, so no separate plugin-only release step is needed. The
+# plugin's OrcaCloud version now simply follows Sutura's own release tag.
 on:
   release:
     types: [published]
@@ -17,7 +21,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Skip if the plugin itself did not change in this release
+        id: check
+        run: |
+          set -euo pipefail
+          current_tag="$GITHUB_REF_NAME"
+          prev_tag="$(git tag --sort=creatordate | awk -v cur="$current_tag" '$0==cur{print prev; found=1} {prev=$0} END{if(!found) print ""}')"
+          if [ -z "$prev_tag" ]; then
+            echo "No earlier tag found -- publishing unconditionally."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "$prev_tag" "$current_tag" -- $PLUGIN_FILES; then
+            echo "Plugin files unchanged since $prev_tag -- skipping OrcaCloud publish for $current_tag."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Plugin files changed since $prev_tag -- publishing."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish release to OrcaCloud
+        if: steps.check.outputs.changed == 'true'
         run: |
           set -euo pipefail
           oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
