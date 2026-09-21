@@ -1,0 +1,41 @@
+name: Publish to OrcaCloud
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # Space-separated globs matching the plugin files to upload (.whl / .py).
+  PLUGIN_FILES: "orcaslicer-plugin/sutura_repair_linux_x86_64.py"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish release to OrcaCloud
+        run: |
+          set -euo pipefail
+          oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=orcacloud" | jq -r .value)"
+          version="${GITHUB_REF_NAME#v}"
+          changelog="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | head -c 4000)"
+          metadata="$(jq -cn --arg version "$version" --arg changelog "$changelog" \
+            '{version: $version} + (if $changelog == "" then {} else {changelog: $changelog} end)')"
+          args=(-F "metadata=$metadata")
+          shopt -s nullglob
+          for file in $PLUGIN_FILES; do
+            args+=(-F "files=@$file")
+          done
+          if [ "${#args[@]}" -eq 1 ]; then
+            echo "No plugin files matched: $PLUGIN_FILES" >&2
+            exit 1
+          fi
+          curl -sS -o response.json -w '%{http_code}' \
+            -H "Authorization: Bearer $oidc_token" \
+            "${args[@]}" \
+            https://api.orcaslicer.com/api/v1/plugin-publish/releases
