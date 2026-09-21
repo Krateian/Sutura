@@ -8,7 +8,11 @@ saved to the `_fixed` file) with a strict defects.detect() closed-loop check:
 
 The pipeline's own verdict (`repair_mesh_from_arrays` + stage 2) is recorded
 alongside so a claim-vs-check discrepancy is visible, and input defects are
-captured with the same detector for an input-vs-output comparison.
+captured with the same detector for an input-vs-output comparison. Input and
+output self-intersection counts are measured too (`input_self_intersections`
+/ `output_self_intersections`, pymeshlab's per-face selection) so SI-focused
+experiments (e.g. the autorefine prototype) can be tracked before/after; the
+strict watertight metric itself deliberately excludes SI.
 
 This is a measurement/benchmark harness, not a pass-fail test. It must run
 under the PyMeshLab venv (it imports repair.py):
@@ -46,6 +50,18 @@ def load_input(path):
     return v, t
 
 
+def count_self_intersections(v, t):
+    """Count self-intersecting faces of a mesh (pymeshlab's per-face SI
+    selection). Mirrors repair.dry_run_mesh_from_arrays' measurement so the
+    harness sees the same number the pipeline's validate/dry-run report."""
+    import pymeshlab as ml
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float32),
+                        face_matrix=np.asarray(t, np.int32)))
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    return int(ms.current_mesh().face_selection_array().sum())
+
+
 def run_one(src, tmpdir):
     """Repair one mesh and return (entry, error)."""
     entry = {'file': os.path.basename(src),
@@ -62,6 +78,7 @@ def run_one(src, tmpdir):
         in_det = defects.detect(v, t)
         entry['input_holes'] = len(in_det['holes'])
         entry['input_non_manifold'] = len(in_det['non_manifold'])
+        entry['input_self_intersections'] = count_self_intersections(v, t)
 
         rep, new_v, new_t = repair.repair_mesh_from_arrays(v, t, tmpdir, mode='auto')
         new_v, new_t = repair.maybe_run_stage2(rep, new_v, new_t, tmpdir)
@@ -87,6 +104,14 @@ def run_one(src, tmpdir):
         entry['strict_non_manifold'] = len(out_det['non_manifold'])
         entry['strict_watertight'] = bool(
             entry['strict_holes'] == 0 and entry['strict_non_manifold'] == 0)
+        # Self-intersections measured on the FINAL output arrays (the stage-1
+        # pipeline value is reported separately as stage1_si_remaining, when
+        # the report carries it). Kept distinct from the strict holes/nm
+        # metric on purpose: SI stays a separate signal (see the benchmark
+        # doc), but the harness now tracks it so SI-focused experiments (e.g.
+        # autorefine) can be measured before/after.
+        entry['output_self_intersections'] = count_self_intersections(new_v, new_t)
+        entry['stage1_si_remaining'] = s1.get('self_intersections_remaining')
         # Optional manifold3d cross-validation (independent verdict; None when
         # manifold3d is unavailable -> column reported as n/a).
         m3_ok, m3_status = manifold_bridge.watertight_check(new_v, new_t)
@@ -132,10 +157,12 @@ def main():
             results[f] = entry
             m3 = entry.get('manifold3d_watertight')
             m3s = 'WT' if m3 is True else ('OPEN' if m3 is False else 'n/a')
-            print('[%3d/%d] %-48s cat=%-10s strict=%s m3d=%s (holes=%d nm=%d)' % (
+            print('[%3d/%d] %-48s cat=%-10s strict=%s m3d=%s (holes=%d nm=%d si=%d->%d)' % (
                 i, len(files), f[:48], str(entry.get('category')),
                 entry['strict_watertight'], m3s, entry['strict_holes'],
-                entry['strict_non_manifold']), flush=True)
+                entry['strict_non_manifold'],
+                entry.get('input_self_intersections', 0),
+                entry.get('output_self_intersections', 0)), flush=True)
         del entry, err
         gc.collect()
 
@@ -193,6 +220,29 @@ def main():
         print()
         print('=== manifold3d cross-validation ===')
         print('manifold3d unavailable in this environment; column is n/a (%d meshes)' % m3_none)
+
+    # Self-intersections before/after (input SI measured by the harness,
+    # output SI measured on the final arrays). Separate signal from the
+    # strict holes/nm watertight metric.
+    si_in = [r.get('input_self_intersections') for r in results.values()
+             if isinstance(r.get('input_self_intersections'), int)]
+    si_out = [r.get('output_self_intersections') for r in results.values()
+              if isinstance(r.get('output_self_intersections'), int)]
+    if si_in:
+        print()
+        print('=== self-intersections (input -> output) ===')
+        print('meshes with input SI    : %d' % sum(1 for s in si_in if s > 0))
+        print('total input SI faces    : %d' % sum(si_in))
+        print('total output SI faces   : %d' % sum(si_out))
+        print('meshes with output SI   : %d' % sum(1 for s in si_out if s > 0))
+        worst = sorted(((r.get('file'), r.get('input_self_intersections'),
+                         r.get('output_self_intersections'))
+                        for r in results.values()
+                        if isinstance(r.get('input_self_intersections'), int)),
+                       key=lambda x: -(x[1] or 0))[:10]
+        print('worst input-SI meshes:')
+        for f, si, so in worst:
+            print('   %-45s in=%d out=%s' % (f, si, so))
     print('wrote %s' % out_path)
 
 
