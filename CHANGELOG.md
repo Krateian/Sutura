@@ -2,6 +2,53 @@
 
 All notable changes to this project are documented here.
 
+## OrcaSlicer plugin (orcaslicer-plugin/) — version history
+
+The plugin keeps its own version number for the Orca Cloud listing, separate
+from the main project's release train. The changelog sections above describe
+the main project; the plugin's own versions are recorded here.
+
+### [0.2.3] - 2026-09-21
+
+### Added
+
+- **Native progress dialog during repair.** `execute()` now opens a host-owned
+  progress dialog (`orca.host.ui.create_progress_dialog`, indeterminate
+  `pulse()`) for the duration of the repair and only then shows the result
+  message, instead of returning immediately with a "Sutura Repair started."
+  message while the worker ran silently in the background. The result/error
+  messages moved out of the worker into `execute()`. On builds without the
+  progress-dialog API the old background behaviour is kept as a fallback.
+- **Upfront filesystem-read permission declaration.** `register_capabilities()`
+  now calls `orca.request_permissions(fs_read=[SUTURA_CLI])` to pre-declare
+  the external Sutura CLI binary path. HONEST SCOPE: the OrcaSlicer audit API
+  only has a declarative form for `fs_read` — `process`/subprocess spawns and
+  network access stay reactive (one dialog "Yes" per target) and their
+  persisted grants are keyed to the exact command line (which contains unique
+  temp paths). This change therefore does NOT reduce the per-run subprocess
+  permission prompt; it only covers reads of the CLI path up front.
+
+### [0.2.2] - 2026-09-21
+
+Retroactively recorded: all three fixes shipped in the Orca Cloud listing
+under 0.2.2 (commits up to `fcfb4a2`) but never entered this changelog.
+
+### Fixed
+
+- **numpy dependency removed.** The embedded OrcaSlicer Python ships only `pip`
+  in site-packages (no numpy), which broke plugin loading outright. Mesh
+  access and binary STL writing are now pure-stdlib (`struct`-based), and
+  repair always runs via the subprocess Sutura CLI.
+- **`orca.ExecutionResult.failure()` signature fixed.** The host requires a
+  leading `orca.PluginResult` status argument; the plugin called it with a bare
+  message string. All `failure()` call sites now pass
+  `PluginResult.RecoverableError`.
+- **macOS bundle-ID reopen.** The repaired file is reloaded with
+  `open -b com.orcaslicer.OrcaSlicer <path>` (bundle-ID matching) instead of
+  name-based `open -a`, and the reopen is skipped when more than one OrcaSlicer
+  process is running (ambiguous). Verified end-to-end on real OrcaSlicer
+  2.5.0-dev (macOS).
+
 ## [0.3.1] - 2026-09-20
 
 ### Added

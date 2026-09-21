@@ -107,7 +107,7 @@ söyler.
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar; her sürümde ayrıca imzasız bir macOS `.dmg` de yayınlanır (`Build macOS .app/.dmg` workflow'u) ve macOS kurulumları yerel bir `~/Applications/Sutura.app` alır — GUI Spotlight'tan açılır (Cmd+Space → "Sutura"), ayrıca Finder'da bir **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) sağ tıkla onarım için. Eksikler: AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur), .dmg notarize edilmemiştir (Gatekeeper "unidentified developer" uyarısı gösterir) ve macOS için ayrı bir kaldırma betiği yoktur (aşağıdaki "macOS kurulumunu kaldırma" bölümüne bakın). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
-| OrcaSlicer eklentisi | ~%35 — deneysel | Tek başına çalışan betik eklentisi, ama **gerçek bir OrcaSlicer'da test edilmemiştir**: yalnızca çalıştırmadığımız nightly/2.4.2+ sürümlerinde bulunan bir eklenti sistemini hedefler, `execute()` seçili modeli okuyamaz (yapılandırılmış bir dosyayı onarır) ve yalnızca Linux içindir. Bitmiş bir özellik değil, bir başlangıç noktası olarak ele alın. |
+| OrcaSlicer eklentisi | ~%70 — deneysel | **Seçili modeli** `orca.host` üzerinden (numpy'siz erişimciler) bellekte okuyan, Sutura CLI'sını çağırıp sonucu sahneye geri yükleyen tek başına çalışan betik eklentisi. Gerçek bir OrcaSlicer **2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux, macOS doğrulanmış bir bonus. Onarım sırasında yerel ilerleme iletişim kutusu; `request_permissions` CLI yolunun fs_read iznini önceden beyan eder (subprocess istemleri kalır — bir OrcaSlicer denetim API kısıtı). Hâlâ erken aşamada; nightly / 2.4.2'den yeni sürümler gerektirir. |
 | Test kapsamı | ~%89 | Düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence) her push/PR'da CI'de çalışır. %100 değil: GUI'nin otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
@@ -623,13 +623,16 @@ Servis menüsünü kurduktan veya kaldırdıktan sonra `kbuildsycoca6` çalışt
 
 ### OrcaSlicer eklentisi (deneysel)
 
-Ayrıca `orcaslicer-plugin/` altında, kurulu Sutura CLI'sını ayrı bir süreç
-olarak çağırarak bir dosyayı doğrudan dilimleyiciden onaran **deneysel** bir
-[OrcaSlicer betik eklentisi](orcaslicer-plugin/) vardır. Bir başlangıç noktası
-olarak sunulur ve **gerçek bir OrcaSlicer'da test edilmemiştir**: hedeflediği
+Ayrıca `orcaslicer-plugin/` altında, **seçili modeli** doğrudan dilimleyiciden
+onaran **deneysel** bir [OrcaSlicer betik eklentisi](orcaslicer-plugin/)
+vardır: meshi `orca.host` üzerinden bellekte okur (numpy'siz
+`vertex(i)`/`triangle(i)` erişimcileri — gömülü Python'da numpy yoktur),
+kurulu Sutura CLI'sını yerel bir ilerleme iletişim kutusu altında arka planda
+çağırır ve onarılan sonucu sahneye geri yükler. Gerçek bir OrcaSlicer
+**2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux'tur
+ve aynı dosya doğrulanmış bir bonus olarak macOS'ta da çalışır. Hedeflediği
 Python eklenti sistemi yalnızca OrcaSlicer **nightly sürümlerinde / 2.4.2'den
-yeni sürümlerinde** bulunur ve biz bu sürümleri çalıştırmadığımız için uçtan
-uca doğrulayamadık. Kurulum adımları ve sınırlamaları için
+yeni sürümlerinde** bulunur. Kurulum adımları ve sınırlamaları için
 [eklenti README'sine](orcaslicer-plugin/README.md) bakın.
 
 ## Mesh türüne duyarlı onarım

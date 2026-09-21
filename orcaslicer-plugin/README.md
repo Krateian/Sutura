@@ -14,14 +14,15 @@ newer than 2.4.2**. The stable **2.4.2 release has no "Plugins" menu** — this
 plugin will not work there. Use a nightly (or a release newer than 2.4.2)
 build.
 
-## ⚠️ EXPERIMENTAL — API-verified, real-instance GUI test pending
+## ⚠️ EXPERIMENTAL — real-instance verified, early stage
 
-The plugin logic and `orca.host` API usage are validated with stub tests
-against the documented API, and a real-instance GUI run is verified
-separately (the author's macOS OrcaSlicer 2.5.0-dev install is the test bed;
-the GUI interaction itself is performed by a user / an automated computer-use
-tool). If you hit an issue, please report it (see "Feedback" below). It is
-offered in good faith as a starting point, not a guaranteed-working product.
+The plugin has been tested end-to-end in a real OrcaSlicer **2.5.0-dev**
+install (macOS): it loads, activates, reads the selected model through
+`orca.host`, repairs it with the Sutura CLI, and loads the repaired result
+back into the scene. The `orca.host` API usage is also stub-tested against a
+mock host (`tests/test_orca_plugin.py`), including loading with numpy blocked.
+It remains an early-stage feature: treat it as a verified starting point, not
+a guaranteed-working product, and report issues (see "Feedback" below).
 
 ## Platform: Linux primary, macOS bonus verification
 
@@ -35,7 +36,9 @@ a bonus real-device layer:
   "macOS uses a different directory" was incorrect.
 - Windows is not supported.
 - macOS-specific behaviour: the repaired file is loaded back with the native
-  `open -a OrcaSlicer <path>`; Linux uses `OrcaSlicer --single-instance <path>`.
+  `open -b com.orcaslicer.OrcaSlicer <path>` (bundle-ID matching, skipped when
+  more than one OrcaSlicer process is running); Linux uses
+  `OrcaSlicer --single-instance <path>`.
 
 ## Unique output files — no overwrites
 
@@ -53,16 +56,24 @@ afterwards.
 - On "Run", `execute()` (on the UI thread) reads the selected model in memory
   (`orca.host.model() -> objects() -> volumes() -> mesh()`, using the
   **numpy-free** `vertex(i)` / `triangle(i)` accessors — the embedded Python
-  has no numpy), returns immediately and spawns a daemon `threading.Thread`
-  so the repair never freezes the slicer.
+  has no numpy), opens a native progress dialog
+  (`orca.host.ui.create_progress_dialog`, pulsed while the repair runs) and
+  shows the result message when it finishes. On builds without the
+  progress-dialog API it falls back to a background thread and reports
+  "started" immediately.
 - Repair always runs via the **subprocess CLI**
   (`~/.local/bin/sutura <stage> -o <unique_out>`): the embedded interpreter
   ships only `pip` (no numpy/pymeshlab/manifold3d), so in-process repair is
-  not possible. Each subprocess spawn may trigger an OrcaSlicer audit-hook
-  permission prompt.
+  not possible.
+- `register_capabilities()` declares the Sutura CLI path up front with
+  `orca.request_permissions(fs_read=[...])`. HONEST SCOPE: this only
+  pre-declares filesystem **reads** — the audit API has no declarative form
+  for subprocess spawns, and their persisted grant matches the exact command
+  line (which contains unique temp paths), so a subprocess permission prompt
+  can still appear.
 - The repaired file is loaded back via `--single-instance` (Linux) /
-  `open -a OrcaSlicer` (macOS), and the result path is reported through
-  `orca.host.ui.message(...)`.
+  `open -b com.orcaslicer.OrcaSlicer` (macOS), and the result path is reported
+  through `orca.host.ui.message(...)`.
 
 ## Install (nightly / OrcaSlicer > 2.4.2)
 

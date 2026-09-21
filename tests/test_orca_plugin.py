@@ -79,12 +79,55 @@ class _Host:
         return self._data_dir
 
 
+class _Progress:
+    """Mock for orca.host.ui.create_progress_dialog()'s handle (context
+    manager with pulse/update/close/is_open, matching the wiki API)."""
+
+    def __init__(self):
+        self.closed = False
+        self.pulses = 0
+
+    def pulse(self, message=''):
+        self.pulses += 1
+        return True
+
+    def update(self, value, message=''):
+        self.pulses += 1
+        return True
+
+    def close(self):
+        self.closed = True
+
+    def is_open(self):
+        return not self.closed
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
 class _UI:
+    PD_APP_MODAL = 1
+    PD_AUTO_HIDE = 2
+    PD_CAN_ABORT = 4
+    PD_CAN_SKIP = 8
+    PD_ELAPSED_TIME = 16
+    PD_ESTIMATED_TIME = 32
+    PD_REMAINING_TIME = 64
+
     def __init__(self):
         self.messages = []
+        self.progress_dialogs = []
 
     def message(self, text, title='', buttons='ok', icon='info'):
         self.messages.append((title, text, icon))
+
+    def create_progress_dialog(self, title, message, maximum=100, style=0):
+        handle = _Progress()
+        self.progress_dialogs.append((title, message, maximum, style, handle))
+        return handle
 
 
 class _Mesh:
@@ -156,6 +199,7 @@ def _load_plugin(model, data_dir):
     orca.script = type('script', (), {'ScriptPluginCapabilityBase': _ScriptPluginCapabilityBase})
     orca.base = _Base
     orca.register_capability = lambda cap: None
+    orca.request_permissions = lambda **kw: None
     orca.plugin = lambda cls: cls
     sys.modules['orca'] = orca
 
@@ -233,14 +277,54 @@ def test_execute_with_model_starts_worker():
     with tempfile.TemporaryDirectory(prefix='orca-stub-') as d:
         mod, host, ui = _load_plugin(model, d)
         calls = []
-        mod.SuturaRepair._worker = lambda self, data: calls.append(data)
+
+        def fake_worker(self, data, result):
+            calls.append(data)
+            result['ok'] = True
+            result['out_path'] = os.path.join(d, 'fake.stl')
+
+        mod.SuturaRepair._worker = fake_worker
         plugin = mod.SuturaRepair()
         res = plugin.execute()
         assert res.ok is True, res
-        time.sleep(0.2)
         assert len(calls) == 1, calls
         assert len(calls[0][1]) == 8, calls[0][1]          # verts now a plain list
         assert len(calls[0][2]) == 12, calls[0][2]          # tris now a plain list
+        # a native progress dialog was opened for the repair duration and the
+        # result message was shown only after the worker finished
+        assert len(ui.progress_dialogs) == 1, ui.progress_dialogs
+        title, msg, maximum, style, handle = ui.progress_dialogs[0]
+        assert title == 'Sutura Repair' and handle.closed, (title, handle.closed)
+        assert style == (ui.PD_APP_MODAL | ui.PD_AUTO_HIDE), style
+        assert any('Sutura repaired' in m[1] for m in ui.messages), ui.messages
+
+
+def test_execute_falls_back_without_progress_dialog():
+    """Builds without orca.host.ui.create_progress_dialog fall back to the old
+    background behaviour: execute() returns 'started' immediately and the
+    worker still runs."""
+    v, t = _cube()
+    model = _Model([_Object([_Volume(_Mesh(v, t))])])
+    with tempfile.TemporaryDirectory(prefix='orca-stub-') as d:
+        mod, host, ui = _load_plugin(model, d)
+        ui.create_progress_dialog = None  # simulate an older host build
+        calls = []
+        mod.SuturaRepair._worker = lambda self, data, result: calls.append(data)
+        plugin = mod.SuturaRepair()
+        res = plugin.execute()
+        assert res.ok is True, res
+        time.sleep(0.3)
+        assert len(calls) == 1, calls
+
+
+def test_register_capabilities_declares_cli_fs_read():
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    calls = []
+    import sys
+    sys.modules['orca'].request_permissions = lambda **kw: calls.append(kw)
+    mod.SuturaRepairPlugin().register_capabilities()
+    assert calls, 'request_permissions was not called'
+    assert calls[0]['fs_read'] == [mod.SUTURA_CLI], calls[0]
 
 
 def test_plugin_imports_and_writes_without_numpy():

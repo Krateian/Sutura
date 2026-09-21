@@ -104,7 +104,7 @@ Sutura and where you should still double-check the output.
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow) and macOS installs get a native `~/Applications/Sutura.app` so the GUI launches from Spotlight (Cmd+Space → "Sutura"), plus a Finder **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) for right-click repair. Gaps: the AppImage/GUI cannot self-update in place (read-only squashfs), the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning), and macOS has no standalone uninstall script (see "Removing a macOS install" below). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
-| OrcaSlicer plugin | ~35% — experimental | Self-contained script plugin, but **untested in a real OrcaSlicer**: it targets a plugin system only in nightly/2.4.2+ builds the project has not run, its `execute()` cannot read the selected model (it repairs a configured file), and it is Linux-only. Treat it as a starting point, not a finished feature. |
+| OrcaSlicer plugin | ~70% — experimental | Self-contained script plugin that repairs the **currently selected model** in-memory via `orca.host` (numpy-free accessors), shelling out to the Sutura CLI and loading the result back. Verified end-to-end in a real OrcaSlicer **2.5.0-dev** (macOS); primary target is Linux, macOS is a verified bonus. Native progress dialog during repair; `request_permissions` pre-declares the CLI path's fs_read (subprocess prompts remain, an OrcaSlicer audit-API limitation). Still early-stage; requires nightly / releases newer than 2.4.2. |
 | Test coverage | ~89% | Plain-script suites (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture) run in CI on push/PR. Not 100%: the GUI itself has no automated UI test, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
@@ -622,12 +622,15 @@ installer does this automatically) or restart Dolphin.
 ### OrcaSlicer plugin (experimental)
 
 There is also an **experimental** [OrcaSlicer script plugin](orcaslicer-plugin/)
-under `orcaslicer-plugin/` that repairs a file straight from the slicer by
-shelling out to the installed Sutura CLI. It is offered as a starting point
-and is **untested in a real OrcaSlicer**: the Python plugin system it targets
-only exists in OrcaSlicer **nightly builds / releases newer than 2.4.2**,
-which the project does not run, so it has not been possible to verify it
-end-to-end. See the
+under `orcaslicer-plugin/` that repairs the **currently selected model**
+straight from the slicer: it reads the mesh in memory through `orca.host`
+(numpy-free `vertex(i)`/`triangle(i)` accessors — the embedded Python ships no
+numpy), shells out to the installed Sutura CLI in the background under a
+native progress dialog, and loads the repaired result back into the scene.
+It has been verified end-to-end in a real OrcaSlicer **2.5.0-dev** (macOS);
+primary target is Linux, and the same file runs on macOS as a verified bonus.
+The Python plugin system it targets only exists in OrcaSlicer **nightly
+builds / releases newer than 2.4.2**. See the
 [plugin README](orcaslicer-plugin/README.md) for install steps and its
 limitations.
 
