@@ -2,6 +2,53 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Experimental autorefine self-intersection resolution**
+  (`sutura/autorefine.py`, `--experimental-autorefine`, GUI checkbox — FAZ16).
+  A from-scratch reimplementation of the published Lazard & Valque 2025 loop
+  ("Resolving self-intersections in 3D meshes while preserving floating-point
+  coordinates", CGF 44(5)): identify properly-intersecting triangle pairs,
+  snap-round the involved vertices onto a float-exact grid, subdivide each
+  triangle along its intersection segments (so each segment becomes a shared
+  edge), and iterate until no proper intersections remain. Unlike the extreme
+  mode's delete-and-reclose approach it **never deletes an input face** — every
+  input triangle is either kept whole or split — which directly targets the
+  documented "extreme mode can worsen heavy-SI scans" failure mode. Exact
+  predicates come from `pyrobust-predicates` (Unlicense / public domain);
+  pure numpy + predicates, no pymeshlab/scipy/trimesh, no CGAL source. In the
+  pipeline the flag runs the same stage-1 chain on the autorefine-preprocessed
+  input and **adopts it only when its final output has no more holes and
+  non-manifold edges than the default chain** (adopt/fallback guard); the
+  report carries `experimental_autorefine` (SI pairs before/after, iterations,
+  converged, adopted). Measured on the real-world corpus: a clear SI reduction
+  on moderate-SI meshes (e.g. thingi10k_1038439 411→97 SI faces standalone,
+  integrated 532→123 vs chain-only), but the float64 construction is limited
+  on dense-SI scans (thousands of intersecting faces in one region) where the
+  subdivision opens holes the chain cannot fully re-close — that documented
+  limitation is why it stays behind a flag. See
+  `docs/alpha-wrap-feasibility-2026-09.md` (feasibility report) for the
+  full before/after numbers and the licensing analysis. Regression-tested by
+  `tests/test_autorefine.py` (never-delete property, SI-pair resolution on a
+  crossing pair, surface-area stability on two interpenetrating spheres,
+  adopt/fallback guard, CLI flag, GUI checkbox).
+- **Benchmark harness records input/output self-intersections.**
+  `scripts/benchmark_repair_corpus.py` now measures SI on the input and final
+  output arrays (`input_self_intersections` / `output_self_intersections` /
+  `stage1_si_remaining`), prints an `si=in->out` column and a before/after
+  summary. The strict watertight metric itself still deliberately excludes SI
+  (documented); SI stays a separate tracked signal.
+- **Feasibility report for alpha wrapping.** `docs/alpha-wrap-feasibility-2026-09.md`
+  records the research spike for a from-scratch alpha-wrapping Stage-2
+  alternative (Portaneri et al. 2022) and the Lazard & Valque autorefine
+  approach: where SI is handled today, the available prototyping stack, the
+  measured corpus targets, the staged implementation plan with the two-sided
+  wrap guard rails, and the licensing picture (CGAL GPL avoided by
+  from-scratch reimplementation; pyrobust-predicates Unlicense chosen over the
+  2D-only `robust`/`shewchuk` alternatives).
+
 ## OrcaSlicer plugin (orcaslicer-plugin/) — version history
 
 The plugin keeps its own version number for the Orca Cloud listing, separate
