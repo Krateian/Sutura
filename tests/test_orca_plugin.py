@@ -14,6 +14,7 @@ Usage: ~/.local/share/sutura/venv/bin/python tests/test_orca_plugin.py
 """
 import importlib.util
 import os
+import struct
 import sys
 import tempfile
 import time
@@ -35,12 +36,26 @@ class _Result:
 
 class _ExecutionResult:
     @staticmethod
-    def success(msg):
-        return _Result(True, msg)
+    def success(message='', data=''):
+        return _Result(True, message)
 
     @staticmethod
-    def failure(msg):
-        return _Result(False, msg)
+    def skipped(message=''):
+        return _Result(None, message)
+
+    @staticmethod
+    def failure(status, message='', data=''):
+        return _Result(False, message)
+
+
+import enum  # noqa: E402
+
+
+class _PluginResult(enum.Enum):
+    Success = 0
+    Skipped = 1
+    RecoverableError = 2
+    FatalError = 3
 
 
 class _ScriptPluginCapabilityBase:
@@ -73,15 +88,26 @@ class _UI:
 
 
 class _Mesh:
+    """TriangleMesh mock exposing ONLY the numpy-free accessors (vertex(i) /
+    triangle(i) / counts) — exactly what the real embedded mesh provides.
+    No vertices()/triangles(): if the plugin ever called them, this mock would
+    AttributeError, proving the plugin uses only the numpy-free path."""
+
     def __init__(self, verts, tris):
-        self._v = verts
-        self._t = tris
+        self._v = [list(x) for x in verts]
+        self._t = [list(x) for x in tris]
 
-    def vertices(self):
-        return self._v
+    def vertex_count(self):
+        return len(self._v)
 
-    def triangles(self):
-        return self._t
+    def triangle_count(self):
+        return len(self._t)
+
+    def vertex(self, i):
+        return tuple(self._v[i])
+
+    def triangle(self, i):
+        return tuple(self._t[i])
 
 
 class _Volume:
@@ -126,6 +152,7 @@ def _load_plugin(model, data_dir):
     orca = type('orca', (), {})
     orca.host = host
     orca.ExecutionResult = _ExecutionResult
+    orca.PluginResult = _PluginResult
     orca.script = type('script', (), {'ScriptPluginCapabilityBase': _ScriptPluginCapabilityBase})
     orca.base = _Base
     orca.register_capability = lambda cap: None
@@ -153,13 +180,22 @@ def test_model_to_mesh_reads_volume():
     mod, _host, _ui = _load_plugin(model, tempfile.mkdtemp())
     name, verts, tris = mod._model_to_mesh(model)
     assert name == 'part.1', name
-    assert verts.shape == (8, 3) and tris.shape == (12, 3), (verts.shape, tris.shape)
+    assert len(verts) == 8 and len(tris) == 12, (len(verts), len(tris))
+    assert len(verts[0]) == 3 and len(tris[0]) == 3, (verts[0], tris[0])
 
 
 def test_model_to_mesh_none_for_empty():
     mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
-    assert mod._model_to_mesh(_Model([])) is None
-    assert mod._model_to_mesh(None) is None
+    assert mod._model_to_mesh(_Model([])) is None  # no objects
+    assert mod._model_to_mesh(_Model([_Object([])])) is None  # object, no volumes
+    # a None model is handled in execute(); _model_to_mesh now PROPAGATES the
+    # real error instead of hiding it (the bug that swallowed the numpy
+    # ImportError from mesh.vertices()/triangles()).
+    try:
+        mod._model_to_mesh(None)
+        assert False, 'expected AttributeError to propagate'
+    except AttributeError:
+        pass
 
 
 def test_write_temp_stl_valid_binary():
@@ -171,7 +207,7 @@ def test_write_temp_stl_valid_binary():
         assert path.endswith('.stl') and os.path.exists(path), path
         with open(path, 'rb') as f:
             head = f.read(80)
-            n = np.frombuffer(f.read(4), dtype='<u4')[0]
+            n = struct.unpack('<I', f.read(4))[0]
         assert head.startswith(b'sutura repair staging'), head[:21]
         assert n == 12, n
         assert os.path.getsize(path) == 84 + 12 * 50, os.path.getsize(path)
@@ -203,7 +239,61 @@ def test_execute_with_model_starts_worker():
         assert res.ok is True, res
         time.sleep(0.2)
         assert len(calls) == 1, calls
-        assert calls[0][1].shape == (8, 3), calls[0][1].shape
+        assert len(calls[0][1]) == 8, calls[0][1]          # verts now a plain list
+        assert len(calls[0][2]) == 12, calls[0][2]          # tris now a plain list
+
+
+def test_plugin_imports_and_writes_without_numpy():
+    """Regression for the real GUI failure: OrcaSlicer's embedded Python has
+    NO numpy. Block numpy entirely (meta-path finder) in a subprocess and
+    verify the plugin still imports and its pure-stdlib helpers work."""
+    import subprocess
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    plugin = os.path.join(repo, 'orcaslicer-plugin', 'sutura_repair_linux_x86_64.py')
+    code = (
+        "import sys, os, importlib.util, tempfile, enum\n"
+        "class _B:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name.split('.')[0] == 'numpy':\n"
+        "            raise ImportError('no numpy in embedded env')\n"
+        "        return None\n"
+        "sys.meta_path.insert(0, _B())\n"
+        "class ER:\n"
+        "    @staticmethod\n"
+        "    def success(m='', d=''): return m\n"
+        "    @staticmethod\n"
+        "    def failure(s, m='', d=''): return m\n"
+        "class PR(enum.Enum): Success=0; Skipped=1; RecoverableError=2; FatalError=3\n"
+        "class U:\n"
+        "    def message(self, *a, **k): pass\n"
+        "class Host:\n"
+        "    def __init__(s, d): s._d=d; s.ui=U()\n"
+        "    def model(s): return None\n"
+        "    def data_dir(s): return s._d\n"
+        "class Cap: pass\n"
+        "class Base: pass\n"
+        "orca = type('orca', (), {})\n"
+        "orca.host = Host(tempfile.mkdtemp())\n"
+        "orca.ExecutionResult = ER\n"
+        "orca.PluginResult = PR\n"
+        "orca.script = type('script', (), {'ScriptPluginCapabilityBase': Cap})\n"
+        "orca.base = Base\n"
+        "orca.register_capability = lambda c: None\n"
+        "orca.plugin = lambda c: c\n"
+        "sys.modules['orca'] = orca\n"
+        "spec = importlib.util.spec_from_file_location('sutura_orca_plugin', %r)\n"
+        "mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)\n"
+        "v = [[0.0,0.0,0.0],[1.0,0.0,0.0],[0.0,1.0,0.0]]\n"
+        "t = [[0,1,2]]\n"
+        "p = mod._write_temp_stl(v, t)\n"
+        "assert os.path.exists(p) and os.path.getsize(p) == 84 + 50, os.path.getsize(p)\n"
+        "assert mod._unique_output_name('m') != mod._unique_output_name('m')\n"
+        "print('NONUMPY-OK')\n" % plugin
+    )
+    r = subprocess.run([sys.executable, '-c', code], capture_output=True,
+                       text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-600:]
+    assert 'NONUMPY-OK' in r.stdout, r.stdout[-200:]
 
 
 if __name__ == '__main__':

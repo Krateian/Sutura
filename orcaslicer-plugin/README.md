@@ -1,10 +1,11 @@
 # Sutura × OrcaSlicer plugin
 
 Repair the **currently selected model** straight from OrcaSlicer: the mesh is
-read in memory through the `orca.host` API, repaired with the
+read through the `orca.host` API (numpy-free `vertex(i)`/`triangle(i)`
+accessors — the embedded Python ships only `pip`, no numpy), repaired with the
 [separately-installed Sutura CLI](https://github.com/Krateian/Sutura), and the
 repaired result is loaded back into the slicer. The plugin does not bundle
-pymeshlab/manifold3d into OrcaSlicer's embedded Python.
+numpy/pymeshlab/manifold3d into OrcaSlicer's embedded Python.
 
 ## ⚠️ Version requirement — nightly / newer than 2.4.2 REQUIRED
 
@@ -50,14 +51,15 @@ afterwards.
   metadata + `@orca.plugin` registration), placed as one entry file in a
   plugin folder.
 - On "Run", `execute()` (on the UI thread) reads the selected model in memory
-  (`orca.host.model() -> objects() -> volumes() -> mesh()`, numpy arrays),
-  returns immediately and spawns a daemon `threading.Thread` so the repair
-  never freezes the slicer.
-- Repair is attempted **in-process** first (importing the installed sutura
-  modules), falling back to the **subprocess CLI**
-  (`~/.local/bin/sutura <stage> -o <unique_out>`) when the embedded Python
-  cannot run the pipeline (e.g. pymeshlab unavailable). Each subprocess spawn
-  may trigger an OrcaSlicer audit-hook permission prompt.
+  (`orca.host.model() -> objects() -> volumes() -> mesh()`, using the
+  **numpy-free** `vertex(i)` / `triangle(i)` accessors — the embedded Python
+  has no numpy), returns immediately and spawns a daemon `threading.Thread`
+  so the repair never freezes the slicer.
+- Repair always runs via the **subprocess CLI**
+  (`~/.local/bin/sutura <stage> -o <unique_out>`): the embedded interpreter
+  ships only `pip` (no numpy/pymeshlab/manifold3d), so in-process repair is
+  not possible. Each subprocess spawn may trigger an OrcaSlicer audit-hook
+  permission prompt.
 - The repaired file is loaded back via `--single-instance` (Linux) /
   `open -a OrcaSlicer` (macOS), and the result path is reported through
   `orca.host.ui.message(...)`.
