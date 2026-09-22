@@ -17,6 +17,19 @@ The loop (per the paper):
   (v)   round new vertices to doubles;
   (vi)  iterate <= 5 times or until no proper intersections remain.
 
+On top of that base loop sits the CGAL 6.1 (June 2025) second-half fix, the
+iterative snap-rounding pass (apply_iterative_snap_rounding): the vertices of
+still-intersecting triangles (and their cell-mates) are repeatedly snapped
+onto a fitting float-exact integer grid, the degenerate elements this creates
+are eliminated, and intersection detection + re-resolution run again,
+iterating (bounded by MAX_SNAP_ROUNDS; no formal termination guarantee) until
+no proper intersection remains or the cap is hit. The grid is kept at the
+finest float-exact level ([2^23, 2^24)): coarsening it was measured on the
+heavy-SI corpus and rejected (100281 went 906->97 pairs on the fine grid vs
+906->74289 when coarsened -- on dense scans the coarse grid amplifies the
+cell-mate snapping and manufactures new intersections). Degenerate elements
+left by each subdivision are eliminated too.
+
 Unlike the delete-and-reclose approach (extreme_extra_passes), this NEVER
 deletes an input face: every input triangle is either kept whole or split
 into sub-triangles. This is the core property that fixes the documented
@@ -39,8 +52,10 @@ from pyrobust_predicates import orient3d
 
 MAX_ITERATIONS = 5
 DEFAULT_SNAP_BITS = 23  # largest |x| scaled into [2^23, 2^24) -> rel. err <= 2^-24
+MAX_SNAP_ROUNDS = 8     # inner iterative snap-rounding cap per outer pass
 MAX_FACES_GROWTH = 4     # blow-up guard: faces may not exceed input * this
 WELD_TOL_REL = 1e-5      # weld merge distance as a fraction of mesh span
+INNER_WELD_TOL_REL = 2e-5  # slightly looser weld used during the inner loop
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +665,36 @@ def _weld(verts, tris, tol=None):
     return np.array(new_verts, dtype=np.float64), np.array(new_tris, dtype=np.int64)
 
 
+def _eliminate_degenerate(v, t, tol_rel=INNER_WELD_TOL_REL):
+    """Eliminate the degenerate/sliver elements that snapping creates.
+
+    Only degenerate OUTPUT is ever removed: triangles whose vertices weld to
+    fewer than three distinct points, faces whose area collapses below a tiny
+    relative floor, and duplicate faces. Non-degenerate triangles -- including
+    every input triangle that was kept or split -- are preserved unchanged.
+    Returns (new_v, new_t)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    if len(t) == 0:
+        return v, t
+    span = float(np.max(v.max(axis=0) - v.min(axis=0)))
+    v, t = _weld(v, t, tol=tol_rel * max(span, 1e-300))
+    if len(t) == 0:
+        return v, t
+    a = v[t[:, 0]]
+    b = v[t[:, 1]]
+    c = v[t[:, 2]]
+    area2 = np.linalg.norm(np.cross(b - a, c - a), axis=1)
+    keep = area2 > 1e-12 * max(span * span, 1e-300)
+    t = t[keep]
+    if len(t) == 0:
+        return v, t
+    key = np.sort(t, axis=1)
+    _, uniq = np.unique(key, axis=0, return_index=True)
+    t = t[np.sort(uniq)]
+    return v, t
+
+
 def subdivide(v, t, pairs, snap_bits=None):
     """Subdivide triangles so every proper-intersection segment becomes a
     shared edge. Never deletes an input triangle. Conforming: a split point
@@ -741,23 +786,63 @@ def subdivide(v, t, pairs, snap_bits=None):
 # main loop
 # ---------------------------------------------------------------------------
 
+def _iterative_snap_round(v, t, snap_bits, max_rounds=MAX_SNAP_ROUNDS,
+                          _debug=False):
+    """Iterative snap-rounding pass (CGAL 6.1 apply_iterative_snap_rounding).
+
+    Round the vertices of still-intersecting triangles (and their cell-mates)
+    onto the fitting double-representable integer grid and eliminate the
+    degenerate elements this creates, iterating while the proper-pair count
+    strictly decreases. The grid is kept at the finest float-exact level
+    (``snap_bits``): coarsening the grid was measured on the heavy-SI corpus
+    and rejected -- on dense scans it amplifies the cell-mate snapping and
+    creates new intersections (100281: finest grid 906->97 pairs vs coarsened
+    906->74289). Bounded by ``max_rounds`` (no formal termination guarantee).
+    Returns (v, t, rounds_used)."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    rounds = 0
+    prev = None
+    for r in range(max_rounds):
+        pairs = detect_pairs_with_segments(v, t)
+        if not pairs:
+            break
+        rounds = r + 1
+        cur = len(pairs)
+        if prev is not None and cur >= prev:
+            break
+        prev = cur
+        if _debug:
+            print('    snap-round %d: %d pairs' % (r, cur))
+        v = snap_round(v, t, pairs, bits=snap_bits)
+        v, t = _eliminate_degenerate(v, t)
+    return v, t, rounds
+
+
 def autorefine(v, t, max_iterations=MAX_ITERATIONS, snap_bits=DEFAULT_SNAP_BITS,
                _debug=False):
-    """Resolve self-intersections by subdivision + snap-rounding. Never
-    deletes an input face. Returns (new_v, new_t, report).
+    """Resolve self-intersections by subdivision + iterative snap-rounding.
+    Never deletes an input face. Returns (new_v, new_t, report).
 
-    Iteration follows the paper: (i) identify proper pairs, (ii)+(iii) snap
+    Outer loop follows the paper: (i) identify proper pairs, (ii)+(iii) snap
     the involved vertices (and cell-mates) to the grid, (iv) subdivide along
-    the intersection segments, repeat. Two safety guards keep the prototype
-    usable on real scans: a ``MAX_FACES_GROWTH`` cap (blow-up guard on
-    dense-SI scans, where float64 construction slivers can cascade) and an
-    early stop when a pass does not reduce the proper-pair count.
+    the intersection segments, repeat. The inner iterative snap-rounding pass
+    (_iterative_snap_round) rounds the still-intersecting vertices onto the
+    fitting float-exact grid and eliminates the degenerate elements created,
+    and the degenerate elements left by each subdivision are eliminated too --
+    the CGAL 6.1 June-2025 second-half fix. The grid stays at the finest
+    float-exact level (no coarsening; see _iterative_snap_round for the corpus
+    evidence). Two safety guards keep the prototype usable on real scans: a
+    ``MAX_FACES_GROWTH`` cap (blow-up guard on dense-SI scans, where float64
+    construction slivers can cascade) and an early stop when an outer pass
+    does not reduce the proper-pair count.
     """
     v = np.asarray(v, dtype=np.float64).copy()
     t = np.asarray(t, dtype=np.int64)
     report = {'iterations': 0, 'si_before': 0, 'si_after': 0,
               'faces_before': int(len(t)), 'faces_after': int(len(t)),
-              'converged': False, 'capped': False}
+              'converged': False, 'capped': False,
+              'snap_rounds_per_iteration': [], 'grid_scales_used': []}
     pairs = detect_pairs_with_segments(v, t)
     report['si_before'] = len(pairs)
     if not pairs:
@@ -775,15 +860,20 @@ def autorefine(v, t, max_iterations=MAX_ITERATIONS, snap_bits=DEFAULT_SNAP_BITS,
         prev_pairs = len(pairs)
         if _debug:
             print('  iter %d: %d proper SI pairs' % (it, len(pairs)))
-        v = snap_round(v, t, pairs, bits=snap_bits)
+        v, t, rounds = _iterative_snap_round(
+            v, t, snap_bits, _debug=_debug)
+        report['iterations'] = it + 1
+        report['snap_rounds_per_iteration'].append(rounds)
+        report['grid_scales_used'].append(snap_bits)
         pairs = detect_pairs_with_segments(v, t)
         if not pairs:
             report['converged'] = True
             break
-        if _debug:
-            print('    after snap: %d pairs' % len(pairs))
+        if len(t) > report['faces_before'] * MAX_FACES_GROWTH:
+            report['capped'] = True
+            break
         v, t = subdivide(v, t, pairs, snap_bits=snap_bits)
-        report['iterations'] = it + 1
+        v, t = _eliminate_degenerate(v, t)
         if len(t) > report['faces_before'] * MAX_FACES_GROWTH:
             report['capped'] = True
             break
