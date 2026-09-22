@@ -154,3 +154,65 @@ No currently-installed helper turned out to be AGPL/GPL where a permissive swap 
 ## Recommended next step
 
 If approved, write this report to `docs/alpha-wrap-feasibility-2026-09.md` (consistent with the existing `*-2026-09.md` docs), then proceed in this order: **(1)** the ~20-min harness fix to record input SI in `benchmark_repair_corpus.py`; **(2)** prototype 4a (autorefine + snap-rounding) on the 8 real-world SI targets, flag-gated; **(3)** only if 4a shows a clear win on SI-remaining while keeping holes/surface-area stable, prototype 4b (alpha wrapping) on the 13 warning meshes with the two-sided-wrap guards, flag-gated. Both stay experimental until corpus evidence clears the project's conservative-defaults bar.
+
+---
+
+## Addendum (2026-09-22) — 4b prototype status: BLOCKED, not integrated
+
+**Status:** prototype 4a is implemented, integrated and committed (see
+CHANGELOG [Unreleased]). Prototype 4b (alpha wrapping) was attempted and is
+**blocked on a correctness blocker in the from-scratch scipy implementation**.
+The work-in-progress module is `sutura/alpha_wrap.py` (untracked, NOT wired
+into repair.py, NOT committed). It is left in place for review; it does NOT
+meet the watertight-output requirement and must not be shipped.
+
+**What works (verified on a clean unit sphere):**
+- Steiner points are placed **exactly on the offset surface**: all output
+  vertices land at `dist(input) = offset` (p10=p50=p90=offset, confirmed to
+  ~1e-3 tolerance).
+- The Delaunay rebuild-per-pass architecture is numerically stable: a fresh
+  scipy `Delaunay(pts, qhull_options='Qt')` each pass avoids the incremental-
+  mode row-instability and near-degenerate-insertion crashes, and cell
+  inside/outside state is carried correctly across rebuilds by the
+  frozenset-of-vertex-keys (verified stable across `add_points`).
+- Batched distance queries make each pass fast (~0.02s on a 1640-tri sphere;
+  the whole 1500-Steiner wrap ~75s, dominated by the trimesh distance oracle).
+- The two-sided-wrap heuristic fires correctly on a clean mesh (False).
+
+**The blocker — the flood fill does not produce a closed offset-surface
+boundary:** the extracted surface (facets separating inside/outside cells)
+has large holes (26 holes up to ~2.2 in diameter on a ~2.0 sphere) and the
+seed-box facets leak into the output. Extensive iteration over the carve /
+refine balance did not converge to a watertight wrap:
+1. **Seed resolution vs offset.** A box-only seed has no cell near the offset
+   surface, so every gate gets carved before any refinement can fire. Seeding
+   the input vertices gives refinement resolution, but then every cell
+   "contains" an input vertex and the carve/refine decision becomes ambiguous:
+   cells spanning box-to-input get refined instead of carved, leaving the box
+   inside the inside-region (box-facet leak).
+2. **Carve condition fragility.** Carving by a single gate's facet distance
+   leaks box facets; carving only when NO facet is near the offset surface
+   leaves the whole box inside and the boundary filter then removes
+   everything. The paper's rule relies on exact dual-Voronoi-edge/offset-
+   surface crossing tests that the coarse scipy Delaunay + trimesh oracle
+   cannot reproduce robustly at every resolution.
+
+**Recommendation (three options for the maintainer):**
+1. **Do not ship 4b now.** Keep `--experimental-alpha-wrap` unimplemented.
+   The existing stage-1 + manifold3d pipeline and the new autorefine flag
+   already cover the moderate-SI cases; the dense-SI worst cases remain a
+   documented VCG limit. This is the conservative default and my recommendation.
+2. **Re-scope 4b to the offset-surface sampling** (the part that works): a
+   surface-only reconstruction that samples the offset surface densely and
+   closes it with the existing VCG hole-closing — loses the guaranteed-
+   manifold property but is far simpler than a full flood-fill wrap.
+3. **Re-attempt the full wrap only with exact arithmetic** (e.g. CGAL's own
+   GPL implementation via a permissively-licensed port, or a from-scratch
+   implementation with an exact predicate kernel for the Delaunay) — a large
+   effort not justified by the current corpus evidence, given 4a's moderate-SI
+   wins already exist.
+
+The blocker is a genuine product decision (whether to invest in exact-
+arithmetic 3D Delaunay for a guaranteed-manifold fallback), not a fixable bug
+in the current prototype — hence this report rather than further unguided
+iteration.
