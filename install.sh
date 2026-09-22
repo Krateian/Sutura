@@ -72,6 +72,7 @@ echo "==> copying application files"
 # itself. The AppImage/macOS package layouts copy it separately.
 install -m 0755 "$SRC/sutura/repair.py"          "$APP_DIR/repair.py"
 install -m 0755 "$SRC/sutura/manifold_bridge.py" "$APP_DIR/manifold_bridge.py"
+install -m 0755 "$SRC/sutura/ftetwild_bridge.py" "$APP_DIR/ftetwild_bridge.py"
 install -m 0755 "$SRC/sutura/classification.py"  "$APP_DIR/classification.py"
 install -m 0755 "$SRC/sutura/confidence.py"      "$APP_DIR/confidence.py"
 install -m 0755 "$SRC/sutura/defects.py"         "$APP_DIR/defects.py"

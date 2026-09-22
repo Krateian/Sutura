@@ -113,7 +113,20 @@ def _resolve_bridge():
     return os.path.join(SUTURA_DIR, 'manifold_bridge.py')
 
 
+def _resolve_ftetwild_bridge():
+    """Locate ftetwild_bridge.py (bundled-copy aware, same as _resolve_bridge)."""
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        for cand in (os.path.join(base, 'ftetwild_bridge.py'),
+                     os.path.join(base, '..', 'ftetwild_bridge.py')):
+            cand = os.path.abspath(cand)
+            if os.path.isfile(cand):
+                return cand
+    return os.path.join(SUTURA_DIR, 'ftetwild_bridge.py')
+
+
 BRIDGE = _resolve_bridge()
+FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 
 VERSION = "0.3.0"
 
@@ -627,7 +640,7 @@ def stl_write_binary(path, verts, tris):
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
                             join_components=False, autorefine=False,
-                            extra_features=False):
+                            ftetwild=False, extra_features=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -641,6 +654,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     experimental join-small-components prototype (flag-gated; NOT the default).
     ``autorefine`` enables the experimental self-intersection subdivision
     prototype (Lazard & Valque 2025; flag-gated; NEVER deletes input faces).
+    ``ftetwild`` enables the experimental fTetWild fallback tier (flag-gated;
+    tetrahedralizes the input and extracts a watertight boundary when stage 1
+    still leaves holes/non-manifold edges/self-intersections).
     ``extra_features`` enables the opt-in edge-tiebreak classifier head.
     """
     import pymeshlab as ml
@@ -791,6 +807,49 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 'Extreme mode removed all geometry (small connected component '
                 'below the size threshold); try a less aggressive mode (e.g. Auto)')
 
+    # --experimental-fallback-ftetwild: guaranteed-correct last-resort
+    # solidifier (FAZ17). When the stage-1 chain (autorefine included) still
+    # leaves self-intersections, holes, or non-manifold edges, tetrahedralize
+    # the ORIGINAL input surface and extract its boundary as a watertight,
+    # SI-free triangle mesh (fTetWild, MPL-2.0, via the pytetwild bridge in
+    # venv311). Adopt only when the extracted surface is no worse on the same
+    # holes+non-manifold metric used by the autorefine guard. Flag-gated, NOT
+    # the default.
+    stats['experimental_ftetwild'] = False
+    if ftetwild and len(t) > 0:
+        ft_rep = {'ran': True}
+        cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
+                                        ms.current_mesh().face_matrix())[0]
+        cur_nm = after.get('non_two_manifold_edges', 0)
+        ms.apply_filter('compute_selection_by_self_intersections_per_face')
+        cur_si = int(ms.current_mesh().face_selection_array().sum())
+        if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
+            try:
+                inter = os.path.join(tmpdir, 'ftetwild_in.obj')
+                out_obj = os.path.join(tmpdir, 'ftetwild_out.obj')
+                write_obj(inter, v, t)
+                mrep, _ok = run_ftetwild(inter, out_obj)
+                ft_rep.update(mrep)
+                if 'error' not in mrep and os.path.exists(out_obj):
+                    cand_v, cand_t = read_obj(out_obj)
+                    if len(cand_t) > 0:
+                        cand_ms = ml.MeshSet()
+                        cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
+                                                 face_matrix=np.asarray(cand_t, np.int32)))
+                        cand_after = cand_ms.apply_filter('get_topological_measures')
+                        cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
+                        cand_nm = cand_after.get('non_two_manifold_edges', 0)
+                        adopted = bool(cand_holes <= cur_holes and cand_nm <= cur_nm)
+                        ft_rep['adopted'] = adopted
+                        ft_rep['output_holes'] = cand_holes
+                        ft_rep['output_non_manifold'] = cand_nm
+                        if adopted:
+                            ms = cand_ms
+                            after = cand_after
+            except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
+                ft_rep['error'] = str(e)
+            stats['experimental_ftetwild'] = ft_rep
+
     holes_after = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                       ms.current_mesh().face_matrix())[0]
     nm_after = after.get('non_two_manifold_edges', 0)
@@ -899,6 +958,49 @@ def run_stage2(inter, out_obj):
 
     # 3) unavailable: report it explicitly, never silently
     return {'error': 'Stage 2 skipped: manifold3d not available in this environment.'}, False
+
+
+def run_ftetwild(inter, out_obj):
+    """Run the fTetWild fallback bridge. Returns (report, ok); reports a skip,
+    never silence.
+
+    Same dual-mode dispatch as run_stage2: the fixed Linux two-venv layout
+    (python3.11 + pytetwild) first, then an in-process attempt in single-
+    environment installs (macOS/conda). The bridge itself reports an explicit
+    skip when pytetwild/pyvista are absent."""
+    # 1) primary: the fixed Linux two-venv layout (python3.11 + pytetwild)
+    if os.path.exists(VENV311) and os.path.exists(FTETWILD_BRIDGE):
+        try:
+            r = subprocess.run(
+                [VENV311, FTETWILD_BRIDGE, inter, out_obj],
+                capture_output=True, text=True, timeout=900,
+            )
+        except subprocess.TimeoutExpired:
+            return {'error': 'fTetWild fallback timed out'}, False
+        if r.returncode == 0:
+            try:
+                report = json.loads(r.stdout.strip().splitlines()[-1])
+            except Exception:
+                report = {'error': 'unparseable ftetwild output'}
+            if 'error' not in report:
+                return report, True
+        # fall through to the in-process attempt if the venv failed
+
+    # 2) single-environment installs (macOS/conda): call the bridge in-process
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('sutura_ftetwild_bridge', FTETWILD_BRIDGE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        report = module.run_bridge(inter, out_obj)
+        if 'error' not in report:
+            return report, True
+    except Exception:
+        pass
+
+    # 3) unavailable: report it explicitly, never silently
+    return {'error': 'fTetWild fallback skipped: pytetwild not available '
+                     'in this environment.'}, False
 
 
 def maybe_run_stage2(report, verts, tris, tmpdir):
@@ -1117,7 +1219,8 @@ def obj_has_material_refs(path):
 
 
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
-                join_components=False, autorefine=False, extra_features=False):
+                join_components=False, autorefine=False, ftetwild=False,
+                extra_features=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -1139,7 +1242,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
     report, new_v, new_t = repair_mesh_from_arrays(
         verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
         declared_unit=declared_unit, join_components=join_components,
-        autorefine=autorefine, extra_features=extra_features)
+        autorefine=autorefine, ftetwild=ftetwild,
+        extra_features=extra_features)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -1216,7 +1320,8 @@ def _read_zip_entry(z, name):
 
 
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
-               join_components=False, autorefine=False, extra_features=False):
+               join_components=False, autorefine=False, ftetwild=False,
+               extra_features=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -1254,6 +1359,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     engine=engine, declared_unit=declared,
                     join_components=join_components,
                     autorefine=autorefine,
+                    ftetwild=ftetwild,
                     extra_features=extra_features)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
@@ -1632,6 +1738,18 @@ def human_report(r, show_defects=False, show_diff=False):
                          'converged=%s%s' % (ar_r.get('si_before', 0),
                                              ar_r.get('si_after', 0),
                                              ar_r.get('iterations', 0), conv, adopted))
+    ft_r = r.get('experimental_ftetwild')
+    if ft_r:
+        if ft_r.get('ran') and 'error' in ft_r:
+            lines.append('  fTetWild fallback (experiment) : error (%s)'
+                         % ft_r['error'][:60])
+        elif ft_r.get('ran'):
+            adopted = ' adopted' if ft_r.get('adopted') else ' NOT adopted (kept stage-1 output)'
+            lines.append('  fTetWild fallback (experiment) : %d faces in %.2fs, '
+                         'holes=%s non-manifold=%s%s' % (
+                             ft_r.get('output_faces', 0), ft_r.get('time', 0),
+                             ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
+                             adopted))
     if show_diff:
         lines.append('  Vertices                : %s -> %s' % (
             s1.get('vertices_before', 0), s1.get('vertices_after', 0)))
@@ -1795,7 +1913,7 @@ def human_dry_run(r):
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
-                 autorefine=False, extra_features=False):
+                 autorefine=False, ftetwild=False, extra_features=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -1805,7 +1923,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     within budget the save is unconditional (reporting the numbers).
     ``join_components`` enables the experimental join-small-components
     prototype (flag-gated). ``autorefine`` enables the experimental
-    self-intersection subdivision prototype (flag-gated).
+    self-intersection subdivision prototype (flag-gated). ``ftetwild`` enables
+    the experimental fTetWild fallback tier (flag-gated).
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -1824,12 +1943,14 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                      profile=profile, engine=engine,
                                      join_components=join_components,
                                      autorefine=autorefine,
+                                     ftetwild=ftetwild,
                                      extra_features=extra_features))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
                                       profile=profile, engine=engine,
                                       join_components=join_components,
                                       autorefine=autorefine,
+                                      ftetwild=ftetwild,
                                       extra_features=extra_features))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
@@ -1971,6 +2092,16 @@ def main():
                              'is limited by float64 construction (see '
                              'docs/alpha-wrap-feasibility-2026-09.md). NOT '
                              'the default behaviour, evaluation only')
+    parser.add_argument('--experimental-fallback-ftetwild', action='store_true',
+                        help='experimental prototype: last-resort solidifier. '
+                             'When the stage-1 chain (autorefine included) '
+                             'still leaves self-intersections, holes, or '
+                             'non-manifold edges, tetrahedralize the ORIGINAL '
+                             'input and extract a watertight, SI-free boundary '
+                             'surface (fTetWild via pytetwild, MPL-2.0). '
+                             'Adopted only when no worse on holes+non-manifold '
+                             'than the stage-1 result. NOT the default '
+                             'behaviour, evaluation only')
     parser.add_argument('--experimental-edge-tiebreak', action='store_true',
                         help='experimental opt-in: use the 11-feature '
                              'classifier head (base features + the five strong '
@@ -2073,6 +2204,7 @@ def main():
                             max_risk=max_risk, force=args.force,
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
+                            ftetwild=args.experimental_fallback_ftetwild,
                             extra_features=args.experimental_edge_tiebreak) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')

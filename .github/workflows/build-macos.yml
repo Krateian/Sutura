@@ -75,9 +75,11 @@ jobs:
             name="${t%%:*}"; entry="sutura/${t#*:}"
             python -m PyInstaller "${PYS[@]}" --name "$name" --onedir "$entry"
           done
-          # ship manifold_bridge.py beside sutura-cli so the bundle-aware
-          # _resolve_bridge() in repair.py finds it (stage 2, in-process)
+# ship manifold_bridge.py + ftetwild_bridge.py beside sutura-cli so
+          # the bundle-aware _resolve_bridge() finds them (stage 2 / fTetWild
+          # fallback, in-process)
           cp sutura/manifold_bridge.py dist/sutura-cli/
+          cp sutura/ftetwild_bridge.py dist/sutura-cli/
 
       - name: Build GUI .app (windowed onedir)
         run: |

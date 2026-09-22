@@ -1,3 +1,11 @@
 manifold3d==3.5.3
 trimesh==5.1.0
 numpy==2.4.6
+# Optional experimental fTetWild fallback tier (FAZ17): pytetwild is the
+# pybind11/nanobind wrapper for fTetWild (MPL-2.0, compatible with our
+# PolyForm-Noncommercial license). It is invoked as a venv311 subprocess bridge
+# (sutura/ftetwild_bridge.py) by repair.py behind --experimental-fallback-ftetwild.
+# pyvista is required at pytetwild import time despite being declared "optional"
+# by its pyproject.toml, so both are pinned here.
+pytetwild==0.4.2
+pyvista>=0.44

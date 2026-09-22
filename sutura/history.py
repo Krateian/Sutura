@@ -104,6 +104,9 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
         'autorefine_applied': bool(result.get('experimental_autorefine')
                                    and result.get('experimental_autorefine')
                                    .get('adopted')),
+        'ftetwild_applied': bool(result.get('experimental_ftetwild')
+                                 and result.get('experimental_ftetwild')
+                                 .get('adopted')),
     }
 
 
