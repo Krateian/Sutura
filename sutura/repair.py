@@ -839,6 +839,33 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                         cand_after = cand_ms.apply_filter('get_topological_measures')
                         cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
                         cand_nm = cand_after.get('non_two_manifold_edges', 0)
+                        # manifold3d post-process of the fTetWild boundary: fTetWild's
+                        # raw boundary can carry non-manifold edges on dense-SI scans
+                        # (e.g. thingi10k_1038441: 0 SI / 0 holes but 531 nm edges), so
+                        # when it is not already watertight we rebuild it as a Manifold
+                        # solid via the same stage-2 bridge (holes/nm -> 0). The
+                        # post-processed boundary is used only when it is no worse on
+                        # holes+nm than the raw fTetWild boundary.
+                        ft_rep['manifold_postprocessed'] = False
+                        if cand_nm > 0 or cand_holes > 0:
+                            m3_in = os.path.join(tmpdir, 'ftetwild_m3d_in.obj')
+                            m3_out = os.path.join(tmpdir, 'ftetwild_m3d_out.obj')
+                            write_obj(m3_in, cand_v, cand_t)
+                            m3rep, m3ok = run_stage2(m3_in, m3_out)
+                            if m3ok and 'error' not in m3rep and os.path.exists(m3_out):
+                                m3_v, m3_t = read_obj(m3_out)
+                                if len(m3_t) > 0:
+                                    m3_ms = ml.MeshSet()
+                                    m3_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(m3_v, np.float32),
+                                                           face_matrix=np.asarray(m3_t, np.int32)))
+                                    m3_after = m3_ms.apply_filter('get_topological_measures')
+                                    m3_holes = boundary_loop_stats(m3_v, m3_t)[0]
+                                    m3_nm = m3_after.get('non_two_manifold_edges', 0)
+                                    if m3_holes <= cand_holes and m3_nm <= cand_nm:
+                                        ft_rep['manifold_postprocessed'] = True
+                                        cand_v, cand_t = m3_v, m3_t
+                                        cand_ms, cand_after = m3_ms, m3_after
+                                        cand_holes, cand_nm = m3_holes, m3_nm
                         adopted = bool(cand_holes <= cur_holes and cand_nm <= cur_nm)
                         ft_rep['adopted'] = adopted
                         ft_rep['output_holes'] = cand_holes
@@ -1745,9 +1772,10 @@ def human_report(r, show_defects=False, show_diff=False):
                          % ft_r['error'][:60])
         elif ft_r.get('ran'):
             adopted = ' adopted' if ft_r.get('adopted') else ' NOT adopted (kept stage-1 output)'
-            lines.append('  fTetWild fallback (experiment) : %d faces in %.2fs, '
+            pp = ' + manifold3d post-process' if ft_r.get('manifold_postprocessed') else ''
+            lines.append('  fTetWild fallback (experiment) : %d faces in %.2fs%s, '
                          'holes=%s non-manifold=%s%s' % (
-                             ft_r.get('output_faces', 0), ft_r.get('time', 0),
+                             ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
                              adopted))
     if show_diff:
