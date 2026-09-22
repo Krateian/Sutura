@@ -157,33 +157,48 @@ If approved, write this report to `docs/alpha-wrap-feasibility-2026-09.md` (cons
 
 ---
 
-## Addendum (2026-09-22) — 4b prototype status: BLOCKED, not integrated
+## 6. Outcome — alpha wrapping evaluated, NOT integrated (2026-09-22)
 
-**Status:** prototype 4a is implemented, integrated and committed (see
-CHANGELOG [Unreleased]). Prototype 4b (alpha wrapping) was attempted and is
-**blocked on a correctness blocker in the from-scratch scipy implementation**.
-The work-in-progress module is `sutura/alpha_wrap.py` (untracked, NOT wired
-into repair.py, NOT committed). It is left in place for review; it does NOT
-meet the watertight-output requirement and must not be shipped.
+Following the project's standing rule for rejected experiments (the FAZ6 /
+FAZ8 / FAZ9 "evaluated, NOT integrated" pattern), this section records the
+alpha-wrapping prototype's outcome honestly so a future attempt does not
+re-tread the same ground.
 
-**What works (verified on a clean unit sphere):**
+**Status:** prototype 4a (autorefine) shipped and is committed (CHANGELOG
+[Unreleased]). Prototype 4b (alpha wrapping) was prototyped from scratch and
+is **NOT integrated**: no `--experimental-alpha-wrap` flag, no GUI control,
+no wiring into repair.py. The prototype source is retained as an unintegrated
+research reference at `scripts/experiments/alpha_wrap_prototype.py` (it is
+NOT part of any install or module list); this report is the authoritative
+record. Alpha wrapping is deliberately NOT offered as a feature.
+
+**What was tried:** a from-scratch reimplementation of Portaneri et al. 2022
+(seed box + flood-fill gate queue over a growing 3D Delaunay, alpha-
+traversability via facet circumradius, Steiner points on the offset surface
+{`dist(input) = offset`} of an unsigned distance field, facets separating
+inside/outside cells as output). The implementation used scipy
+`Delaunay` + a trimesh exact closest-point oracle — no CGAL source.
+
+**What worked (verified on a clean unit sphere):**
 - Steiner points are placed **exactly on the offset surface**: all output
   vertices land at `dist(input) = offset` (p10=p50=p90=offset, confirmed to
   ~1e-3 tolerance).
-- The Delaunay rebuild-per-pass architecture is numerically stable: a fresh
-  scipy `Delaunay(pts, qhull_options='Qt')` each pass avoids the incremental-
-  mode row-instability and near-degenerate-insertion crashes, and cell
-  inside/outside state is carried correctly across rebuilds by the
+- The Delaunay **rebuild-per-pass** architecture is numerically stable: a
+  fresh scipy `Delaunay(pts, qhull_options='Qt')` each pass avoids the
+  incremental-mode row-instability and near-degenerate-insertion crashes, and
+  cell inside/outside state is carried correctly across rebuilds by the
   frozenset-of-vertex-keys (verified stable across `add_points`).
 - Batched distance queries make each pass fast (~0.02s on a 1640-tri sphere;
   the whole 1500-Steiner wrap ~75s, dominated by the trimesh distance oracle).
-- The two-sided-wrap heuristic fires correctly on a clean mesh (False).
+- The two-sided-wrap heuristic (90th-percentile output distance > 8× offset)
+  fires correctly on a clean mesh (False).
 
-**The blocker — the flood fill does not produce a closed offset-surface
-boundary:** the extracted surface (facets separating inside/outside cells)
-has large holes (26 holes up to ~2.2 in diameter on a ~2.0 sphere) and the
-seed-box facets leak into the output. Extensive iteration over the carve /
-refine balance did not converge to a watertight wrap:
+**What did not work — the watertight guarantee does not hold without exact
+arithmetic:** the flood fill does not produce a closed offset-surface
+boundary. The extracted surface (facets separating inside/outside cells) has
+large holes (26 holes up to ~2.2 in diameter on a ~2.0 sphere) and seed-box
+facets leak into the output. Extensive iteration over the carve / refine
+balance did not converge to a watertight wrap:
 1. **Seed resolution vs offset.** A box-only seed has no cell near the offset
    surface, so every gate gets carved before any refinement can fire. Seeding
    the input vertices gives refinement resolution, but then every cell
@@ -193,26 +208,24 @@ refine balance did not converge to a watertight wrap:
 2. **Carve condition fragility.** Carving by a single gate's facet distance
    leaks box facets; carving only when NO facet is near the offset surface
    leaves the whole box inside and the boundary filter then removes
-   everything. The paper's rule relies on exact dual-Voronoi-edge/offset-
-   surface crossing tests that the coarse scipy Delaunay + trimesh oracle
+   everything. The paper's rule relies on exact dual-Voronoi-edge / offset-
+   surface crossing tests that a coarse scipy Delaunay + trimesh oracle
    cannot reproduce robustly at every resolution.
 
-**Recommendation (three options for the maintainer):**
-1. **Do not ship 4b now.** Keep `--experimental-alpha-wrap` unimplemented.
-   The existing stage-1 + manifold3d pipeline and the new autorefine flag
-   already cover the moderate-SI cases; the dense-SI worst cases remain a
-   documented VCG limit. This is the conservative default and my recommendation.
-2. **Re-scope 4b to the offset-surface sampling** (the part that works): a
-   surface-only reconstruction that samples the offset surface densely and
-   closes it with the existing VCG hole-closing — loses the guaranteed-
-   manifold property but is far simpler than a full flood-fill wrap.
-3. **Re-attempt the full wrap only with exact arithmetic** (e.g. CGAL's own
-   GPL implementation via a permissively-licensed port, or a from-scratch
-   implementation with an exact predicate kernel for the Delaunay) — a large
-   effort not justified by the current corpus evidence, given 4a's moderate-SI
-   wins already exist.
+**Why it was not shipped:** the entire value of alpha wrapping is the
+watertight + manifold + intersection-free GUARANTEE from any input. A
+partial / unreliable implementation would look like it solves the dense-SI
+problem while silently not always delivering, which is worse than not
+shipping. The guarantee requires exact-arithmetic 3D Delaunay construction;
+that is a dedicated effort (option 3 below) out of scope for this session and
+needs explicit maintainer buy-in on the investment.
 
-The blocker is a genuine product decision (whether to invest in exact-
-arithmetic 3D Delaunay for a guaranteed-manifold fallback), not a fixable bug
-in the current prototype — hence this report rather than further unguided
-iteration.
+**Recommendation:** do not pursue alpha wrapping further without a dedicated
+exact-arithmetic-Delaunay effort. If it is revisited, the retained prototype
+provides verified building blocks (offset-surface Steiner placement, the
+rebuild-per-pass pattern, the batched oracle, the two-sided-wrap heuristic)
+but the flood-fill core must be re-derived on an exact kernel (e.g. a
+permissively-licensed Delaunay with exact predicates, or CGAL-derived work
+under a compatible licence). The existing stage-1 + manifold3d pipeline and
+the shipped autorefine flag already cover the moderate-SI cases; the dense-SI
+worst cases remain a documented VCG limit.
