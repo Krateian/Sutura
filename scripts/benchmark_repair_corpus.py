@@ -62,7 +62,7 @@ def count_self_intersections(v, t):
     return int(ms.current_mesh().face_selection_array().sum())
 
 
-def run_one(src, tmpdir):
+def run_one(src, tmpdir, autorefine=False, ftetwild=False):
     """Repair one mesh and return (entry, error)."""
     entry = {'file': os.path.basename(src),
              'size_bytes': os.path.getsize(src)}
@@ -80,7 +80,9 @@ def run_one(src, tmpdir):
         entry['input_non_manifold'] = len(in_det['non_manifold'])
         entry['input_self_intersections'] = count_self_intersections(v, t)
 
-        rep, new_v, new_t = repair.repair_mesh_from_arrays(v, t, tmpdir, mode='auto')
+        rep, new_v, new_t = repair.repair_mesh_from_arrays(
+            v, t, tmpdir, mode='auto', autorefine=autorefine,
+            ftetwild=ftetwild)
         new_v, new_t = repair.maybe_run_stage2(rep, new_v, new_t, tmpdir)
 
         category, _issues, _summary = classification.classify(rep)
@@ -112,6 +114,18 @@ def run_one(src, tmpdir):
         # autorefine) can be measured before/after.
         entry['output_self_intersections'] = count_self_intersections(new_v, new_t)
         entry['stage1_si_remaining'] = s1.get('self_intersections_remaining')
+        # fTetWild fallback tier (FAZ17) outcome when enabled: whether it ran,
+        # was adopted, and whether a manifold3d post-process was applied.
+        ft = rep.get('experimental_ftetwild')
+        if isinstance(ft, dict):
+            entry['ftetwild_ran'] = bool(ft.get('ran'))
+            entry['ftetwild_adopted'] = bool(ft.get('adopted'))
+            entry['ftetwild_manifold_postprocessed'] = bool(
+                ft.get('manifold_postprocessed'))
+            entry['ftetwild_time'] = ft.get('time')
+            entry['ftetwild_error'] = ft.get('error')
+        else:
+            entry['ftetwild_ran'] = False
         # Optional manifold3d cross-validation (independent verdict; None when
         # manifold3d is unavailable -> column reported as n/a).
         m3_ok, m3_status = manifold_bridge.watertight_check(new_v, new_t)
@@ -132,10 +146,23 @@ def run_one(src, tmpdir):
 
 
 def main():
-    corpus = sys.argv[1] if len(sys.argv) > 1 else '/tmp/sutura_corpus_100'
-    out_path = sys.argv[2] if len(sys.argv) > 2 else '/tmp/sutura_repair_benchmark.json'
+    import argparse
+    p = argparse.ArgumentParser(
+        description='Repair-corpus benchmark with a strict watertight metric.')
+    p.add_argument('corpus', nargs='?', default='/tmp/sutura_corpus_100',
+                   help='corpus dir (default: /tmp/sutura_corpus_100)')
+    p.add_argument('out', nargs='?', default='/tmp/sutura_repair_benchmark.json',
+                   help='output JSON path')
+    p.add_argument('--experimental-autorefine', action='store_true',
+                   help='enable --experimental-autorefine for every mesh')
+    p.add_argument('--experimental-fallback-ftetwild', action='store_true',
+                   help='enable --experimental-fallback-ftetwild for every mesh')
+    args = p.parse_args()
+    corpus, out_path = args.corpus, args.out
     files = sorted(f for f in os.listdir(corpus) if f.lower().endswith('.stl'))
-    print('corpus: %s (%d STL files)' % (corpus, len(files)), flush=True)
+    flags = (' +autorefine' if args.experimental_autorefine else '') + \
+            (' +ftetwild' if args.experimental_fallback_ftetwild else '')
+    print('corpus: %s (%d STL files)%s' % (corpus, len(files), flags), flush=True)
 
     results = {}
     failures = []
@@ -143,7 +170,9 @@ def main():
         tmp = tempfile.mkdtemp(prefix='sutura-bench-')
         entry = err = None
         try:
-            entry, err = run_one(os.path.join(corpus, f), tmp)
+            entry, err = run_one(os.path.join(corpus, f), tmp,
+                                 autorefine=args.experimental_autorefine,
+                                 ftetwild=args.experimental_fallback_ftetwild)
         except Exception as e:  # noqa: BLE001 - never let one file kill the run
             err = {'file': f, 'error': '%s: %s' % (type(e).__name__, e)}
         finally:
@@ -157,12 +186,13 @@ def main():
             results[f] = entry
             m3 = entry.get('manifold3d_watertight')
             m3s = 'WT' if m3 is True else ('OPEN' if m3 is False else 'n/a')
-            print('[%3d/%d] %-48s cat=%-10s strict=%s m3d=%s (holes=%d nm=%d si=%d->%d)' % (
+            fta = ' adv' if entry.get('ftetwild_adopted') else (' run' if entry.get('ftetwild_ran') else '')
+            print('[%3d/%d] %-48s cat=%-10s strict=%s m3d=%s (holes=%d nm=%d si=%d->%d)%s' % (
                 i, len(files), f[:48], str(entry.get('category')),
                 entry['strict_watertight'], m3s, entry['strict_holes'],
                 entry['strict_non_manifold'],
                 entry.get('input_self_intersections', 0),
-                entry.get('output_self_intersections', 0)), flush=True)
+                entry.get('output_self_intersections', 0), fta), flush=True)
         del entry, err
         gc.collect()
 
@@ -243,6 +273,40 @@ def main():
         print('worst input-SI meshes:')
         for f, si, so in worst:
             print('   %-45s in=%d out=%s' % (f, si, so))
+
+    # fTetWild fallback tier summary (FAZ17) when the flag was enabled.
+    ft_meshes = [r for r in results.values() if r.get('ftetwild_ran')]
+    if ft_meshes:
+        adopted = [r for r in ft_meshes if r.get('ftetwild_adopted')]
+        pp = [r for r in adopted if r.get('ftetwild_manifold_postprocessed')]
+        not_adopted = [r for r in ft_meshes if not r.get('ftetwild_adopted')]
+        err = [r for r in ft_meshes if r.get('ftetwild_error')]
+        timeouts = [r for r in err if r.get('ftetwild_error') == 'timeout']
+        times = [r.get('ftetwild_time') for r in ft_meshes
+                 if isinstance(r.get('ftetwild_time'), (int, float))]
+        print()
+        print('=== fTetWild fallback tier (--experimental-fallback-ftetwild) ===')
+        print('meshes where it ran      : %d' % len(ft_meshes))
+        print('adopted                  : %d' % len(adopted))
+        print('  of which manifold3d post-processed : %d' % len(pp))
+        print('adopt=False (kept stage-1) : %d' % len(not_adopted))
+        print('errors                   : %d (of which %d timeout)' % (
+            len(err), len(timeouts)))
+        if timeouts:
+            print('timeout meshes:')
+            for r in sorted(timeouts, key=lambda x: x.get('file')):
+                print('   %-45s' % r.get('file'))
+        if times:
+            import statistics
+            print('ftetwild time (s): min=%.2f median=%.2f max=%.2f total=%.2f'
+                  % (min(times), statistics.median(times), max(times), sum(times)))
+        wt_gain = sum(1 for r in adopted if r.get('strict_watertight'))
+        print('adopted meshes that end strictly watertight: %d' % wt_gain)
+        if not_adopted:
+            print('adopt=False meshes:')
+            for r in sorted(not_adopted, key=lambda x: x.get('file')):
+                print('   %-45s holes=%s nm=%s' % (
+                    r.get('file'), r.get('strict_holes'), r.get('strict_non_manifold')))
     print('wrote %s' % out_path)
 
 

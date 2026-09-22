@@ -987,23 +987,34 @@ def run_stage2(inter, out_obj):
     return {'error': 'Stage 2 skipped: manifold3d not available in this environment.'}, False
 
 
+# Wall-clock budget for ONE fTetWild bridge call (per mesh). fTetWild is fast
+# on most meshes but default settings can stall for a long time on dense 3D
+# scans (measured: one artec_* mesh did not finish within ~2h), so the fallback
+# is time-boxed per mesh and a timeout is recorded as ftetwild_error='timeout'
+# instead of blocking the whole batch (FAZ17).
+FTETWILD_TIMEOUT = 180
+
+
 def run_ftetwild(inter, out_obj):
     """Run the fTetWild fallback bridge. Returns (report, ok); reports a skip,
-    never silence.
+    never silence. Time-boxed: a per-mesh wall-clock budget (FTETWILD_TIMEOUT)
+    bounds the call so a dense scan cannot stall the batch; on timeout the
+    report carries error='timeout'.
 
-    Same dual-mode dispatch as run_stage2: the fixed Linux two-venv layout
-    (python3.11 + pytetwild) first, then an in-process attempt in single-
-    environment installs (macOS/conda). The bridge itself reports an explicit
-    skip when pytetwild/pyvista are absent."""
+    Dispatch: the fixed Linux two-venv layout (python3.11 + pytetwild) first,
+    then a killable `sys.executable` subprocess for single-environment installs
+    (macOS/conda and frozen bundles), then an in-process attempt wrapped in a
+    timed thread as a last resort. The bridge itself reports an explicit skip
+    when pytetwild/pyvista are absent."""
     # 1) primary: the fixed Linux two-venv layout (python3.11 + pytetwild)
     if os.path.exists(VENV311) and os.path.exists(FTETWILD_BRIDGE):
         try:
             r = subprocess.run(
                 [VENV311, FTETWILD_BRIDGE, inter, out_obj],
-                capture_output=True, text=True, timeout=900,
+                capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
-            return {'error': 'fTetWild fallback timed out'}, False
+            return {'error': 'timeout'}, False
         if r.returncode == 0:
             try:
                 report = json.loads(r.stdout.strip().splitlines()[-1])
@@ -1011,21 +1022,53 @@ def run_ftetwild(inter, out_obj):
                 report = {'error': 'unparseable ftetwild output'}
             if 'error' not in report:
                 return report, True
-        # fall through to the in-process attempt if the venv failed
+        # fall through to the sys.executable attempt if the venv failed
 
-    # 2) single-environment installs (macOS/conda): call the bridge in-process
+    # 2) single-environment installs (macOS/conda, frozen bundles): run the
+    # bridge as a KILLABLE subprocess with the current interpreter (which has
+    # pytetwild installed), so a hung fTetWild call can be terminated instead
+    # of blocking the batch forever.
     try:
+        r = subprocess.run(
+            [sys.executable, FTETWILD_BRIDGE, inter, out_obj],
+            capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
+        )
+        if r.returncode == 0:
+            try:
+                report = json.loads(r.stdout.strip().splitlines()[-1])
+            except Exception:
+                report = {'error': 'unparseable ftetwild output'}
+            if 'error' not in report:
+                return report, True
+    except subprocess.TimeoutExpired:
+        return {'error': 'timeout'}, False
+    except Exception:
+        pass
+
+    # 3) last-resort in-process attempt, wrapped in a timed thread so it can
+    # never block the caller beyond the budget (the thread is not killable, but
+    # the caller proceeds and records the timeout).
+    try:
+        import threading
         import importlib.util
         spec = importlib.util.spec_from_file_location('sutura_ftetwild_bridge', FTETWILD_BRIDGE)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        report = module.run_bridge(inter, out_obj)
-        if 'error' not in report:
+        box = {}
+        def _go():
+            box['report'] = module.run_bridge(inter, out_obj)
+        th = threading.Thread(target=_go, daemon=True)
+        th.start()
+        th.join(FTETWILD_TIMEOUT)
+        if th.is_alive():
+            return {'error': 'timeout'}, False
+        report = box.get('report')
+        if report is not None and 'error' not in report:
             return report, True
     except Exception:
         pass
 
-    # 3) unavailable: report it explicitly, never silently
+    # 4) unavailable: report it explicitly, never silently
     return {'error': 'fTetWild fallback skipped: pytetwild not available '
                      'in this environment.'}, False
 
