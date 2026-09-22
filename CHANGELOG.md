@@ -6,6 +6,35 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Experimental fTetWild fallback tier for residual self-intersections**
+  (`sutura/ftetwild_bridge.py`, `--experimental-fallback-ftetwild`, GUI
+  checkbox — FAZ17). A guaranteed-correct last-resort solidifier: when the
+  stage-1 chain (autorefine included) still leaves self-intersections, holes,
+  or non-manifold edges, the ORIGINAL input surface is tetrahedralized with
+  fTetWild (via the `pytetwild` wrapper, MPL-2.0) and its boundary is
+  extracted as a watertight, SI-free triangle mesh. The bridge follows the
+  same dual-mode dispatch as `manifold_bridge.py` (venv311 subprocess on
+  Linux, in-process in single-environment installs) and the result is adopted
+  only when it is no worse on the same holes+non-manifold metric used by the
+  autorefine guard. The report carries `experimental_ftetwild`
+  (`ran`/`time`/`output_faces`/`output_holes`/`output_non_manifold`/
+  `adopted`/`error`). Measured on the heavy-SI corpus (auto mode):
+  thingi10k_100281 goes 3677→0 SI faces (adopted, ~55s), thingi10k_100827
+  11→0 (adopted, ~0.5s); thingi10k_1038441 is correctly declined by the guard
+  (its raw fTetWild boundary is non-manifold, 531 edges). `pytetwild` +
+  `pyvista` were added to `requirements-311.txt`. Usage history records
+  `ftetwild_applied`.
+- **Iterative snap-rounding pass in the autorefine prototype**
+  (`sutura/autorefine.py` — FAZ16 refinement). The base Lazard & Valque loop
+  gained the CGAL 6.1 June-2025 second-half fix: after each snap the
+  degenerate/sliver elements created are eliminated and still-intersecting
+  vertices are re-snapped + re-resolved iteratively (`MAX_SNAP_ROUNDS`,
+  strict-decrease guard). The grid is kept at the finest float-exact level —
+  coarsening it was measured and rejected on the heavy-SI corpus (100281:
+  906→97 pairs on the fine grid vs 906→74289 coarsened). Report additions:
+  `snap_rounds_per_iteration` and `grid_scales_used`. Standalone SI on the
+  heavy-SI corpus improves vs the previous autorefine (100281 3677→4849→3787,
+  1038439 411→97→69, 46012 454→466→214).
 - **Experimental autorefine self-intersection resolution**
   (`sutura/autorefine.py`, `--experimental-autorefine`, GUI checkbox — FAZ16).
   A from-scratch reimplementation of the published Lazard & Valque 2025 loop

@@ -57,3 +57,25 @@ caps release assets at 2 GB), with a `SHA256SUMS` per-part checksum file.
   5. `gh release create <tag> --draft --title "Repair benchmark corpus (115 mesh)" --notes-file <notes>` then `gh release upload <tag> <parts...> SHA256SUMS`.
   6. Re-verify: `scripts/fetch_benchmark_corpus.sh` on a clean machine and re-run
      `scripts/benchmark_repair_corpus.py` to confirm the corpus round-trips.
+
+## Third-party library dependencies
+
+Sutura's own code is licensed under the PolyForm Noncommercial 1.0.0 license.
+The following third-party libraries are bundled or depended upon at runtime
+and keep **their own licenses** (reuse/distribution of Sutura does not change
+their terms):
+
+- **fTetWild / pytetwild** — MPL-2.0. `sutura/ftetwild_bridge.py` calls the
+  `pytetwild` wrapper around fTetWild (https://github.com/wildmeshing/fTetWild,
+  wrapper https://github.com/pyvista/pytetwild) behind the opt-in
+  `--experimental-fallback-ftetwild` flag / GUI checkbox (FAZ17). Used only as
+  an unmodified dependency: no Sutura source is converted to MPL (MPL-2.0 is
+  file-level copyleft), and the MPL-2.0 license text + upstream URLs are the
+  full notice required when distributing the dependency or a bundled wheel.
+- **pyrobust-predicates** — Unlicense / public domain. Shewchuk-style exact
+  3D orientation predicates used by `sutura/autorefine.py` (FAZ16).
+- **PyMeshLab** — GPL-3.0/Commercial (VCG library); used via its Python
+  package as the stage-1 engine.
+- **manifold3d** — a permissive license (Apache-2.0/MIT-style); stage 2.
+- **PySide6 / Qt** — LGPL-3.0; the GUI toolkit.
+- **pyvista / VTK** — BSD-3-Clause; required by `pytetwild` at import time.
