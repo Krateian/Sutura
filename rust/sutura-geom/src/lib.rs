@@ -17,6 +17,7 @@ use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
+pub mod triangle_intersection;
 
 /// Parse a point argument into `[f64; 3]`, accepting a tuple, list, or numpy
 /// 1-D array of length 3.
