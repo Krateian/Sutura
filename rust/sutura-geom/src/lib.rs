@@ -2,15 +2,21 @@
 //!
 //! Phase A scope: thin PyO3 wrapper exposing the explicit-point robust predicates
 //! `orient3d` and `insphere` from the `robust` crate (Shewchuk adaptive-precision
-//! arithmetic) to Python. Indirect/implicit predicates, expansion arithmetic,
-//! CDT and arrangement logic are explicitly out of scope and will be layered on
-//! top of this crate in later phases.
+//! arithmetic) to Python.
+//!
+//! Phase B scope (in progress): indirect point representations (LPI/PPI),
+//! exact predicates on explicit and implicit points (`orient3d`, `orient2d`,
+//! `incircle`), and the predicate core for the future arrangement-lite engine.
 
 use numpy::{AllowTypeChange, PyArrayLike1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
-use robust::{Coord3D, insphere as robust_insphere, orient3d as robust_orient3d};
+use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
+
+pub mod point;
+pub mod predicates2d;
+pub mod predicates3d;
 
 /// Parse a point argument into `[f64; 3]`, accepting a tuple, list, or numpy
 /// 1-D array of length 3.
@@ -29,10 +35,26 @@ fn parse_point(arr: &PyArrayLike1<'_, f64, AllowTypeChange>) -> PyResult<[f64; 3
 /// `pa, pb, pc` (with `pa, pb, pc` counterclockwise viewed from above),
 /// zero when coplanar, negative otherwise. Exact via adaptive precision.
 fn orient3d_coords(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3], pd: [f64; 3]) -> f64 {
-    let pa = Coord3D { x: pa[0], y: pa[1], z: pa[2] };
-    let pb = Coord3D { x: pb[0], y: pb[1], z: pb[2] };
-    let pc = Coord3D { x: pc[0], y: pc[1], z: pc[2] };
-    let pd = Coord3D { x: pd[0], y: pd[1], z: pd[2] };
+    let pa = Coord3D {
+        x: pa[0],
+        y: pa[1],
+        z: pa[2],
+    };
+    let pb = Coord3D {
+        x: pb[0],
+        y: pb[1],
+        z: pb[2],
+    };
+    let pc = Coord3D {
+        x: pc[0],
+        y: pc[1],
+        z: pc[2],
+    };
+    let pd = Coord3D {
+        x: pd[0],
+        y: pd[1],
+        z: pd[2],
+    };
     robust_orient3d(pa, pb, pc, pd)
 }
 
@@ -61,18 +83,32 @@ fn orient3d<'py>(
 /// Pure-Rust `insphere` helper: sign of whether `pe` lies inside the sphere
 /// through `pa, pb, pc, pd`. Requires `(pa, pb, pc, pd)` positively oriented.
 /// Zero when cospherical, positive when `pe` is inside, negative when outside.
-fn insphere_coords(
-    pa: [f64; 3],
-    pb: [f64; 3],
-    pc: [f64; 3],
-    pd: [f64; 3],
-    pe: [f64; 3],
-) -> f64 {
-    let pa = Coord3D { x: pa[0], y: pa[1], z: pa[2] };
-    let pb = Coord3D { x: pb[0], y: pb[1], z: pb[2] };
-    let pc = Coord3D { x: pc[0], y: pc[1], z: pc[2] };
-    let pd = Coord3D { x: pd[0], y: pd[1], z: pd[2] };
-    let pe = Coord3D { x: pe[0], y: pe[1], z: pe[2] };
+fn insphere_coords(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3], pd: [f64; 3], pe: [f64; 3]) -> f64 {
+    let pa = Coord3D {
+        x: pa[0],
+        y: pa[1],
+        z: pa[2],
+    };
+    let pb = Coord3D {
+        x: pb[0],
+        y: pb[1],
+        z: pb[2],
+    };
+    let pc = Coord3D {
+        x: pc[0],
+        y: pc[1],
+        z: pc[2],
+    };
+    let pd = Coord3D {
+        x: pd[0],
+        y: pd[1],
+        z: pd[2],
+    };
+    let pe = Coord3D {
+        x: pe[0],
+        y: pe[1],
+        z: pe[2],
+    };
     robust_insphere(pa, pb, pc, pd, pe)
 }
 

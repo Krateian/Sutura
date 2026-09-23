@@ -104,16 +104,18 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 
 ## Process discipline
 
-- **Codebase exploration (ALWAYS use, not just "prefer"):** `graphify` is
+- **Codebase exploration (default, not a hard rule):** `graphify` is
   a real CLI (PyPI package `graphifyy`,
   https://github.com/Graphify-Labs/graphify), not just a plugin
-  convention. ALWAYS reach for `graphify query "<question>"` /
-  `graphify explain "<symbol>"` / `graphify path "A" "B"` first for any
-  codebase-understanding question, instead of raw grep/find/cat
-  file-crawling — a graph query returns a small, focused answer instead
-  of dumping whole files, which is a direct token/context saving on every
-  call, not just a convenience. Fall back to raw grep only when graphify
-  genuinely cannot answer the question. Output lives in `graphify-out/`.
+  convention. Reach for `graphify query "<question>"` /
+  `graphify explain "<symbol>"` / `graphify path "A" "B"` first for focused
+  codebase-understanding questions — a graph query returns a small, focused
+  answer instead of dumping whole files, which saves tokens and context.
+  However, if graphify is not installed, errors out, returns no useful
+  result, or a tiny well-known file can be read more directly, fall back to
+  raw grep/find/cat immediately. The goal is efficiency, not a rigid rule
+  that blocks work when the graph is stale or unavailable. Output lives in
+  `graphify-out/`.
   **On a new machine (graphify is pipx-installed per-machine, not
   repo-tracked), check first:** `which graphify` — if missing, run
   `pipx install graphifyy` (or `uv tool install graphifyy`), then
