@@ -92,6 +92,22 @@ impl HostFrame {
             c: c.to_rational()?,
         })
     }
+
+    /// Map 2D barycentric `(s,t)` coordinates back to an exact rational 3D
+    /// point using `p = a + s*(b - a) + t*(c - a)`.
+    pub fn point3d(&self, s: &BigRational, t: &BigRational) -> [BigRational; 3] {
+        let u0 = &self.b[0] - &self.a[0];
+        let u1 = &self.b[1] - &self.a[1];
+        let u2 = &self.b[2] - &self.a[2];
+        let v0 = &self.c[0] - &self.a[0];
+        let v1 = &self.c[1] - &self.a[1];
+        let v2 = &self.c[2] - &self.a[2];
+        [
+            &self.a[0] + s.clone() * &u0 + t.clone() * &v0,
+            &self.a[1] + s.clone() * &u1 + t.clone() * &v1,
+            &self.a[2] + s.clone() * &u2 + t.clone() * &v2,
+        ]
+    }
 }
 
 /// A constrained Delaunay triangulation of a host triangle.
@@ -153,6 +169,14 @@ impl Triangulation {
         self.verts.push(q);
         self.insert_vertex_at(vi);
         Some(vi)
+    }
+
+    /// Return the index of an existing vertex whose projected 2D coordinates
+    /// exactly match `p`, if any.
+    pub fn find_vertex(&self, host: &HostFrame, p: &Point3) -> Option<usize> {
+        let pr = p.to_rational()?;
+        let q = project_point(&host.a, &host.b, &host.c, &pr)?;
+        self.verts.iter().position(|v| v.s == q.s && v.t == q.t)
     }
 
     /// Insert an already-projected explicit 2D point.

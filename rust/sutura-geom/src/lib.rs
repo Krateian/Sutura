@@ -8,12 +8,13 @@
 //! exact predicates on explicit and implicit points (`orient3d`, `orient2d`,
 //! `incircle`), and the predicate core for the future arrangement-lite engine.
 
-use numpy::{AllowTypeChange, PyArrayLike1};
+use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyDict, PyModule};
 use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 
+pub mod arrangement;
 pub mod cdt2d;
 pub mod point;
 pub mod predicates2d;
@@ -138,10 +139,82 @@ fn insphere<'py>(
     Ok(insphere_coords(pa, pb, pc, pd, pe))
 }
 
+/// Split a self-intersecting triangle soup into one where no two triangles
+/// properly intersect.  Returns `(verts_out, tris_out, report)` where
+/// `verts_out` is `(N, 3)` float64, `tris_out` is `(M, 3)` int32, and
+/// `report` is a dict with `input_faces`, `output_faces`,
+/// `si_pairs_detected`, `degenerate_cases`, and `converged`.
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+fn arrangement_lite<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<(
+    Bound<'py, numpy::PyArray2<f64>>,
+    Bound<'py, numpy::PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let vv = verts.as_array();
+    let tt = tris.as_array();
+    let n = vv.nrows();
+    let m = tt.nrows();
+    if vv.ncols() != 3 || tt.ncols() != 3 {
+        return Err(PyValueError::new_err(
+            "verts must be Nx3 and tris must be Mx3",
+        ));
+    }
+
+    let mut rust_verts: Vec<[f64; 3]> = Vec::with_capacity(n);
+    for i in 0..n {
+        rust_verts.push([vv[[i, 0]], vv[[i, 1]], vv[[i, 2]]]);
+    }
+
+    let mut rust_tris: Vec<[usize; 3]> = Vec::with_capacity(m);
+    for i in 0..m {
+        let a = tt[[i, 0]];
+        let b = tt[[i, 1]];
+        let c = tt[[i, 2]];
+        if a < 0 || b < 0 || c < 0 || a as usize >= n || b as usize >= n || c as usize >= n {
+            return Err(PyValueError::new_err("triangle index out of range"));
+        }
+        rust_tris.push([a as usize, b as usize, c as usize]);
+    }
+
+    let (pool, out_tris, report) = arrangement::arrangement_lite_core(&rust_verts, &rust_tris)
+        .map_err(PyValueError::new_err)?;
+
+    let out_verts: Vec<Vec<f64>> = pool
+        .iter()
+        .map(|p| arrangement::rat3_to_f64(p).to_vec())
+        .collect();
+    let out_tris_i32: Vec<Vec<i32>> = out_tris
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+
+    let verts_np = numpy::PyArray2::from_vec2(py, &out_verts)?;
+    let tris_np = numpy::PyArray2::from_vec2(py, &out_tris_i32)?;
+
+    let report_dict = PyDict::new(py);
+    report_dict.set_item("input_faces", report.input_faces as i64)?;
+    report_dict.set_item("output_faces", report.output_faces as i64)?;
+    report_dict.set_item("si_pairs_detected", report.si_pairs_detected as i64)?;
+    report_dict.set_item("converged", report.converged)?;
+    let degen = PyDict::new(py);
+    for (k, v) in report.degenerate_cases {
+        degen.set_item(k, v as i64)?;
+    }
+    report_dict.set_item("degenerate_cases", degen)?;
+
+    Ok((verts_np, tris_np, report_dict))
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
     m.add_function(wrap_pyfunction!(insphere, m)?)?;
+    m.add_function(wrap_pyfunction!(arrangement_lite, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
