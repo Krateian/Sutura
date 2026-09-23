@@ -43,54 +43,18 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
         );
     }
 
-    // Filter: try an approximate f64 evaluation; if the magnitude is safely
-    // away from zero, the sign is certified.
-    if let (Some(a), Some(b), Some(c), Some(d)) =
-        (p1.to_f64(), p2.to_f64(), p3.to_f64(), p4.to_f64())
-    {
-        let det = robust_orient3d(
-            Coord3D {
-                x: a[0],
-                y: a[1],
-                z: a[2],
-            },
-            Coord3D {
-                x: b[0],
-                y: b[1],
-                z: b[2],
-            },
-            Coord3D {
-                x: c[0],
-                y: c[1],
-                z: c[2],
-            },
-            Coord3D {
-                x: d[0],
-                y: d[1],
-                z: d[2],
-            },
-        );
-        let scale = (a[0].abs()
-            + a[1].abs()
-            + a[2].abs()
-            + b[0].abs()
-            + b[1].abs()
-            + b[2].abs()
-            + c[0].abs()
-            + c[1].abs()
-            + c[2].abs()
-            + d[0].abs()
-            + d[1].abs()
-            + d[2].abs())
-        .max(1e-300);
-        // A very loose relative threshold; the exact rational path catches
-        // anything near zero.
-        if det.abs() > 1e-9 * scale.powi(3) {
-            return det;
-        }
-    }
-
-    // Exact rational fallback.
+    // Any implicit point: evaluate the determinant EXACTLY in rational
+    // arithmetic.  A previous f64 fast path evaluated the determinant on the
+    // ROUNDED coordinates of the LPI/PPI point; the construction rounding can
+    // dominate a small exact determinant and certify a wrong sign (measured:
+    // the f64 filter contradicted the exact sign on ~1/8 random triangle
+    // pairs).  Correctness first; a rigorous error-bound filter can be added
+    // later.
+    //
+    // Sign convention: the robust crate (and orient3d_indirect_one_lpi) return
+    // the NEGATIVE of det(b-a, c-a, d-a) — positive when `d` lies below the
+    // plane through (a,b,c) with (a,b,c) CCW viewed from above.  Swapping `b`
+    // and `c` below reproduces that sign.
     let a = p1
         .to_rational()
         .expect("implicit point must be well-defined");
@@ -104,7 +68,7 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
         .to_rational()
         .expect("implicit point must be well-defined");
 
-    let det = det_rat(&sub_rat(&b, &a), &sub_rat(&c, &a), &sub_rat(&d, &a));
+    let det = det_rat(&sub_rat(&c, &a), &sub_rat(&b, &a), &sub_rat(&d, &a));
     if det.is_zero() {
         0.0
     } else if det.is_positive() {
@@ -285,5 +249,35 @@ mod tests {
             // The explicit sign must itself be consistent.
             assert!(sign_direct == 1.0 || sign_direct == -1.0 || sign_direct == 0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod signcheck {
+    use super::*;
+
+    #[test]
+    fn indirect_one_lpi_sign_convention() {
+        let zx = [0.0, 0.0, -1.0];
+        let xx = [1.0, 0.0, 0.0];
+        let yy = [0.0, 1.0, 0.0];
+        // LPI point = origin: z-axis ∩ z=0 plane.
+        let p = Point3::Lpi {
+            q1: [0.0, 0.0, -1.0],
+            q2: [0.0, 0.0, 1.0],
+            r: [0.0, 0.0, 0.0],
+            s: xx,
+            t: yy,
+        };
+        // orient3d(origin, X, Y, NEG_Z) should be positive (below plane).
+        let direct = orient3d_sign(
+            &p,
+            &Point3::Explicit(xx),
+            &Point3::Explicit(yy),
+            &Point3::Explicit(zx),
+        );
+        let ind = orient3d_indirect_one_lpi(&p, &xx, &yy, &zx).unwrap();
+        assert_eq!(direct, 1.0);
+        assert_eq!(ind, 1.0);
     }
 }

@@ -74,6 +74,17 @@ impl Tri {
     fn edge_opp(&self, i: usize) -> (usize, usize) {
         (self.v[(i + 1) % 3], self.v[(i + 2) % 3])
     }
+
+    /// Index of the edge between vertices `a` and `b`, if present.
+    fn find_edge(&self, a: usize, b: usize) -> Option<usize> {
+        for i in 0..3 {
+            let (e0, e1) = self.edge_opp(i);
+            if (e0 == a && e1 == b) || (e0 == b && e1 == a) {
+                return Some(i);
+            }
+        }
+        None
+    }
 }
 
 /// Host triangle frame used for repeated projection of 3D points.
@@ -281,11 +292,14 @@ impl Triangulation {
             self.tris.push(Tri::new(p, nd, c));
 
             // n0=(p,b,d), n1=(p,d,c); they share edge (p,d).
-            self.tris[n0].adj = [nadj[(ne + 2) % 3], Some(n1), Some(t1)];
-            self.tris[n1].adj = [nadj[(ne + 1) % 3], Some(t0), Some(n0)];
+            // tn = [d, c, b] with the shared edge at index `ne`, so:
+            //   edge (b,d) (n0's edge0) is tn's edge_opp((ne+1)%3)
+            //   edge (d,c) (n1's edge0) is tn's edge_opp((ne+2)%3)
+            self.tris[n0].adj = [nadj[(ne + 1) % 3], Some(n1), Some(t1)];
+            self.tris[n1].adj = [nadj[(ne + 2) % 3], Some(t0), Some(n0)];
 
-            self.update_adj(nadj[(ne + 2) % 3], b, nd, Some(n0));
-            self.update_adj(nadj[(ne + 1) % 3], nd, c, Some(n1));
+            self.update_adj(nadj[(ne + 1) % 3], b, nd, Some(n0));
+            self.update_adj(nadj[(ne + 2) % 3], nd, c, Some(n1));
 
             // Glue the four triangles along the split edge.
             self.tris[t0].adj[2] = Some(n1);
@@ -300,6 +314,143 @@ impl Triangulation {
         } else {
             stack.push((t0, 0));
             stack.push((t1, 0));
+        }
+    }
+
+    /// Split the triangle containing the chord `(a, b)` so the chord becomes
+    /// an edge.  Called when a constraint segment connects two existing
+    /// vertices but crosses no existing edge (i.e. it lies entirely inside one
+    /// triangle).  The triangle's boundary cycle is split at `a` and `b` and
+    /// the two resulting polygons are fan-triangulated from their chord
+    /// endpoints; adjacencies are then rebuilt for the whole (small) CDT.
+    fn split_triangle_by_chord(&mut self, a: usize, b: usize) {
+        let t = match self.locate_chord_triangle(a, b) {
+            Some(t) => t,
+            None => {
+                // No single triangle contains the segment: leave it
+                // unconstrained rather than panic (the caller already handles
+                // vertex-on-segment splitting).
+                return;
+            }
+        };
+        let v = self.tris[t].v;
+
+        // CCW boundary cycle of triangle t: v[0] -> v[1] -> v[2] -> v[0].
+        // Insert a and b (when not vertices of t) at their edge positions.
+        let mut cycle: Vec<usize> = vec![v[0], v[1], v[2]];
+        for x in [a, b] {
+            if cycle.contains(&x) {
+                continue;
+            }
+            let mut placed = false;
+            for i in 0..3 {
+                let (p, q) = (cycle[i], cycle[(i + 1) % 3]);
+                if orient2d(&self.verts[p], &self.verts[q], &self.verts[x]).is_zero()
+                    && dot1d_between(&self.verts[p], &self.verts[q], &self.verts[x])
+                {
+                    cycle.insert(i + 1, x);
+                    placed = true;
+                    break;
+                }
+            }
+            if !placed {
+                // The endpoint is not on this triangle's boundary (the
+                // segment is not a chord of one triangle); leave the
+                // constraint unresolved rather than panic.
+                return;
+            }
+        }
+
+        let n = cycle.len();
+        let ia = match cycle.iter().position(|&c| c == a) {
+            Some(i) => i,
+            None => return,
+        };
+        let ib = match cycle.iter().position(|&c| c == b) {
+            Some(i) => i,
+            None => return,
+        };
+        let steps = (ib + n - ia) % n;
+
+        let mut arc_a: Vec<usize> = Vec::new();
+        for k in 0..=steps {
+            arc_a.push(cycle[(ia + k) % n]);
+        }
+        let mut arc_b: Vec<usize> = Vec::new();
+        for k in 0..=(n - steps) {
+            arc_b.push(cycle[(ib + k) % n]);
+        }
+
+        let mut new_tris: Vec<[usize; 3]> = Vec::new();
+        for arc in [&arc_a, &arc_b] {
+            if arc.len() < 3 {
+                continue;
+            }
+            let p0 = arc[0];
+            for j in 1..arc.len() - 1 {
+                new_tris.push([p0, arc[j], arc[j + 1]]);
+            }
+        }
+
+        if new_tris.is_empty() {
+            // a and b are adjacent on the boundary: the chord is already an
+            // edge (or a boundary sub-edge); just mark it constrained.
+            self.mark_constrained_edge(a, b);
+            return;
+        }
+
+        // Replace triangle t with the first new triangle; push the rest.
+        let first = new_tris[0];
+        self.tris[t] = Tri::new(first[0], first[1], first[2]);
+        for nt in &new_tris[1..] {
+            self.tris.push(Tri::new(nt[0], nt[1], nt[2]));
+        }
+
+        // Rebuild adjacencies for the whole CDT (small per-host triangle).
+        for tri in &mut self.tris {
+            tri.adj = [None; 3];
+        }
+        let ntris = self.tris.len();
+        for i in 0..ntris {
+            for e in 0..3 {
+                if self.tris[i].adj[e].is_some() {
+                    continue;
+                }
+                let (ea, eb) = self.tris[i].edge_opp(e);
+                for j in (i + 1)..ntris {
+                    if let Some(f) = self.tris[j].find_edge(ea, eb) {
+                        if self.tris[j].adj[f].is_none() {
+                            self.tris[i].adj[e] = Some(j);
+                            self.tris[j].adj[f] = Some(i);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // The chord is the constraint being added.
+        self.mark_constrained_edge(a, b);
+    }
+
+    /// Find a triangle whose boundary contains both `a` and `b` (the chord's
+    /// interior lies in that triangle).
+    fn locate_chord_triangle(&self, a: usize, b: usize) -> Option<usize> {
+        let pa = &self.verts[a];
+        let pb = &self.verts[b];
+        let mid = Point2D {
+            s: (&pa.s + &pb.s) / BigRational::from_integer(2.into()),
+            t: (&pa.t + &pb.t) / BigRational::from_integer(2.into()),
+        };
+        self.locate(&mid)
+    }
+
+    /// Mark every occurrence of edge `(a, b)` as constrained.
+    fn mark_constrained_edge(&mut self, a: usize, b: usize) {
+        for tri in &mut self.tris {
+            if let Some(e) = tri.find_edge(a, b) {
+                tri.constrained[e] = true;
+            }
         }
     }
 
@@ -461,6 +612,14 @@ impl Triangulation {
         // Repeatedly flip edges that cross the segment until the segment
         // appears in the triangulation.
         loop {
+            // If the segment passes through an existing vertex (a degenerate
+            // alignment), split it there: each sub-segment is shorter and
+            // falls into the regular cases.
+            if let Some(v) = self.find_vertex_on_open_segment(a, b) {
+                self.add_constraint(a, v);
+                self.add_constraint(v, b);
+                return;
+            }
             let crossing = self.find_crossing_edge(a, b);
             match crossing {
                 Some((t, e)) => {
@@ -486,13 +645,11 @@ impl Triangulation {
                     self.flip(t, e, nbr, ne);
                 }
                 None => {
-                    // Segment is now present; mark it constrained.
-                    let (t, e) = self.find_any_edge(a, b).unwrap();
-                    self.tris[t].constrained[e] = true;
-                    if let Some(n) = self.tris[t].adj[e] {
-                        let ne = self.find_edge(n, a, b).unwrap();
-                        self.tris[n].constrained[ne] = true;
-                    }
+                    // No edge crosses the segment and the segment is not yet
+                    // an edge: it is a chord inside a single triangle.  Split
+                    // that triangle along the chord so the constraint becomes
+                    // an edge.
+                    self.split_triangle_by_chord(a, b);
                     return;
                 }
             }
@@ -519,6 +676,22 @@ impl Triangulation {
                 if segments_properly_intersect(pa, pb, pu, pv) {
                     return Some((i, e));
                 }
+            }
+        }
+        None
+    }
+
+    /// A vertex (other than `a`/`b`) lying strictly between them on the open
+    /// segment `(a, b)`, if any.
+    fn find_vertex_on_open_segment(&self, a: usize, b: usize) -> Option<usize> {
+        let pa = &self.verts[a];
+        let pb = &self.verts[b];
+        for (i, v) in self.verts.iter().enumerate() {
+            if i == a || i == b {
+                continue;
+            }
+            if orient2d(pa, pb, v).is_zero() && strictly_between(pa, pb, v) {
+                return Some(i);
             }
         }
         None
@@ -693,6 +866,16 @@ fn dot1d_between(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
     dot <= BigRational::zero()
 }
 
+/// Strictly-between test: `p` lies in the open segment `(a, b)`.
+fn strictly_between(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
+    let px = &p.s - &a.s;
+    let py = &p.t - &a.t;
+    let qx = &p.s - &b.s;
+    let qy = &p.t - &b.t;
+    let dot = px * qx + py * qy;
+    dot < BigRational::zero()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -793,6 +976,58 @@ mod tests {
         assert_eq!(t.num_tris(), 2);
         assert!(has_edge(&t, 0, pi));
         assert!(has_edge(&t, 1, pi));
+    }
+
+    #[test]
+    fn split_internal_edge_with_neighbour() {
+        // First split the host edge (0,1) at its midpoint, then split the NEW
+        // internal edge (shared by the two sub-triangles) at its midpoint.
+        // The second split exercises the interior-neighbour branch of
+        // split_edge (regression: the neighbour adjacency slots were swapped,
+        // panicking with "adjacent triangle missing edge").
+        let (a, b, c) = tri_right();
+        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
+        let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
+
+        let m01 = Point3::Explicit([0.5, 0.0, 0.0]);
+        let mi = t.insert_vertex(&frame, &m01).unwrap();
+        // After the boundary split the mesh is (p,1,2) and (p,2,0); the
+        // internal edge is (2, p) == (2, mi).  Insert its midpoint, which
+        // splits that internal edge via the interior-neighbour branch.
+        let inner = Point3::Explicit([0.25, 0.5, 0.0]);
+        let inner_i = t.insert_vertex(&frame, &inner).unwrap();
+
+        validate_triangulation(&t);
+        // The internal edge (mi, 2) is split into (mi, inner) and (inner, 2);
+        // both incident triangles split, so 1 -> 2 -> 4 triangles total.
+        assert!(has_edge(&t, mi, inner_i));
+        assert!(has_edge(&t, inner_i, 2));
+        assert_eq!(t.num_tris(), 4);
+    }
+
+    #[test]
+    fn chord_constraint_inside_triangle() {
+        // Insert points on all three host edges, then constrain the segment
+        // between two of them that is NOT created by the insertion fan.  The
+        // chord splits the containing triangle (regression: previously this
+        // panicked in add_constraint's find_any_edge().unwrap()).
+        let (a, b, c) = tri_right();
+        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
+        let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
+
+        let m01 = Point3::Explicit([0.5, 0.0, 0.0]);
+        let m12 = Point3::Explicit([0.5, 0.5, 0.0]);
+        let m20 = Point3::Explicit([0.0, 0.5, 0.0]);
+        let p01 = t.insert_vertex(&frame, &m01).unwrap();
+        let p12 = t.insert_vertex(&frame, &m12).unwrap();
+        let p20 = t.insert_vertex(&frame, &m20).unwrap();
+
+        // Segment between the edge-02 and edge-12 midpoints: a chord inside
+        // one of the fan triangles.
+        t.add_constraint(p20, p12);
+
+        validate_triangulation(&t);
+        assert!(has_edge(&t, p20, p12));
     }
 
     #[test]
