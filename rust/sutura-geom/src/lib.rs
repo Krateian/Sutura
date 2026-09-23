@@ -14,6 +14,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 
+pub mod cdt2d;
 pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
