@@ -134,6 +134,8 @@ STRINGS = {
         'repair_log_extreme': 'Extreme extra passes applied (%d self-intersection(s) removed)',
         'repair_log_ftetwild': 'fTetWild fallback: %d faces, %ds (adopted)' ,
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
+        'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
+        'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
         'edge_tiebreak_label': 'Experimental: edge-tiebreak classifier',
         'edge_tiebreak_tip': 'Opt-in 11-feature classifier head (base + 5 '
@@ -157,6 +159,13 @@ STRINGS = {
                         'a watertight, SI-free boundary surface (fTetWild via '
                         'pytetwild, MPL-2.0). Adopted only when no worse than '
                         'the stage-1 result (NOT the default).',
+        'indirect_autorefine_label': 'Experimental: indirect autorefine',
+        'indirect_autorefine_tip': 'Resolve self-intersections with the exact '
+                                   'arrangement-lite split (rust/sutura-geom '
+                                   'indirect predicates). Never deletes input '
+                                   'faces; adopted only when the result is not '
+                                   'worse than the default chain (NOT the '
+                                   'default).',
         'defect_hole': 'hole: centroid=(%.3f, %.3f, %.3f), diameter=%.3f mm',
         'defect_nm': 'non-manifold: centroid=(%.3f, %.3f, %.3f), %d faces',
         'defect_none': 'no defects', 'defect_empty': 'No defects available for this file.',
@@ -348,6 +357,8 @@ STRINGS = {
         'repair_log_extreme': 'Extreme ek geçişler uygulandı (%d kendisiyle-kesişim silindi)',
         'repair_log_ftetwild': 'fTetWild fallback: %d yüz, %ds (uygulandı)',
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
+        'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
+        'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
         'edge_tiebreak_label': 'Deneysel: edge-tiebreak sınıflandırıcı',
         'edge_tiebreak_tip': '11-özellikli sınıflandırıcı kafası (temel + 5 güçlü '
@@ -371,6 +382,13 @@ STRINGS = {
                         'geçirmez, SI-free bir yüzey çıkarır (fTetWild via '
                         'pytetwild, MPL-2.0). Yalnızca stage-1 sonucundan daha '
                         'kötü değilse uygulanır (varsayılan değil).',
+        'indirect_autorefine_label': 'Deneysel: indirect autorefine',
+        'indirect_autorefine_tip': "Self-intersection'ları exact arrangement-"
+                                   'lite bölmesiyle çözer (rust/sutura-geom '
+                                   'indirect predikatları). Girdi yüzeylerini '
+                                   'ASLA silmez; yalnızca sonuç varsayılan '
+                                   'zincirden daha kötü değilse uygulanır '
+                                   '(varsayılan değil).',
         'defect_hole': 'delik: merkez=(%.3f, %.3f, %.3f), çap=%.3f mm',
         'defect_nm': 'non-manifold: merkez=(%.3f, %.3f, %.3f), %d yüz',
         'defect_none': 'kusur yok', 'defect_empty': 'Bu dosya için kusur bilgisi yok.',
@@ -765,7 +783,7 @@ class RepairWorker(QThread):
     def __init__(self, files, mode='auto', profile=None, force=False,
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild=False,
-                 parent=None):
+                 indirect_autorefine=False, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
@@ -777,6 +795,7 @@ class RepairWorker(QThread):
         self._join_components = join_components
         self._autorefine = autorefine
         self._ftetwild = ftetwild
+        self._indirect_autorefine = indirect_autorefine
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -826,6 +845,8 @@ class RepairWorker(QThread):
                 args.append('--experimental-autorefine')
             if self._ftetwild:
                 args.append('--experimental-fallback-ftetwild')
+            if self._indirect_autorefine:
+                args.append('--experimental-indirect-autorefine')
             args.append(path)
             self._proc = subprocess.Popen(
                 args,
@@ -1529,6 +1550,7 @@ class MainWindow(QMainWindow):
         self._join_components = False # batch-wide opt-in join-components (FAZ14)
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
         self._ftetwild = False        # batch-wide opt-in fTetWild fallback tier (FAZ17)
+        self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -1632,6 +1654,13 @@ class MainWindow(QMainWindow):
         self.chk_fallback_ftetwild.toggled.connect(
             lambda on: setattr(self, '_ftetwild', on))
         actions.addWidget(self.chk_fallback_ftetwild)
+        # opt-in experimental indirect arrangement-lite split (Phase B,
+        # batch-wide)
+        self.chk_indirect_autorefine = QCheckBox(_t('indirect_autorefine_label'))
+        self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
+        self.chk_indirect_autorefine.toggled.connect(
+            lambda on: setattr(self, '_indirect_autorefine', on))
+        actions.addWidget(self.chk_indirect_autorefine)
         # repair profile dropdown (batch-wide, like the mode): "Auto" = the
         # current classifier-driven default; the named profiles opt in to a
         # fixed Stage 1 threshold preset (see repair.PROFILES).
@@ -2070,6 +2099,7 @@ class MainWindow(QMainWindow):
                                    join_components=self._join_components,
                                    autorefine=self._autorefine,
                                    ftetwild=self._ftetwild,
+                                   indirect_autorefine=self._indirect_autorefine,
                                    parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
@@ -2326,6 +2356,12 @@ class MainWindow(QMainWindow):
             key = 'repair_log_ftetwild' if ft_r.get('adopted') \
                 else 'repair_log_ftetwild_not'
             lines.append(_t(key, ft_r.get('output_faces', 0), ft_r.get('time', 0)))
+        ia_r = data.get('experimental_indirect_autorefine')
+        if ia_r and not ia_r.get('skipped') and 'error' not in ia_r:
+            key = 'repair_log_indirect' if ia_r.get('adopted') \
+                else 'repair_log_indirect_not'
+            lines.append(_t(key, ia_r.get('si_before', 0), ia_r.get('si_after', 0),
+                            ia_r.get('faces_after', 0)))
         s2 = data.get('stage2')
         if s2 is not None:
             if 'error' in s2:

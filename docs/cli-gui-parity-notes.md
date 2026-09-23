@@ -33,6 +33,9 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `history_enabled`) · `--dry-run`/`validate` (GUI "Analyze") ·
 `--experimental-edge-tiebreak` (GUI checkbox) ·
 `--experimental-join-components` (GUI checkbox — gap closed in FAZ14) ·
+`--experimental-autorefine` (GUI checkbox) ·
+`--experimental-fallback-ftetwild` (GUI checkbox) ·
+`--experimental-indirect-autorefine` (GUI checkbox — Phase B) ·
 `--version` (GUI version label).
 
 ## History

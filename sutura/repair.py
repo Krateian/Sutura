@@ -125,8 +125,21 @@ def _resolve_ftetwild_bridge():
     return os.path.join(SUTURA_DIR, 'ftetwild_bridge.py')
 
 
+def _resolve_indirect_bridge():
+    """Locate indirect_bridge.py (bundled-copy aware, same as _resolve_bridge)."""
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+        for cand in (os.path.join(base, 'indirect_bridge.py'),
+                     os.path.join(base, '..', 'indirect_bridge.py')):
+            cand = os.path.abspath(cand)
+            if os.path.isfile(cand):
+                return cand
+    return os.path.join(SUTURA_DIR, 'indirect_bridge.py')
+
+
 BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
+INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
 VERSION = "0.3.0"
 
@@ -640,7 +653,8 @@ def stl_write_binary(path, verts, tris):
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
                             join_components=False, autorefine=False,
-                            ftetwild=False, extra_features=False):
+                            ftetwild=False, indirect_autorefine=False,
+                            extra_features=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -657,6 +671,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ``ftetwild`` enables the experimental fTetWild fallback tier (flag-gated;
     tetrahedralizes the input and extracts a watertight boundary when stage 1
     still leaves holes/non-manifold edges/self-intersections).
+    ``indirect_autorefine`` enables the experimental exact indirect-predicate
+    arrangement-lite split (rust/sutura-geom; flag-gated; same adopt/fallback
+    guard as ``autorefine``).
     ``extra_features`` enables the opt-in edge-tiebreak classifier head.
     """
     import pymeshlab as ml
@@ -756,6 +773,54 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
             ar_rep['error'] = str(e)
         stats['experimental_autorefine'] = ar_rep
+
+    # --experimental-indirect-autorefine (Phase B): exact arrangement-lite
+    # self-intersection split via the rust/sutura-geom extension (B4).  The
+    # INPUT mesh is split along its proper-intersection segments with exact
+    # indirect predicates (broad phase + exact classifier + per-triangle 2D
+    # CDT + exact-rational welding), then the SAME stage-1 chain is re-run on
+    # the split output.  Adopt/fallback guard identical to autorefine: the
+    # indirect result is adopted only when its final holes AND non-manifold
+    # edge counts are no worse than the baseline chain's.  Flag-gated, NOT the
+    # default; reports an explicit skip when sutura_geom is unavailable.
+    stats['experimental_indirect_autorefine'] = False
+    if indirect_autorefine and len(t) > 0:
+        ia_rep = {'skipped': False}
+        try:
+            import indirect_bridge
+        except Exception as e:  # noqa: BLE001
+            ia_rep['skipped'] = True
+            ia_rep['error'] = 'indirect bridge unavailable: %s' % e
+        else:
+            try:
+                ia_v, ia_t, al_info = indirect_bridge.arrangement_lite_arrays(v, t)
+                ia_rep.update(al_info)
+                if len(ia_t) > 0:
+                    ms_cand = ml.MeshSet()
+                    ms_cand.add_mesh(ml.Mesh(vertex_matrix=np.asarray(ia_v, np.float32),
+                                             face_matrix=np.asarray(ia_t, np.int32)))
+                    apply_chain(ms_cand, stage1_chain(ml, **_p, join_components=join_components))
+                    cand_after = ms_cand.apply_filter('get_topological_measures')
+                    cand_holes = boundary_loop_stats(
+                        ms_cand.current_mesh().vertex_matrix(),
+                        ms_cand.current_mesh().face_matrix())[0]
+                    cand_nm = cand_after.get('non_two_manifold_edges', 0)
+                    base_holes = boundary_loop_stats(
+                        ms.current_mesh().vertex_matrix(),
+                        ms.current_mesh().face_matrix())[0]
+                    base_nm = after.get('non_two_manifold_edges', 0)
+                    adopted = bool(cand_holes <= base_holes and cand_nm <= base_nm)
+                    ia_rep['adopted'] = adopted
+                    if adopted:
+                        ms = ms_cand
+                        after = cand_after
+            except ImportError as e:
+                ia_rep['skipped'] = True
+                ia_rep['error'] = ('indirect autorefine skipped: sutura_geom '
+                                   'extension unavailable (%s)' % e)
+            except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
+                ia_rep['error'] = str(e)
+        stats['experimental_indirect_autorefine'] = ia_rep
 
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
         fb = ml.MeshSet()
@@ -1290,7 +1355,7 @@ def obj_has_material_refs(path):
 
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                 join_components=False, autorefine=False, ftetwild=False,
-                extra_features=False):
+                indirect_autorefine=False, extra_features=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -1313,6 +1378,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
         declared_unit=declared_unit, join_components=join_components,
         autorefine=autorefine, ftetwild=ftetwild,
+        indirect_autorefine=indirect_autorefine,
         extra_features=extra_features)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
@@ -1391,7 +1457,7 @@ def _read_zip_entry(z, name):
 
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                join_components=False, autorefine=False, ftetwild=False,
-               extra_features=False):
+               indirect_autorefine=False, extra_features=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -1430,6 +1496,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     join_components=join_components,
                     autorefine=autorefine,
                     ftetwild=ftetwild,
+                    indirect_autorefine=indirect_autorefine,
                     extra_features=extra_features)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
@@ -1821,6 +1888,22 @@ def human_report(r, show_defects=False, show_diff=False):
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
                              adopted))
+    ia_r = r.get('experimental_indirect_autorefine')
+    if ia_r:
+        if ia_r.get('skipped'):
+            lines.append('  Indirect autorefine (experiment) : skipped (%s)'
+                         % (ia_r.get('error') or 'no triangles')[:60])
+        elif 'error' in ia_r:
+            lines.append('  Indirect autorefine (experiment) : error (%s)'
+                         % ia_r['error'][:60])
+        else:
+            adopted = ' adopted' if ia_r.get('adopted') else ' NOT adopted (kept stage-1 output)'
+            lines.append('  Indirect autorefine (experiment) : SI pairs %d -> %d, '
+                         'faces %d -> %d%s' % (ia_r.get('si_before', 0),
+                                               ia_r.get('si_after', 0),
+                                               ia_r.get('faces_before', 0),
+                                               ia_r.get('faces_after', 0),
+                                               adopted))
     if show_diff:
         lines.append('  Vertices                : %s -> %s' % (
             s1.get('vertices_before', 0), s1.get('vertices_after', 0)))
@@ -1984,7 +2067,8 @@ def human_dry_run(r):
 def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
-                 autorefine=False, ftetwild=False, extra_features=False):
+                 autorefine=False, ftetwild=False, indirect_autorefine=False,
+                 extra_features=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -1995,7 +2079,9 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     ``join_components`` enables the experimental join-small-components
     prototype (flag-gated). ``autorefine`` enables the experimental
     self-intersection subdivision prototype (flag-gated). ``ftetwild`` enables
-    the experimental fTetWild fallback tier (flag-gated).
+    the experimental fTetWild fallback tier (flag-gated). ``indirect_autorefine``
+    enables the experimental exact indirect-predicate arrangement-lite split
+    (flag-gated).
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -2015,6 +2101,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                      join_components=join_components,
                                      autorefine=autorefine,
                                      ftetwild=ftetwild,
+                                     indirect_autorefine=indirect_autorefine,
                                      extra_features=extra_features))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
@@ -2022,6 +2109,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                       join_components=join_components,
                                       autorefine=autorefine,
                                       ftetwild=ftetwild,
+                                      indirect_autorefine=indirect_autorefine,
                                       extra_features=extra_features))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
@@ -2173,6 +2261,17 @@ def main():
                              'Adopted only when no worse on holes+non-manifold '
                              'than the stage-1 result. NOT the default '
                              'behaviour, evaluation only')
+    parser.add_argument('--experimental-indirect-autorefine', action='store_true',
+                        help='experimental prototype: exact arrangement-lite '
+                             'self-intersection split via the rust/sutura-geom '
+                             'extension (indirect predicates: broad phase + '
+                             'exact triangle-triangle classifier + per-triangle '
+                             '2D CDT + exact-rational welding). Resolves '
+                             'proper intersections by subdivision instead of '
+                             'face deletion. Adopted only when no worse on '
+                             'holes+non-manifold than the stage-1 result '
+                             '(same guard as --experimental-autorefine). NOT '
+                             'the default behaviour, evaluation only')
     parser.add_argument('--experimental-edge-tiebreak', action='store_true',
                         help='experimental opt-in: use the 11-feature '
                              'classifier head (base features + the five strong '
@@ -2276,6 +2375,7 @@ def main():
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
                             ftetwild=args.experimental_fallback_ftetwild,
+                            indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
