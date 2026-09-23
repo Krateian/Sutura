@@ -11,6 +11,7 @@ test-layered-multiobject.3mf
 *.zip
 screenshots/
 dist/
+target/
 graphify-out/cost.json
 graphify-out/cache/
 graphify-out/.graphify_root
