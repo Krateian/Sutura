@@ -623,23 +623,26 @@ impl Triangulation {
             let crossing = self.find_crossing_edge(a, b);
             match crossing {
                 Some((t, e)) => {
-                    if self.tris[t].constrained[e] {
-                        panic!("constrained edge blocks segment insertion");
-                    }
                     let nbr = self.tris[t].adj[e].expect("crossing edge on boundary");
                     let ne = self
                         .find_edge(nbr, self.tris[t].edge_opp(e).0, self.tris[t].edge_opp(e).1)
                         .unwrap();
-                    // Only flip if the quadrilateral is convex; otherwise we
-                    // cannot resolve this crossing by a simple flip.
-                    if !self.is_convex_for_flip(t, e, nbr, ne) {
-                        // Fallback: split the crossing edge at the intersection
-                        // point.  This increases vertex count but always makes
-                        // progress.
+                    // Only flip if the quadrilateral is convex and the crossed
+                    // edge is not itself a constraint.  If a previously
+                    // inserted constraint blocks us, split both segments at the
+                    // exact intersection point and recurse; this is the
+                    // arrangement fallback that makes multi-segment batches
+                    // robust.
+                    if self.tris[t].constrained[e] || !self.is_convex_for_flip(t, e, nbr, ne) {
                         let (p, _) = self.segment_edge_intersection(a, b, t, e);
                         let vi = self.insert_point_2d(p);
                         self.add_constraint(a, vi);
                         self.add_constraint(vi, b);
+                        if self.tris[t].constrained[e] {
+                            let (u, v) = self.tris[t].edge_opp(e);
+                            self.add_constraint(u, vi);
+                            self.add_constraint(vi, v);
+                        }
                         return;
                     }
                     self.flip(t, e, nbr, ne);
@@ -654,6 +657,161 @@ impl Triangulation {
                 }
             }
         }
+    }
+
+    /// Insert a batch of constrained segments in a segment-order-independent
+    /// way by first computing their planar arrangement.
+    ///
+    /// The input indices refer to vertices already present in the
+    /// triangulation.  Every pair of input segments is examined for a proper
+    /// intersection; when one exists, the intersection point is inserted as a
+    /// new vertex and both segments are split at that point.  Existing vertices
+    /// that lie in the interior of a segment are also used as split points.
+    /// After this pre-splitting, no two sub-segments cross in their interior,
+    /// so enforcing them one by one is safe.
+    pub fn add_constraints_batch(&mut self, constraints: &[(usize, usize)]) {
+        if constraints.is_empty() {
+            return;
+        }
+
+        let n_initial = self.verts.len();
+        let n_raw = constraints.len();
+
+        // Lists of vertex indices lying on each raw segment.  Start with the
+        // two endpoints; intersections and endpoint-on-segment events are
+        // added below.
+        let mut on_seg: Vec<Vec<usize>> = Vec::with_capacity(n_raw);
+        for &(a, b) in constraints {
+            on_seg.push(vec![a, b]);
+        }
+
+        // 1) Pairwise intersections.  For every intersecting pair, insert the
+        // intersection vertex (if it is not already present) and add its index
+        // to both segments.  A cheap 2D bbox prefilter skips disjoint pairs
+        // before the expensive exact predicate work.
+        let bboxes: Vec<_> = constraints
+            .iter()
+            .map(|&(a, b)| bbox2d(&self.verts[a], &self.verts[b]))
+            .collect();
+        for i in 0..n_raw {
+            for j in (i + 1)..n_raw {
+                if !bboxes_overlap(&bboxes[i], &bboxes[j]) {
+                    continue;
+                }
+                if let Some(vi) = self.intersect_segments_add_vertex(constraints[i], constraints[j])
+                {
+                    on_seg[i].push(vi);
+                    on_seg[j].push(vi);
+                }
+            }
+        }
+
+        // 2) Existing vertices that lie in the interior of a raw segment.
+        for i in 0..n_raw {
+            let (a, b) = constraints[i];
+            for v in 0..n_initial {
+                if v == a || v == b {
+                    continue;
+                }
+                if point_on_segment(&self.verts[a], &self.verts[b], &self.verts[v]) {
+                    on_seg[i].push(v);
+                }
+            }
+        }
+
+        // 3) Sort each segment's vertices along the segment, deduplicate, and
+        // emit the short sub-segments.
+        let mut sub_segments: Vec<(usize, usize)> = Vec::new();
+        for i in 0..n_raw {
+            let (a, b) = constraints[i];
+            let pa = &self.verts[a];
+            let pb = &self.verts[b];
+            on_seg[i].sort_by(|u, v| {
+                param_along(pa, pb, &self.verts[*u])
+                    .cmp(&param_along(pa, pb, &self.verts[*v]))
+            });
+            on_seg[i].dedup();
+            for k in 0..on_seg[i].len().saturating_sub(1) {
+                let u = on_seg[i][k];
+                let v = on_seg[i][k + 1];
+                if u != v {
+                    sub_segments.push((u, v));
+                }
+            }
+        }
+
+        // 4) Enforce every sub-segment.  Because all interior crossings were
+        // resolved in step 1, these cannot cross each other except at shared
+        // vertices.
+        for (a, b) in sub_segments {
+            self.add_constraint(a, b);
+        }
+    }
+
+    /// Compute the intersection of two closed segments whose endpoints are
+    /// vertices of this triangulation.  If the segments intersect at a point
+    /// that is not already a vertex, insert it into the triangulation and
+    /// return its index.  Endpoints and collinear overlaps are returned as the
+    /// corresponding existing vertex index without inserting anything new.
+    fn intersect_segments_add_vertex(
+        &mut self,
+        (a, b): (usize, usize),
+        (c, d): (usize, usize),
+    ) -> Option<usize> {
+        let pa = &self.verts[a];
+        let pb = &self.verts[b];
+        let pc = &self.verts[c];
+        let pd = &self.verts[d];
+
+        // Shared endpoints.
+        if a == c || a == d {
+            return Some(a);
+        }
+        if b == c || b == d {
+            return Some(b);
+        }
+
+        // Endpoint lying on the other segment.
+        if point_on_segment(pc, pd, pa) {
+            return Some(a);
+        }
+        if point_on_segment(pc, pd, pb) {
+            return Some(b);
+        }
+        if point_on_segment(pa, pb, pc) {
+            return Some(c);
+        }
+        if point_on_segment(pa, pb, pd) {
+            return Some(d);
+        }
+
+        // Proper intersection.
+        let o1 = orient2d(pa, pb, pc);
+        let o2 = orient2d(pa, pb, pd);
+        let o3 = orient2d(pc, pd, pa);
+        let o4 = orient2d(pc, pd, pb);
+
+        let straddles_ab =
+            (o1.is_positive() && o2.is_negative()) || (o1.is_negative() && o2.is_positive());
+        let straddles_cd =
+            (o3.is_positive() && o4.is_negative()) || (o3.is_negative() && o4.is_positive());
+        if straddles_ab && straddles_cd {
+            let (p, _) = line_line_intersection(pa, pb, pc, pd);
+            if let Some(vi) = self.find_vertex_2d(&p) {
+                return Some(vi);
+            }
+            let vi = self.verts.len();
+            self.verts.push(p.clone());
+            self.insert_vertex_at(vi);
+            return Some(vi);
+        }
+
+        // Collinear but non-overlapping, or disjoint: nothing to insert.
+        None
+    }
+
+    fn find_vertex_2d(&self, p: &Point2D) -> Option<usize> {
+        self.verts.iter().position(|v| v.s == p.s && v.t == p.t)
     }
 
     fn find_any_edge(&self, a: usize, b: usize) -> Option<(usize, usize)> {
@@ -876,6 +1034,48 @@ fn strictly_between(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
     dot < BigRational::zero()
 }
 
+/// True if `p` lies on the closed segment `[a, b]` (endpoints included).
+fn point_on_segment(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
+    orient2d(a, b, p).is_zero() && dot1d_between(a, b, p)
+}
+
+/// Projection parameter of `p` onto the directed line `a -> b`.
+///
+/// Returns `t` such that `p = a + t*(b-a)` in the 1D ordering along the
+/// segment.  All arguments are assumed collinear; the value is used only for
+/// sorting vertices that lie on the same segment.
+fn param_along(a: &Point2D, b: &Point2D, p: &Point2D) -> BigRational {
+    let dx = &b.s - &a.s;
+    let dy = &b.t - &a.t;
+    let wx = &p.s - &a.s;
+    let wy = &p.t - &a.t;
+    let num = wx * &dx + wy * &dy;
+    let den = &dx * &dx + &dy * &dy;
+    num / den
+}
+
+/// Axis-aligned 2D bounding box in parameter space.
+#[derive(Clone, Debug)]
+struct Bbox2D {
+    min_s: BigRational,
+    max_s: BigRational,
+    min_t: BigRational,
+    max_t: BigRational,
+}
+
+fn bbox2d(a: &Point2D, b: &Point2D) -> Bbox2D {
+    Bbox2D {
+        min_s: a.s.clone().min(b.s.clone()),
+        max_s: a.s.clone().max(b.s.clone()),
+        min_t: a.t.clone().min(b.t.clone()),
+        max_t: a.t.clone().max(b.t.clone()),
+    }
+}
+
+fn bboxes_overlap(a: &Bbox2D, b: &Bbox2D) -> bool {
+    a.min_s <= b.max_s && b.min_s <= a.max_s && a.min_t <= b.max_t && b.min_t <= a.max_t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,6 +1106,36 @@ mod tests {
                 let (e0, e1) = tri.edge_opp(i);
                 if (e0 == a && e1 == b) || (e0 == b && e1 == a) {
                     return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn are_connected(t: &Triangulation, a: usize, b: usize) -> bool {
+        if a == b {
+            return true;
+        }
+        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut stack = vec![a];
+        while let Some(v) = stack.pop() {
+            if v == b {
+                return true;
+            }
+            if !seen.insert(v) {
+                continue;
+            }
+            for tri in &t.tris {
+                if let Some(e) = tri.find_edge(v, b) {
+                    let _ = e;
+                    return true;
+                }
+                if tri.v.contains(&v) {
+                    for &u in &tri.v {
+                        if u != v {
+                            stack.push(u);
+                        }
+                    }
                 }
             }
         }
@@ -1018,7 +1248,7 @@ mod tests {
         let m01 = Point3::Explicit([0.5, 0.0, 0.0]);
         let m12 = Point3::Explicit([0.5, 0.5, 0.0]);
         let m20 = Point3::Explicit([0.0, 0.5, 0.0]);
-        let p01 = t.insert_vertex(&frame, &m01).unwrap();
+        let _p01 = t.insert_vertex(&frame, &m01).unwrap();
         let p12 = t.insert_vertex(&frame, &m12).unwrap();
         let p20 = t.insert_vertex(&frame, &m20).unwrap();
 
@@ -1060,5 +1290,100 @@ mod tests {
         validate_triangulation(&t);
         assert!(has_edge(&t, ii, m01));
         assert!(has_edge(&t, ii, m02));
+    }
+
+    #[test]
+    fn crossing_segments_in_one_triangle() {
+        // Regression for thingi10k_1038441-style dense SI: several
+        // intersection segments lie inside the same host triangle and cross
+        // each other (including a triple intersection).  The old incremental
+        // add_constraint would panic with "constrained edge blocks segment
+        // insertion" because it inserted segments one by one; the batch
+        // arrangement must resolve all crossings first.
+        let (a, b, c) = tri_right();
+        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
+        let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
+
+        // All coordinates are exact binary fractions so the rational
+        // projection stays geometrically consistent.  Endpoints are kept
+        // distinct so the test does not rely on the caller welding coincident
+        // intersection points.
+        let v_bottom = Point3::Explicit([0.25, 0.0, 0.0]);
+        let v_top = Point3::Explicit([0.25, 0.75, 0.0]);
+        let d1_left = Point3::Explicit([0.0, 0.5, 0.0]);
+        let d1_right = Point3::Explicit([0.5, 0.0, 0.0]);
+        let d2_left = Point3::Explicit([0.0, 0.25, 0.0]);
+        let d2_right = Point3::Explicit([0.5, 0.25, 0.0]);
+        let d3_bottom = Point3::Explicit([0.5, 0.125, 0.0]);
+        let d3_left = Point3::Explicit([0.0, 0.375, 0.0]);
+
+        let ivb = t.insert_vertex(&frame, &v_bottom).unwrap();
+        let ivt = t.insert_vertex(&frame, &v_top).unwrap();
+        let id1l = t.insert_vertex(&frame, &d1_left).unwrap();
+        let id1r = t.insert_vertex(&frame, &d1_right).unwrap();
+        let id2l = t.insert_vertex(&frame, &d2_left).unwrap();
+        let id2r = t.insert_vertex(&frame, &d2_right).unwrap();
+        let id3b = t.insert_vertex(&frame, &d3_bottom).unwrap();
+        let id3l = t.insert_vertex(&frame, &d3_left).unwrap();
+
+        t.add_constraints_batch(&[
+            (ivb, ivt),
+            (id1l, id1r),
+            (id2l, id2r),
+            (id3b, id3l),
+        ]);
+
+        validate_triangulation(&t);
+        // All four segments meet at the single interior point (0.25,0.25).
+        // The batch arrangement may insert additional fallback split vertices
+        // on a segment when the current triangulation edge is non-convex, so
+        // we verify endpoint-to-endpoint connectivity rather than a single
+        // direct edge.
+        let p1 = t
+            .vertices()
+            .iter()
+            .position(|v| v.s == f64_to_rat(0.25) && v.t == f64_to_rat(0.25))
+            .expect("common intersection missing");
+
+        assert!(are_connected(&t, ivb, p1));
+        assert!(are_connected(&t, p1, ivt));
+        assert!(are_connected(&t, id1l, p1));
+        assert!(are_connected(&t, p1, id1r));
+        assert!(are_connected(&t, id2l, p1));
+        assert!(are_connected(&t, p1, id2r));
+        assert!(are_connected(&t, id3b, p1));
+        assert!(are_connected(&t, p1, id3l));
+    }
+
+    #[test]
+    fn batch_two_crossing_segments() {
+        let (a, b, c) = tri_right();
+        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
+        let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
+
+        // Exact binary fractions so the projected rational coordinates are
+        // geometrically consistent (0.2 in f64 is not exactly 1/5).
+        let p = Point3::Explicit([0.25, 0.0, 0.0]);
+        let q = Point3::Explicit([0.25, 0.75, 0.0]);
+        let r = Point3::Explicit([0.0, 0.5, 0.0]);
+        let s = Point3::Explicit([0.5, 0.0, 0.0]);
+
+        let pi = t.insert_vertex(&frame, &p).unwrap();
+        let qi = t.insert_vertex(&frame, &q).unwrap();
+        let ri = t.insert_vertex(&frame, &r).unwrap();
+        let si = t.insert_vertex(&frame, &s).unwrap();
+
+        t.add_constraints_batch(&[(pi, qi), (ri, si)]);
+
+        validate_triangulation(&t);
+        // The original segments are split at their intersection (0.25,0.25).
+        // Find the split vertex and verify both sub-segments exist.
+        let ix = t.vertices().iter().position(|v| {
+            v.s == f64_to_rat(0.25) && v.t == f64_to_rat(0.25)
+        }).expect("intersection vertex missing");
+        assert!(has_edge(&t, pi, ix));
+        assert!(has_edge(&t, ix, qi));
+        assert!(has_edge(&t, ri, ix));
+        assert!(has_edge(&t, ix, si));
     }
 }

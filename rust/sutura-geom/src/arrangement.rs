@@ -241,6 +241,14 @@ pub fn arrangement_lite_core(
         )
         .ok_or("degenerate host triangle")?;
 
+        // Insert all segment endpoints first, then resolve the planar
+        // arrangement of the segments inside this host triangle.  The batch
+        // approach computes every segment-segment intersection up front, adds
+        // the intersection vertices, and only then enforces the split
+        // sub-segments.  This avoids the incremental "constrained edge blocks
+        // segment insertion" failure that occurs when several intersection
+        // segments coincide in one host triangle.
+        let mut constraint_indices: Vec<(usize, usize)> = Vec::with_capacity(segments[ti].len());
         for (p, q) in &segments[ti] {
             let pi = match cdt.find_vertex(&host, p) {
                 Some(v) => v,
@@ -254,8 +262,9 @@ pub fn arrangement_lite_core(
                     .insert_vertex(&host, q)
                     .ok_or("unprojectable intersection point")?,
             };
-            cdt.add_constraint(pi, qi);
+            constraint_indices.push((pi, qi));
         }
+        cdt.add_constraints_batch(&constraint_indices);
 
         let sub = cdt.triangles();
         let v2 = cdt.vertices();
