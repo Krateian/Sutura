@@ -104,12 +104,25 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 
 ## Process discipline
 
-- **Codebase exploration:** prefer `graphify query <question>` over raw
-  grep/file-crawling to understand the codebase (a repo-local OpenCode
-  plugin at `.opencode/plugins/graphify.js`, output in `graphify-out/`).
-  After any change, run `graphify update .` to keep the graph current.
-  This only works as a convention inside an OpenCode session in this repo,
-  not as a standalone shell command.
+- **Codebase exploration (ALWAYS use, not just "prefer"):** `graphify` is
+  a real CLI (PyPI package `graphifyy`,
+  https://github.com/Graphify-Labs/graphify), not just a plugin
+  convention. ALWAYS reach for `graphify query "<question>"` /
+  `graphify explain "<symbol>"` / `graphify path "A" "B"` first for any
+  codebase-understanding question, instead of raw grep/find/cat
+  file-crawling — a graph query returns a small, focused answer instead
+  of dumping whole files, which is a direct token/context saving on every
+  call, not just a convenience. Fall back to raw grep only when graphify
+  genuinely cannot answer the question. Output lives in `graphify-out/`.
+  **On a new machine (graphify is pipx-installed per-machine, not
+  repo-tracked), check first:** `which graphify` — if missing, run
+  `pipx install graphifyy` (or `uv tool install graphifyy`), then
+  `graphify install --platform opencode` (registers the OpenCode plugin +
+  skill) and `graphify update .` (builds the graph fresh for this repo).
+  Git hooks (`post-commit`/`post-checkout`, installed via
+  `graphify hook install`) auto-refresh the graph on commit/checkout; run
+  `graphify update .` manually after uncommitted changes if the graph
+  needs to be current before that.
 - **Plan before touching files (standing rule — needs re-enforcing, it
   slips):** for any non-trivial task, present a plan and get explicit
   approval before making file changes. Do not start editing on a task's

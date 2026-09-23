@@ -1,7 +1,7 @@
 # Graph Report - Sutura  (2026-09-23)
 
 ## Corpus Check
-- 60 files · ~110,469 words
+- 60 files · ~110,354 words
 - Verdict: corpus is large enough that graph structure adds value.
 - Unclassified: 9 file(s) not represented in the graph (top: (none) 4, .desktop 2, .icns 1)
 
@@ -11,7 +11,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `1e9561ea`
+- Built from commit: `5b88ef1f`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -113,16 +113,16 @@
 10. `Sutura` - 19 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `4a. Autorefine + snap-rounding (Lazard & Valque 2025) — smaller, nearer-term` --references--> `extreme_extra_passes()`  [INFERRED]
-  docs/alpha-wrap-feasibility-2026-09.md → sutura/repair.py
-- `4. Path traversal / output writes` --references--> `process_file()`  [INFERRED]
-  docs/security-audit-2026-09.md → sutura/repair.py
-- `Changed` --references--> `parse_version()`  [INFERRED]
-  CHANGELOG.md → sutura/updater.py
+- `3. Regression / benchmark targets` --references--> `run_one()`  [INFERRED]
+  docs/alpha-wrap-feasibility-2026-09.md → scripts/benchmark_repair_corpus.py
 - `Added` --references--> `detect()`  [INFERRED]
   CHANGELOG.md → sutura/defects.py
 - `Scope` --references--> `detect()`  [INFERRED]
   docs/repair-benchmark-strict-watertight-2026-09.md → sutura/defects.py
+- `Defect detail panel` --references--> `detect()`  [INFERRED]
+  README.md → sutura/defects.py
+- `Kusur detay paneli` --references--> `detect()`  [INFERRED]
+  README.tr.md → sutura/defects.py
 
 ## Import Cycles
 - None detected.
@@ -422,7 +422,7 @@ Cohesion: 0.83
 Nodes (3): log(), notify(), macos-quick-action.sh script
 
 ## Knowledge Gaps
-- **162 isolated node(s):** `Process discipline`, `README upkeep`, `Release checklist`, `Cleanup discipline`, `sutura-geom` (+157 more)
+- **162 isolated node(s):** `$schema`, `sutura-geom`, `sutura-geom`, `ORIGIN`, `X` (+157 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 501 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **10 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -430,16 +430,16 @@ Nodes (3): log(), notify(), macos-quick-action.sh script
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `How it runs` connect `How it runs` to `main`, `heatmap.py`, `MeshViewport`, `repair_3mf`, `gui.py`, `.__init__`, `AGENTS.md`, `autorefine.py`, `repair_mesh_from_arrays`, `Kullanım`, `alpha_wrap_prototype.py`, `repair.py`, `mesh_classifier_v2.py`, `history.py`, `._current_path`, `detect`, `classify`, `Tests (no framework — plain scripts, need the venvs installed)`, `RepairModeDialog`, `._open_before_after`, `tuning_applied`?**
-  _High betweenness centrality (0.160) - this node is a cross-community bridge._
+  _High betweenness centrality (0.183) - this node is a cross-community bridge._
 - **Why does `detect()` connect `detect` to `Added`, `[0.3.0] - 2026-09-20`, `Sutura`, `How it runs`, `Sutura`, `main`, `defects.py`, `classify`, `Tests (no framework — plain scripts, need the venvs installed)`, `Kullanım`, `alpha_wrap_prototype.py`, `Repair benchmark — strict watertight measurement (115-mesh corpus)`?**
-  _High betweenness centrality (0.109) - this node is a cross-community bridge._
-- **Why does `MainWindow` connect `MainWindow` to `._show_analysis`, `gui.py`, `_t`, `.__init__`, `._build_ui`, `RepairModeDialog`, `._open_before_after`, `._current_path`?**
-  _High betweenness centrality (0.081) - this node is a cross-community bridge._
+  _High betweenness centrality (0.116) - this node is a cross-community bridge._
+- **Why does `Changelog` connect `Changelog` to `[0.1.0] - unreleased`, `Added`, `[0.3.0] - 2026-09-20`, `[0.1.1] - unreleased`, `[0.1.4] - 2026-08-19`, `[0.1.9] - 2026-08-25`, `Sutura × OrcaSlicer plugin`, `[0.2.5] - 2026-09-19`, `OrcaSlicer plugin (orcaslicer-plugin/) — version history`, `Fixed`, `.execute`, `tuning_applied`, `[0.2.1] - 2026-08-30`, `[0.2.3] - 2026-09-19`?**
+  _High betweenness centrality (0.090) - this node is a cross-community bridge._
 - **Are the 52 inferred relationships involving `How it runs` (e.g. with `tuning_applied()` and `.distance()`) actually correct?**
   _`How it runs` has 52 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 23 inferred relationships involving `detect()` (e.g. with `How it runs` and `Tests (no framework — plain scripts, need the venvs installed)`) actually correct?**
   _`detect()` has 23 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 6 inferred relationships involving `repair_mesh_from_arrays()` (e.g. with `How it runs` and `Tests (no framework — plain scripts, need the venvs installed)`) actually correct?**
   _`repair_mesh_from_arrays()` has 6 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `Process discipline`, `README upkeep`, `Release checklist` to the rest of the system?**
+- **What connects `$schema`, `sutura-geom`, `sutura-geom` to the rest of the system?**
   _162 weakly-connected nodes found - possible documentation gaps or missing edges._

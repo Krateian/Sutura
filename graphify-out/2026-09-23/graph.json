@@ -5388,7 +5388,7 @@
       "node_kind": "heading",
       "norm_label": "cleanup discipline",
       "source_file": "AGENTS.md",
-      "source_location": "L223"
+      "source_location": "L210"
     },
     {
       "id": "agents_process_discipline",
@@ -5412,7 +5412,7 @@
       "node_kind": "heading",
       "norm_label": "readme upkeep",
       "source_file": "AGENTS.md",
-      "source_location": "L136"
+      "source_location": "L123"
     },
     {
       "id": "agents_release_checklist",
@@ -5424,7 +5424,7 @@
       "node_kind": "heading",
       "norm_label": "release checklist",
       "source_file": "AGENTS.md",
-      "source_location": "L162"
+      "source_location": "L149"
     },
     {
       "id": "sutura_gui_rationale_1456",
@@ -12233,7 +12233,6 @@
     {
       "id": "pyrobust_predicates",
       "label": "pyrobust_predicates",
-      "_origin": "semantic",
       "community": 12,
       "community_name": "autorefine.py",
       "external": true,
@@ -12245,7 +12244,6 @@
     {
       "id": "heapq",
       "label": "heapq",
-      "_origin": "semantic",
       "community": 16,
       "community_name": "alpha_wrap_prototype.py",
       "external": true,
@@ -12257,7 +12255,6 @@
     {
       "id": "scipy_spatial",
       "label": "scipy_spatial",
-      "_origin": "semantic",
       "community": 16,
       "community_name": "alpha_wrap_prototype.py",
       "external": true,
@@ -12269,7 +12266,6 @@
     {
       "id": "collections",
       "label": "collections",
-      "_origin": "semantic",
       "community": 17,
       "community_name": "repair.py",
       "external": true,
@@ -12281,7 +12277,6 @@
     {
       "id": "re",
       "label": "re",
-      "_origin": "semantic",
       "community": 17,
       "community_name": "repair.py",
       "external": true,
@@ -12293,7 +12288,6 @@
     {
       "id": "zipfile",
       "label": "zipfile",
-      "_origin": "semantic",
       "community": 17,
       "community_name": "repair.py",
       "external": true,
@@ -12305,7 +12299,6 @@
     {
       "id": "prelude",
       "label": "prelude",
-      "_origin": "semantic",
       "community": 18,
       "community_name": "lib.rs",
       "external": true,
@@ -12317,7 +12310,6 @@
     {
       "id": "pyvalueerror",
       "label": "pyvalueerror",
-      "_origin": "semantic",
       "community": 18,
       "community_name": "lib.rs",
       "external": true,
@@ -12329,7 +12321,6 @@
     {
       "id": "robust",
       "label": "robust",
-      "_origin": "semantic",
       "community": 18,
       "community_name": "lib.rs",
       "external": true,
@@ -12341,7 +12332,6 @@
     {
       "id": "super",
       "label": "super",
-      "_origin": "semantic",
       "community": 18,
       "community_name": "lib.rs",
       "external": true,
@@ -12353,7 +12343,6 @@
     {
       "id": "importlib_util",
       "label": "importlib_util",
-      "_origin": "semantic",
       "community": 2,
       "community_name": "updater.py",
       "external": true,
@@ -12365,7 +12354,6 @@
     {
       "id": "shutil",
       "label": "shutil",
-      "_origin": "semantic",
       "community": 2,
       "community_name": "updater.py",
       "external": true,
@@ -12377,7 +12365,6 @@
     {
       "id": "urllib_error",
       "label": "urllib_error",
-      "_origin": "semantic",
       "community": 2,
       "community_name": "updater.py",
       "external": true,
@@ -12389,7 +12376,6 @@
     {
       "id": "urllib_request",
       "label": "urllib_request",
-      "_origin": "semantic",
       "community": 2,
       "community_name": "updater.py",
       "external": true,
@@ -12401,7 +12387,6 @@
     {
       "id": "manifold3d",
       "label": "manifold3d",
-      "_origin": "semantic",
       "community": 20,
       "community_name": "manifold_bridge.py",
       "external": true,
@@ -12413,7 +12398,6 @@
     {
       "id": "trimesh",
       "label": "trimesh",
-      "_origin": "semantic",
       "community": 20,
       "community_name": "manifold_bridge.py",
       "external": true,
@@ -12425,7 +12409,6 @@
     {
       "id": "datetime",
       "label": "datetime",
-      "_origin": "semantic",
       "community": 21,
       "community_name": "history.py",
       "external": true,
@@ -12437,7 +12420,6 @@
     {
       "id": "hashlib",
       "label": "hashlib",
-      "_origin": "semantic",
       "community": 21,
       "community_name": "history.py",
       "external": true,
@@ -12449,7 +12431,6 @@
     {
       "id": "json",
       "label": "json",
-      "_origin": "semantic",
       "community": 24,
       "community_name": "repair_score.py",
       "external": true,
@@ -12461,7 +12442,6 @@
     {
       "id": "numpy",
       "label": "numpy",
-      "_origin": "semantic",
       "community": 25,
       "community_name": "numpy",
       "external": true,
@@ -12473,7 +12453,6 @@
     {
       "id": "os",
       "label": "os",
-      "_origin": "semantic",
       "community": 25,
       "community_name": "numpy",
       "external": true,
@@ -12485,7 +12464,6 @@
     {
       "id": "pymeshlab",
       "label": "pymeshlab",
-      "_origin": "semantic",
       "community": 25,
       "community_name": "numpy",
       "external": true,
@@ -12497,7 +12475,6 @@
     {
       "id": "sys",
       "label": "sys",
-      "_origin": "semantic",
       "community": 25,
       "community_name": "numpy",
       "external": true,
@@ -12509,7 +12486,6 @@
     {
       "id": "ref_fs",
       "label": "ref_fs",
-      "_origin": "semantic",
       "community": 28,
       "community_name": "graphify.js",
       "external": true,
@@ -12521,7 +12497,6 @@
     {
       "id": "ref_path",
       "label": "ref_path",
-      "_origin": "semantic",
       "community": 28,
       "community_name": "graphify.js",
       "external": true,
@@ -12533,7 +12508,6 @@
     {
       "id": "orca",
       "label": "orca",
-      "_origin": "semantic",
       "community": 33,
       "community_name": "sutura_repair_linux_x86_64.py",
       "external": true,
@@ -12545,7 +12519,6 @@
     {
       "id": "struct",
       "label": "struct",
-      "_origin": "semantic",
       "community": 33,
       "community_name": "sutura_repair_linux_x86_64.py",
       "external": true,
@@ -12557,7 +12530,6 @@
     {
       "id": "threading",
       "label": "threading",
-      "_origin": "semantic",
       "community": 33,
       "community_name": "sutura_repair_linux_x86_64.py",
       "external": true,
@@ -12569,7 +12541,6 @@
     {
       "id": "uuid",
       "label": "uuid",
-      "_origin": "semantic",
       "community": 33,
       "community_name": "sutura_repair_linux_x86_64.py",
       "external": true,
@@ -12581,7 +12552,6 @@
     {
       "id": "gc",
       "label": "gc",
-      "_origin": "semantic",
       "community": 43,
       "community_name": "benchmark_repair_corpus.py",
       "external": true,
@@ -12593,7 +12563,6 @@
     {
       "id": "tempfile",
       "label": "tempfile",
-      "_origin": "semantic",
       "community": 43,
       "community_name": "benchmark_repair_corpus.py",
       "external": true,
@@ -12605,7 +12574,6 @@
     {
       "id": "time",
       "label": "time",
-      "_origin": "semantic",
       "community": 43,
       "community_name": "benchmark_repair_corpus.py",
       "external": true,
@@ -12617,7 +12585,6 @@
     {
       "id": "argparse",
       "label": "argparse",
-      "_origin": "semantic",
       "community": 55,
       "community_name": "calibrate_classifier.py",
       "external": true,
@@ -12629,7 +12596,6 @@
     {
       "id": "make_classifier_set",
       "label": "make_classifier_set",
-      "_origin": "semantic",
       "community": 55,
       "community_name": "calibrate_classifier.py",
       "external": true,
@@ -12641,7 +12607,6 @@
     {
       "id": "math",
       "label": "math",
-      "_origin": "semantic",
       "community": 8,
       "community_name": "gui.py",
       "external": true,
@@ -12653,7 +12618,6 @@
     {
       "id": "pyside6_qtcore",
       "label": "pyside6_qtcore",
-      "_origin": "semantic",
       "community": 8,
       "community_name": "gui.py",
       "external": true,
@@ -12665,7 +12629,6 @@
     {
       "id": "pyside6_qtgui",
       "label": "pyside6_qtgui",
-      "_origin": "semantic",
       "community": 8,
       "community_name": "gui.py",
       "external": true,
@@ -12677,7 +12640,6 @@
     {
       "id": "pyside6_qtwidgets",
       "label": "pyside6_qtwidgets",
-      "_origin": "semantic",
       "community": 8,
       "community_name": "gui.py",
       "external": true,
@@ -12689,7 +12651,6 @@
     {
       "id": "subprocess",
       "label": "subprocess",
-      "_origin": "semantic",
       "community": 8,
       "community_name": "gui.py",
       "external": true,
@@ -12701,7 +12662,6 @@
     {
       "id": "webbrowser",
       "label": "webbrowser",
-      "_origin": "semantic",
       "community": 8,
       "community_name": "gui.py",
       "external": true,
@@ -20266,7 +20226,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "AGENTS.md",
-      "source_location": "L136",
+      "source_location": "L123",
       "weight": 1.0
     },
     {
@@ -20277,7 +20237,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "AGENTS.md",
-      "source_location": "L162",
+      "source_location": "L149",
       "weight": 1.0
     },
     {
@@ -20288,7 +20248,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "AGENTS.md",
-      "source_location": "L223",
+      "source_location": "L210",
       "weight": 1.0
     },
     {
@@ -33647,5 +33607,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "1e9561ea2aae0699ddeb7bc424f420049fead63c"
+  "built_at_commit": "5b88ef1fc84d73daaab7ce23de65197dd8dc58f8"
 }
