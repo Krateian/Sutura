@@ -53,7 +53,40 @@ impl DiagState {
 #[derive(Clone, Debug)]
 pub struct CdtVertex {
     pub st: Point2D,
-    pub provenance: Point3,
+    /// Exact construction recipe from original input data.  `None` only for
+    /// rare fallback vertices built exactly in 2D (e.g. constraint splits
+    /// against an arbitrary CDT edge); those are deduplicated by `(s,t)`.
+    pub provenance: Option<Point3>,
+}
+
+/// Describes how a constrained segment inside a host triangle relates to the
+/// original input geometry. The CDT uses these descriptions to compute
+/// segment-segment crossings directly from original planes and lines, never
+/// from previously constructed points.
+#[derive(Clone, Debug)]
+pub enum SegmentSource {
+    /// The segment is the intersection of the host plane with a transversal
+    /// input triangle. `other_plane` are three points defining that triangle.
+    Transversal {
+        other_plane: ([f64; 3], [f64; 3], [f64; 3]),
+    },
+    /// The segment lies on a boundary edge of the host triangle itself.
+    /// `endpoints` are the original 3D coordinates of that host edge.
+    HostEdge {
+        endpoints: ([f64; 3], [f64; 3]),
+    },
+    /// The segment is an edge of a triangle that is coplanar with the host.
+    /// `endpoints` are the original 3D coordinates of the edge endpoints.
+    CoplanarEdge {
+        endpoints: ([f64; 3], [f64; 3]),
+    },
+}
+
+/// A constrained segment together with its source geometry.
+#[derive(Clone, Debug)]
+pub struct ConstrainedSegment {
+    pub endpoints: (usize, usize),
+    pub source: SegmentSource,
 }
 
 /// Result sign of an exact predicate.
@@ -129,6 +162,10 @@ pub struct HostFrame {
     a: [BigRational; 3],
     b: [BigRational; 3],
     c: [BigRational; 3],
+    /// Original input vertices of the host triangle, kept for provenance.
+    pub host_a: [f64; 3],
+    pub host_b: [f64; 3],
+    pub host_c: [f64; 3],
 }
 
 impl HostFrame {
@@ -137,7 +174,25 @@ impl HostFrame {
             a: a.to_rational()?,
             b: b.to_rational()?,
             c: c.to_rational()?,
+            host_a: a.to_f64()?,
+            host_b: b.to_f64()?,
+            host_c: c.to_f64()?,
         })
+    }
+
+    /// Return a (non-unit) normal vector of the host plane, computed from the
+    /// original input vertices. Used only for constructing exact provenance of
+    /// coplanar-edge crossings.
+    pub fn normal(&self) -> [f64; 3] {
+        let u = sub_f64(self.host_b, self.host_a);
+        let v = sub_f64(self.host_c, self.host_a);
+        cross_f64(u, v)
+    }
+
+    /// Project an exact 3D point into the host's `(s,t)` parameter space.
+    pub(crate) fn project(&self, p: &Point3) -> Option<Point2D> {
+        let pr = p.to_rational()?;
+        project_point(&self.a, &self.b, &self.c, &pr)
     }
 
     /// Map 2D barycentric `(s,t)` coordinates back to an exact rational 3D
@@ -162,6 +217,8 @@ impl HostFrame {
 pub struct Triangulation {
     verts: Vec<CdtVertex>,
     tris: Vec<Tri>,
+    /// Host triangle frame, kept for projecting inserted provenance points.
+    host: HostFrame,
     /// Maps a vertex's canonical provenance key to its index.
     vertex_index: HashMap<Vec<u64>, usize>,
     /// Maps cached (s,t) coordinates to a vertex index.
@@ -173,15 +230,14 @@ pub struct Triangulation {
 impl Triangulation {
     #[cfg(feature = "cdt-diag")]
     fn push_vertex(&mut self, v: CdtVertex) -> usize {
+        debug_assert!(
+            !v.provenance.as_ref().map_or(false, |p| p.is_nan_placeholder()),
+            "NaN placeholder provenance must never be stored in the CDT"
+        );
         self.diag.update_bit_len(&v.st);
         let vi = self.verts.len();
-        // NaN placeholders (the temporary 2D-only fallback path) must not be
-        // inserted into the provenance-based index because they all share the
-        // same key. They remain reachable via the (s,t) index. Commit 4 removes
-        // the fallback entirely.
-        if !v.provenance.is_nan_placeholder() {
-            self.vertex_index
-                .insert(v.provenance.canonical_key(), vi);
+        if let Some(p) = &v.provenance {
+            self.vertex_index.insert(p.canonical_key(), vi);
         }
         self.st_index
             .insert((v.st.s.clone(), v.st.t.clone()), vi);
@@ -191,10 +247,13 @@ impl Triangulation {
 
     #[cfg(not(feature = "cdt-diag"))]
     fn push_vertex(&mut self, v: CdtVertex) -> usize {
+        debug_assert!(
+            !v.provenance.as_ref().map_or(false, |p| p.is_nan_placeholder()),
+            "NaN placeholder provenance must never be stored in the CDT"
+        );
         let vi = self.verts.len();
-        if !v.provenance.is_nan_placeholder() {
-            self.vertex_index
-                .insert(v.provenance.canonical_key(), vi);
+        if let Some(p) = &v.provenance {
+            self.vertex_index.insert(p.canonical_key(), vi);
         }
         self.st_index
             .insert((v.st.s.clone(), v.st.t.clone()), vi);
@@ -228,6 +287,123 @@ impl Triangulation {
     #[cfg(not(feature = "cdt-diag"))]
     fn diag_record_crossing(&mut self, _vi: usize, _n_initial: usize) {}
 
+    /// Compute the exact provenance of the crossing of two constrained
+    /// segments from their original source descriptions.
+    ///
+    /// All constructions use only original input data:
+    /// - transversal ∩ transversal       -> PPI(host, A, B)
+    /// - transversal ∩ host edge         -> LPI(host edge, plane A)
+    /// - transversal ∩ coplanar edge     -> LPI(edge, plane A)
+    /// - host edge ∩ host edge           -> explicit endpoint (already a vertex)
+    /// - host edge ∩ coplanar edge       -> LPI(edge, plane of host edge line + host normal)
+    /// - coplanar edge ∩ coplanar edge   -> LPI(edge A, plane through edge B and host normal)
+    fn crossing_provenance(
+        host: &HostFrame,
+        a: &SegmentSource,
+        b: &SegmentSource,
+    ) -> Option<Point3> {
+        match (a, b) {
+            (
+                SegmentSource::Transversal {
+                    other_plane: (a1, a2, a3),
+                },
+                SegmentSource::Transversal {
+                    other_plane: (b1, b2, b3),
+                },
+            ) => Some(Point3::Ppi {
+                r1: host.host_a,
+                s1: host.host_b,
+                t1: host.host_c,
+                r2: *a1,
+                s2: *a2,
+                t2: *a3,
+                r3: *b1,
+                s3: *b2,
+                t3: *b3,
+            }),
+            (
+                SegmentSource::Transversal {
+                    other_plane: (a1, a2, a3),
+                },
+                SegmentSource::HostEdge {
+                    endpoints: (e1, e2),
+                },
+            )
+            | (
+                SegmentSource::HostEdge {
+                    endpoints: (e1, e2),
+                },
+                SegmentSource::Transversal {
+                    other_plane: (a1, a2, a3),
+                },
+            )
+            | (
+                SegmentSource::Transversal {
+                    other_plane: (a1, a2, a3),
+                },
+                SegmentSource::CoplanarEdge {
+                    endpoints: (e1, e2),
+                },
+            )
+            | (
+                SegmentSource::CoplanarEdge {
+                    endpoints: (e1, e2),
+                },
+                SegmentSource::Transversal {
+                    other_plane: (a1, a2, a3),
+                },
+            ) => Some(Point3::Lpi {
+                q1: *e1,
+                q2: *e2,
+                r: *a1,
+                s: *a2,
+                t: *a3,
+            }),
+            (
+                SegmentSource::HostEdge { .. },
+                SegmentSource::HostEdge { .. },
+            ) => {
+                // Two host edges only meet at a host vertex, which is already
+                // in the triangulation. No new vertex is needed.
+                None
+            }
+            (
+                SegmentSource::HostEdge {
+                    endpoints: (a1, a2),
+                },
+                SegmentSource::CoplanarEdge {
+                    endpoints: (b1, b2),
+                },
+            )
+            | (
+                SegmentSource::CoplanarEdge {
+                    endpoints: (b1, b2),
+                },
+                SegmentSource::HostEdge {
+                    endpoints: (a1, a2),
+                },
+            )
+            | (
+                SegmentSource::CoplanarEdge {
+                    endpoints: (a1, a2),
+                },
+                SegmentSource::CoplanarEdge {
+                    endpoints: (b1, b2),
+                },
+            ) => {
+                let n = host.normal();
+                let off = [b1[0] + n[0], b1[1] + n[1], b1[2] + n[2]];
+                Some(Point3::Lpi {
+                    q1: *a1,
+                    q2: *a2,
+                    r: *b1,
+                    s: *b2,
+                    t: off,
+                })
+            }
+        }
+    }
+
     /// Create a triangulation from a host triangle given as three 3D points.
     /// The host triangle's vertices are vertices 0, 1, 2 of the new mesh.
     pub fn from_host(a: &Point3, b: &Point3, c: &Point3) -> Option<Self> {
@@ -243,45 +419,37 @@ impl Triangulation {
             return None;
         }
 
-        let verts = vec![
-            CdtVertex {
-                st: p0,
-                provenance: a.clone(),
-            },
-            CdtVertex {
-                st: p1,
-                provenance: b.clone(),
-            },
-            CdtVertex {
-                st: p2,
-                provenance: c.clone(),
-            },
-        ];
+        // Ensure CCW orientation before building indices.
+        let mut st = [p0, p1, p2];
+        let mut prov = [a.clone(), b.clone(), c.clone()];
+        if !orient2d(&st[0], &st[1], &st[2]).is_positive() {
+            st.swap(1, 2);
+            prov.swap(1, 2);
+        }
+
+        let host = HostFrame::from_points(&prov[0], &prov[1], &prov[2])?;
+        let verts: Vec<CdtVertex> = st
+            .into_iter()
+            .zip(prov.into_iter())
+            .map(|(s, p)| CdtVertex { st: s, provenance: Some(p) })
+            .collect();
         let mut vertex_index = HashMap::with_capacity(3);
         let mut st_index = HashMap::with_capacity(3);
         for (i, v) in verts.iter().enumerate() {
-            vertex_index.insert(v.provenance.canonical_key(), i);
+            if let Some(p) = &v.provenance {
+                vertex_index.insert(p.canonical_key(), i);
+            }
             st_index.insert((v.st.s.clone(), v.st.t.clone()), i);
         }
-        let mut t = Self {
+        Some(Self {
             verts,
             tris: vec![Tri::new(0, 1, 2)],
+            host,
             vertex_index,
             st_index,
             #[cfg(feature = "cdt-diag")]
             diag: DiagState::default(),
-        };
-
-        if !t.orient_ccw(0) {
-            t.verts.swap(1, 2);
-            t.tris[0].v = [0, 1, 2];
-        }
-        Some(t)
-    }
-
-    fn orient_ccw(&self, tri: usize) -> bool {
-        let v = &self.tris[tri].v;
-        orient2d(&self.verts[v[0]].st, &self.verts[v[1]].st, &self.verts[v[2]].st).is_positive()
+        })
     }
 
     /// Number of vertices (including the three host vertices).
@@ -296,36 +464,47 @@ impl Triangulation {
 
     /// Insert a new point (projected from a 3D point) into the triangulation.
     /// Returns the index of the new vertex.
-    pub fn insert_vertex(&mut self, host: &HostFrame, p: &Point3) -> Option<usize> {
+    pub fn insert_vertex(&mut self, p: &Point3) -> Option<usize> {
+        // Dedup against existing vertices by provenance or (s,t).
+        if let Some(vi) = self.find_vertex(p) {
+            return Some(vi);
+        }
         let pr = p.to_rational()?;
-        let q = project_point(&host.a, &host.b, &host.c, &pr)?;
+        let q = project_point(&self.host.a, &self.host.b, &self.host.c, &pr)?;
         let vi = self.push_vertex(CdtVertex {
             st: q,
-            provenance: p.clone(),
+            provenance: Some(p.clone()),
         });
         self.insert_vertex_at(vi);
         Some(vi)
     }
 
+    /// Insert a vertex given only by exact 2D parameter coordinates (no 3D
+    /// provenance).  Used as the exact fallback when no original-data
+    /// construction is available.  Deduplicates by `(s,t)`.
+    fn insert_vertex_2d(&mut self, q: Point2D) -> usize {
+        if let Some(&vi) = self.st_index.get(&(q.s.clone(), q.t.clone())) {
+            return vi;
+        }
+        let vi = self.push_vertex(CdtVertex {
+            st: q,
+            provenance: None,
+        });
+        self.insert_vertex_at(vi);
+        vi
+    }
+
     /// Return the index of an existing vertex whose projected 2D coordinates
     /// exactly match `p`, if any.
-    pub fn find_vertex(&self, host: &HostFrame, p: &Point3) -> Option<usize> {
+    pub fn find_vertex(&self, p: &Point3) -> Option<usize> {
         // Fast path: look up by canonical provenance key.
         if let Some(&vi) = self.vertex_index.get(&p.canonical_key()) {
             return Some(vi);
         }
         // Fallback: project and look up by (s,t).
         let pr = p.to_rational()?;
-        let q = project_point(&host.a, &host.b, &host.c, &pr)?;
+        let q = project_point(&self.host.a, &self.host.b, &self.host.c, &pr)?;
         self.st_index.get(&(q.s, q.t)).copied()
-    }
-
-    /// Insert an already-projected explicit 2D point together with its 3D
-    /// construction recipe.
-    pub fn insert_point_2d(&mut self, p: Point2D, provenance: Point3) -> usize {
-        let vi = self.push_vertex(CdtVertex { st: p, provenance });
-        self.insert_vertex_at(vi);
-        vi
     }
 
     fn insert_vertex_at(&mut self, vi: usize) {
@@ -764,13 +943,21 @@ impl Triangulation {
                     // arrangement fallback that makes multi-segment batches
                     // robust.
                     if self.tris[t].constrained[e] || !self.is_convex_for_flip(t, e, nbr, ne) {
-                        let (p, _) = self.segment_edge_intersection(a, b, t, e);
-                        // TODO(C1): this fallback is removed in commit 4; provenance
-                        // is recomputed from original planes there.
-                        let vi = self.insert_point_2d(
-                            p,
-                            Point3::Explicit([f64::NAN; 3]),
+                        // Compute the 3D provenance of the fallback split point as
+                        // the intersection of the constraint's supporting line and
+                        // the blocking edge's supporting line in the host plane.
+                        // Exact 2D construction (the pre-C1 behaviour).  A 3D
+                        // recipe cannot be rebuilt here without the sources of
+                        // both lines; rounding implicit points to f64 would
+                        // break exactness, so none is attempted.
+                        let (u, v) = self.tris[t].edge_opp(e);
+                        let (q, _) = line_line_intersection(
+                            &self.verts[a].st,
+                            &self.verts[b].st,
+                            &self.verts[u].st,
+                            &self.verts[v].st,
                         );
+                        let vi = self.insert_vertex_2d(q);
                         self.add_constraint(a, vi);
                         self.add_constraint(vi, b);
                         if self.tris[t].constrained[e] {
@@ -797,35 +984,39 @@ impl Triangulation {
     /// Insert a batch of constrained segments in a segment-order-independent
     /// way by first computing their planar arrangement.
     ///
-    /// The input indices refer to vertices already present in the
+    /// The input endpoints refer to vertices already present in the
     /// triangulation.  Every pair of input segments is examined for a proper
-    /// intersection; when one exists, the intersection point is inserted as a
-    /// new vertex and both segments are split at that point.  Existing vertices
-    /// that lie in the interior of a segment are also used as split points.
-    /// After this pre-splitting, no two sub-segments cross in their interior,
-    /// so enforcing them one by one is safe.
-    pub fn add_constraints_batch(&mut self, constraints: &[(usize, usize)]) {
-        if constraints.is_empty() {
+    /// intersection; when one exists, the crossing point is constructed from
+    /// the original input planes/lines (PPI/LPI) and inserted, then both
+    /// segments are split at that point.  Existing vertices that lie in the
+    /// interior of a segment are also used as split points.  After this
+    /// pre-splitting, no two sub-segments cross in their interior, so
+    /// enforcing them one by one is safe.
+    pub fn add_constraints_batch(&mut self, segments: &[ConstrainedSegment]) {
+        if segments.is_empty() {
             return;
         }
 
         let n_initial = self.verts.len();
-        let n_raw = constraints.len();
+        let n_raw = segments.len();
         self.diag_begin_batch(n_raw);
+
+        let host = self.host.clone();
 
         // Lists of vertex indices lying on each raw segment.  Start with the
         // two endpoints; intersections and endpoint-on-segment events are
         // added below.
         let mut on_seg: Vec<Vec<usize>> = Vec::with_capacity(n_raw);
-        for &(a, b) in constraints {
-            on_seg.push(vec![a, b]);
+        for s in segments {
+            on_seg.push(vec![s.endpoints.0, s.endpoints.1]);
         }
 
-        // 1) Pairwise intersections.  For every intersecting pair, insert the
-        // intersection vertex (if it is not already present) and add its index
-        // to both segments.  A cheap 2D bbox prefilter skips disjoint pairs
-        // before the expensive exact predicate work.
-        let bboxes: Vec<_> = constraints
+        // 1) Pairwise intersections.  For every intersecting pair, compute the
+        // crossing from original source geometry (PPI/LPI), insert it, and add
+        // its index to both segments.  A cheap 2D bbox prefilter skips disjoint
+        // pairs before the exact predicate work.
+        let endpoints: Vec<_> = segments.iter().map(|s| s.endpoints).collect();
+        let bboxes: Vec<_> = endpoints
             .iter()
             .map(|&(a, b)| bbox2d(&self.verts[a].st, &self.verts[b].st))
             .collect();
@@ -834,18 +1025,43 @@ impl Triangulation {
                 if !bboxes_overlap(&bboxes[i], &bboxes[j]) {
                     continue;
                 }
-                if let Some(vi) = self.intersect_segments_add_vertex(constraints[i], constraints[j])
-                {
-                    self.diag_record_crossing(vi, n_initial);
-                    on_seg[i].push(vi);
-                    on_seg[j].push(vi);
+                let (a, b) = endpoints[i];
+                let (c, d) = endpoints[j];
+                if !segments_properly_intersect(
+                    &self.verts[a].st,
+                    &self.verts[b].st,
+                    &self.verts[c].st,
+                    &self.verts[d].st,
+                ) {
+                    continue;
                 }
+                let provenance =
+                    Self::crossing_provenance(&host, &segments[i].source, &segments[j].source);
+                // Preferred: construct the crossing from original input data
+                // (bounded bit size).  If that is unavailable or degenerate,
+                // fall back to the exact 2D line-line construction from the
+                // raw segment endpoints -- a proper crossing is never dropped.
+                let vi = match provenance.and_then(|p| self.insert_vertex(&p)) {
+                    Some(vi) => vi,
+                    None => {
+                        let (q, _) = line_line_intersection(
+                            &self.verts[a].st,
+                            &self.verts[b].st,
+                            &self.verts[c].st,
+                            &self.verts[d].st,
+                        );
+                        self.insert_vertex_2d(q)
+                    }
+                };
+                self.diag_record_crossing(vi, n_initial);
+                on_seg[i].push(vi);
+                on_seg[j].push(vi);
             }
         }
 
         // 2) Existing vertices that lie in the interior of a raw segment.
         for i in 0..n_raw {
-            let (a, b) = constraints[i];
+            let (a, b) = endpoints[i];
             for v in 0..n_initial {
                 if v == a || v == b {
                     continue;
@@ -860,7 +1076,7 @@ impl Triangulation {
         // emit the short sub-segments.
         let mut sub_segments: Vec<(usize, usize)> = Vec::new();
         for i in 0..n_raw {
-            let (a, b) = constraints[i];
+            let (a, b) = endpoints[i];
             let pa = &self.verts[a].st;
             let pb = &self.verts[b].st;
             on_seg[i].sort_by(|u, v| {
@@ -886,74 +1102,6 @@ impl Triangulation {
         self.diag_end_batch();
     }
 
-    /// Compute the intersection of two closed segments whose endpoints are
-    /// vertices of this triangulation.  If the segments intersect at a point
-    /// that is not already a vertex, insert it into the triangulation and
-    /// return its index.  Endpoints and collinear overlaps are returned as the
-    /// corresponding existing vertex index without inserting anything new.
-    fn intersect_segments_add_vertex(
-        &mut self,
-        (a, b): (usize, usize),
-        (c, d): (usize, usize),
-    ) -> Option<usize> {
-        let pa = &self.verts[a].st;
-        let pb = &self.verts[b].st;
-        let pc = &self.verts[c].st;
-        let pd = &self.verts[d].st;
-
-        // Shared endpoints.
-        if a == c || a == d {
-            return Some(a);
-        }
-        if b == c || b == d {
-            return Some(b);
-        }
-
-        // Endpoint lying on the other segment.
-        if point_on_segment(pc, pd, pa) {
-            return Some(a);
-        }
-        if point_on_segment(pc, pd, pb) {
-            return Some(b);
-        }
-        if point_on_segment(pa, pb, pc) {
-            return Some(c);
-        }
-        if point_on_segment(pa, pb, pd) {
-            return Some(d);
-        }
-
-        // Proper intersection.
-        let o1 = orient2d(pa, pb, pc);
-        let o2 = orient2d(pa, pb, pd);
-        let o3 = orient2d(pc, pd, pa);
-        let o4 = orient2d(pc, pd, pb);
-
-        let straddles_ab =
-            (o1.is_positive() && o2.is_negative()) || (o1.is_negative() && o2.is_positive());
-        let straddles_cd =
-            (o3.is_positive() && o4.is_negative()) || (o3.is_negative() && o4.is_positive());
-        if straddles_ab && straddles_cd {
-            let (p, _) = line_line_intersection(pa, pb, pc, pd);
-            if let Some(vi) = self.find_vertex_2d(&p) {
-                return Some(vi);
-            }
-            // TODO(C1): this 2D-only construction is replaced by PPI in commit 4.
-            let vi = self.push_vertex(CdtVertex {
-                st: p.clone(),
-                provenance: Point3::Explicit([f64::NAN; 3]),
-            });
-            self.insert_vertex_at(vi);
-            return Some(vi);
-        }
-
-        // Collinear but non-overlapping, or disjoint: nothing to insert.
-        None
-    }
-
-    fn find_vertex_2d(&self, p: &Point2D) -> Option<usize> {
-        self.st_index.get(&(p.s.clone(), p.t.clone())).copied()
-    }
 
     fn find_any_edge(&self, a: usize, b: usize) -> Option<(usize, usize)> {
         for (i, _) in self.tris.iter().enumerate() {
@@ -1008,20 +1156,6 @@ impl Triangulation {
             && orient2d(&self.verts[a].st, &self.verts[d].st, &self.verts[c].st).is_positive()
     }
 
-    fn segment_edge_intersection(
-        &self,
-        a: usize,
-        b: usize,
-        t: usize,
-        e: usize,
-    ) -> (Point2D, BigRational) {
-        let pa = &self.verts[a].st;
-        let pb = &self.verts[b].st;
-        let (u, v) = self.tris[t].edge_opp(e);
-        let pu = &self.verts[u].st;
-        let pv = &self.verts[v].st;
-        line_line_intersection(pa, pb, pu, pv)
-    }
 
     /// Return the triangulation as a list of CCW vertex-index triples.
     pub fn triangles(&self) -> Vec<[usize; 3]> {
@@ -1042,7 +1176,7 @@ impl Triangulation {
 
 /// Project an exact 3D point `p` onto the `(s,t)` parameter space of the host
 /// triangle `a,b,c` solving `p - a = s*(b-a) + t*(c-a)`.
-fn project_point(
+pub(crate) fn project_point(
     a: &[BigRational; 3],
     b: &[BigRational; 3],
     c: &[BigRational; 3],
@@ -1107,6 +1241,27 @@ pub fn incircle(a: &Point2D, b: &Point2D, c: &Point2D, d: &Point2D) -> Sign {
     Sign::from_rational(&det)
 }
 
+/// Compute the intersection point of two (non-parallel) lines in 2D.
+fn line_line_intersection(
+    a: &Point2D,
+    b: &Point2D,
+    u: &Point2D,
+    v: &Point2D,
+) -> (Point2D, BigRational) {
+    let d1 = &b.t - &a.t;
+    let c1 = &a.s - &b.s;
+    let f1 = &a.s * (&b.t - &a.t) - &a.t * (&b.s - &a.s);
+
+    let d2 = &v.t - &u.t;
+    let c2 = &u.s - &v.s;
+    let f2 = &u.s * (&v.t - &u.t) - &u.t * (&v.s - &u.s);
+
+    let det = &d1 * &c2 - &d2 * &c1;
+    let x = (&f1 * &c2 - &f2 * &c1) / &det;
+    let y = (&d1 * &f2 - &d2 * &f1) / &det;
+    (Point2D { s: x, t: y }, det)
+}
+
 /// True if the closed segments ab and uv intersect in their interiors or at
 /// endpoints.
 fn segments_properly_intersect(a: &Point2D, b: &Point2D, u: &Point2D, v: &Point2D) -> bool {
@@ -1131,25 +1286,16 @@ fn segments_properly_intersect(a: &Point2D, b: &Point2D, u: &Point2D, v: &Point2
     false
 }
 
-/// Compute the intersection point of two (non-parallel) lines in 2D.
-fn line_line_intersection(
-    a: &Point2D,
-    b: &Point2D,
-    u: &Point2D,
-    v: &Point2D,
-) -> (Point2D, BigRational) {
-    let d1 = &b.t - &a.t;
-    let c1 = &a.s - &b.s;
-    let f1 = &a.s * (&b.t - &a.t) - &a.t * (&b.s - &a.s);
+fn sub_f64(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
 
-    let d2 = &v.t - &u.t;
-    let c2 = &u.s - &v.s;
-    let f2 = &u.s * (&v.t - &u.t) - &u.t * (&v.s - &u.s);
-
-    let det = &d1 * &c2 - &d2 * &c1;
-    let x = (&f1 * &c2 - &f2 * &c1) / &det;
-    let y = (&d1 * &f2 - &d2 * &f1) / &det;
-    (Point2D { s: x, t: y }, det)
+fn cross_f64(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 fn sub_rat(a: &[BigRational; 3], b: &[BigRational; 3]) -> [BigRational; 3] {
@@ -1291,6 +1437,15 @@ mod tests {
         false
     }
 
+    fn seg(a: usize, b: usize, pa: &Point3, pb: &Point3) -> ConstrainedSegment {
+        ConstrainedSegment {
+            endpoints: (a, b),
+            source: SegmentSource::CoplanarEdge {
+                endpoints: (pa.to_f64().unwrap(), pb.to_f64().unwrap()),
+            },
+        }
+    }
+
     #[test]
     fn orient_and_incircle_on_unit_triangle() {
         let a = Point2D {
@@ -1325,14 +1480,13 @@ mod tests {
     #[test]
     fn simple_crossing() {
         let (a, b, c) = tri_right();
-        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         // Segment from edge (0,1) at midpoint to edge (0,2) at midpoint.
         let p = Point3::Explicit([0.5, 0.0, 0.0]);
         let q = Point3::Explicit([0.0, 0.5, 0.0]);
-        let pi = t.insert_vertex(&frame, &p).unwrap();
-        let qi = t.insert_vertex(&frame, &q).unwrap();
+        let pi = t.insert_vertex(&p).unwrap();
+        let qi = t.insert_vertex(&q).unwrap();
         t.add_constraint(pi, qi);
 
         validate_triangulation(&t);
@@ -1345,11 +1499,10 @@ mod tests {
     #[test]
     fn vertex_on_edge() {
         let (a, b, c) = tri_right();
-        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         let p = Point3::Explicit([0.5, 0.0, 0.0]);
-        let pi = t.insert_vertex(&frame, &p).unwrap();
+        let pi = t.insert_vertex(&p).unwrap();
 
         validate_triangulation(&t);
         assert_eq!(t.num_tris(), 2);
@@ -1365,16 +1518,15 @@ mod tests {
         // split_edge (regression: the neighbour adjacency slots were swapped,
         // panicking with "adjacent triangle missing edge").
         let (a, b, c) = tri_right();
-        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         let m01 = Point3::Explicit([0.5, 0.0, 0.0]);
-        let mi = t.insert_vertex(&frame, &m01).unwrap();
+        let mi = t.insert_vertex(&m01).unwrap();
         // After the boundary split the mesh is (p,1,2) and (p,2,0); the
         // internal edge is (2, p) == (2, mi).  Insert its midpoint, which
         // splits that internal edge via the interior-neighbour branch.
         let inner = Point3::Explicit([0.25, 0.5, 0.0]);
-        let inner_i = t.insert_vertex(&frame, &inner).unwrap();
+        let inner_i = t.insert_vertex(&inner).unwrap();
 
         validate_triangulation(&t);
         // The internal edge (mi, 2) is split into (mi, inner) and (inner, 2);
@@ -1391,15 +1543,14 @@ mod tests {
         // chord splits the containing triangle (regression: previously this
         // panicked in add_constraint's find_any_edge().unwrap()).
         let (a, b, c) = tri_right();
-        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         let m01 = Point3::Explicit([0.5, 0.0, 0.0]);
         let m12 = Point3::Explicit([0.5, 0.5, 0.0]);
         let m20 = Point3::Explicit([0.0, 0.5, 0.0]);
-        let _p01 = t.insert_vertex(&frame, &m01).unwrap();
-        let p12 = t.insert_vertex(&frame, &m12).unwrap();
-        let p20 = t.insert_vertex(&frame, &m20).unwrap();
+        let _p01 = t.insert_vertex(&m01).unwrap();
+        let p12 = t.insert_vertex(&m12).unwrap();
+        let p20 = t.insert_vertex(&m20).unwrap();
 
         // Segment between the edge-02 and edge-12 midpoints: a chord inside
         // one of the fan triangles.
@@ -1423,16 +1574,15 @@ mod tests {
     #[test]
     fn multiple_segments() {
         let (a, b, c) = tri_right();
-        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         // Two segments meeting at an interior point, fanning out to edges.
         let interior = Point3::Explicit([0.25, 0.25, 0.0]);
         let e01 = Point3::Explicit([0.5, 0.0, 0.0]);
         let e02 = Point3::Explicit([0.0, 0.5, 0.0]);
-        let ii = t.insert_vertex(&frame, &interior).unwrap();
-        let m01 = t.insert_vertex(&frame, &e01).unwrap();
-        let m02 = t.insert_vertex(&frame, &e02).unwrap();
+        let ii = t.insert_vertex(&interior).unwrap();
+        let m01 = t.insert_vertex(&e01).unwrap();
+        let m02 = t.insert_vertex(&e02).unwrap();
         t.add_constraint(ii, m01);
         t.add_constraint(ii, m02);
 
@@ -1450,7 +1600,6 @@ mod tests {
         // insertion" because it inserted segments one by one; the batch
         // arrangement must resolve all crossings first.
         let (a, b, c) = tri_right();
-        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         // All coordinates are exact binary fractions so the rational
@@ -1466,20 +1615,20 @@ mod tests {
         let d3_bottom = Point3::Explicit([0.5, 0.125, 0.0]);
         let d3_left = Point3::Explicit([0.0, 0.375, 0.0]);
 
-        let ivb = t.insert_vertex(&frame, &v_bottom).unwrap();
-        let ivt = t.insert_vertex(&frame, &v_top).unwrap();
-        let id1l = t.insert_vertex(&frame, &d1_left).unwrap();
-        let id1r = t.insert_vertex(&frame, &d1_right).unwrap();
-        let id2l = t.insert_vertex(&frame, &d2_left).unwrap();
-        let id2r = t.insert_vertex(&frame, &d2_right).unwrap();
-        let id3b = t.insert_vertex(&frame, &d3_bottom).unwrap();
-        let id3l = t.insert_vertex(&frame, &d3_left).unwrap();
+        let ivb = t.insert_vertex(&v_bottom).unwrap();
+        let ivt = t.insert_vertex(&v_top).unwrap();
+        let id1l = t.insert_vertex(&d1_left).unwrap();
+        let id1r = t.insert_vertex(&d1_right).unwrap();
+        let id2l = t.insert_vertex(&d2_left).unwrap();
+        let id2r = t.insert_vertex(&d2_right).unwrap();
+        let id3b = t.insert_vertex(&d3_bottom).unwrap();
+        let id3l = t.insert_vertex(&d3_left).unwrap();
 
         t.add_constraints_batch(&[
-            (ivb, ivt),
-            (id1l, id1r),
-            (id2l, id2r),
-            (id3b, id3l),
+            seg(ivb, ivt, &v_bottom, &v_top),
+            seg(id1l, id1r, &d1_left, &d1_right),
+            seg(id2l, id2r, &d2_left, &d2_right),
+            seg(id3b, id3l, &d3_bottom, &d3_left),
         ]);
 
         validate_triangulation(&t);
@@ -1507,7 +1656,6 @@ mod tests {
     #[test]
     fn batch_two_crossing_segments() {
         let (a, b, c) = tri_right();
-        let frame = HostFrame::from_points(&a, &b, &c).unwrap();
         let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
 
         // Exact binary fractions so the projected rational coordinates are
@@ -1517,12 +1665,12 @@ mod tests {
         let r = Point3::Explicit([0.0, 0.5, 0.0]);
         let s = Point3::Explicit([0.5, 0.0, 0.0]);
 
-        let pi = t.insert_vertex(&frame, &p).unwrap();
-        let qi = t.insert_vertex(&frame, &q).unwrap();
-        let ri = t.insert_vertex(&frame, &r).unwrap();
-        let si = t.insert_vertex(&frame, &s).unwrap();
+        let pi = t.insert_vertex(&p).unwrap();
+        let qi = t.insert_vertex(&q).unwrap();
+        let ri = t.insert_vertex(&r).unwrap();
+        let si = t.insert_vertex(&s).unwrap();
 
-        t.add_constraints_batch(&[(pi, qi), (ri, si)]);
+        t.add_constraints_batch(&[seg(pi, qi, &p, &q), seg(ri, si, &r, &s)]);
 
         validate_triangulation(&t);
         // The original segments are split at their intersection (0.25,0.25).
@@ -1534,5 +1682,38 @@ mod tests {
         assert!(has_edge(&t, ix, qi));
         assert!(has_edge(&t, ri, ix));
         assert!(has_edge(&t, ix, si));
+    }
+
+    #[test]
+    fn crossing_provenance_agrees_for_coplanar_edges() {
+        // Two different LPI constructions of the same triple crossing point
+        // must project to the identical (s,t) so the (s,t) index dedups them.
+        let (a, b, c) = tri_right();
+        let t = Triangulation::from_host(&a, &b, &c).unwrap();
+        let host = t.host;
+        let s1 = SegmentSource::CoplanarEdge {
+            endpoints: ([0.25, 0.0, 0.0], [0.25, 0.75, 0.0]),
+        };
+        let s2 = SegmentSource::CoplanarEdge {
+            endpoints: ([0.0, 0.5, 0.0], [0.5, 0.0, 0.0]),
+        };
+        let s3 = SegmentSource::CoplanarEdge {
+            endpoints: ([0.0, 0.25, 0.0], [0.5, 0.25, 0.0]),
+        };
+        let p12 = Triangulation::crossing_provenance(&host, &s1, &s2)
+            .unwrap()
+            .to_rational()
+            .unwrap();
+        let p13 = Triangulation::crossing_provenance(&host, &s1, &s3)
+            .unwrap()
+            .to_rational()
+            .unwrap();
+        assert_eq!(p12, p13);
+        let st12 = crate::cdt2d::project_point(&host.a, &host.b, &host.c, &p12).unwrap();
+        let st13 = crate::cdt2d::project_point(&host.a, &host.b, &host.c, &p13).unwrap();
+        assert_eq!(st12.s, f64_to_rat(0.25));
+        assert_eq!(st12.t, f64_to_rat(0.25));
+        assert_eq!(st12.s, st13.s);
+        assert_eq!(st12.t, st13.t);
     }
 }

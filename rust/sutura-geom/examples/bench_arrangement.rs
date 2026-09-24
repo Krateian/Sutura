@@ -177,6 +177,7 @@ fn run_timed(
     let wall = start.elapsed();
     let summary = match result {
         Ok((_, _, r)) => {
+            #[allow(unused_mut)]
             let mut s = format!(
                 "OK input_faces={}, output_faces={}, si_pairs={}",
                 r.input_faces, r.output_faces, r.si_pairs_detected
