@@ -7,6 +7,13 @@ name: Publish to OrcaCloud
 on:
   release:
     types: [published]
+  # Manual re-publish of an EXISTING release tag (e.g. after an API error):
+  # checks out that tag and uses that release's body as the changelog.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)publish, e.g. v0.4.0"
+        required: true
 
 permissions:
   id-token: write
@@ -15,6 +22,7 @@ permissions:
 env:
   # Space-separated globs matching the plugin files to upload (.whl / .py).
   PLUGIN_FILES: "orcaslicer-plugin/sutura_repair_linux_x86_64.py"
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   publish:
@@ -22,6 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -29,7 +38,7 @@ jobs:
         id: check
         run: |
           set -euo pipefail
-          current_tag="$GITHUB_REF_NAME"
+          current_tag="$TAG"
           prev_tag="$(git tag --sort=creatordate | awk -v cur="$current_tag" '$0==cur{print prev; found=1} {prev=$0} END{if(!found) print ""}')"
           if [ -z "$prev_tag" ]; then
             echo "No earlier tag found -- publishing unconditionally."
@@ -44,12 +53,18 @@ jobs:
 
       - name: Publish release to OrcaCloud
         if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=orcacloud" | jq -r .value)"
-          version="${GITHUB_REF_NAME#v}"
-          changelog="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | head -c 4000)"
+          version="${TAG#v}"
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            changelog="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | head -c 4000)"
+          else
+            changelog="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body | head -c 4000)"
+          fi
           metadata="$(jq -cn --arg version "$version" --arg changelog "$changelog" \
             '{version: $version} + (if $changelog == "" then {} else {changelog: $changelog} end)')"
           args=(-F "metadata=$metadata")
@@ -61,7 +76,13 @@ jobs:
             echo "No plugin files matched: $PLUGIN_FILES" >&2
             exit 1
           fi
-          curl -sS -o response.json -w '%{http_code}' \
+          # Print the API response and fail on anything but 201 (the official
+          # template does this; without it a 4xx was reported as success).
+          status="$(curl -sS -o response.json -w '%{http_code}' \
             -H "Authorization: Bearer $oidc_token" \
             "${args[@]}" \
-            https://api.orcaslicer.com/api/v1/plugin-publish/releases
+            https://api.orcaslicer.com/api/v1/plugin-publish/releases)"
+          echo "HTTP $status"
+          cat response.json
+          echo
+          [ "$status" = "201" ]
