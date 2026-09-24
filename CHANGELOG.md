@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [0.4.1] - 2026-09-25
+
+### Fixed
+
+- **OrcaCloud auto-publish reported success on a failed upload.** The
+  workflow had lost the official template's status check, so the v0.4.0 run
+  got HTTP 400 from the publish API, printed no response body and still
+  passed; the v0.4.0 plugin listing was therefore not published. The
+  workflow now prints the API response and fails on anything but 201, and
+  can be dispatched manually for an existing tag (the OrcaCloud side only
+  accepts tokens from the release event, so a dispatch is diagnostic only).
+  This release re-publishes the plugin (header version aligned to 0.4.1),
+  carrying the OrcaSlicer plugin changes listed under 0.4.0.
+
 ## [0.4.0] - 2026-09-25
 
 This release also carries everything recorded under 0.3.1, which was never
