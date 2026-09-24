@@ -309,9 +309,9 @@ pub fn arrangement_lite_core(
             let sub = cdt.triangles();
             let v2 = cdt.vertices();
             for [u, w, z] in sub {
-                let pu = host.point3d(&v2[u].s, &v2[u].t);
-                let pw = host.point3d(&v2[w].s, &v2[w].t);
-                let pz = host.point3d(&v2[z].s, &v2[z].t);
+                let pu = host.point3d(&v2[u].st.s, &v2[u].st.t);
+                let pw = host.point3d(&v2[w].st.s, &v2[w].st.t);
+                let pz = host.point3d(&v2[z].st.s, &v2[z].st.t);
                 let iu = weld_point(&mut pool, &mut weld, pu);
                 let iw = weld_point(&mut pool, &mut weld, pw);
                 let iz = weld_point(&mut pool, &mut weld, pz);

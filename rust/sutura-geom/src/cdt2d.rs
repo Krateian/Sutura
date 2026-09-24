@@ -47,6 +47,14 @@ impl DiagState {
     }
 }
 
+/// A vertex of the 2D CDT, carrying both its cached parameter-space
+/// coordinate and its construction recipe in 3D.
+#[derive(Clone, Debug)]
+pub struct CdtVertex {
+    pub st: Point2D,
+    pub provenance: Point3,
+}
+
 /// Result sign of an exact predicate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sign {
@@ -151,7 +159,7 @@ impl HostFrame {
 /// A constrained Delaunay triangulation of a host triangle.
 #[derive(Clone, Debug)]
 pub struct Triangulation {
-    verts: Vec<Point2D>,
+    verts: Vec<CdtVertex>,
     tris: Vec<Tri>,
     #[cfg(feature = "cdt-diag")]
     diag: DiagState,
@@ -159,17 +167,17 @@ pub struct Triangulation {
 
 impl Triangulation {
     #[cfg(feature = "cdt-diag")]
-    fn push_vertex(&mut self, p: Point2D) -> usize {
-        self.diag.update_bit_len(&p);
+    fn push_vertex(&mut self, v: CdtVertex) -> usize {
+        self.diag.update_bit_len(&v.st);
         let vi = self.verts.len();
-        self.verts.push(p);
+        self.verts.push(v);
         vi
     }
 
     #[cfg(not(feature = "cdt-diag"))]
-    fn push_vertex(&mut self, p: Point2D) -> usize {
+    fn push_vertex(&mut self, v: CdtVertex) -> usize {
         let vi = self.verts.len();
-        self.verts.push(p);
+        self.verts.push(v);
         vi
     }
 
@@ -215,7 +223,20 @@ impl Triangulation {
         }
 
         let mut t = Self {
-            verts: vec![p0, p1, p2],
+            verts: vec![
+                CdtVertex {
+                    st: p0,
+                    provenance: a.clone(),
+                },
+                CdtVertex {
+                    st: p1,
+                    provenance: b.clone(),
+                },
+                CdtVertex {
+                    st: p2,
+                    provenance: c.clone(),
+                },
+            ],
             tris: vec![Tri::new(0, 1, 2)],
             #[cfg(feature = "cdt-diag")]
             diag: DiagState::default(),
@@ -230,7 +251,7 @@ impl Triangulation {
 
     fn orient_ccw(&self, tri: usize) -> bool {
         let v = &self.tris[tri].v;
-        orient2d(&self.verts[v[0]], &self.verts[v[1]], &self.verts[v[2]]).is_positive()
+        orient2d(&self.verts[v[0]].st, &self.verts[v[1]].st, &self.verts[v[2]].st).is_positive()
     }
 
     /// Number of vertices (including the three host vertices).
@@ -248,7 +269,10 @@ impl Triangulation {
     pub fn insert_vertex(&mut self, host: &HostFrame, p: &Point3) -> Option<usize> {
         let pr = p.to_rational()?;
         let q = project_point(&host.a, &host.b, &host.c, &pr)?;
-        let vi = self.push_vertex(q);
+        let vi = self.push_vertex(CdtVertex {
+            st: q,
+            provenance: p.clone(),
+        });
         self.insert_vertex_at(vi);
         Some(vi)
     }
@@ -258,18 +282,19 @@ impl Triangulation {
     pub fn find_vertex(&self, host: &HostFrame, p: &Point3) -> Option<usize> {
         let pr = p.to_rational()?;
         let q = project_point(&host.a, &host.b, &host.c, &pr)?;
-        self.verts.iter().position(|v| v.s == q.s && v.t == q.t)
+        self.verts.iter().position(|v| v.st.s == q.s && v.st.t == q.t)
     }
 
-    /// Insert an already-projected explicit 2D point.
-    pub fn insert_point_2d(&mut self, p: Point2D) -> usize {
-        let vi = self.push_vertex(p);
+    /// Insert an already-projected explicit 2D point together with its 3D
+    /// construction recipe.
+    pub fn insert_point_2d(&mut self, p: Point2D, provenance: Point3) -> usize {
+        let vi = self.push_vertex(CdtVertex { st: p, provenance });
         self.insert_vertex_at(vi);
         vi
     }
 
     fn insert_vertex_at(&mut self, vi: usize) {
-        let p = self.verts[vi].clone();
+        let p = self.verts[vi].st.clone();
         let t = self.locate(&p);
         assert!(t.is_some(), "inserted point outside host triangle");
         let t = t.unwrap();
@@ -278,8 +303,8 @@ impl Triangulation {
         let mut on_edge: Option<usize> = None;
         for i in 0..3 {
             let (a, b) = self.tris[t].edge_opp(i);
-            if orient2d(&self.verts[a], &self.verts[b], &p).is_zero()
-                && dot1d_between(&self.verts[a], &self.verts[b], &p)
+            if orient2d(&self.verts[a].st, &self.verts[b].st, &p).is_zero()
+                && dot1d_between(&self.verts[a].st, &self.verts[b].st, &p)
             {
                 on_edge = Some(i);
                 break;
@@ -415,8 +440,8 @@ impl Triangulation {
             let mut placed = false;
             for i in 0..3 {
                 let (p, q) = (cycle[i], cycle[(i + 1) % 3]);
-                if orient2d(&self.verts[p], &self.verts[q], &self.verts[x]).is_zero()
-                    && dot1d_between(&self.verts[p], &self.verts[q], &self.verts[x])
+                if orient2d(&self.verts[p].st, &self.verts[q].st, &self.verts[x].st).is_zero()
+                    && dot1d_between(&self.verts[p].st, &self.verts[q].st, &self.verts[x].st)
                 {
                     cycle.insert(i + 1, x);
                     placed = true;
@@ -506,8 +531,8 @@ impl Triangulation {
     /// Find a triangle whose boundary contains both `a` and `b` (the chord's
     /// interior lies in that triangle).
     fn locate_chord_triangle(&self, a: usize, b: usize) -> Option<usize> {
-        let pa = &self.verts[a];
-        let pb = &self.verts[b];
+        let pa = &self.verts[a].st;
+        let pb = &self.verts[b].st;
         let mid = Point2D {
             s: (&pa.s + &pb.s) / BigRational::from_integer(2.into()),
             t: (&pa.t + &pb.t) / BigRational::from_integer(2.into()),
@@ -545,10 +570,10 @@ impl Triangulation {
 
             // If d is inside circumcircle of (a,b,c), flip.
             if incircle(
-                &self.verts[a],
-                &self.verts[b],
-                &self.verts[c],
-                &self.verts[d],
+                &self.verts[a].st,
+                &self.verts[b].st,
+                &self.verts[c].st,
+                &self.verts[d].st,
             )
             .is_positive()
             {
@@ -651,9 +676,9 @@ impl Triangulation {
     fn locate(&self, p: &Point2D) -> Option<usize> {
         for (i, tri) in self.tris.iter().enumerate() {
             let v = tri.v;
-            let s0 = orient2d(&self.verts[v[0]], &self.verts[v[1]], p);
-            let s1 = orient2d(&self.verts[v[1]], &self.verts[v[2]], p);
-            let s2 = orient2d(&self.verts[v[2]], &self.verts[v[0]], p);
+            let s0 = orient2d(&self.verts[v[0]].st, &self.verts[v[1]].st, p);
+            let s1 = orient2d(&self.verts[v[1]].st, &self.verts[v[2]].st, p);
+            let s2 = orient2d(&self.verts[v[2]].st, &self.verts[v[0]].st, p);
             if (s0.is_positive() || s0.is_zero())
                 && (s1.is_positive() || s1.is_zero())
                 && (s2.is_positive() || s2.is_zero())
@@ -705,7 +730,12 @@ impl Triangulation {
                     // robust.
                     if self.tris[t].constrained[e] || !self.is_convex_for_flip(t, e, nbr, ne) {
                         let (p, _) = self.segment_edge_intersection(a, b, t, e);
-                        let vi = self.insert_point_2d(p);
+                        // TODO(C1): this fallback is removed in commit 4; provenance
+                        // is recomputed from original planes there.
+                        let vi = self.insert_point_2d(
+                            p,
+                            Point3::Explicit([f64::NAN; 3]),
+                        );
                         self.add_constraint(a, vi);
                         self.add_constraint(vi, b);
                         if self.tris[t].constrained[e] {
@@ -762,7 +792,7 @@ impl Triangulation {
         // before the expensive exact predicate work.
         let bboxes: Vec<_> = constraints
             .iter()
-            .map(|&(a, b)| bbox2d(&self.verts[a], &self.verts[b]))
+            .map(|&(a, b)| bbox2d(&self.verts[a].st, &self.verts[b].st))
             .collect();
         for i in 0..n_raw {
             for j in (i + 1)..n_raw {
@@ -785,7 +815,7 @@ impl Triangulation {
                 if v == a || v == b {
                     continue;
                 }
-                if point_on_segment(&self.verts[a], &self.verts[b], &self.verts[v]) {
+                if point_on_segment(&self.verts[a].st, &self.verts[b].st, &self.verts[v].st) {
                     on_seg[i].push(v);
                 }
             }
@@ -796,11 +826,11 @@ impl Triangulation {
         let mut sub_segments: Vec<(usize, usize)> = Vec::new();
         for i in 0..n_raw {
             let (a, b) = constraints[i];
-            let pa = &self.verts[a];
-            let pb = &self.verts[b];
+            let pa = &self.verts[a].st;
+            let pb = &self.verts[b].st;
             on_seg[i].sort_by(|u, v| {
-                param_along(pa, pb, &self.verts[*u])
-                    .cmp(&param_along(pa, pb, &self.verts[*v]))
+                param_along(pa, pb, &self.verts[*u].st)
+                    .cmp(&param_along(pa, pb, &self.verts[*v].st))
             });
             on_seg[i].dedup();
             for k in 0..on_seg[i].len().saturating_sub(1) {
@@ -831,10 +861,10 @@ impl Triangulation {
         (a, b): (usize, usize),
         (c, d): (usize, usize),
     ) -> Option<usize> {
-        let pa = &self.verts[a];
-        let pb = &self.verts[b];
-        let pc = &self.verts[c];
-        let pd = &self.verts[d];
+        let pa = &self.verts[a].st;
+        let pb = &self.verts[b].st;
+        let pc = &self.verts[c].st;
+        let pd = &self.verts[d].st;
 
         // Shared endpoints.
         if a == c || a == d {
@@ -873,7 +903,11 @@ impl Triangulation {
             if let Some(vi) = self.find_vertex_2d(&p) {
                 return Some(vi);
             }
-            let vi = self.push_vertex(p.clone());
+            // TODO(C1): this 2D-only construction is replaced by PPI in commit 4.
+            let vi = self.push_vertex(CdtVertex {
+                st: p.clone(),
+                provenance: Point3::Explicit([f64::NAN; 3]),
+            });
             self.insert_vertex_at(vi);
             return Some(vi);
         }
@@ -883,7 +917,9 @@ impl Triangulation {
     }
 
     fn find_vertex_2d(&self, p: &Point2D) -> Option<usize> {
-        self.verts.iter().position(|v| v.s == p.s && v.t == p.t)
+        self.verts
+            .iter()
+            .position(|v| v.st.s == p.s && v.st.t == p.t)
     }
 
     fn find_any_edge(&self, a: usize, b: usize) -> Option<(usize, usize)> {
@@ -896,13 +932,13 @@ impl Triangulation {
     }
 
     fn find_crossing_edge(&self, a: usize, b: usize) -> Option<(usize, usize)> {
-        let pa = &self.verts[a];
-        let pb = &self.verts[b];
+        let pa = &self.verts[a].st;
+        let pb = &self.verts[b].st;
         for (i, tri) in self.tris.iter().enumerate() {
             for e in 0..3 {
                 let (u, v) = tri.edge_opp(e);
-                let pu = &self.verts[u];
-                let pv = &self.verts[v];
+                let pu = &self.verts[u].st;
+                let pv = &self.verts[v].st;
                 if segments_properly_intersect(pa, pb, pu, pv) {
                     return Some((i, e));
                 }
@@ -914,13 +950,13 @@ impl Triangulation {
     /// A vertex (other than `a`/`b`) lying strictly between them on the open
     /// segment `(a, b)`, if any.
     fn find_vertex_on_open_segment(&self, a: usize, b: usize) -> Option<usize> {
-        let pa = &self.verts[a];
-        let pb = &self.verts[b];
+        let pa = &self.verts[a].st;
+        let pb = &self.verts[b].st;
         for (i, v) in self.verts.iter().enumerate() {
             if i == a || i == b {
                 continue;
             }
-            if orient2d(pa, pb, v).is_zero() && strictly_between(pa, pb, v) {
+            if orient2d(pa, pb, &v.st).is_zero() && strictly_between(pa, pb, &v.st) {
                 return Some(i);
             }
         }
@@ -935,8 +971,8 @@ impl Triangulation {
         let d = self.tris[t2].v[e2];
         // Quadrilateral a-b-c-d (ordered around t1 then t2) is convex iff
         // both new triangles would be CCW.
-        orient2d(&self.verts[a], &self.verts[b], &self.verts[d]).is_positive()
-            && orient2d(&self.verts[a], &self.verts[d], &self.verts[c]).is_positive()
+        orient2d(&self.verts[a].st, &self.verts[b].st, &self.verts[d].st).is_positive()
+            && orient2d(&self.verts[a].st, &self.verts[d].st, &self.verts[c].st).is_positive()
     }
 
     fn segment_edge_intersection(
@@ -946,11 +982,11 @@ impl Triangulation {
         t: usize,
         e: usize,
     ) -> (Point2D, BigRational) {
-        let pa = &self.verts[a];
-        let pb = &self.verts[b];
+        let pa = &self.verts[a].st;
+        let pb = &self.verts[b].st;
         let (u, v) = self.tris[t].edge_opp(e);
-        let pu = &self.verts[u];
-        let pv = &self.verts[v];
+        let pu = &self.verts[u].st;
+        let pv = &self.verts[v].st;
         line_line_intersection(pa, pb, pu, pv)
     }
 
@@ -959,8 +995,8 @@ impl Triangulation {
         self.tris.iter().map(|t| t.v).collect()
     }
 
-    /// Return a reference to the 2D vertices.
-    pub fn vertices(&self) -> &[Point2D] {
+    /// Return a reference to the CDT vertices.
+    pub fn vertices(&self) -> &[CdtVertex] {
         &self.verts
     }
 
@@ -1173,7 +1209,7 @@ mod tests {
         for tri in &t.tris {
             let v = tri.v;
             assert!(
-                orient2d(&t.verts[v[0]], &t.verts[v[1]], &t.verts[v[2]]).is_positive(),
+                orient2d(&t.verts[v[0]].st, &t.verts[v[1]].st, &t.verts[v[2]].st).is_positive(),
                 "triangle {:?} is not CCW",
                 v
             );
@@ -1422,7 +1458,7 @@ mod tests {
         let p1 = t
             .vertices()
             .iter()
-            .position(|v| v.s == f64_to_rat(0.25) && v.t == f64_to_rat(0.25))
+            .position(|v| v.st.s == f64_to_rat(0.25) && v.st.t == f64_to_rat(0.25))
             .expect("common intersection missing");
 
         assert!(are_connected(&t, ivb, p1));
@@ -1459,7 +1495,7 @@ mod tests {
         // The original segments are split at their intersection (0.25,0.25).
         // Find the split vertex and verify both sub-segments exist.
         let ix = t.vertices().iter().position(|v| {
-            v.s == f64_to_rat(0.25) && v.t == f64_to_rat(0.25)
+            v.st.s == f64_to_rat(0.25) && v.st.t == f64_to_rat(0.25)
         }).expect("intersection vertex missing");
         assert!(has_edge(&t, pi, ix));
         assert!(has_edge(&t, ix, qi));
