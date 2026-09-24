@@ -217,6 +217,47 @@ impl Point3 {
     }
 }
 
+impl Point3 {
+    /// Interval enclosure of the homogeneous representation `(λ, d)` with
+    /// `p = λ / d`, built from the SAME polynomial formulas as
+    /// [`Point3::homogeneous`].  Used only by the predicate filters.
+    pub fn homogeneous_iv(&self) -> ([crate::interval::Iv; 3], crate::interval::Iv) {
+        use crate::interval::*;
+        match *self {
+            Point3::Explicit(p) => (exact3(p), Iv::exact(1.0)),
+            Point3::Lpi { q1, q2, r, s, t } => {
+                let (q1, q2, r, s, t) = (exact3(q1), exact3(q2), exact3(r), exact3(s), exact3(t));
+                let sr = sub3(&s, &r);
+                let tr = sub3(&t, &r);
+                let d = det3(&sub3(&q1, &q2), &sr, &tr);
+                let nq = det3(&sub3(&q1, &r), &sr, &tr);
+                let lambda = add3(&scale3(&q1, d), &scale3(&sub3(&q2, &q1), nq));
+                (lambda, d)
+            }
+            Point3::Ppi { r1, s1, t1, r2, s2, t2, r3, s3, t3 } => {
+                let plane = |r: [f64; 3], s: [f64; 3], t: [f64; 3]| {
+                    let (r, s, t) = (exact3(r), exact3(s), exact3(t));
+                    let n = cross3(&sub3(&s, &r), &sub3(&t, &r));
+                    let d = dot3(&n, &r);
+                    (n, d)
+                };
+                let (n1, d1) = plane(r1, s1, t1);
+                let (n2, d2) = plane(r2, s2, t2);
+                let (n3, d3) = plane(r3, s3, t3);
+                let n2xn3 = cross3(&n2, &n3);
+                let n3xn1 = cross3(&n3, &n1);
+                let n1xn2 = cross3(&n1, &n2);
+                let d = dot3(&n1, &n2xn3);
+                let lambda = add3(
+                    &add3(&scale3(&n2xn3, d1), &scale3(&n3xn1, d2)),
+                    &scale3(&n1xn2, d3),
+                );
+                (lambda, d)
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // f64 vector helpers (filter path only)
 // ---------------------------------------------------------------------------

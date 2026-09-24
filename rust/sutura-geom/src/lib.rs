@@ -16,6 +16,7 @@ use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 
 pub mod arrangement;
 pub mod cdt2d;
+pub mod interval;
 pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;

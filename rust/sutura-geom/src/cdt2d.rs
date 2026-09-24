@@ -1210,6 +1210,18 @@ pub(crate) fn project_point(
 /// Exact 2D orientation test.
 pub fn orient2d(a: &Point2D, b: &Point2D, c: &Point2D) -> Sign {
     profile_count!(ORIENT2D_CALLS, 1);
+    {
+        use crate::interval::Iv;
+        let (as_, at) = (Iv::from_rational(&a.s), Iv::from_rational(&a.t));
+        let (bs, bt) = (Iv::from_rational(&b.s), Iv::from_rational(&b.t));
+        let (cs, ct) = (Iv::from_rational(&c.s), Iv::from_rational(&c.t));
+        let f = bs.sub(as_).mul(ct.sub(at)).sub(bt.sub(at).mul(cs.sub(as_)));
+        match f.sign() {
+            Some(1) => return Sign::Positive,
+            Some(-1) => return Sign::Negative,
+            _ => {}
+        }
+    }
     let m = (&b.s - &a.s) * (&c.t - &a.t) - (&b.t - &a.t) * (&c.s - &a.s);
     Sign::from_rational(&m)
 }
@@ -1218,6 +1230,30 @@ pub fn orient2d(a: &Point2D, b: &Point2D, c: &Point2D) -> Sign {
 /// through `a,b,c`.
 pub fn incircle(a: &Point2D, b: &Point2D, c: &Point2D, d: &Point2D) -> Sign {
     profile_count!(INCIRCLE_CALLS, 1);
+    {
+        use crate::interval::Iv;
+        let iv = |p: &Point2D| (Iv::from_rational(&p.s), Iv::from_rational(&p.t));
+        let (as_, at) = iv(a);
+        let (bs, bt) = iv(b);
+        let (cs, ct) = iv(c);
+        let (ds, dt) = iv(d);
+        let sq = |s: Iv, t: Iv| s.mul(s).add(t.mul(t));
+        let (a2, b2, c2, d2) = (sq(as_, at), sq(bs, bt), sq(cs, ct), sq(ds, dt));
+        let (m11, m12, m13) = (bs.sub(as_), bt.sub(at), b2.sub(a2));
+        let (m21, m22, m23) = (cs.sub(as_), ct.sub(at), c2.sub(a2));
+        let (m31, m32, m33) = (ds.sub(as_), dt.sub(at), d2.sub(a2));
+        let det = m11
+            .mul(m22.mul(m33).sub(m23.mul(m32)))
+            .sub(m12.mul(m21.mul(m33).sub(m23.mul(m31))))
+            .add(m13.mul(m21.mul(m32).sub(m22.mul(m31))));
+        // Only the sign of the exact determinant matters below; map it the
+        // same way the exact branch does.
+        match det.sign() {
+            Some(1) => return Sign::Positive,
+            Some(-1) => return Sign::Negative,
+            _ => {}
+        }
+    }
     let a2 = &a.s * &a.s + &a.t * &a.t;
     let b2 = &b.s * &b.s + &b.t * &b.t;
     let c2 = &c.s * &c.s + &c.t * &c.t;
@@ -1373,6 +1409,42 @@ fn bboxes_overlap(a: &Bbox2D, b: &Bbox2D) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Filtered orient2d / incircle must equal the exact rational result,
+    /// including exactly collinear / cocircular inputs built from rationals
+    /// that are not representable in f64 (e.g. thirds).
+    #[test]
+    fn filtered_2d_predicates_agree_with_exact() {
+        use num_bigint::BigInt;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xc1_2d);
+        let q = |n: i64, d: i64| BigRational::new(BigInt::from(n), BigInt::from(d));
+        let exact_o = |a: &Point2D, b: &Point2D, c: &Point2D| {
+            Sign::from_rational(&((&b.s - &a.s) * (&c.t - &a.t) - (&b.t - &a.t) * (&c.s - &a.s)))
+        };
+        for _ in 0..4000 {
+            let mut rp = || Point2D {
+                s: q(rng.gen_range(-50..50), rng.gen_range(1..9)),
+                t: q(rng.gen_range(-50..50), rng.gen_range(1..9)),
+            };
+            let a = rp();
+            let b = rp();
+            let mut c = rp();
+            if rng.gen_bool(0.3) {
+                // Exactly collinear: c = a + k (b - a) with a rational k.
+                let k = q(rng.gen_range(-7..7), 3);
+                c = Point2D { s: &a.s + &k * (&b.s - &a.s), t: &a.t + &k * (&b.t - &a.t) };
+            }
+            assert_eq!(orient2d(&a, &b, &c), exact_o(&a, &b, &c));
+        }
+        // Cocircular: four points on the unit circle with rational coords.
+        let p = |n: i64, m: i64| {
+            let den = n * n + m * m;
+            Point2D { s: q(n * n - m * m, den), t: q(2 * n * m, den) }
+        };
+        let (a, b, c, d) = (p(2, 1), p(3, 2), p(5, 1), p(7, 3));
+        assert!(incircle(&a, &b, &c, &d).is_zero());
+    }
+
     use super::*;
     use crate::point::f64_to_rat;
 

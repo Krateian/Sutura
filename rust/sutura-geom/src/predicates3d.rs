@@ -47,6 +47,14 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
 
     profile_count!(ORIENT3D_IMPLICIT, 1);
 
+    // Rigorous interval filter on the homogeneous (λ, d) representation:
+    // sign(det(c-a, b-a, d-a)) = sign(det4([λ_i, d_i])) * Π sign(d_i).
+    // It decides only when the enclosure excludes zero; otherwise the exact
+    // rational evaluation below runs, so results are unchanged.
+    if let Some(s) = orient3d_filter(p1, p2, p3, p4) {
+        return s;
+    }
+
     // Any implicit point: evaluate the determinant EXACTLY in rational
     // arithmetic.  A previous f64 fast path evaluated the determinant on the
     // ROUNDED coordinates of the LPI/PPI point; the construction rounding can
@@ -80,6 +88,33 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
     } else {
         -1.0
     }
+}
+
+fn orient3d_filter(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> Option<f64> {
+    let (l1, d1) = p1.homogeneous_iv();
+    let (l2, d2) = p2.homogeneous_iv();
+    let (l3, d3) = p3.homogeneous_iv();
+    let (l4, d4) = p4.homogeneous_iv();
+    let sd = d1.sign()? * d2.sign()? * d3.sign()? * d4.sign()?;
+    let m = [
+        [l1[0], l1[1], l1[2], d1],
+        [l2[0], l2[1], l2[2], d2],
+        [l3[0], l3[1], l3[2], d3],
+        [l4[0], l4[1], l4[2], d4],
+    ];
+    let s = crate::interval::det4(&m).sign()?;
+    Some((s * sd) as f64)
+}
+
+/// Exact-only evaluation (no filter); used by tests to cross-check the filter.
+#[cfg(test)]
+pub(crate) fn orient3d_sign_exact(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 {
+    let a = p1.to_rational().unwrap();
+    let b = p2.to_rational().unwrap();
+    let c = p3.to_rational().unwrap();
+    let d = p4.to_rational().unwrap();
+    let det = det_rat(&sub_rat(&c, &a), &sub_rat(&b, &a), &sub_rat(&d, &a));
+    if det.is_zero() { 0.0 } else if det.is_positive() { 1.0 } else { -1.0 }
 }
 
 /// Indirect `orient3d` for the case where exactly the first point is an
@@ -148,6 +183,56 @@ pub fn orient3d_sign_explicit(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]
 
 #[cfg(test)]
 mod tests {
+    /// The interval filter must never contradict the exact evaluation:
+    /// random explicit / LPI / PPI quadruples, including near-degenerate
+    /// ones built from shared input vertices.
+    #[test]
+    fn filter_agrees_with_exact_on_implicit_points() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x5eed_c1);
+        let rp = |rng: &mut rand::rngs::StdRng| -> [f64; 3] {
+            [rng.gen_range(-10.0..10.0), rng.gen_range(-10.0..10.0), rng.gen_range(-10.0..10.0)]
+        };
+        let mut decided = 0usize;
+        let mut total = 0usize;
+        for _ in 0..3000 {
+            let pts: Vec<[f64; 3]> = (0..12).map(|_| rp(&mut rng)).collect();
+            let mk = |k: usize, rng: &mut rand::rngs::StdRng| -> Point3 {
+                match rng.gen_range(0..3) {
+                    0 => Point3::Explicit(pts[k % 12]),
+                    1 => Point3::Lpi { q1: pts[k % 12], q2: pts[(k + 1) % 12], r: pts[(k + 2) % 12], s: pts[(k + 3) % 12], t: pts[(k + 4) % 12] },
+                    _ => Point3::Ppi {
+                        r1: pts[k % 12], s1: pts[(k + 1) % 12], t1: pts[(k + 2) % 12],
+                        r2: pts[(k + 3) % 12], s2: pts[(k + 4) % 12], t2: pts[(k + 5) % 12],
+                        r3: pts[(k + 6) % 12], s3: pts[(k + 7) % 12], t3: pts[(k + 8) % 12],
+                    },
+                }
+            };
+            let a = mk(0, &mut rng);
+            let b = mk(3, &mut rng);
+            let c = mk(6, &mut rng);
+            // Degenerate on purpose half of the time: d reuses a's recipe.
+            let d = if rng.gen_bool(0.5) { a.clone() } else { mk(9, &mut rng) };
+            if [&a, &b, &c, &d].iter().any(|p| p.to_rational().is_none()) {
+                continue;
+            }
+            total += 1;
+            let exact = orient3d_sign_exact(&a, &b, &c, &d);
+            if let Some(f) = orient3d_filter(&a, &b, &c, &d) {
+                decided += 1;
+                assert_eq!(f, exact, "filter contradicted exact sign");
+            }
+            // All-explicit quadruples take the robust-crate path, which
+            // returns the determinant value rather than +/-1: compare signs.
+            let full = orient3d_sign(&a, &b, &c, &d);
+            let full_sign = if full == 0.0 { 0.0 } else { full.signum() };
+            assert_eq!(full_sign, exact);
+        }
+        assert!(total > 1000);
+        // The filter should decide the large majority of generic cases.
+        assert!(decided * 2 > total, "filter decided only {decided}/{total}");
+    }
+
     use super::*;
 
     const ORIGIN: [f64; 3] = [0.0, 0.0, 0.0];
