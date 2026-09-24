@@ -6,6 +6,24 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Phase B indirect-predicates prototype (`--experimental-indirect-autorefine`).**
+  The `rust/sutura-geom` crate now implements the full Phase B chain: indirect
+  `orient3d`/`orient2d`/`incircle` predicates on explicit and LPI/PPI implicit
+  points (`predicates2d.rs`, `predicates3d.rs`), an exact triangle–triangle
+  intersection classifier (`triangle_intersection.rs`), a 2D constrained
+  Delaunay triangulation for projected implicit points (`cdt2d.rs`), an
+  `arrangement_lite` PyO3 binding that splits a self-intersecting triangle
+  soup, and `--experimental-indirect-autorefine` wiring in `sutura/repair.py`.
+  The incremental single-segment CDT insertion was replaced by a planar
+  arrangement step that computes all segment-segment intersections up front
+  before enforcing constraints, fixing the "constrained edge blocks segment
+  insertion" panic seen on thingi10k_1038441-style dense self-intersections.
+  Regression tests: 38 Rust unit tests + 9 Python smoke tests pass, plus two
+  new CDT tests for multiple crossing segments in one host triangle. Known
+  limitation: the subdivision phase is exact-rational only, so dense
+  self-intersection scans do not finish in practical time; a filtered
+  f64/interval/exact evaluation layer is the next step before the path can be
+  benchmarked against the full 115-mesh corpus.
 - **Experimental fTetWild fallback tier for residual self-intersections**
   (`sutura/ftetwild_bridge.py`, `--experimental-fallback-ftetwild`, GUI
   checkbox — FAZ17). A guaranteed-correct last-resort solidifier: when the
