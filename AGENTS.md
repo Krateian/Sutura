@@ -210,6 +210,13 @@ the following in order, without being asked separately for each:
    verify after the fact that the new version actually appears on the Orca
    Cloud listing page (Actions tab -> workflow run -> check the "Publish
    release to OrcaCloud" step didn't get skipped and returned 2xx).
+   Since v0.4.1 the step prints the API response and fails on anything but
+   HTTP 201 (it used to report success on a 400). The metadata JSON is sent
+   with `curl --form-string` because `-F` splits the value at `;`. The
+   OrcaCloud side only accepts OIDC tokens from the `release` event, so a
+   failed publish is retried by turning the release into a draft and
+   publishing it again (same tag, re-fires `published`), not by
+   `workflow_dispatch`.
 
 This checklist is the release process — steps 5 and 6 are not optional
 extras to be reminded about separately; they are part of doing a release at

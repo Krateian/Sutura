@@ -67,7 +67,11 @@ jobs:
           fi
           metadata="$(jq -cn --arg version "$version" --arg changelog "$changelog" \
             '{version: $version} + (if $changelog == "" then {} else {changelog: $changelog} end)')"
-          args=(-F "metadata=$metadata")
+          # --form-string, NOT -F: curl -F parses ';' inside the value as a
+          # field-attribute separator (and a leading '@' / '<' as a file), which
+          # truncated the JSON whenever the release body contained a semicolon
+          # (v0.4.1: HTTP 400 "Metadata must be valid JSON").
+          args=(--form-string "metadata=$metadata")
           shopt -s nullglob
           for file in $PLUGIN_FILES; do
             args+=(-F "files=@$file")
