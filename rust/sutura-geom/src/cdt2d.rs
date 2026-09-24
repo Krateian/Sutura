@@ -175,8 +175,14 @@ impl Triangulation {
     fn push_vertex(&mut self, v: CdtVertex) -> usize {
         self.diag.update_bit_len(&v.st);
         let vi = self.verts.len();
-        self.vertex_index
-            .insert(v.provenance.canonical_key(), vi);
+        // NaN placeholders (the temporary 2D-only fallback path) must not be
+        // inserted into the provenance-based index because they all share the
+        // same key. They remain reachable via the (s,t) index. Commit 4 removes
+        // the fallback entirely.
+        if !v.provenance.is_nan_placeholder() {
+            self.vertex_index
+                .insert(v.provenance.canonical_key(), vi);
+        }
         self.st_index
             .insert((v.st.s.clone(), v.st.t.clone()), vi);
         self.verts.push(v);
@@ -186,8 +192,10 @@ impl Triangulation {
     #[cfg(not(feature = "cdt-diag"))]
     fn push_vertex(&mut self, v: CdtVertex) -> usize {
         let vi = self.verts.len();
-        self.vertex_index
-            .insert(v.provenance.canonical_key(), vi);
+        if !v.provenance.is_nan_placeholder() {
+            self.vertex_index
+                .insert(v.provenance.canonical_key(), vi);
+        }
         self.st_index
             .insert((v.st.s.clone(), v.st.t.clone()), vi);
         self.verts.push(v);

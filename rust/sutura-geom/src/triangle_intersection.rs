@@ -70,20 +70,24 @@ impl Point3 {
     /// A canonical key suitable for deduplicating implicit points that arise
     /// from the same geometric construction in different orderings.
     ///
-    /// For an LPI point the line vertices and plane vertices are each sorted
-    /// independently; for a PPI point each plane is sorted and the three
-    /// planes are sorted.  Explicit points are keyed by their `f64` bit
-    /// patterns.
+    /// Vertices are sorted as whole `[u64;3]` tuples (not as individual scalar
+    /// bits) so that coordinate grouping is preserved. `-0.0` is normalized to
+    /// `+0.0` before taking `to_bits()`.
     pub fn canonical_key(&self) -> Vec<u64> {
-        fn key3(p: [f64; 3]) -> [u64; 3] {
-            [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]
+        fn norm(x: f64) -> f64 {
+            if x == 0.0 { 0.0 } else { x }
         }
-        fn sorted_plane(r: [f64; 3], s: [f64; 3], t: [f64; 3]) -> [u64; 3] {
-            let mut k = [r, s, t].iter().flat_map(|p| key3(*p)).collect::<Vec<_>>();
+        fn key3(p: [f64; 3]) -> [u64; 3] {
+            [
+                norm(p[0]).to_bits(),
+                norm(p[1]).to_bits(),
+                norm(p[2]).to_bits(),
+            ]
+        }
+        fn sorted_vertices(v: [[f64; 3]; 3]) -> [[u64; 3]; 3] {
+            let mut k = [key3(v[0]), key3(v[1]), key3(v[2])];
             k.sort_unstable();
-            let mut out = [0u64; 3];
-            out.copy_from_slice(&k);
-            out
+            k
         }
 
         match *self {
@@ -93,14 +97,15 @@ impl Point3 {
                 k
             }
             Point3::Lpi { q1, q2, r, s, t } => {
-                let mut line = key3(q1).to_vec();
-                line.extend_from_slice(&key3(q2));
+                let mut line = [key3(q1), key3(q2)];
                 line.sort_unstable();
-                let mut plane = [r, s, t].iter().flat_map(|p| key3(*p)).collect::<Vec<_>>();
-                plane.sort_unstable();
+                let plane = sorted_vertices([r, s, t]);
                 let mut out = vec![1]; // tag for LPI
-                out.extend_from_slice(&line);
-                out.extend_from_slice(&plane);
+                out.extend_from_slice(&line[0]);
+                out.extend_from_slice(&line[1]);
+                for v in &plane {
+                    out.extend_from_slice(v);
+                }
                 out
             }
             Point3::Ppi {
@@ -115,18 +120,25 @@ impl Point3 {
                 t3,
             } => {
                 let mut planes = [
-                    sorted_plane(r1, s1, t1),
-                    sorted_plane(r2, s2, t2),
-                    sorted_plane(r3, s3, t3),
+                    sorted_vertices([r1, s1, t1]),
+                    sorted_vertices([r2, s2, t2]),
+                    sorted_vertices([r3, s3, t3]),
                 ];
                 planes.sort_unstable();
                 let mut out = vec![2]; // tag for PPI
-                for p in &planes {
-                    out.extend_from_slice(p);
+                for plane in &planes {
+                    for v in plane {
+                        out.extend_from_slice(v);
+                    }
                 }
                 out
             }
         }
+    }
+
+    /// True if this point uses the placeholder NaN explicit representation.
+    pub(crate) fn is_nan_placeholder(&self) -> bool {
+        matches!(*self, Point3::Explicit(p) if p.iter().any(|x| x.is_nan()))
     }
 }
 
@@ -731,5 +743,87 @@ mod tests {
             s: s.explicit(),
             t: t.explicit(),
         }
+    }
+
+    #[test]
+    fn canonical_key_ppi_does_not_panic() {
+        // Regression: the old sorted_plane() tried to copy 9 u64s into [u64;3].
+        let p = Point3::Ppi {
+            r1: [0.0, 0.0, 0.0],
+            s1: [1.0, 0.0, 0.0],
+            t1: [0.0, 1.0, 0.0],
+            r2: [0.0, 0.0, 0.0],
+            s2: [1.0, 0.0, 0.0],
+            t2: [0.0, 0.0, 1.0],
+            r3: [1.0, 1.0, 1.0],
+            s3: [2.0, 1.0, 1.0],
+            t3: [1.0, 2.0, 1.0],
+        };
+        let _ = p.canonical_key();
+    }
+
+    #[test]
+    fn canonical_key_preserves_vertex_grouping() {
+        // Two distinct planes whose flattened, scalar-sorted bit sequences are
+        // identical. The old code produced the same key; the fixed code must
+        // produce different keys because the vertex tuples differ.
+        let plane_a = Point3::Ppi {
+            r1: [0.0, 1.0, 2.0],
+            s1: [3.0, 4.0, 5.0],
+            t1: [6.0, 7.0, 8.0],
+            r2: [0.0, 0.0, 0.0],
+            s2: [1.0, 0.0, 0.0],
+            t2: [0.0, 1.0, 0.0],
+            r3: [1.0, 1.0, 1.0],
+            s3: [0.0, 1.0, 1.0],
+            t3: [1.0, 0.0, 1.0],
+        };
+        let plane_b = Point3::Ppi {
+            r1: [0.0, 1.0, 2.0],
+            s1: [3.0, 4.0, 6.0],
+            t1: [5.0, 7.0, 8.0],
+            r2: [0.0, 0.0, 0.0],
+            s2: [1.0, 0.0, 0.0],
+            t2: [0.0, 1.0, 0.0],
+            r3: [1.0, 1.0, 1.0],
+            s3: [0.0, 1.0, 1.0],
+            t3: [1.0, 0.0, 1.0],
+        };
+        assert_ne!(plane_a.canonical_key(), plane_b.canonical_key());
+    }
+
+    #[test]
+    fn canonical_key_normalizes_negative_zero() {
+        let a = Point3::Explicit([-0.0, 0.0, 0.0]);
+        let b = Point3::Explicit([0.0, 0.0, 0.0]);
+        assert_eq!(a.canonical_key(), b.canonical_key());
+    }
+
+    #[test]
+    fn lpi_and_ppi_same_point_have_different_keys() {
+        // Point (0.5, 0.5, 0) as an LPI and as a PPI.
+        let lpi = Point3::Lpi {
+            q1: [0.0, 0.0, -1.0],
+            q2: [1.0, 1.0, 1.0],
+            r: [0.0, 0.0, 0.0],
+            s: [1.0, 0.0, 0.0],
+            t: [0.0, 1.0, 0.0],
+        };
+        let ppi = Point3::Ppi {
+            r1: [0.0, 0.0, 0.0],
+            s1: [1.0, 0.0, 0.0],
+            t1: [0.0, 1.0, 0.0],
+            r2: [0.0, 0.0, 0.0],
+            s2: [1.0, 1.0, 0.0],
+            t2: [0.0, 0.0, 1.0],
+            r3: [1.0, 0.0, 0.0],
+            s3: [0.0, 1.0, 0.0],
+            t3: [0.5, 0.5, 1.0],
+        };
+        assert_ne!(lpi.canonical_key(), ppi.canonical_key());
+        // But they describe the same geometric point.
+        let lr = lpi.to_rational().unwrap();
+        let pr = ppi.to_rational().unwrap();
+        assert_eq!(lr, pr);
     }
 }
