@@ -9,6 +9,7 @@ use crate::point::Point3;
 use crate::profile_count;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
+use std::collections::HashMap;
 
 /// A point in the 2D parameter space of a host triangle.
 ///
@@ -161,6 +162,10 @@ impl HostFrame {
 pub struct Triangulation {
     verts: Vec<CdtVertex>,
     tris: Vec<Tri>,
+    /// Maps a vertex's canonical provenance key to its index.
+    vertex_index: HashMap<Vec<u64>, usize>,
+    /// Maps cached (s,t) coordinates to a vertex index.
+    st_index: HashMap<(BigRational, BigRational), usize>,
     #[cfg(feature = "cdt-diag")]
     diag: DiagState,
 }
@@ -170,6 +175,10 @@ impl Triangulation {
     fn push_vertex(&mut self, v: CdtVertex) -> usize {
         self.diag.update_bit_len(&v.st);
         let vi = self.verts.len();
+        self.vertex_index
+            .insert(v.provenance.canonical_key(), vi);
+        self.st_index
+            .insert((v.st.s.clone(), v.st.t.clone()), vi);
         self.verts.push(v);
         vi
     }
@@ -177,6 +186,10 @@ impl Triangulation {
     #[cfg(not(feature = "cdt-diag"))]
     fn push_vertex(&mut self, v: CdtVertex) -> usize {
         let vi = self.verts.len();
+        self.vertex_index
+            .insert(v.provenance.canonical_key(), vi);
+        self.st_index
+            .insert((v.st.s.clone(), v.st.t.clone()), vi);
         self.verts.push(v);
         vi
     }
@@ -222,22 +235,31 @@ impl Triangulation {
             return None;
         }
 
+        let verts = vec![
+            CdtVertex {
+                st: p0,
+                provenance: a.clone(),
+            },
+            CdtVertex {
+                st: p1,
+                provenance: b.clone(),
+            },
+            CdtVertex {
+                st: p2,
+                provenance: c.clone(),
+            },
+        ];
+        let mut vertex_index = HashMap::with_capacity(3);
+        let mut st_index = HashMap::with_capacity(3);
+        for (i, v) in verts.iter().enumerate() {
+            vertex_index.insert(v.provenance.canonical_key(), i);
+            st_index.insert((v.st.s.clone(), v.st.t.clone()), i);
+        }
         let mut t = Self {
-            verts: vec![
-                CdtVertex {
-                    st: p0,
-                    provenance: a.clone(),
-                },
-                CdtVertex {
-                    st: p1,
-                    provenance: b.clone(),
-                },
-                CdtVertex {
-                    st: p2,
-                    provenance: c.clone(),
-                },
-            ],
+            verts,
             tris: vec![Tri::new(0, 1, 2)],
+            vertex_index,
+            st_index,
             #[cfg(feature = "cdt-diag")]
             diag: DiagState::default(),
         };
@@ -280,9 +302,14 @@ impl Triangulation {
     /// Return the index of an existing vertex whose projected 2D coordinates
     /// exactly match `p`, if any.
     pub fn find_vertex(&self, host: &HostFrame, p: &Point3) -> Option<usize> {
+        // Fast path: look up by canonical provenance key.
+        if let Some(&vi) = self.vertex_index.get(&p.canonical_key()) {
+            return Some(vi);
+        }
+        // Fallback: project and look up by (s,t).
         let pr = p.to_rational()?;
         let q = project_point(&host.a, &host.b, &host.c, &pr)?;
-        self.verts.iter().position(|v| v.st.s == q.s && v.st.t == q.t)
+        self.st_index.get(&(q.s, q.t)).copied()
     }
 
     /// Insert an already-projected explicit 2D point together with its 3D
@@ -917,9 +944,7 @@ impl Triangulation {
     }
 
     fn find_vertex_2d(&self, p: &Point2D) -> Option<usize> {
-        self.verts
-            .iter()
-            .position(|v| v.st.s == p.s && v.st.t == p.t)
+        self.st_index.get(&(p.s.clone(), p.t.clone())).copied()
     }
 
     fn find_any_edge(&self, a: usize, b: usize) -> Option<(usize, usize)> {
