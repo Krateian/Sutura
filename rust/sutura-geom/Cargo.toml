@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 profile = []
+cdt-diag = []
 extension-module = ["pyo3/extension-module"]
 default = []
 

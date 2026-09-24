@@ -22,6 +22,29 @@ pub struct Report {
     pub si_pairs_detected: usize,
     pub degenerate_cases: HashMap<String, usize>,
     pub converged: bool,
+    /// Per-host CDT diagnostics (only populated with the `cdt-diag` feature).
+    #[cfg(feature = "cdt-diag")]
+    pub host_diagnostics: Vec<crate::cdt2d::DiagState>,
+}
+
+impl Report {
+    fn new(
+        input_faces: usize,
+        output_faces: usize,
+        si_pairs_detected: usize,
+        degenerate_cases: HashMap<String, usize>,
+        converged: bool,
+    ) -> Self {
+        Self {
+            input_faces,
+            output_faces,
+            si_pairs_detected,
+            degenerate_cases,
+            converged,
+            #[cfg(feature = "cdt-diag")]
+            host_diagnostics: Vec::new(),
+        }
+    }
 }
 
 struct Aabb {
@@ -175,13 +198,7 @@ pub fn arrangement_lite_core(
         return Ok((
             Vec::new(),
             Vec::new(),
-            Report {
-                input_faces: 0,
-                output_faces: 0,
-                si_pairs_detected: 0,
-                degenerate_cases: degenerate,
-                converged: true,
-            },
+            Report::new(0, 0, 0, degenerate, true),
         ));
     }
 
@@ -228,6 +245,8 @@ pub fn arrangement_lite_core(
     let mut pool: Vec<[BigRational; 3]> = Vec::new();
     let mut weld: HashMap<[BigRational; 3], usize> = HashMap::new();
     let mut out_tris: Vec<[usize; 3]> = Vec::new();
+    #[cfg(feature = "cdt-diag")]
+    let mut host_diagnostics: Vec<crate::cdt2d::DiagState> = Vec::new();
 
     for (ti, tri) in tris.iter().enumerate() {
         let a = verts[tri[0]];
@@ -282,6 +301,11 @@ pub fn arrangement_lite_core(
             }
             cdt.add_constraints_batch(&constraint_indices);
 
+            #[cfg(feature = "cdt-diag")]
+            {
+                host_diagnostics.push(cdt.diagnostic().clone());
+            }
+
             let sub = cdt.triangles();
             let v2 = cdt.vertices();
             for [u, w, z] in sub {
@@ -299,13 +323,13 @@ pub fn arrangement_lite_core(
 
     profile_count!(WELD_AND_OUTPUT, out_tris.len() as u64);
 
-    let report = Report {
-        input_faces: m,
-        output_faces: out_tris.len(),
-        si_pairs_detected: si_pairs,
-        degenerate_cases: degenerate,
-        converged: true,
-    };
+    #[cfg_attr(not(feature = "cdt-diag"), allow(unused_mut))]
+    let mut report = Report::new(m, out_tris.len(), si_pairs, degenerate, true);
+
+    #[cfg(feature = "cdt-diag")]
+    {
+        report.host_diagnostics = host_diagnostics;
+    }
 
     Ok((pool, out_tris, report))
 }

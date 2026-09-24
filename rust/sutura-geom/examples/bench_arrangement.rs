@@ -176,14 +176,49 @@ fn run_timed(
     };
     let wall = start.elapsed();
     let summary = match result {
-        Ok((_, _, r)) => format!(
-            "OK input_faces={}, output_faces={}, si_pairs={}",
-            r.input_faces, r.output_faces, r.si_pairs_detected
-        ),
+        Ok((_, _, r)) => {
+            let mut s = format!(
+                "OK input_faces={}, output_faces={}, si_pairs={}",
+                r.input_faces, r.output_faces, r.si_pairs_detected
+            );
+            #[cfg(feature = "cdt-diag")]
+            {
+                s.push_str("\n");
+                s.push_str(&diag_summary(&r));
+            }
+            s
+        }
         Err(e) => format!("ERROR: {}", e),
     };
     profile::flush_partial_all();
     Ok((wall, summary, profile::report()))
+}
+
+#[cfg(feature = "cdt-diag")]
+fn diag_summary(r: &sutura_geom::arrangement::Report) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    if r.host_diagnostics.is_empty() {
+        return out;
+    }
+    let worst = r
+        .host_diagnostics
+        .iter()
+        .max_by_key(|d| d.max_bit_len)
+        .unwrap_or(&r.host_diagnostics[0]);
+    let total_hosts = r.host_diagnostics.len();
+    let hosts_with_segments = r.host_diagnostics.iter().filter(|d| d.input_segments > 0).count();
+    let _ = writeln!(
+        out,
+        "**CDT diag:** total_hosts={}, hosts_with_segments={}",
+        total_hosts, hosts_with_segments
+    );
+    let _ = writeln!(
+        out,
+        "**Worst host:** input_segments={}, crossings={}, final_vertices={}, max_bit_len={}",
+        worst.input_segments, worst.crossings, worst.final_vertices, worst.max_bit_len
+    );
+    out
 }
 
 fn append_block(block: &str) {
@@ -222,10 +257,11 @@ fn child_mode(path: &str, timeout_secs: u64, label: &str) {
     let mesh = read_obj(path);
     start_heartbeat();
     let block = match run_timed(&mesh, Duration::from_secs(timeout_secs)) {
-        Ok((wall, _summary, table)) => format!(
-            "{}\n**Wall time:** {:.3} s\n{}",
+        Ok((wall, summary, table)) => format!(
+            "{}\n**Wall time:** {:.3} s\n{}\n{}",
             label,
             wall.as_secs_f64(),
+            summary,
             table
         ),
         Err((wall, summary, table)) => format!(

@@ -21,6 +21,32 @@ pub struct Point2D {
     pub t: BigRational,
 }
 
+/// Per-host diagnostic snapshot (only populated when the `cdt-diag` feature
+/// is enabled).
+#[derive(Clone, Debug, Default)]
+pub struct DiagState {
+    pub input_segments: usize,
+    pub crossings: usize,
+    pub final_vertices: usize,
+    pub max_bit_len: u64,
+}
+
+#[cfg(feature = "cdt-diag")]
+impl DiagState {
+    fn update_bit_len(&mut self, p: &Point2D) {
+        use num_traits::Signed;
+        let bits = |r: &BigRational| {
+            let n = r.numer().abs();
+            let d = r.denom().abs();
+            n.bits().max(d.bits())
+        };
+        let m = bits(&p.s).max(bits(&p.t));
+        if m > self.max_bit_len {
+            self.max_bit_len = m;
+        }
+    }
+}
+
 /// Result sign of an exact predicate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sign {
@@ -127,9 +153,52 @@ impl HostFrame {
 pub struct Triangulation {
     verts: Vec<Point2D>,
     tris: Vec<Tri>,
+    #[cfg(feature = "cdt-diag")]
+    diag: DiagState,
 }
 
 impl Triangulation {
+    #[cfg(feature = "cdt-diag")]
+    fn push_vertex(&mut self, p: Point2D) -> usize {
+        self.diag.update_bit_len(&p);
+        let vi = self.verts.len();
+        self.verts.push(p);
+        vi
+    }
+
+    #[cfg(not(feature = "cdt-diag"))]
+    fn push_vertex(&mut self, p: Point2D) -> usize {
+        let vi = self.verts.len();
+        self.verts.push(p);
+        vi
+    }
+
+    #[cfg(feature = "cdt-diag")]
+    fn diag_begin_batch(&mut self, n: usize) {
+        self.diag.input_segments = n;
+    }
+
+    #[cfg(not(feature = "cdt-diag"))]
+    fn diag_begin_batch(&mut self, _n: usize) {}
+
+    #[cfg(feature = "cdt-diag")]
+    fn diag_end_batch(&mut self) {
+        self.diag.final_vertices = self.verts.len();
+    }
+
+    #[cfg(not(feature = "cdt-diag"))]
+    fn diag_end_batch(&mut self) {}
+
+    #[cfg(feature = "cdt-diag")]
+    fn diag_record_crossing(&mut self, vi: usize, n_initial: usize) {
+        if vi >= n_initial {
+            self.diag.crossings += 1;
+        }
+    }
+
+    #[cfg(not(feature = "cdt-diag"))]
+    fn diag_record_crossing(&mut self, _vi: usize, _n_initial: usize) {}
+
     /// Create a triangulation from a host triangle given as three 3D points.
     /// The host triangle's vertices are vertices 0, 1, 2 of the new mesh.
     pub fn from_host(a: &Point3, b: &Point3, c: &Point3) -> Option<Self> {
@@ -148,6 +217,8 @@ impl Triangulation {
         let mut t = Self {
             verts: vec![p0, p1, p2],
             tris: vec![Tri::new(0, 1, 2)],
+            #[cfg(feature = "cdt-diag")]
+            diag: DiagState::default(),
         };
 
         if !t.orient_ccw(0) {
@@ -177,8 +248,7 @@ impl Triangulation {
     pub fn insert_vertex(&mut self, host: &HostFrame, p: &Point3) -> Option<usize> {
         let pr = p.to_rational()?;
         let q = project_point(&host.a, &host.b, &host.c, &pr)?;
-        let vi = self.verts.len();
-        self.verts.push(q);
+        let vi = self.push_vertex(q);
         self.insert_vertex_at(vi);
         Some(vi)
     }
@@ -193,8 +263,7 @@ impl Triangulation {
 
     /// Insert an already-projected explicit 2D point.
     pub fn insert_point_2d(&mut self, p: Point2D) -> usize {
-        let vi = self.verts.len();
-        self.verts.push(p);
+        let vi = self.push_vertex(p);
         self.insert_vertex_at(vi);
         vi
     }
@@ -677,6 +746,7 @@ impl Triangulation {
 
         let n_initial = self.verts.len();
         let n_raw = constraints.len();
+        self.diag_begin_batch(n_raw);
 
         // Lists of vertex indices lying on each raw segment.  Start with the
         // two endpoints; intersections and endpoint-on-segment events are
@@ -701,6 +771,7 @@ impl Triangulation {
                 }
                 if let Some(vi) = self.intersect_segments_add_vertex(constraints[i], constraints[j])
                 {
+                    self.diag_record_crossing(vi, n_initial);
                     on_seg[i].push(vi);
                     on_seg[j].push(vi);
                 }
@@ -747,6 +818,7 @@ impl Triangulation {
         for (a, b) in sub_segments {
             self.add_constraint(a, b);
         }
+        self.diag_end_batch();
     }
 
     /// Compute the intersection of two closed segments whose endpoints are
@@ -801,8 +873,7 @@ impl Triangulation {
             if let Some(vi) = self.find_vertex_2d(&p) {
                 return Some(vi);
             }
-            let vi = self.verts.len();
-            self.verts.push(p.clone());
+            let vi = self.push_vertex(p.clone());
             self.insert_vertex_at(vi);
             return Some(vi);
         }
@@ -891,6 +962,12 @@ impl Triangulation {
     /// Return a reference to the 2D vertices.
     pub fn vertices(&self) -> &[Point2D] {
         &self.verts
+    }
+
+    /// Return the diagnostic snapshot for this host triangle.
+    #[cfg(feature = "cdt-diag")]
+    pub fn diagnostic(&self) -> &DiagState {
+        &self.diag
     }
 }
 
