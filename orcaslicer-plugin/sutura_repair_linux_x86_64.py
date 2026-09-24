@@ -6,7 +6,7 @@
 # name = "Sutura Repair"
 # description = "EXPERIMENTAL: repairs the SELECTED model in-memory via orca.host, runs the Sutura pipeline and loads the result back."
 # author = "Krateian"
-# version = "0.2.3"
+# version = "0.4.0"
 # ///
 """Sutura Repair — OrcaSlicer script plugin.
 

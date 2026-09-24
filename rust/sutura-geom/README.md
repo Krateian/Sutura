@@ -82,3 +82,29 @@ predicate but do not address the per-host complexity; the next chunk must
 target the arrangement directly.
 
 The full report is at `/tmp/phase-c0-profile.md`.
+
+## Phase C1 result (thingi10k_1038441, same harness, Apple M2)
+
+C1 did two things: every crossing is constructed from the original input
+planes/lines (PPI of host plane + the two intersecting triangles' planes, LPI
+against a host edge) instead of chaining previously constructed 2D points,
+and a rigorous interval filter (`src/interval.rs`, one-ulp outward rounding,
+NaN/overflow undecidable) sits in front of the exact `BigRational`
+`orient3d` (implicit points), `orient2d` and `incircle`. A sampling profile
+showed that most of the C0 time was `BigRational` normalisation (gcd) inside
+those predicates, so the filter paid off more than the C0 verdict above
+expected.
+
+| Input | C0 | C1 (crossings from original data) | C1 + interval filter | Output faces |
+|---|---|---|---|---|
+| 100 faces | 0.63 s | 0.50 s | **0.16 s** | 158 (unchanged) |
+| 500 faces | 2.21 s | 2.12 s | **0.68 s** | 607 (unchanged) |
+| 1001 faces | 52.98 s | 53.17 s | **5.99 s** | 2,510 (unchanged) |
+| 5000 faces | timeout (180 s) | timeout (180 s) | **31.1 s** | 10,731 |
+| 10418 faces (full) | timeout (600 s) | — | **462.7 s** | 37,325 (4,443 proper SI pairs) |
+
+Full-mesh phase split with the filter: classify pairs 10.9 s, constrained
+triangulation per host 150.6 s (83 % of instrumented time, 59.6 M `orient2d`
+calls). Next: cut the per-host CDT cost (walking point location instead of
+linear scans, fewer non-convex fallback splits) before corpus-wide
+benchmarking.

@@ -65,6 +65,10 @@ echo "==> virtualenv (stage 2: manifold3d) [$VENV311_PY]"
 [ -d "$APP_DIR/venv311" ] || "$VENV311_PY" -m venv "$APP_DIR/venv311"
 "$APP_DIR/venv311/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/venv311/bin/pip" install --quiet -r "$SRC/requirements-311.txt"
+if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
+    echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
+    "$APP_DIR/venv311/bin/pip" install --quiet -r "$SRC/requirements-ftetwild.txt"
+fi
 
 echo "==> copying application files"
 # __init__.py is deliberately not copied: the installed layout is flat (no

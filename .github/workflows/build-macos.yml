@@ -48,7 +48,8 @@ jobs:
         run: |
           conda install -y -c conda-forge pymeshlab
           pip install --quiet \
-            manifold3d trimesh PySide6-Essentials pyinstaller numpy
+            manifold3d trimesh PySide6-Essentials pyinstaller numpy \
+            pyrobust-predicates
           python -c \
             "import pymeshlab, manifold3d, trimesh, PySide6; print('deps OK')"
 
@@ -68,6 +69,8 @@ jobs:
             "--hidden-import" "history" "--hidden-import" "heatmap"
             "--hidden-import" "heatmap_render" "--hidden-import" "viewer_common"
             "--hidden-import" "updater" "--hidden-import" "numpy"
+            "--hidden-import" "autorefine" "--hidden-import" "mesh_classifier_v2"
+            "--hidden-import" "pyrobust_predicates"
             "--collect-data" "pymeshlab" "--collect-data" "manifold3d")
           for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
                      before-after-render:before_after_render.py \
@@ -75,7 +78,7 @@ jobs:
             name="${t%%:*}"; entry="sutura/${t#*:}"
             python -m PyInstaller "${PYS[@]}" --name "$name" --onedir "$entry"
           done
-# ship manifold_bridge.py + ftetwild_bridge.py + indirect_bridge.py beside
+          # ship manifold_bridge.py + ftetwild_bridge.py + indirect_bridge.py beside
           # sutura-cli so the bundle-aware _resolve_bridge() finds them
           # (stage 2 / fTetWild fallback / indirect autorefine, in-process)
           cp sutura/manifold_bridge.py dist/sutura-cli/

@@ -68,7 +68,10 @@ def run_bridge(src, dst):
         import pytetwild  # noqa: F401  (imports pyvista internally)
     except ImportError as e:
         report['error'] = ('fTetWild fallback skipped: pytetwild/pyvista not '
-                           'available in this environment (%s)' % e)
+                           'available in this environment (%s); it is an '
+                           'optional ~1.1 GB extra - reinstall with '
+                           'SUTURA_WITH_FTETWILD=1 (see '
+                           'requirements-ftetwild.txt)' % e)
         return report
 
     t0 = time.perf_counter()

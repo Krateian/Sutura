@@ -2,10 +2,62 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-25
+
+This release also carries everything recorded under 0.3.1, which was never
+tagged: its OrcaSlicer plugin revision ships here.
 
 ### Added
 
+- **Phase C1: exact self-intersection arrangement made practical on dense
+  scans** (`rust/sutura-geom`, still behind `--experimental-indirect-autorefine`).
+  - Segment-segment crossings inside a host triangle are constructed from the
+    original input geometry (PPI of host plane and the two intersecting
+    triangles' planes, LPI against a host edge) instead of being chained from
+    previously constructed 2D points, which bounds coordinate bit size. Every
+    CDT vertex carries its provenance; when no original-data construction
+    exists the exact 2D construction is the fallback, so a crossing is never
+    dropped and no implicit point is rounded to build a new one.
+  - A rigorous interval-arithmetic filter (`src/interval.rs`: outward
+    rounding by one ulp per operation, NaN/overflow undecidable) now decides
+    `orient3d` on implicit points and the CDT's `orient2d`/`incircle` whenever
+    the enclosure excludes zero; otherwise the exact `BigRational` path runs,
+    so results are unchanged by construction. Differential tests compare the
+    filter against the exact evaluation on random and deliberately degenerate
+    inputs.
+  - Measured on thingi10k_1038441 (Apple M2, release build, identical output
+    face counts before/after on every subset): 1001-face subset 53.0 s ->
+    6.0 s, 5000-face subset timeout at 180 s -> 31.1 s, full mesh (10,418
+    faces, 4,443 proper SI pairs) did not finish in 30+ min -> 462.7 s. The
+    remaining time is dominated by the per-host constrained triangulation;
+    the path stays opt-in and developer-built (`maturin develop` in
+    `rust/sutura-geom`).
+  - C0 profiling harness `rust/sutura-geom/examples/bench_arrangement.rs`
+    (feature `profile`, per-phase timers and predicate counters, spatially
+    local subsets, per-subset time boxes) and a `cdt-diag` feature for
+    per-host CDT diagnostics.
+- **Geogram evaluation (not integrated).** `docs/geogram-spike-2026-09-24.md`
+  records a measured spike of Geogram's `MeshSurfaceIntersection` +
+  `remove_internal_shells` as an external self-union solver: fast, but its
+  output is not accepted by the manifold3d rebuild on any tested mesh and the
+  community edition aborts in `RadialSort` on thingi10k_1038441 (the library
+  points to the proprietary geogramplus kernel). The path is closed.
+- **OrcaSlicer plugin revision** (recorded under the never-tagged 0.3.1).
+  The plugin now repairs the **currently selected model** by reading it in
+  memory through the `orca.host` API (`model() -> objects() -> volumes() ->
+  mesh()`, using the numpy-free `vertex(i)`/`triangle(i)` accessors — the
+  embedded interpreter ships only `pip`, no numpy) instead of a fixed
+  configured file. Repair runs via the subprocess CLI (no numpy/pymeshlab in
+  the embedded interpreter); the repaired result is written with a **unique
+  per-run filename** (`<stem>_fixed_<timestamp>_<uuid>`) so consecutive runs
+  never overwrite a previous output, and loaded back via `--single-instance`
+  (Linux) / `open -a OrcaSlicer` (macOS). The OrcaSlicer plugin system
+  requires nightly / releases newer than 2.4.2 (stable 2.4.2 has no Plugins
+  menu). Primary target is Linux; the same file is also verified on macOS (the
+  CLI is at the same `~/.local/bin/sutura` path on both platforms). Stub-
+  tested against a mock `orca.host` (`tests/test_orca_plugin.py`), including
+  loading with numpy blocked; the real-instance GUI run is performed
+  separately (user / computer-use).
 - **Phase B indirect-predicates prototype (`--experimental-indirect-autorefine`).**
   The `rust/sutura-geom` crate now implements the full Phase B chain: indirect
   `orient3d`/`orient2d`/`incircle` predicates on explicit and LPI/PPI implicit
@@ -96,11 +148,45 @@ All notable changes to this project are documented here.
   from-scratch reimplementation; pyrobust-predicates Unlicense chosen over the
   2D-only `robust`/`shewchuk` alternatives).
 
+### Changed
+
+- **fTetWild fallback dependencies are now an optional extra.** `pytetwild`
+  and `pyvista` moved from `requirements-311.txt` to
+  `requirements-ftetwild.txt`: pyvista pulls in VTK, roughly 1.1 GB installed
+  (VTK alone ~520 MB), which the default install, the AppImage and the .dmg
+  no longer carry for an opt-in experimental tier. Enable it with
+  `SUTURA_WITH_FTETWILD=1 ./install.sh` (Linux) or
+  `SUTURA_WITH_FTETWILD=1 ./install-macos.sh` (macOS); without it
+  `--experimental-fallback-ftetwild` / the GUI checkbox reports an explicit
+  skip with that hint.
+
+### Fixed
+
+- **`build-macos.yml` was invalid YAML** since the fTetWild commit (a comment
+  line at column 0 inside a `run: |` block), so the macOS .dmg workflow failed
+  instantly; fixed and validated.
+- **`--experimental-autorefine` could crash a repair** when
+  `pyrobust-predicates` was missing (the module import sat outside the
+  guard); it is now imported inside the guard and reported as an error.
+  `pyrobust-predicates` (pure Python) is added to `install-macos.sh` and the
+  .dmg build, which previously did not install it.
+- **`Point3::canonical_key` (sutura-geom)** panicked on any PPI key
+  (9-element copy into a 3-element array) and sorted flattened coordinate
+  scalars, which could give two different points the same dedup key; keys
+  now sort whole vertices, normalise -0.0, and never index NaN placeholders.
+- **Touch-segment host-edge classification** mapped the `s = 0` and
+  `s + t = 1` edges the wrong way round under `p = a + s(b-a) + t(c-a)`.
+
 ## OrcaSlicer plugin (orcaslicer-plugin/) — version history
 
 The plugin keeps its own version number for the Orca Cloud listing, separate
 from the main project's release train. The changelog sections above describe
 the main project; the plugin's own versions are recorded here.
+
+From Sutura 0.4.0 on, the Orca Cloud listing is published automatically on
+every GitHub Release whose plugin file changed, and its version follows the
+Sutura release tag; the plugin header was aligned to `0.4.0` accordingly. The
+0.4.0 listing carries the 0.2.3 changes below.
 
 ### [0.2.3] - 2026-09-21
 
@@ -142,27 +228,6 @@ under 0.2.2 (commits up to `fcfb4a2`) but never entered this changelog.
   name-based `open -a`, and the reopen is skipped when more than one OrcaSlicer
   process is running (ambiguous). Verified end-to-end on real OrcaSlicer
   2.5.0-dev (macOS).
-
-## [0.3.1] - 2026-09-20
-
-### Added
-
-- **OrcaSlicer plugin revision.** The plugin now repairs the **currently
-  selected model** by reading it in memory through the `orca.host` API
-  (`model() -> objects() -> volumes() -> mesh()`, using the numpy-free
-  `vertex(i)`/`triangle(i)` accessors — the embedded interpreter ships only
-  `pip`, no numpy) instead of a fixed configured file. Repair runs via the
-  subprocess CLI (no numpy/pymeshlab in the embedded interpreter); the
-  repaired result is written with a **unique per-run filename**
-  (`<stem>_fixed_<timestamp>_<uuid>`) so consecutive runs never overwrite a
-  previous output, and loaded back via `--single-instance` (Linux) /
-  `open -a OrcaSlicer` (macOS). The OrcaSlicer plugin system requires nightly
-  / releases newer than 2.4.2 (stable 2.4.2 has no Plugins menu). Primary
-  target is Linux; the same file is also verified on macOS (the CLI is at the
-  same `~/.local/bin/sutura` path on both platforms). Stub-tested against a
-  mock `orca.host` (`tests/test_orca_plugin.py`), including loading with numpy
-  blocked; the real-instance GUI run is performed separately (user /
-  computer-use).
 
 ## [0.3.0] - 2026-09-20
 

@@ -141,7 +141,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -744,12 +744,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # default.
     stats['experimental_autorefine'] = False
     if autorefine and len(t) > 0:
-        import autorefine
         ar_v = np.asarray(v, dtype=np.float64)
         ar_t = np.asarray(t, dtype=np.int64)
         ar_rep = {'skipped': False}
         try:
-            ar_v, ar_t, ar_info = autorefine.autorefine(ar_v, ar_t)
+            # Imported here, inside the guard: autorefine needs
+            # pyrobust-predicates, and a missing optional dependency must be
+            # reported, never crash the repair.
+            import autorefine as _autorefine
+            ar_v, ar_t, ar_info = _autorefine.autorefine(ar_v, ar_t)
             ar_rep.update(ar_info)
             if len(ar_t) > 0:
                 ms_cand = ml.MeshSet()
