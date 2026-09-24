@@ -8,6 +8,7 @@
 use crate::cdt2d::{HostFrame, Triangulation};
 use crate::point::{f64_to_rat, Point3};
 use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
+use crate::{profile_count, profile_time};
 use num_rational::BigRational;
 use num_traits::ToPrimitive;
 use std::collections::{HashMap, HashSet};
@@ -57,7 +58,7 @@ fn aabb_overlap(a: &Aabb, b: &Aabb) -> bool {
 
 /// Enumerate candidate `(i, j)` pairs whose AABBs overlap using a uniform-grid
 /// spatial hash.  Mirror of `autorefine.broad_phase_candidates`.
-fn broad_phase_candidates(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<(usize, usize)> {
+pub fn broad_phase_candidates(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<(usize, usize)> {
     let m = tris.len();
     if m < 2 {
         return Vec::new();
@@ -145,13 +146,17 @@ fn weld_point(
     map: &mut HashMap<[BigRational; 3], usize>,
     p: [BigRational; 3],
 ) -> usize {
-    if let Some(&i) = map.get(&p) {
-        return i;
-    }
-    let i = pool.len();
-    map.insert(p.clone(), i);
-    pool.push(p);
-    i
+    profile_time!(WELD_AND_OUTPUT, {
+        let result = if let Some(&i) = map.get(&p) {
+            i
+        } else {
+            let i = pool.len();
+            map.insert(p.clone(), i);
+            pool.push(p);
+            i
+        };
+        result
+    })
 }
 
 /// Split a self-intersecting triangle soup along its proper-intersection
@@ -180,29 +185,38 @@ pub fn arrangement_lite_core(
         ));
     }
 
-    let candidates = broad_phase_candidates(verts, tris);
+    let candidates = profile_time!(BROAD_PHASE, broad_phase_candidates(verts, tris));
+    profile_count!(BROAD_PHASE, candidates.len() as u64);
 
     let mut segments: Vec<Vec<(Point3, Point3)>> = vec![Vec::new(); m];
     let mut si_pairs = 0usize;
 
     for (i, j) in candidates {
-        let t1 = Triangle::explicit(verts[tris[i][0]], verts[tris[i][1]], verts[tris[i][2]]);
-        let t2 = Triangle::explicit(verts[tris[j][0]], verts[tris[j][1]], verts[tris[j][2]]);
-        match intersect_triangles(&t1, &t2) {
+        let isect = profile_time!(CLASSIFY_PAIRS, {
+            let t1 = Triangle::explicit(verts[tris[i][0]], verts[tris[i][1]], verts[tris[i][2]]);
+            let t2 = Triangle::explicit(verts[tris[j][0]], verts[tris[j][1]], verts[tris[j][2]]);
+            intersect_triangles(&t1, &t2)
+        });
+        profile_count!(CLASSIFY_PAIRS, 1);
+        match isect {
             TriangleIntersection::ProperSegment { p, q } => {
                 si_pairs += 1;
+                profile_count!(PROPER_SI_PAIRS, 1);
                 segments[i].push((p.clone(), q.clone()));
                 segments[j].push((p, q));
             }
             TriangleIntersection::TouchSegment { p, q } => {
                 // Boundary contact; splitting keeps the shared boundary exact.
+                profile_count!(TOUCH_SEGMENTS, 1);
                 segments[i].push((p.clone(), q.clone()));
                 segments[j].push((p, q));
             }
             TriangleIntersection::TouchPoint(_) => {
+                profile_count!(TOUCH_POINTS, 1);
                 *degenerate.entry("touch_point".to_string()).or_insert(0) += 1;
             }
             TriangleIntersection::CoplanarOverlap => {
+                profile_count!(COPLANAR_OVERLAPS, 1);
                 *degenerate
                     .entry("coplanar_overlap".to_string())
                     .or_insert(0) += 1;
@@ -228,56 +242,62 @@ pub fn arrangement_lite_core(
             continue;
         }
 
-        let host = HostFrame::from_points(
-            &Point3::Explicit(a),
-            &Point3::Explicit(b),
-            &Point3::Explicit(c),
-        )
-        .ok_or("degenerate host triangle")?;
-        let mut cdt = Triangulation::from_host(
-            &Point3::Explicit(a),
-            &Point3::Explicit(b),
-            &Point3::Explicit(c),
-        )
-        .ok_or("degenerate host triangle")?;
+        profile_count!(CDT_PER_HOST, 1);
+        profile_time!(CDT_PER_HOST, {
+            let host = HostFrame::from_points(
+                &Point3::Explicit(a),
+                &Point3::Explicit(b),
+                &Point3::Explicit(c),
+            )
+            .ok_or("degenerate host triangle")?;
+            let mut cdt = Triangulation::from_host(
+                &Point3::Explicit(a),
+                &Point3::Explicit(b),
+                &Point3::Explicit(c),
+            )
+            .ok_or("degenerate host triangle")?;
 
-        // Insert all segment endpoints first, then resolve the planar
-        // arrangement of the segments inside this host triangle.  The batch
-        // approach computes every segment-segment intersection up front, adds
-        // the intersection vertices, and only then enforces the split
-        // sub-segments.  This avoids the incremental "constrained edge blocks
-        // segment insertion" failure that occurs when several intersection
-        // segments coincide in one host triangle.
-        let mut constraint_indices: Vec<(usize, usize)> = Vec::with_capacity(segments[ti].len());
-        for (p, q) in &segments[ti] {
-            let pi = match cdt.find_vertex(&host, p) {
-                Some(v) => v,
-                None => cdt
-                    .insert_vertex(&host, p)
-                    .ok_or("unprojectable intersection point")?,
-            };
-            let qi = match cdt.find_vertex(&host, q) {
-                Some(v) => v,
-                None => cdt
-                    .insert_vertex(&host, q)
-                    .ok_or("unprojectable intersection point")?,
-            };
-            constraint_indices.push((pi, qi));
-        }
-        cdt.add_constraints_batch(&constraint_indices);
+            // Insert all segment endpoints first, then resolve the planar
+            // arrangement of the segments inside this host triangle.  The batch
+            // approach computes every segment-segment intersection up front, adds
+            // the intersection vertices, and only then enforces the split
+            // sub-segments.  This avoids the incremental "constrained edge blocks
+            // segment insertion" failure that occurs when several intersection
+            // segments coincide in one host triangle.
+            let mut constraint_indices: Vec<(usize, usize)> = Vec::with_capacity(segments[ti].len());
+            for (p, q) in &segments[ti] {
+                let pi = match cdt.find_vertex(&host, p) {
+                    Some(v) => v,
+                    None => cdt
+                        .insert_vertex(&host, p)
+                        .ok_or("unprojectable intersection point")?,
+                };
+                let qi = match cdt.find_vertex(&host, q) {
+                    Some(v) => v,
+                    None => cdt
+                        .insert_vertex(&host, q)
+                        .ok_or("unprojectable intersection point")?,
+                };
+                constraint_indices.push((pi, qi));
+            }
+            cdt.add_constraints_batch(&constraint_indices);
 
-        let sub = cdt.triangles();
-        let v2 = cdt.vertices();
-        for [u, w, z] in sub {
-            let pu = host.point3d(&v2[u].s, &v2[u].t);
-            let pw = host.point3d(&v2[w].s, &v2[w].t);
-            let pz = host.point3d(&v2[z].s, &v2[z].t);
-            let iu = weld_point(&mut pool, &mut weld, pu);
-            let iw = weld_point(&mut pool, &mut weld, pw);
-            let iz = weld_point(&mut pool, &mut weld, pz);
-            out_tris.push([iu, iw, iz]);
-        }
+            let sub = cdt.triangles();
+            let v2 = cdt.vertices();
+            for [u, w, z] in sub {
+                let pu = host.point3d(&v2[u].s, &v2[u].t);
+                let pw = host.point3d(&v2[w].s, &v2[w].t);
+                let pz = host.point3d(&v2[z].s, &v2[z].t);
+                let iu = weld_point(&mut pool, &mut weld, pu);
+                let iw = weld_point(&mut pool, &mut weld, pw);
+                let iz = weld_point(&mut pool, &mut weld, pz);
+                out_tris.push([iu, iw, iz]);
+            }
+            Ok::<(), String>(())
+        })?;
     }
+
+    profile_count!(WELD_AND_OUTPUT, out_tris.len() as u64);
 
     let report = Report {
         input_faces: m,

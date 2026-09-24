@@ -6,6 +6,7 @@
 //! `incircle` can be evaluated with exact rational arithmetic.
 
 use crate::point::Point3;
+use crate::profile_count;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
 
@@ -928,6 +929,7 @@ fn project_point(
 
 /// Exact 2D orientation test.
 pub fn orient2d(a: &Point2D, b: &Point2D, c: &Point2D) -> Sign {
+    profile_count!(ORIENT2D_CALLS, 1);
     let m = (&b.s - &a.s) * (&c.t - &a.t) - (&b.t - &a.t) * (&c.s - &a.s);
     Sign::from_rational(&m)
 }
@@ -935,6 +937,7 @@ pub fn orient2d(a: &Point2D, b: &Point2D, c: &Point2D) -> Sign {
 /// Exact incircle test: positive if `d` lies inside the oriented circle
 /// through `a,b,c`.
 pub fn incircle(a: &Point2D, b: &Point2D, c: &Point2D, d: &Point2D) -> Sign {
+    profile_count!(INCIRCLE_CALLS, 1);
     let a2 = &a.s * &a.s + &a.t * &a.t;
     let b2 = &b.s * &b.s + &b.t * &b.t;
     let c2 = &c.s * &c.s + &c.t * &c.t;

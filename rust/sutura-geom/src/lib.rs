@@ -19,6 +19,7 @@ pub mod cdt2d;
 pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
+pub mod profile;
 pub mod triangle_intersection;
 
 /// Parse a point argument into `[f64; 3]`, accepting a tuple, list, or numpy
@@ -184,19 +185,22 @@ fn arrangement_lite<'py>(
     let (pool, out_tris, report) = arrangement::arrangement_lite_core(&rust_verts, &rust_tris)
         .map_err(PyValueError::new_err)?;
 
-    let out_verts: Vec<Vec<f64>> = pool
-        .iter()
-        .map(|p| arrangement::rat3_to_f64(p).to_vec())
-        .collect();
-    let out_tris_i32: Vec<Vec<i32>> = out_tris
-        .iter()
-        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
-        .collect();
+    let (verts_np, tris_np, report_dict) = crate::profile_time!(PYO3_MARSHAL, {
+        let out_verts: Vec<Vec<f64>> = pool
+            .iter()
+            .map(|p| arrangement::rat3_to_f64(p).to_vec())
+            .collect();
+        let out_tris_i32: Vec<Vec<i32>> = out_tris
+            .iter()
+            .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+            .collect();
 
-    let verts_np = numpy::PyArray2::from_vec2(py, &out_verts)?;
-    let tris_np = numpy::PyArray2::from_vec2(py, &out_tris_i32)?;
+        let verts_np = numpy::PyArray2::from_vec2(py, &out_verts)?;
+        let tris_np = numpy::PyArray2::from_vec2(py, &out_tris_i32)?;
 
-    let report_dict = PyDict::new(py);
+        let report_dict = PyDict::new(py);
+        (verts_np, tris_np, report_dict)
+    });
     report_dict.set_item("input_faces", report.input_faces as i64)?;
     report_dict.set_item("output_faces", report.output_faces as i64)?;
     report_dict.set_item("si_pairs_detected", report.si_pairs_detected as i64)?;

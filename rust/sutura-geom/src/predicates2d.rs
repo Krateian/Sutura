@@ -6,6 +6,7 @@
 //! Cartesian coordinates are `(A/d, B/d)`.
 
 use crate::point::f64_to_rat;
+use crate::profile_count;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
 
@@ -86,6 +87,7 @@ fn hom_pair(p: &Point2) -> Option<(BigRational, BigRational, BigRational)> {
 /// points the cleared determinant from Attene 2020 (§4.3) is evaluated in
 /// exact rational arithmetic.
 pub fn orient2d_sign(a: &Point2, b: &Point2, c: &Point2) -> f64 {
+    profile_count!(ORIENT2D_CALLS, 1);
     if let (Point2::Explicit(pa), Point2::Explicit(pb), Point2::Explicit(pc)) = (a, b, c) {
         return robust_orient2d(
             RobustCoord2D { x: pa[0], y: pa[1] },
@@ -136,6 +138,7 @@ pub fn orient2d_sign(a: &Point2, b: &Point2, c: &Point2) -> f64 {
 /// Returns positive if `d` lies inside the oriented circumcircle of
 /// `(a,b,c)`, negative if outside, zero if cospherical.
 pub fn incircle_sign(a: &Point2, b: &Point2, c: &Point2, d: &Point2) -> f64 {
+    profile_count!(INCIRCLE_CALLS, 1);
     if let (
         Point2::Explicit(pa),
         Point2::Explicit(pb),

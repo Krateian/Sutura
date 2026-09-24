@@ -11,6 +11,7 @@ name = "sutura_geom"
 crate-type = ["cdylib", "rlib"]
 
 [features]
+profile = []
 extension-module = ["pyo3/extension-module"]
 default = []
 

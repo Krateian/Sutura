@@ -7,6 +7,7 @@
 //! homogeneous representation `(λ, d)` such that `p = λ / d`, and predicates
 //! are evaluated by clearing denominators.
 
+use crate::{profile_count, profile_time};
 use num_rational::BigRational;
 use num_traits::{FromPrimitive, One, Zero};
 
@@ -89,60 +90,67 @@ impl Point3 {
     /// are treated as exact dyadic rationals, and the construction is carried
     /// out in `BigRational` arithmetic.
     pub fn to_rational(&self) -> Option<[BigRational; 3]> {
-        match *self {
-            Point3::Explicit(p) => Some([f64_to_rat(p[0]), f64_to_rat(p[1]), f64_to_rat(p[2])]),
-            Point3::Lpi { q1, q2, r, s, t } => {
-                let q1 = arr_rat(q1);
-                let q2 = arr_rat(q2);
-                let r = arr_rat(r);
-                let s = arr_rat(s);
-                let t = arr_rat(t);
-
-                let sr = sub_rat(&s, &r);
-                let tr = sub_rat(&t, &r);
-                let q1q2 = sub_rat(&q1, &q2);
-                let d = det_rat(&q1q2, &sr, &tr);
-                if d.is_zero() {
-                    return None;
+        profile_time!(IMPLICIT_CONSTRUCTION, {
+            profile_count!(IMPLICIT_CONSTRUCTION, 1);
+            let result = match *self {
+                Point3::Explicit(p) => {
+                    Some([f64_to_rat(p[0]), f64_to_rat(p[1]), f64_to_rat(p[2])])
                 }
+                Point3::Lpi { q1, q2, r, s, t } => {
+                    let q1 = arr_rat(q1);
+                    let q2 = arr_rat(q2);
+                    let r = arr_rat(r);
+                    let s = arr_rat(s);
+                    let t = arr_rat(t);
 
-                let q1r = sub_rat(&q1, &r);
-                let nq = det_rat(&q1r, &sr, &tr);
+                    let sr = sub_rat(&s, &r);
+                    let tr = sub_rat(&t, &r);
+                    let q1q2 = sub_rat(&q1, &q2);
+                    let d = det_rat(&q1q2, &sr, &tr);
+                    if d.is_zero() {
+                        None
+                    } else {
+                        let q1r = sub_rat(&q1, &r);
+                        let nq = det_rat(&q1r, &sr, &tr);
 
-                let lambda = add_rat(&scale_rat(&q1, &d), &scale_rat(&sub_rat(&q2, &q1), &nq));
-                Some([&lambda[0] / &d, &lambda[1] / &d, &lambda[2] / &d])
-            }
-            Point3::Ppi {
-                r1,
-                s1,
-                t1,
-                r2,
-                s2,
-                t2,
-                r3,
-                s3,
-                t3,
-            } => {
-                let (n1, d1) = plane_rat(r1, s1, t1);
-                let (n2, d2) = plane_rat(r2, s2, t2);
-                let (n3, d3) = plane_rat(r3, s3, t3);
-
-                let n2xn3 = cross_rat(&n2, &n3);
-                let n3xn1 = cross_rat(&n3, &n1);
-                let n1xn2 = cross_rat(&n1, &n2);
-
-                let d = dot_rat(&n1, &n2xn3);
-                if d.is_zero() {
-                    return None;
+                        let lambda =
+                            add_rat(&scale_rat(&q1, &d), &scale_rat(&sub_rat(&q2, &q1), &nq));
+                        Some([&lambda[0] / &d, &lambda[1] / &d, &lambda[2] / &d])
+                    }
                 }
+                Point3::Ppi {
+                    r1,
+                    s1,
+                    t1,
+                    r2,
+                    s2,
+                    t2,
+                    r3,
+                    s3,
+                    t3,
+                } => {
+                    let (n1, d1) = plane_rat(r1, s1, t1);
+                    let (n2, d2) = plane_rat(r2, s2, t2);
+                    let (n3, d3) = plane_rat(r3, s3, t3);
 
-                let num = add_rat(
-                    &add_rat(&scale_rat(&n2xn3, &d1), &scale_rat(&n3xn1, &d2)),
-                    &scale_rat(&n1xn2, &d3),
-                );
-                Some([&num[0] / &d, &num[1] / &d, &num[2] / &d])
-            }
-        }
+                    let n2xn3 = cross_rat(&n2, &n3);
+                    let n3xn1 = cross_rat(&n3, &n1);
+                    let n1xn2 = cross_rat(&n1, &n2);
+
+                    let d = dot_rat(&n1, &n2xn3);
+                    if d.is_zero() {
+                        None
+                    } else {
+                        let num = add_rat(
+                            &add_rat(&scale_rat(&n2xn3, &d1), &scale_rat(&n3xn1, &d2)),
+                            &scale_rat(&n1xn2, &d3),
+                        );
+                        Some([&num[0] / &d, &num[1] / &d, &num[2] / &d])
+                    }
+                }
+            };
+            result
+        })
     }
 
     /// Homogeneous representation `(λ, d)` such that `p = λ / d`.  For an

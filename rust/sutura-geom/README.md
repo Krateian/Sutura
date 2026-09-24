@@ -61,3 +61,24 @@ sutura_geom.insphere((0,0,0), (1,0,0), (0,1,0), (0,0,1), (0.25,0.25,0.25))  # > 
 
 Smoke test: `tests/test_sutura_geom.py` (run with the venv python that has the
 extension installed).
+
+## Phase C0 profile (thingi10k_1038441)
+
+Run with `cargo run --release --example bench_arrangement --features profile --
+/tmp/thingi10k_1038441.obj`.
+
+| Input | Wall time | cdt_per_host | Key count |
+|---|---|---|---|
+| 100 faces | 0.63 s | 29 % | 98 host triangles with segments |
+| 500 faces | 2.21 s | 20 % | 501 host triangles with segments |
+| 1001 faces | 52.98 s | **84.9 %** | 515,326 `orient2d` calls |
+| 5000 faces | 180 s (timeout) | **82.3 %** | one host triangle CDT >158 s |
+| 10418 faces (full) | 600 s (timeout) | **77.1 %** | only 19 host triangles completed |
+
+**Verdict:** the bottleneck is an algorithmic blow-up inside the per-host 2D
+CDT/arrangement on host triangles that carry many intersection segments.
+Predicate filters (C1) and expansion arithmetic (C2) reduce the cost per
+predicate but do not address the per-host complexity; the next chunk must
+target the arrangement directly.
+
+The full report is at `/tmp/phase-c0-profile.md`.

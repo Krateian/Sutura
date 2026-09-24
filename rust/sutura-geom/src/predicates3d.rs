@@ -1,6 +1,7 @@
 //! Exact 3D geometric predicates on explicit and indirect points.
 
 use crate::point::{det_rat, sub_rat, Point3};
+use crate::profile_count;
 use num_traits::{Signed, Zero};
 use robust::{orient3d as robust_orient3d, Coord3D};
 
@@ -19,6 +20,7 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
     if let (Point3::Explicit(a), Point3::Explicit(b), Point3::Explicit(c), Point3::Explicit(d)) =
         (p1, p2, p3, p4)
     {
+        profile_count!(ORIENT3D_EXPLICIT, 1);
         return robust_orient3d(
             Coord3D {
                 x: a[0],
@@ -42,6 +44,8 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
             },
         );
     }
+
+    profile_count!(ORIENT3D_IMPLICIT, 1);
 
     // Any implicit point: evaluate the determinant EXACTLY in rational
     // arithmetic.  A previous f64 fast path evaluated the determinant on the
