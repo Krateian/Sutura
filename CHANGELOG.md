@@ -28,6 +28,17 @@ All notable changes to this project are documented here.
   the full thingi10k_1038441 mesh passes). CI runs the Rust tests with and
   without it, plus a new randomized accelerated-vs-linear test.
 
+### Fixed
+
+- **GUI construction hung on headless systems.** With no
+  `~/.config/sutura/config.json`, `MainWindow` opened the modal first-run
+  dialog, which nobody can answer on Qt's `offscreen`/`minimal` platforms, so
+  the two suites that build the window (`tests/test_autorefine.py`,
+  `tests/test_join_components.py`) hung until their 120 s timeout on the
+  ubuntu CI runner. The dialog is now skipped on those platforms without
+  writing a config (it is still asked on the first on-screen start), and both
+  suites run in CI again.
+
 ## [0.4.1] - 2026-09-25
 
 ### Fixed
