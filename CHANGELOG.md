@@ -83,6 +83,16 @@ All notable changes to this project are documented here.
   pytetwild but no `ftetwild_bridge.py` stays silent instead of reporting an
   error.
 
+- **GUI: one Options menu instead of a row of checkboxes.** The six
+  batch-wide switches (fTetWild fallback, *+ self-intersections (slow)*,
+  autorefine, indirect autorefine, join small components, edge-tiebreak
+  classifier) had stretched the action row across the window. They now sit
+  in one **Options** drop-down next to **Mode**, grouped into *Fallback
+  tier* and *Experimental (opt-in)*; the menu stays open while several boxes
+  are toggled, and the button label counts the options that differ from
+  their defaults (*Options (2)*). The checkbox labels lost their redundant
+  "Experimental:" prefix. Behaviour and CLI mapping are unchanged.
+
 ### Fixed
 
 - **GUI construction hung on headless systems.** With no

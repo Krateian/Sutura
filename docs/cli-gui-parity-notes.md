@@ -36,7 +36,8 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--experimental-autorefine` (GUI checkbox) ·
 `--no-fallback-ftetwild` (GUI checkbox *fTetWild fallback*, checked by default) ·
 `--experimental-fallback-ftetwild` (GUI checkbox *+ self-intersections (slow)* next to it) ·
-`--experimental-indirect-autorefine` (GUI checkbox — Phase B) ·
+`--experimental-indirect-autorefine` (GUI checkbox — Phase B; all six
+batch-wide checkboxes above sit in the GUI's *Options* drop-down menu) ·
 `--version` (GUI version label).
 
 ## History
