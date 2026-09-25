@@ -184,17 +184,18 @@ fn touch_segment_source(
     other_idx: usize,
     p: &Point3,
     q: &Point3,
+    frames: &mut HashMap<usize, HostFrame>,
 ) -> SegmentSource {
     let host = &tris[host_idx];
-    let a = verts[host[0]];
-    let b = verts[host[1]];
-    let c = verts[host[2]];
-    let frame = HostFrame::from_points(
-        &Point3::Explicit(a),
-        &Point3::Explicit(b),
-        &Point3::Explicit(c),
-    )
-    .expect("host triangle must be non-degenerate");
+    // The exact frame depends only on the host triangle: build it once.
+    let frame = frames.entry(host_idx).or_insert_with(|| {
+        HostFrame::from_points(
+            &Point3::Explicit(verts[host[0]]),
+            &Point3::Explicit(verts[host[1]]),
+            &Point3::Explicit(verts[host[2]]),
+        )
+        .expect("host triangle must be non-degenerate")
+    });
 
     fn host_edge_index(st: &crate::cdt2d::Point2D) -> Option<(usize, usize)> {
         use num_traits::{One, Zero};
@@ -275,6 +276,7 @@ pub fn arrangement_lite_core(
 
     let mut segments: Vec<Vec<HostSegment>> = vec![Vec::new(); m];
     let mut si_pairs = 0usize;
+    let mut frames: HashMap<usize, HostFrame> = HashMap::new();
 
     for (i, j) in candidates {
         let isect = profile_time!(CLASSIFY_PAIRS, {
@@ -308,8 +310,8 @@ pub fn arrangement_lite_core(
                 // A touch segment lies on the boundary of one of the triangles.
                 // Classify by checking which triangle contributes the supporting
                 // line; if both are coplanar, treat as coplanar edges.
-                let src_i = touch_segment_source(&verts, &tris, i, j, &p, &q);
-                let src_j = touch_segment_source(&verts, &tris, j, i, &p, &q);
+                let src_i = touch_segment_source(&verts, &tris, i, j, &p, &q, &mut frames);
+                let src_j = touch_segment_source(&verts, &tris, j, i, &p, &q, &mut frames);
                 segments[i].push(HostSegment {
                     p: p.clone(),
                     q: q.clone(),

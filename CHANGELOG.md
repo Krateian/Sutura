@@ -29,6 +29,19 @@ All notable changes to this project are documented here.
   asserted against the linear reference scan (used for differential testing;
   the full thingi10k_1038441 mesh passes). CI runs the Rust tests with and
   without it, plus a new randomized accelerated-vs-linear test.
+- **Phase C3: classification and exact-arithmetic hot spots**
+  (`rust/sutura-geom`, output identical). Orientation tests of a
+  line-plane intersection against the edge it was built on return the exact
+  zero without evaluation; candidate intersection points are proven
+  different by a rigorous interval test before exact rationals are built;
+  the exact host frame for touch segments is built once per host; the 3D
+  back-projection, the fallback line-line intersection and the segment sort
+  key use integer arithmetic with a single normalisation (unit-tested value
+  by value against the rational formulas). thingi10k_1038441 on the same
+  x86_64 VM: 52.5 s → 28.1 s (classification 19.2 s → 4.6 s); identical
+  output digests on that mesh, its subsets and 1038439, 55772, 502009,
+  100045, 46012 (90k faces, 165 s → 95 s) and artec_metal-nut (90k faces,
+  132 s → 77 s).
 - **fTetWild fallback tier on by default when installed.** With the
   optional extra (`requirements-ftetwild.txt`, `SUTURA_WITH_FTETWILD=1`)
   present, the tier now runs without a flag whenever stage 1 still leaves
