@@ -213,6 +213,9 @@ Other meshes on the VM (C2 → C3): 1038439 8.5 s → 4.8 s, 55772 7.0 s →
 3.9 s, 502009 23.0 s → 9.7 s, 46012 165 s → 95 s, artec_metal-nut 132 s →
 77 s (the last two measured with a second job running).
 
+Same harness on the Apple M2 used for the C1/C2 tables (same OBJ, same
+digest `7b05a6fc3b785f42`): full mesh 16.8 s (C2 on the M2: 29.8 s).
+
 ## Phase C4 result (exact-key hashing and integer implicit constructions)
 
 The C3 profile still spent 6.0 s in weld and output and 5.9 s in implicit
@@ -257,3 +260,6 @@ overlap, and profiling adds overhead); the full-mesh wall times from
 5.1 s → 3.9 s, 55772 3.6 s → 3.4 s, 502009 10.0 s → 7.9 s, 46012 95.3 s →
 92.2 s, artec_metal-nut 78.5 s → 77.7 s. On the two 90k-face meshes the
 remaining cost lies outside the phases changed here.
+
+Same harness on the Apple M2 used for the C1/C2/C3 numbers (same OBJ, same
+digest `7b05a6fc3b785f42`): full mesh 10.6 s (C3 on the M2: 16.8 s).
