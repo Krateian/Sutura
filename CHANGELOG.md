@@ -22,6 +22,14 @@ All notable changes to this project are documented here.
   The output changes only for meshes where fTetWild is adopted and its
   boundary is not two-manifold. New regression tests in
   `tests/test_ftetwild_default.py` (synthetic bowtie, no fTetWild needed).
+  Measured on the 40 real-world samples on macOS (fTetWild auto, before and
+  after this change): strict watertight 39/40 and category watertight 38/40
+  in both runs, total time ~354 s in both, no regression; 224108 and 248395
+  were watertight in both runs (the pinched case did not occur there; the
+  unit test covers it). thingi10k_1038441, listed as declined in the 0.4.0
+  entry, is adopted after the manifold3d post-process (25.8 s, watertight).
+  The one remaining strict failure is artec_metal-nut, where fTetWild hits
+  its 180 s budget.
 
 ## [0.4.2] - 2026-09-25
 
