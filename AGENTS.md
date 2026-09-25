@@ -45,6 +45,7 @@ Options menu, never in the way of the plain repair.
 - **Reference input and digest:** the OBJ is converted from `tests/real-world-samples/thingi10k_1038441.stl` with trimesh (5.x; its vertex welding is why the subsets differ slightly from the C1 table in the crate README). The reference digest for the full mesh, identical across C1–C4, is `7b05a6fc3b785f42` (37,323 output faces, 4,445 proper SI pairs). Corpus/test OBJs go to `/tmp`, never into the repo.
 - **Measurement (Linux):** `cd rust/sutura-geom && cargo run --release --example arrangement_digest -- /tmp/<mesh>.obj [...]` prints time, face counts and digest per file; `cargo run --release --example bench_arrangement --features profile -- /tmp/<mesh>.obj` gives the per-phase split.
 - **Measurement (macOS, conda env `sutura-env`):** build with `PYO3_PYTHON=/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/bin/python cargo build --release --example arrangement_digest`, then run `DYLD_LIBRARY_PATH=/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/lib ./target/release/examples/arrangement_digest /tmp/thingi10k_1038441.obj`. `DYLD_LIBRARY_PATH` must not be exported while cargo itself runs (libiconv conflict), and without `PYO3_PYTHON` the example links against a different libpython than the one on `DYLD_LIBRARY_PATH`.
+- **Evaluated CDT variants (developer switches, NOT the default):** `cdt2d::experimental` holds per-thread bits (thread-local, so parallel unit tests cannot interfere): 1 = keep constraint flags on `flip` (the default `flip` rebuilds with `Tri::new` and clears the outer-edge flags on the flipped side), 2 = Sloan queue flips instead of split vertices on the constraint, 4 = propagate segment endpoints lying inside a host edge to every triangle sharing that edge (`arrangement::collect_edge_points`; zero-area triangles are kept unchanged). Set them with `SUTURA_CDT_OPTS` (`arrangement_digest`), `sutura_geom._set_cdt_experimental(bits)` or `benchmark_repair_corpus.py --cdt-experimental BITS`. Findings: the reference output has T-junctions exactly where an endpoint lies inside a host edge (bit 4 removes them: 100045 56 -> 0 odd-use edges; regression `propagated_edge_points_remove_t_junctions`), Sloan cuts 1038441 from 37,323 to 32,481 faces and 17.8 s to 13.8 s (regression `sloan_flips_add_no_vertex`), bit 1 has no effect once Sloan is on. End to end on the 40 real-world samples (`--experimental-indirect-autorefine --no-fallback-ftetwild`) strict watertight stays 31/40 for all variants and for the pipeline without the tier; propagation costs ~35 % arrangement time. Default output therefore unchanged; results table in the crate README. Enabling one by default is an output-changing decision (see the rule above).
 - **Timing status, thingi10k_1038441 full mesh:** C1 (v0.4.0) 462.7 s on the Apple M2 / 830 s on the x86_64 VM (2 vCPU); C2 29.8 s / 52.5 s; C3 16.8 s / 28.1 s; C4 10.6 s / 17.6 s. Timings are compared only within one machine. Remaining cost on the VM after C4 (profile build): per-host triangulation 7.4 s, classification 4.6 s, implicit point construction 2.3 s, weld and output 0.06 s (the phases overlap in the profile). On the 90k-face meshes (46012, artec_metal-nut) C4 gains only 1–3 %; their cost lies outside these phases and has not been profiled yet.
 
 ## Backlog (v0.3 notes — diagnosed, NOT fixed yet)
@@ -78,10 +79,12 @@ Options menu, never in the way of the plain repair.
 - **Strict-watertight but `warning` after fTetWild.** thingi10k_224108 and
   thingi10k_248395 are strictly watertight after the fTetWild fallback, but
   stage 2 is skipped, so the category is `warning`. Not investigated yet.
-- **Sloan-style flipping in the per-host CDT (output-changing).** Non-convex
-  quadrilaterals fall back to a Steiner split; queue flipping would produce
-  fewer split vertices but changes the output, so it needs its own decision
-  and a corpus measurement (see the Rust core performance section).
+- **`indirect_bridge.py` rounds the exact arrangement to float32.** The
+  exact output of `--experimental-indirect-autorefine` is converted to
+  `float32` before the stage-1 chain, which can re-create near-coincident
+  or intersecting geometry; the `si_after: 0` in its report holds for the
+  exact output only. A float64 hand-off is the obvious next experiment for
+  the tier (not measured yet).
 - **Pending release.** The changes under `[Unreleased]` in CHANGELOG.md
   (Phase C2/C3, the fTetWild default, the headless GUI fix) are not tagged;
   the last release is v0.4.1, so the next release is v0.4.2 (see the

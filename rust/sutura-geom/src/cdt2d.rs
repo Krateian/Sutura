@@ -12,7 +12,45 @@ use std::cell::Cell;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+
+/// Experimental, output-changing CDT behaviours, all off by default (the
+/// default output is the reference the digests are compared against).
+/// They are per-thread switches (set them on the thread that runs the
+/// arrangement) so the measurement tools can compare variants on the same
+/// build and parallel unit tests cannot affect each other; they are not
+/// wired to the CLI.
+pub mod experimental {
+    use std::cell::Cell;
+
+    /// Keep the constraint flags of the four outer quadrilateral edges when
+    /// an edge is flipped (the default `flip` resets them).
+    pub const PRESERVE_FLAGS_ON_FLIP: u8 = 1;
+    /// Insert a constraint with Sloan's queue of edge flips: a crossed edge
+    /// whose quadrilateral is not convex is retried later instead of being
+    /// split by a new vertex on the constraint.
+    pub const SLOAN_FLIPS: u8 = 2;
+    /// Propagate every segment endpoint that lies in the interior of a host
+    /// triangle's edge to all input triangles sharing that edge, so the
+    /// output has no T-junction there (see `arrangement::arrangement_lite_core`).
+    pub const PROPAGATE_EDGE_POINTS: u8 = 4;
+
+    thread_local! {
+        static OPTIONS: Cell<u8> = const { Cell::new(0) };
+    }
+
+    pub fn set_options(bits: u8) {
+        OPTIONS.with(|o| o.set(bits));
+    }
+
+    pub fn options() -> u8 {
+        OPTIONS.with(|o| o.get())
+    }
+
+    pub(crate) fn enabled(bit: u8) -> bool {
+        options() & bit != 0
+    }
+}
 
 /// A point in the 2D parameter space of a host triangle.
 ///
@@ -980,6 +1018,12 @@ impl Triangulation {
         //
         self.tris[t1].adj = [adj2[(e2 + 1) % 3], Some(t2), adj1[(e1 + 2) % 3]];
         self.tris[t2].adj = [adj2[(e2 + 2) % 3], adj1[(e1 + 1) % 3], Some(t1)];
+        if experimental::enabled(experimental::PRESERVE_FLAGS_ON_FLIP) {
+            // Same edge mapping as the adjacencies above; the new diagonal
+            // (a, d) is never a constraint (a constrained edge is not flipped).
+            self.tris[t1].constrained = [_cons2[(e2 + 1) % 3], false, _cons1[(e1 + 2) % 3]];
+            self.tris[t2].constrained = [_cons2[(e2 + 2) % 3], _cons1[(e1 + 1) % 3], false];
+        }
 
         self.update_adj(adj1[(e1 + 2) % 3], a, b, Some(t1));
         self.update_adj(adj2[(e2 + 1) % 3], b, d, Some(t1));
@@ -1124,6 +1168,20 @@ impl Triangulation {
                 self.add_constraint(a, v);
                 self.add_constraint(v, b);
                 return;
+            }
+            if experimental::enabled(experimental::SLOAN_FLIPS) {
+                if let Some(w) = walk.as_ref() {
+                    if self.sloan_insert(a, b, w) {
+                        if let Some((t, e)) = self.find_any_edge(a, b) {
+                            self.tris[t].constrained[e] = true;
+                            if let Some(n) = self.tris[t].adj[e] {
+                                let ne = self.find_edge(n, a, b).unwrap();
+                                self.tris[n].constrained[ne] = true;
+                            }
+                            return;
+                        }
+                    }
+                }
             }
             let crossing = self.find_crossing_edge(a, b, walk.as_ref());
             match crossing {
@@ -1407,6 +1465,65 @@ impl Triangulation {
             }
         }
         None
+    }
+
+    /// Sloan (1993): remove every edge that properly crosses `(a, b)` by
+    /// flipping, retrying edges whose quadrilateral is not strictly convex
+    /// after the others, until `(a, b)` is an edge.  No vertex is added.
+    /// Returns `false` without changing the triangulation when a crossed
+    /// edge is itself a constraint, and `false` after a full pass without a
+    /// flip (the triangulation stays valid; the caller then continues with
+    /// its split fallback).  Requires that no vertex lies on the open
+    /// segment, which the caller has already ruled out.
+    fn sloan_insert(&mut self, a: usize, b: usize, walk: &SegmentWalk) -> bool {
+        let mut queue: VecDeque<(usize, usize)> = VecDeque::new();
+        for &t in &walk.corridor {
+            for e in 0..3 {
+                let (u, v) = self.tris[t].edge_opp(e);
+                if !self.cross_idx(a, b, u, v) {
+                    continue;
+                }
+                if self.tris[t].constrained[e] {
+                    return false;
+                }
+                let key = (u.min(v), u.max(v));
+                if !queue.contains(&key) {
+                    queue.push_back(key);
+                }
+            }
+        }
+        let mut stalled = 0usize;
+        while let Some((u, v)) = queue.pop_front() {
+            let (t, e) = match self.find_any_edge(u, v) {
+                Some(te) => te,
+                None => return false,
+            };
+            let nbr = match self.tris[t].adj[e] {
+                Some(n) => n,
+                None => return false,
+            };
+            let (p, q) = self.tris[t].edge_opp(e);
+            let ne = match self.find_edge(nbr, p, q) {
+                Some(ne) => ne,
+                None => return false,
+            };
+            if !self.is_convex_for_flip(t, e, nbr, ne) {
+                queue.push_back((u, v));
+                stalled += 1;
+                if stalled > queue.len() {
+                    return false;
+                }
+                continue;
+            }
+            let x = self.tris[t].v[e];
+            let d = self.tris[nbr].v[ne];
+            self.flip(t, e, nbr, ne);
+            stalled = 0;
+            if self.cross_idx(a, b, x, d) {
+                queue.push_back((x.min(d), x.max(d)));
+            }
+        }
+        true
     }
 
     fn is_convex_for_flip(&self, t1: usize, e1: usize, t2: usize, e2: usize) -> bool {
@@ -2489,4 +2606,61 @@ mod tests {
         assert_eq!(st12.s, st13.s);
         assert_eq!(st12.t, st13.t);
     }
+
+    /// Fan constraints from one vertex never cross each other, so with
+    /// Sloan flips the batch must add no vertex at all; the reference
+    /// behaviour adds split vertices on the same input (so the non-convex
+    /// case is really exercised).
+    #[test]
+    fn sloan_flips_add_no_vertex() {
+        use rand::{Rng, SeedableRng};
+        let run = |bits: u8, seed: u64| -> (usize, usize, Triangulation, Vec<(usize, usize)>) {
+            experimental::set_options(bits);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let (a, b, c) = tri_right();
+            let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
+            let mut pt = || loop {
+                let x = rng.gen_range(1..64) as f64 / 64.0;
+                let y = rng.gen_range(1..64) as f64 / 64.0;
+                if x + y < 1.0 {
+                    return Point3::Explicit([x, y, 0.0]);
+                }
+            };
+            let hub = pt();
+            let hi = t.insert_vertex(&hub).unwrap();
+            let mut ends = Vec::new();
+            for _ in 0..40 {
+                let p = pt();
+                ends.push((t.insert_vertex(&p).unwrap(), p));
+            }
+            let before = t.verts.len();
+            let segs: Vec<_> = ends
+                .iter()
+                .filter(|(i, _)| *i != hi)
+                .map(|(i, p)| seg(hi, *i, &hub, p))
+                .collect();
+            let pairs = segs.iter().map(|s| s.endpoints).collect();
+            t.add_constraints_batch(&segs);
+            experimental::set_options(0);
+            (before, t.verts.len(), t, pairs)
+        };
+        let mut reference_split = false;
+        for seed in 0..6 {
+            let (before, after, t, pairs) = run(experimental::SLOAN_FLIPS, seed);
+            validate_triangulation(&t);
+            assert_eq!(before, after, "Sloan flips added a vertex (seed {})", seed);
+            for (a, b) in pairs {
+                // A constraint through a collinear vertex is split there; its
+                // pieces are edges, so only check segments with no vertex on
+                // them.
+                if t.find_vertex_on_open_segment_linear(a, b).is_none() {
+                    assert!(has_edge(&t, a, b), "constraint {}-{} missing", a, b);
+                }
+            }
+            let (rb, ra, _, _) = run(0, seed);
+            reference_split |= ra > rb;
+        }
+        assert!(reference_split, "no seed exercised the non-convex split");
+    }
+
 }

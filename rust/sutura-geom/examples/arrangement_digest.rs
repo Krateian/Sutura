@@ -9,6 +9,15 @@
 //! change internal bookkeeping but must not change the result.
 //!
 //!     cargo run --release --example arrangement_digest -- <mesh.obj> [...]
+//!
+//! `SUTURA_CDT_OPTS=<bits>` enables the experimental, output-changing CDT
+//! behaviours of `cdt2d::experimental` (1 = keep constraint flags on flip,
+//! 2 = Sloan flips; default 0 = the reference output).  The extra columns
+//! give the edge-use histogram `m1/m2/m3/m4/m5+` (number of undirected
+//! edges used by 1, 2, 3, 4 and more triangles) of the input and of the
+//! output.  A conforming split of two crossing surfaces turns every
+//! intersection sub-edge into a 4-use edge; odd uses (1, 3) in the output
+//! that were not in the input point at T-junctions.
 
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -16,7 +25,10 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
+use std::collections::HashMap;
+
 use sutura_geom::arrangement::arrangement_lite_core;
+use sutura_geom::cdt2d::experimental;
 
 fn read_obj(path: &str) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     let data = fs::read_to_string(path).expect("failed to read OBJ");
@@ -40,7 +52,30 @@ fn read_obj(path: &str) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     (verts, tris)
 }
 
+/// Edge-use histogram `[m1, m2, m3, m4, m5+]` of an indexed triangle list.
+fn edge_uses(tris: &[[usize; 3]]) -> [usize; 5] {
+    let mut count: HashMap<(usize, usize), usize> = HashMap::new();
+    for t in tris {
+        for k in 0..3 {
+            let (u, v) = (t[k], t[(k + 1) % 3]);
+            *count.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+        }
+    }
+    let mut h = [0usize; 5];
+    for &c in count.values() {
+        h[c.min(5) - 1] += 1;
+    }
+    h
+}
+
+fn fmt_uses(h: [usize; 5]) -> String {
+    format!("{}/{}/{}/{}/{}", h[0], h[1], h[2], h[3], h[4])
+}
+
 fn main() {
+    if let Ok(bits) = env::var("SUTURA_CDT_OPTS") {
+        experimental::set_options(bits.parse().expect("SUTURA_CDT_OPTS must be an integer"));
+    }
     for path in env::args().skip(1) {
         let (verts, tris) = read_obj(&path);
         let start = Instant::now();
@@ -62,14 +97,19 @@ fn main() {
         canon.sort_unstable();
         let mut h = DefaultHasher::new();
         canon.hash(&mut h);
+        let in_uses = fmt_uses(edge_uses(&tris));
+        let out_uses = fmt_uses(edge_uses(&out));
         println!(
-            "{}\tinput_faces={}\toutput_faces={}\tsi_pairs={}\tdigest={:016x}\ttime={:.3}s",
+            "{}\tinput_faces={}\toutput_faces={}\tsi_pairs={}\tdigest={:016x}\ttime={:.3}s\toutput_verts={}\tedge_uses_in={}\tedge_uses_out={}",
             path,
             report.input_faces,
             report.output_faces,
             report.si_pairs_detected,
             h.finish(),
-            secs
+            secs,
+            pool.len(),
+            in_uses,
+            out_uses
         );
     }
 }
