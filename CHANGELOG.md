@@ -56,6 +56,12 @@ All notable changes to this project are documented here.
   ubuntu CI runner. The dialog is now skipped on those platforms without
   writing a config (it is still asked on the first on-screen start), and both
   suites run in CI again.
+- **fTetWild left `__tracked_surface.stl` in the working directory.**
+  fTetWild writes this ~1 MB debug surface into its current directory, so a
+  repair started from a user's folder (terminal, Dolphin/Finder right-click)
+  left the file next to the model. The bridge subprocess now runs in the
+  repair's private temp directory; a regression check is in
+  `tests/test_ftetwild_default.py`.
 
 ## [0.4.1] - 2026-09-25
 
