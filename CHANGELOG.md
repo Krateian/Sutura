@@ -6,6 +6,12 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **GUI suites aborted on macOS with an existing user config.** With
+  `check_for_updates` enabled and a check due in `~/.config/sutura/config.json`,
+  constructing `MainWindow` started the update-check thread, which was still
+  running when the test subprocess exited (SIGABRT, return code -6). The
+  background update check is now skipped on the windowless Qt platforms
+  (`offscreen`/`minimal`), as the first-run dialog already was.
 - **fTetWild results with a pinched vertex ended as `warning`.** fTetWild's
   boundary can be closed with no non-manifold edge and still not be
   two-manifold (two tetrahedra meeting in one vertex), so stage 2 never ran
