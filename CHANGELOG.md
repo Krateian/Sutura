@@ -47,6 +47,9 @@ All notable changes to this project are documented here.
   closed meshes. fTetWild's output and run time vary between runs; the
   result is re-triangulated. New `tests/test_ftetwild_default.py` (in CI;
   the checks that need fTetWild skip there).
+  The default also requires the bridge module, so a stale install that has
+  pytetwild but no `ftetwild_bridge.py` stays silent instead of reporting an
+  error.
 
 ### Fixed
 
