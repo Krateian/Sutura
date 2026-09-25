@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Deep-repair ladder (`--deep-repair {off,local,full}`).** The tiers that
+  run after the stage-1 chain now have one entry point,
+  `repair.deep_repair_ladder`. The mode comes from the flag, then
+  `SUTURA_DEEP_REPAIR`, then the `deep_repair` key of
+  `~/.config/sutura/config.json` (new `updater.DEFAULT_CONFIG` entry), and
+  defaults to `full`. `full` runs the fTetWild tier unchanged (the block was
+  moved, not modified; the output is identical to the previous version);
+  `--no-fallback-ftetwild` maps to `off` and
+  `--experimental-fallback-ftetwild` to `full` when no `--deep-repair` is
+  given. `off` runs no tier and reports `deep_repair.available`
+  (`holes_remaining`, `nm_remaining`, `tiers`, `estimate_s`) when holes or
+  non-manifold edges remain; `repair.estimate_deep_repair_time` gives the
+  estimate with placeholder coefficients. `local` is a PyMeshLab-based
+  prototype that deletes the damaged region (faces on boundary or
+  non-manifold edges plus one vertex ring), closes the openings with refined
+  hole filling and smooths only the new interior vertices; it is adopted only
+  when holes and non-manifold edges do not get worse, self-intersections do
+  not increase and all faces outside the region are unchanged (report key
+  `deep_repair.local`). The report gains `deep_repair` (`mode`,
+  `holes_before`, `nm_before`, `tiers_run`, `final_tier`, `local`,
+  `ftetwild`, `available`); `experimental_ftetwild` is kept.
+  `scripts/benchmark_repair_corpus.py` gained `--deep-repair` and the columns
+  `final_tier`, `time_total`, `time_local`, `time_ftetwild`, `estimate_s`,
+  `actual_s`, `deep_repair_available`, `hausdorff_max_rel` and
+  `hausdorff_mean_rel` (one-sided output-to-input, relative to the bounding
+  box diagonal). The GUI does not use the new modes yet. New suite
+  `tests/test_deep_repair.py`, in CI.
+
 ### Fixed
 
 - **Closed results with pinched vertices ended as `warning`.** A mesh can

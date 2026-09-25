@@ -85,6 +85,10 @@ DEFAULT_CONFIG = {
     'last_check': None,
     'last_known_version': None,
     'history_enabled': True,
+    # Deep-repair ladder mode read by the CLI (repair.resolve_deep_repair):
+    # 'off' / 'local' / 'full'. The CLI and the file-manager menu run it
+    # automatically; the GUI decides per run.
+    'deep_repair': 'full',
 }
 
 
