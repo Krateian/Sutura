@@ -64,6 +64,20 @@ def test_auto_is_a_no_op_without_the_extra():
     assert rep.get('experimental_ftetwild') is False, rep.get('experimental_ftetwild')
 
 
+def test_auto_is_a_no_op_without_the_bridge_module():
+    """A stale install can have pytetwild but no ftetwild_bridge.py; the
+    default must then stay silent instead of reporting an error."""
+    saved = (repair._FTETWILD_AVAILABLE, repair.FTETWILD_BRIDGE)
+    repair._FTETWILD_AVAILABLE = None
+    repair.FTETWILD_BRIDGE = os.path.join(SUTURA, 'no-such-bridge.py')
+    try:
+        assert repair.ftetwild_available() is False
+        rep = _repair(OPEN_AFTER_STAGE1, 'auto')
+    finally:
+        repair._FTETWILD_AVAILABLE, repair.FTETWILD_BRIDGE = saved
+    assert rep.get('experimental_ftetwild') is False, rep.get('experimental_ftetwild')
+
+
 def test_off_never_runs():
     rep = _repair(OPEN_AFTER_STAGE1, False)
     assert rep.get('experimental_ftetwild') is False

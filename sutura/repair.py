@@ -1083,10 +1083,16 @@ def ftetwild_available():
     requirements-ftetwild.txt) is installed where run_ftetwild will look:
     the venv311 stage-2 environment, or the current interpreter for
     single-environment installs. Checked on disk / via find_spec, without
-    importing the (heavy) packages; cached per process."""
+    importing the (heavy) packages; cached per process. Also requires the
+    bridge module itself (FTETWILD_BRIDGE)."""
     global _FTETWILD_AVAILABLE
     if _FTETWILD_AVAILABLE is None:
         ok = False
+        if not os.path.isfile(FTETWILD_BRIDGE):
+            # A stale install without the bridge module: the packages alone
+            # are not enough, and 'auto' must stay a silent no-op.
+            _FTETWILD_AVAILABLE = False
+            return False
         if os.path.exists(VENV311):
             import glob
             root = os.path.dirname(os.path.dirname(VENV311))
