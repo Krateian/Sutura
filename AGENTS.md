@@ -32,6 +32,15 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - **fTetWild tier default (after 0.4.1):** `repair.resolve_ftetwild()` maps the CLI to `ftetwild` = `'auto'` (default), `False` (`--no-fallback-ftetwild`) or `True` (`--experimental-fallback-ftetwild`). `'auto'` runs only when `repair.ftetwild_available()` (pytetwild + pyvista present in venv311 site-packages or findable by the current interpreter; no import) and stage 1 still leaves holes or non-manifold edges; `True` keeps the original trigger (also closed-but-SI results) and the explicit skip report. Library functions keep `ftetwild=False` as their default. GUI: `chk_fallback_ftetwild` (checked by default, unchecked -> `--no-fallback-ftetwild`) + `chk_ftetwild_si` (-> `--experimental-fallback-ftetwild`), mapped by `MainWindow._sync_ftetwild`. Measured on the 40 real-world samples: strict watertight 31 -> 39, total time 64 s -> 669 s ('auto') vs 2,595 s ('always', which also remeshes 7 closed meshes). fTetWild is non-deterministic (output and time vary between runs, even with num_threads=1). Regression: `tests/test_ftetwild_default.py` (fTetWild-dependent checks skip without the extra).
 - `sutura/ftetwild_bridge.py` + `--experimental-fallback-ftetwild` (CLI) / GUI batch-wide checkbox `chk_fallback_ftetwild` is the guaranteed-correct fallback tier (FAZ17) for meshes where stage 1 (autorefine included) STILL leaves self-intersections/holes/non-manifold edges: it tetrahedralizes the ORIGINAL input surface with fTetWild (via the `pytetwild` wrapper, MPL-2.0 — file-level copyleft, compatible with PolyForm-Noncommercial; plain TetWild is GPL and MUST NOT be used) and extracts the boundary triangles (faces incident to exactly one tet) as a watertight, SI-free mesh. `ftetwild_bridge.py` mirrors `manifold_bridge.py`: dual-mode dispatch — venv311 subprocess on Linux (`run_ftetwild`), in-process fallback in single-env installs; input via trimesh, output OBJ + JSON report (`input_vertices`/`input_faces`/`output_vertices`/`output_faces`/`time`/`ok`). In `repair_mesh_from_arrays` it runs AFTER the whole stage-1 chain (autorefine + delete-fallback + join-components) and BEFORE the final holes/nm measurement, triggers only when the current result still has SI/holes/nm, and adopts only when `cand_holes <= base_holes and cand_nm <= base_nm` (same guard as autorefine). Report key `experimental_ftetwild` (`ran`/`time`/`output_faces`/`output_holes`/`output_non_manifold`/`adopted`/`error`); `--human` shows a "fTetWild fallback (experiment)" line; GUI repair log shows it too. Measured (auto mode): 100281 3677→0 SI (adopted, ~55s), 100827 11→0 (adopted, ~0.5s); 1038441 is correctly DECLINED by the guard because fTetWild's raw boundary is non-manifold on it (0 SI, 0 holes but 531 nm edges) — a documented known limitation (a future manifold3d pass on the fTetWild boundary could fix it; not done yet). `pytetwild` + `pyvista` (required at pytetwild import time despite its pyproject listing it optional) were added to `requirements-311.txt` (Linux cp311 wheels verified: pytetwild 0.4.2, vtk 9.7.0 manylinux2014 x86_64); the Linux venv311 subprocess path is the primary path and works. history.py records `ftetwild_applied`. Keep `ftetwild_bridge.py` in the module lists of `install.sh`, `install-macos.sh`, `scripts/build_appimage.sh`, `build-macos.yml` and `updater.py` (all updated).
 
+## Rust core performance work (`rust/sutura-geom`)
+
+- **Output-identity rule:** a performance change to the exact arrangement keeps the output identical, not merely equal in face count. Verification is the order-independent digest of `examples/arrangement_digest.rs` (exact rational vertex coordinates + winding; independent of triangle order, vertex numbering and cyclic rotation), compared before/after on thingi10k_1038441, its subsets (produced by `examples/bench_arrangement.rs`) and at least thingi10k_1038439, 55772, 502009, 46012 and artec_metal-nut. `cargo test --release --features cdt-check` additionally asserts every accelerated triangulation query against the linear reference scan; CI runs the Rust tests with and without that feature.
+- **Output-changing work is a separate decision:** changes that alter the output (for example Sloan-style queue flipping instead of the Steiner split used for non-convex quadrilaterals) are not performance work. They require an explicit decision and a measurement on the real-world corpus, and are never bundled with an identity-preserving optimisation.
+- **Reference input and digest:** the OBJ is converted from `tests/real-world-samples/thingi10k_1038441.stl` with trimesh (5.x; its vertex welding is why the subsets differ slightly from the C1 table in the crate README). The reference digest for the full mesh, identical across C1, C2 and C3, is `7b05a6fc3b785f42` (37,323 output faces, 4,445 proper SI pairs). Corpus/test OBJs go to `/tmp`, never into the repo.
+- **Measurement (Linux):** `cd rust/sutura-geom && cargo run --release --example arrangement_digest -- /tmp/<mesh>.obj [...]` prints time, face counts and digest per file; `cargo run --release --example bench_arrangement --features profile -- /tmp/<mesh>.obj` gives the per-phase split.
+- **Measurement (macOS, conda env `sutura-env`):** build with `PYO3_PYTHON=/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/bin/python cargo build --release --example arrangement_digest`, then run `DYLD_LIBRARY_PATH=/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/lib ./target/release/examples/arrangement_digest /tmp/thingi10k_1038441.obj`. `DYLD_LIBRARY_PATH` must not be exported while cargo itself runs (libiconv conflict), and without `PYO3_PYTHON` the example links against a different libpython than the one on `DYLD_LIBRARY_PATH`.
+- **Timing status, thingi10k_1038441 full mesh:** C1 (v0.4.0) 462.7 s on the Apple M2 / 830 s on the x86_64 VM (2 vCPU); C2 29.8 s / 52.5 s; C3 not yet measured on the M2 / 28.1 s on the VM. Timings are compared only within one machine. Remaining cost on the VM after C3: per-host triangulation 21.5 s, weld and output 6.0 s (hashing of large `BigRational` keys), implicit point construction 5.9 s, classification 4.6 s (the phases overlap in the profile).
+
 ## Backlog (v0.3 notes — diagnosed, NOT fixed yet)
 
 - **Pre-v0.3 security audit (2026-09, FAZ12):** `docs/security-audit-2026-09.md`
@@ -54,6 +63,23 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
   `sug_holes_many`/`sug_si_*` on exactly these meshes — the suggestion text
   may over-promise extreme's value on heavy-SI scans. Revisit the suggestion
   wording/conditions for v0.3; do not attempt to fix now.
+
+- **fTetWild output fidelity and determinism.** fTetWild is not
+  deterministic (output and run time vary between runs even with
+  `num_threads=1`), and its result is re-triangulated: the one-sided
+  output-to-input Hausdorff distance reaches 28 % of the bounding-box
+  diagonal on thingi10k_46012, where openings and cavities are closed.
+- **Strict-watertight but `warning` after fTetWild.** thingi10k_224108 and
+  thingi10k_248395 are strictly watertight after the fTetWild fallback, but
+  stage 2 is skipped, so the category is `warning`. Not investigated yet.
+- **Sloan-style flipping in the per-host CDT (output-changing).** Non-convex
+  quadrilaterals fall back to a Steiner split; queue flipping would produce
+  fewer split vertices but changes the output, so it needs its own decision
+  and a corpus measurement (see the Rust core performance section).
+- **Pending release.** The changes under `[Unreleased]` in CHANGELOG.md
+  (Phase C2/C3, the fTetWild default, the headless GUI fix) are not tagged;
+  the last release is v0.4.1. The fTetWild default is a user-visible
+  behaviour change, so the next release is a v0.5.0 candidate.
 
 ## Backlog resolved
 
