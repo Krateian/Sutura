@@ -6,7 +6,7 @@
 //! `incircle` can be evaluated with exact rational arithmetic.
 
 use crate::interval::Iv;
-use crate::point::Point3;
+use crate::point::{Point3, RatKey};
 use crate::profile_count;
 use std::cell::Cell;
 use num_bigint::BigInt;
@@ -23,6 +23,12 @@ use std::collections::HashMap;
 pub struct Point2D {
     pub s: BigRational,
     pub t: BigRational,
+}
+
+/// Exact `(s,t)` lookup key of a CDT vertex (see [`RatKey`]).
+#[inline]
+fn st_key(p: &Point2D) -> (RatKey, RatKey) {
+    (RatKey::new(p.s.clone()), RatKey::new(p.t.clone()))
 }
 
 /// Per-host diagnostic snapshot (only populated when the `cdt-diag` feature
@@ -271,7 +277,7 @@ pub struct Triangulation {
     /// Maps a vertex's canonical provenance key to its index.
     vertex_index: HashMap<Vec<u64>, usize>,
     /// Maps cached (s,t) coordinates to a vertex index.
-    st_index: HashMap<(BigRational, BigRational), usize>,
+    st_index: HashMap<(RatKey, RatKey), usize>,
     /// Rigorous interval enclosure of every vertex's `(s,t)`, cached so the
     /// filtered predicates do not re-convert the rationals on every call.
     viv: Vec<[Iv; 2]>,
@@ -299,7 +305,7 @@ impl Triangulation {
             self.vertex_index.insert(p.canonical_key(), vi);
         }
         self.st_index
-            .insert((v.st.s.clone(), v.st.t.clone()), vi);
+            .insert(st_key(&v.st), vi);
         self.viv.push(st_interval(&v.st));
         self.vert_tri.push(NO_TRI);
         self.verts.push(v);
@@ -317,7 +323,7 @@ impl Triangulation {
             self.vertex_index.insert(p.canonical_key(), vi);
         }
         self.st_index
-            .insert((v.st.s.clone(), v.st.t.clone()), vi);
+            .insert(st_key(&v.st), vi);
         self.viv.push(st_interval(&v.st));
         self.vert_tri.push(NO_TRI);
         self.verts.push(v);
@@ -510,7 +516,7 @@ impl Triangulation {
             if let Some(p) = &v.provenance {
                 vertex_index.insert(p.canonical_key(), i);
             }
-            st_index.insert((v.st.s.clone(), v.st.t.clone()), i);
+            st_index.insert(st_key(&v.st), i);
         }
         let viv = verts.iter().map(|v| st_interval(&v.st)).collect();
         Some(Self {
@@ -559,7 +565,7 @@ impl Triangulation {
     /// provenance).  Used as the exact fallback when no original-data
     /// construction is available.  Deduplicates by `(s,t)`.
     fn insert_vertex_2d(&mut self, q: Point2D) -> usize {
-        if let Some(&vi) = self.st_index.get(&(q.s.clone(), q.t.clone())) {
+        if let Some(&vi) = self.st_index.get(&st_key(&q)) {
             return vi;
         }
         let vi = self.push_vertex(CdtVertex {
@@ -592,7 +598,7 @@ impl Triangulation {
             Some(q) => q,
             None => return Err(None),
         };
-        match self.st_index.get(&(q.s.clone(), q.t.clone())) {
+        match self.st_index.get(&st_key(&q)) {
             Some(&vi) => Ok(vi),
             None => Err(Some(q)),
         }
