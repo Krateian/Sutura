@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
-    QCheckBox, QDoubleSpinBox, QSpinBox)
+    QCheckBox, QDoubleSpinBox, QSpinBox, QMenu, QWidgetAction)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -137,15 +137,15 @@ STRINGS = {
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
-        'edge_tiebreak_label': 'Experimental: edge-tiebreak classifier',
+        'edge_tiebreak_label': 'Edge-tiebreak classifier',
         'edge_tiebreak_tip': 'Opt-in 11-feature classifier head (base + 5 '
                              'strong scan signals). NOT the default; the gain is '
                              'marginal (1 mesh on the 71-mesh labeled set).',
-        'join_components_label': 'Experimental: join small components',
+        'join_components_label': 'Join small components',
         'join_components_tip': 'Instead of deleting small connected components, '
                                'move them onto the nearest larger component '
                                '(changes geometry; NOT the default).',
-        'autorefine_label': 'Experimental: autorefine self-intersections',
+        'autorefine_label': 'Autorefine self-intersections',
         'autorefine_tip': 'Resolve self-intersections by subdividing the '
                           'intersecting triangles along their intersection '
                           'segments instead of deleting faces (Lazard & Valque '
@@ -166,7 +166,7 @@ STRINGS = {
                            'result is closed but still self-intersects. Such '
                            'meshes are remeshed; can take up to 3 minutes per '
                            'mesh (--experimental-fallback-ftetwild).',
-        'indirect_autorefine_label': 'Experimental: indirect autorefine',
+        'indirect_autorefine_label': 'Indirect autorefine (exact)',
         'indirect_autorefine_tip': 'Resolve self-intersections with the exact '
                                    'arrangement-lite split (rust/sutura-geom '
                                    'indirect predicates). Never deletes input '
@@ -264,6 +264,13 @@ STRINGS = {
         'repair_tip': 'Repair all files',
         'stop_tip': 'Stop the running batch',
         'mode_tip': 'Choose the repair mode for the whole batch',
+        'options_btn': 'Options',
+        'options_btn_n': 'Options (%d)',
+        'options_tip': 'Repair options for the whole batch: the fTetWild '
+                       'fallback tier and the opt-in experimental passes. The '
+                       'number counts options changed from their defaults.',
+        'options_section_fallback': 'Fallback tier',
+        'options_section_experimental': 'Experimental (opt-in)',
         'profile_tip': 'Repair profile (whole batch): Auto uses the classifier; '
                        'named profiles opt in to fixed Stage 1 thresholds.',
         'profile_auto': 'Profile: Auto',
@@ -367,15 +374,15 @@ STRINGS = {
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
-        'edge_tiebreak_label': 'Deneysel: edge-tiebreak sınıflandırıcı',
+        'edge_tiebreak_label': 'Edge-tiebreak sınıflandırıcı',
         'edge_tiebreak_tip': '11-özellikli sınıflandırıcı kafası (temel + 5 güçlü '
                              'tarama sinyali). Varsayılan değil; kazanç marjinal '
                              '(71 etiketli mesh setinde 1 mesh).',
-        'join_components_label': 'Deneysel: küçük parçaları birleştir',
+        'join_components_label': 'Küçük parçaları birleştir',
         'join_components_tip': 'Küçük bağlı bileşenleri silmek yerine en yakın '
                                'büyük bileşene taşır (geometriyi değiştirir; '
                                'varsayılan değil).',
-        'autorefine_label': 'Deneysel: self-intersection autorefine',
+        'autorefine_label': 'Self-intersection autorefine',
         'autorefine_tip': "Self-intersection'ları yüz silmek yerine kesişen "
                           'üçgenleri kesişim doğruları boyunca alt üçgenlere '
                           'bölerek çözer (Lazard & Valque 2025). Girdi '
@@ -396,7 +403,7 @@ STRINGS = {
                            'içeriyorsa da fTetWild fallback\'i çalıştırır. Bu '
                            'mesh\'ler yeniden örgülenir; mesh başına 3 dakikaya '
                            'kadar sürebilir (--experimental-fallback-ftetwild).',
-        'indirect_autorefine_label': 'Deneysel: indirect autorefine',
+        'indirect_autorefine_label': 'Indirect autorefine (exact)',
         'indirect_autorefine_tip': "Self-intersection'ları exact arrangement-"
                                    'lite bölmesiyle çözer (rust/sutura-geom '
                                    'indirect predikatları). Girdi yüzeylerini '
@@ -493,6 +500,13 @@ STRINGS = {
         'repair_tip': 'Tüm dosyaları onar',
         'stop_tip': 'Çalışan batch\u2019i durdur',
         'mode_tip': 'Batch geneli onarım modunu seç',
+        'options_btn': 'Seçenekler',
+        'options_btn_n': 'Seçenekler (%d)',
+        'options_tip': 'Batch geneli onarım seçenekleri: fTetWild yedek '
+                       'katmanı ve isteğe bağlı deneysel adımlar. Sayı, '
+                       'varsayılandan değiştirilmiş seçenekleri gösterir.',
+        'options_section_fallback': 'Yedek katman',
+        'options_section_experimental': 'Deneysel (isteğe bağlı)',
         'profile_tip': 'Onarım profili (batch geneli): Auto sınıflandırıcıyı '
                        'kullanır; adlandırılmış profiller sabit Aşama 1 '
                        'eşiklerine geçer.',
@@ -1654,30 +1668,25 @@ class MainWindow(QMainWindow):
         self.chk_edge_tiebreak.setToolTip(_t('edge_tiebreak_tip'))
         self.chk_edge_tiebreak.toggled.connect(
             lambda on: setattr(self, '_edge_tiebreak', on))
-        actions.addWidget(self.chk_edge_tiebreak)
         # opt-in experimental join-components prototype (FAZ14, batch-wide)
         self.chk_join_components = QCheckBox(_t('join_components_label'))
         self.chk_join_components.setToolTip(_t('join_components_tip'))
         self.chk_join_components.toggled.connect(
             lambda on: setattr(self, '_join_components', on))
-        actions.addWidget(self.chk_join_components)
         # opt-in experimental autorefine self-intersection resolution (FAZ16,
         # batch-wide)
         self.chk_autorefine = QCheckBox(_t('autorefine_label'))
         self.chk_autorefine.setToolTip(_t('autorefine_tip'))
         self.chk_autorefine.toggled.connect(
             lambda on: setattr(self, '_autorefine', on))
-        actions.addWidget(self.chk_autorefine)
         # fTetWild fallback tier (FAZ17, batch-wide): on by default (used
         # only when the optional extra is installed), opt-out by unchecking;
         # the second box extends it to closed-but-self-intersecting results.
         self.chk_fallback_ftetwild = QCheckBox(_t('ftetwild_label'))
         self.chk_fallback_ftetwild.setToolTip(_t('ftetwild_tip'))
         self.chk_fallback_ftetwild.setChecked(True)
-        actions.addWidget(self.chk_fallback_ftetwild)
         self.chk_ftetwild_si = QCheckBox(_t('ftetwild_si_label'))
         self.chk_ftetwild_si.setToolTip(_t('ftetwild_si_tip'))
-        actions.addWidget(self.chk_ftetwild_si)
         self.chk_fallback_ftetwild.toggled.connect(self._sync_ftetwild)
         self.chk_ftetwild_si.toggled.connect(self._sync_ftetwild)
         self._sync_ftetwild()
@@ -1687,7 +1696,55 @@ class MainWindow(QMainWindow):
         self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
         self.chk_indirect_autorefine.toggled.connect(
             lambda on: setattr(self, '_indirect_autorefine', on))
-        actions.addWidget(self.chk_indirect_autorefine)
+        # The batch-wide options above live in one drop-down menu next to
+        # the mode button instead of a row of checkboxes. Each QCheckBox is
+        # embedded unchanged (QWidgetAction), so several can be toggled
+        # without the menu closing and every chk_* attribute keeps its
+        # behaviour; the button shows how many differ from their defaults.
+        self.btn_options = QPushButton(_t('options_btn'))
+        self.btn_options.setToolTip(_t('options_tip'))
+        menu = QMenu(self.btn_options)
+        self._options_defaults = (
+            (self.chk_fallback_ftetwild, True),
+            (self.chk_ftetwild_si, False),
+            (self.chk_autorefine, False),
+            (self.chk_indirect_autorefine, False),
+            (self.chk_join_components, False),
+            (self.chk_edge_tiebreak, False),
+        )
+
+        def _menu_widget(widget, indent=0, header=False):
+            holder = QWidget(menu)
+            box = QHBoxLayout(holder)
+            box.setContentsMargins(10 + indent, 4 if header else 2, 12, 2)
+            box.addWidget(widget)
+            act = QWidgetAction(menu)
+            act.setDefaultWidget(holder)
+            if header:
+                act.setEnabled(False)
+            menu.addAction(act)
+
+        def _menu_header(key):
+            label = QLabel(_t(key))
+            f = label.font()
+            f.setBold(True)
+            label.setFont(f)
+            _menu_widget(label, header=True)
+
+        _menu_header('options_section_fallback')
+        _menu_widget(self.chk_fallback_ftetwild)
+        _menu_widget(self.chk_ftetwild_si, indent=18)
+        menu.addSeparator()
+        _menu_header('options_section_experimental')
+        for chk in (self.chk_autorefine, self.chk_indirect_autorefine,
+                    self.chk_join_components, self.chk_edge_tiebreak):
+            _menu_widget(chk)
+        self.btn_options.setMenu(menu)
+        self._options_menu = menu
+        for chk, _default in self._options_defaults:
+            chk.toggled.connect(self._update_options_label)
+        self._update_options_label()
+        actions.addWidget(self.btn_options)
         # repair profile dropdown (batch-wide, like the mode): "Auto" = the
         # current classifier-driven default; the named profiles opt in to a
         # fixed Stage 1 threshold preset (see repair.PROFILES).
@@ -1861,6 +1918,14 @@ class MainWindow(QMainWindow):
         p.drawLine(10, 9, 14, 13)
         p.end()
         return QIcon(pm)
+
+    def _update_options_label(self, *_):
+        """Show on the Options button how many batch-wide options differ
+        from their defaults (a disabled sub-option does not count)."""
+        changed = sum(1 for chk, default in self._options_defaults
+                      if chk.isEnabled() and chk.isChecked() != default)
+        self.btn_options.setText(
+            _t('options_btn_n', changed) if changed else _t('options_btn'))
 
     def _sync_ftetwild(self, *_):
         """Map the two fTetWild checkboxes to the CLI tri-state."""
