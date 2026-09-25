@@ -215,11 +215,23 @@ fn arrangement_lite<'py>(
     Ok((verts_np, tris_np, report_dict))
 }
 
+/// Developer hook: set the experimental, output-changing CDT behaviours
+/// (`cdt2d::experimental` bits: 1 = keep constraint flags on flip,
+/// 2 = Sloan flips, 4 = propagate edge points) for the calling thread; 0 restores
+/// the reference behaviour.  Returns the previous value.
+#[pyfunction]
+fn _set_cdt_experimental(bits: u8) -> u8 {
+    let prev = cdt2d::experimental::options();
+    cdt2d::experimental::set_options(bits);
+    prev
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
     m.add_function(wrap_pyfunction!(insphere, m)?)?;
     m.add_function(wrap_pyfunction!(arrangement_lite, m)?)?;
+    m.add_function(wrap_pyfunction!(_set_cdt_experimental, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

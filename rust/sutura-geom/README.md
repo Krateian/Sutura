@@ -263,3 +263,55 @@ remaining cost lies outside the phases changed here.
 
 Same harness on the Apple M2 used for the C1/C2/C3 numbers (same OBJ, same
 digest `7b05a6fc3b785f42`): full mesh 10.6 s (C3 on the M2: 16.8 s).
+
+## Sloan flips and edge-point propagation (evaluated, not the default)
+
+Two output-changing CDT variants were implemented behind per-thread
+developer switches (`cdt2d::experimental`, bits 1/2/4; `SUTURA_CDT_OPTS` in
+`arrangement_digest`, `sutura_geom._set_cdt_experimental(bits)` from Python,
+`--cdt-experimental BITS` in `scripts/benchmark_repair_corpus.py`). With the
+switches off the output is the reference one (same digests as C4 on every
+input of the verification set).
+
+- **Sloan (1993) flips (bit 2).** A crossed edge whose quadrilateral is not
+  strictly convex is retried after the others instead of being split by a
+  new vertex on the constraint. `sloan_flips_add_no_vertex` checks that a
+  fan of non-crossing constraints is inserted without any new vertex (the
+  reference behaviour adds split vertices on the same input).
+- **Constraint flags kept on flip (bit 1).** `flip` rebuilds both triangles
+  with `Tri::new`, which clears the constrained flags of the four outer
+  quadrilateral edges on the flipped side; this variant carries them over.
+  It changes 1038441 and 46012 slightly and has no effect once Sloan is on
+  (bits 3 and 2 give identical output).
+- **Edge-point propagation (bit 4).** A segment endpoint that lies inside a
+  host triangle's edge is inserted into every input triangle sharing that
+  edge. The reference output has T-junctions exactly there: on thingi10k
+  100045, 502009 and 55772 (closed inputs) the output has odd-use edges,
+  about a third of them with an output vertex lying inside the edge, and on
+  100045 and 502009 all of them disappear once these endpoints are
+  propagated. `propagated_edge_points_remove_t_junctions` checks that 100045
+  goes from 56 odd-use edges to 0. A zero-area triangle cannot be triangulated and is
+  kept unchanged, so its T-junctions remain (all of 55772's).
+
+Arrangement output (x86_64 VM; edge uses `m1/m3` = edges used by one/three
+triangles):
+
+| Input | reference | Sloan | propagation | propagation + Sloan |
+|---|---|---|---|---|
+| 100045 faces / m1+m3 | 894 / 56 | 836 / 56 | 938 / **0** | 876 / **0** |
+| 1038439 | 7,031 / 445 | 6,965 / 445 | 7,210 / 234 | 7,138 / 234 |
+| 502009 | 8,896 / 32 | 8,896 / 32 | 8,912 / **0** | 8,912 / **0** |
+| 1038441 | 37,323 / 358, 17.8 s | 32,481 / 356, 13.8 s | 37,402 / 177, 24.6 s | 32,556 / 177, 20.7 s |
+
+End to end (`benchmark_repair_corpus.py --experimental-indirect-autorefine
+--no-fallback-ftetwild` on the 40 real-world samples): strict watertight is
+31/40 for the plain pipeline and for all four variants; the arrangement is
+adopted on 26 meshes (reference) and 24 (propagation, with or without
+Sloan); thingi10k_248395 ends with 14 holes without the tier, 5 with the
+reference arrangement and 4 with propagation. Total time 67 s without the
+tier, 748 s with the reference arrangement, about 1,005 s with propagation.
+Neither variant improves the repair outcome, so the default output is left
+unchanged; both remain available for further work (for example together
+with a float64 hand-off, since `sutura/indirect_bridge.py` currently rounds
+the exact output to `float32` before the stage-1 chain).
+

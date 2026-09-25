@@ -1025,6 +1025,10 @@ ya da hattı asla değiştirmez — manifold3d yoksa sütun `n/a` bildirilir.
 manifold3d opsiyonel/ağır bir bağımlılıktır (önceden derlenmiş wheel'ler yalnızca
 Python 3.13'e kadar; `requirements-311.txt` ve macOS conda env'sinde zaten
 bildiriliyor — `requirements.txt` içindeki yoruma bakın).
+`--experimental-indirect-autorefine` her mesh için exact Rust arrangement
+katmanını çalıştırır; geliştirici kancası `--cdt-experimental BITS` ise
+değerlendirilmiş ama varsayılan olmayan CDT varyantlarını açar (bkz. crate
+README'si, "Sloan flips and edge-point propagation").
 
 İşkence testleri zor ama basılabilir geometriyi kapsar:
 
