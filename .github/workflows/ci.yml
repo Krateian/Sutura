@@ -11,6 +11,11 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # Every suite is run from the repo: repair.py resolves its bridges and
+      # the stage-2 venv311 relative to SUTURA_DIR, which must be sutura/.
+      SUTURA_DIR: ${{ github.workspace }}/sutura
+      QT_QPA_PLATFORM: offscreen
     strategy:
       matrix:
         # 3.11 is the manifold3d (stage 2) target; 3.14 is the current
@@ -29,14 +34,15 @@ jobs:
       # pymeshlab's STL/OBJ I/O plugins are Qt plugins that need the GL
       # runtime libs, which the default headless runner image lacks.
       - name: Install system GL libraries
-        run: sudo apt-get update && sudo apt-get install -y libopengl0 libgl1 libglu1-mesa
+        run: sudo apt-get update && sudo apt-get install -y libopengl0 libgl1 libglu1-mesa libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
 
-      # CLI / repair tests are headless and need no display.
-      - name: Install the repair engine
+      # CLI / repair tests are headless and need no display; the render/GUI
+      # suites use Qt's offscreen platform (QT_QPA_PLATFORM above).
+      - name: Install the repair engine + GUI deps
         run: |
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip
-          ./venv/bin/pip install --quiet -r requirements.txt
+          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-gui.txt trimesh==5.1.0
 
       - name: Import check (pymeshlab)
         run: ./venv/bin/python -c "import pymeshlab; print('pymeshlab OK')"
@@ -44,14 +50,17 @@ jobs:
       - name: Install manifold3d (stage 2)
         if: matrix.python-version == '3.11'   # only 3.11 has a wheel
         run: |
-          python -m venv venv311
-          ./venv311/bin/pip install --quiet --upgrade pip
-          ./venv311/bin/pip install --quiet -r requirements-311.txt
+          python -m venv sutura/venv311
+          ./sutura/venv311/bin/pip install --quiet --upgrade pip
+          ./sutura/venv311/bin/pip install --quiet -r requirements-311.txt
         continue-on-error: true   # stage 2 is optional for these tests
 
+      - name: CLI shim for suites that exec the CLI
+        run: |
+          printf '#!/bin/bash\nexec %s/venv/bin/python %s/sutura/repair.py "$@"\n' "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE" > /tmp/sutura-wrap
+          chmod +x /tmp/sutura-wrap
+
       - name: Smoke test (broken cube)
-        env:
-          SUTURA_DIR: ${{ github.workspace }}
         run: |
           ./venv/bin/python tests/make_broken_stl.py /tmp/broken.stl
           ./venv/bin/python sutura/repair.py /tmp/broken.stl >/tmp/out.json 2>&1 || true
@@ -60,22 +69,120 @@ jobs:
           ./venv/bin/python -c "import json; d=json.load(open('/tmp/out.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0"
 
       - name: Layered multi-object 3MF regression
-        env:
-          SUTURA_DIR: ${{ github.workspace }}
         run: |
-          # use the repo repair engine + venv311 directly (no CLI install needed)
           ./venv/bin/python tests/make_layered_multiobject_3mf.py /tmp/layered.3mf
           ./venv/bin/python sutura/repair.py /tmp/layered.3mf >/tmp/out2.json
           ./venv/bin/python -c "import json; d=json.load(open('/tmp/out2.json')); assert d.get('objects',0)==3"
           ./venv/bin/python -c "import zipfile; zipfile.ZipFile('/tmp/layered_fixed.3mf').testzip() is None"
 
-      - name: Adversarial input regression
+      - name: "Test: adversarial inputs"
         env:
-          SUTURA_DIR: ${{ github.workspace }}
+          SUTURA: /tmp/sutura-wrap
+        run: ./venv/bin/python tests/test_adversarial.py
+
+      - name: "Test: classification"
+        run: ./venv/bin/python tests/test_classification.py
+
+      - name: "Test: confidence"
+        run: ./venv/bin/python tests/test_confidence.py
+
+      - name: "Test: defects"
+        run: ./venv/bin/python tests/test_defects.py
+
+      - name: "Test: history"
+        run: ./venv/bin/python tests/test_history.py
+
+      - name: "Test: repair score"
+        run: ./venv/bin/python tests/test_repair_score.py
+
+      - name: "Test: updater"
+        run: ./venv/bin/python tests/test_updater.py
+
+      - name: "Test: suggestions"
+        run: ./venv/bin/python tests/test_suggestions.py
+
+      - name: "Test: mesh classifier (classic)"
+        run: ./venv/bin/python tests/test_mesh_classifier.py
+
+      - name: "Test: mesh classifier v2"
+        run: ./venv/bin/python tests/test_mesh_classifier_v2.py
+
+      - name: "Test: heatmap render"
+        run: ./venv/bin/python tests/test_heatmap.py
+
+      - name: "Test: healed mask"
+        run: ./venv/bin/python tests/test_healed_mask.py
+
+      - name: "Test: before/after render"
+        run: ./venv/bin/python tests/test_before_after_render.py
+
+      - name: "Test: viewer data"
+        run: ./venv/bin/python tests/test_viewer_data.py
+
+      - name: "Test: repair mode"
+        run: ./venv/bin/python tests/test_repair_mode.py
+
+      - name: "Test: repair budget"
+        run: ./venv/bin/python tests/test_budget.py
+
+      - name: "Test: validate / dry-run"
+        run: ./venv/bin/python tests/test_validate.py
+
+      - name: "Test: units"
+        run: ./venv/bin/python tests/test_units.py
+
+      - name: "Test: OBJ repair"
+        run: ./venv/bin/python tests/test_obj_repair.py
+
+      - name: "Test: defect injector"
+        run: ./venv/bin/python tests/test_defect_injector.py
+
+      - name: "Test: autorefine"
+        run: ./venv/bin/python tests/test_autorefine.py
+
+      - name: "Test: join components"
+        run: ./venv/bin/python tests/test_join_components.py
+
+      - name: "Test: OrcaSlicer plugin stub"
+        run: ./venv/bin/python tests/test_orca_plugin.py
+
+      - name: "Test: stage 2 3MF per object"
+        run: ./venv/bin/python tests/test_stage2_3mf.py
+
+      - name: "Test: manifold3d watertight check"
+        if: matrix.python-version == '3.11'
+        run: ./sutura/venv311/bin/python tests/test_manifold3d_watertight.py
+
+      - name: "Test: real-world corpus regression (~2 min)"
+        env:
+          SUTURA: /tmp/sutura-wrap
+        run: ./venv/bin/python tests/test_real_world_corpus.py
+
+  # The Rust core (rust/sutura-geom): unit + filter-vs-exact differential
+  # tests, then the Python binding smoke tests against a maturin build.
+  rust-geom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Rust unit tests
+        working-directory: rust/sutura-geom
+        run: cargo test --release
+
+      - name: Build the extension into a venv (maturin needs one)
         run: |
-          # test_adversarial runs $SUTURA as a single executable; point it at
-          # a shim that invokes repair.py with the venv interpreter (the
-          # script's own shebang would use the system python without pymeshlab).
-          printf '#!/bin/bash\nexec ./venv/bin/python ./sutura/repair.py "$@"\n' > /tmp/sutura-wrap
-          chmod +x /tmp/sutura-wrap
-          SUTURA=/tmp/sutura-wrap ./venv/bin/python tests/test_adversarial.py
+          python -m venv .venv
+          ./.venv/bin/pip install --quiet --upgrade pip
+          ./.venv/bin/pip install --quiet maturin==1.15.0 numpy
+          cd rust/sutura-geom && VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv PATH=$GITHUB_WORKSPACE/.venv/bin:$PATH maturin develop --release
+
+      - name: "Test: sutura_geom smoke"
+        run: ./.venv/bin/python tests/test_sutura_geom.py
+
+      - name: "Test: sutura_geom arrangement"
+        run: ./.venv/bin/python tests/test_sutura_geom_arrangement.py
