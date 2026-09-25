@@ -132,6 +132,7 @@ STRINGS = {
         'repair_log_stage2_skip': 'Stage 2 skipped (manifold3d unavailable)',
         'repair_log_stage2_err': 'Stage 2 error',
         'repair_log_extreme': 'Extreme extra passes applied (%d self-intersection(s) removed)',
+        'repair_log_pinched': 'Split %d pinched vertex(es) (closed mesh made two-manifold)',
         'repair_log_ftetwild': 'fTetWild fallback: %d faces, %ds (adopted)' ,
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
@@ -369,6 +370,7 @@ STRINGS = {
         'repair_log_stage2_skip': 'Aşama 2 atlandı (manifold3d yok)',
         'repair_log_stage2_err': 'Aşama 2 hatası',
         'repair_log_extreme': 'Extreme ek geçişler uygulandı (%d kendisiyle-kesişim silindi)',
+        'repair_log_pinched': '%d sıkışmış vertex ayrıldı (kapalı mesh two-manifold yapıldı)',
         'repair_log_ftetwild': 'fTetWild fallback: %d yüz, %ds (uygulandı)',
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
@@ -2464,6 +2466,9 @@ class MainWindow(QMainWindow):
             lines.append(_t('repair_log_components', cb, ca))
         lines.append(_t('repair_log_two_manifold_yes' if s1.get('two_manifold')
                         else 'repair_log_two_manifold_no'))
+        pv = data.get('pinched_vertices_split')
+        if pv and pv.get('adopted'):
+            lines.append(_t('repair_log_pinched', pv.get('before', 0) - pv.get('after', 0)))
         if data.get('extreme_passes_applied') and data.get('self_intersections_removed'):
             lines.append(_t('repair_log_extreme', data['self_intersections_removed']))
         ft_r = data.get('experimental_ftetwild')
