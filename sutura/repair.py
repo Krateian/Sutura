@@ -920,33 +920,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                         cand_after = cand_ms.apply_filter('get_topological_measures')
                         cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
                         cand_nm = cand_after.get('non_two_manifold_edges', 0)
-                        # manifold3d post-process of the fTetWild boundary: fTetWild's
-                        # raw boundary can carry non-manifold edges on dense-SI scans
-                        # (e.g. thingi10k_1038441: 0 SI / 0 holes but 531 nm edges), so
-                        # when it is not already watertight we rebuild it as a Manifold
-                        # solid via the same stage-2 bridge (holes/nm -> 0). The
-                        # post-processed boundary is used only when it is no worse on
-                        # holes+nm than the raw fTetWild boundary.
-                        ft_rep['manifold_postprocessed'] = False
-                        if cand_nm > 0 or cand_holes > 0:
-                            m3_in = os.path.join(tmpdir, 'ftetwild_m3d_in.obj')
-                            m3_out = os.path.join(tmpdir, 'ftetwild_m3d_out.obj')
-                            write_obj(m3_in, cand_v, cand_t)
-                            m3rep, m3ok = run_stage2(m3_in, m3_out)
-                            if m3ok and 'error' not in m3rep and os.path.exists(m3_out):
-                                m3_v, m3_t = read_obj(m3_out)
-                                if len(m3_t) > 0:
-                                    m3_ms = ml.MeshSet()
-                                    m3_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(m3_v, np.float32),
-                                                           face_matrix=np.asarray(m3_t, np.int32)))
-                                    m3_after = m3_ms.apply_filter('get_topological_measures')
-                                    m3_holes = boundary_loop_stats(m3_v, m3_t)[0]
-                                    m3_nm = m3_after.get('non_two_manifold_edges', 0)
-                                    if m3_holes <= cand_holes and m3_nm <= cand_nm:
-                                        ft_rep['manifold_postprocessed'] = True
-                                        cand_v, cand_t = m3_v, m3_t
-                                        cand_ms, cand_after = m3_ms, m3_after
-                                        cand_holes, cand_nm = m3_holes, m3_nm
+                        (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm,
+                         ft_rep['manifold_postprocessed']) = _ftetwild_manifold_postprocess(
+                            ml, tmpdir, cand_v, cand_t, cand_ms, cand_after,
+                            cand_holes, cand_nm)
                         adopted = bool(cand_holes <= cur_holes and cand_nm <= cur_nm)
                         ft_rep['adopted'] = adopted
                         ft_rep['output_holes'] = cand_holes
@@ -1202,6 +1179,44 @@ def run_ftetwild(inter, out_obj):
     # 4) unavailable: report it explicitly, never silently
     return {'error': 'fTetWild fallback skipped: pytetwild not available '
                      'in this environment.'}, False
+
+
+def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_after,
+                                   cand_holes, cand_nm):
+    """manifold3d post-process of the fTetWild boundary.
+
+    fTetWild's raw boundary can carry non-manifold edges on dense-SI scans
+    (e.g. thingi10k_1038441: 0 SI / 0 holes but 531 nm edges), and it can be
+    closed with no non-manifold edge yet still not two-manifold: two
+    tetrahedra meeting in a single vertex leave a pinched ("bowtie") vertex
+    (thingi10k_248395). Stage 2 only runs on a two-manifold stage-1 result,
+    so such a boundary ended as a warning. In both cases the boundary is
+    rebuilt as a Manifold solid via the same stage-2 bridge; the rebuilt
+    boundary is used only when it is no worse on holes and non-manifold
+    edges than the raw fTetWild boundary. A boundary that is already
+    two-manifold with no hole is returned unchanged.
+
+    Returns ``(verts, tris, meshset, topo, holes, nm, postprocessed)``.
+    """
+    two_manifold = bool(cand_after.get('is_mesh_two_manifold'))
+    if cand_nm == 0 and cand_holes == 0 and two_manifold:
+        return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, False
+    m3_in = os.path.join(tmpdir, 'ftetwild_m3d_in.obj')
+    m3_out = os.path.join(tmpdir, 'ftetwild_m3d_out.obj')
+    write_obj(m3_in, cand_v, cand_t)
+    m3rep, m3ok = run_stage2(m3_in, m3_out)
+    if m3ok and 'error' not in m3rep and os.path.exists(m3_out):
+        m3_v, m3_t = read_obj(m3_out)
+        if len(m3_t) > 0:
+            m3_ms = ml.MeshSet()
+            m3_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(m3_v, np.float32),
+                                   face_matrix=np.asarray(m3_t, np.int32)))
+            m3_after = m3_ms.apply_filter('get_topological_measures')
+            m3_holes = boundary_loop_stats(m3_v, m3_t)[0]
+            m3_nm = m3_after.get('non_two_manifold_edges', 0)
+            if m3_holes <= cand_holes and m3_nm <= cand_nm:
+                return m3_v, m3_t, m3_ms, m3_after, m3_holes, m3_nm, True
+    return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, False
 
 
 def maybe_run_stage2(report, verts, tris, tmpdir):
