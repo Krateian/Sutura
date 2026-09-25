@@ -83,12 +83,6 @@ Options menu, never in the way of the plain repair.
   out on thingi10k_248395 as well (15 holes left). The budget/timeout
   behaviour (budget size, fTetWild parameters such as the target edge
   length, input reduction, reporting) needs its own treatment.
-- **Closed but not two-manifold after stage 1, without fTetWild.**
-  thingi10k_145065 is strictly watertight after stage 1 (0 holes, 0
-  non-manifold edges, manifold3d_watertight=True) but `two_manifold=False`
-  (pinched vertex), so stage 2 is skipped and the category is `warning`.
-  fTetWild never runs there (its trigger is holes or non-manifold edges), so
-  the fTetWild-boundary fix does not reach this path.
 - **The exact arrangement is SI-free only as exact rationals (float64
   hand-off evaluated, not adopted).** `indirect_bridge.py` rounds the exact
   output to `float32`, and the `si_after: 0` in its report holds only for
@@ -117,6 +111,21 @@ Options menu, never in the way of the plain repair.
 
 ## Backlog resolved
 
+- **Closed but not two-manifold after stage 1, without fTetWild — FIXED.**
+  thingi10k_145065 left the chain strictly watertight (0 holes, 0
+  non-manifold edges, manifold3d_watertight=True) but with 18 pinched
+  vertices, so `two_manifold=False`, stage 2 was skipped and the category
+  was `warning`; fTetWild never runs there. `repair._split_pinched_vertices`
+  (called right before the final stage-1 measurement, so it also covers an
+  adopted fTetWild boundary) repeats `meshing_repair_non_manifold_vertices`
+  up to `PINCH_SPLIT_MAX_PASSES=5` times (145065: 18 -> 2 -> 1 -> 0) and keeps
+  the result only when holes and non-manifold edges stay 0; report key
+  `pinched_vertices_split`. `classification.py` and the stage-2 gate are
+  unchanged. Note that STL carries no topology: the split vertices share
+  coordinates and weld again when the file is reloaded; the pinch is a
+  property of the shape and slicers handle it — the fix corrects the stage-2
+  flow and the report. Regression: `tests/test_pinched_vertices.py`.
+
 - **Strict-watertight but `warning` after fTetWild — FIXED.** Diagnosed on
   macOS (224108: 3/3 watertight; 248395: 7/10 watertight, 2 warning, 1
   fTetWild timeout): the warning runs had `holes_remaining=0`,
@@ -144,6 +153,7 @@ Options menu, never in the way of the plain repair.
 - Smoke: `python3 tests/make_broken_stl.py /tmp/broken.stl && sutura /tmp/broken.stl --human` — generates a cube with missing face, inverted winding, duplicate/degenerate/self-intersecting triangles.
 - `~/.local/share/sutura/venv/bin/python tests/torture_tests.py` — manual torture harness (5M-sphere timing, thin wall, multi-part, scan mesh, and a self-intersecting-pair scenario run in `--mode extreme` that must report `extreme_passes_applied=True` and drop self-intersections to 0). Uses `$SUTURA` if set, else the installed `~/.local/bin/sutura`.
 - `python3 tests/make_layered_multiobject_3mf.py --check` — layered/folded-vertex 3MF regression. It now generates THREE objects (two layered + one clean closed cube), honors `$SUTURA` (fallback: the installed CLI), and asserts every object repairs two-manifold with no soup corruption. The layered objects only survive because `stage1_chain`/`delete_fallback_chain` run a SECOND `meshing_remove_duplicate_faces` right after `meshing_remove_duplicate_vertices` (vertex dedup is what *creates* the duplicate faces on a layered mesh); without it, `meshing_repair_non_manifold_edges` sees a per-edge face soup and deletes the mesh (the macOS "all faces are degenerate" failure, documented in `docs/stage2-3mf-per-object.md` Investigation A).
+- `~/.local/share/sutura/venv/bin/python tests/test_pinched_vertices.py` — pinched-vertex split on a closed stage-1 result: synthetic bowtie becomes two-manifold (vertex duplicated, faces and holes unchanged), a clean and an open cube are left alone, and thingi10k_145065 repairs two-manifold (category `watertight` when stage 2 is available).
 - `python3 tests/test_adversarial.py` — malformed-input rejection; it expects the **installed** CLI at `~/.local/bin/sutura`, not the repo copy.
 - `python3 tests/test_updater.py` — auto-update license-boundary logic: `crosses_license_boundary()` stops a v0.1.x install from silently jumping to v0.2.0+, allows post-boundary patches, and never fires on malformed input.
 - `python3 tests/test_classification.py` — classification stdlib-only rule (importing it must not pull in numpy/pymeshlab) plus the documented category/issue scenarios (watertight, volume warning, stage 2 skipped/error, partial, malformed).
