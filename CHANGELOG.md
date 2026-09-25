@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Evaluated CDT variants for the exact arrangement (developer switches,
+  off by default).** `rust/sutura-geom` gained Sloan-style queue flips
+  (constraints inserted without split vertices), constraint flags kept
+  across flips, and propagation of segment endpoints that lie inside a host
+  edge to every triangle sharing that edge (removes the T-junctions the
+  reference output leaves there: thingi10k_100045 56 → 0 odd-use edges).
+  They are per-thread switches (`cdt2d::experimental`; `SUTURA_CDT_OPTS` in
+  `arrangement_digest`, `sutura_geom._set_cdt_experimental`), measured on
+  the 40 real-world samples with the new benchmark flags: strict watertight
+  stays 31/40 for every variant, propagation costs ~35 % arrangement time,
+  so the default output is unchanged (same digests). `arrangement_digest`
+  also prints the vertex count and the input/output edge-use histogram.
+- `scripts/benchmark_repair_corpus.py`: `--experimental-indirect-autorefine`
+  and the developer hook `--cdt-experimental BITS`; per-mesh
+  `indirect_adopted`/`indirect_faces_after`/`indirect_error` columns.
+
 ### Changed
 
 - **Phase C2: per-host constrained triangulation without linear scans**
@@ -95,6 +113,9 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- `scripts/benchmark_repair_corpus.py` crashed at import when manifold3d is
+  not importable in the running interpreter (the documented behaviour is an
+  `n/a` cross-validation column); the import is now optional.
 - **GUI construction hung on headless systems.** With no
   `~/.config/sutura/config.json`, `MainWindow` opened the modal first-run
   dialog, which nobody can answer on Qt's `offscreen`/`minimal` platforms, so
