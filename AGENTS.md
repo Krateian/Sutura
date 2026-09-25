@@ -4,6 +4,10 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 (VCG filter chain), stage 2 = manifold3d solid rebuild. Git repo, branch
 `main`, remote `Krateian/Sutura`.
 
+Project goal: a mesh repair application in the spirit of CGAL and Netfabb —
+exact, robust geometry (the `rust/sutura-geom` exact arrangement core) with
+a practical CLI/GUI workflow on top.
+
 ## How it runs
 
 - Real entry point is `sutura/repair.py` (JSON report to stdout; `--human` for a readable report; exit 0 on success or a stage-1-only partial, exit 1 on a hard error like malformed input). `bin/sutura` is only a bash wrapper: `exec $HOME/.local/share/sutura/venv/bin/python .../repair.py "$@"`. Two read-only modes share the same entry point: `sutura validate model.stl` (first positional arg `validate`) analyzes without repairing, and `sutura model.stl --dry-run` reports the would-do plan — both write NO output file. Mode/eşik resolution for repair AND dry-run comes from the shared `repair.resolve_mode_params(mode, type, conf)` (single source of truth, like classification.py).
@@ -78,8 +82,8 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
   and a corpus measurement (see the Rust core performance section).
 - **Pending release.** The changes under `[Unreleased]` in CHANGELOG.md
   (Phase C2/C3, the fTetWild default, the headless GUI fix) are not tagged;
-  the last release is v0.4.1. The fTetWild default is a user-visible
-  behaviour change, so the next release is a v0.5.0 candidate.
+  the last release is v0.4.1, so the next release is v0.4.2 (see the
+  versioning rule in Process discipline).
 
 ## Backlog resolved
 
@@ -173,6 +177,12 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - **Push/commit discipline:** do not commit and push each small fix
   individually. Batch small fixes together and ship them under one
   version bump/release (see Release checklist below).
+- **Versioning (standing rule):** releases advance in small steps — the
+  patch number goes up by 0.0.1 per release (v0.4.1 -> v0.4.2 -> ...),
+  even when the batch contains a user-visible behaviour change. Changes
+  accumulate under `[Unreleased]` in CHANGELOG.md and ship together. A
+  minor bump (vX.(Y+1).0) is the user's explicit decision, never inferred
+  from the size or kind of the batch.
 - **Test/corpus output location:** corpus and test-run files always go to
   `/tmp`, never committed to the repo (see also Cleanup discipline below).
 
