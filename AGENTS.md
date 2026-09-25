@@ -131,6 +131,19 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
   slips):** for any non-trivial task, present a plan and get explicit
   approval before making file changes. Do not start editing on a task's
   first pass without that approval step.
+- **Merge and release approval (standing rule):** opening a PR and
+  iterating on it — algorithm/math work, benchmarking, pushing more
+  commits to an open PR branch — needs no per-step approval. Merging
+  that PR (`gh pr merge`, including a backgrounded/nohup script that
+  auto-merges once CI is green) and anything under the Release
+  checklist below (bumping the version, tagging, pushing to main,
+  publishing a GitHub Release) needs the user's explicit go-ahead,
+  asked for by name, before it starts. Green CI is not that
+  go-ahead. A backlog note that "the next release is a vX.Y.0
+  candidate" is not that go-ahead either — it is a note for a human
+  to act on, not a queued task. Leave the PR open and say it's ready;
+  do not self-merge and do not start the release checklist on your
+  own judgment.
 - **Push/commit discipline:** do not commit and push each small fix
   individually. Batch small fixes together and ship them under one
   version bump/release (see Release checklist below).
@@ -165,8 +178,11 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 
 ## Release checklist
 
-Whenever doing a version release (tag + push + GitHub Release), run ALL of
-the following in order, without being asked separately for each:
+Get the user's explicit go-ahead to start a release, asked for by name
+("should I cut vX.Y.Z now?"), before step 1 — green CI, a merged PR, or
+a backlog note that a release is pending are not that go-ahead (see
+Merge and release approval above). Once given, run ALL of the
+following in order, without being asked separately for each step:
 
 1. Bump the version constant (repair.py) — batch bumps, don't bump on every
    commit (see Conventions).
