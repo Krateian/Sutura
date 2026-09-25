@@ -5,8 +5,11 @@
 //! projected to exact barycentric `(s,t)` coordinates so that `orient2d` and
 //! `incircle` can be evaluated with exact rational arithmetic.
 
+use crate::interval::Iv;
 use crate::point::Point3;
 use crate::profile_count;
+use std::cell::Cell;
+use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{Signed, Zero};
 use std::collections::HashMap;
@@ -160,23 +163,64 @@ impl Tri {
 #[derive(Clone, Debug)]
 pub struct HostFrame {
     a: [BigRational; 3],
+    #[cfg_attr(not(test), allow(dead_code))]
     b: [BigRational; 3],
+    #[cfg_attr(not(test), allow(dead_code))]
     c: [BigRational; 3],
     /// Original input vertices of the host triangle, kept for provenance.
     pub host_a: [f64; 3],
     pub host_b: [f64; 3],
     pub host_c: [f64; 3],
+    /// Per-host constants of the projection, computed once: edge vectors
+    /// `u = b - a`, `v = c - a` and the normal-equation terms `u.v`, `v.v`,
+    /// `u.u` and their determinant (zero for a degenerate host).
+    u: [BigRational; 3],
+    v: [BigRational; 3],
+    uu: BigRational,
+    uv: BigRational,
+    vv: BigRational,
+    det: BigRational,
 }
 
 impl HostFrame {
     pub fn from_points(a: &Point3, b: &Point3, c: &Point3) -> Option<Self> {
+        let (a3, b3, c3) = (a.to_rational()?, b.to_rational()?, c.to_rational()?);
+        let u = sub_rat(&b3, &a3);
+        let v = sub_rat(&c3, &a3);
+        let uu = dot_rat(&u, &u);
+        let uv = dot_rat(&u, &v);
+        let vv = dot_rat(&v, &v);
+        let det = &uu * &vv - &uv * &uv;
         Some(Self {
-            a: a.to_rational()?,
-            b: b.to_rational()?,
-            c: c.to_rational()?,
+            a: a3,
+            b: b3,
+            c: c3,
             host_a: a.to_f64()?,
             host_b: b.to_f64()?,
             host_c: c.to_f64()?,
+            u,
+            v,
+            uu,
+            uv,
+            vv,
+            det,
+        })
+    }
+
+    /// Same result as `project_point(a, b, c, p)`, reusing the per-host
+    /// constants (exact rationals are canonical, so the values are equal).
+    fn project_rational(&self, p: &[BigRational; 3]) -> Option<Point2D> {
+        if self.det.is_zero() {
+            return None;
+        }
+        let w = sub_rat(p, &self.a);
+        let uw = dot_rat(&self.u, &w);
+        let vw = dot_rat(&self.v, &w);
+        let det_s = &uw * &self.vv - &self.uv * &vw;
+        let det_t = &self.uu * &vw - &uw * &self.uv;
+        Some(Point2D {
+            s: det_s / &self.det,
+            t: det_t / &self.det,
         })
     }
 
@@ -192,22 +236,17 @@ impl HostFrame {
     /// Project an exact 3D point into the host's `(s,t)` parameter space.
     pub(crate) fn project(&self, p: &Point3) -> Option<Point2D> {
         let pr = p.to_rational()?;
-        project_point(&self.a, &self.b, &self.c, &pr)
+        self.project_rational(&pr)
     }
 
     /// Map 2D barycentric `(s,t)` coordinates back to an exact rational 3D
     /// point using `p = a + s*(b - a) + t*(c - a)`.
     pub fn point3d(&self, s: &BigRational, t: &BigRational) -> [BigRational; 3] {
-        let u0 = &self.b[0] - &self.a[0];
-        let u1 = &self.b[1] - &self.a[1];
-        let u2 = &self.b[2] - &self.a[2];
-        let v0 = &self.c[0] - &self.a[0];
-        let v1 = &self.c[1] - &self.a[1];
-        let v2 = &self.c[2] - &self.a[2];
+        let (u, v) = (&self.u, &self.v);
         [
-            &self.a[0] + s.clone() * &u0 + t.clone() * &v0,
-            &self.a[1] + s.clone() * &u1 + t.clone() * &v1,
-            &self.a[2] + s.clone() * &u2 + t.clone() * &v2,
+            &self.a[0] + s * &u[0] + t * &v[0],
+            &self.a[1] + s * &u[1] + t * &v[1],
+            &self.a[2] + s * &u[2] + t * &v[2],
         ]
     }
 }
@@ -223,6 +262,16 @@ pub struct Triangulation {
     vertex_index: HashMap<Vec<u64>, usize>,
     /// Maps cached (s,t) coordinates to a vertex index.
     st_index: HashMap<(BigRational, BigRational), usize>,
+    /// Rigorous interval enclosure of every vertex's `(s,t)`, cached so the
+    /// filtered predicates do not re-convert the rationals on every call.
+    viv: Vec<[Iv; 2]>,
+    /// One triangle incident to each vertex (`NO_TRI` until the vertex is
+    /// part of the triangulation).  Kept current by `set_tri`/`push_tri`.
+    vert_tri: Vec<usize>,
+    /// Start triangle for the next point-location walk.
+    hint: Cell<usize>,
+    /// State of the xorshift generator used by the stochastic walk.
+    rng: Cell<u64>,
     #[cfg(feature = "cdt-diag")]
     diag: DiagState,
 }
@@ -241,6 +290,8 @@ impl Triangulation {
         }
         self.st_index
             .insert((v.st.s.clone(), v.st.t.clone()), vi);
+        self.viv.push(st_interval(&v.st));
+        self.vert_tri.push(NO_TRI);
         self.verts.push(v);
         vi
     }
@@ -257,6 +308,8 @@ impl Triangulation {
         }
         self.st_index
             .insert((v.st.s.clone(), v.st.t.clone()), vi);
+        self.viv.push(st_interval(&v.st));
+        self.vert_tri.push(NO_TRI);
         self.verts.push(v);
         vi
     }
@@ -407,13 +460,17 @@ impl Triangulation {
     /// Create a triangulation from a host triangle given as three 3D points.
     /// The host triangle's vertices are vertices 0, 1, 2 of the new mesh.
     pub fn from_host(a: &Point3, b: &Point3, c: &Point3) -> Option<Self> {
-        let pa = a.to_rational()?;
-        let pb = b.to_rational()?;
-        let pc = c.to_rational()?;
-
-        let p0 = project_point(&pa, &pb, &pc, &pa)?;
-        let p1 = project_point(&pa, &pb, &pc, &pb)?;
-        let p2 = project_point(&pa, &pb, &pc, &pc)?;
+        // The host vertices project exactly to (0,0), (1,0) and (0,1) (the
+        // normal equations give s = det/det etc.) whenever the host is not
+        // degenerate; the frame's determinant decides that.
+        let frame = HostFrame::from_points(a, b, c)?;
+        if frame.det.is_zero() {
+            return None;
+        }
+        let (zero, one) = (BigRational::zero(), BigRational::from_integer(1.into()));
+        let p0 = Point2D { s: zero.clone(), t: zero.clone() };
+        let p1 = Point2D { s: one.clone(), t: zero.clone() };
+        let p2 = Point2D { s: zero, t: one };
 
         if orient2d(&p0, &p1, &p2).is_zero() {
             return None;
@@ -422,12 +479,16 @@ impl Triangulation {
         // Ensure CCW orientation before building indices.
         let mut st = [p0, p1, p2];
         let mut prov = [a.clone(), b.clone(), c.clone()];
-        if !orient2d(&st[0], &st[1], &st[2]).is_positive() {
+        let swapped = !orient2d(&st[0], &st[1], &st[2]).is_positive();
+        if swapped {
             st.swap(1, 2);
             prov.swap(1, 2);
         }
 
-        let host = HostFrame::from_points(&prov[0], &prov[1], &prov[2])?;
+        // (s,t) of the three host vertices is (0,0), (1,0), (0,1): always
+        // CCW, so no swap happens and `frame` already is the host frame.
+        debug_assert!(!swapped);
+        let host = frame;
         let verts: Vec<CdtVertex> = st
             .into_iter()
             .zip(prov.into_iter())
@@ -441,12 +502,17 @@ impl Triangulation {
             }
             st_index.insert((v.st.s.clone(), v.st.t.clone()), i);
         }
+        let viv = verts.iter().map(|v| st_interval(&v.st)).collect();
         Some(Self {
             verts,
             tris: vec![Tri::new(0, 1, 2)],
             host,
             vertex_index,
             st_index,
+            viv,
+            vert_tri: vec![0, 0, 0],
+            hint: Cell::new(0),
+            rng: Cell::new(0x9e37_79b9_7f4a_7c15),
             #[cfg(feature = "cdt-diag")]
             diag: DiagState::default(),
         })
@@ -465,12 +531,12 @@ impl Triangulation {
     /// Insert a new point (projected from a 3D point) into the triangulation.
     /// Returns the index of the new vertex.
     pub fn insert_vertex(&mut self, p: &Point3) -> Option<usize> {
-        // Dedup against existing vertices by provenance or (s,t).
-        if let Some(vi) = self.find_vertex(p) {
-            return Some(vi);
-        }
-        let pr = p.to_rational()?;
-        let q = project_point(&self.host.a, &self.host.b, &self.host.c, &pr)?;
+        // Dedup against existing vertices by provenance or (s,t); the
+        // projection computed for the lookup is reused for the insertion.
+        let q = match self.lookup_vertex(p) {
+            Ok(vi) => return Some(vi),
+            Err(q) => q?,
+        };
         let vi = self.push_vertex(CdtVertex {
             st: q,
             provenance: Some(p.clone()),
@@ -497,14 +563,29 @@ impl Triangulation {
     /// Return the index of an existing vertex whose projected 2D coordinates
     /// exactly match `p`, if any.
     pub fn find_vertex(&self, p: &Point3) -> Option<usize> {
+        self.lookup_vertex(p).ok()
+    }
+
+    /// `Ok(index)` of an existing vertex matching `p`, or `Err(projection)`
+    /// (`Err(None)` when `p` cannot be constructed or projected).
+    fn lookup_vertex(&self, p: &Point3) -> Result<usize, Option<Point2D>> {
         // Fast path: look up by canonical provenance key.
         if let Some(&vi) = self.vertex_index.get(&p.canonical_key()) {
-            return Some(vi);
+            return Ok(vi);
         }
         // Fallback: project and look up by (s,t).
-        let pr = p.to_rational()?;
-        let q = project_point(&self.host.a, &self.host.b, &self.host.c, &pr)?;
-        self.st_index.get(&(q.s, q.t)).copied()
+        let q = match p.to_rational() {
+            Some(pr) => self.host.project_rational(&pr),
+            None => None,
+        };
+        let q = match q {
+            Some(q) => q,
+            None => return Err(None),
+        };
+        match self.st_index.get(&(q.s.clone(), q.t.clone())) {
+            Some(&vi) => Ok(vi),
+            None => Err(Some(q)),
+        }
     }
 
     fn insert_vertex_at(&mut self, vi: usize) {
@@ -517,7 +598,7 @@ impl Triangulation {
         let mut on_edge: Option<usize> = None;
         for i in 0..3 {
             let (a, b) = self.tris[t].edge_opp(i);
-            if orient2d(&self.verts[a].st, &self.verts[b].st, &p).is_zero()
+            if self.orient_idx(a, b, vi).is_zero()
                 && dot1d_between(&self.verts[a].st, &self.verts[b].st, &p)
             {
                 on_edge = Some(i);
@@ -549,9 +630,9 @@ impl Triangulation {
         let t1 = self.tris.len();
         let t2 = self.tris.len() + 1;
 
-        self.tris[t0] = Tri::new(p, v[0], v[1]);
-        self.tris.push(Tri::new(p, v[1], v[2]));
-        self.tris.push(Tri::new(p, v[2], v[0]));
+        self.set_tri(t0, Tri::new(p, v[0], v[1]));
+        self.push_tri(Tri::new(p, v[1], v[2]));
+        self.push_tri(Tri::new(p, v[2], v[0]));
 
         // adj[0] is edge opposite p, i.e. the old edge.
         self.tris[t0].adj = [adj[2], Some(t1), Some(t2)];
@@ -577,8 +658,8 @@ impl Triangulation {
         let tn = adj[e];
         let t0 = t;
         let t1 = self.tris.len();
-        self.tris[t0] = Tri::new(p, c, a);
-        self.tris.push(Tri::new(p, a, b));
+        self.set_tri(t0, Tri::new(p, c, a));
+        self.push_tri(Tri::new(p, a, b));
 
         // t0 becomes (p, c, a), t1 becomes (p, a, b); they share edge (p,a).
         self.tris[t0].adj = [adj[(e + 1) % 3], Some(t1), None];
@@ -597,8 +678,8 @@ impl Triangulation {
 
             let n0 = tn;
             let n1 = self.tris.len();
-            self.tris[n0] = Tri::new(p, b, nd);
-            self.tris.push(Tri::new(p, nd, c));
+            self.set_tri(n0, Tri::new(p, b, nd));
+            self.push_tri(Tri::new(p, nd, c));
 
             // n0=(p,b,d), n1=(p,d,c); they share edge (p,d).
             // tn = [d, c, b] with the shared edge at index `ne`, so:
@@ -633,7 +714,18 @@ impl Triangulation {
     /// the two resulting polygons are fan-triangulated from their chord
     /// endpoints; adjacencies are then rebuilt for the whole (small) CDT.
     fn split_triangle_by_chord(&mut self, a: usize, b: usize) {
-        let t = match self.locate_chord_triangle(a, b) {
+        // When (a, b) is already an edge, its midpoint lies in the interior
+        // of that edge, so the lowest-index containing triangle is simply the
+        // lowest-index triangle owning the edge (no predicates needed).
+        let owners = self.tris_with_edge(a, b);
+        let located = if owners.is_empty() {
+            self.locate_chord_triangle(a, b)
+        } else {
+            owners.into_iter().min()
+        };
+        #[cfg(feature = "cdt-check")]
+        assert_eq!(located, self.locate_chord_triangle(a, b), "chord triangle shortcut");
+        let t = match located {
             Some(t) => t,
             None => {
                 // No single triangle contains the segment: leave it
@@ -654,7 +746,7 @@ impl Triangulation {
             let mut placed = false;
             for i in 0..3 {
                 let (p, q) = (cycle[i], cycle[(i + 1) % 3]);
-                if orient2d(&self.verts[p].st, &self.verts[q].st, &self.verts[x].st).is_zero()
+                if self.orient_idx(p, q, x).is_zero()
                     && dot1d_between(&self.verts[p].st, &self.verts[q].st, &self.verts[x].st)
                 {
                     cycle.insert(i + 1, x);
@@ -708,14 +800,35 @@ impl Triangulation {
             return;
         }
 
+        if n == 3 && new_tris.len() == 1 {
+            // Common case: `a` and `b` are both vertices of `t`, so the chord
+            // is one of its edges and the "split" only rewrites `t` as a
+            // rotation of itself.  This is the normal exit of the flip loop
+            // in `add_constraint`.  The rewrite is reproduced exactly: same
+            // vertex rotation, neighbours carried over (a whole-mesh rebuild
+            // would find the same, unique, neighbours), constraint flags of
+            // `t` cleared as `Tri::new` does, then `(a, b)` marked.
+            let nt = new_tris[0];
+            let old = self.tris[t].clone();
+            let r = (0..3).find(|&i| old.v[i] == nt[0]).expect("rotation of t");
+            let mut tri = Tri::new(nt[0], nt[1], nt[2]);
+            debug_assert_eq!(tri.v, [old.v[r], old.v[(r + 1) % 3], old.v[(r + 2) % 3]]);
+            tri.adj = [old.adj[r], old.adj[(r + 1) % 3], old.adj[(r + 2) % 3]];
+            self.set_tri(t, tri);
+            self.mark_constrained_edge(a, b);
+            return;
+        }
+
         // Replace triangle t with the first new triangle; push the rest.
         let first = new_tris[0];
-        self.tris[t] = Tri::new(first[0], first[1], first[2]);
+        self.set_tri(t, Tri::new(first[0], first[1], first[2]));
         for nt in &new_tris[1..] {
-            self.tris.push(Tri::new(nt[0], nt[1], nt[2]));
+            self.push_tri(Tri::new(nt[0], nt[1], nt[2]));
         }
 
         // Rebuild adjacencies for the whole CDT (small per-host triangle).
+        // Only reached for a genuine chord through one triangle, which does
+        // not occur on a conforming triangulation; kept verbatim.
         for tri in &mut self.tris {
             tri.adj = [None; 3];
         }
@@ -756,10 +869,9 @@ impl Triangulation {
 
     /// Mark every occurrence of edge `(a, b)` as constrained.
     fn mark_constrained_edge(&mut self, a: usize, b: usize) {
-        for tri in &mut self.tris {
-            if let Some(e) = tri.find_edge(a, b) {
-                tri.constrained[e] = true;
-            }
+        for t in self.tris_with_edge(a, b) {
+            let e = self.tris[t].find_edge(a, b).unwrap();
+            self.tris[t].constrained[e] = true;
         }
     }
 
@@ -822,8 +934,8 @@ impl Triangulation {
         let _cons2 = self.tris[t2].constrained;
 
         // New triangles: (a,b,d) and (a,d,c).
-        self.tris[t1] = Tri::new(a, b, d);
-        self.tris[t2] = Tri::new(a, d, c);
+        self.set_tri(t1, Tri::new(a, b, d));
+        self.set_tri(t2, Tri::new(a, d, c));
 
         // adjacency across edges of new t1:
         // edge 0 (a,b) -> old adj1[(e1+1)%3] (edge opposite c? wait old edge (a,b) was index (e1+2)%3? Let's recompute)
@@ -885,14 +997,81 @@ impl Triangulation {
         }
     }
 
-    /// Locate the triangle containing point `p`.  If `p` lies exactly on an
-    /// edge, any of the two incident triangles may be returned.
+    /// Locate the triangle containing point `p`: the LOWEST-index triangle
+    /// whose closed region contains `p`, i.e. exactly what a linear scan in
+    /// index order returns.  Found by a stochastic visibility walk (which
+    /// terminates on any triangulation, Delaunay or not) followed by a
+    /// canonicalisation step when `p` lies on an edge or a vertex; falls back
+    /// to the linear scan if the walk cannot conclude.
     fn locate(&self, p: &Point2D) -> Option<usize> {
+        let found = self.locate_walk(p);
+        #[cfg(feature = "cdt-check")]
+        assert_eq!(found, self.locate_linear(p), "walking locate disagrees with scan");
+        found
+    }
+
+    fn locate_walk(&self, p: &Point2D) -> Option<usize> {
+        let n = self.tris.len();
+        let piv = st_interval(p);
+        let mut t = self.hint.get().min(n - 1);
+        let mut steps = 0usize;
+        loop {
+            steps += 1;
+            if steps > 4 * n + 16 {
+                return self.locate_linear(p);
+            }
+            let start = (self.next_rand() % 3) as usize;
+            let mut next = None;
+            for k in 0..3 {
+                let e = (start + k) % 3;
+                let (u, w) = self.tris[t].edge_opp(e);
+                if self.orient_vvp(u, w, p, &piv).is_negative() {
+                    match self.tris[t].adj[e] {
+                        Some(nb) => next = Some(nb),
+                        // Outside the host triangle: let the scan decide.
+                        None => return self.locate_linear(p),
+                    }
+                    break;
+                }
+            }
+            match next {
+                Some(nb) => t = nb,
+                None => break,
+            }
+        }
+        self.hint.set(t);
+        // `t` contains `p`; make the answer the lowest containing index.
+        let v = self.tris[t].v;
+        let zero: Vec<usize> = (0..3)
+            .filter(|&e| {
+                let (u, w) = self.tris[t].edge_opp(e);
+                self.orient_vvp(u, w, p, &piv).is_zero()
+            })
+            .collect();
+        match zero.len() {
+            3 => self.locate_linear(p),
+            0 => Some(t),
+            1 => Some(match self.tris[t].adj[zero[0]] {
+                Some(nb) => t.min(nb),
+                None => t,
+            }),
+            _ => {
+                // On a vertex: the vertex shared by the two zero edges is the
+                // one not opposite either of them.
+                let vx = v[(0..3).find(|i| !zero.contains(i)).unwrap()];
+                self.fan(vx).into_iter().min()
+            }
+        }
+    }
+
+    /// Reference linear scan (the pre-C2 implementation).
+    fn locate_linear(&self, p: &Point2D) -> Option<usize> {
+        let piv = st_interval(p);
         for (i, tri) in self.tris.iter().enumerate() {
             let v = tri.v;
-            let s0 = orient2d(&self.verts[v[0]].st, &self.verts[v[1]].st, p);
-            let s1 = orient2d(&self.verts[v[1]].st, &self.verts[v[2]].st, p);
-            let s2 = orient2d(&self.verts[v[2]].st, &self.verts[v[0]].st, p);
+            let s0 = self.orient_vvp(v[0], v[1], p, &piv);
+            let s1 = self.orient_vvp(v[1], v[2], p, &piv);
+            let s2 = self.orient_vvp(v[2], v[0], p, &piv);
             if (s0.is_positive() || s0.is_zero())
                 && (s1.is_positive() || s1.is_zero())
                 && (s2.is_positive() || s2.is_zero())
@@ -924,12 +1103,13 @@ impl Triangulation {
             // If the segment passes through an existing vertex (a degenerate
             // alignment), split it there: each sub-segment is shorter and
             // falls into the regular cases.
-            if let Some(v) = self.find_vertex_on_open_segment(a, b) {
+            let walk = self.walk_segment(a, b);
+            if let Some(v) = self.find_vertex_on_open_segment(a, b, walk.as_ref()) {
                 self.add_constraint(a, v);
                 self.add_constraint(v, b);
                 return;
             }
-            let crossing = self.find_crossing_edge(a, b);
+            let crossing = self.find_crossing_edge(a, b, walk.as_ref());
             match crossing {
                 Some((t, e)) => {
                     let nbr = self.tris[t].adj[e].expect("crossing edge on boundary");
@@ -1015,24 +1195,23 @@ impl Triangulation {
         // crossing from original source geometry (PPI/LPI), insert it, and add
         // its index to both segments.  A cheap 2D bbox prefilter skips disjoint
         // pairs before the exact predicate work.
+        // The prefilter uses the cached interval enclosures: it is
+        // conservative (never rejects a pair whose exact boxes overlap), and
+        // a proper crossing implies overlapping boxes, so the exact test below
+        // sees every pair that can intersect and the result is unchanged.
         let endpoints: Vec<_> = segments.iter().map(|s| s.endpoints).collect();
-        let bboxes: Vec<_> = endpoints
+        let bboxes: Vec<IvBox> = endpoints
             .iter()
-            .map(|&(a, b)| bbox2d(&self.verts[a].st, &self.verts[b].st))
+            .map(|&(a, b)| iv_box(&self.viv[a], &self.viv[b]))
             .collect();
         for i in 0..n_raw {
             for j in (i + 1)..n_raw {
-                if !bboxes_overlap(&bboxes[i], &bboxes[j]) {
+                if !iv_boxes_overlap(&bboxes[i], &bboxes[j]) {
                     continue;
                 }
                 let (a, b) = endpoints[i];
                 let (c, d) = endpoints[j];
-                if !segments_properly_intersect(
-                    &self.verts[a].st,
-                    &self.verts[b].st,
-                    &self.verts[c].st,
-                    &self.verts[d].st,
-                ) {
+                if !self.cross_idx(a, b, c, d) {
                     continue;
                 }
                 let provenance =
@@ -1062,11 +1241,19 @@ impl Triangulation {
         // 2) Existing vertices that lie in the interior of a raw segment.
         for i in 0..n_raw {
             let (a, b) = endpoints[i];
+            let bb = &bboxes[i];
             for v in 0..n_initial {
                 if v == a || v == b {
                     continue;
                 }
-                if point_on_segment(&self.verts[a].st, &self.verts[b].st, &self.verts[v].st) {
+                // Conservative box rejection before the exact test.
+                let q = &self.viv[v];
+                if q[0].hi < bb[0] || q[0].lo > bb[1] || q[1].hi < bb[2] || q[1].lo > bb[3] {
+                    continue;
+                }
+                if self.orient_idx(a, b, v).is_zero()
+                    && dot1d_between(&self.verts[a].st, &self.verts[b].st, &self.verts[v].st)
+                {
                     on_seg[i].push(v);
                 }
             }
@@ -1079,10 +1266,8 @@ impl Triangulation {
             let (a, b) = endpoints[i];
             let pa = &self.verts[a].st;
             let pb = &self.verts[b].st;
-            on_seg[i].sort_by(|u, v| {
-                param_along(pa, pb, &self.verts[*u].st)
-                    .cmp(&param_along(pa, pb, &self.verts[*v].st))
-            });
+            // Stable sort on the same key, each key computed once.
+            on_seg[i].sort_by_cached_key(|u| param_along(pa, pb, &self.verts[*u].st));
             on_seg[i].dedup();
             for k in 0..on_seg[i].len().saturating_sub(1) {
                 let u = on_seg[i][k];
@@ -1103,7 +1288,20 @@ impl Triangulation {
     }
 
 
+    /// Lowest-index triangle containing edge `(a, b)`, and the edge's slot.
     fn find_any_edge(&self, a: usize, b: usize) -> Option<(usize, usize)> {
+        let found = self
+            .tris_with_edge(a, b)
+            .into_iter()
+            .min()
+            .map(|t| (t, self.find_edge(t, a, b).unwrap()));
+        #[cfg(feature = "cdt-check")]
+        assert_eq!(found, self.find_any_edge_linear(a, b));
+        found
+    }
+
+    #[cfg(feature = "cdt-check")]
+    fn find_any_edge_linear(&self, a: usize, b: usize) -> Option<(usize, usize)> {
         for (i, _) in self.tris.iter().enumerate() {
             if let Some(e) = self.find_edge(i, a, b) {
                 return Some((i, e));
@@ -1112,7 +1310,40 @@ impl Triangulation {
         None
     }
 
-    fn find_crossing_edge(&self, a: usize, b: usize) -> Option<(usize, usize)> {
+    /// Lowest `(triangle, edge)` whose edge properly crosses segment `ab`,
+    /// matching a linear scan in index order.  Only triangles of the walk
+    /// corridor can own such an edge, so only they are tested.
+    fn find_crossing_edge(
+        &self,
+        a: usize,
+        b: usize,
+        walk: Option<&SegmentWalk>,
+    ) -> Option<(usize, usize)> {
+        let found = match walk {
+            Some(w) => {
+                let mut best: Option<(usize, usize)> = None;
+                for &t in &w.corridor {
+                    if best.map_or(false, |(bt, _)| t >= bt) {
+                        continue;
+                    }
+                    for e in 0..3 {
+                        let (u, v) = self.tris[t].edge_opp(e);
+                        if self.cross_idx(a, b, u, v) {
+                            best = Some((t, e));
+                            break;
+                        }
+                    }
+                }
+                best
+            }
+            None => self.find_crossing_edge_linear(a, b),
+        };
+        #[cfg(feature = "cdt-check")]
+        assert_eq!(found, self.find_crossing_edge_linear(a, b), "corridor crossing disagrees");
+        found
+    }
+
+    fn find_crossing_edge_linear(&self, a: usize, b: usize) -> Option<(usize, usize)> {
         let pa = &self.verts[a].st;
         let pb = &self.verts[b].st;
         for (i, tri) in self.tris.iter().enumerate() {
@@ -1128,16 +1359,32 @@ impl Triangulation {
         None
     }
 
-    /// A vertex (other than `a`/`b`) lying strictly between them on the open
-    /// segment `(a, b)`, if any.
-    fn find_vertex_on_open_segment(&self, a: usize, b: usize) -> Option<usize> {
+    /// The lowest-index vertex (other than `a`/`b`) lying strictly between
+    /// them on the open segment `(a, b)`, if any.  The segment walk visits
+    /// every vertex on the segment, so its minimum equals the linear scan.
+    fn find_vertex_on_open_segment(
+        &self,
+        a: usize,
+        b: usize,
+        walk: Option<&SegmentWalk>,
+    ) -> Option<usize> {
+        let found = match walk {
+            Some(w) => w.on_segment.iter().copied().min(),
+            None => self.find_vertex_on_open_segment_linear(a, b),
+        };
+        #[cfg(feature = "cdt-check")]
+        assert_eq!(found, self.find_vertex_on_open_segment_linear(a, b), "walk vertices disagree");
+        found
+    }
+
+    fn find_vertex_on_open_segment_linear(&self, a: usize, b: usize) -> Option<usize> {
         let pa = &self.verts[a].st;
         let pb = &self.verts[b].st;
         for (i, v) in self.verts.iter().enumerate() {
             if i == a || i == b {
                 continue;
             }
-            if orient2d(pa, pb, &v.st).is_zero() && strictly_between(pa, pb, &v.st) {
+            if self.orient_idx(a, b, i).is_zero() && strictly_between(pa, pb, &v.st) {
                 return Some(i);
             }
         }
@@ -1152,8 +1399,7 @@ impl Triangulation {
         let d = self.tris[t2].v[e2];
         // Quadrilateral a-b-c-d (ordered around t1 then t2) is convex iff
         // both new triangles would be CCW.
-        orient2d(&self.verts[a].st, &self.verts[b].st, &self.verts[d].st).is_positive()
-            && orient2d(&self.verts[a].st, &self.verts[d].st, &self.verts[c].st).is_positive()
+        self.orient_idx(a, b, d).is_positive() && self.orient_idx(a, d, c).is_positive()
     }
 
 
@@ -1174,8 +1420,308 @@ impl Triangulation {
     }
 }
 
+/// Sentinel for a vertex that is not yet part of any triangle.
+const NO_TRI: usize = usize::MAX;
+
+/// Rigorous interval enclosure of a parameter-space point.
+fn st_interval(p: &Point2D) -> [Iv; 2] {
+    [Iv::from_rational(&p.s), Iv::from_rational(&p.t)]
+}
+
+/// Interval-filtered orientation sign; `None` when undecided.
+#[inline]
+fn orient2d_iv(a: &[Iv; 2], b: &[Iv; 2], c: &[Iv; 2]) -> Option<Sign> {
+    let f = b[0].sub(a[0]).mul(c[1].sub(a[1])).sub(b[1].sub(a[1]).mul(c[0].sub(a[0])));
+    match f.sign() {
+        Some(1) => Some(Sign::Positive),
+        Some(-1) => Some(Sign::Negative),
+        _ => None,
+    }
+}
+
+/// `x - y` as an unreduced fraction `(numerator, positive denominator)`.
+#[inline]
+fn diff_frac(x: &BigRational, y: &BigRational) -> (BigInt, BigInt) {
+    if x.denom() == y.denom() {
+        (x.numer() - y.numer(), x.denom().clone())
+    } else {
+        (x.numer() * y.denom() - y.numer() * x.denom(), x.denom() * y.denom())
+    }
+}
+
+/// Sign of `n1/d1 * n2/d2 + sgn * n3/d3 * n4/d4` for positive denominators,
+/// evaluated on integers without the per-operation gcd of `BigRational`.
+#[inline]
+fn sign_of_products(
+    (n1, d1): (BigInt, BigInt),
+    (n2, d2): (BigInt, BigInt),
+    (n3, d3): (BigInt, BigInt),
+    (n4, d4): (BigInt, BigInt),
+    subtract: bool,
+) -> Sign {
+    let lhs = n1 * n2 * &d3 * &d4;
+    let rhs = n3 * n4 * d1 * d2;
+    let m = if subtract { lhs - rhs } else { lhs + rhs };
+    match m.sign() {
+        num_bigint::Sign::Plus => Sign::Positive,
+        num_bigint::Sign::Minus => Sign::Negative,
+        num_bigint::Sign::NoSign => Sign::Zero,
+    }
+}
+
+/// Exact orientation (same value as the `BigRational` determinant; the
+/// denominators of normalised rationals are positive, so clearing them
+/// preserves the sign).
+#[inline]
+fn orient2d_exact(a: &Point2D, b: &Point2D, c: &Point2D) -> Sign {
+    sign_of_products(
+        diff_frac(&b.s, &a.s),
+        diff_frac(&c.t, &a.t),
+        diff_frac(&b.t, &a.t),
+        diff_frac(&c.s, &a.s),
+        true,
+    )
+}
+
+/// Exact sign of `(p - a) . (p - b)`.
+#[inline]
+fn dot_sign(a: &Point2D, b: &Point2D, p: &Point2D) -> Sign {
+    sign_of_products(
+        diff_frac(&p.s, &a.s),
+        diff_frac(&p.s, &b.s),
+        diff_frac(&p.t, &a.t),
+        diff_frac(&p.t, &b.t),
+        false,
+    )
+}
+
+/// Result of walking segment `(a, b)` through the triangulation.
+#[derive(Debug, Default)]
+struct SegmentWalk {
+    /// Vertices hit strictly between `a` and `b`.
+    on_segment: Vec<usize>,
+    /// Triangles whose interior the segment passes through.
+    corridor: Vec<usize>,
+}
+
+impl Triangulation {
+    /// Write triangle `ti` and record it as incident to its vertices.
+    fn set_tri(&mut self, ti: usize, tri: Tri) {
+        for &x in &tri.v {
+            self.vert_tri[x] = ti;
+        }
+        self.tris[ti] = tri;
+    }
+
+    /// Append a triangle and record it as incident to its vertices.
+    fn push_tri(&mut self, tri: Tri) -> usize {
+        let ti = self.tris.len();
+        for &x in &tri.v {
+            self.vert_tri[x] = ti;
+        }
+        self.tris.push(tri);
+        ti
+    }
+
+    fn next_rand(&self) -> u64 {
+        let mut x = self.rng.get();
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng.set(x);
+        x
+    }
+
+    /// Filtered orientation of three vertices (by index).
+    fn orient_idx(&self, i: usize, j: usize, k: usize) -> Sign {
+        profile_count!(ORIENT2D_CALLS, 1);
+        orient2d_iv(&self.viv[i], &self.viv[j], &self.viv[k]).unwrap_or_else(|| {
+            orient2d_exact(&self.verts[i].st, &self.verts[j].st, &self.verts[k].st)
+        })
+    }
+
+    /// Filtered orientation of two vertices and a free point.
+    fn orient_vvp(&self, i: usize, j: usize, p: &Point2D, piv: &[Iv; 2]) -> Sign {
+        profile_count!(ORIENT2D_CALLS, 1);
+        orient2d_iv(&self.viv[i], &self.viv[j], piv)
+            .unwrap_or_else(|| orient2d_exact(&self.verts[i].st, &self.verts[j].st, p))
+    }
+
+    /// `segments_properly_intersect` on vertex indices.
+    fn cross_idx(&self, a: usize, b: usize, u: usize, v: usize) -> bool {
+        let s1 = self.orient_idx(a, b, u);
+        let s2 = self.orient_idx(a, b, v);
+        if !(s1.is_positive() && s2.is_negative() || s1.is_negative() && s2.is_positive()) {
+            return false;
+        }
+        let s3 = self.orient_idx(u, v, a);
+        let s4 = self.orient_idx(u, v, b);
+        s3.is_positive() && s4.is_negative() || s3.is_negative() && s4.is_positive()
+    }
+
+    /// All triangles incident to vertex `x`, by rotating through the
+    /// adjacency around it.  Falls back to a scan if the fan is inconsistent.
+    fn fan(&self, x: usize) -> Vec<usize> {
+        let t0 = self.vert_tri[x];
+        if t0 == NO_TRI || !self.tris[t0].v.contains(&x) {
+            return self.fan_linear(x);
+        }
+        let cap = self.tris.len() + 1;
+        let mut out = vec![t0];
+        let pos = |t: usize| self.tris[t].v.iter().position(|&y| y == x);
+        let mut t = t0;
+        let mut closed = false;
+        for _ in 0..cap {
+            let i = match pos(t) {
+                Some(i) => i,
+                None => return self.fan_linear(x),
+            };
+            match self.tris[t].adj[(i + 1) % 3] {
+                Some(nb) if nb == t0 => {
+                    closed = true;
+                    break;
+                }
+                Some(nb) => {
+                    out.push(nb);
+                    t = nb;
+                }
+                None => break,
+            }
+        }
+        if !closed {
+            t = t0;
+            for _ in 0..cap {
+                let i = match pos(t) {
+                    Some(i) => i,
+                    None => return self.fan_linear(x),
+                };
+                match self.tris[t].adj[(i + 2) % 3] {
+                    Some(nb) if nb == t0 => break,
+                    Some(nb) => {
+                        out.push(nb);
+                        t = nb;
+                    }
+                    None => break,
+                }
+            }
+        }
+        #[cfg(feature = "cdt-check")]
+        {
+            let mut a = out.clone();
+            a.sort_unstable();
+            a.dedup();
+            assert_eq!(a, self.fan_linear(x), "fan of vertex {} inconsistent", x);
+        }
+        out
+    }
+
+    fn fan_linear(&self, x: usize) -> Vec<usize> {
+        (0..self.tris.len()).filter(|&t| self.tris[t].v.contains(&x)).collect()
+    }
+
+    /// Triangles that contain edge `(a, b)`.
+    fn tris_with_edge(&self, a: usize, b: usize) -> Vec<usize> {
+        self.fan(a)
+            .into_iter()
+            .filter(|&t| self.tris[t].find_edge(a, b).is_some())
+            .collect()
+    }
+
+    /// Exact `dot(u - x, b - x) > 0`, i.e. `u` lies ahead of `x` towards `b`.
+    fn forward(&self, x: usize, u: usize, b: usize) -> bool {
+        let (ix, iu, ib) = (&self.viv[x], &self.viv[u], &self.viv[b]);
+        let f = iu[0].sub(ix[0]).mul(ib[0].sub(ix[0])).add(iu[1].sub(ix[1]).mul(ib[1].sub(ix[1])));
+        if let Some(sg) = f.sign() {
+            return sg > 0;
+        }
+        // (u - x) . (b - x) = -((x - u) . (x - b))
+        let (px, pu, pb) = (&self.verts[x].st, &self.verts[u].st, &self.verts[b].st);
+        dot_sign(pu, pb, px).is_negative()
+    }
+
+    /// Walk segment `(a, b)` from `a` to `b`, collecting the vertices it
+    /// passes through and the triangles it crosses.  Returns `None` if the
+    /// walk cannot proceed (inconsistent triangulation); callers then use the
+    /// linear reference scans.
+    fn walk_segment(&self, a: usize, b: usize) -> Option<SegmentWalk> {
+        let mut out = SegmentWalk::default();
+        let mut x = a;
+        let cap = self.tris.len() + self.verts.len() + 8;
+        let mut steps = 0usize;
+        'from_vertex: loop {
+            // Leave vertex `x` towards `b`: either along an edge to a
+            // collinear vertex, or into the interior of one fan triangle.
+            let mut wedge: Option<(usize, usize)> = None;
+            let mut next_vertex: Option<usize> = None;
+            for t in self.fan(x) {
+                let i = self.tris[t].v.iter().position(|&y| y == x)?;
+                let u = self.tris[t].v[(i + 1) % 3];
+                let w = self.tris[t].v[(i + 2) % 3];
+                let ou = self.orient_idx(x, u, b);
+                if ou.is_zero() && self.forward(x, u, b) {
+                    next_vertex = Some(u);
+                    break;
+                }
+                let ow = self.orient_idx(x, w, b);
+                if ow.is_zero() && self.forward(x, w, b) {
+                    next_vertex = Some(w);
+                    break;
+                }
+                if ou.is_positive() && ow.is_negative() {
+                    wedge = Some((t, i));
+                    break;
+                }
+            }
+            if let Some(nv) = next_vertex {
+                if nv == b {
+                    return Some(out);
+                }
+                out.on_segment.push(nv);
+                x = nv;
+                steps += 1;
+                if steps > cap {
+                    return None;
+                }
+                continue 'from_vertex;
+            }
+            let (mut t, i) = wedge?;
+            out.corridor.push(t);
+            // Crossed edge (u, w): `u` right of a->b, `w` left of it.
+            let mut u = self.tris[t].v[(i + 1) % 3];
+            let mut w = self.tris[t].v[(i + 2) % 3];
+            loop {
+                steps += 1;
+                if steps > cap {
+                    return None;
+                }
+                let e = self.tris[t].find_edge(u, w)?;
+                let nb = self.tris[t].adj[e]?;
+                let ne = self.tris[nb].find_edge(u, w)?;
+                let z = self.tris[nb].v[ne];
+                out.corridor.push(nb);
+                let oz = self.orient_idx(a, b, z);
+                if oz.is_zero() {
+                    if z == b {
+                        return Some(out);
+                    }
+                    out.on_segment.push(z);
+                    x = z;
+                    continue 'from_vertex;
+                }
+                if oz.is_negative() {
+                    u = z; // z on the right: exit through (z, w)
+                } else {
+                    w = z; // z on the left: exit through (u, z)
+                }
+                t = nb;
+            }
+        }
+    }
+}
+
 /// Project an exact 3D point `p` onto the `(s,t)` parameter space of the host
 /// triangle `a,b,c` solving `p - a = s*(b-a) + t*(c-a)`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn project_point(
     a: &[BigRational; 3],
     b: &[BigRational; 3],
@@ -1222,8 +1768,7 @@ pub fn orient2d(a: &Point2D, b: &Point2D, c: &Point2D) -> Sign {
             _ => {}
         }
     }
-    let m = (&b.s - &a.s) * (&c.t - &a.t) - (&b.t - &a.t) * (&c.s - &a.s);
-    Sign::from_rational(&m)
+    orient2d_exact(a, b, c)
 }
 
 /// Exact incircle test: positive if `d` lies inside the oriented circle
@@ -1347,27 +1892,12 @@ fn dot_rat(a: &[BigRational; 3], b: &[BigRational; 3]) -> BigRational {
 }
 
 fn dot1d_between(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
-    let px = &p.s - &a.s;
-    let py = &p.t - &a.t;
-    let qx = &p.s - &b.s;
-    let qy = &p.t - &b.t;
-    let dot = px * qx + py * qy;
-    dot <= BigRational::zero()
+    !dot_sign(a, b, p).is_positive()
 }
 
 /// Strictly-between test: `p` lies in the open segment `(a, b)`.
 fn strictly_between(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
-    let px = &p.s - &a.s;
-    let py = &p.t - &a.t;
-    let qx = &p.s - &b.s;
-    let qy = &p.t - &b.t;
-    let dot = px * qx + py * qy;
-    dot < BigRational::zero()
-}
-
-/// True if `p` lies on the closed segment `[a, b]` (endpoints included).
-fn point_on_segment(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
-    orient2d(a, b, p).is_zero() && dot1d_between(a, b, p)
+    dot_sign(a, b, p).is_negative()
 }
 
 /// Projection parameter of `p` onto the directed line `a -> b`.
@@ -1385,26 +1915,20 @@ fn param_along(a: &Point2D, b: &Point2D, p: &Point2D) -> BigRational {
     num / den
 }
 
-/// Axis-aligned 2D bounding box in parameter space.
-#[derive(Clone, Debug)]
-struct Bbox2D {
-    min_s: BigRational,
-    max_s: BigRational,
-    min_t: BigRational,
-    max_t: BigRational,
+/// Outer interval box `[min_s, max_s, min_t, max_t]` of a segment.
+type IvBox = [f64; 4];
+
+fn iv_box(a: &[Iv; 2], b: &[Iv; 2]) -> IvBox {
+    [
+        a[0].lo.min(b[0].lo),
+        a[0].hi.max(b[0].hi),
+        a[1].lo.min(b[1].lo),
+        a[1].hi.max(b[1].hi),
+    ]
 }
 
-fn bbox2d(a: &Point2D, b: &Point2D) -> Bbox2D {
-    Bbox2D {
-        min_s: a.s.clone().min(b.s.clone()),
-        max_s: a.s.clone().max(b.s.clone()),
-        min_t: a.t.clone().min(b.t.clone()),
-        max_t: a.t.clone().max(b.t.clone()),
-    }
-}
-
-fn bboxes_overlap(a: &Bbox2D, b: &Bbox2D) -> bool {
-    a.min_s <= b.max_s && b.min_s <= a.max_s && a.min_t <= b.max_t && b.min_t <= a.max_t
+fn iv_boxes_overlap(a: &IvBox, b: &IvBox) -> bool {
+    a[0] <= b[1] && b[0] <= a[1] && a[2] <= b[3] && b[2] <= a[3]
 }
 
 #[cfg(test)]
@@ -1754,6 +2278,88 @@ mod tests {
         assert!(has_edge(&t, ix, qi));
         assert!(has_edge(&t, ri, ix));
         assert!(has_edge(&t, ix, si));
+    }
+
+    /// C2 differential test: the accelerated queries (walking locate, fan
+    /// rotation, segment walk) must return exactly what the linear reference
+    /// scans return, on a dense random arrangement with many collinear and
+    /// crossing constraints.
+    #[test]
+    fn accelerated_queries_match_linear_scans() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xc2);
+        for round in 0..4 {
+            let (a, b, c) = tri_right();
+            let mut t = Triangulation::from_host(&a, &b, &c).unwrap();
+            // Dyadic grid points (exact in f64) so many are collinear.
+            let mut pt = || loop {
+                let x = rng.gen_range(0..=16) as f64 / 16.0;
+                let y = rng.gen_range(0..=16) as f64 / 16.0;
+                if x + y <= 1.0 {
+                    return Point3::Explicit([x, y, 0.0]);
+                }
+            };
+            let mut segs = Vec::new();
+            for _ in 0..(10 + 6 * round) {
+                let (p, q) = (pt(), pt());
+                let pi = t.insert_vertex(&p).unwrap();
+                let qi = t.insert_vertex(&q).unwrap();
+                if pi != qi {
+                    segs.push(seg(pi, qi, &p, &q));
+                }
+            }
+            t.add_constraints_batch(&segs);
+            validate_triangulation(&t);
+
+            let nv = t.verts.len();
+            for x in 0..nv {
+                let mut f = t.fan(x);
+                f.sort_unstable();
+                assert_eq!(f, t.fan_linear(x), "fan of {}", x);
+            }
+            for x in 0..nv {
+                for y in 0..nv {
+                    if x == y {
+                        continue;
+                    }
+                    let w = t.walk_segment(x, y);
+                    assert!(w.is_some(), "walk {}->{} failed", x, y);
+                    let w = w.as_ref();
+                    let lin_v = t.find_vertex_on_open_segment_linear(x, y);
+                    assert_eq!(t.find_vertex_on_open_segment(x, y, w), lin_v);
+                    if lin_v.is_none() {
+                        assert_eq!(
+                            t.find_crossing_edge(x, y, w),
+                            t.find_crossing_edge_linear(x, y)
+                        );
+                    }
+                }
+            }
+            // Points on vertices, on edge midpoints and random interior points.
+            let mut probes: Vec<Point2D> = t.verts.iter().map(|v| v.st.clone()).collect();
+            for tri in &t.tris {
+                for e in 0..3 {
+                    let (u, w) = tri.edge_opp(e);
+                    let (pu, pw) = (&t.verts[u].st, &t.verts[w].st);
+                    let half = BigRational::new(1.into(), 2.into());
+                    probes.push(Point2D {
+                        s: (&pu.s + &pw.s) * &half,
+                        t: (&pu.t + &pw.t) * &half,
+                    });
+                }
+            }
+            for _ in 0..200 {
+                let x = rng.gen_range(0..1000) as f64 / 1000.0;
+                let y = rng.gen_range(0..1000) as f64 / 1000.0;
+                if x + y <= 1.0 {
+                    probes.push(Point2D { s: f64_to_rat(x), t: f64_to_rat(y) });
+                }
+            }
+            for (k, p) in probes.iter().enumerate() {
+                t.hint.set(k % t.tris.len());
+                assert_eq!(t.locate_walk(p), t.locate_linear(p), "locate probe {}", k);
+            }
+        }
     }
 
     #[test]

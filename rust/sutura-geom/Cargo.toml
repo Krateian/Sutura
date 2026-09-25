@@ -13,6 +13,9 @@ crate-type = ["cdylib", "rlib"]
 [features]
 profile = []
 cdt-diag = []
+# Cross-checks every accelerated CDT query against the linear reference
+# scan (slow; differential testing only).
+cdt-check = []
 extension-module = ["pyo3/extension-module"]
 default = []
 

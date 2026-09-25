@@ -379,18 +379,13 @@ pub fn arrangement_lite_core(
             let mut constraint_segments: Vec<ConstrainedSegment> =
                 Vec::with_capacity(segments[ti].len());
             for seg in &segments[ti] {
-                let pi = match cdt.find_vertex(&seg.p) {
-                    Some(v) => v,
-                    None => cdt
-                        .insert_vertex(&seg.p)
-                        .ok_or("unprojectable intersection point")?,
-                };
-                let qi = match cdt.find_vertex(&seg.q) {
-                    Some(v) => v,
-                    None => cdt
-                        .insert_vertex(&seg.q)
-                        .ok_or("unprojectable intersection point")?,
-                };
+                // insert_vertex deduplicates against existing vertices.
+                let pi = cdt
+                    .insert_vertex(&seg.p)
+                    .ok_or("unprojectable intersection point")?;
+                let qi = cdt
+                    .insert_vertex(&seg.q)
+                    .ok_or("unprojectable intersection point")?;
                 constraint_segments.push(ConstrainedSegment {
                     endpoints: (pi, qi),
                     source: seg.source.clone(),
@@ -405,13 +400,19 @@ pub fn arrangement_lite_core(
 
             let sub = cdt.triangles();
             let v2 = cdt.vertices();
+            // Map each CDT vertex back to 3D and weld it once; triangles then
+            // reuse the pooled index (same welded result, fewer conversions).
+            let mut welded: Vec<Option<usize>> = vec![None; v2.len()];
+            let mut weld_vertex = |k: usize, pool: &mut Vec<[BigRational; 3]>,
+                                   weld: &mut HashMap<[BigRational; 3], usize>| {
+                *welded[k].get_or_insert_with(|| {
+                    weld_point(pool, weld, host.point3d(&v2[k].st.s, &v2[k].st.t))
+                })
+            };
             for [u, w, z] in sub {
-                let pu = host.point3d(&v2[u].st.s, &v2[u].st.t);
-                let pw = host.point3d(&v2[w].st.s, &v2[w].st.t);
-                let pz = host.point3d(&v2[z].st.s, &v2[z].st.t);
-                let iu = weld_point(&mut pool, &mut weld, pu);
-                let iw = weld_point(&mut pool, &mut weld, pw);
-                let iz = weld_point(&mut pool, &mut weld, pz);
+                let iu = weld_vertex(u, &mut pool, &mut weld);
+                let iw = weld_vertex(w, &mut pool, &mut weld);
+                let iz = weld_vertex(z, &mut pool, &mut weld);
                 out_tris.push([iu, iw, iz]);
             }
             Ok::<(), String>(())
