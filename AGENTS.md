@@ -85,10 +85,6 @@ Options menu, never in the way of the plain repair.
   or intersecting geometry; the `si_after: 0` in its report holds for the
   exact output only. A float64 hand-off is the obvious next experiment for
   the tier (not measured yet).
-- **Pending release.** The changes under `[Unreleased]` in CHANGELOG.md
-  (Phase C2/C3, the fTetWild default, the headless GUI fix) are not tagged;
-  the last release is v0.4.1, so the next release is v0.4.2 (see the
-  versioning rule in Process discipline).
 
 ## Backlog resolved
 

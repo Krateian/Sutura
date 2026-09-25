@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-25
+
 ### Added
 
 - **Evaluated CDT variants for the exact arrangement (developer switches,
