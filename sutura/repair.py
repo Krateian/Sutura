@@ -1124,12 +1124,18 @@ def run_ftetwild(inter, out_obj):
     (macOS/conda and frozen bundles), then an in-process attempt wrapped in a
     timed thread as a last resort. The bridge itself reports an explicit skip
     when pytetwild/pyvista are absent."""
+    # fTetWild writes a debug file (__tracked_surface.stl, ~1 MB) into the
+    # current working directory; run the bridge from the private temp dir of
+    # the output so nothing lands in the user's folder (e.g. a Dolphin /
+    # Finder right-click repair runs with the file's folder as cwd).
+    workdir = os.path.dirname(os.path.abspath(out_obj))
     # 1) primary: the fixed Linux two-venv layout (python3.11 + pytetwild)
     if os.path.exists(VENV311) and os.path.exists(FTETWILD_BRIDGE):
         try:
             r = subprocess.run(
                 [VENV311, FTETWILD_BRIDGE, inter, out_obj],
                 capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
+                cwd=workdir,
             )
         except subprocess.TimeoutExpired:
             return {'error': 'timeout'}, False
@@ -1150,6 +1156,7 @@ def run_ftetwild(inter, out_obj):
         r = subprocess.run(
             [sys.executable, FTETWILD_BRIDGE, inter, out_obj],
             capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
+            cwd=workdir,
         )
         if r.returncode == 0:
             try:

@@ -81,6 +81,23 @@ def test_auto_closes_open_result_when_installed():
     assert rep['stage1']['non_manifold_edges_remaining'] == 0, rep['stage1']
 
 
+def test_cli_default_leaves_no_file_in_cwd():
+    """fTetWild writes __tracked_surface.stl into its working directory; the
+    CLI must run it elsewhere, so a repair started from the user's folder
+    (e.g. a file-manager right-click) leaves only the _fixed output there."""
+    if not repair.ftetwild_available():
+        print('   (skipped: fTetWild extra not installed)')
+        return
+    with tempfile.TemporaryDirectory(prefix='sutura-ftw-cwd-') as cwd:
+        out = os.path.join(cwd, 'out_fixed.stl')
+        r = subprocess.run([sys.executable, os.path.join(SUTURA, 'repair.py'),
+                            OPEN_AFTER_STAGE1, '-o', out, '--no-history'],
+                           cwd=cwd, capture_output=True, text=True, timeout=600)
+        assert r.returncode == 0, r.stderr[-500:]
+        assert '"experimental_ftetwild"' in r.stdout, r.stdout[-500:]
+        assert sorted(os.listdir(cwd)) == ['out_fixed.stl'], os.listdir(cwd)
+
+
 def test_auto_leaves_closed_si_result_alone():
     if not repair.ftetwild_available():
         print('   (skipped: fTetWild extra not installed)')
