@@ -165,7 +165,12 @@ C1 table above.
 | 5000 faces | 56.2 s | 13.1 s | 10,683 | identical |
 | 10418 faces (full) | 830 s | **52.5 s** | 37,323 (4,445 proper SI pairs) | identical |
 
-Full-mesh phase split after C2: classify pairs 19.2 s, per-host constrained
+Same harness on the Apple M2 used for the C1 table (same OBJ, same digest
+`7b05a6fc3b785f42` as on the VM): 100 faces 0.11 s, 501 faces 0.50 s,
+1001 faces 1.77 s, 5000 faces 7.55 s, **full mesh 29.8 s** (C1 on the M2:
+462.7 s); classify pairs 10.8 s, per-host triangulation 16.2 s.
+
+Full-mesh phase split after C2 (VM): classify pairs 19.2 s, per-host constrained
 triangulation 26.9 s (was ~83 % of the time), weld and output 6.2 s;
 `orient2d` calls on the full mesh dropped to 1.1 M. The remaining cost is
 spread over the triangle-pair classification and the exact constructions of

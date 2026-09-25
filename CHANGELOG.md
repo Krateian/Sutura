@@ -22,7 +22,9 @@ All notable changes to this project are documented here.
   order-independent digest of the exact output triangles, new
   `examples/arrangement_digest.rs`), not only equal in face count. On the
   same x86_64 VM, thingi10k_1038441: full mesh 830 s → 52.5 s, 5000-face
-  subset 56.2 s → 13.1 s, 1001-face subset 10.9 s → 3.1 s.
+  subset 56.2 s → 13.1 s, 1001-face subset 10.9 s → 3.1 s. On the Apple M2
+  used for the C1 numbers the full mesh takes 29.8 s (C1: 462.7 s), with the
+  same output digest.
 - New `cdt-check` Cargo feature: every accelerated triangulation query is
   asserted against the linear reference scan (used for differential testing;
   the full thingi10k_1038441 mesh passes). CI runs the Rust tests with and
