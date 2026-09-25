@@ -139,12 +139,11 @@ jobs:
       - name: "Test: defect injector"
         run: ./venv/bin/python tests/test_defect_injector.py
 
-      - name: "Test: autorefine"
-        run: ./venv/bin/python tests/test_autorefine.py
-
-      - name: "Test: join components"
-        run: ./venv/bin/python tests/test_join_components.py
-
+      # NOT in CI yet: tests/test_autorefine.py and tests/test_join_components.py
+      # each construct gui.MainWindow in a subprocess, which hangs (120 s
+      # timeout) on the headless ubuntu runner but passes on macOS. Run them
+      # locally before a release until the MainWindow startup is fixed for
+      # headless CI.
       - name: "Test: OrcaSlicer plugin stub"
         run: ./venv/bin/python tests/test_orca_plugin.py
 
