@@ -1973,8 +1973,13 @@ class MainWindow(QMainWindow):
     def _maybe_check_updates(self):
         """Start a background check if enabled and due.
 
-        Skipped for AppImage builds: self-update is not available there."""
+        Skipped for AppImage builds: self-update is not available there,
+        and on windowless Qt platforms (offscreen/minimal, e.g. the test
+        suites): a check thread still running when the process exits aborts
+        it (SIGABRT), as with a due check in an existing user config."""
         if updater.is_appimage():
+            return
+        if QApplication.platformName() in HEADLESS_QPA_PLATFORMS:
             return
         cfg = updater.load_config()
         if not updater.should_check(cfg):
