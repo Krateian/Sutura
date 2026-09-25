@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **fTetWild results with a pinched vertex ended as `warning`.** fTetWild's
+  boundary can be closed with no non-manifold edge and still not be
+  two-manifold (two tetrahedra meeting in one vertex), so stage 2 never ran
+  and the file was reported as a warning although it is strictly watertight
+  (thingi10k_248395 in some runs; fTetWild is not deterministic). The
+  manifold3d post-process of the fTetWild boundary now also runs when the
+  boundary is not two-manifold, which lets stage 2 run on the adopted result.
+  The output changes only for meshes where fTetWild is adopted and its
+  boundary is not two-manifold. New regression tests in
+  `tests/test_ftetwild_default.py` (synthetic bowtie, no fTetWild needed).
+
 ## [0.4.2] - 2026-09-25
 
 ### Added
