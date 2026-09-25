@@ -20,6 +20,7 @@ import tempfile
 import shutil
 import zipfile
 import subprocess
+import importlib.util
 import time
 from collections import defaultdict
 import numpy as np
@@ -668,9 +669,13 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     experimental join-small-components prototype (flag-gated; NOT the default).
     ``autorefine`` enables the experimental self-intersection subdivision
     prototype (Lazard & Valque 2025; flag-gated; NEVER deletes input faces).
-    ``ftetwild`` enables the experimental fTetWild fallback tier (flag-gated;
-    tetrahedralizes the input and extracts a watertight boundary when stage 1
-    still leaves holes/non-manifold edges/self-intersections).
+    ``ftetwild`` selects the fTetWild fallback tier, which tetrahedralizes the
+    input and extracts a watertight boundary: ``'auto'`` (the CLI/GUI
+    default) runs it only when fTetWild is installed and stage 1 still leaves
+    holes or non-manifold edges; ``True`` (``--experimental-fallback-ftetwild``)
+    also runs it on a closed result that still self-intersects and reports an
+    explicit skip when fTetWild is missing; ``False`` disables it (library
+    default, ``--no-fallback-ftetwild``).
     ``indirect_autorefine`` enables the experimental exact indirect-predicate
     arrangement-lite split (rust/sutura-geom; flag-gated; same adopt/fallback
     guard as ``autorefine``).
@@ -875,22 +880,30 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 'Extreme mode removed all geometry (small connected component '
                 'below the size threshold); try a less aggressive mode (e.g. Auto)')
 
-    # --experimental-fallback-ftetwild: guaranteed-correct last-resort
-    # solidifier (FAZ17). When the stage-1 chain (autorefine included) still
-    # leaves self-intersections, holes, or non-manifold edges, tetrahedralize
-    # the ORIGINAL input surface and extract its boundary as a watertight,
-    # SI-free triangle mesh (fTetWild, MPL-2.0, via the pytetwild bridge in
-    # venv311). Adopt only when the extracted surface is no worse on the same
-    # holes+non-manifold metric used by the autorefine guard. Flag-gated, NOT
-    # the default.
+    # fTetWild fallback tier (FAZ17): guaranteed-correct last-resort
+    # solidifier. Tetrahedralize the ORIGINAL input surface and extract its
+    # boundary as a watertight, SI-free triangle mesh (fTetWild, MPL-2.0, via
+    # the pytetwild bridge in venv311). Adopt only when the extracted surface
+    # is no worse on the same holes+non-manifold metric used by the autorefine
+    # guard.
+    # - 'auto' (default when installed): only when stage 1 still leaves holes
+    #   or non-manifold edges. Measured on the 40 real-world samples: strict
+    #   watertight 31 -> 39, and a mesh stage 1 already closed is never
+    #   remeshed (its residual self-intersections are left alone).
+    # - True (--experimental-fallback-ftetwild): also when the closed result
+    #   still self-intersects (slow: up to FTETWILD_TIMEOUT per mesh).
     stats['experimental_ftetwild'] = False
+    if ftetwild == 'auto' and not ftetwild_available():
+        ftetwild = False
     if ftetwild and len(t) > 0:
-        ft_rep = {'ran': True}
+        ft_rep = {'ran': True, 'trigger': 'auto' if ftetwild == 'auto' else 'always'}
         cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                         ms.current_mesh().face_matrix())[0]
         cur_nm = after.get('non_two_manifold_edges', 0)
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        cur_si = int(ms.current_mesh().face_selection_array().sum())
+        cur_si = 0
+        if ftetwild is True:
+            ms.apply_filter('compute_selection_by_self_intersections_per_face')
+            cur_si = int(ms.current_mesh().face_selection_array().sum())
         if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
             try:
                 inter = os.path.join(tmpdir, 'ftetwild_in.obj')
@@ -1061,6 +1074,43 @@ def run_stage2(inter, out_obj):
 # is time-boxed per mesh and a timeout is recorded as ftetwild_error='timeout'
 # instead of blocking the whole batch (FAZ17).
 FTETWILD_TIMEOUT = 180
+
+_FTETWILD_AVAILABLE = None
+
+
+def ftetwild_available():
+    """True when the optional fTetWild extra (pytetwild + pyvista,
+    requirements-ftetwild.txt) is installed where run_ftetwild will look:
+    the venv311 stage-2 environment, or the current interpreter for
+    single-environment installs. Checked on disk / via find_spec, without
+    importing the (heavy) packages; cached per process."""
+    global _FTETWILD_AVAILABLE
+    if _FTETWILD_AVAILABLE is None:
+        ok = False
+        if os.path.exists(VENV311):
+            import glob
+            root = os.path.dirname(os.path.dirname(VENV311))
+            site = glob.glob(os.path.join(root, 'lib', 'python3*', 'site-packages'))
+            ok = any(os.path.isdir(os.path.join(sp, 'pytetwild')) and
+                     os.path.isdir(os.path.join(sp, 'pyvista')) for sp in site)
+        if not ok:
+            try:
+                ok = (importlib.util.find_spec('pytetwild') is not None and
+                      importlib.util.find_spec('pyvista') is not None)
+            except (ImportError, ValueError):
+                ok = False
+        _FTETWILD_AVAILABLE = ok
+    return _FTETWILD_AVAILABLE
+
+
+def resolve_ftetwild(no_fallback=False, experimental=False):
+    """CLI flags -> the ``ftetwild`` argument: the opt-out wins, the
+    experimental flag forces the tier, otherwise 'auto'."""
+    if no_fallback:
+        return False
+    if experimental:
+        return True
+    return 'auto'
 
 
 def run_ftetwild(inter, out_obj):
@@ -1881,12 +1931,12 @@ def human_report(r, show_defects=False, show_diff=False):
     ft_r = r.get('experimental_ftetwild')
     if ft_r:
         if ft_r.get('ran') and 'error' in ft_r:
-            lines.append('  fTetWild fallback (experiment) : error (%s)'
+            lines.append('  fTetWild fallback : error (%s)'
                          % ft_r['error'][:60])
         elif ft_r.get('ran'):
             adopted = ' adopted' if ft_r.get('adopted') else ' NOT adopted (kept stage-1 output)'
             pp = ' + manifold3d post-process' if ft_r.get('manifold_postprocessed') else ''
-            lines.append('  fTetWild fallback (experiment) : %d faces in %.2fs%s, '
+            lines.append('  fTetWild fallback : %d faces in %.2fs%s, '
                          'holes=%s non-manifold=%s%s' % (
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
@@ -2254,16 +2304,23 @@ def main():
                              'is limited by float64 construction (see '
                              'docs/alpha-wrap-feasibility-2026-09.md). NOT '
                              'the default behaviour, evaluation only')
+    parser.add_argument('--no-fallback-ftetwild', action='store_true',
+                        help='disable the fTetWild fallback tier. By default, '
+                             'when the optional fTetWild extra is installed '
+                             '(SUTURA_WITH_FTETWILD=1) and the stage-1 chain '
+                             'still leaves holes or non-manifold edges, the '
+                             'ORIGINAL input is tetrahedralized and its '
+                             'boundary extracted as a watertight, SI-free '
+                             'surface (fTetWild via pytetwild, MPL-2.0); it is '
+                             'adopted only when no worse on holes+non-manifold '
+                             'than the stage-1 result. Without the extra this '
+                             'flag changes nothing')
     parser.add_argument('--experimental-fallback-ftetwild', action='store_true',
-                        help='experimental prototype: last-resort solidifier. '
-                             'When the stage-1 chain (autorefine included) '
-                             'still leaves self-intersections, holes, or '
-                             'non-manifold edges, tetrahedralize the ORIGINAL '
-                             'input and extract a watertight, SI-free boundary '
-                             'surface (fTetWild via pytetwild, MPL-2.0). '
-                             'Adopted only when no worse on holes+non-manifold '
-                             'than the stage-1 result. NOT the default '
-                             'behaviour, evaluation only')
+                        help='run the fTetWild fallback tier also when the '
+                             'stage-1 result is closed but still '
+                             'self-intersects (slow: up to %d s per mesh; '
+                             'remeshes such meshes), and report an explicit '
+                             'skip when fTetWild is not installed' % FTETWILD_TIMEOUT)
     parser.add_argument('--experimental-indirect-autorefine', action='store_true',
                         help='experimental prototype: exact arrangement-lite '
                              'self-intersection split via the rust/sutura-geom '
@@ -2377,7 +2434,8 @@ def main():
                             max_risk=max_risk, force=args.force,
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
-                            ftetwild=args.experimental_fallback_ftetwild,
+                            ftetwild=resolve_ftetwild(args.no_fallback_ftetwild,
+                                                      args.experimental_fallback_ftetwild),
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
