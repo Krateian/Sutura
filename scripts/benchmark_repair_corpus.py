@@ -38,7 +38,10 @@ import classification  # noqa: E402
 import defects  # noqa: E402
 
 import repair  # noqa: E402
-import manifold_bridge  # noqa: E402  (optional manifold3d cross-validation)
+try:  # optional manifold3d cross-validation: n/a when manifold3d is absent
+    import manifold_bridge  # noqa: E402
+except ImportError:
+    manifold_bridge = None
 
 
 def load_input(path):
@@ -62,7 +65,8 @@ def count_self_intersections(v, t):
     return int(ms.current_mesh().face_selection_array().sum())
 
 
-def run_one(src, tmpdir, autorefine=False, ftetwild=False):
+def run_one(src, tmpdir, autorefine=False, ftetwild=False,
+            indirect_autorefine=False):
     """Repair one mesh and return (entry, error)."""
     entry = {'file': os.path.basename(src),
              'size_bytes': os.path.getsize(src)}
@@ -82,7 +86,7 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False):
 
         rep, new_v, new_t = repair.repair_mesh_from_arrays(
             v, t, tmpdir, mode='auto', autorefine=autorefine,
-            ftetwild=ftetwild)
+            ftetwild=ftetwild, indirect_autorefine=indirect_autorefine)
         new_v, new_t = repair.maybe_run_stage2(rep, new_v, new_t, tmpdir)
 
         category, _issues, _summary = classification.classify(rep)
@@ -126,9 +130,17 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False):
             entry['ftetwild_error'] = ft.get('error')
         else:
             entry['ftetwild_ran'] = False
+        ia = rep.get('experimental_indirect_autorefine')
+        if isinstance(ia, dict):
+            entry['indirect_adopted'] = bool(ia.get('adopted'))
+            entry['indirect_faces_after'] = ia.get('faces_after')
+            entry['indirect_error'] = ia.get('error')
         # Optional manifold3d cross-validation (independent verdict; None when
         # manifold3d is unavailable -> column reported as n/a).
-        m3_ok, m3_status = manifold_bridge.watertight_check(new_v, new_t)
+        if manifold_bridge is not None:
+            m3_ok, m3_status = manifold_bridge.watertight_check(new_v, new_t)
+        else:
+            m3_ok, m3_status = None, 'manifold3d not importable'
         entry['manifold3d_watertight'] = m3_ok
         entry['manifold3d_status'] = m3_status
         entry['m3d_consistent'] = (
@@ -161,12 +173,25 @@ def main():
                         'holes/non-manifold edges)')
     p.add_argument('--experimental-fallback-ftetwild', action='store_true',
                    help='enable --experimental-fallback-ftetwild for every mesh')
+    p.add_argument('--experimental-indirect-autorefine', action='store_true',
+                   help='enable --experimental-indirect-autorefine for every mesh '
+                        '(needs the maturin-built sutura_geom extension)')
+    p.add_argument('--cdt-experimental', type=int, default=0, metavar='BITS',
+                   help='developer hook: experimental, output-changing CDT '
+                        'behaviours of the exact arrangement (1 = keep '
+                        'constraint flags on flip, 2 = Sloan flips, 4 = '
+                        'propagate edge points; default 0 = reference)')
     args = p.parse_args()
+    if args.cdt_experimental:
+        import sutura_geom
+        sutura_geom._set_cdt_experimental(args.cdt_experimental)
     ftetwild = repair.resolve_ftetwild(args.no_fallback_ftetwild,
                                        args.experimental_fallback_ftetwild)
     corpus, out_path = args.corpus, args.out
     files = sorted(f for f in os.listdir(corpus) if f.lower().endswith('.stl'))
     flags = (' +autorefine' if args.experimental_autorefine else '') + \
+            (' +indirect(cdt=%d)' % args.cdt_experimental
+             if args.experimental_indirect_autorefine else '') + \
             {False: ' ftetwild=off', True: ' ftetwild=always',
              'auto': ' ftetwild=auto%s' % ('' if repair.ftetwild_available()
                                           else ' (not installed)')}[ftetwild]
@@ -180,7 +205,8 @@ def main():
         try:
             entry, err = run_one(os.path.join(corpus, f), tmp,
                                  autorefine=args.experimental_autorefine,
-                                 ftetwild=ftetwild)
+                                 ftetwild=ftetwild,
+                                 indirect_autorefine=args.experimental_indirect_autorefine)
         except Exception as e:  # noqa: BLE001 - never let one file kill the run
             err = {'file': f, 'error': '%s: %s' % (type(e).__name__, e)}
         finally:

@@ -1039,6 +1039,10 @@ changes the strict result or the pipeline — when manifold3d is unavailable the
 column is reported as `n/a`. manifold3d is an optional/heavy dependency (prebuilt
 wheels only up to Python 3.13; already declared in `requirements-311.txt` and the
 macOS conda env — see the comment in `requirements.txt`).
+`--experimental-indirect-autorefine` runs the exact Rust arrangement tier for
+every mesh, and the developer hook `--cdt-experimental BITS` switches on its
+evaluated-but-not-default CDT variants (see the crate README, "Sloan flips
+and edge-point propagation").
 
 Torture tests cover hard-but-printable geometry:
 
