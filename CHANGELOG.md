@@ -6,6 +6,21 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Closed results with pinched vertices ended as `warning`.** A mesh can
+  leave the stage-1 chain with no hole and no non-manifold edge and still not
+  be two-manifold, because two parts of the surface meet in one vertex (the
+  final hole closing can fan-fill a hole at a vertex shared by two boundary
+  loops). Stage 2 only runs on a two-manifold result, so such a strictly
+  watertight mesh was reported as a warning (thingi10k_145065, 18 pinched
+  vertices; fTetWild never runs there). The pinched vertices are now split by
+  repeating `meshing_repair_non_manifold_vertices` (at most 5 passes; three
+  on 145065), which only duplicates vertices; the result is kept only when it
+  still has no hole and no non-manifold edge. The report carries
+  `pinched_vertices_split` (`before`/`after`/`passes`/`adopted`), `--human`
+  shows a "Pinched vertices split" line and the GUI repair log a matching
+  entry. The output changes only for closed, non-manifold-edge-free meshes
+  that are not two-manifold. New suite `tests/test_pinched_vertices.py`
+  (synthetic bowtie, clean and open cubes, and thingi10k_145065), in CI.
 - **GUI suites aborted on macOS with an existing user config.** With
   `check_for_updates` enabled and a check due in `~/.config/sutura/config.json`,
   constructing `MainWindow` started the update-check thread, which was still
