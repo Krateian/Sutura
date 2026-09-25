@@ -42,6 +42,23 @@ All notable changes to this project are documented here.
   output digests on that mesh, its subsets and 1038439, 55772, 502009,
   100045, 46012 (90k faces, 165 s → 95 s) and artec_metal-nut (90k faces,
   132 s → 77 s).
+- **Phase C4: exact-key hashing and integer implicit constructions**
+  (`rust/sutura-geom`, output identical). The output weld map and the
+  per-host `(s,t)` vertex index hashed `BigRational` keys through
+  `num-rational`'s continued-fraction `Hash` (a chain of `BigInt` floor
+  divisions per lookup); a `RatKey` wrapper now hashes and compares the
+  reduced `(numer, denom)` pair directly, which is equivalent because every
+  rational in the crate is kept reduced. Line-plane and plane-plane-plane
+  constructions (`Point3::to_rational`) evaluate their formulas on integers
+  over one common power-of-two scale with a single normalisation per
+  coordinate (a randomized unit test compares them with the rational
+  formulas value by value, including subnormal and widely scaled
+  coordinates). thingi10k_1038441 on the same x86_64 VM: 28.2 s → 17.6 s
+  (weld and output 6.4 s → 0.06 s, per-host triangulation 21.6 s → 7.4 s,
+  implicit construction 5.7 s → 2.3 s); identical output digests on that
+  mesh, its four subsets and 100045, 1038439, 55772, 502009, 46012 and
+  artec_metal-nut (the two 90k-face meshes gain only 1–3 %, their cost lies
+  elsewhere).
 - **fTetWild fallback tier on by default when installed.** With the
   optional extra (`requirements-ftetwild.txt`, `SUTURA_WITH_FTETWILD=1`)
   present, the tier now runs without a flag whenever stage 1 still leaves

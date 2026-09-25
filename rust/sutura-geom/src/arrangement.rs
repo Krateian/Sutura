@@ -6,7 +6,7 @@
 //! reimplement any of the predicate math.
 
 use crate::cdt2d::{ConstrainedSegment, HostFrame, SegmentSource, Triangulation};
-use crate::point::{f64_to_rat, Point3};
+use crate::point::{f64_to_rat, Point3, RatKey};
 use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
 use crate::{profile_count, profile_time};
 use num_rational::BigRational;
@@ -235,16 +235,17 @@ fn touch_segment_source(
 
 fn weld_point(
     pool: &mut Vec<[BigRational; 3]>,
-    map: &mut HashMap<[BigRational; 3], usize>,
+    map: &mut HashMap<[RatKey; 3], usize>,
     p: [BigRational; 3],
 ) -> usize {
     profile_time!(WELD_AND_OUTPUT, {
-        let result = if let Some(&i) = map.get(&p) {
+        let key = p.map(RatKey::new);
+        let result = if let Some(&i) = map.get(&key) {
             i
         } else {
             let i = pool.len();
-            map.insert(p.clone(), i);
-            pool.push(p);
+            pool.push([key[0].0.clone(), key[1].0.clone(), key[2].0.clone()]);
+            map.insert(key, i);
             i
         };
         result
@@ -339,7 +340,7 @@ pub fn arrangement_lite_core(
     }
 
     let mut pool: Vec<[BigRational; 3]> = Vec::new();
-    let mut weld: HashMap<[BigRational; 3], usize> = HashMap::new();
+    let mut weld: HashMap<[RatKey; 3], usize> = HashMap::new();
     let mut out_tris: Vec<[usize; 3]> = Vec::new();
     #[cfg(feature = "cdt-diag")]
     let mut host_diagnostics: Vec<crate::cdt2d::DiagState> = Vec::new();
@@ -406,7 +407,7 @@ pub fn arrangement_lite_core(
             // reuse the pooled index (same welded result, fewer conversions).
             let mut welded: Vec<Option<usize>> = vec![None; v2.len()];
             let mut weld_vertex = |k: usize, pool: &mut Vec<[BigRational; 3]>,
-                                   weld: &mut HashMap<[BigRational; 3], usize>| {
+                                   weld: &mut HashMap<[RatKey; 3], usize>| {
                 *welded[k].get_or_insert_with(|| {
                     weld_point(pool, weld, host.point3d(&v2[k].st.s, &v2[k].st.t))
                 })

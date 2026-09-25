@@ -212,3 +212,48 @@ artec_metal-nut (90k faces).
 Other meshes on the VM (C2 → C3): 1038439 8.5 s → 4.8 s, 55772 7.0 s →
 3.9 s, 502009 23.0 s → 9.7 s, 46012 165 s → 95 s, artec_metal-nut 132 s →
 77 s (the last two measured with a second job running).
+
+## Phase C4 result (exact-key hashing and integer implicit constructions)
+
+The C3 profile still spent 6.0 s in weld and output and 5.9 s in implicit
+point construction. Both had one cause: normalised `BigRational` work that
+does not affect the result.
+
+- `num-rational` hashes a ratio through its continued-fraction expansion (a
+  chain of `BigInt` floor divisions) and compares two ratios through `cmp`,
+  so that non-reduced ratios agree with `Eq`. The output weld map and the
+  per-host `(s,t)` vertex index now use a `RatKey` wrapper that hashes and
+  compares the `(numer, denom)` pair directly. Every rational in the crate is
+  built with `Ratio::new`, `from_f64` or ratio arithmetic, which keep it
+  reduced with a positive denominator, so for these values the two
+  equalities coincide (a `debug_assert` checks the invariant on every key).
+  The maps are only probed and filled, never iterated, so the welded vertex
+  order is unchanged as well.
+- `Point3::to_rational` writes every input coordinate as `X * 2^e` with one
+  common exponent, evaluates the line-plane and plane-plane-plane formulas
+  on the integers `X` and reduces each coordinate once. The value, and
+  therefore the normalised rational, is the one the rational formulas give;
+  `integer_constructions_match_rational` compares both value by value on
+  4,000 random constructions (zero, subnormal and widely scaled
+  coordinates, parallel/degenerate cases included).
+
+Differential check (same digest before and after; debug build with the
+`RatKey` assertion active on the 1001-face subset and 100045): the four
+subsets of thingi10k_1038441, the full mesh, 100045, 1038439, 55772,
+502009, 46012 and artec_metal-nut.
+
+| x86_64 VM (2 vCPU) | C3 | C4 |
+|---|---|---|
+| thingi10k_1038441, full mesh | 28.2 s | **17.6 s** |
+| weld and output | 6.4 s | 0.06 s |
+| per-host triangulation | 21.6 s | 7.4 s |
+| implicit construction | 5.7 s | 2.3 s |
+| classify pairs | 4.8 s | 4.6 s |
+
+Phase times come from `bench_arrangement --features profile` (the phases
+overlap, and profiling adds overhead); the full-mesh wall times from
+`arrangement_digest`. Other meshes (C3 → C4): 1001-face subset 1.56 s →
+1.14 s, 5000-face subset 7.25 s → 5.36 s, 100045 0.39 s → 0.31 s, 1038439
+5.1 s → 3.9 s, 55772 3.6 s → 3.4 s, 502009 10.0 s → 7.9 s, 46012 95.3 s →
+92.2 s, artec_metal-nut 78.5 s → 77.7 s. On the two 90k-face meshes the
+remaining cost lies outside the phases changed here.
