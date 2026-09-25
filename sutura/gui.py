@@ -573,6 +573,10 @@ def _find_sutura_cmd():
 
 SUTURA_CMD = _find_sutura_cmd()
 
+# Qt platform plugins without a real window system: modal dialogs cannot be
+# answered there (headless CI runs the GUI tests with QT_QPA_PLATFORM=offscreen).
+HEADLESS_QPA_PLATFORMS = ('offscreen', 'minimal')
+
 # PySide6 bundles its own Qt plugins and misses the system platform theme
 # (plasma-integration), so QFileDialog would fall back to Qt's embedded
 # widget (no rubber-band selection). Point Qt at the system plugin dir.
@@ -1839,8 +1843,15 @@ class MainWindow(QMainWindow):
         """Ask once (on first run, no config) about update checks and the
         anonymous usage history. The update question is skipped for AppImage
         builds (no self-update there); the history preference is always asked
-        and defaults to enabled."""
+        and defaults to enabled.
+
+        Skipped on a windowless Qt platform (offscreen/minimal, e.g. a
+        headless CI runner): nobody can answer the modal there, so exec()
+        would block forever. Nothing is written, so the question is still
+        asked on the first real (on-screen) start."""
         if updater.config_exists():
+            return
+        if QApplication.platformName() in HEADLESS_QPA_PLATFORMS:
             return
         ask_updates = not updater.is_appimage()
         dlg = QMessageBox(self)
