@@ -177,6 +177,12 @@ jobs:
         working-directory: rust/sutura-geom
         run: cargo test --release
 
+      # Same tests with every accelerated CDT query cross-checked against the
+      # linear reference scan (asserts inside the library, not just the tests).
+      - name: Rust unit tests (cdt-check)
+        working-directory: rust/sutura-geom
+        run: cargo test --release --features cdt-check
+
       - name: Build the extension into a venv (maturin needs one)
         run: |
           python -m venv .venv

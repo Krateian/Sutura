@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **Phase C2: per-host constrained triangulation without linear scans**
+  (`rust/sutura-geom/src/cdt2d.rs`, still behind
+  `--experimental-indirect-autorefine`). Point location is a stochastic
+  visibility walk canonicalised to the lowest-index containing triangle;
+  vertex–triangle incidence is maintained so edge lookups and constraint
+  marking rotate around one vertex; constraint insertion walks the segment
+  corridor, which yields exactly the crossing edge and the on-segment vertex
+  the old whole-triangulation scans returned; the normal end of the flip loop
+  updates one triangle instead of rebuilding all adjacencies. The exact
+  `orient2d` fallback clears denominators and works on `BigInt`, vertex
+  interval enclosures are cached, per-host projection constants are computed
+  once and each CDT vertex is mapped back to 3D and welded once. Every
+  decision is the same as before, so the output is identical (same
+  order-independent digest of the exact output triangles, new
+  `examples/arrangement_digest.rs`), not only equal in face count. On the
+  same x86_64 VM, thingi10k_1038441: full mesh 830 s → 52.5 s, 5000-face
+  subset 56.2 s → 13.1 s, 1001-face subset 10.9 s → 3.1 s.
+- New `cdt-check` Cargo feature: every accelerated triangulation query is
+  asserted against the linear reference scan (used for differential testing;
+  the full thingi10k_1038441 mesh passes). CI runs the Rust tests with and
+  without it, plus a new randomized accelerated-vs-linear test.
+
 ## [0.4.1] - 2026-09-25
 
 ### Fixed

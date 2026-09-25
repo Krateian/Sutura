@@ -108,3 +108,65 @@ triangulation per host 150.6 s (83 % of instrumented time, 59.6 M `orient2d`
 calls). Next: cut the per-host CDT cost (walking point location instead of
 linear scans, fewer non-convex fallback splits) before corpus-wide
 benchmarking.
+
+## Phase C2 result (per-host CDT without linear scans)
+
+C2 removes every whole-triangulation scan from the per-host constrained
+triangulation (`src/cdt2d.rs`) while keeping each decision the old code made,
+so the output is identical, not merely equal in face count:
+
+- **Point location** is a stochastic visibility walk (it terminates on any
+  triangulation, Delaunay or not) from the last located triangle. When the
+  point lies on an edge or a vertex, the answer is canonicalised to the
+  lowest-index containing triangle, which is what the old linear scan
+  returned; the scan remains as the fallback if a walk cannot conclude.
+- **Vertex–triangle incidence** is maintained on every triangle write, so
+  edge lookups and constraint marking rotate around one vertex instead of
+  scanning all triangles.
+- **Constraint insertion** walks the segment corridor from `a` to `b`. Only
+  corridor triangles can own an edge that properly crosses the segment, so the
+  lowest `(triangle, edge)` among them equals the old scan's first hit; the
+  walk also yields every vertex on the open segment (the lowest index is
+  used, as before).
+- The **normal end of the flip loop** (the constraint has become an edge) no
+  longer rebuilds the adjacency of the whole triangulation; the rewrite is
+  reproduced locally with the same vertex rotation and flags.
+- Cached interval enclosures per vertex feed the filtered `orient2d`; the
+  exact fallback clears denominators and works on `BigInt` instead of
+  normalising a `BigRational` after every operation (same sign). Per-host
+  projection constants are computed once, a point is projected once per
+  insertion, host vertices get their known `(0,0)/(1,0)/(0,1)` coordinates,
+  segment vertices are sorted with cached keys, and each CDT vertex is mapped
+  back to 3D and welded once.
+- Batch pre-filters (segment pairs, vertex-on-segment) use the conservative
+  interval boxes; the exact test still decides every pair that can intersect.
+
+Non-convex quadrilaterals still fall back to a Steiner split, as before;
+switching to Sloan-style queue flipping would change the output (fewer split
+vertices) and is left for a separate, output-changing step.
+
+Verification: `cargo test --release --features cdt-check` runs every
+accelerated query against the linear reference scan inside the library and
+panics on any disagreement; the full thingi10k_1038441 mesh was run this way
+without a mismatch. `examples/arrangement_digest.rs` prints an
+order-independent digest of the exact output geometry; the pre-C2 and C2
+builds produce the same digest on every input below.
+
+Measured on the same machine (x86_64 cloud VM, 2 vCPU; slower than the M2
+used for C1, so compare within the table only). The OBJ was converted with
+trimesh 5.x, whose vertex welding makes the subsets differ slightly from the
+C1 table above.
+
+| Input | C1 | C2 | Output faces | Digest |
+|---|---|---|---|---|
+| 100 faces | 0.28 s | 0.18 s | 158 | identical |
+| 501 faces | 1.11 s | 0.85 s | 607 | identical |
+| 1001 faces | 10.85 s | 3.07 s | 2,494 | identical |
+| 5000 faces | 56.2 s | 13.1 s | 10,683 | identical |
+| 10418 faces (full) | 830 s | **52.5 s** | 37,323 (4,445 proper SI pairs) | identical |
+
+Full-mesh phase split after C2: classify pairs 19.2 s, per-host constrained
+triangulation 26.9 s (was ~83 % of the time), weld and output 6.2 s;
+`orient2d` calls on the full mesh dropped to 1.1 M. The remaining cost is
+spread over the triangle-pair classification and the exact constructions of
+implicit points rather than concentrated in the triangulation.
