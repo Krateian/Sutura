@@ -242,12 +242,22 @@ impl HostFrame {
     /// Map 2D barycentric `(s,t)` coordinates back to an exact rational 3D
     /// point using `p = a + s*(b - a) + t*(c - a)`.
     pub fn point3d(&self, s: &BigRational, t: &BigRational) -> [BigRational; 3] {
+        // Same value as `a + s*u + t*v`, summed over one common denominator
+        // with a single normalisation per coordinate instead of one per
+        // BigRational operation.
         let (u, v) = (&self.u, &self.v);
-        [
-            &self.a[0] + s * &u[0] + t * &v[0],
-            &self.a[1] + s * &u[1] + t * &v[1],
-            &self.a[2] + s * &u[2] + t * &v[2],
-        ]
+        let (sn, sd) = (s.numer(), s.denom());
+        let (tn, td) = (t.numer(), t.denom());
+        let coord = |k: usize| {
+            let (an, ad) = (self.a[k].numer(), self.a[k].denom());
+            let (un, ud) = (u[k].numer(), u[k].denom());
+            let (vn, vd) = (v[k].numer(), v[k].denom());
+            let su_d = sd * ud;
+            let tv_d = td * vd;
+            let num = an * &su_d * &tv_d + sn * un * ad * &tv_d + tn * vn * ad * &su_d;
+            BigRational::new(num, ad * su_d * tv_d)
+        };
+        [coord(0), coord(1), coord(2)]
     }
 }
 
@@ -1131,7 +1141,7 @@ impl Triangulation {
                         // both lines; rounding implicit points to f64 would
                         // break exactness, so none is attempted.
                         let (u, v) = self.tris[t].edge_opp(e);
-                        let (q, _) = line_line_intersection(
+                        let q = line_line_intersection(
                             &self.verts[a].st,
                             &self.verts[b].st,
                             &self.verts[u].st,
@@ -1223,7 +1233,7 @@ impl Triangulation {
                 let vi = match provenance.and_then(|p| self.insert_vertex(&p)) {
                     Some(vi) => vi,
                     None => {
-                        let (q, _) = line_line_intersection(
+                        let q = line_line_intersection(
                             &self.verts[a].st,
                             &self.verts[b].st,
                             &self.verts[c].st,
@@ -1266,8 +1276,10 @@ impl Triangulation {
             let (a, b) = endpoints[i];
             let pa = &self.verts[a].st;
             let pb = &self.verts[b].st;
-            // Stable sort on the same key, each key computed once.
-            on_seg[i].sort_by_cached_key(|u| param_along(pa, pb, &self.verts[*u].st));
+            // Stable sort, each key computed once. The key is the numerator
+            // of `param_along` (its denominator |b-a|^2 is the same positive
+            // value for every entry), so the order and the ties are identical.
+            on_seg[i].sort_by_cached_key(|u| param_numerator(pa, pb, &self.verts[*u].st));
             on_seg[i].dedup();
             for k in 0..on_seg[i].len().saturating_sub(1) {
                 let u = on_seg[i][k];
@@ -1828,19 +1840,30 @@ fn line_line_intersection(
     b: &Point2D,
     u: &Point2D,
     v: &Point2D,
-) -> (Point2D, BigRational) {
-    let d1 = &b.t - &a.t;
-    let c1 = &a.s - &b.s;
-    let f1 = &a.s * (&b.t - &a.t) - &a.t * (&b.s - &a.s);
-
-    let d2 = &v.t - &u.t;
-    let c2 = &u.s - &v.s;
-    let f2 = &u.s * (&v.t - &u.t) - &u.t * (&v.s - &u.s);
-
-    let det = &d1 * &c2 - &d2 * &c1;
-    let x = (&f1 * &c2 - &f2 * &c1) / &det;
-    let y = (&d1 * &f2 - &d2 * &f1) / &det;
-    (Point2D { s: x, t: y }, det)
+) -> Point2D {
+    // Same values as the textbook BigRational formula, computed on integers:
+    // write every point over one common denominator per line, so each
+    // coordinate is one normalised fraction at the end.
+    let line = |p: &Point2D, q: &Point2D| {
+        // Integer coefficients (d, c, f) of d*x + c*y = f, scaled by D > 0.
+        let den = p.s.denom() * p.t.denom() * q.s.denom() * q.t.denom();
+        let sc = |r: &BigRational| r.numer() * (&den / r.denom());
+        let (ps, pt, qs, qt) = (sc(&p.s), sc(&p.t), sc(&q.s), sc(&q.t));
+        let d = &qt - &pt;
+        let c = &ps - &qs;
+        let f = &ps * &d + &pt * &c; // = ps*(qt-pt) - pt*(qs-ps), scaled by den^2
+        (d, c, f, den)
+    };
+    let (d1, c1, f1, den1) = line(a, b);
+    let (d2, c2, f2, den2) = line(u, v);
+    // Line 1 in true coordinates: (d1/den1) x + (c1/den1) y = f1/den1^2.
+    // Multiply by den1^2: (d1*den1) x + (c1*den1) y = f1. Likewise line 2.
+    let (a1, b1, e1) = (&d1 * &den1, &c1 * &den1, f1);
+    let (a2, b2, e2) = (&d2 * &den2, &c2 * &den2, f2);
+    let det_i = &a1 * &b2 - &a2 * &b1;
+    let x = BigRational::new(&e1 * &b2 - &e2 * &b1, det_i.clone());
+    let y = BigRational::new(&a1 * &e2 - &a2 * &e1, det_i);
+    Point2D { s: x, t: y }
 }
 
 /// True if the closed segments ab and uv intersect in their interiors or at
@@ -1900,6 +1923,19 @@ fn strictly_between(a: &Point2D, b: &Point2D, p: &Point2D) -> bool {
     dot_sign(a, b, p).is_negative()
 }
 
+/// Numerator `(p - a) . (b - a)` of `param_along`, as one normalised
+/// rational built from integer arithmetic.
+fn param_numerator(a: &Point2D, b: &Point2D, p: &Point2D) -> BigRational {
+    let (n1, d1) = diff_frac(&p.s, &a.s);
+    let (n2, d2) = diff_frac(&b.s, &a.s);
+    let (n3, d3) = diff_frac(&p.t, &a.t);
+    let (n4, d4) = diff_frac(&b.t, &a.t);
+    let den12 = d1 * d2;
+    let den34 = d3 * d4;
+    BigRational::new(n1 * n2 * &den34 + n3 * n4 * &den12, den12 * den34)
+}
+
+#[cfg(test)]
 /// Projection parameter of `p` onto the directed line `a -> b`.
 ///
 /// Returns `t` such that `p = a + t*(b-a)` in the 1D ordering along the
@@ -2278,6 +2314,59 @@ mod tests {
         assert!(has_edge(&t, ix, qi));
         assert!(has_edge(&t, ri, ix));
         assert!(has_edge(&t, ix, si));
+    }
+
+    /// The integer-arithmetic rewrites must equal the textbook BigRational
+    /// formulas exactly (values, not just signs).
+    #[test]
+    fn integer_rewrites_equal_rational_formulas() {
+        use num_bigint::BigInt;
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xc3);
+        let mut q = || BigRational::new(BigInt::from(rng.gen_range(-900i64..900)), BigInt::from(rng.gen_range(1i64..97)));
+        for _ in 0..3000 {
+            let (a, b, u, v, p) = (
+                Point2D { s: q(), t: q() },
+                Point2D { s: q(), t: q() },
+                Point2D { s: q(), t: q() },
+                Point2D { s: q(), t: q() },
+                Point2D { s: q(), t: q() },
+            );
+            // param numerator: same value as param_along times |b-a|^2
+            let d2 = (&b.s - &a.s) * (&b.s - &a.s) + (&b.t - &a.t) * (&b.t - &a.t);
+            if !d2.is_zero() {
+                assert_eq!(param_numerator(&a, &b, &p), param_along(&a, &b, &p) * &d2);
+            }
+            // line-line intersection: textbook formula
+            let d1 = &b.t - &a.t;
+            let c1 = &a.s - &b.s;
+            let f1 = &a.s * (&b.t - &a.t) - &a.t * (&b.s - &a.s);
+            let dd = &v.t - &u.t;
+            let c2 = &u.s - &v.s;
+            let f2 = &u.s * (&v.t - &u.t) - &u.t * (&v.s - &u.s);
+            let det = &d1 * &c2 - &dd * &c1;
+            if !det.is_zero() {
+                let r = line_line_intersection(&a, &b, &u, &v);
+                assert_eq!(r.s, (&f1 * &c2 - &f2 * &c1) / &det);
+                assert_eq!(r.t, (&d1 * &f2 - &dd * &f1) / &det);
+            }
+        }
+        // point3d: a + s*u + t*v
+        let (ha, hb, hc) = (
+            Point3::Explicit([0.3, -1.25, 7.0]),
+            Point3::Explicit([2.5, 0.1, -3.0]),
+            Point3::Explicit([-1.0, 4.75, 0.2]),
+        );
+        let f = HostFrame::from_points(&ha, &hb, &hc).unwrap();
+        for _ in 0..500 {
+            let (s, t) = (q(), q());
+            let want = [
+                &f.a[0] + &s * &f.u[0] + &t * &f.v[0],
+                &f.a[1] + &s * &f.u[1] + &t * &f.v[1],
+                &f.a[2] + &s * &f.u[2] + &t * &f.v[2],
+            ];
+            assert_eq!(f.point3d(&s, &t), want);
+        }
     }
 
     /// C2 differential test: the accelerated queries (walking locate, fan

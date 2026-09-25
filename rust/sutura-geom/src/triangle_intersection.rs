@@ -228,9 +228,35 @@ fn intersect_from_signs(
 }
 
 fn points_are_equal(p: &Point3, q: &Point3) -> bool {
+    // Rigorous interval rejection: p = λp/dp and q = λq/dq are equal iff
+    // λp·dq − λq·dp = 0 in every coordinate, so a component whose enclosure
+    // excludes zero proves them different without building the rationals.
+    if points_certainly_differ(p, q) {
+        return false;
+    }
     match (p.to_rational(), q.to_rational()) {
         (Some(a), Some(b)) => a == b,
         (None, None) => true,
+        _ => false,
+    }
+}
+
+fn points_certainly_differ(p: &Point3, q: &Point3) -> bool {
+    let (lp, dp) = p.homogeneous_iv();
+    let (lq, dq) = q.homogeneous_iv();
+    // A zero denominator means an undefined point; leave that to the exact path.
+    if dp.sign().is_none() || dq.sign().is_none() {
+        return false;
+    }
+    (0..3).any(|k| lp[k].mul(dq).sub(lq[k].mul(dp)).sign().is_some())
+}
+
+/// True when `p` is a line-plane intersection whose line is the line
+/// through `a` and `b`: then `p` lies on that line exactly, and any
+/// `orient3d(a, b, p, x)` is exactly zero.
+fn lpi_on_line(p: &Point3, a: [f64; 3], b: [f64; 3]) -> bool {
+    match *p {
+        Point3::Lpi { q1, q2, .. } => (q1 == a && q2 == b) || (q1 == b && q2 == a),
         _ => false,
     }
 }
@@ -455,24 +481,45 @@ fn point_inside_triangle_3d(tri: &Triangle, p: &Point3) -> bool {
             continue;
         }
 
-        let s_ab = orient3d_sign(
-            &Point3::Explicit(a),
-            &Point3::Explicit(b),
-            p,
-            &Point3::Explicit(q),
-        );
-        let s_bc = orient3d_sign(
-            &Point3::Explicit(b),
-            &Point3::Explicit(cc),
-            p,
-            &Point3::Explicit(q),
-        );
-        let s_ca = orient3d_sign(
-            &Point3::Explicit(cc),
-            &Point3::Explicit(a),
-            p,
-            &Point3::Explicit(q),
-        );
+        // Exactly zero when `p` was built on this edge's line (the common
+        // case: an edge of this triangle crossing the other plane); skips
+        // the exact rational fallback the interval filter cannot avoid.
+        let s_ab = if lpi_on_line(p, a, b) {
+            0.0
+        } else {
+            orient3d_sign(
+                &Point3::Explicit(a),
+                &Point3::Explicit(b),
+                p,
+                &Point3::Explicit(q),
+            )
+        };
+        // Exactly zero when `p` was built on this edge's line (the common
+        // case: an edge of this triangle crossing the other plane); skips
+        // the exact rational fallback the interval filter cannot avoid.
+        let s_bc = if lpi_on_line(p, b, cc) {
+            0.0
+        } else {
+            orient3d_sign(
+                &Point3::Explicit(b),
+                &Point3::Explicit(cc),
+                p,
+                &Point3::Explicit(q),
+            )
+        };
+        // Exactly zero when `p` was built on this edge's line (the common
+        // case: an edge of this triangle crossing the other plane); skips
+        // the exact rational fallback the interval filter cannot avoid.
+        let s_ca = if lpi_on_line(p, cc, a) {
+            0.0
+        } else {
+            orient3d_sign(
+                &Point3::Explicit(cc),
+                &Point3::Explicit(a),
+                p,
+                &Point3::Explicit(q),
+            )
+        };
 
         return same_side_or_zero(s_ab, ref_ab)
             && same_side_or_zero(s_bc, ref_bc)
@@ -742,6 +789,30 @@ mod tests {
             r: r.explicit(),
             s: s.explicit(),
             t: t.explicit(),
+        }
+    }
+
+    /// The interval rejection in `points_are_equal` may only fire for points
+    /// that really differ.
+    #[test]
+    fn interval_point_rejection_is_sound() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xc4);
+        let mut v = || [rng.gen_range(-8i32..8) as f64 * 0.5, rng.gen_range(-8i32..8) as f64 * 0.5, rng.gen_range(-8i32..8) as f64 * 0.5];
+        let mut pts: Vec<Point3> = Vec::new();
+        for _ in 0..400 {
+            let p = Point3::Lpi { q1: v(), q2: v(), r: v(), s: v(), t: v() };
+            if p.to_rational().is_some() {
+                pts.push(p);
+            }
+            pts.push(Point3::Explicit(v()));
+        }
+        for i in 0..pts.len() {
+            for j in 0..pts.len().min(i + 40) {
+                if points_certainly_differ(&pts[i], &pts[j]) {
+                    assert_ne!(pts[i].to_rational(), pts[j].to_rational());
+                }
+            }
         }
     }
 

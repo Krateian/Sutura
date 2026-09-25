@@ -175,3 +175,40 @@ triangulation 26.9 s (was ~83 % of the time), weld and output 6.2 s;
 `orient2d` calls on the full mesh dropped to 1.1 M. The remaining cost is
 spread over the triangle-pair classification and the exact constructions of
 implicit points rather than concentrated in the triangulation.
+
+## Phase C3 result (classification and exact-arithmetic hot spots)
+
+After C2 the remaining time was spread over the triangle-pair classification
+and a few exact constructions. C3 keeps the output identical again and
+removes those hot spots:
+
+- `point_inside_triangle_3d`: when the tested point is a line-plane
+  intersection built on the very edge being tested, the orientation is
+  exactly zero by construction and is returned without evaluation (this was
+  the case the interval filter could never decide, so it always fell back to
+  exact rationals).
+- `points_are_equal`: a rigorous interval test on the homogeneous
+  coordinates (`λp·dq − λq·dp`) proves most candidate pairs different before
+  any rational coordinate is built.
+- The exact host frame used to classify touch segments is built once per
+  host triangle instead of once per segment.
+- `HostFrame::point3d`, the fallback `line_line_intersection` and the
+  segment sort key are evaluated on integers over a common denominator with
+  one normalisation at the end (the sort key is the numerator of the old
+  parameter; its positive denominator is common to all entries, so order and
+  ties are unchanged). A unit test checks each rewrite against the textbook
+  `BigRational` formula value by value.
+
+Differential check (same digest before and after): thingi10k_1038441 and
+its subsets, 100045, 1038439, 55772, 502009, 46012 (90k faces) and
+artec_metal-nut (90k faces).
+
+| thingi10k_1038441, x86_64 VM | C2 | C3 |
+|---|---|---|
+| full mesh | 52.5 s | **28.1 s** |
+| classify pairs | 19.2 s | 4.6 s |
+| per-host triangulation | 26.9 s | 21.5 s |
+
+Other meshes on the VM (C2 → C3): 1038439 8.5 s → 4.8 s, 55772 7.0 s →
+3.9 s, 502009 23.0 s → 9.7 s, 46012 165 s → 95 s, artec_metal-nut 132 s →
+77 s (the last two measured with a second job running).
