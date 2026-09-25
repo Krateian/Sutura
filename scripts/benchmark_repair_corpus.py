@@ -155,13 +155,21 @@ def main():
                    help='output JSON path')
     p.add_argument('--experimental-autorefine', action='store_true',
                    help='enable --experimental-autorefine for every mesh')
+    p.add_argument('--no-fallback-ftetwild', action='store_true',
+                   help='disable the fTetWild fallback tier (default: same as '
+                        'the CLI, i.e. on when installed and stage 1 leaves '
+                        'holes/non-manifold edges)')
     p.add_argument('--experimental-fallback-ftetwild', action='store_true',
                    help='enable --experimental-fallback-ftetwild for every mesh')
     args = p.parse_args()
+    ftetwild = repair.resolve_ftetwild(args.no_fallback_ftetwild,
+                                       args.experimental_fallback_ftetwild)
     corpus, out_path = args.corpus, args.out
     files = sorted(f for f in os.listdir(corpus) if f.lower().endswith('.stl'))
     flags = (' +autorefine' if args.experimental_autorefine else '') + \
-            (' +ftetwild' if args.experimental_fallback_ftetwild else '')
+            {False: ' ftetwild=off', True: ' ftetwild=always',
+             'auto': ' ftetwild=auto%s' % ('' if repair.ftetwild_available()
+                                          else ' (not installed)')}[ftetwild]
     print('corpus: %s (%d STL files)%s' % (corpus, len(files), flags), flush=True)
 
     results = {}
@@ -172,7 +180,7 @@ def main():
         try:
             entry, err = run_one(os.path.join(corpus, f), tmp,
                                  autorefine=args.experimental_autorefine,
-                                 ftetwild=args.experimental_fallback_ftetwild)
+                                 ftetwild=ftetwild)
         except Exception as e:  # noqa: BLE001 - never let one file kill the run
             err = {'file': f, 'error': '%s: %s' % (type(e).__name__, e)}
         finally:
@@ -285,7 +293,7 @@ def main():
         times = [r.get('ftetwild_time') for r in ft_meshes
                  if isinstance(r.get('ftetwild_time'), (int, float))]
         print()
-        print('=== fTetWild fallback tier (--experimental-fallback-ftetwild) ===')
+        print('=== fTetWild fallback tier ===')
         print('meshes where it ran      : %d' % len(ft_meshes))
         print('adopted                  : %d' % len(adopted))
         print('  of which manifold3d post-processed : %d' % len(pp))

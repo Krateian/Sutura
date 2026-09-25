@@ -148,6 +148,11 @@ jobs:
       - name: "Test: join components"
         run: ./venv/bin/python tests/test_join_components.py
 
+      # The fTetWild extra (~1.1 GB) is not installed here: the suite checks
+      # flag resolution, the no-op default without it and the GUI wiring.
+      - name: "Test: fTetWild fallback defaults"
+        run: ./venv/bin/python tests/test_ftetwild_default.py
+
       - name: "Test: OrcaSlicer plugin stub"
         run: ./venv/bin/python tests/test_orca_plugin.py
 

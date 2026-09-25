@@ -27,6 +27,24 @@ All notable changes to this project are documented here.
   asserted against the linear reference scan (used for differential testing;
   the full thingi10k_1038441 mesh passes). CI runs the Rust tests with and
   without it, plus a new randomized accelerated-vs-linear test.
+- **fTetWild fallback tier on by default when installed.** With the
+  optional extra (`requirements-ftetwild.txt`, `SUTURA_WITH_FTETWILD=1`)
+  present, the tier now runs without a flag whenever stage 1 still leaves
+  holes or non-manifold edges; a closed result that only self-intersects is
+  left alone. New opt-out `--no-fallback-ftetwild`;
+  `--experimental-fallback-ftetwild` keeps its previous meaning (also runs on
+  closed-but-self-intersecting results, explicit skip when not installed).
+  GUI: the *fTetWild fallback* checkbox (no longer labelled experimental) is
+  checked by default and a second checkbox next to it,
+  *+ self-intersections (slow)*, maps to the experimental flag. Without the extra nothing changes (no report
+  entry, no time cost). `scripts/benchmark_repair_corpus.py` follows the CLI
+  default and gained `--no-fallback-ftetwild`. Measured on the 40 real-world
+  samples: strict watertight 31 → 39 (ran on 9 meshes, adopted on 8; the
+  remaining open mesh hit the 180 s budget), total time 64 s → 669 s; the
+  always-on variant reaches the same 39 in 2,595 s and remeshes 7 already
+  closed meshes. fTetWild's output and run time vary between runs; the
+  result is re-triangulated. New `tests/test_ftetwild_default.py` (in CI;
+  the checks that need fTetWild skip there).
 
 ### Fixed
 

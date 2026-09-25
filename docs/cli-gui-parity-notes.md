@@ -34,7 +34,8 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--experimental-edge-tiebreak` (GUI checkbox) ·
 `--experimental-join-components` (GUI checkbox — gap closed in FAZ14) ·
 `--experimental-autorefine` (GUI checkbox) ·
-`--experimental-fallback-ftetwild` (GUI checkbox) ·
+`--no-fallback-ftetwild` (GUI checkbox *fTetWild fallback*, checked by default) ·
+`--experimental-fallback-ftetwild` (GUI checkbox *+ self-intersections (slow)* next to it) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B) ·
 `--version` (GUI version label).
 

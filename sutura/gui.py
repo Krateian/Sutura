@@ -152,13 +152,20 @@ STRINGS = {
                           '2025). NEVER deletes input faces; adopted only when '
                           'the result is not worse than the default chain '
                           '(NOT the default).',
-        'ftetwild_label': 'Experimental: fTetWild fallback',
-        'ftetwild_tip': 'Last-resort solidifier: when the stage-1 chain still '
-                        'leaves self-intersections, holes, or non-manifold '
+        'ftetwild_label': 'fTetWild fallback',
+        'ftetwild_tip': 'Last-resort solidifier, on by default: when the '
+                        'stage-1 chain still leaves holes or non-manifold '
                         'edges, tetrahedralize the original input and extract '
                         'a watertight, SI-free boundary surface (fTetWild via '
                         'pytetwild, MPL-2.0). Adopted only when no worse than '
-                        'the stage-1 result (NOT the default).',
+                        'the stage-1 result. Needs the optional extra '
+                        '(SUTURA_WITH_FTETWILD=1); without it this has no '
+                        'effect. Uncheck to disable (--no-fallback-ftetwild).',
+        'ftetwild_si_label': '+ self-intersections (slow)',
+        'ftetwild_si_tip': 'Also run the fTetWild fallback when the stage-1 '
+                           'result is closed but still self-intersects. Such '
+                           'meshes are remeshed; can take up to 3 minutes per '
+                           'mesh (--experimental-fallback-ftetwild).',
         'indirect_autorefine_label': 'Experimental: indirect autorefine',
         'indirect_autorefine_tip': 'Resolve self-intersections with the exact '
                                    'arrangement-lite split (rust/sutura-geom '
@@ -375,13 +382,20 @@ STRINGS = {
                           'yüzeylerini ASLA silmez; yalnızca sonuç varsayılan '
                           'zincirden daha kötü değilse uygulanır (varsayılan '
                           'değil).',
-        'ftetwild_label': 'Deneysel: fTetWild fallback',
-        'ftetwild_tip': 'Son çare katılaştırıcı: stage-1 zinciri hâlâ '
-                        'self-intersection, delik veya non-manifold kenar '
+        'ftetwild_label': 'fTetWild fallback',
+        'ftetwild_tip': 'Son çare katılaştırıcı, varsayılan olarak açık: '
+                        'stage-1 zinciri hâlâ delik veya non-manifold kenar '
                         'bırakırsa orijinal girdiyi tetrahedralize edip su '
                         'geçirmez, SI-free bir yüzey çıkarır (fTetWild via '
                         'pytetwild, MPL-2.0). Yalnızca stage-1 sonucundan daha '
-                        'kötü değilse uygulanır (varsayılan değil).',
+                        'kötü değilse uygulanır. İsteğe bağlı ek paket gerekir '
+                        '(SUTURA_WITH_FTETWILD=1); yoksa etkisi yoktur. '
+                        'Kapatmak için işareti kaldırın (--no-fallback-ftetwild).',
+        'ftetwild_si_label': '+ self-intersection (yavaş)',
+        'ftetwild_si_tip': 'Stage-1 sonucu kapalı ama hâlâ self-intersection '
+                           'içeriyorsa da fTetWild fallback\'i çalıştırır. Bu '
+                           'mesh\'ler yeniden örgülenir; mesh başına 3 dakikaya '
+                           'kadar sürebilir (--experimental-fallback-ftetwild).',
         'indirect_autorefine_label': 'Deneysel: indirect autorefine',
         'indirect_autorefine_tip': "Self-intersection'ları exact arrangement-"
                                    'lite bölmesiyle çözer (rust/sutura-geom '
@@ -786,7 +800,7 @@ class RepairWorker(QThread):
 
     def __init__(self, files, mode='auto', profile=None, force=False,
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
-                 join_components=False, autorefine=False, ftetwild=False,
+                 join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, parent=None):
         super().__init__(parent)
         self._files = list(files)
@@ -847,7 +861,9 @@ class RepairWorker(QThread):
                 args.append('--experimental-join-components')
             if self._autorefine:
                 args.append('--experimental-autorefine')
-            if self._ftetwild:
+            if self._ftetwild is False:
+                args.append('--no-fallback-ftetwild')
+            elif self._ftetwild is True:
                 args.append('--experimental-fallback-ftetwild')
             if self._indirect_autorefine:
                 args.append('--experimental-indirect-autorefine')
@@ -1553,7 +1569,7 @@ class MainWindow(QMainWindow):
         self._edge_tiebreak = False   # batch-wide opt-in edge-tiebreak head (FAZ11)
         self._join_components = False # batch-wide opt-in join-components (FAZ14)
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
-        self._ftetwild = False        # batch-wide opt-in fTetWild fallback tier (FAZ17)
+        self._ftetwild = 'auto'       # fTetWild fallback tier: 'auto' (default) / False (off) / True (+SI)
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
@@ -1652,12 +1668,19 @@ class MainWindow(QMainWindow):
         self.chk_autorefine.toggled.connect(
             lambda on: setattr(self, '_autorefine', on))
         actions.addWidget(self.chk_autorefine)
-        # opt-in experimental fTetWild fallback tier (FAZ17, batch-wide)
+        # fTetWild fallback tier (FAZ17, batch-wide): on by default (used
+        # only when the optional extra is installed), opt-out by unchecking;
+        # the second box extends it to closed-but-self-intersecting results.
         self.chk_fallback_ftetwild = QCheckBox(_t('ftetwild_label'))
         self.chk_fallback_ftetwild.setToolTip(_t('ftetwild_tip'))
-        self.chk_fallback_ftetwild.toggled.connect(
-            lambda on: setattr(self, '_ftetwild', on))
+        self.chk_fallback_ftetwild.setChecked(True)
         actions.addWidget(self.chk_fallback_ftetwild)
+        self.chk_ftetwild_si = QCheckBox(_t('ftetwild_si_label'))
+        self.chk_ftetwild_si.setToolTip(_t('ftetwild_si_tip'))
+        actions.addWidget(self.chk_ftetwild_si)
+        self.chk_fallback_ftetwild.toggled.connect(self._sync_ftetwild)
+        self.chk_ftetwild_si.toggled.connect(self._sync_ftetwild)
+        self._sync_ftetwild()
         # opt-in experimental indirect arrangement-lite split (Phase B,
         # batch-wide)
         self.chk_indirect_autorefine = QCheckBox(_t('indirect_autorefine_label'))
@@ -1838,6 +1861,17 @@ class MainWindow(QMainWindow):
         p.drawLine(10, 9, 14, 13)
         p.end()
         return QIcon(pm)
+
+    def _sync_ftetwild(self, *_):
+        """Map the two fTetWild checkboxes to the CLI tri-state."""
+        on = self.chk_fallback_ftetwild.isChecked()
+        self.chk_ftetwild_si.setEnabled(on)
+        if not on:
+            self._ftetwild = False
+        elif self.chk_ftetwild_si.isChecked():
+            self._ftetwild = True
+        else:
+            self._ftetwild = 'auto'
 
     def _maybe_ask_update_on_first_run(self):
         """Ask once (on first run, no config) about update checks and the
