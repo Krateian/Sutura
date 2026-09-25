@@ -166,6 +166,94 @@ def test_gui_checkboxes_map_to_cli_flags():
     assert 'GUI-OK' in r.stdout, r.stdout[-500:]
 
 
+
+# Two tetrahedra sharing only vertex 0: closed, no non-manifold edge, but the
+# shared vertex is pinched, so pymeshlab reports it as not two-manifold.
+_BOWTIE_V = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1),
+             (-1, 0, 0), (0, -1, 0), (0, 0, -1)]
+_TET = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
+_BOWTIE_T = _TET + [(0, 5, 4), (0, 4, 6), (0, 6, 5), (4, 5, 6)]
+# The same two tetrahedra with the pinched vertex split: two-manifold.
+_SPLIT_V = _BOWTIE_V + [(0, 0, 0)]
+_SPLIT_T = _TET + [(7, 5, 4), (7, 4, 6), (7, 6, 5), (4, 5, 6)]
+
+
+def _measure(v, t):
+    import numpy as np
+    import pymeshlab as ml
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                        face_matrix=np.asarray(t, np.int32)))
+    topo = ms.apply_filter('get_topological_measures')
+    holes = repair.boundary_loop_stats(np.asarray(v, np.float64), np.asarray(t))[0]
+    return ms, topo, holes, topo.get('non_two_manifold_edges', 0)
+
+
+def _postprocess(v, t, fake_stage2):
+    import pymeshlab as ml
+    ms, topo, holes, nm = _measure(v, t)
+    saved = repair.run_stage2
+    if fake_stage2 is not None:
+        repair.run_stage2 = fake_stage2
+    try:
+        with tempfile.TemporaryDirectory(prefix='sutura-bowtie-') as tmp:
+            return repair._ftetwild_manifold_postprocess(
+                ml, tmp, v, t, ms, topo, holes, nm)
+    finally:
+        repair.run_stage2 = saved
+
+
+def test_bowtie_fixture_is_closed_but_not_two_manifold():
+    _ms, topo, holes, nm = _measure(_BOWTIE_V, _BOWTIE_T)
+    assert holes == 0 and nm == 0
+    assert not topo.get('is_mesh_two_manifold')
+    _ms, topo, holes, nm = _measure(_SPLIT_V, _SPLIT_T)
+    assert holes == 0 and nm == 0 and topo.get('is_mesh_two_manifold')
+
+
+def test_bowtie_boundary_gets_the_manifold_postprocess():
+    """A closed fTetWild boundary with a pinched vertex is rebuilt by stage 2
+    (here a stand-in that returns the split mesh), so the adopted result is
+    two-manifold and stage 2 can run on it."""
+    calls = []
+
+    def fake_stage2(inter, out_obj):
+        calls.append(inter)
+        repair.write_obj(out_obj, _SPLIT_V, _SPLIT_T)
+        return {'output_triangles': len(_SPLIT_T)}, True
+
+    v, t, _ms, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, fake_stage2)
+    assert calls, 'the manifold post-process was not attempted'
+    assert done and holes == 0 and nm == 0
+    assert topo.get('is_mesh_two_manifold')
+    assert len(t) == len(_SPLIT_T)
+
+
+def test_two_manifold_boundary_is_left_unchanged():
+    calls = []
+
+    def fake_stage2(inter, out_obj):
+        calls.append(inter)
+        return {'error': 'must not be called'}, False
+
+    v, t, _ms, _topo, _h, _nm, done = _postprocess(_SPLIT_V, _SPLIT_T, fake_stage2)
+    assert not calls and not done
+    assert (v, t) == (_SPLIT_V, _SPLIT_T)
+
+
+def test_bowtie_with_real_stage2():
+    """End to end with manifold3d when the stage-2 bridge is usable here."""
+    with tempfile.TemporaryDirectory(prefix='sutura-bowtie-') as tmp:
+        probe_in = os.path.join(tmp, 'probe.obj')
+        repair.write_obj(probe_in, _SPLIT_V, _SPLIT_T)
+        _rep, ok = repair.run_stage2(probe_in, os.path.join(tmp, 'probe_out.obj'))
+    if not ok:
+        print('    (stage 2 unavailable: real manifold3d check skipped)')
+        return
+    _v, _t, _ms, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, None)
+    assert done, 'manifold3d post-process not adopted'
+    assert holes == 0 and nm == 0 and topo.get('is_mesh_two_manifold')
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):
