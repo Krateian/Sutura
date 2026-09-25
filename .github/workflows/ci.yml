@@ -148,6 +148,7 @@ jobs:
         run: ./venv/bin/python tests/test_orca_plugin.py
 
       - name: "Test: stage 2 3MF per object"
+        if: matrix.python-version == '3.11'   # needs the stage-2 venv311
         run: ./venv/bin/python tests/test_stage2_3mf.py
 
       - name: "Test: manifold3d watertight check"
@@ -155,6 +156,7 @@ jobs:
         run: ./sutura/venv311/bin/python tests/test_manifold3d_watertight.py
 
       - name: "Test: real-world corpus regression (~2 min)"
+        if: matrix.python-version == '3.11'   # expected results assume stage 2
         env:
           SUTURA: /tmp/sutura-wrap
         run: ./venv/bin/python tests/test_real_world_corpus.py
