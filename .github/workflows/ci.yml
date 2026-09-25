@@ -17,6 +17,7 @@ jobs:
       SUTURA_DIR: ${{ github.workspace }}/sutura
       QT_QPA_PLATFORM: offscreen
     strategy:
+      fail-fast: false   # report every leg, do not cancel 3.11 when 3.14 fails
       matrix:
         # 3.11 is the manifold3d (stage 2) target; 3.14 is the current
         # Python. 3.12/3.13 are not tested: pymeshlab imports on 3.13 but the
@@ -123,6 +124,7 @@ jobs:
         run: ./venv/bin/python tests/test_repair_mode.py
 
       - name: "Test: repair budget"
+        if: matrix.python-version == '3.11'   # asserts a stage-2 watertight result
         run: ./venv/bin/python tests/test_budget.py
 
       - name: "Test: validate / dry-run"
