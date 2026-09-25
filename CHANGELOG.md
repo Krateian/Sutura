@@ -41,7 +41,8 @@ All notable changes to this project are documented here.
   x86_64 VM: 52.5 s → 28.1 s (classification 19.2 s → 4.6 s); identical
   output digests on that mesh, its subsets and 1038439, 55772, 502009,
   100045, 46012 (90k faces, 165 s → 95 s) and artec_metal-nut (90k faces,
-  132 s → 77 s).
+  132 s → 77 s). On the Apple M2 used for the C1/C2 numbers, the full mesh
+  takes 16.8 s (C2 on the M2: 29.8 s), same output digest.
 - **Phase C4: exact-key hashing and integer implicit constructions**
   (`rust/sutura-geom`, output identical). The output weld map and the
   per-host `(s,t)` vertex index hashed `BigRational` keys through
@@ -58,7 +59,8 @@ All notable changes to this project are documented here.
   implicit construction 5.7 s → 2.3 s); identical output digests on that
   mesh, its four subsets and 100045, 1038439, 55772, 502009, 46012 and
   artec_metal-nut (the two 90k-face meshes gain only 1–3 %, their cost lies
-  elsewhere).
+  elsewhere). On the Apple M2, the full mesh takes 10.6 s (C3 on the M2:
+  16.8 s), same output digest.
 - **fTetWild fallback tier on by default when installed.** With the
   optional extra (`requirements-ftetwild.txt`, `SUTURA_WITH_FTETWILD=1`)
   present, the tier now runs without a flag whenever stage 1 still leaves
