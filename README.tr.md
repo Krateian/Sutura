@@ -118,8 +118,14 @@ parçası değildir.
 
 Her katman ancak sonucu, delik ve non-manifold kenar açısından düz iki
 aşamalı sonuçtan kötü değilse benimsenir; yani iki aşamalı yol her zaman
-güvenlik ağı olarak kalır. fTetWild eki kurulu değilse ve hiçbir bayrak
-verilmezse davranış tam olarak yukarıdaki iki aşamadır.
+güvenlik ağı olarak kalır. fTetWild sonucu ayrıca şekli korumalıdır:
+çıktıdan girdiye tek yönlü Hausdorff mesafesi sınır kutusu köşegeninin
+%1'ini aşarsa reddedilir (`reject_reason: shape`; geçici eşik). Bu
+korumadan önce ölçülen optimizasyonlu fTetWild koşularında
+thingi10k_1038441 (%3,7), 1038439 (%1,8) ve 224108 (%1,1) reddedilirdi; bu
+yüzden aşağıdaki 39/40'ın yeniden ölçülene kadar düşmesi beklenir. fTetWild
+eki kurulu değilse ve hiçbir bayrak verilmezse davranış tam olarak
+yukarıdaki iki aşamadır.
 
 40 gerçek örnek üzerinde ölçüldü (`scripts/benchmark_repair_corpus.py`,
 2 vCPU'lu x86_64 VM): yedek katman olmadan kesin su geçirmez 31/40,
