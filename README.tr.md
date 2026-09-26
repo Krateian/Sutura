@@ -284,8 +284,8 @@ söyler.
 | STL onarımı (iki aşamalı) | ~%96 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmış ve 75 modellik gerçek dünya korpusunda (0 sert hata; Aşama 1 zinciri yeniden düzenlendi ve `maxholesize` mesh-duyarlı hale getirildi, böylece büyük tarama delikleri kapanıyor) ayrıca 115 mesh'lik gerçek-dünya tarama korpusunda doğrulanmıştır (gerçek çıktı geometrisi üzerinde sıkı bir `defects.detect()` kapalı-döngü kontrolüyle yeniden ölçüldü: 0 çökme, 103/115 = ~%90 sıkı su geçirmez, her hat iddiası birebir doğrulandı — bkz. `docs/repair-benchmark-strict-watertight-2026-09.md`). %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve tarama mesh'lerindeki son birkaç inatçı delik / ağır non-manifold yapı gerçek bir VCG sınırıdır. |
 | 3MF çok nesneli | ~%92 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Aşama 1'in kapattığı her nesne artık tek-mesh dosyalarıyla aynı paylaşılan yardımcı aracılığıyla **nesne başına aşama 2** (manifold3d su geçirmez yeniden kurma) alır: nesne başına `stage2` raporları, `objects_watertight` / `objects_stage2_ok` özetleri ve dosya düzeyi karar TÜM nesneleri dikkate alır (yalnızca nesne 0'ı değil). Bayt bayt özdeş nesneler tek onarımı paylaşır ama her biri yine kendi raporunu alır. Katmanlı/yinelenen köşeli (Bambu tarzı) bir 3MF, Aşama 1'de düzeltilir (köşe tekilleştirmesinden sonra ikinci bir yinelenen-yüz geçişi) ve nesne başına 12 yüz / 0 deliğe onarılır, nesne başına aşama 2 ile su geçirmez doğrulanır. Regression testiyle doğrulanır (`tests/test_stage2_3mf.py`). Bilinen sınırlar: nesne başına aşama 2 yalnızca Aşama 1'in gerçekten kapattığı nesnelere uygulanır (açık nesneler aşama 1 çıktısı olarak kalır), nesne 0'ın `stage1`/`stage2` üst düzey alanları geriye dönük uyumluluk için korunur ve `<vertex>` ayrıştırıcısı x,y,z öznitelik sırasını varsayar. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
-| GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), **renk-kodlu kusur görünümü** (kırmızı = non-manifold, turuncu = ters sarmalım, sarı = dejenere yüz — FAZ11), **"ne değişti" onarım günlüğü paneli** (kapatılan delikler, düzeltilen non-manifold kenarlar, silinen yüzler, bileşenler, aşama 2 — FAZ11), **batch geneli seçenekler için tek bir *Seçenekler* açılır menüsü** (fTetWild yedek katmanı — FAZ17 — ve isteğe bağlı deneysel olanlar: edge-tiebreak sınıflandırıcı kafası; küçük-parçaları-birleştir — FAZ14; autorefine self-intersection çözümü — FAZ16; exact indirect autorefine — Faz B/C1), onarım modu seçici + onarım profili açılır listesi, *Repair* sekmesinde preset başına ipuçlu bir **Triage yoğunluk** açılır listesi (presetler + kullanıcı profilleri), **Yeni/Çoğalt/Yeniden adlandır/Sil profil düğmeleri ve satır içi Profil ayarları düzenleyicisi** ve bir *Önerilene sıfırla* düğmesi, bir **Motorlar** sekmesi (boyutlu ve iptal edilebilir ilerleme pencereli fTetWild kur/kaldır yöneticisi, ayrıca yapılandırılmış harici motor listesi ve motor belgelerine bağlantı), durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS'ta Finder sağ tık onarımı GUI'nin kendisi yerine ayrı Quick Action ile sağlanır. |
-| CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--intensity <preset|profil>`, `--list-intensities`, `--dry-run`, `--version`), salt-okunur `validate` alt komutu, `engines list|check` ve `ftetwild status|install|uninstall` alt komutları, JSON raporları, batch özeti, çıkış kodları. Ayrıca deneysel/prototip bayraklar: `--experimental-join-components` (küçük bileşenleri silmek yerine en yakın büyük bileşene taşır; geometriyi değiştirir, yalnızca değerlendirme), `--experimental-autorefine` (self-intersection'ları yüz silmek yerine kesişen üçgenleri kesişim doğruları boyunca alt üçgenlere bölerek çözer — Lazard & Valque 2025; girdi yüzeylerini ASLA silmez; yalnızca sonucu varsayılan zincirden daha kötü değilse uygulanır; orta-düzey SI mesh'lerde SI'yı azaltır, yoğun-SI taramalarda float64 kurulumu sınırlıdır — bkz. `docs/alpha-wrap-feasibility-2026-09.md`; 25 Eylül 2026'da 45 gerçek örnek üzerinde yeniden ölçüldü: hiçbir nihai sonucu değiştirmedi — her iki durumda 31/45 kesin su geçirmez — toplam süre ise ~33 sn'den ~1003 sn'ye çıktı, bu yüzden isteğe bağlı kalıyor), `--no-fallback-ftetwild` / `--experimental-fallback-ftetwild` (fTetWild son çare katılaştırıcısı — ORİJİNAL girdiyi pytetwild üzerinden fTetWild ile tetrahedralize edip (MPL-2.0) su geçirmez, SI-free bir yüzey çıkarır; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır — isteğe bağlı ~1,1 GB'lık eki kuruluysa varsayılan olarak AÇIKTIR, `SUTURA_WITH_FTETWILD=1`, ve yalnızca stage 1 delik veya non-manifold kenar bıraktığında çalışır: gerçek örneklerde kesin su geçirmez 31/40 → 39/40; ilk bayrak kapatır, ikincisi kapalı ama hâlâ self-intersection içeren sonuçlarda da çalıştırır), `--experimental-indirect-autorefine` (Phase B prototipi: rust/sutura-geom uzantısıyla exact arrangement-lite self-intersection bölmesi — indirect predikatlar, broad phase + exact üçgen sınıflandırıcı + üçgen başına 2D CDT + exact-rasyonel welding; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır, `--experimental-autorefine` ile aynı koruma; yalnızca değerlendirme ve geliştirici derlemesi; yoğun thingi10k_1038441 taraması artık yaklaşık on saniyede tamamlanıyor — M2'de ~463 sn (C1) → 29,8 sn (C2) → 10,6 sn (C4); 2 vCPU'lu bir x86_64 VM'de 830 sn → 52,5 sn (C2) → 17,6 sn (C4) — ama katman hâlâ geliştirici derlemesi ve varsayılan yolda değil) ve `--experimental-edge-tiebreak` (opt-in 11-özellikli sınıflandırıcı kafası — temel + FAZ10 taramasının beş güçlü sinyali; kazanç küçük, 71 mesh'lik etiketli sette 1 mesh, ama sinyal istatistiksel olarak gerçek; varsayılan değil). `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
+| GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), **renk-kodlu kusur görünümü** (kırmızı = non-manifold, turuncu = ters sarmalım, sarı = dejenere yüz — FAZ11), **"ne değişti" onarım günlüğü paneli** (kapatılan delikler, düzeltilen non-manifold kenarlar, silinen yüzler, bileşenler, aşama 2 — FAZ11), **sekmeli bir *Seçenekler* penceresi** (Genel / Onarım / Deneysel / Güncellemeler / Değişiklikler / Motorlar; Ctrl+, / Cmd+,) batch geneli seçeneklerle (fTetWild yedek katmanı — FAZ17 — ve isteğe bağlı deneysel olanlar: edge-tiebreak sınıflandırıcı kafası; küçük-parçaları-birleştir — FAZ14; autorefine self-intersection çözümü — FAZ16; exact indirect autorefine — Faz B/C1), onarım modu seçici + onarım profili açılır listesi, *Repair* sekmesinde preset başına ipuçlu bir **Triage yoğunluk** açılır listesi (presetler + kullanıcı profilleri), **Yeni/Çoğalt/Yeniden adlandır/Sil profil düğmeleri ve satır içi Profil ayarları düzenleyicisi** ve bir *Önerilene sıfırla* düğmesi, bir **Motorlar** sekmesi (boyutlu ve iptal edilebilir ilerleme pencereli fTetWild kur/kaldır yöneticisi, ayrıca yapılandırılmış harici motor listesi ve motor belgelerine bağlantı), durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS'ta Finder sağ tık onarımı GUI'nin kendisi yerine ayrı Quick Action ile sağlanır. |
+| CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--intensity <preset|profil>`, `--list-intensities`, `--dry-run`, `--deep-repair {off,local,full}`, `--ftetwild-optimize`, `--version`), salt-okunur `validate`, `export-history`, `engines list|check` ve `ftetwild status|install|uninstall` alt komutları, JSON raporları, batch özeti, çıkış kodları. Ayrıca deneysel/prototip bayraklar: `--experimental-join-components` (küçük bileşenleri silmek yerine en yakın büyük bileşene taşır; geometriyi değiştirir, yalnızca değerlendirme), `--experimental-autorefine` (self-intersection'ları yüz silmek yerine kesişen üçgenleri kesişim doğruları boyunca alt üçgenlere bölerek çözer — Lazard & Valque 2025; girdi yüzeylerini ASLA silmez; yalnızca sonucu varsayılan zincirden daha kötü değilse uygulanır; orta-düzey SI mesh'lerde SI'yı azaltır, yoğun-SI taramalarda float64 kurulumu sınırlıdır — bkz. `docs/alpha-wrap-feasibility-2026-09.md`; 25 Eylül 2026'da 45 gerçek örnek üzerinde yeniden ölçüldü: hiçbir nihai sonucu değiştirmedi — her iki durumda 31/45 kesin su geçirmez — toplam süre ise ~33 sn'den ~1003 sn'ye çıktı, bu yüzden isteğe bağlı kalıyor), `--no-fallback-ftetwild` / `--experimental-fallback-ftetwild` (fTetWild son çare katılaştırıcısı — ORİJİNAL girdiyi pytetwild üzerinden fTetWild ile tetrahedralize edip (MPL-2.0) su geçirmez, SI-free bir yüzey çıkarır; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır — isteğe bağlı ~1,1 GB'lık eki kuruluysa varsayılan olarak AÇIKTIR, `SUTURA_WITH_FTETWILD=1`, ve yalnızca stage 1 delik veya non-manifold kenar bıraktığında çalışır: gerçek örneklerde kesin su geçirmez 31/40 → 39/40; ilk bayrak kapatır, ikincisi kapalı ama hâlâ self-intersection içeren sonuçlarda da çalıştırır), `--experimental-indirect-autorefine` (Phase B prototipi: rust/sutura-geom uzantısıyla exact arrangement-lite self-intersection bölmesi — indirect predikatlar, broad phase + exact üçgen sınıflandırıcı + üçgen başına 2D CDT + exact-rasyonel welding; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır, `--experimental-autorefine` ile aynı koruma; yalnızca değerlendirme ve geliştirici derlemesi; yoğun thingi10k_1038441 taraması artık yaklaşık on saniyede tamamlanıyor — M2'de ~463 sn (C1) → 29,8 sn (C2) → 10,6 sn (C4); 2 vCPU'lu bir x86_64 VM'de 830 sn → 52,5 sn (C2) → 17,6 sn (C4) — ama katman hâlâ geliştirici derlemesi ve varsayılan yolda değil) ve `--experimental-edge-tiebreak` (opt-in 11-özellikli sınıflandırıcı kafası — temel + FAZ10 taramasının beş güçlü sinyali; kazanç küçük, 71 mesh'lik etiketli sette 1 mesh, ama sinyal istatistiksel olarak gerçek; varsayılan değil). `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
 | Batch işleme | ~%90 | Dosya başına sonuçları ve bir özeti olan çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) desteklenir; batch kaldığı yerden sürdürülemez ve başarısız bir dosya diğerlerini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL çağrıları segfault verir, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelenir ve çok nesneli 3MF'de yalnızca ilk nesne çizilir. |
 | Öncesi/sonrası karşılaştırma | ~%80 | Orijinal ve onarılmış görünümler arasında statik, CPU ile çizilmiş görüntülerin tıkla-geçişi; **en yoğun bozukluk bölgesi yakın çekimi** ve üç durumlu renk şemasıyla (gri = hiç bozulmamış, yeşil `(46,204,113)` = düzelen, turuncu `(255,140,60)` = hâlâ bozuk). Düzelen harita uzaysaldır (onarılmış yüz merkezleri, orijinal kusur uzantılarına göre) ve tarama mesh'lerinin hızlı kalması için en büyük 256 kusurla sınırlıdır. **Statik/İnteraktif** anahtarı, CPU tabanlı etkileşimli 3D görünüm ekler (sürükleyerek döndür, tekerlekle yakınlaştır; sürüklemede LOD, sonra tam çözünürlüklü son kare) ve **yüzey-sapması** modu (pymeshlab'ın en-yakın-yüzey-noktası filter'ıyla yüzey başına onarılmış→orijinal uzaklık + global Hausdorff maks.), ikisi de ilk kullanımda tembel üretilir ve diyalog başına önbelleğe alınır; interaktif LOD hedefi 75 modellik korpusa göre ayarlanır (720×540'ta medyan ~71 FPS). Isı haritasıyla aynı GL kısıtı CPU çizicisinde kalmasını gerektirir; çok nesneli 3MF'de yalnızca ilk nesne karşılaştırılır. Regression testleriyle doğrulanır (`tests/test_healed_mask.py`, `tests/test_before_after_render.py`, `tests/test_viewer_data.py`, `scripts/verify_before_after_dialog.py`). |
@@ -441,6 +441,13 @@ SUTURA_WITH_FTETWILD=1 ./install.sh
 Kurulmadığında varsayılan hiçbir şeyi değiştirmez (GUI kutusunun da etkisi
 olmaz); yalnızca `--experimental-fallback-ftetwild` açık bir "atlandı"
 raporu verir.
+
+Ek, kurulumdan sonra installer yeniden çalıştırılmadan da yönetilebilir:
+`sutura ftetwild install` / `sutura ftetwild uninstall` (`--dry-run`,
+`--yes` ile) veya GUI'nin Seçenekler → **Motorlar** sekmesi, eki yalnızca
+Sutura ortamına kurar/kaldırır ve önce indirme ve disk boyutlarını gösterir.
+Her ikisi de desteklenmeyen düzenleri (AppImage, `.dmg`, sistem Python'u)
+gerekçeyle reddeder.
 
 Arch'ta `python311` kurulu değilse önce kurun (yukarıya bakın).
 
@@ -736,9 +743,11 @@ adımlar — ayrı bir **Seçenekler** penceresindedir (**Mod** düğmesinin
 yanındaki düğme ya da Ctrl+, / Cmd+,); onarım sürerken açık kalabilir, düğme
 etiketi varsayılandan farklı seçenek sayısını gösterir, örneğin *Seçenekler
 (2)*. Sekmeleri: *Genel* (anonim kullanım geçmişi), *Onarım* (fTetWild yedek
-katmanı), *Deneysel* (isteğe bağlı adımlar), *Güncellemeler* (elle kontrol,
-otomatik güncelleme, isteğe bağlı her açılışta kontrol) ve *Değişiklikler*
-(GitHub'dan sürüm notları, çevrimdışı yedekli).
+katmanı ve Triage yoğunluk preset/profil seçicisi ile profil düzenleyicisi),
+*Deneysel* (isteğe bağlı adımlar), *Güncellemeler* (elle kontrol, otomatik
+güncelleme, isteğe bağlı her açılışta kontrol), *Değişiklikler* (GitHub'dan
+sürüm notları, çevrimdışı yedekli) ve *Motorlar* (fTetWild kur/kaldır ve
+yapılandırılmış harici motor listesi).
 
 #### Onarım öncesi analiz
 
@@ -1130,6 +1139,19 @@ tek-başına-entegrasyon barını geçmedi** — "ilginç alt-parça, yalnızca 
 özellik-seçimi çerçevesiyle ya da yeni veriyle yeniden bakılmalı" olarak
 işaretlendi, entegre edilmedi.
 
+### Opt-in edge-tiebreak kafası (`--experimental-edge-tiebreak`, varsayılan DEĞİL)
+
+Maintainer'ın "ilginç alt-parçaları cımbızla seç" kararı gereği, en güçlü beş
+FAZ10 tarama sinyali (`oppmax_std`, `don_mean`, `dihed_mean`, `rmin_mean`,
+`gc_mean`) varsayılan vektöre EKLENMEZ (LOO-CV yalnızca ~1 mesh
+değiştirdiklerini ve dihedral özelliklerle örtüştüklerini gösterdi — varsayılan
+yolda risk alınmaz). Bunun yerine `--experimental-edge-tiebreak` (CLI) veya
+GUI'nin **Seçenekler** penceresindeki *Edge-tiebreak classifier* onay kutusuyla
+(batch geneli) bir **opt-in 11-özellikli kafa** olarak sunulurlar. 11-özellikli
+kafa aynı 71 etiketli mesh üzerinde yeniden eğitildi (LOO-CV 0.845, 5-fold×20
+ortalama 0.852'ye karşı temel 0.850). Bu deneyseldir ve varsayılan değildir;
+kazanç küçüktür ama altındaki sinyaller istatistiksel olarak gerçektir.
+
 ## Test
 
 Sentetik kırık mesh:
@@ -1401,20 +1423,18 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
-- **Unreleased** — Triage Engine **yoğunluk presetleri ve adlandırılmış
-  profiller** (`--intensity quick|balanced|thorough|extreme|<profil>`,
-  Seçenekler *Repair* sekmesinde Yeni/Çoğalt/Yeniden adlandır/Sil düğmeleri
-  ve bir *Profil ayarları* düzenleyicisi ile GUI açılır listesi, ayrıca
-  *Önerilene sıfırla*): Aşama 1 sonrası çaba için tek katman (derin-onarım
-  katmanı, fTetWild durumu/sınırı/bütçesi, sadeleştirme merdiveni, Hausdorff
-  örnekleri). Balanced tarihsel varsayılanlarla bayt-birebirdir; kullanıcı
-  profilleri bir taban preset üzerine seyrek alan geçersiz kılmaları ekler
-  ve `~/.config/sutura/profiles.json` içinde saklanır; Aşama 1 etkilenmez.
-- **v0.4.2 — 2026-09-25** — fTetWild yedek katmanı, isteğe bağlı eki
-  kuruluysa varsayılan olarak çalışıyor (kapatmak için `--no-fallback-ftetwild`);
-  GUI'nin batch geneli seçenekleri tek bir **Seçenekler** menüsüne taşındı;
-  exact Rust arrangement yeniden ~2,8× hızlandı (thingi10k_1038441: M2'de
-  29,8 sn → 10,6 sn, çıktı birebir aynı).
+- **v0.5.0 — 2026-09-26** — Triage Engine: **yoğunluk presetleri ve
+  adlandırılmış profiller** (`--intensity quick|balanced|thorough|extreme|<profil>`,
+  GUI açılır listesi + profil düzenleyicisi), bir **derin-onarım merdiveni**
+  (`--deep-repair {off,local,full}`) ve fTetWild yoğun-çıktı sadeleştirmesi,
+  **harici onarım motorları** (`~/.config/sutura/engines/*.toml`, `chain.toml`,
+  her sonuç fTetWild ile aynı su geçirmezlik + Hausdorff korumasından geçer)
+  ve bir **fTetWild kur/kaldır yöneticisi** (`sutura ftetwild`, GUI *Motorlar*
+  sekmesi), **sekmeli Seçenekler penceresi**, açık `--ftetwild-optimize` ve
+  CI Linux/macOS uçtan uca kurulumlar. fTetWild yedek katmanı eki kuruluysa
+  varsayılan olarak açıktır (kapatmak için `--no-fallback-ftetwild`); exact
+  Rust arrangement yeniden ~2,8× hızlandı (thingi10k_1038441: M2'de 29,8 sn →
+  10,6 sn, çıktı birebir aynı).
 - **v0.4.0 — 2026-09-25** — deneysel self-intersection katmanları: yinelemeli
   snap-rounding'li autorefine ve fTetWild yedek katmanı (isteğe bağlı ~1,1 GB
   ek), ikisi de CLI bayrağı + GUI kutusu olarak; exact Rust arrangement

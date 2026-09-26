@@ -242,7 +242,19 @@ Options window, never in the way of the plain repair.
   even when the batch contains a user-visible behaviour change. Changes
   accumulate under `[Unreleased]` in CHANGELOG.md and ship together. A
   minor bump (vX.(Y+1).0) is the user's explicit decision, never inferred
-  from the size or kind of the batch.
+  from the size or kind of the batch. **v0.5.0 (2026-09-26) is such an
+  explicit decision:** the owner chose a minor bump (not v0.4.2) for the
+  Triage Engine milestone (intensity presets, user profiles, external
+  engines, fTetWild manager, deep-repair ladder, tabbed Options window);
+  the previously unreleased `[0.4.2]` CHANGELOG batch was folded into the
+  `[0.5.0]` section.
+- **Triage Engine module lists (standing rule):** `sutura/triage.py`,
+  `sutura/engines.py` and `sutura/ftetwild_manager.py` must stay in the
+  explicit module lists of `install.sh`, `install-macos.sh`,
+  `scripts/build_appimage.sh`, `sutura/updater.py` and
+  `.github/workflows/build-macos.yml` (PyInstaller `--hidden-import`).
+  `engines.py` and `ftetwild_manager.py` are imported inside functions, so a
+  missing file silently degrades the engine layer to a no-op.
 - **Test/corpus output location:** corpus and test-run files always go to
   `/tmp`, never committed to the repo (see also Cleanup discipline below).
 

@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-26
 
 ### Added
 
@@ -262,6 +262,14 @@ All notable changes to this project are documented here.
   local tier's time there drops from 24.6 s to 6.0 s (x86_64 VM). The
   report gains `deep_repair.local.max_loop_len`.
 
+- **CI: Linux and macOS end-to-end install workflows.** The CI set
+  gained a Linux `install.sh` end-to-end smoke and a macOS install smoke
+  (`.github/workflows/`), and `install.sh` now falls back to downloading
+  a standalone Python 3.11 build when the system has none
+  (`SUTURA_NO_PYTHON_DOWNLOAD` opts out).
+- **Typical-user repair corpus.** A 50-mesh Thingi10K typical-user corpus
+  plus `scripts/fetch_typical_corpus.py` for realistic benchmarking.
+
 ### Fixed
 
 - **Hausdorff distance counted unreferenced vertices.** PyMeshLab's
@@ -317,9 +325,9 @@ All notable changes to this project are documented here.
   The one remaining strict failure is artec_metal-nut, where fTetWild hits
   its 180 s budget.
 
-## [0.4.2] - 2026-09-25
+### Folded from the previously unreleased v0.4.2 batch
 
-### Added
+#### Added
 
 - **Evaluated CDT variants for the exact arrangement (developer switches,
   off by default).** `rust/sutura-geom` gained Sloan-style queue flips
@@ -337,7 +345,7 @@ All notable changes to this project are documented here.
   and the developer hook `--cdt-experimental BITS`; per-mesh
   `indirect_adopted`/`indirect_faces_after`/`indirect_error` columns.
 
-### Changed
+#### Changed
 
 - **Phase C2: per-host constrained triangulation without linear scans**
   (`rust/sutura-geom/src/cdt2d.rs`, still behind
@@ -426,7 +434,7 @@ All notable changes to this project are documented here.
   their defaults (*Options (2)*). The checkbox labels lost their redundant
   "Experimental:" prefix. Behaviour and CLI mapping are unchanged.
 
-### Fixed
+#### Fixed
 
 - `scripts/benchmark_repair_corpus.py` crashed at import when manifold3d is
   not importable in the running interpreter (the documented behaviour is an
