@@ -39,9 +39,41 @@ All notable changes to this project are documented here.
   default checkboxes), keeps the selection batch-wide and persists it to the
   config. New suites `tests/test_triage.py` and offscreen
   `tests/test_options_dialog.py` cases, plus `tests/test_repair_mode.py`
-  intensity cases. A named user-profile override layer (overriding any preset
-  field on top of a base preset) is designed via the unused
-  `resolve_intensity(user_profiles=...)` hook but not implemented.
+  intensity cases. The named user-profile override layer is implemented on
+  top of this preset table (see the next entry).
+- **Named intensity profiles (`--intensity <profile>`).** On top of the four
+  read-only presets, users can create, rename, duplicate and delete any
+  number of **named profiles**. A profile is a base preset plus a sparse
+  mapping of overrides of the `IntensitySpec` fields (only the fields the
+  user changed are stored); the built-in presets stay read-only. Profiles
+  are stored in a separate, schema-versioned
+  `~/.config/sutura/profiles.json` (its own file, not a `config.json` key,
+  because `config.json` is rewritten whole and a corrupt profile blob must
+  never poison ambient configuration), written atomically via a temp file +
+  `os.replace`. A corrupt, unreadable, wrong-schema or absent file warns on
+  stderr and falls back to the built-in presets — it can never crash a
+  repair. Profile names must be non-empty, unique case-insensitively, and
+  must not shadow a built-in preset name; `triage.name_error` enforces the
+  rules. `--intensity` (and `SUTURA_INTENSITY` / the `intensity` config key)
+  accept a preset or a profile name; the new `--list-intensities` prints the
+  presets and the profiles with their effective values and exits. The report
+  carries `triage_profile_base` and `triage_overrides` when a profile is
+  used, in addition to `triage_intensity`. The Hausdorff sample floor
+  (200,000) is enforced in the resolver as well as the GUI: a hand-edited
+  profile below it is clamped with a warning. The Options *Repair* tab's
+  combo lists the presets, a separator, then the user profiles, with
+  *New* (from the current selection/editor values), *Duplicate*,
+  *Rename* and *Delete* (confirming) buttons and an inline *Profile
+  settings* editor exposing every field with typed widgets/ranges (fTetWild
+  on/off, max faces with a *No limit* box, timeout, decimation ladder
+  including `threshold`, optimise retry, deep repair off/local/full, and the
+  floored Hausdorff samples); editing a built-in offers *Save as new
+  profile*, and *Reset to recommended* still selects Balanced without
+  deleting any profile. The watertight + Hausdorff shape guard is never a
+  field. EN/TR strings and hover tooltips cover the new controls. New suite
+  `tests/test_triage_profiles.py` (storage round-trip, corrupt file, name
+  rules, resolution precedence, the CLI listing/selection and the offscreen
+  GUI create/rename/duplicate/delete flow with a temporary HOME).
 - **fTetWild tet optimisation is an explicit option.** It stays off by
   default (measured: only the boundary surface is used, and on
   thingi10k_46012 the optimisation pass took 34 s instead of 6 s with the
