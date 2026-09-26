@@ -132,7 +132,12 @@ thread); the result is re-triangulated (face counts change, often coarser);
 every input point stays close to the output (0.2–1.4 % of the bounding-box
 diagonal on the checked meshes) while the output can add surface away from
 the input where openings or cavities are closed (up to 28 % on
-thingi10k_46012, mean ≤ 1 %).
+thingi10k_46012, mean ≤ 1 %). fTetWild now runs without its mesh-quality
+optimisation (`optimize=False`; the optimisation only improves the discarded
+interior tetrahedra): in a parameter sweep on macOS it cut thingi10k_46012
+from 34 s to 6 s with a 0.09 % Hausdorff distance, while artec_metal-nut
+still exceeded the budget. The run times and counts above were measured
+with the optimisation on.
 
 The original file is never overwritten. Output is written with a `_fixed`
 suffix in the same directory.

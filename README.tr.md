@@ -135,7 +135,12 @@ tekrarlanabilir değildir (ör. thingi10k_248395 tek iş parçacığıyla bile
 değişir, çoğunlukla daha kaba); girdinin her noktası çıktıya yakın kalır
 (kontrol edilen mesh'lerde sınır kutusu köşegeninin %0,2–1,4'ü), çıktı ise
 açıklıkların veya boşlukların kapatıldığı yerlerde girdiden uzakta yüzey
-ekleyebilir (thingi10k_46012'de %28'e kadar, ortalama ≤ %1).
+ekleyebilir (thingi10k_46012'de %28'e kadar, ortalama ≤ %1). fTetWild artık
+mesh kalitesi optimizasyonu olmadan çalışır (`optimize=False`; optimizasyon
+yalnızca atılan iç tetrahedronları iyileştirir): macOS'taki parametre
+taramasında thingi10k_46012'yi 34 sn'den 6 sn'ye indirdi, Hausdorff mesafesi
+%0,09 oldu; artec_metal-nut ise bütçeyi yine aştı. Yukarıdaki süreler ve
+sayılar optimizasyon açıkken ölçülmüştür.
 
 Orijinal dosya asla üzerine yazılmaz. Çıktı aynı dizinde `_fixed` sonekiyle
 yazılır.

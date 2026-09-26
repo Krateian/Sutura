@@ -1087,7 +1087,7 @@ def resolve_deep_repair_flags(deep_repair=None, no_fallback=False,
     return mode, ftetwild
 
 
-def run_ftetwild(inter, out_obj):
+def run_ftetwild(inter, out_obj, params=None):
     """Run the fTetWild fallback bridge. Returns (report, ok); reports a skip,
     never silence. Time-boxed: a per-mesh wall-clock budget (FTETWILD_TIMEOUT)
     bounds the call so a dense scan cannot stall the batch; on timeout the
@@ -1097,7 +1097,9 @@ def run_ftetwild(inter, out_obj):
     then a killable `sys.executable` subprocess for single-environment installs
     (macOS/conda and frozen bundles), then an in-process attempt wrapped in a
     timed thread as a last resort. The bridge itself reports an explicit skip
-    when pytetwild/pyvista are absent."""
+    when pytetwild/pyvista are absent. ``params`` (dict) overrides the
+    bridge's DEFAULT_PARAMS for pytetwild.tetrahedralize."""
+    extra = [json.dumps(params)] if params is not None else []
     # fTetWild writes a debug file (__tracked_surface.stl, ~1 MB) into the
     # current working directory; run the bridge from the private temp dir of
     # the output so nothing lands in the user's folder (e.g. a Dolphin /
@@ -1107,7 +1109,7 @@ def run_ftetwild(inter, out_obj):
     if os.path.exists(VENV311) and os.path.exists(FTETWILD_BRIDGE):
         try:
             r = subprocess.run(
-                [VENV311, FTETWILD_BRIDGE, inter, out_obj],
+                [VENV311, FTETWILD_BRIDGE, inter, out_obj] + extra,
                 capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
                 cwd=workdir,
             )
@@ -1128,7 +1130,7 @@ def run_ftetwild(inter, out_obj):
     # of blocking the batch forever.
     try:
         r = subprocess.run(
-            [sys.executable, FTETWILD_BRIDGE, inter, out_obj],
+            [sys.executable, FTETWILD_BRIDGE, inter, out_obj] + extra,
             capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
             cwd=workdir,
         )
@@ -1155,7 +1157,7 @@ def run_ftetwild(inter, out_obj):
         spec.loader.exec_module(module)
         box = {}
         def _go():
-            box['report'] = module.run_bridge(inter, out_obj)
+            box['report'] = module.run_bridge(inter, out_obj, params)
         th = threading.Thread(target=_go, daemon=True)
         th.start()
         th.join(FTETWILD_TIMEOUT)

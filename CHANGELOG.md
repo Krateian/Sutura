@@ -33,6 +33,18 @@ All notable changes to this project are documented here.
   `hausdorff_mean_rel` (one-sided output-to-input, relative to the bounding
   box diagonal). The GUI does not use the new modes yet. New suite
   `tests/test_deep_repair.py`, in CI.
+- **fTetWild runs without its quality optimisation.** `ftetwild_bridge`
+  calls `pytetwild.tetrahedralize` with `optimize=False` by default
+  (`DEFAULT_PARAMS`; `run_bridge(..., params)`, a JSON third argument on the
+  bridge command line and `repair.run_ftetwild(..., params)` override it;
+  the report records `params`). The optimisation only improves the interior
+  tetrahedra, which are discarded. In the macOS parameter sweep
+  thingi10k_46012 took 6 s instead of 34 s (Hausdorff 0.09 % of the
+  diagonal); the unoptimised boundary can carry non-manifold edges, which
+  the manifold3d post-process removes. artec_metal-nut still does not finish
+  within the 180 s budget (only `optimize=False` with
+  `edge_length_fac=0.1` finished, in 806 s). Output-changing for every mesh
+  the fTetWild tier handles.
 - **Local tier limited to small, simple damage.** Measured on macOS, the
   local tier made 3 of the 40 real-world samples strictly watertight
   (31 → 34: thingi10k_40886, 46012, 71691) but none of the 115-mesh corpus,
