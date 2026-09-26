@@ -40,7 +40,8 @@ All notable changes to this project are documented here.
   the report records `params`). The optimisation only improves the interior
   tetrahedra, which are discarded. In the macOS parameter sweep
   thingi10k_46012 took 6 s instead of 34 s (Hausdorff 0.09 % of the
-  diagonal); the unoptimised boundary can carry non-manifold edges, which
+  diagonal; the sweep's 28 % for the optimised run was a measurement
+  artifact, see Fixed); the unoptimised boundary can carry non-manifold edges, which
   the manifold3d post-process removes. artec_metal-nut still does not finish
   within the 180 s budget (only `optimize=False` with
   `edge_length_fac=0.1` finished, in 806 s). Output-changing for every mesh
@@ -59,6 +60,19 @@ All notable changes to this project are documented here.
   report gains `deep_repair.local.max_loop_len`.
 
 ### Fixed
+
+- **Hausdorff distance counted unreferenced vertices.** PyMeshLab's
+  `get_hausdorff_distance(samplevert=True)` also samples vertices that no
+  face references, and the fTetWild bridge output keeps every tetrahedron
+  vertex, interior ones included. When no post-process compacted the
+  boundary, interior points dominated the maximum: a closed sphere plus 200
+  random interior points measured 26 % of the diagonal instead of 0, and the
+  fTetWild parameter sweep reported 28 % for thingi10k_46012 with default
+  parameters where the corpus benchmark measured 0.06 %. The new
+  `repair._hausdorff_rel` drops unreferenced vertices of both meshes first;
+  `scripts/benchmark_repair_corpus.py` and the local tier use it. The
+  benchmark's earlier figures are unaffected wherever its output had been
+  compacted (stage 2 or the manifold3d post-process ran).
 
 - **Closed results with pinched vertices ended as `warning`.** A mesh can
   leave the stage-1 chain with no hole and no non-manifold edge and still not
