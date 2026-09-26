@@ -655,7 +655,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
                             join_components=False, autorefine=False,
                             ftetwild=False, indirect_autorefine=False,
-                            extra_features=False):
+                            extra_features=False, deep_repair=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -680,6 +680,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     arrangement-lite split (rust/sutura-geom; flag-gated; same adopt/fallback
     guard as ``autorefine``).
     ``extra_features`` enables the opt-in edge-tiebreak classifier head.
+    ``deep_repair`` selects the deep-repair ladder mode ('off'/'local'/
+    'full', see ``deep_repair_ladder``); None (library default) keeps the
+    pre-ladder behaviour and adds no ``deep_repair`` report.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -892,48 +895,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     #   remeshed (its residual self-intersections are left alone).
     # - True (--experimental-fallback-ftetwild): also when the closed result
     #   still self-intersects (slow: up to FTETWILD_TIMEOUT per mesh).
-    stats['experimental_ftetwild'] = False
-    if ftetwild == 'auto' and not ftetwild_available():
-        ftetwild = False
-    if ftetwild and len(t) > 0:
-        ft_rep = {'ran': True, 'trigger': 'auto' if ftetwild == 'auto' else 'always'}
-        cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
-                                        ms.current_mesh().face_matrix())[0]
-        cur_nm = after.get('non_two_manifold_edges', 0)
-        cur_si = 0
-        if ftetwild is True:
-            ms.apply_filter('compute_selection_by_self_intersections_per_face')
-            cur_si = int(ms.current_mesh().face_selection_array().sum())
-        if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
-            try:
-                inter = os.path.join(tmpdir, 'ftetwild_in.obj')
-                out_obj = os.path.join(tmpdir, 'ftetwild_out.obj')
-                write_obj(inter, v, t)
-                mrep, _ok = run_ftetwild(inter, out_obj)
-                ft_rep.update(mrep)
-                if 'error' not in mrep and os.path.exists(out_obj):
-                    cand_v, cand_t = read_obj(out_obj)
-                    if len(cand_t) > 0:
-                        cand_ms = ml.MeshSet()
-                        cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
-                                                 face_matrix=np.asarray(cand_t, np.int32)))
-                        cand_after = cand_ms.apply_filter('get_topological_measures')
-                        cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
-                        cand_nm = cand_after.get('non_two_manifold_edges', 0)
-                        (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm,
-                         ft_rep['manifold_postprocessed']) = _ftetwild_manifold_postprocess(
-                            ml, tmpdir, cand_v, cand_t, cand_ms, cand_after,
-                            cand_holes, cand_nm)
-                        adopted = bool(cand_holes <= cur_holes and cand_nm <= cur_nm)
-                        ft_rep['adopted'] = adopted
-                        ft_rep['output_holes'] = cand_holes
-                        ft_rep['output_non_manifold'] = cand_nm
-                        if adopted:
-                            ms = cand_ms
-                            after = cand_after
-            except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
-                ft_rep['error'] = str(e)
-            stats['experimental_ftetwild'] = ft_rep
+    ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
+                                   mode=deep_repair, ftetwild=ftetwild)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -944,6 +907,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     holes_after = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                       ms.current_mesh().face_matrix())[0]
     nm_after = after.get('non_two_manifold_edges', 0)
+    _deep_repair_offer(stats, holes_after, nm_after, len(t))
 
     stats['stage1']['holes_closed'] = max(holes_before - holes_after, 0)
     stats['stage1']['holes_remaining'] = holes_after
@@ -1058,6 +1022,66 @@ def run_stage2(inter, out_obj):
 # instead of blocking the whole batch (FAZ17).
 FTETWILD_TIMEOUT = 180
 
+# Shape flag of the fTetWild tier: an adopted result whose one-sided
+# output-to-input Hausdorff distance exceeds this fraction of the input
+# bounding-box diagonal is still adopted (it is closed where stage 1 left it
+# open) but reported with shape_changed=True and the issue code
+# 'shape_changed'. Measured on macOS (2026-09-26): 3.7 % / 9.6 % on
+# thingi10k_1038441 (40 samples / corpus), 1.7 % on 1038439, 1.1 % on
+# 224108, 5 % on 1017012. Rejecting them instead cost 3 of the 40 samples
+# and 4 corpus meshes. Provisional value.
+FTETWILD_MAX_HAUSDORFF_REL = 0.01
+
+# Second fTetWild attempt: when the default (optimize=False) boundary fails
+# the holes/non-manifold guard even after the manifold3d post-process, the
+# mesh is tetrahedralized once more with the quality optimisation on, within
+# what is left of FTETWILD_TIMEOUT (skipped when less than
+# FTETWILD_RETRY_MIN_SECONDS remain). thingi10k_1038444 was adopted with the
+# optimisation and rejected ('holes_nm') without it (macOS, 2026-09-26).
+FTETWILD_RETRY_PARAMS = {'optimize': True}
+FTETWILD_RETRY_MIN_SECONDS = 10.0
+
+# Input size above which the fTetWild tier is not started
+# (reject_reason='too_large'). The limit follows from the budget: the
+# slowest completed runs on the 40 real-world samples took ~55 s
+# (thingi10k_100281) at 90,000 faces, so even with linear scaling a mesh
+# above ~300,000 faces cannot finish in FTETWILD_TIMEOUT=180 s. The six
+# Artec scans of the 115-mesh corpus that reach the tier (dense scans of
+# millions of faces) timed out at 180 s in every run; skipping them saves
+# ~18 min per corpus run. The 90k-face samples (the largest of the 40)
+# stay below the limit. Provisional; the corpus face counts are not in the
+# repository, the benchmark's input_faces column verifies the split.
+FTETWILD_MAX_FACES = 300000
+
+# Decimation of a wastefully dense fTetWild boundary. fTetWild with
+# optimize=False can return a boundary far denser than the input (measured on
+# thingi10k_73444: 473,212 output faces at 7,882 input faces, against 14,012
+# with optimize=True at the same solver time); the extra faces cost ~65 s of
+# downstream work (manifold3d, Hausdorff, self-intersection/boundary passes)
+# and carry no more shape information. After such an attempt the boundary is
+# decimated with a pymeshlab quadric edge collapse before the manifold3d
+# post-process. The face counts below are only a SIZE BUDGET (is this output
+# wastefully dense?); the quality gate is the Hausdorff comparison against the
+# raw fTetWild boundary (DECIMATE_HD_MARGIN), so a coarse target is accepted
+# whenever it does not make the shape measurably worse.
+DENSE_RATIO = 4
+DENSE_MIN_FACES = 20000
+# Escalating target ladder: multiples of the input face count, tried in order.
+DENSE_TARGET_LADDER = (1.5, 3.0)
+# Quadric edge collapse quality threshold (0..1); 0.3 favours boundary/shape
+# preservation over aggressive simplification.
+DENSE_QUALITY = 0.3
+# A decimated candidate is accepted only when its one-sided Hausdorff distance
+# (relative to the input bbox diagonal) is at most the raw fTetWild boundary's
+# own distance plus this margin: decimation may not make the shape measurably
+# worse than fTetWild already did. 0.5 % of the diagonal.
+DECIMATE_HD_MARGIN = 0.005
+
+# Fixed Hausdorff sample count, independent of the output face count, so a
+# dense output cannot inflate the measurement cost (the previous inline
+# formula scaled the sample count with the output size up to this cap).
+HAUSDORFF_SAMPLES = 200000
+
 _FTETWILD_AVAILABLE = None
 
 
@@ -1102,7 +1126,28 @@ def resolve_ftetwild(no_fallback=False, experimental=False):
     return 'auto'
 
 
-def run_ftetwild(inter, out_obj):
+def resolve_deep_repair_flags(deep_repair=None, no_fallback=False,
+                              experimental=False, environ=None, config_path=None):
+    """CLI flags -> ``(deep_repair mode, ftetwild argument)``.
+
+    ``--deep-repair`` wins; otherwise ``--no-fallback-ftetwild`` means 'off'
+    and ``--experimental-fallback-ftetwild`` means 'full' (the pre-ladder
+    flags keep their meaning); otherwise env / config / default via
+    ``resolve_deep_repair``. The fTetWild tier only runs in 'full', with the
+    unchanged ``resolve_ftetwild`` semantics."""
+    if deep_repair in DEEP_REPAIR_MODES:
+        mode = deep_repair
+    elif no_fallback:
+        mode = 'off'
+    elif experimental:
+        mode = 'full'
+    else:
+        mode = resolve_deep_repair(None, environ=environ, config_path=config_path)
+    ftetwild = resolve_ftetwild(no_fallback, experimental) if mode == 'full' else False
+    return mode, ftetwild
+
+
+def run_ftetwild(inter, out_obj, params=None, timeout=None):
     """Run the fTetWild fallback bridge. Returns (report, ok); reports a skip,
     never silence. Time-boxed: a per-mesh wall-clock budget (FTETWILD_TIMEOUT)
     bounds the call so a dense scan cannot stall the batch; on timeout the
@@ -1112,7 +1157,11 @@ def run_ftetwild(inter, out_obj):
     then a killable `sys.executable` subprocess for single-environment installs
     (macOS/conda and frozen bundles), then an in-process attempt wrapped in a
     timed thread as a last resort. The bridge itself reports an explicit skip
-    when pytetwild/pyvista are absent."""
+    when pytetwild/pyvista are absent. ``params`` (dict) overrides the
+    bridge's DEFAULT_PARAMS for pytetwild.tetrahedralize; ``timeout``
+    (seconds) replaces FTETWILD_TIMEOUT for this call."""
+    extra = [json.dumps(params)] if params is not None else []
+    budget = FTETWILD_TIMEOUT if timeout is None else timeout
     # fTetWild writes a debug file (__tracked_surface.stl, ~1 MB) into the
     # current working directory; run the bridge from the private temp dir of
     # the output so nothing lands in the user's folder (e.g. a Dolphin /
@@ -1122,8 +1171,8 @@ def run_ftetwild(inter, out_obj):
     if os.path.exists(VENV311) and os.path.exists(FTETWILD_BRIDGE):
         try:
             r = subprocess.run(
-                [VENV311, FTETWILD_BRIDGE, inter, out_obj],
-                capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
+                [VENV311, FTETWILD_BRIDGE, inter, out_obj] + extra,
+                capture_output=True, text=True, timeout=budget,
                 cwd=workdir,
             )
         except subprocess.TimeoutExpired:
@@ -1143,8 +1192,8 @@ def run_ftetwild(inter, out_obj):
     # of blocking the batch forever.
     try:
         r = subprocess.run(
-            [sys.executable, FTETWILD_BRIDGE, inter, out_obj],
-            capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
+            [sys.executable, FTETWILD_BRIDGE, inter, out_obj] + extra,
+            capture_output=True, text=True, timeout=budget,
             cwd=workdir,
         )
         if r.returncode == 0:
@@ -1170,10 +1219,10 @@ def run_ftetwild(inter, out_obj):
         spec.loader.exec_module(module)
         box = {}
         def _go():
-            box['report'] = module.run_bridge(inter, out_obj)
+            box['report'] = module.run_bridge(inter, out_obj, params)
         th = threading.Thread(target=_go, daemon=True)
         th.start()
-        th.join(FTETWILD_TIMEOUT)
+        th.join(budget)
         if th.is_alive():
             return {'error': 'timeout'}, False
         report = box.get('report')
@@ -1268,6 +1317,711 @@ def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_aft
             if m3_holes <= cand_holes and m3_nm <= cand_nm:
                 return m3_v, m3_t, m3_ms, m3_after, m3_holes, m3_nm, True
     return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, False
+
+
+def _ftetwild_candidate(ml, tmpdir, cand_v, cand_t):
+    """Measure a boundary candidate and run the manifold3d post-process on it.
+
+    Returns ``(verts, tris, meshset, topo, holes, nm, postprocessed)``; the
+    same measurement/post-process the tier always applied to a single fTetWild
+    boundary."""
+    cand_ms = ml.MeshSet()
+    cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
+                             face_matrix=np.asarray(cand_t, np.int32)))
+    cand_after = cand_ms.apply_filter('get_topological_measures')
+    cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
+    cand_nm = cand_after.get('non_two_manifold_edges', 0)
+    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \
+        _ftetwild_manifold_postprocess(
+            ml, tmpdir, cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+    return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp
+
+
+def _decimate_boundary(ml, cand_v, cand_t, target):
+    """Quadric edge collapse of an fTetWild boundary to ``target`` faces.
+
+    Boundary and topology are preserved and a planar quadric is used, so a
+    closed boundary stays closed. The raw bridge output carries every
+    tetrahedron vertex (interior ones included), so the unreferenced vertices
+    are dropped first. Returns ``(verts, tris)`` or None on failure/empty
+    output (the caller then falls back to the undecimated boundary)."""
+    try:
+        rv, rt = _referenced_only(cand_v, cand_t)
+        if len(rt) == 0:
+            return None
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=rv,
+                            face_matrix=np.asarray(rt, np.int32)))
+        ms.apply_filter('meshing_decimation_quadric_edge_collapse',
+                        targetfacenum=int(target),
+                        qualitythr=DENSE_QUALITY,
+                        preserveboundary=True,
+                        preservenormal=True,
+                        preservetopology=True,
+                        planarquadric=True,
+                        autoclean=True)
+        m = ms.current_mesh()
+        dv = np.asarray(m.vertex_matrix(), np.float64)
+        dt = np.asarray(m.face_matrix(), np.int64)
+        if len(dt) == 0:
+            return None
+        return dv, dt
+    except Exception:
+        return None
+
+
+def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
+    """Decimate a wastefully dense fTetWild boundary and pick a candidate.
+
+    The escalating target ladder ``DENSE_TARGET_LADDER`` (multiples of the
+    input face count) is tried in order. A target is accepted only when its
+    post-processed result is strictly watertight AND its one-sided Hausdorff
+    distance to the input is at most the raw boundary's own distance plus
+    ``DECIMATE_HD_MARGIN``; the raw distance is measured once on the raw
+    boundary, so decimation may not make the shape measurably worse than
+    fTetWild already did (its own result may already exceed the shape
+    threshold, which is a flag, not a rejection). A raw boundary already
+    within ``FTETWILD_MAX_HAUSDORFF_REL`` additionally requires the
+    decimated candidate to stay within it, so decimation can never turn an
+    unflagged result into a flagged one. Returns
+    ``(payload_or_None, info)`` where payload is the tuple built by
+    ``_ftetwild_candidate``; None means every target failed and the caller
+    falls back to the undecimated result. ``info`` carries the reported
+    ``ftetwild_*`` fields either way."""
+    input_faces = int(len(t))
+    raw_faces = int(len(cand_t))
+    info = {'ftetwild_decimated': False, 'ftetwild_faces_final': raw_faces,
+            'ftetwild_decimate_time': 0.0}
+    hd_raw, _ = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+    info['ftetwild_hausdorff_raw'] = hd_raw
+    limit = (hd_raw if hd_raw is not None else 0.0) + DECIMATE_HD_MARGIN
+    # A raw boundary already inside the shape threshold must not be pushed
+    # over it by decimation: otherwise an UNFLAGGED fTetWild result becomes a
+    # FLAGGED one for a face-count gain (thingi10k_78968: raw 0.0087, a
+    # decimated 0.0126 within the margin but past the 0.01 threshold). When
+    # the raw boundary is already above the threshold the margin rule alone
+    # applies -- fTetWild's own result is the reference, and a flag is not a
+    # rejection there.
+    raw_within_shape = (hd_raw is not None
+                        and hd_raw <= FTETWILD_MAX_HAUSDORFF_REL)
+    targets = []
+    for mult in DENSE_TARGET_LADDER:
+        tg = max(int(round(mult * input_faces)), DENSE_MIN_FACES)
+        if tg not in targets:
+            targets.append(tg)
+    attempts = []
+    for tg in targets:
+        t0 = time.perf_counter()
+        try:
+            dec = _decimate_boundary(ml, cand_v, cand_t, tg)
+        except Exception:
+            dec = None
+        info['ftetwild_decimate_time'] = round(
+            info['ftetwild_decimate_time'] + time.perf_counter() - t0, 3)
+        rec = {'target': tg}
+        if dec is None:
+            rec['reason'] = 'decimation_failed'
+            attempts.append(rec)
+            continue
+        dv, dt = dec
+        rec['faces'] = int(len(dt))
+        payload = _ftetwild_candidate(ml, tmpdir, dv, dt)
+        cv, ct, _cms, cafter, choles, cnm, _pp = payload
+        rec['holes'] = int(choles)
+        rec['non_manifold'] = int(cnm)
+        if not (choles == 0 and cnm == 0 and cafter.get('is_mesh_two_manifold')):
+            rec['reason'] = 'not_watertight'
+            attempts.append(rec)
+            continue
+        hd_dec, _ = _hausdorff_rel(ml, v, t, cv, ct)
+        rec['hausdorff_rel'] = hd_dec
+        if (hd_dec is None or hd_dec > limit
+                or (raw_within_shape
+                    and hd_dec > FTETWILD_MAX_HAUSDORFF_REL)):
+            rec['reason'] = 'hausdorff'
+            attempts.append(rec)
+            continue
+        info.update({'ftetwild_decimated': True,
+                     # ``*_faces_final`` is the candidate actually adopted,
+                     # AFTER the in-tier manifold3d post-process (which can
+                     # add faces); ``*_faces_decimated`` is the quadric output
+                     # before it. Neither is the final file's face count --
+                     # stage 2 rebuilds the adopted boundary again.
+                     'ftetwild_faces_final': int(len(ct)),
+                     'ftetwild_faces_decimated': int(len(dt)),
+                     'ftetwild_decimate_target': tg,
+                     'ftetwild_hausdorff_decimated': hd_dec,
+                     'ftetwild_decimate_attempts': attempts + [rec],
+                     'hausdorff_rel': hd_dec})
+        return payload, info
+    info['ftetwild_decimate_attempts'] = attempts
+    if attempts:
+        info['ftetwild_decimate_fallback'] = attempts[-1].get('reason')
+    return None, info
+
+
+def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None):
+    """One fTetWild run on the written input ``inter``, followed by the
+    manifold3d post-process. A wastefully dense boundary
+    (``DENSE_RATIO * max(input_faces, DENSE_MIN_FACES)``) is decimated first
+    and the dense undecimated result is only post-processed when every
+    decimation target fails (see ``_ftetwild_decimate_and_postprocess``).
+    Returns ``(attempt_report, candidate)`` where candidate is
+    ``(verts, tris, meshset, topo, holes, nm)`` or None."""
+    out_obj = os.path.join(tmpdir, 'ftetwild_out_%s.obj' % tag)
+    t0 = time.perf_counter()
+    if params is None:
+        mrep, _ok = run_ftetwild(inter, out_obj)
+    else:
+        mrep, _ok = run_ftetwild(inter, out_obj, params, timeout=timeout)
+    att = {'attempt': tag, 'wall_time': round(time.perf_counter() - t0, 2)}
+    att.update(mrep)
+    if 'error' in mrep or not os.path.exists(out_obj):
+        return att, None
+    cand_v, cand_t = read_obj(out_obj)
+    if len(cand_t) == 0:
+        return att, None
+    raw_faces = int(len(cand_t))
+    att['ftetwild_faces_raw'] = raw_faces
+    att['ftetwild_decimated'] = False
+    att['ftetwild_faces_final'] = raw_faces
+    att['ftetwild_decimate_time'] = 0.0
+    if (v is not None and t is not None
+            and raw_faces > DENSE_RATIO * max(len(t), DENSE_MIN_FACES)):
+        payload, dec_info = _ftetwild_decimate_and_postprocess(
+            ml, tmpdir, cand_v, cand_t, v, t)
+        att.update(dec_info)
+        if payload is not None:
+            cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp = payload
+            att['manifold_postprocessed'] = pp
+            att['output_holes'] = cand_holes
+            att['output_non_manifold'] = cand_nm
+            return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+        # every decimation target failed: fall through to the undecimated
+        # boundary exactly as before this change
+    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \
+        _ftetwild_candidate(ml, tmpdir, cand_v, cand_t)
+    att['manifold_postprocessed'] = pp
+    att['output_holes'] = cand_holes
+    att['output_non_manifold'] = cand_nm
+    return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+
+
+def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
+    """fTetWild basamak of the deep-repair ladder. Returns ``(ms, after)``.
+
+    Skipped for inputs above FTETWILD_MAX_FACES (reject_reason
+    'too_large'). The first attempt uses the bridge defaults
+    (optimize=False); when its boundary fails the holes/non-manifold guard,
+    one retry with FTETWILD_RETRY_PARAMS runs within the remaining budget.
+    ``attempts`` lists every run, ``adopted_attempt`` names the adopted one;
+    the top-level report fields describe the adopted (or else the last)
+    attempt. An adopted result far from the input is flagged
+    (``shape_changed``), not rejected."""
+    stats['experimental_ftetwild'] = False
+    if ftetwild == 'auto' and not ftetwild_available():
+        ftetwild = False
+    if ftetwild and len(t) > 0:
+        ft_rep = {'ran': True, 'trigger': 'auto' if ftetwild == 'auto' else 'always'}
+        cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
+                                        ms.current_mesh().face_matrix())[0]
+        cur_nm = after.get('non_two_manifold_edges', 0)
+        cur_si = 0
+        if ftetwild is True:
+            ms.apply_filter('compute_selection_by_self_intersections_per_face')
+            cur_si = int(ms.current_mesh().face_selection_array().sum())
+        if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
+            if len(t) > FTETWILD_MAX_FACES:
+                stats['experimental_ftetwild'] = {
+                    'ran': False, 'adopted': False, 'reject_reason': 'too_large',
+                    'input_faces': int(len(t)), 'max_faces': FTETWILD_MAX_FACES,
+                    'trigger': ft_rep['trigger']}
+                return ms, after
+            try:
+                inter = os.path.join(tmpdir, 'ftetwild_in.obj')
+                write_obj(inter, v, t)
+                attempts = []
+                t_start = time.perf_counter()
+                plan = [('default', None), ('optimize', FTETWILD_RETRY_PARAMS)]
+                chosen = None
+                for tag, params in plan:
+                    if tag != 'default':
+                        last = attempts[-1]
+                        # retry only when the first boundary exists but
+                        # fails the holes/non-manifold guard
+                        if last.get('reject_reason') != 'holes_nm':
+                            break
+                        remaining = FTETWILD_TIMEOUT - (time.perf_counter() - t_start)
+                        if remaining < FTETWILD_RETRY_MIN_SECONDS:
+                            last['retry_skipped'] = 'budget'
+                            break
+                    else:
+                        remaining = None
+                    att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag,
+                                                  params, remaining, v, t)
+                    attempts.append(att)
+                    if cand is None:
+                        continue
+                    if cand[4] <= cur_holes and cand[5] <= cur_nm:
+                        chosen = (att, cand)
+                        break
+                    att['reject_reason'] = 'holes_nm'
+                final = chosen[0] if chosen else attempts[-1]
+                ft_rep.update({k: val for k, val in final.items() if k != 'attempt'})
+                ft_rep['attempts'] = attempts
+                ft_rep['adopted'] = chosen is not None
+                if chosen:
+                    att, (cand_v, cand_t, cand_ms, cand_after, _h, _n) = chosen
+                    ft_rep['adopted_attempt'] = att['attempt']
+                    ft_rep.pop('reject_reason', None)
+                    # shape flag: fTetWild can close openings and cavities,
+                    # adding surface far from the input. A decimated candidate
+                    # already carries the distance measured during its ladder,
+                    # so it is reused instead of recomputed.
+                    hd_max = ft_rep.get('hausdorff_rel')
+                    if hd_max is None:
+                        hd_max, _hd_mean = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+                    ft_rep['hausdorff_rel'] = hd_max
+                    ft_rep['shape_changed'] = bool(
+                        hd_max is not None and hd_max > FTETWILD_MAX_HAUSDORFF_REL)
+                    if ft_rep['shape_changed']:
+                        stats['shape_changed'] = True
+                    ms = cand_ms
+                    after = cand_after
+            except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
+                ft_rep['error'] = str(e)
+            stats['experimental_ftetwild'] = ft_rep
+    return ms, after
+
+
+# --------------------------------------------------------------------------
+# Deep-repair ladder. After the fast stage-1 chain, the remaining holes and
+# non-manifold edges can be handed to slower tiers: 'local' (re-mesh only the
+# damaged regions, the rest of the surface untouched) and 'ftetwild'
+# (tetrahedralize the original input). Mode: 'off' runs no tier and only
+# reports what is available, 'local' runs the local tier, 'full' runs the
+# fTetWild tier exactly as before the ladder existed (the local tier is not
+# part of 'full' until it has been measured on the corpora).
+DEEP_REPAIR_MODES = ('off', 'local', 'full')
+DEEP_REPAIR_DEFAULT = 'full'
+DEEP_REPAIR_ENV = 'SUTURA_DEEP_REPAIR'
+DEEP_REPAIR_CONFIG = os.path.expanduser('~/.config/sutura/config.json')
+
+# Run-time estimate coefficients. PLACEHOLDERS, not calibrated: they will be
+# fitted to the estimate_s / actual_s columns of the corpus benchmark.
+DEEP_ESTIMATE_LOCAL_BASE = 0.5         # s
+DEEP_ESTIMATE_LOCAL_PER_REGION = 0.05  # s per damaged region
+DEEP_ESTIMATE_LOCAL_PER_KFACE = 0.02   # s per 1000 faces (selection, SI check)
+DEEP_ESTIMATE_FTETWILD_A = 1e-3        # s, a * faces**b
+DEEP_ESTIMATE_FTETWILD_B = 1.0
+
+# Local tier: the largest hole (in boundary edges) the re-mesh closes, and
+# the fairing steps on the new interior vertices.
+LOCAL_REMESH_MAX_HOLE = 5000
+LOCAL_REMESH_FAIR_STEPS = 3
+# Hole refinement is off: on the 90k-face samples meshing_close_holes with
+# refinehole=True took ~9 s (the refinement pass works on the whole mesh)
+# against ~0.04 s without it, and on the 40 real-world samples it changed no
+# local-tier outcome (same adopted meshes, same holes left). With it off the
+# fairing step has no new interior vertex to move.
+LOCAL_REMESH_REFINE = False
+# Scope gates: the local tier only runs on small, simple damage. Chosen from
+# the 40 real-world samples (2026-09-26), where it ran on 9 meshes and made
+# 3 strictly watertight (thingi10k_40886, 46012, 71691): all 9 had no
+# non-manifold edge, boundary loops of at most 14 edges, at most 6 damaged
+# regions and at most 822 deleted faces (the three gains: loops <= 11,
+# regions <= 2, <= 822 faces). On the 115-mesh corpus the tier gained
+# nothing and added 69 % run time, i.e. the remaining open meshes there are
+# outside this range. Non-manifold edges are excluded because no measured
+# case exists where the tier removed one; the gates are constants so a
+# later measurement can widen them.
+LOCAL_MAX_NM_EDGES = 0
+LOCAL_MAX_LOOP_LEN = 16
+LOCAL_MAX_REGIONS = 8
+LOCAL_MAX_REMOVED_FACES = 2000
+LOCAL_MAX_SECONDS = 10.0     # checked between steps; slowest sample 1.9 s
+
+
+def resolve_deep_repair(cli_value=None, environ=None, config_path=None):
+    """Deep-repair mode: CLI flag > SUTURA_DEEP_REPAIR > config.json
+    ``deep_repair`` > DEEP_REPAIR_DEFAULT. Invalid env/config values fall
+    back to the next source (an invalid CLI value is rejected by argparse)."""
+    if cli_value in DEEP_REPAIR_MODES:
+        return cli_value
+    env = (os.environ if environ is None else environ).get(DEEP_REPAIR_ENV)
+    if env in DEEP_REPAIR_MODES:
+        return env
+    path = DEEP_REPAIR_CONFIG if config_path is None else config_path
+    try:
+        with open(path) as f:
+            val = json.load(f).get('deep_repair')
+        if val in DEEP_REPAIR_MODES:
+            return val
+    except (OSError, ValueError, AttributeError):
+        pass
+    return DEEP_REPAIR_DEFAULT
+
+
+def estimate_deep_repair_time(n_faces, n_regions, tiers):
+    """Rough per-tier run-time estimate in seconds (placeholder
+    coefficients, see DEEP_ESTIMATE_*). Pure function, repairs nothing.
+    The fTetWild estimate is capped at its time budget."""
+    est = {}
+    if 'local' in tiers:
+        est['local'] = round(DEEP_ESTIMATE_LOCAL_BASE
+                             + DEEP_ESTIMATE_LOCAL_PER_REGION * n_regions
+                             + DEEP_ESTIMATE_LOCAL_PER_KFACE * n_faces / 1000.0, 1)
+    if 'ftetwild' in tiers:
+        est['ftetwild'] = round(min(DEEP_ESTIMATE_FTETWILD_A
+                                    * float(n_faces) ** DEEP_ESTIMATE_FTETWILD_B,
+                                    float(FTETWILD_TIMEOUT)), 1)
+    return est
+
+
+def _edge_uses(tris):
+    """Undirected edges of ``tris`` as (keys, counts, V) with key = a*V+b."""
+    tris = np.asarray(tris, dtype=np.int64)
+    V = int(tris.max()) + 1
+    a = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
+    b = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
+    keys = np.minimum(a, b) * V + np.maximum(a, b)
+    uniq, inv, counts = np.unique(keys, return_inverse=True, return_counts=True)
+    return keys, uniq, inv, counts
+
+
+def _damaged_region(tris, max_faces=None):
+    """Faces of the damaged region: every face with a boundary edge (used
+    once) or a non-manifold edge (used more than twice), grown by one vertex
+    ring. Returns (face mask, number of connected regions); the region count
+    is None when the region has more than ``max_faces`` faces (not
+    computed)."""
+    tris = np.asarray(tris, dtype=np.int64)
+    F = len(tris)
+    _keys, _uniq, inv, counts = _edge_uses(tris)
+    bad_edge = (counts[inv] != 2)
+    seed = bad_edge[:F] | bad_edge[F:2 * F] | bad_edge[2 * F:]
+    if not seed.any():
+        return seed, 0
+    vmark = np.zeros(int(tris.max()) + 1, dtype=bool)
+    vmark[tris[seed].ravel()] = True
+    region = vmark[tris].any(axis=1)
+    if max_faces is not None and int(region.sum()) > max_faces:
+        return region, None
+    # connected regions (faces sharing a vertex), union-find over vertices
+    parent = np.arange(len(vmark))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for f in tris[region]:
+        r0 = find(f[0])
+        for x in f[1:]:
+            rx = find(x)
+            if rx != r0:
+                parent[rx] = r0
+    roots = {find(x) for x in np.unique(tris[region])}
+    return region, len(roots)
+
+
+def _faces_preserved(verts, tris, new_verts, new_tris):
+    """True when every face of (verts, tris) occurs in (new_verts,
+    new_tris) with bit-identical float32 vertex coordinates and the same
+    orientation, counted with multiplicity (index- and order-independent,
+    a face may start at any of its three corners)."""
+    a = np.asarray(verts, dtype=np.float32)[np.asarray(tris, dtype=np.int64)]
+    b = np.asarray(new_verts, dtype=np.float32)[np.asarray(new_tris, dtype=np.int64)]
+    pts = np.ascontiguousarray(np.concatenate([a.reshape(-1, 3), b.reshape(-1, 3)]))
+    _u, ids = np.unique(pts.view(np.dtype((np.void, 12))).ravel(), return_inverse=True)
+    ids = ids.reshape(-1, 3)
+    fa, fb = ids[:len(a)], ids[len(a):]
+
+    def canon(f):
+        # lexicographically smallest cyclic rotation (also well defined when
+        # two corners share a coordinate)
+        best = f
+        for k in (1, 2):
+            r = np.roll(f, -k, axis=1)
+            less = ((r[:, 0] < best[:, 0])
+                    | ((r[:, 0] == best[:, 0])
+                       & ((r[:, 1] < best[:, 1])
+                          | ((r[:, 1] == best[:, 1]) & (r[:, 2] < best[:, 2])))))
+            best = np.where(less[:, None], r, best)
+        return best
+    ua, ca = np.unique(canon(fa), axis=0, return_counts=True)
+    ub, cb = np.unique(canon(fb), axis=0, return_counts=True)
+    if len(ua) == 0:
+        return True
+    # count of each needed face among the available ones
+    both = np.concatenate([ub, ua])
+    _uu, inv = np.unique(both, axis=0, return_inverse=True)
+    inv = inv.ravel()
+    have = np.zeros(len(_uu), dtype=np.int64)
+    have[inv[:len(ub)]] = cb
+    return bool(np.all(have[inv[len(ub):]] >= ca))
+
+
+def _referenced_only(verts, tris):
+    """(verts, tris) without the vertices no face references (float64)."""
+    tris = np.asarray(tris, dtype=np.int64)
+    used = np.unique(tris)
+    remap = np.full(len(verts), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return np.asarray(verts, np.float64)[used], remap[tris]
+
+
+def _hausdorff_rel(ml, in_v, in_t, out_v, out_t):
+    """One-sided Hausdorff distance, samples on the output, distance to the
+    input, relative to the input bounding-box diagonal: ``(max, mean)``, or
+    ``(None, None)`` for an empty mesh or a zero diagonal. Also used by
+    scripts/benchmark_repair_corpus.py.
+
+    Both meshes are reduced to the vertices their faces reference first:
+    ``get_hausdorff_distance(samplevert=True)`` also samples unreferenced
+    vertices, and the fTetWild bridge output carries every tetrahedron
+    vertex, interior ones included (a closed sphere plus random interior
+    points measures ~26 % instead of 0)."""
+    if len(in_t) == 0 or len(out_t) == 0:
+        return None, None
+    in_v, in_t = _referenced_only(in_v, in_t)
+    out_v, out_t = _referenced_only(out_v, out_t)
+    diag = float(np.linalg.norm(in_v.max(0) - in_v.min(0)))
+    if not diag:
+        return None, None
+    # The filter's ``maxdist`` is a ``PercentageValue`` and CLIPS every
+    # distance above it, reporting exactly the cap (a raw and a decimated
+    # candidate would then look equally far from the input). It is hard-capped
+    # at 100 by pymeshlab (``InvalidPercentageException`` above that), and
+    # 100 % is measured against the UNION bounding box of the two meshes, i.e.
+    # exactly the largest possible point-to-point distance between them
+    # (verified: displacements of 1.5x-100x the input diagonal come back
+    # unclipped). ``PercentageValue(100)`` is therefore the maximum the API
+    # allows AND provably clipping-free; smaller values do clip (5 %/50 %
+    # return a capped or empty result). Do not lower it.
+    hd = ml.MeshSet()
+    hd.add_mesh(ml.Mesh(vertex_matrix=in_v,
+                        face_matrix=np.asarray(in_t, np.int32)))      # id 0
+    hd.add_mesh(ml.Mesh(vertex_matrix=np.asarray(out_v, np.float64),
+                        face_matrix=np.asarray(out_t, np.int32)))     # id 1
+    r = hd.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
+                        samplevert=True, sampleface=True,
+                        samplenum=HAUSDORFF_SAMPLES,
+                        maxdist=ml.PercentageValue(100))
+    return (round(float(r.get('max') or 0) / diag, 6),
+            round(float(r.get('mean') or 0) / diag, 6))
+
+
+def _count_si(ml, ms):
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    n = int(ms.current_mesh().face_selection_array().sum())
+    ms.apply_filter('set_selection_none')
+    return n
+
+
+def _umbrella_fair(verts, tris, first_free, steps):
+    """Umbrella-operator smoothing (each vertex moves to the mean of its
+    1-ring neighbours) of the vertices with index >= ``first_free``; all
+    other vertices are fixed."""
+    n = len(verts)
+    if first_free >= n or steps <= 0:
+        return verts
+    a = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
+    b = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
+    src = np.concatenate([a, b])
+    dst = np.concatenate([b, a])
+    deg = np.bincount(src, minlength=n).astype(np.float64)
+    free = np.zeros(n, dtype=bool)
+    free[first_free:] = True
+    free &= deg > 0
+    out = verts.copy()
+    for _ in range(steps):
+        acc = np.zeros_like(out)
+        np.add.at(acc, src, out[dst])
+        out[free] = acc[free] / deg[free, None]
+    return out
+
+
+def _local_remesh_tier(ml, ms, after):
+    """Local re-mesh basamak (pymeshlab-only prototype).
+
+    The damaged region (faces on a boundary or non-manifold edge, grown by
+    one vertex ring) is deleted, pinched vertices of the new boundary are
+    split, the openings are closed with ``meshing_close_holes`` (refined to
+    the mean edge length of the deleted region) and only the new interior
+    vertices are smoothed (Laplacian, the hole boundary stays fixed). The
+    result is adopted only when holes and non-manifold edges are no worse
+    and not both unchanged, self-intersections do not increase, and every
+    face outside the deleted region is still present with identical
+    coordinates. Returns ``(ms, after, report)``.
+    """
+    t0 = time.perf_counter()
+    m = ms.current_mesh()
+    v = np.asarray(m.vertex_matrix(), dtype=np.float64)
+    t = np.asarray(m.face_matrix(), dtype=np.int64)
+    rep = {'ran': True, 'adopted': False}
+    base_holes, base_loop = boundary_loop_stats(v, t)
+    base_nm = after.get('non_two_manifold_edges', 0)
+    rep.update(holes_before=int(base_holes), nm_before=int(base_nm),
+               max_loop_len=int(base_loop))
+
+    def skip(reason):
+        rep['reject_reason'] = reason
+        rep['time'] = round(time.perf_counter() - t0, 3)
+        return ms, after, rep
+    if base_nm > LOCAL_MAX_NM_EDGES:
+        return skip('scope: non-manifold edges')
+    if base_loop > LOCAL_MAX_LOOP_LEN:
+        return skip('scope: boundary loop too long')
+    region, n_regions = _damaged_region(t, max_faces=LOCAL_MAX_REMOVED_FACES)
+    rep['faces_removed'] = int(region.sum())
+    if n_regions is None:
+        return skip('scope: region too large')
+    rep['regions'] = int(n_regions)
+    if n_regions == 0:
+        return skip('no damaged region')
+    if n_regions > LOCAL_MAX_REGIONS:
+        return skip('scope: too many regions')
+    kept = t[~region]
+    if len(kept) == 0:
+        return skip('region covers the whole mesh')
+    rt = t[region]
+    el = np.linalg.norm(v[rt] - v[np.roll(rt, 1, axis=1)], axis=2)
+    edge_len = float(el.mean()) if el.size else 0.0
+    used = np.unique(kept)
+    remap = -np.ones(len(v), dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    kv, kt = v[used], remap[kept]
+    try:
+        trial = ml.MeshSet()
+        trial.add_mesh(ml.Mesh(vertex_matrix=kv, face_matrix=kt.astype(np.int32)))
+        trial.apply_filter('meshing_repair_non_manifold_vertices')
+        n0 = trial.current_mesh().face_number()
+        nv0 = trial.current_mesh().vertex_number()
+        trial.apply_filter('meshing_close_holes', maxholesize=LOCAL_REMESH_MAX_HOLE,
+                           newfaceselected=True, selfintersection=True,
+                           refinehole=LOCAL_REMESH_REFINE and edge_len > 0,
+                           refineholeedgelen=ml.PureValue(edge_len))
+        rep['faces_added'] = int(trial.current_mesh().face_number() - n0)
+        if time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
+            return skip('time')
+        tm = trial.current_mesh()
+        nv = np.asarray(tm.vertex_matrix(), dtype=np.float64)
+        nt = np.asarray(tm.face_matrix(), dtype=np.int64)
+        # Fairing on the new interior vertices only (the refinement appends
+        # them after the existing ones), so the hole boundary stays fixed.
+        # pymeshlab's selected-only Laplacian also moved vertices of the
+        # surrounding surface, hence the explicit umbrella operator here.
+        nv = _umbrella_fair(nv, nt, nv0, LOCAL_REMESH_FAIR_STEPS)
+        rep['fairing_iters'] = LOCAL_REMESH_FAIR_STEPS
+        trial = ml.MeshSet()
+        trial.add_mesh(ml.Mesh(vertex_matrix=nv, face_matrix=nt.astype(np.int32)))
+        t_after = trial.apply_filter('get_topological_measures')
+        holes = boundary_loop_stats(nv, nt)[0]
+        nm = t_after.get('non_two_manifold_edges', 0)
+        rep.update(holes_after=int(holes), nm_after=int(nm))
+        # guard 1: outside faces unchanged (exact coordinates, any order)
+        outside_ok = _faces_preserved(kv, kt, nv, nt)
+        rep['outside_unchanged'] = bool(outside_ok)
+        # guard 2: holes / nm no worse, and some progress
+        better = (holes <= base_holes and nm <= base_nm
+                  and (holes, nm) != (base_holes, base_nm))
+        si_ok = True
+        if outside_ok and better and time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
+            return skip('time')
+        if outside_ok and better:
+            base_si = _count_si(ml, ms)
+            new_si = _count_si(ml, trial)
+            rep.update(si_before=base_si, si_after=new_si)
+            si_ok = new_si <= base_si
+        if not outside_ok:
+            rep['reject_reason'] = 'faces outside the region changed'
+        elif not better:
+            rep['reject_reason'] = 'no improvement on holes/non-manifold edges'
+        elif not si_ok:
+            rep['reject_reason'] = 'more self-intersections'
+        else:
+            rep['hausdorff_rel'] = _hausdorff_rel(ml, v, t, nv, nt)[0]
+            rep['adopted'] = True
+            rep['time'] = round(time.perf_counter() - t0, 3)
+            return trial, t_after, rep
+    except Exception as e:  # noqa: BLE001 - a prototype never crashes a repair
+        rep['error'] = str(e)
+    rep['time'] = round(time.perf_counter() - t0, 3)
+    return ms, after, rep
+
+
+def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
+                       ftetwild=False):
+    """Single entry point of the deep-repair ladder, called after the stage-1
+    chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
+    default (no deep-repair report; ``ftetwild`` alone decides, as before
+    the ladder existed). 'local' runs the local re-mesh tier; 'full' and None
+    run the fTetWild tier (``ftetwild``: 'auto'/True/False, unchanged
+    semantics); 'off' runs nothing. Records ``stats['deep_repair']`` (mode,
+    tiers run, per-tier reports); the ``available`` offer is filled in by
+    ``_deep_repair_offer`` after the final stage-1 measurement.
+    Returns ``(ms, after)``."""
+    tiers_run = []
+    cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
+                                    ms.current_mesh().face_matrix())[0]
+    cur_nm = int(after.get('non_two_manifold_edges', 0))
+    if mode == 'local':
+        if cur_holes > 0 or cur_nm > 0:
+            ms, after, local_rep = _local_remesh_tier(ml, ms, after)
+            tiers_run.append('local')
+        else:
+            local_rep = None
+    else:
+        local_rep = None
+    if mode in (None, 'full'):
+        ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild)
+        if (stats.get('experimental_ftetwild') or {}).get('ran'):
+            tiers_run.append('ftetwild')
+    else:
+        stats['experimental_ftetwild'] = False
+    if mode is not None:
+        stats['deep_repair'] = {
+            'mode': mode,
+            'holes_before': int(cur_holes),
+            'nm_before': cur_nm,
+            'tiers_run': tiers_run,
+            'local': local_rep,
+            'ftetwild': stats.get('experimental_ftetwild') or None,
+            'available': None,
+        }
+    return ms, after
+
+
+def _deep_repair_offer(stats, holes, nm, n_faces):
+    """Fill ``deep_repair.available`` and ``final_tier`` once the final
+    stage-1 counts are known: when holes or non-manifold edges remain, list
+    the tiers this mode did not run (fTetWild only when installed) with a
+    rough time estimate."""
+    dr = stats.get('deep_repair')
+    if not dr:
+        return
+    final = 'stage1'
+    if (dr.get('ftetwild') or {}).get('adopted'):
+        final = 'ftetwild'
+    elif (dr.get('local') or {}).get('adopted'):
+        final = 'local'
+    dr['final_tier'] = final
+    if holes == 0 and nm == 0:
+        return
+    tiers = []
+    if dr['mode'] == 'off':
+        tiers.append('local')
+    if (dr['mode'] in ('off', 'local') and ftetwild_available()
+            and n_faces <= FTETWILD_MAX_FACES):
+        tiers.append('ftetwild')
+    if tiers:
+        dr['available'] = {
+            'holes_remaining': int(holes),
+            'nm_remaining': int(nm),
+            'tiers': tiers,
+            'estimate_s': estimate_deep_repair_time(n_faces, holes + nm, tiers),
+        }
 
 
 def maybe_run_stage2(report, verts, tris, tmpdir):
@@ -1487,7 +2241,7 @@ def obj_has_material_refs(path):
 
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                 join_components=False, autorefine=False, ftetwild=False,
-                indirect_autorefine=False, extra_features=False):
+                indirect_autorefine=False, extra_features=False, deep_repair=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -1511,7 +2265,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         declared_unit=declared_unit, join_components=join_components,
         autorefine=autorefine, ftetwild=ftetwild,
         indirect_autorefine=indirect_autorefine,
-        extra_features=extra_features)
+        extra_features=extra_features, deep_repair=deep_repair)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -1589,7 +2343,7 @@ def _read_zip_entry(z, name):
 
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                join_components=False, autorefine=False, ftetwild=False,
-               indirect_autorefine=False, extra_features=False):
+               indirect_autorefine=False, extra_features=False, deep_repair=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -1629,7 +2383,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     autorefine=autorefine,
                     ftetwild=ftetwild,
                     indirect_autorefine=indirect_autorefine,
-                    extra_features=extra_features)
+                    extra_features=extra_features,
+                    deep_repair=deep_repair)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -2014,17 +2769,54 @@ def human_report(r, show_defects=False, show_diff=False):
                                              ar_r.get('iterations', 0), conv, adopted))
     ft_r = r.get('experimental_ftetwild')
     if ft_r:
-        if ft_r.get('ran') and 'error' in ft_r:
+        if ft_r.get('reject_reason') == 'too_large':
+            lines.append('  fTetWild fallback : skipped (%d faces, limit %d)'
+                         % (ft_r.get('input_faces', 0), ft_r.get('max_faces', 0)))
+        elif ft_r.get('ran') and 'error' in ft_r:
             lines.append('  fTetWild fallback : error (%s)'
                          % ft_r['error'][:60])
         elif ft_r.get('ran'):
-            adopted = ' adopted' if ft_r.get('adopted') else ' NOT adopted (kept stage-1 output)'
+            if ft_r.get('adopted') and ft_r.get('shape_changed'):
+                adopted = (' adopted, SHAPE CHANGED (Hausdorff %.1f%% of the '
+                           'diagonal)' % (100 * (ft_r.get('hausdorff_rel') or 0)))
+            elif ft_r.get('adopted'):
+                adopted = ' adopted'
+            else:
+                adopted = ' NOT adopted (kept stage-1 output)'
             pp = ' + manifold3d post-process' if ft_r.get('manifold_postprocessed') else ''
+            if ft_r.get('adopted_attempt') == 'optimize':
+                pp += ' (second attempt, optimisation on)'
+            if ft_r.get('ftetwild_decimated'):
+                pp += ', decimated %d->%d faces' % (
+                    ft_r.get('ftetwild_faces_raw', 0),
+                    ft_r.get('ftetwild_faces_decimated',
+                             ft_r.get('ftetwild_faces_final', 0)))
             lines.append('  fTetWild fallback : %d faces in %.2fs%s, '
                          'holes=%s non-manifold=%s%s' % (
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
                              adopted))
+    dr = r.get('deep_repair')
+    if dr:
+        lr = dr.get('local')
+        if lr:
+            if 'error' in lr:
+                lines.append('  Local re-mesh (experiment) : error (%s)' % lr['error'][:60])
+            else:
+                res = ('adopted' if lr.get('adopted')
+                       else 'NOT adopted (%s)' % lr.get('reject_reason', '?'))
+                lines.append('  Local re-mesh (experiment) : %d region(s), %d face(s) removed, %s added, '
+                             'holes %s -> %s, non-manifold %s -> %s, %s' % (
+                                 lr.get('regions', 0), lr.get('faces_removed', 0),
+                                 lr.get('faces_added', '-'), lr.get('holes_before'),
+                                 lr.get('holes_after', '-'), lr.get('nm_before'),
+                                 lr.get('nm_after', '-'), res))
+        av = dr.get('available')
+        if av:
+            est = ', '.join('%s ~%ss' % (k, v) for k, v in av['estimate_s'].items())
+            lines.append('  Deep repair available : %d hole(s), %d non-manifold '
+                         'edge(s) left; %s' % (av['holes_remaining'],
+                                               av['nm_remaining'], est))
     ia_r = r.get('experimental_indirect_autorefine')
     if ia_r:
         if ia_r.get('skipped'):
@@ -2205,7 +2997,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
-                 extra_features=False):
+                 extra_features=False, deep_repair=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -2239,7 +3031,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                      autorefine=autorefine,
                                      ftetwild=ftetwild,
                                      indirect_autorefine=indirect_autorefine,
-                                     extra_features=extra_features))
+                                     extra_features=extra_features,
+                                     deep_repair=deep_repair))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
                                       profile=profile, engine=engine,
@@ -2247,7 +3040,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                       autorefine=autorefine,
                                       ftetwild=ftetwild,
                                       indirect_autorefine=indirect_autorefine,
-                                      extra_features=extra_features))
+                                      extra_features=extra_features,
+                                      deep_repair=deep_repair))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -2405,6 +3199,17 @@ def main():
                              'self-intersects (slow: up to %d s per mesh; '
                              'remeshes such meshes), and report an explicit '
                              'skip when fTetWild is not installed' % FTETWILD_TIMEOUT)
+    parser.add_argument('--deep-repair', choices=DEEP_REPAIR_MODES, default=None,
+                        help='deep-repair ladder after the fast repair, when '
+                             'holes or non-manifold edges remain: "full" '
+                             '(default) runs the fTetWild tier as before, '
+                             '"local" re-meshes only the damaged regions '
+                             '(experimental prototype, the rest of the '
+                             'surface is kept unchanged), "off" runs no tier '
+                             'and only reports what is available with a '
+                             'rough time estimate. Default from %s or the '
+                             '"deep_repair" key of ~/.config/sutura/config.json'
+                             % DEEP_REPAIR_ENV)
     parser.add_argument('--experimental-indirect-autorefine', action='store_true',
                         help='experimental prototype: exact arrangement-lite '
                              'self-intersection split via the rust/sutura-geom '
@@ -2512,14 +3317,16 @@ def main():
             print(json.dumps({'files': results}, ensure_ascii=False))
         sys.exit(0 if nerr == 0 else 1)
 
+    _dr_mode, _ft_arg = resolve_deep_repair_flags(
+        args.deep_repair, args.no_fallback_ftetwild,
+        args.experimental_fallback_ftetwild)
     results = [process_file(f, human, mode=mode, profile=args.profile,
                             no_history=args.no_history, engine=engine,
                             out=out, max_geom_change=max_geom_change,
                             max_risk=max_risk, force=args.force,
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
-                            ftetwild=resolve_ftetwild(args.no_fallback_ftetwild,
-                                                      args.experimental_fallback_ftetwild),
+                            ftetwild=_ft_arg, deep_repair=_dr_mode,
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')

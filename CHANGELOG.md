@@ -4,7 +4,149 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Deep-repair ladder (`--deep-repair {off,local,full}`).** The tiers that
+  run after the stage-1 chain now have one entry point,
+  `repair.deep_repair_ladder`. The mode comes from the flag, then
+  `SUTURA_DEEP_REPAIR`, then the `deep_repair` key of
+  `~/.config/sutura/config.json` (new `updater.DEFAULT_CONFIG` entry), and
+  defaults to `full`. `full` runs the fTetWild tier unchanged (the block was
+  moved, not modified; the output is identical to the previous version);
+  `--no-fallback-ftetwild` maps to `off` and
+  `--experimental-fallback-ftetwild` to `full` when no `--deep-repair` is
+  given. `off` runs no tier and reports `deep_repair.available`
+  (`holes_remaining`, `nm_remaining`, `tiers`, `estimate_s`) when holes or
+  non-manifold edges remain; `repair.estimate_deep_repair_time` gives the
+  estimate with placeholder coefficients. `local` is a PyMeshLab-based
+  prototype that deletes the damaged region (faces on boundary or
+  non-manifold edges plus one vertex ring), closes the openings with refined
+  hole filling and smooths only the new interior vertices; it is adopted only
+  when holes and non-manifold edges do not get worse, self-intersections do
+  not increase and all faces outside the region are unchanged (report key
+  `deep_repair.local`). The report gains `deep_repair` (`mode`,
+  `holes_before`, `nm_before`, `tiers_run`, `final_tier`, `local`,
+  `ftetwild`, `available`); `experimental_ftetwild` is kept.
+  `scripts/benchmark_repair_corpus.py` gained `--deep-repair` and the columns
+  `final_tier`, `time_total`, `time_local`, `time_ftetwild`, `estimate_s`,
+  `actual_s`, `deep_repair_available`, `hausdorff_max_rel` and
+  `hausdorff_mean_rel` (one-sided output-to-input, relative to the bounding
+  box diagonal). The GUI does not use the new modes yet. New suite
+  `tests/test_deep_repair.py`, in CI.
+- **fTetWild shape flag.** An adopted fTetWild result whose one-sided
+  output-to-input Hausdorff distance exceeds
+  `FTETWILD_MAX_HAUSDORFF_REL = 0.01` of the input bounding-box diagonal
+  (provisional) is flagged instead of rejected: `experimental_ftetwild`
+  carries `hausdorff_rel` and `shape_changed`, the report a top-level
+  `shape_changed: true`, and `classification` adds the issue code
+  `shape_changed` ("Shape changed by the fTetWild fallback"; GUI EN/TR
+  labels) without changing the category. A rejecting variant was measured
+  first on macOS: it left thingi10k_1038441 (3.7 % on the 40 samples, 9.6 %
+  in the corpus), 1038439 (1.7 %), 224108 (1.1 %) and 1017012 (5 %) open
+  (strict watertight 39 -> 36 of 40, 109 -> 105 of 115). An fTetWild result
+  rejected by the holes/non-manifold guard reports `reject_reason:
+  holes_nm`. The benchmark adds `ftetwild_reject_reason`,
+  `ftetwild_hausdorff_rel` and `ftetwild_shape_changed`.
+- **fTetWild skipped for large inputs.** Inputs with more than
+  `FTETWILD_MAX_FACES = 300000` faces no longer start the fTetWild tier;
+  the report carries `experimental_ftetwild = {ran: false, reject_reason:
+  too_large, input_faces, max_faces}`, `--human` a "skipped" line, and the
+  `off`-mode offer no longer lists fTetWild for such a mesh. The limit
+  follows from the budget: the slowest completed run on the 40 real-world
+  samples took ~55 s at 90,000 faces (thingi10k_100281), so above ~300,000
+  faces even linear scaling exceeds 180 s. On the 115-mesh corpus the six
+  dense Artec scans that reach the tier timed out at 180 s on every run
+  (expected saving ~18 min per corpus run). Provisional: the corpus face
+  counts are not stored in the repository; the benchmark's `input_faces`
+  column verifies the split.
+- **Second fTetWild attempt with the optimisation on.** When the default
+  (optimize=False) boundary fails the holes/non-manifold guard after the
+  manifold3d post-process, the tier runs fTetWild once more with
+  `FTETWILD_RETRY_PARAMS = {'optimize': True}` within the remaining
+  `FTETWILD_TIMEOUT` (skipped below `FTETWILD_RETRY_MIN_SECONDS = 10`;
+  `retry_skipped: budget`). No retry after a timeout or error.
+  `experimental_ftetwild` gains `attempts` (one entry per run, with its
+  `reject_reason`) and `adopted_attempt` (`default` or `optimize`);
+  `run_ftetwild` gains a `timeout` argument; the benchmark adds
+  `ftetwild_adopted_attempt` and `ftetwild_attempts`. Motivation: on macOS
+  thingi10k_1038444 was adopted with the optimisation and rejected
+  (`holes_nm`) without it.
+- **fTetWild runs without its quality optimisation.** `ftetwild_bridge`
+  calls `pytetwild.tetrahedralize` with `optimize=False` by default
+  (`DEFAULT_PARAMS`; `run_bridge(..., params)`, a JSON third argument on the
+  bridge command line and `repair.run_ftetwild(..., params)` override it;
+  the report records `params`). The optimisation only improves the interior
+  tetrahedra, which are discarded. In the macOS parameter sweep
+  thingi10k_46012 took 6 s instead of 34 s (Hausdorff 0.09 % of the
+  diagonal; the sweep's 28 % for the optimised run was a measurement
+  artifact, see Fixed); the unoptimised boundary can carry non-manifold edges, which
+  the manifold3d post-process removes. artec_metal-nut still does not finish
+   within the 180 s budget (only `optimize=False` with
+   `edge_length_fac=0.1` finished, in 806 s). Output-changing for every mesh
+   the fTetWild tier handles.
+- **Wastefully dense fTetWild boundaries are decimated; fixed Hausdorff
+  sample count.** `optimize=False` can return a boundary far denser than the
+  input (thingi10k_73444: 473,212 faces at 7,882 input faces against 14,012
+  with `optimize=True`, same solver time), and the extra faces cost ~65 s of
+  downstream work with no added shape. When an attempt's boundary exceeds
+  `DENSE_RATIO = 4 * max(input_faces, DENSE_MIN_FACES = 20000)` it is
+  decimated with a pymeshlab quadric edge collapse (boundary/topology
+  preserving, planar quadric) over an escalating target ladder
+  (`DENSE_TARGET_LADDER = (1.5, 3.0)` times the input face count); a target
+  is accepted only when its manifold3d-post-processed result is strictly
+  watertight and its Hausdorff distance to the input is at most the raw
+  boundary's own distance plus `DECIMATE_HD_MARGIN = 0.005` (the face count
+  is only a size budget, the Hausdorff comparison is the quality gate).
+  A raw boundary already inside `FTETWILD_MAX_HAUSDORFF_REL` additionally
+  requires the decimated candidate to stay inside it, so decimation can never
+  turn an unflagged fTetWild result into a flagged one even while it stays
+  inside `hd_raw + DECIMATE_HD_MARGIN` (thingi10k_78968: raw 0.0087, a
+  decimated 0.0126). Otherwise the undecimated boundary is used exactly as
+  before, and the existing `optimize=True` retry is unchanged. The report's
+  `experimental_ftetwild` gains `ftetwild_decimated`, `ftetwild_faces_raw`,
+  `ftetwild_faces_final`, `ftetwild_decimate_time` and, when the ladder runs,
+  `ftetwild_hausdorff_raw`, `ftetwild_decimate_target`,
+  `ftetwild_hausdorff_decimated`, `ftetwild_decimate_attempts` and
+  `ftetwild_decimate_fallback`; `ftetwild_faces_final` is the adopted
+  boundary after the in-tier manifold3d post-process and the new
+  `ftetwild_faces_decimated` the quadric output before it (the final file's
+  face count is the separate stage-2 rebuild of that boundary).
+  `_hausdorff_rel` now samples a fixed `HAUSDORFF_SAMPLES = 200000` points
+  regardless of the output size, and keeps `maxdist = PercentageValue(100)`,
+  the pymeshlab maximum: it is measured against the union bounding box, so it
+  is the one value that cannot clip (smaller values cap or empty the result).
+  The exactly-5 %-of-diagonal distance some open inputs report is therefore
+  not a measurement cap but the fTetWild envelope (`edge_length_fac = 0.05`),
+  measured independently with
+  `compute_scalar_by_distance_from_another_mesh_per_vertex`. New tests in
+  `tests/test_deep_repair.py`.
+- **Local tier limited to small, simple damage.** Measured on macOS, the
+  local tier made 3 of the 40 real-world samples strictly watertight
+  (31 → 34: thingi10k_40886, 46012, 71691) but none of the 115-mesh corpus,
+  where it added 69 % run time. It now runs only when there is no
+  non-manifold edge, the longest boundary loop has at most 16 edges and the
+  damaged region has at most 8 parts and 2,000 faces, and it stops after
+  10 s (`LOCAL_MAX_*`; `reject_reason` starts with `scope:` or is `time`).
+  Hole refinement is off (`LOCAL_REMESH_REFINE`): it took ~9 s of the
+  ~11 s per 90k-face mesh and changed no outcome on the 40 samples. The
+  outside-face guard is vectorized. Same three gains on the 40 samples; the
+  local tier's time there drops from 24.6 s to 6.0 s (x86_64 VM). The
+  report gains `deep_repair.local.max_loop_len`.
+
 ### Fixed
+
+- **Hausdorff distance counted unreferenced vertices.** PyMeshLab's
+  `get_hausdorff_distance(samplevert=True)` also samples vertices that no
+  face references, and the fTetWild bridge output keeps every tetrahedron
+  vertex, interior ones included. When no post-process compacted the
+  boundary, interior points dominated the maximum: a closed sphere plus 200
+  random interior points measured 26 % of the diagonal instead of 0, and the
+  fTetWild parameter sweep reported 28 % for thingi10k_46012 with default
+  parameters where the corpus benchmark measured 0.06 %. The new
+  `repair._hausdorff_rel` drops unreferenced vertices of both meshes first;
+  `scripts/benchmark_repair_corpus.py` and the local tier use it. The
+  benchmark's earlier figures are unaffected wherever its output had been
+  compacted (stage 2 or the manifold3d post-process ran).
 
 - **Closed results with pinched vertices ended as `warning`.** A mesh can
   leave the stage-1 chain with no hole and no non-manifold edge and still not

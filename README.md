@@ -90,9 +90,47 @@ whenever its optional extra is installed:
   (slow)*, below it) also runs it on a closed result that still
   self-intersects.
 
+These after-stage-1 tiers form the **deep-repair ladder**, selected with
+`--deep-repair {off,local,full}` (or `SUTURA_DEEP_REPAIR`, or the
+`deep_repair` key of `~/.config/sutura/config.json`; the flag wins, then the
+environment, then the config). `full` is the default for the CLI and the
+file-manager menu and runs the fTetWild tier exactly as described above. `off`
+runs no tier; when holes or non-manifold edges remain, the JSON report
+carries `deep_repair.available` (remaining holes and non-manifold edges, the
+tiers that could still run and a rough time estimate `estimate_s`; the
+estimate coefficients are placeholders until they are calibrated on the
+corpora) and `--human` shows a "Deep repair available" line. `local` is an
+experimental prototype that re-meshes only the damaged regions: faces on a
+boundary or non-manifold edge and their one-vertex ring are deleted, the
+openings are closed with PyMeshLab's refined hole filling and the new
+interior vertices are smoothed with the boundary fixed; it is adopted only
+when holes and non-manifold edges do not get worse, self-intersections do not
+increase and every face outside the deleted region is unchanged. It only
+runs on small, simple damage (no non-manifold edge, boundary loops of at most
+16 edges, at most 8 damaged regions and 2,000 deleted faces, 10 s); hole
+refinement is off because it cost ~9 s per 90k-face mesh without changing a
+result. Measured on the 40 real-world samples it made 3 more meshes strictly
+watertight (31 → 34); on the 115-mesh corpus it gained none, which is why it
+is not part of `full`.
+
 Every tier is adopted only when its result is no worse than the plain
 two-stage result on holes and non-manifold edges, so the two-stage path always
-remains the safety net. Without the fTetWild extra and with no flag set, the
+remains the safety net. An adopted fTetWild result whose one-sided
+output-to-input Hausdorff distance exceeds 1 % of the bounding-box diagonal
+(provisional threshold) is kept but flagged: the report carries
+`shape_changed: true` and the issue `shape_changed` ("Shape changed by the
+fTetWild fallback"), without downgrading the category. Measured on macOS
+this concerns thingi10k_1038441 (3.7 %), 1038439 (1.7 %) and 224108 (1.1 %)
+of the 40 samples. When the default fTetWild boundary (run without the
+quality optimisation) fails the holes and non-manifold guard even after the
+manifold3d pass, the mesh is tetrahedralized once more with the
+optimisation on, within what remains of the 180 s budget; the report lists
+both runs (`attempts`) and names the adopted one (`adopted_attempt`).
+Inputs above 300,000 faces skip the fTetWild tier (`reject_reason:
+too_large`): the slowest completed run on the 40 samples took ~55 s at
+90,000 faces, so larger scans cannot finish within the budget, and the
+dense Artec scans of the 115-mesh corpus timed out on every run.
+Without the fTetWild extra and with no flag set, the
 behaviour is exactly the two stages above.
 
 Measured on the 40 real-world samples (`scripts/benchmark_repair_corpus.py`,
@@ -108,8 +146,15 @@ thingi10k_248395 took 30–160 s, occasionally beyond the budget, even with one
 thread); the result is re-triangulated (face counts change, often coarser);
 every input point stays close to the output (0.2–1.4 % of the bounding-box
 diagonal on the checked meshes) while the output can add surface away from
-the input where openings or cavities are closed (up to 28 % on
-thingi10k_46012, mean ≤ 1 %).
+the input where openings or cavities are closed (one-sided output-to-input
+Hausdorff distance 1–4 % on thingi10k_224108, 1038439 and 1038441, 5–8 % on
+two corpus meshes; an earlier figure of 28 % on thingi10k_46012 came from a
+measurement that also sampled interior tetrahedron vertices). fTetWild now runs without its mesh-quality
+optimisation (`optimize=False`; the optimisation only improves the discarded
+interior tetrahedra): in a parameter sweep on macOS it cut thingi10k_46012
+from 34 s to 6 s with a 0.09 % Hausdorff distance, while artec_metal-nut
+still exceeded the budget. The run times and counts above were measured
+with the optimisation on.
 
 The original file is never overwritten. Output is written with a `_fixed`
 suffix in the same directory.
@@ -145,7 +190,7 @@ Sutura and where you should still double-check the output.
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~70% — experimental | Self-contained script plugin that repairs the **currently selected model** in-memory via `orca.host` (numpy-free accessors), shelling out to the Sutura CLI and loading the result back. Verified end-to-end in a real OrcaSlicer **2.5.0-dev** (macOS); primary target is Linux, macOS is a verified bonus. Native progress dialog during repair; `request_permissions` pre-declares the CLI path's fs_read (subprocess prompts remain, an OrcaSlicer audit-API limitation). Still early-stage; requires nightly / releases newer than 2.4.2. |
 | Indirect predicates / exact arrangement-lite (Phase B + C1–C4) | ~50% — experimental | A Rust prototype (`--experimental-indirect-autorefine`, `rust/sutura-geom`) that splits self-intersecting geometry with exact indirect predicates instead of the float64 snap-rounding used by `--experimental-autorefine`. Phase B built the chain (predicate core, exact triangle–triangle classifier, 2D CDT with implicit points, `arrangement_lite` PyO3 binding, `repair.py` wiring). Phase C1 (0.4.0) builds every crossing from the original input planes/lines instead of chaining constructed points, and adds a rigorous interval filter in front of the exact `BigRational` predicates (results unchanged by construction, differential-tested). Measured on thingi10k_1038441 (M2): 1001-face subset 53 s → 6 s, 5000-face subset timeout → 31 s, full mesh did not finish in 30+ min → ~463 s, identical output face counts. Phase C2 removes the linear scans from the per-host constrained triangulation (walking point location, segment-corridor walk, local updates, integer exact fallback) with byte-identical output: on the same x86_64 VM the full mesh went from 830 s to 52.5 s (5000-face subset 56 s → 13 s); on the M2 the full mesh now takes 29.8 s (C1: ~463 s). Phase C3 (classification shortcuts, integer exact arithmetic, output again identical) brings the VM time to 28.1 s, and Phase C4 (direct hashing of reduced exact keys, integer implicit constructions, output identical) to 17.6 s (M2: 16.8 s after C3, 10.6 s after C4). Known limitations: disabled by default and developer-built (`maturin develop`, not bundled in the AppImage/.dmg); not yet benchmarked on the full 115-mesh corpus. An external alternative, Geogram's `MeshSurfaceIntersection`, was measured and rejected (output not accepted by the manifold3d rebuild, community edition aborts on dense scans) — see `docs/geogram-spike-2026-09-24.md`. |
-| Test coverage | ~85% | Plain-script suites, each runnable as `python3 tests/<suite>.py` (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture, autorefine, join-components, fTetWild defaults, pinched vertices, OrcaSlicer plugin stub, history, real-world corpus, manifold3d watertight check). CI on every push/PR runs all of them except the manual torture harness on Python 3.11 and 3.14 (the stage-2-dependent budget, stage2-3mf and real-world-corpus suites on the 3.11 leg only); the two suites that build the main window run headless since the first-run dialog is skipped on the offscreen Qt platform. The Rust core has 54 unit tests including filter-vs-exact differential tests, a randomized accelerated-vs-linear CDT query test and regression tests for the evaluated (off-by-default) Sloan and edge-point CDT variants, run in CI both plainly and with `--features cdt-check` (every accelerated triangulation query asserted against the linear reference scan), and `tests/test_sutura_geom*.py` smoke-test its Python binding. Not 100%: the GUI itself has no automated UI test beyond construction and checkbox wiring, and there is no reproducible end-to-end test against a live OrcaSlicer. |
+| Test coverage | ~85% | Plain-script suites, each runnable as `python3 tests/<suite>.py` (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture, autorefine, join-components, fTetWild defaults, pinched vertices, deep-repair ladder, OrcaSlicer plugin stub, history, real-world corpus, manifold3d watertight check). CI on every push/PR runs all of them except the manual torture harness on Python 3.11 and 3.14 (the stage-2-dependent budget, stage2-3mf and real-world-corpus suites on the 3.11 leg only); the two suites that build the main window run headless since the first-run dialog is skipped on the offscreen Qt platform. The Rust core has 54 unit tests including filter-vs-exact differential tests, a randomized accelerated-vs-linear CDT query test and regression tests for the evaluated (off-by-default) Sloan and edge-point CDT variants, run in CI both plainly and with `--features cdt-check` (every accelerated triangulation query asserted against the linear reference scan), and `tests/test_sutura_geom*.py` smoke-test its Python binding. Not 100%: the GUI itself has no automated UI test beyond construction and checkbox wiring, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
 

@@ -37,6 +37,23 @@ def test_watertight():
     assert key == 'watertight'
 
 
+def test_shape_changed_is_an_issue_not_a_category():
+    from classification import classify, issue_label
+    data = {
+        'stage1': {'two_manifold': True, 'holes_remaining': 0},
+        'stage2': {'ok': True},
+        'shape_changed': True,
+    }
+    cat, issues, key = classify(data)
+    assert cat == 'watertight' and key == 'watertight', (cat, key)
+    assert issues == ['shape_changed'], issues
+    assert issue_label('shape_changed') != 'shape_changed'
+    multi = {'object_reports': [dict(data), {'stage1': data['stage1'],
+                                             'stage2': {'ok': True}}]}
+    cat, issues, _key = classify(multi)
+    assert cat == 'watertight' and issues == ['shape_changed'], (cat, issues)
+
+
 def test_volume_warning():
     from classification import classify
     data = {

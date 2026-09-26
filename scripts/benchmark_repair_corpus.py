@@ -65,8 +65,16 @@ def count_self_intersections(v, t):
     return int(ms.current_mesh().face_selection_array().sum())
 
 
+def hausdorff_out_to_in(v_in, t_in, v_out, t_out):
+    """One-sided Hausdorff distance, samples on the output, distance to the
+    input, relative to the input bounding-box diagonal: (max, mean). The same
+    function as the fTetWild shape guard (repair._hausdorff_rel)."""
+    import pymeshlab as ml
+    return repair._hausdorff_rel(ml, v_in, t_in, v_out, t_out)
+
+
 def run_one(src, tmpdir, autorefine=False, ftetwild=False,
-            indirect_autorefine=False):
+            indirect_autorefine=False, deep_repair=None):
     """Repair one mesh and return (entry, error)."""
     entry = {'file': os.path.basename(src),
              'size_bytes': os.path.getsize(src)}
@@ -84,10 +92,13 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False,
         entry['input_non_manifold'] = len(in_det['non_manifold'])
         entry['input_self_intersections'] = count_self_intersections(v, t)
 
+        t_rep = time.time()
         rep, new_v, new_t = repair.repair_mesh_from_arrays(
             v, t, tmpdir, mode='auto', autorefine=autorefine,
-            ftetwild=ftetwild, indirect_autorefine=indirect_autorefine)
+            ftetwild=ftetwild, indirect_autorefine=indirect_autorefine,
+            deep_repair=deep_repair)
         new_v, new_t = repair.maybe_run_stage2(rep, new_v, new_t, tmpdir)
+        entry['time_total'] = round(time.time() - t_rep, 3)
 
         category, _issues, _summary = classification.classify(rep)
         entry['category'] = category
@@ -128,8 +139,39 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False,
                 ft.get('manifold_postprocessed'))
             entry['ftetwild_time'] = ft.get('time')
             entry['ftetwild_error'] = ft.get('error')
+            entry['ftetwild_reject_reason'] = ft.get('reject_reason')
+            entry['ftetwild_hausdorff_rel'] = ft.get('hausdorff_rel')
+            entry['ftetwild_shape_changed'] = bool(ft.get('shape_changed'))
+            entry['ftetwild_adopted_attempt'] = ft.get('adopted_attempt')
+            entry['ftetwild_attempts'] = len(ft.get('attempts') or [])
         else:
             entry['ftetwild_ran'] = False
+        # Deep-repair ladder (--deep-repair): tier run, per-tier time, the
+        # placeholder estimate for the tiers that ran (for calibration
+        # against actual_s) and the offer left for the tiers that did not.
+        dr = rep.get('deep_repair')
+        if isinstance(dr, dict):
+            entry['deep_repair_mode'] = dr.get('mode')
+            entry['final_tier'] = dr.get('final_tier')
+            entry['tiers_run'] = dr.get('tiers_run')
+            lr = dr.get('local') or {}
+            entry['time_local'] = lr.get('time')
+            entry['local_adopted'] = lr.get('adopted') if lr else None
+            entry['local_reject_reason'] = lr.get('reject_reason')
+            entry['local_regions'] = lr.get('regions')
+            entry['local_faces_removed'] = lr.get('faces_removed')
+            entry['local_faces_added'] = lr.get('faces_added')
+            ftr = dr.get('ftetwild') or {}
+            entry['time_ftetwild'] = ftr.get('time')
+            tiers = dr.get('tiers_run') or []
+            entry['estimate_s'] = repair.estimate_deep_repair_time(
+                len(t), dr.get('holes_before', 0) + dr.get('nm_before', 0), tiers)
+            entry['actual_s'] = {k: v for k, v in (('local', entry['time_local']),
+                                                    ('ftetwild', entry['time_ftetwild']))
+                                 if k in tiers}
+            entry['deep_repair_available'] = dr.get('available')
+        entry['hausdorff_max_rel'], entry['hausdorff_mean_rel'] = \
+            hausdorff_out_to_in(v, t, new_v, new_t)
         ia = rep.get('experimental_indirect_autorefine')
         if isinstance(ia, dict):
             entry['indirect_adopted'] = bool(ia.get('adopted'))
@@ -173,6 +215,11 @@ def main():
                         'holes/non-manifold edges)')
     p.add_argument('--experimental-fallback-ftetwild', action='store_true',
                    help='enable --experimental-fallback-ftetwild for every mesh')
+    p.add_argument('--deep-repair', choices=repair.DEEP_REPAIR_MODES, default=None,
+                   help='deep-repair ladder mode for every mesh (off/local/full, '
+                        'same resolution as the CLI; without it the benchmark '
+                        'keeps the pre-ladder call and records no deep_repair '
+                        'columns)')
     p.add_argument('--experimental-indirect-autorefine', action='store_true',
                    help='enable --experimental-indirect-autorefine for every mesh '
                         '(needs the maturin-built sutura_geom extension)')
@@ -185,8 +232,14 @@ def main():
     if args.cdt_experimental:
         import sutura_geom
         sutura_geom._set_cdt_experimental(args.cdt_experimental)
-    ftetwild = repair.resolve_ftetwild(args.no_fallback_ftetwild,
-                                       args.experimental_fallback_ftetwild)
+    if args.deep_repair is not None:
+        deep_repair, ftetwild = repair.resolve_deep_repair_flags(
+            args.deep_repair, args.no_fallback_ftetwild,
+            args.experimental_fallback_ftetwild)
+    else:
+        deep_repair = None
+        ftetwild = repair.resolve_ftetwild(args.no_fallback_ftetwild,
+                                           args.experimental_fallback_ftetwild)
     corpus, out_path = args.corpus, args.out
     files = sorted(f for f in os.listdir(corpus) if f.lower().endswith('.stl'))
     flags = (' +autorefine' if args.experimental_autorefine else '') + \
@@ -194,7 +247,8 @@ def main():
              if args.experimental_indirect_autorefine else '') + \
             {False: ' ftetwild=off', True: ' ftetwild=always',
              'auto': ' ftetwild=auto%s' % ('' if repair.ftetwild_available()
-                                          else ' (not installed)')}[ftetwild]
+                                          else ' (not installed)')}[ftetwild] + \
+            (' deep_repair=%s' % deep_repair if deep_repair else '')
     print('corpus: %s (%d STL files)%s' % (corpus, len(files), flags), flush=True)
 
     results = {}
@@ -206,7 +260,8 @@ def main():
             entry, err = run_one(os.path.join(corpus, f), tmp,
                                  autorefine=args.experimental_autorefine,
                                  ftetwild=ftetwild,
-                                 indirect_autorefine=args.experimental_indirect_autorefine)
+                                 indirect_autorefine=args.experimental_indirect_autorefine,
+                                 deep_repair=deep_repair)
         except Exception as e:  # noqa: BLE001 - never let one file kill the run
             err = {'file': f, 'error': '%s: %s' % (type(e).__name__, e)}
         finally:
@@ -315,6 +370,9 @@ def main():
         pp = [r for r in adopted if r.get('ftetwild_manifold_postprocessed')]
         not_adopted = [r for r in ft_meshes if not r.get('ftetwild_adopted')]
         err = [r for r in ft_meshes if r.get('ftetwild_error')]
+        shape = [r for r in ft_meshes if r.get('ftetwild_shape_changed')]
+        too_large = [r for r in results.values()
+                     if r.get('ftetwild_reject_reason') == 'too_large']
         timeouts = [r for r in err if r.get('ftetwild_error') == 'timeout']
         times = [r.get('ftetwild_time') for r in ft_meshes
                  if isinstance(r.get('ftetwild_time'), (int, float))]
@@ -324,6 +382,8 @@ def main():
         print('adopted                  : %d' % len(adopted))
         print('  of which manifold3d post-processed : %d' % len(pp))
         print('adopt=False (kept stage-1) : %d' % len(not_adopted))
+        print('adopted with shape_changed : %d' % len(shape))
+        print('skipped as too large       : %d' % len(too_large))
         print('errors                   : %d (of which %d timeout)' % (
             len(err), len(timeouts)))
         if timeouts:
@@ -341,6 +401,38 @@ def main():
             for r in sorted(not_adopted, key=lambda x: x.get('file')):
                 print('   %-45s holes=%s nm=%s' % (
                     r.get('file'), r.get('strict_holes'), r.get('strict_non_manifold')))
+    ok_entries = [r for r in results.values() if 'error' not in r]
+    dr_entries = [r for r in ok_entries if r.get('deep_repair_mode')]
+    if dr_entries:
+        import statistics
+        loc = [r for r in dr_entries if 'local' in (r.get('tiers_run') or [])]
+        loc_ad = [r for r in loc if r.get('local_adopted')]
+        print()
+        print('=== deep-repair ladder (mode=%s) ===' % dr_entries[0]['deep_repair_mode'])
+        print('local tier ran           : %d, adopted %d' % (len(loc), len(loc_ad)))
+        reasons = {}
+        for r in loc:
+            if not r.get('local_adopted'):
+                k = r.get('local_reject_reason') or 'error'
+                reasons[k] = reasons.get(k, 0) + 1
+        for k, n in sorted(reasons.items()):
+            print('   not adopted: %-40s %d' % (k, n))
+        lt = [r['time_local'] for r in loc if isinstance(r.get('time_local'), (int, float))]
+        if lt:
+            print('local time (s): median=%.2f max=%.2f total=%.2f'
+                  % (statistics.median(lt), max(lt), sum(lt)))
+        offered = [r for r in dr_entries if r.get('deep_repair_available')]
+        print('deep repair still available : %d' % len(offered))
+    tt = [r['time_total'] for r in ok_entries if isinstance(r.get('time_total'), (int, float))]
+    if tt:
+        import statistics
+        print('repair time (s): median=%.2f total=%.2f' % (statistics.median(tt), sum(tt)))
+    hd = [r['hausdorff_max_rel'] for r in ok_entries
+          if isinstance(r.get('hausdorff_max_rel'), (int, float))]
+    if hd:
+        import statistics
+        print('Hausdorff out->in / diag: median=%.4f max=%.4f (n=%d)'
+              % (statistics.median(hd), max(hd), len(hd)))
     print('wrote %s' % out_path)
 
 
