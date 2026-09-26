@@ -74,8 +74,22 @@ def topo_of(ml, v, t):
     return ms, topo, holes, topo.get('non_two_manifold_edges', 0)
 
 
+def _referenced_only(v, t):
+    """Drop vertices no face references: get_hausdorff_distance with
+    samplevert=True samples them too, and a raw fTetWild boundary keeps
+    every tetrahedron vertex (interior ones included)."""
+    t = np.asarray(t, dtype=np.int64)
+    used = np.unique(t)
+    remap = np.full(len(v), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return np.asarray(v, np.float64)[used], remap[t]
+
+
 def hausdorff(ml, out_v, out_t, in_v, in_t):
-    """One-sided Hausdorff: samples on the output, distance to the input."""
+    """One-sided Hausdorff: samples on the output, distance to the input
+    (referenced vertices only)."""
+    out_v, out_t = _referenced_only(out_v, out_t)
+    in_v, in_t = _referenced_only(in_v, in_t)
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(in_v, np.float64),
                         face_matrix=np.asarray(in_t, np.int32)))      # id 0
