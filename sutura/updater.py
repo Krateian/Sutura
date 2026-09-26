@@ -89,6 +89,10 @@ DEFAULT_CONFIG = {
     # 'off' / 'local' / 'full'. The CLI and the file-manager menu run it
     # automatically; the GUI decides per run.
     'deep_repair': 'full',
+    # Triage Engine intensity preset read by the CLI (triage.resolve_intensity)
+    # and used as the GUI's initial selection: quick / balanced / thorough /
+    # extreme. Balanced is the historical default.
+    'intensity': 'balanced',
     'check_on_startup': False,
 }
 
