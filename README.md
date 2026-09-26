@@ -121,7 +121,12 @@ output-to-input Hausdorff distance exceeds 1 % of the bounding-box diagonal
 `shape_changed: true` and the issue `shape_changed` ("Shape changed by the
 fTetWild fallback"), without downgrading the category. Measured on macOS
 this concerns thingi10k_1038441 (3.7 %), 1038439 (1.7 %) and 224108 (1.1 %)
-of the 40 samples. Without the fTetWild extra and with no flag set, the
+of the 40 samples. When the default fTetWild boundary (run without the
+quality optimisation) fails the holes and non-manifold guard even after the
+manifold3d pass, the mesh is tetrahedralized once more with the
+optimisation on, within what remains of the 180 s budget; the report lists
+both runs (`attempts`) and names the adopted one (`adopted_attempt`).
+Without the fTetWild extra and with no flag set, the
 behaviour is exactly the two stages above.
 
 Measured on the 40 real-world samples (`scripts/benchmark_repair_corpus.py`,

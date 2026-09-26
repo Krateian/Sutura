@@ -1032,6 +1032,15 @@ FTETWILD_TIMEOUT = 180
 # and 4 corpus meshes. Provisional value.
 FTETWILD_MAX_HAUSDORFF_REL = 0.01
 
+# Second fTetWild attempt: when the default (optimize=False) boundary fails
+# the holes/non-manifold guard even after the manifold3d post-process, the
+# mesh is tetrahedralized once more with the quality optimisation on, within
+# what is left of FTETWILD_TIMEOUT (skipped when less than
+# FTETWILD_RETRY_MIN_SECONDS remain). thingi10k_1038444 was adopted with the
+# optimisation and rejected ('holes_nm') without it (macOS, 2026-09-26).
+FTETWILD_RETRY_PARAMS = {'optimize': True}
+FTETWILD_RETRY_MIN_SECONDS = 10.0
+
 _FTETWILD_AVAILABLE = None
 
 
@@ -1097,7 +1106,7 @@ def resolve_deep_repair_flags(deep_repair=None, no_fallback=False,
     return mode, ftetwild
 
 
-def run_ftetwild(inter, out_obj, params=None):
+def run_ftetwild(inter, out_obj, params=None, timeout=None):
     """Run the fTetWild fallback bridge. Returns (report, ok); reports a skip,
     never silence. Time-boxed: a per-mesh wall-clock budget (FTETWILD_TIMEOUT)
     bounds the call so a dense scan cannot stall the batch; on timeout the
@@ -1108,8 +1117,10 @@ def run_ftetwild(inter, out_obj, params=None):
     (macOS/conda and frozen bundles), then an in-process attempt wrapped in a
     timed thread as a last resort. The bridge itself reports an explicit skip
     when pytetwild/pyvista are absent. ``params`` (dict) overrides the
-    bridge's DEFAULT_PARAMS for pytetwild.tetrahedralize."""
+    bridge's DEFAULT_PARAMS for pytetwild.tetrahedralize; ``timeout``
+    (seconds) replaces FTETWILD_TIMEOUT for this call."""
     extra = [json.dumps(params)] if params is not None else []
+    budget = FTETWILD_TIMEOUT if timeout is None else timeout
     # fTetWild writes a debug file (__tracked_surface.stl, ~1 MB) into the
     # current working directory; run the bridge from the private temp dir of
     # the output so nothing lands in the user's folder (e.g. a Dolphin /
@@ -1120,7 +1131,7 @@ def run_ftetwild(inter, out_obj, params=None):
         try:
             r = subprocess.run(
                 [VENV311, FTETWILD_BRIDGE, inter, out_obj] + extra,
-                capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
+                capture_output=True, text=True, timeout=budget,
                 cwd=workdir,
             )
         except subprocess.TimeoutExpired:
@@ -1141,7 +1152,7 @@ def run_ftetwild(inter, out_obj, params=None):
     try:
         r = subprocess.run(
             [sys.executable, FTETWILD_BRIDGE, inter, out_obj] + extra,
-            capture_output=True, text=True, timeout=FTETWILD_TIMEOUT,
+            capture_output=True, text=True, timeout=budget,
             cwd=workdir,
         )
         if r.returncode == 0:
@@ -1170,7 +1181,7 @@ def run_ftetwild(inter, out_obj, params=None):
             box['report'] = module.run_bridge(inter, out_obj, params)
         th = threading.Thread(target=_go, daemon=True)
         th.start()
-        th.join(FTETWILD_TIMEOUT)
+        th.join(budget)
         if th.is_alive():
             return {'error': 'timeout'}, False
         report = box.get('report')
@@ -1267,9 +1278,47 @@ def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_aft
     return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, False
 
 
+def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout):
+    """One fTetWild run on the written input ``inter``, followed by the
+    manifold3d post-process. Returns ``(attempt_report, candidate)`` where
+    candidate is ``(verts, tris, meshset, topo, holes, nm)`` or None."""
+    out_obj = os.path.join(tmpdir, 'ftetwild_out_%s.obj' % tag)
+    t0 = time.perf_counter()
+    if params is None:
+        mrep, _ok = run_ftetwild(inter, out_obj)
+    else:
+        mrep, _ok = run_ftetwild(inter, out_obj, params, timeout=timeout)
+    att = {'attempt': tag, 'wall_time': round(time.perf_counter() - t0, 2)}
+    att.update(mrep)
+    if 'error' in mrep or not os.path.exists(out_obj):
+        return att, None
+    cand_v, cand_t = read_obj(out_obj)
+    if len(cand_t) == 0:
+        return att, None
+    cand_ms = ml.MeshSet()
+    cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
+                             face_matrix=np.asarray(cand_t, np.int32)))
+    cand_after = cand_ms.apply_filter('get_topological_measures')
+    cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
+    cand_nm = cand_after.get('non_two_manifold_edges', 0)
+    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm,
+     att['manifold_postprocessed']) = _ftetwild_manifold_postprocess(
+        ml, tmpdir, cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+    att['output_holes'] = cand_holes
+    att['output_non_manifold'] = cand_nm
+    return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+
+
 def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
-    """fTetWild basamak of the deep-repair ladder (moved verbatim from
-    repair_mesh_from_arrays; behaviour unchanged). Returns ``(ms, after)``."""
+    """fTetWild basamak of the deep-repair ladder. Returns ``(ms, after)``.
+
+    The first attempt uses the bridge defaults
+    (optimize=False); when its boundary fails the holes/non-manifold guard,
+    one retry with FTETWILD_RETRY_PARAMS runs within the remaining budget.
+    ``attempts`` lists every run, ``adopted_attempt`` names the adopted one;
+    the top-level report fields describe the adopted (or else the last)
+    attempt. An adopted result far from the input is flagged
+    (``shape_changed``), not rejected."""
     stats['experimental_ftetwild'] = False
     if ftetwild == 'auto' and not ftetwild_available():
         ftetwild = False
@@ -1285,41 +1334,50 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
         if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
             try:
                 inter = os.path.join(tmpdir, 'ftetwild_in.obj')
-                out_obj = os.path.join(tmpdir, 'ftetwild_out.obj')
                 write_obj(inter, v, t)
-                mrep, _ok = run_ftetwild(inter, out_obj)
-                ft_rep.update(mrep)
-                if 'error' not in mrep and os.path.exists(out_obj):
-                    cand_v, cand_t = read_obj(out_obj)
-                    if len(cand_t) > 0:
-                        cand_ms = ml.MeshSet()
-                        cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
-                                                 face_matrix=np.asarray(cand_t, np.int32)))
-                        cand_after = cand_ms.apply_filter('get_topological_measures')
-                        cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
-                        cand_nm = cand_after.get('non_two_manifold_edges', 0)
-                        (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm,
-                         ft_rep['manifold_postprocessed']) = _ftetwild_manifold_postprocess(
-                            ml, tmpdir, cand_v, cand_t, cand_ms, cand_after,
-                            cand_holes, cand_nm)
-                        adopted = bool(cand_holes <= cur_holes and cand_nm <= cur_nm)
-                        if not adopted:
-                            ft_rep['reject_reason'] = 'holes_nm'
-                        else:
-                            # shape flag: fTetWild can close openings and
-                            # cavities, adding surface far from the input
-                            hd_max, _hd_mean = _hausdorff_rel(ml, v, t, cand_v, cand_t)
-                            ft_rep['hausdorff_rel'] = hd_max
-                            ft_rep['shape_changed'] = bool(
-                                hd_max is not None and hd_max > FTETWILD_MAX_HAUSDORFF_REL)
-                            if ft_rep['shape_changed']:
-                                stats['shape_changed'] = True
-                        ft_rep['adopted'] = adopted
-                        ft_rep['output_holes'] = cand_holes
-                        ft_rep['output_non_manifold'] = cand_nm
-                        if adopted:
-                            ms = cand_ms
-                            after = cand_after
+                attempts = []
+                t_start = time.perf_counter()
+                plan = [('default', None), ('optimize', FTETWILD_RETRY_PARAMS)]
+                chosen = None
+                for tag, params in plan:
+                    if tag != 'default':
+                        last = attempts[-1]
+                        # retry only when the first boundary exists but
+                        # fails the holes/non-manifold guard
+                        if last.get('reject_reason') != 'holes_nm':
+                            break
+                        remaining = FTETWILD_TIMEOUT - (time.perf_counter() - t_start)
+                        if remaining < FTETWILD_RETRY_MIN_SECONDS:
+                            last['retry_skipped'] = 'budget'
+                            break
+                    else:
+                        remaining = None
+                    att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag, params, remaining)
+                    attempts.append(att)
+                    if cand is None:
+                        continue
+                    if cand[4] <= cur_holes and cand[5] <= cur_nm:
+                        chosen = (att, cand)
+                        break
+                    att['reject_reason'] = 'holes_nm'
+                final = chosen[0] if chosen else attempts[-1]
+                ft_rep.update({k: val for k, val in final.items() if k != 'attempt'})
+                ft_rep['attempts'] = attempts
+                ft_rep['adopted'] = chosen is not None
+                if chosen:
+                    att, (cand_v, cand_t, cand_ms, cand_after, _h, _n) = chosen
+                    ft_rep['adopted_attempt'] = att['attempt']
+                    ft_rep.pop('reject_reason', None)
+                    # shape flag: fTetWild can close openings and cavities,
+                    # adding surface far from the input
+                    hd_max, _hd_mean = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+                    ft_rep['hausdorff_rel'] = hd_max
+                    ft_rep['shape_changed'] = bool(
+                        hd_max is not None and hd_max > FTETWILD_MAX_HAUSDORFF_REL)
+                    if ft_rep['shape_changed']:
+                        stats['shape_changed'] = True
+                    ms = cand_ms
+                    after = cand_after
             except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
                 ft_rep['error'] = str(e)
             stats['experimental_ftetwild'] = ft_rep
@@ -1698,7 +1756,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
         local_rep = None
     if mode in (None, 'full'):
         ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild)
-        if isinstance(stats.get('experimental_ftetwild'), dict):
+        if (stats.get('experimental_ftetwild') or {}).get('ran'):
             tiers_run.append('ftetwild')
     else:
         stats['experimental_ftetwild'] = False
@@ -2502,6 +2560,8 @@ def human_report(r, show_defects=False, show_diff=False):
             else:
                 adopted = ' NOT adopted (kept stage-1 output)'
             pp = ' + manifold3d post-process' if ft_r.get('manifold_postprocessed') else ''
+            if ft_r.get('adopted_attempt') == 'optimize':
+                pp += ' (second attempt, optimisation on)'
             lines.append('  fTetWild fallback : %d faces in %.2fs%s, '
                          'holes=%s non-manifold=%s%s' % (
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,

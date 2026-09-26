@@ -47,6 +47,18 @@ All notable changes to this project are documented here.
   rejected by the holes/non-manifold guard reports `reject_reason:
   holes_nm`. The benchmark adds `ftetwild_reject_reason`,
   `ftetwild_hausdorff_rel` and `ftetwild_shape_changed`.
+- **Second fTetWild attempt with the optimisation on.** When the default
+  (optimize=False) boundary fails the holes/non-manifold guard after the
+  manifold3d post-process, the tier runs fTetWild once more with
+  `FTETWILD_RETRY_PARAMS = {'optimize': True}` within the remaining
+  `FTETWILD_TIMEOUT` (skipped below `FTETWILD_RETRY_MIN_SECONDS = 10`;
+  `retry_skipped: budget`). No retry after a timeout or error.
+  `experimental_ftetwild` gains `attempts` (one entry per run, with its
+  `reject_reason`) and `adopted_attempt` (`default` or `optimize`);
+  `run_ftetwild` gains a `timeout` argument; the benchmark adds
+  `ftetwild_adopted_attempt` and `ftetwild_attempts`. Motivation: on macOS
+  thingi10k_1038444 was adopted with the optimisation and rejected
+  (`holes_nm`) without it.
 - **fTetWild runs without its quality optimisation.** `ftetwild_bridge`
   calls `pytetwild.tetrahedralize` with `optimize=False` by default
   (`DEFAULT_PARAMS`; `run_bridge(..., params)`, a JSON third argument on the
