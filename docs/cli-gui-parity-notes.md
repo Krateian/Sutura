@@ -39,6 +39,12 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all six
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
+`engines list|check` (GUI *Engines* tab engine list with Reload / *Open
+engines folder* / docs link) ·
+`ftetwild status|install|uninstall` and `--yes`/`--dry-run` (GUI *Engines*
+tab fTetWild section: status line, Install/Remove with a size confirmation
+and a cancellable progress dialog; the GUI's confirmation dialog is the
+`--yes` equivalent) ·
 `--version` (GUI version label).
 
 ## History
@@ -51,3 +57,7 @@ batch-wide checkboxes above sit in the GUI's *Options* window) ·
   `deep_repair.available` estimate, an *Options* setting that writes the
   config key) is scheduled separately; until then the GUI keeps its fTetWild
   checkboxes, which map onto `off`/`full`.
+- **External engines / fTetWild manager:** the `engines` and `ftetwild`
+  subcommands and the GUI *Engines* tab were added together, so the parity
+  rule holds. The engine *configuration* (the TOML files) is edited outside
+  the app in both cases; the GUI only lists, reloads and opens the folder.

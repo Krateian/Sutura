@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GUI test for the tabbed Options window (OptionsDialog).
 
-Checks that the dialog exists with its five tabs, that the batch-wide
+Checks that the dialog exists with its six tabs, that the batch-wide
 checkboxes live in it, that "Check on every start" is only enabled while
 automatic updates is on (and both write config.json), and that toggling an
 option still updates the count on the Options button.
@@ -40,7 +40,7 @@ def test_options_dialog_tabs_and_updates():
         "app = QApplication([])\n"
         "w = gui.MainWindow()\n"
         "d = w._options_dialog\n"
-        "assert d.tabs.count() == 5, d.tabs.count()\n"
+        "assert d.tabs.count() == 6, d.tabs.count()\n"
         "assert not d.isVisible()\n"
         "w.btn_options.click()\n"
         "assert d.isVisible() and d.tabs.currentIndex() == d.TAB_REPAIR\n"

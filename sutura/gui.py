@@ -18,17 +18,18 @@ import webbrowser
 
 import numpy as np
 
-from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion, QTimer
+from PySide6.QtCore import (
+    Qt, QThread, Signal, QLocale, QPoint, qVersion, QTimer, QUrl)
 from PySide6.QtGui import (
     QIcon, QFontDatabase, QPixmap, QPainter, QColor, QPolygon, QPalette, QPen,
-    QShortcut, QKeySequence)
+    QShortcut, QKeySequence, QDesktopServices)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
     QCheckBox, QDoubleSpinBox, QSpinBox, QLineEdit, QInputDialog,
-    QFormLayout, QGroupBox,
+    QFormLayout, QGroupBox, QListWidget,
     QTabWidget, QTextBrowser, QComboBox)
 
 # the updater/repair modules live beside this file in both the repo and the
@@ -308,6 +309,43 @@ STRINGS = {
                              'versions are downloaded from the releases page.',
         'opt_changelog_loading': 'Loading release notes…',
         'opt_changelog_offline': 'Release notes could not be loaded (offline?).',
+        'opt_tab_engines': 'Engines',
+        'engines_ftetwild_group': 'fTetWild fallback tier',
+        'engines_status_checking': 'Checking…',
+        'engines_status_installed': 'Installed: v%s (%s)',
+        'engines_status_missing': 'Not installed (download ~%s, on disk ~%s)',
+        'engines_status_unsupported': 'Unavailable here: %s',
+        'engines_install': 'Install…',
+        'engines_install_tip': 'Download and install the optional fTetWild extra '
+                               'into this Sutura environment.',
+        'engines_remove': 'Remove…',
+        'engines_remove_tip': 'Uninstall the fTetWild extra and free its disk '
+                              'space.',
+        'engines_confirm_install': 'Install fTetWild? Download ~%s, about %s on '
+                                   'disk.',
+        'engines_confirm_remove': 'Remove fTetWild? This frees about %s.',
+        'engines_progress_title': 'fTetWild %s',
+        'engines_cancel': 'Cancel',
+        'engines_done_ok': 'fTetWild %s finished.',
+        'engines_done_fail': 'fTetWild %s failed: %s',
+        'engines_cancelled': 'Cancelled.',
+        'engines_list_group': 'External repair engines',
+        'engines_list_tip': 'Third-party engines configured in the engines '
+                            'folder. Every engine result passes the same '
+                            'watertight + Hausdorff guard as fTetWild.',
+        'engines_list_none': '(no engines configured)',
+        'engines_list_item': '%s — %s — %s%s',
+        'engines_binary_ok': 'binary found',
+        'engines_binary_missing': 'binary MISSING',
+        'engines_enabled_off': ', disabled',
+        'engines_not_in_chain': ', not in chain',
+        'engines_reload': 'Reload',
+        'engines_reload_tip': 'Re-read the engine configuration folder.',
+        'engines_open_folder': 'Open engines folder',
+        'engines_open_folder_tip': 'Open the folder that holds the engine TOML '
+                                   'files.',
+        'engines_docs': 'Engine documentation',
+        'engines_docs_tip': 'Open docs/external-engines.md on GitHub.',
         'options_section_fallback': 'Fallback tier',
         'options_section_experimental': 'Experimental (opt-in)',
         'profile_tip': 'Repair profile (whole batch): Auto uses the classifier; '
@@ -656,6 +694,41 @@ STRINGS = {
                              'sürümler releases sayfasından indirilir.',
         'opt_changelog_loading': 'Sürüm notları yükleniyor…',
         'opt_changelog_offline': 'Sürüm notları yüklenemedi (çevrimdışı mı?).',
+        'opt_tab_engines': 'Motorlar',
+        'engines_ftetwild_group': 'fTetWild yedek katmanı',
+        'engines_status_checking': 'Kontrol ediliyor…',
+        'engines_status_installed': 'Kurulu: v%s (%s)',
+        'engines_status_missing': 'Kurulu değil (indirme ~%s, diskte ~%s)',
+        'engines_status_unsupported': 'Burada kullanılamaz: %s',
+        'engines_install': 'Kur…',
+        'engines_install_tip': 'İsteğe bağlı fTetWild ekini bu Sutura ortamına '
+                               'indirip kurar.',
+        'engines_remove': 'Kaldır…',
+        'engines_remove_tip': 'fTetWild ekini kaldırır ve disk alanını boşaltır.',
+        'engines_confirm_install': 'fTetWild kurulsun mu? İndirme ~%s, diskte '
+                                   'yaklaşık %s.',
+        'engines_confirm_remove': 'fTetWild kaldırılsın mı? Yaklaşık %s boşalır.',
+        'engines_progress_title': 'fTetWild %s',
+        'engines_cancel': 'İptal',
+        'engines_done_ok': 'fTetWild %s tamamlandı.',
+        'engines_done_fail': 'fTetWild %s başarısız: %s',
+        'engines_cancelled': 'İptal edildi.',
+        'engines_list_group': 'Harici onarım motorları',
+        'engines_list_tip': 'Motorlar klasöründe tanımlı üçüncü taraf motorlar. '
+                            'Her motor sonucu fTetWild ile aynı su geçirmezlik + '
+                            'Hausdorff korumasından geçer.',
+        'engines_list_none': '(tanımlı motor yok)',
+        'engines_list_item': '%s — %s — %s%s',
+        'engines_binary_ok': 'ikili bulundu',
+        'engines_binary_missing': 'ikili YOK',
+        'engines_enabled_off': ', devre dışı',
+        'engines_not_in_chain': ', zincirde değil',
+        'engines_reload': 'Yenile',
+        'engines_reload_tip': 'Motor yapılandırma klasörünü yeniden oku.',
+        'engines_open_folder': 'Motor klasörünü aç',
+        'engines_open_folder_tip': 'Motor TOML dosyalarının bulunduğu klasörü açar.',
+        'engines_docs': 'Motor belgeleri',
+        'engines_docs_tip': 'GitHub üzerinde docs/external-engines.md dosyasını açar.',
         'options_section_fallback': 'Yedek katman',
         'options_section_experimental': 'Deneysel (isteğe bağlı)',
         'profile_tip': 'Onarım profili (batch geneli): Auto sınıflandırıcıyı '
@@ -1967,6 +2040,110 @@ class ProfileEditor(QWidget):
         return triage.profile_overrides(base_spec, self.values())
 
 
+class EnginesStatusWorker(QThread):
+    """Background: fTetWild manager status + configured engine list.
+
+    Stdlib-only (no pymeshlab), so it is safe inside the GUI process. Runs in
+    a thread so ``importlib.metadata`` scans never freeze the dialog."""
+
+    done = Signal(object)
+
+    def run(self):
+        data = {}
+        try:
+            import ftetwild_manager as mgr
+            data['ftetwild'] = mgr.status()
+            data['estimate'] = mgr.estimate()
+        except Exception as e:  # noqa: BLE001 - never crash the GUI
+            data['ftetwild'] = {'supported': False, 'installed': False,
+                                'reason': str(e)}
+            data['estimate'] = {}
+        try:
+            import engines as _engines
+            eng, warns = _engines.load_all_engines()
+            chain, cwarns = _engines.resolve_chain(eng)
+            ordered = [n for n in chain if n in eng]
+            ordered += [n for n in sorted(eng) if n not in ordered]
+            items = []
+            for name in ordered:
+                cfg = eng[name]
+                items.append({
+                    'name': cfg.name, 'placement': cfg.placement,
+                    'enabled': cfg.enabled, 'in_chain': name in chain,
+                    'binary_found': bool(_engines.is_engine_available(cfg)),
+                })
+            data['engines'] = {'items': items, 'warnings': warns + cwarns,
+                               'config_dir': str(_engines.get_engines_dir()),
+                               'error': None}
+        except Exception as e:  # noqa: BLE001
+            data['engines'] = {'items': [], 'warnings': [],
+                               'config_dir': '', 'error': str(e)}
+        self.done.emit(data)
+
+
+class FtetwildManagerWorker(QThread):
+    """Background fTetWild install/uninstall with streamed lines and cancel."""
+
+    line = Signal(str)
+    finished_action = Signal(object)
+
+    def __init__(self, action, parent=None):
+        super().__init__(parent)
+        self._action = action
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def run(self):
+        res = {'ok': False, 'error': 'ftetwild manager unavailable'}
+        try:
+            import ftetwild_manager as mgr
+            kwargs = {'progress_cb': self.line.emit,
+                      'cancel_event': self.cancel_event}
+            if self._action == 'install':
+                res = mgr.install(**kwargs)
+            else:
+                res = mgr.uninstall(**kwargs)
+        except Exception as e:  # noqa: BLE001 - never crash the GUI
+            res = {'ok': False, 'error': str(e)}
+        self.finished_action.emit(res)
+
+
+class EnginesProgressDialog(QDialog):
+    """Streamed install/uninstall log with a Cancel button. The window
+    manager close button is ignored while the action runs; Cancel asks the
+    worker to terminate the process group and clean up."""
+
+    def __init__(self, title, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(560, 360)
+        lay = QVBoxLayout(self)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        lay.addWidget(self.log)
+        row = QHBoxLayout()
+        self.btn_cancel = QPushButton(_t('engines_cancel'))
+        row.addStretch(1)
+        row.addWidget(self.btn_cancel)
+        lay.addLayout(row)
+        self._allow_close = False
+
+    def append(self, text):
+        self.log.appendPlainText(text)
+
+    def finish(self):
+        self._allow_close = True
+        self.close()
+
+    def closeEvent(self, event):
+        if self._allow_close:
+            event.accept()
+        else:
+            event.ignore()
+
+
 class OptionsDialog(QDialog):
     """Non-modal, tabbed Options window.
 
@@ -1976,7 +2153,8 @@ class OptionsDialog(QDialog):
     that are not per batch (usage history, update checks) are written to
     config.json immediately."""
 
-    TAB_GENERAL, TAB_REPAIR, TAB_EXPERIMENTAL, TAB_UPDATES, TAB_CHANGELOG = range(5)
+    (TAB_GENERAL, TAB_REPAIR, TAB_EXPERIMENTAL, TAB_UPDATES, TAB_CHANGELOG,
+     TAB_ENGINES) = range(6)
 
     def __init__(self, main):
         super().__init__(main)
@@ -1986,6 +2164,11 @@ class OptionsDialog(QDialog):
         self.resize(560, 460)
         self._changelog_worker = None
         self._changelog_loaded = False
+        self._engines_worker = None
+        self._engines_loaded = False
+        self._ft_worker = None
+        self._ft_progress = None
+        self._ft_state = {}
 
         root = QVBoxLayout(self)
         self.tabs = QTabWidget(self)
@@ -2137,6 +2320,54 @@ class OptionsDialog(QDialog):
         self.changelog = QTextBrowser()
         self.changelog.setOpenExternalLinks(True)
         self.tabs.addTab(self.changelog, _t('opt_tab_changelog'))
+
+        # Engines: fTetWild manager + the configured external engine list.
+        eng = QWidget()
+        el = QVBoxLayout(eng)
+        ft_group = QGroupBox(_t('engines_ftetwild_group'))
+        fgl = QVBoxLayout(ft_group)
+        self.lbl_ftetwild_status = QLabel(_t('engines_status_checking'))
+        self.lbl_ftetwild_status.setWordWrap(True)
+        fgl.addWidget(self.lbl_ftetwild_status)
+        ft_row = QHBoxLayout()
+        self.btn_ftetwild_install = QPushButton(_t('engines_install'))
+        self.btn_ftetwild_install.setToolTip(_t('engines_install_tip'))
+        self.btn_ftetwild_install.clicked.connect(
+            lambda: self._start_ftetwild_action('install'))
+        self.btn_ftetwild_remove = QPushButton(_t('engines_remove'))
+        self.btn_ftetwild_remove.setToolTip(_t('engines_remove_tip'))
+        self.btn_ftetwild_remove.clicked.connect(
+            lambda: self._start_ftetwild_action('uninstall'))
+        ft_row.addWidget(self.btn_ftetwild_install)
+        ft_row.addWidget(self.btn_ftetwild_remove)
+        ft_row.addStretch(1)
+        fgl.addLayout(ft_row)
+        el.addWidget(ft_group)
+
+        eng_group = QGroupBox(_t('engines_list_group'))
+        egl = QVBoxLayout(eng_group)
+        self.engines_list = QListWidget()
+        self.engines_list.setToolTip(_t('engines_list_tip'))
+        egl.addWidget(self.engines_list)
+        eng_row = QHBoxLayout()
+        self.btn_engines_reload = QPushButton(_t('engines_reload'))
+        self.btn_engines_reload.setToolTip(_t('engines_reload_tip'))
+        self.btn_engines_reload.clicked.connect(lambda: self.refresh_engines(True))
+        self.btn_engines_open = QPushButton(_t('engines_open_folder'))
+        self.btn_engines_open.setToolTip(_t('engines_open_folder_tip'))
+        self.btn_engines_open.clicked.connect(self._open_engines_folder)
+        self.btn_engines_docs = QPushButton(_t('engines_docs'))
+        self.btn_engines_docs.setToolTip(_t('engines_docs_tip'))
+        self.btn_engines_docs.clicked.connect(self._open_engines_docs)
+        for b in (self.btn_engines_reload, self.btn_engines_open,
+                  self.btn_engines_docs):
+            eng_row.addWidget(b)
+        eng_row.addStretch(1)
+        egl.addLayout(eng_row)
+        el.addWidget(eng_group)
+        el.addStretch(1)
+        self.tabs.addTab(eng, _t('opt_tab_engines'))
+
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     # --- config helpers
@@ -2193,6 +2424,8 @@ class OptionsDialog(QDialog):
     def _on_tab_changed(self, index):
         if index == self.TAB_UPDATES:
             self.refresh_updates()
+        if index == self.TAB_ENGINES:
+            self.refresh_engines()
         if index != self.TAB_CHANGELOG or self._changelog_loaded:
             return
         self._changelog_loaded = True
@@ -2212,9 +2445,140 @@ class OptionsDialog(QDialog):
             text = _bundled_changelog() or _t('opt_changelog_offline')
         self.changelog.setMarkdown(text)
 
+    # --- engines tab
+    def refresh_engines(self, force=False):
+        if self._engines_worker is not None and self._engines_worker.isRunning():
+            return
+        if self._engines_loaded and not force:
+            return
+        self._engines_loaded = True
+        self.lbl_ftetwild_status.setText(_t('engines_status_checking'))
+        w = EnginesStatusWorker(self)
+        w.done.connect(self._on_engines_status)
+        self._engines_worker = w
+        w.start()
+
+    def _on_engines_status(self, data):
+        self._engines_worker = None
+        self._ft_state = data
+        ft = data.get('ftetwild') or {}
+        est = data.get('estimate') or {}
+        if not ft.get('supported'):
+            self.lbl_ftetwild_status.setText(
+                _t('engines_status_unsupported', ft.get('reason') or '?'))
+            self.btn_ftetwild_install.setEnabled(False)
+            self.btn_ftetwild_remove.setEnabled(False)
+        else:
+            if ft.get('installed'):
+                self.lbl_ftetwild_status.setText(_t(
+                    'engines_status_installed', ft.get('version'),
+                    ft.get('size_human')))
+            else:
+                self.lbl_ftetwild_status.setText(_t(
+                    'engines_status_missing', est.get('download_human', '?'),
+                    est.get('installed_human', '?')))
+            self.btn_ftetwild_install.setEnabled(not ft.get('installed'))
+            self.btn_ftetwild_remove.setEnabled(bool(ft.get('installed')))
+        self.engines_list.clear()
+        ed = data.get('engines') or {}
+        items = ed.get('items') or []
+        if not items:
+            self.engines_list.addItem(_t('engines_list_none'))
+        for it in items:
+            if it.get('binary_found'):
+                bin_s = _t('engines_binary_ok')
+            else:
+                bin_s = _t('engines_binary_missing')
+            extra = ''
+            if not it.get('enabled'):
+                extra += _t('engines_enabled_off')
+            if not it.get('in_chain'):
+                extra += _t('engines_not_in_chain')
+            self.engines_list.addItem(_t('engines_list_item', it.get('name'),
+                                         it.get('placement'), bin_s, extra))
+        self._engines_config_dir = ed.get('config_dir') or ''
+
+    def _start_ftetwild_action(self, action):
+        ft = (self._ft_state or {}).get('ftetwild') or {}
+        est = (self._ft_state or {}).get('estimate') or {}
+        if not ft.get('supported'):
+            QMessageBox.warning(self, _t('engines_ftetwild_group'),
+                                _t('engines_status_unsupported',
+                                   ft.get('reason') or '?'))
+            return
+        if action == 'install':
+            msg = _t('engines_confirm_install', est.get('download_human', '?'),
+                     est.get('installed_human', '?'))
+        else:
+            msg = _t('engines_confirm_remove', ft.get('size_human', '?'))
+        if QMessageBox.question(self, _t('engines_ftetwild_group'), msg,
+                                QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) != QMessageBox.Yes:
+            return
+        self._ft_progress = EnginesProgressDialog(
+            _t('engines_progress_title', action), self)
+        self._ft_progress.btn_cancel.clicked.connect(self._cancel_ftetwild)
+        w = FtetwildManagerWorker(action, self)
+        w.line.connect(self._ft_progress.append)
+        w.finished_action.connect(
+            lambda res, a=action: self._on_ftetwild_finished(a, res))
+        self._ft_worker = w
+        self._ft_progress.show()
+        w.start()
+
+    def _cancel_ftetwild(self):
+        w = self._ft_worker
+        if w is not None:
+            w.cancel()
+            if self._ft_progress is not None:
+                self._ft_progress.append(_t('engines_cancelled'))
+
+    def _on_ftetwild_finished(self, action, res):
+        self._ft_worker = None
+        if self._ft_progress is not None:
+            self._ft_progress.finish()
+            self._ft_progress = None
+        if res.get('ok'):
+            QMessageBox.information(self, _t('engines_ftetwild_group'),
+                                    _t('engines_done_ok', action))
+        elif res.get('cancelled'):
+            QMessageBox.information(self, _t('engines_ftetwild_group'),
+                                    _t('engines_cancelled'))
+        else:
+            QMessageBox.warning(self, _t('engines_ftetwild_group'),
+                                _t('engines_done_fail', action,
+                                   res.get('error') or '?'))
+        self.refresh_engines(force=True)
+
+    def _open_engines_folder(self):
+        d = getattr(self, '_engines_config_dir', '') or ''
+        if not d:
+            try:
+                import engines as _engines
+                d = str(_engines.get_engines_dir())
+            except Exception:
+                d = ''
+        if d:
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
+            QDesktopServices.openUrl(QUrl.fromLocalFile(d))
+
+    def _open_engines_docs(self):
+        QDesktopServices.openUrl(QUrl(
+            'https://github.com/Krateian/Sutura/blob/main/docs/external-engines.md'))
+
     def stop_workers(self):
         w = self._changelog_worker
         if w is not None and w.isRunning():
+            w.wait(6000)
+        w = self._engines_worker
+        if w is not None and w.isRunning():
+            w.wait(6000)
+        w = self._ft_worker
+        if w is not None and w.isRunning():
+            w.cancel()
             w.wait(6000)
 
 
