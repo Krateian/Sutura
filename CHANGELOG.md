@@ -103,6 +103,37 @@ All notable changes to this project are documented here.
   directory) and falls back to the cache or the bundled `CHANGELOG.md`
   offline. No network access on headless Qt platforms (tests), and running
   threads are waited for on close.
+- **External repair engines and the fTetWild install manager (Triage Engine,
+  parts 2 and 3).** `sutura/engines.py` (user-installed third-party repair
+  binaries configured as `~/.config/sutura/engines/*.toml`) and
+  `sutura/ftetwild_manager.py` (inspect/install/remove the optional fTetWild
+  extra in the Sutura environment only) are wired into the repair pipeline and
+  the interface. Engines are loaded **once per run** and slotted in at their
+  `placement` (`before_stage1`, `after_stage1`, `after_stage2`,
+  `replace_ftetwild`, `final_fallback`) or in an explicit `chain.toml` order;
+  load problems only warn (`engine_warnings`) and never fail a repair.
+  **Every engine result passes the identical holes/non-manifold + Hausdorff
+  guard as fTetWild** — adopted only when no worse on holes+non-manifold, and
+  an adopted far-off result is flagged `shape_changed` (`FTETWILD_MAX_HAUSDORFF_REL`)
+  rather than rejected; an engine cannot bypass the guard. Each run adds a
+  per-engine report entry (`name`, `placement`, `rc`, `time`, `adopted`,
+  `reject_reason`, stdout/stderr tails, `shape_changed`). With no engines and
+  no `chain.toml` the output is byte-identical to the pre-engines behaviour
+  (regression-tested). CLI: `sutura engines list|check` (validate configs and
+  resolve binaries, never runs one) and `sutura ftetwild
+  status|install|uninstall [--dry-run] [--yes]` (download/installed/freed
+  sizes shown first, confirmation unless `--yes`, `--dry-run` never touches
+  the environment; unsupported AppImage/frozen/system-Python layouts are
+  refused with a reason). GUI: a new *Engines* tab in the Options window with
+  the fTetWild status line, Install/Remove (size confirmation + a streamed,
+  cancellable progress dialog) and the engine list with Reload, *Open engines
+  folder* and a link to `docs/external-engines.md`; the workers are
+  interruptible and joined in `closeEvent`. New suites
+  `tests/test_engine_integration.py` (placement, adopt/reject with a fake
+  engine, corrupt output, timeout, shape flag, `chain.toml` order, no-engines
+  byte-identity, CLI dry-run) and offscreen `tests/test_engines_gui.py` (the
+  Engines tab with a temporary HOME), plus the upstream `tests/test_engines.py`
+  and `tests/test_ftetwild_manager.py`.
 
 - **Deep-repair ladder (`--deep-repair {off,local,full}`).** The tiers that
   run after the stage-1 chain now have one entry point,
