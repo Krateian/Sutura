@@ -49,6 +49,40 @@ APPIMAGE_RELEASE_URL = 'https://github.com/Krateian/Sutura/releases'
 # see the new terms first.
 LICENSE_BOUNDARY_VERSION = '0.2.0'
 
+# Single source of truth for the application modules a self-update copies into
+# APP_DIR. It must stay in sync with install.sh's install list: a module that
+# is imported by repair.py/gui.py but missing here silently survives an update
+# at its old version. tests/test_updater.py asserts this equals install.sh.
+APP_MODULES = (
+    'repair.py',
+    'manifold_bridge.py',
+    'ftetwild_bridge.py',
+    'indirect_bridge.py',
+    'classification.py',
+    'confidence.py',
+    'defects.py',
+    'mesh_classifier.py',
+    'mesh_classifier_v2.py',
+    'autorefine.py',
+    'triage.py',
+    'engines.py',
+    'ftetwild_manager.py',
+    'history.py',
+    'repair_score.py',
+    'updater.py',
+    'gui.py',
+    'heatmap.py',
+    'heatmap_render.py',
+    'before_after_render.py',
+    'viewer_common.py',
+    'viewer_data_render.py',
+)
+# __init__.py is copied by the updater although install.sh deliberately omits
+# it for the flat install layout (the AppImage/macOS packages copy it too).
+COPY_EXTRA_MODULES = ('__init__.py',)
+# open.sh only ships with the Linux install.
+LINUX_EXTRA_FILES = ('open.sh',)
+
 
 def is_appimage():
     """True when running inside an AppImage.
@@ -317,12 +351,7 @@ def requirements_changed(src_dir, req_files):
 # ---------------------------------------------------------------- install
 
 def _copy_python_files(src_dir):
-    for f in ('repair.py', 'manifold_bridge.py', 'ftetwild_bridge.py', 'indirect_bridge.py',
-              'classification.py', 'confidence.py', 'defects.py', 'mesh_classifier.py',
-              'engines.py', 'ftetwild_manager.py',
-              'updater.py', 'gui.py', 'heatmap.py', 'heatmap_render.py',
-              'before_after_render.py', 'viewer_common.py',
-              'viewer_data_render.py', 'repair_score.py', '__init__.py'):
+    for f in APP_MODULES + COPY_EXTRA_MODULES:
         shutil.copy2(os.path.join(src_dir, 'sutura', f), os.path.join(APP_DIR, f))
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):
@@ -335,12 +364,7 @@ def _copy_python_files(src_dir):
 def _install_linux(src_dir, req_files):
     """install.sh-style copy + venv update only when requirements change."""
     sutura_src = os.path.join(src_dir, 'sutura')
-    for f in ('repair.py', 'manifold_bridge.py', 'ftetwild_bridge.py', 'indirect_bridge.py',
-              'classification.py', 'confidence.py', 'defects.py', 'mesh_classifier.py',
-              'engines.py', 'ftetwild_manager.py',
-              'updater.py', 'gui.py', 'heatmap.py', 'heatmap_render.py',
-              'before_after_render.py', 'viewer_common.py',
-              'viewer_data_render.py', 'repair_score.py', '__init__.py', 'open.sh'):
+    for f in APP_MODULES + COPY_EXTRA_MODULES + LINUX_EXTRA_FILES:
         shutil.copy2(os.path.join(sutura_src, f), os.path.join(APP_DIR, f))
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):

@@ -165,6 +165,24 @@ jobs:
       - name: "Test: deep-repair ladder"
         run: ./venv/bin/python tests/test_deep_repair.py
 
+      - name: "Test: triage presets"
+        run: ./venv/bin/python tests/test_triage.py
+
+      - name: "Test: triage profiles"
+        run: ./venv/bin/python tests/test_triage_profiles.py
+
+      - name: "Test: external engines"
+        run: ./venv/bin/python tests/test_engines.py
+
+      - name: "Test: engine integration"
+        run: ./venv/bin/python tests/test_engine_integration.py
+
+      - name: "Test: engines GUI"
+        run: ./venv/bin/python tests/test_engines_gui.py
+
+      - name: "Test: fTetWild manager"
+        run: ./venv/bin/python tests/test_ftetwild_manager.py
+
       - name: "Test: OrcaSlicer plugin stub"
         run: ./venv/bin/python tests/test_orca_plugin.py
 
