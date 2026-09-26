@@ -54,24 +54,58 @@ jobs:
             "$HOME/.local/share/sutura/venv/bin/python" -c "import json; d=json.load(open('/tmp/${sample}.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
           done
 
-      - name: "Check b: desktop-file-validate on application and ServiceMenu entries"
+      - name: "Check b: desktop-file-validate on application and ServiceMenu structural checks"
         run: |
           echo "--- Validating application entry strictly ---"
           desktop-file-validate "$HOME/.local/share/applications/sutura.desktop"
 
-          echo "--- Validating ServiceMenu files ---"
+          echo "--- Validating ServiceMenu structural requirements ---"
           for f in "$HOME/.local/share/kio/servicemenus"/*.desktop; do
             [ -f "$f" ] || continue
-            echo "Validating $f"
-            val_out=$(desktop-file-validate "$f" 2>&1 || true)
-            echo "$val_out"
-            # Filter out KDE ServiceMenu specific keys/types (Type=Service, ServiceTypes, X-KDE-*, Actions in Service)
-            filtered_out=$(echo "$val_out" | grep -vE '(value "Service" for key "Type"|unknown key "ServiceTypes"|unknown key "X-KDE-|key "Actions" in group "Desktop Entry" is deprecated|action ".*" is not defined)' || true)
-            if [ -n "$filtered_out" ]; then
-              echo "::error::Unexpected desktop-file-validate errors for $f:"
-              echo "$filtered_out"
+            echo "Checking ServiceMenu: $f"
+
+            # 1. File must be executable (KDE 6 requirement)
+            if [ ! -x "$f" ]; then
+              echo "::error::$f is not executable (KDE 6 refuses non-executable servicemenus)!"
               exit 1
             fi
+
+            # 2. [Desktop Entry] has Type=Service, non-empty MimeType=, and Actions= list
+            if ! grep -q -E '^\[Desktop Entry\]' "$f"; then
+              echo "::error::$f is missing [Desktop Entry] section!"
+              exit 1
+            fi
+            if ! grep -q -E '^Type=Service[[:space:]]*$' "$f"; then
+              echo "::error::$f is missing Type=Service!"
+              exit 1
+            fi
+            if ! grep -q -E '^MimeType=[^[:space:]]+' "$f"; then
+              echo "::error::$f has missing or empty MimeType=!"
+              exit 1
+            fi
+            actions_val=$(grep -E '^Actions=[^[:space:]]+' "$f" | head -n1 | cut -d'=' -f2- || true)
+            if [ -z "$actions_val" ]; then
+              echo "::error::$f has missing or empty Actions= list!"
+              exit 1
+            fi
+
+            # 3. Every action id in Actions= has matching [Desktop Action <id>] with Name= and Exec=
+            IFS=';' read -ra action_ids <<< "$actions_val"
+            for action in "${action_ids[@]}"; do
+              action=$(echo "$action" | xargs)
+              [ -z "$action" ] && continue
+              echo "  Validating action group: [Desktop Action $action]"
+              if ! awk -v grp="[Desktop Action $action]" '
+                $0 ~ "^\\[" { in_grp = ($0 == grp) }
+                in_grp && /^Name=[^[:space:]]+/ { has_name = 1 }
+                in_grp && /^Exec=[^[:space:]]+/ { has_exec = 1 }
+                END { if (!has_name || !has_exec) exit 1 }
+              ' "$f"; then
+                echo "::error::Action [$action] in $f missing [Desktop Action $action] group, Name=, or Exec=!"
+                exit 1
+              fi
+              echo "  OK: [Desktop Action $action] has Name= and Exec="
+            done
           done
 
           echo "--- Checking Exec= targets ---"
@@ -199,32 +233,85 @@ jobs:
 
       - name: "Check b: ServiceMenu validation (if install succeeded)"
         run: |
-          su - archuser -c '
+          su - archuser << 'EOF'
+          echo "--- Validating application entry strictly ---"
           desktop-file-validate ~/.local/share/applications/sutura.desktop
+
+          echo "--- Validating ServiceMenu structural requirements ---"
           for f in ~/.local/share/kio/servicemenus/*.desktop; do
             [ -f "$f" ] || continue
-            val_out=$(desktop-file-validate "$f" 2>&1 || true)
-            filtered_out=$(echo "$val_out" | grep -vE "(value \"Service\" for key \"Type\"|unknown key \"ServiceTypes\"|unknown key \"X-KDE-|key \"Actions\" in group \"Desktop Entry\" is deprecated|action \".*\" is not defined)" || true)
-            if [ -n "$filtered_out" ]; then
-              echo "::error::Unexpected desktop-file-validate errors for $f: $filtered_out"
+            echo "Checking ServiceMenu: $f"
+
+            # 1. File must be executable (KDE 6 requirement)
+            if [ ! -x "$f" ]; then
+              echo "::error::$f is not executable (KDE 6 refuses non-executable servicemenus)!"
               exit 1
             fi
+
+            # 2. [Desktop Entry] has Type=Service, non-empty MimeType=, and Actions= list
+            if ! grep -q -E '^\[Desktop Entry\]' "$f"; then
+              echo "::error::$f is missing [Desktop Entry] section!"
+              exit 1
+            fi
+            if ! grep -q -E '^Type=Service[[:space:]]*$' "$f"; then
+              echo "::error::$f is missing Type=Service!"
+              exit 1
+            fi
+            if ! grep -q -E '^MimeType=[^[:space:]]+' "$f"; then
+              echo "::error::$f has missing or empty MimeType=!"
+              exit 1
+            fi
+            actions_val=$(grep -E '^Actions=[^[:space:]]+' "$f" | head -n1 | cut -d'=' -f2- || true)
+            if [ -z "$actions_val" ]; then
+              echo "::error::$f has missing or empty Actions= list!"
+              exit 1
+            fi
+
+            # 3. Every action id in Actions= has matching [Desktop Action <id>] with Name= and Exec=
+            IFS=';' read -ra action_ids <<< "$actions_val"
+            for action in "${action_ids[@]}"; do
+              action=$(echo "$action" | xargs)
+              [ -z "$action" ] && continue
+              echo "  Validating action group: [Desktop Action $action]"
+              if ! awk -v grp="[Desktop Action $action]" '
+                $0 ~ "^\\[" { in_grp = ($0 == grp) }
+                in_grp && /^Name=[^[:space:]]+/ { has_name = 1 }
+                in_grp && /^Exec=[^[:space:]]+/ { has_exec = 1 }
+                END { if (!has_name || !has_exec) exit 1 }
+              ' "$f"; then
+                echo "::error::Action [$action] in $f missing [Desktop Action $action] group, Name=, or Exec=!"
+                exit 1
+              fi
+              echo "  OK: [Desktop Action $action] has Name= and Exec="
+            done
           done
 
+          echo "--- Checking Exec= targets ---"
           for f in ~/.local/share/applications/sutura.desktop ~/.local/share/kio/servicemenus/*.desktop; do
             [ -f "$f" ] || continue
-            while IFS="=" read -r key val; do
-              val=$(echo "$val" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//")
-              target=$(echo "$val" | awk "{print \$1}")
+            echo "Scanning Exec lines in $f..."
+            while IFS='=' read -r key val; do
+              val=$(echo "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+              target=$(echo "$val" | awk '{print $1}')
+              echo "  Found Exec target token: $target"
               if [[ "$target" == /* ]]; then
                 resolved="$target"
               else
                 resolved=$(command -v "$target" || true)
               fi
               if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
-                echo "::error::Target \"$target\" in $f does not exist or is not executable!"
+                echo "::error::Target '$target' in $f (resolved to '$resolved') does not exist or is not executable!"
                 exit 1
               fi
-            done < <(grep -E "^[[:space:]]*Exec=" "$f")
+              echo "  OK: '$resolved' is executable"
+              arg2=$(echo "$val" | awk '{print $2}')
+              if [[ "$arg2" == /* ]] && [[ "$arg2" != %* ]]; then
+                if [ ! -f "$arg2" ]; then
+                  echo "::error::Script argument '$arg2' in $f does not exist!"
+                  exit 1
+                fi
+                echo "  OK: script argument '$arg2' exists"
+              fi
+            done < <(grep -E '^[[:space:]]*Exec=' "$f")
           done
-          '
+          EOF
