@@ -6,6 +6,42 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Triage Engine intensity presets (`--intensity`).** The post-Stage-1
+  effort is grouped into four read-only presets in a new single source of
+  truth, `sutura/triage.py` (`INTENSITIES`, an `IntensitySpec` dataclass,
+  `PRESETS`, `resolve_intensity`). `--intensity
+  quick|balanced|thorough|extreme` (or `SUTURA_INTENSITY`, or the `intensity`
+  config key; CLI > env > config > balanced) selects them and the report
+  carries `triage_intensity` (`--human` an `Intensity:` line). Stage 1 is
+  never affected — the repair mode and `--profile` keep their behaviour.
+  `balanced` equals the historical `repair.py` constants (the module
+  constants are now derived from it) and is regression-tested byte-identical
+  on the real-world samples and typical-corpus meshes (`--no-fallback-ftetwild`
+  runs to remove fTetWild's run-to-run nondeterminism; the fTetWild tier
+  itself is covered by the faked-bridge tests). `quick` disables the
+  deep-repair ladder and the fTetWild tier and has an empty decimation
+  ladder. `thorough` raises the fTetWild budget to 600 s, the Hausdorff
+  sample count to 400,000 and adds the `threshold` decimation rung
+  (`DENSE_RATIO × max(input, DENSE_MIN_FACES)`); `extreme` removes the
+  input-size cap, raises the budget to 1,800 s and the samples to 1,000,000,
+  and makes one extra fTetWild run with `optimize=True` when every
+  decimation rung of a dense boundary fails, before the undecimated
+  fallback. The `FTETWILD_MAX_FACES` skip is now an explicit
+  `ftetwild_enabled` bool plus an `ftetwild_max_faces` int-or-None instead
+  of the previous `0`/`300000` double meaning. Measured on thingi10k_73444
+  with `--intensity thorough` (stage 2 active): the `optimize=False`
+  boundary returned 469,144 faces, the `20,000`/`23,646` rungs failed the
+  watertight check and the `threshold` target of 80,000 succeeded (watertight,
+  adopted, `shape_changed` flagged at 5 % — the shape guard is invariant, not
+  a preset field). The CLI exposes `--intensity`; `dry_run` reports it; the
+  GUI adds a preset combo with per-preset EN/TR tooltips and a *Reset to
+  recommended* button on the Options *Repair* tab (restoring Balanced and the
+  default checkboxes), keeps the selection batch-wide and persists it to the
+  config. New suites `tests/test_triage.py` and offscreen
+  `tests/test_options_dialog.py` cases, plus `tests/test_repair_mode.py`
+  intensity cases. A named user-profile override layer (overriding any preset
+  field on top of a base preset) is designed via the unused
+  `resolve_intensity(user_profiles=...)` hook but not implemented.
 - **fTetWild tet optimisation is an explicit option.** It stays off by
   default (measured: only the boundary surface is used, and on
   thingi10k_46012 the optimisation pass took 34 s instead of 6 s with the

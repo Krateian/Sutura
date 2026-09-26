@@ -162,7 +162,16 @@ def _cube_with_fin():
 
 def _run_with_fake_ftetwild(fake_run, **patch):
     """Repair thingi10k_100827 with a faked fTetWild bridge and no stage-2
-    post-process (so a fake boundary is judged as returned)."""
+    post-process (so a fake boundary is judged as returned). Intensity knobs
+    are passed as a Balanced spec override (dense_min_faces / ftetwild_timeout
+    / ftetwild_max_faces / dense_target_ladder); other keys patch repair."""
+    import dataclasses
+    spec_over = {}
+    for key in ('dense_min_faces', 'ftetwild_timeout', 'ftetwild_max_faces',
+                'dense_target_ladder', 'ftetwild_hausdorff_samples'):
+        if key in patch:
+            spec_over[key] = patch.pop(key)
+    spec = dataclasses.replace(repair.triage.PRESETS['balanced'], **spec_over)
     names = ['ftetwild_available', 'run_ftetwild', 'run_stage2'] + list(patch)
     saved = {n: getattr(repair, n) for n in names}
     repair.ftetwild_available = lambda: True
@@ -172,7 +181,8 @@ def _run_with_fake_ftetwild(fake_run, **patch):
         setattr(repair, n, val)
     try:
         v, t = _load(OPEN_SAMPLE)
-        return _repair(v, t, ftetwild='auto', deep_repair='full')[0]
+        return _repair(v, t, ftetwild='auto', deep_repair='full',
+                       triage_spec=spec)[0]
     finally:
         for n, val in saved.items():
             setattr(repair, n, val)
@@ -225,7 +235,7 @@ def test_ftetwild_retry_needs_budget():
         cv, ct = _cube_with_fin()
         repair.write_obj(out_obj, cv, ct)
         return {'ok': True, 'output_faces': len(ct)}, True
-    ft = _run_with_fake_ftetwild(fake_run, FTETWILD_TIMEOUT=5)['experimental_ftetwild']
+    ft = _run_with_fake_ftetwild(fake_run, ftetwild_timeout=5)['experimental_ftetwild']
     assert calls == [None], calls
     assert not ft['adopted'] and ft['reject_reason'] == 'holes_nm', ft
     assert ft['attempts'][0]['retry_skipped'] == 'budget', ft
@@ -237,20 +247,23 @@ def test_ftetwild_skipped_for_large_inputs():
     def fake_run(inter, out_obj, params=None, timeout=None):
         calls.append(params)
         return {'error': 'must not run'}, False
-    rep = _run_with_fake_ftetwild(fake_run, FTETWILD_MAX_FACES=10)
+    rep = _run_with_fake_ftetwild(fake_run, ftetwild_max_faces=10)
     ft = rep['experimental_ftetwild']
     assert calls == [], calls
     assert not ft['ran'] and ft['reject_reason'] == 'too_large', ft
     assert ft['input_faces'] > ft['max_faces'] == 10, ft
     assert rep['deep_repair']['tiers_run'] == []
     # the off-mode offer does not list a tier that would be skipped
-    saved = repair.ftetwild_available, repair.FTETWILD_MAX_FACES
-    repair.ftetwild_available, repair.FTETWILD_MAX_FACES = (lambda: True), 10
+    import dataclasses
+    off_spec = dataclasses.replace(repair.triage.PRESETS['balanced'],
+                                   ftetwild_max_faces=10)
+    saved = repair.ftetwild_available
+    repair.ftetwild_available = lambda: True
     try:
         v, t = _load(OPEN_SAMPLE)
-        off = _repair(v, t, deep_repair='off')[0]
+        off = _repair(v, t, deep_repair='off', triage_spec=off_spec)[0]
     finally:
-        repair.ftetwild_available, repair.FTETWILD_MAX_FACES = saved
+        repair.ftetwild_available = saved
     assert off['deep_repair']['available']['tiers'] == ['local'], off['deep_repair']
 
 
@@ -267,7 +280,7 @@ def _fake_hd(raw_value=0.02, dec_value=0.02):
     """Deterministic stand-in for ``repair._hausdorff_rel``: a raw/undecimated
     boundary (many faces) reports ``raw_value``, a decimated candidate reports
     ``dec_value``. Returns ``(max, mean)`` like the real function."""
-    def _hd(_ml, _in_v, _in_t, _out_v, out_t):
+    def _hd(_ml, _in_v, _in_t, _out_v, out_t, samples=None):
         return ((raw_value if len(out_t) > 1000 else dec_value), 0.0)
     return _hd
 
@@ -282,7 +295,7 @@ def test_dense_ftetwild_output_is_decimated():
     def fake_run(inter, out_obj, params=None, timeout=None):
         repair.write_obj(out_obj, v, t)
         return {'ok': True, 'output_faces': raw_faces}, True
-    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+    rep = _run_with_fake_ftetwild(fake_run, dense_min_faces=100,
                                   _hausdorff_rel=_fake_hd(0.02, 0.02))
     ft = rep['experimental_ftetwild']
     assert ft['adopted'] and ft['ftetwild_decimated'], ft
@@ -302,7 +315,7 @@ def test_ftetwild_output_below_the_ratio_is_not_decimated():
     def fake_run(inter, out_obj, params=None, timeout=None):
         repair.write_obj(out_obj, v, t)
         return {'ok': True, 'output_faces': len(t)}, True
-    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100)
+    rep = _run_with_fake_ftetwild(fake_run, dense_min_faces=100)
     ft = rep['experimental_ftetwild']
     assert ft['adopted'] and not ft['ftetwild_decimated'], ft
     assert ft['ftetwild_faces_raw'] == ft['ftetwild_faces_final'] == len(t), ft
@@ -319,7 +332,7 @@ def test_decimation_failure_falls_back_to_the_undecimated_result():
 
     def failing_decimate(_ml, _cv, _ct, _target):
         return None
-    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+    rep = _run_with_fake_ftetwild(fake_run, dense_min_faces=100,
                                   _decimate_boundary=failing_decimate,
                                   _hausdorff_rel=_fake_hd(0.02, 0.02))
     ft = rep['experimental_ftetwild']
@@ -341,7 +354,7 @@ def test_decimation_worse_than_raw_beyond_the_margin_is_rejected():
         repair.write_obj(out_obj, v, t)
         return {'ok': True, 'output_faces': raw_faces}, True
     # raw 0.02, decimated 0.05 > 0.02 + DECIMATE_HD_MARGIN -> both rejected
-    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+    rep = _run_with_fake_ftetwild(fake_run, dense_min_faces=100,
                                   _hausdorff_rel=_fake_hd(0.02, 0.05))
     ft = rep['experimental_ftetwild']
     assert ft['adopted'] and not ft['ftetwild_decimated'], ft
@@ -368,7 +381,7 @@ def test_decimation_crossing_the_shape_threshold_is_rejected():
     def fake_run(inter, out_obj, params=None, timeout=None):
         repair.write_obj(out_obj, v, t)
         return {'ok': True, 'output_faces': raw_faces}, True
-    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+    rep = _run_with_fake_ftetwild(fake_run, dense_min_faces=100,
                                   _hausdorff_rel=_fake_hd(raw, dec))
     ft = rep['experimental_ftetwild']
     assert ft['adopted'] and not ft['ftetwild_decimated'], ft

@@ -52,9 +52,9 @@ def _sphere_stl(path):
     return int((~drop).sum())
 
 
-def _run(args):
+def _run(args, env=None):
     r = subprocess.run([sys.executable, REPAIR_PY] + args,
-                       capture_output=True, text=True, timeout=600)
+                       capture_output=True, text=True, timeout=600, env=env)
     return r
 
 
@@ -108,6 +108,69 @@ def test_human_report_shows_mode(tmp):
     r = _run(['--mode', 'aggressive', '--human', path])
     assert r.returncode == 0, r.stderr
     assert 'Mode  : aggressive' in r.stdout, r.stdout
+
+
+# --- Triage Engine intensity (--intensity) --------------------------------
+
+INTENSITIES = ('quick', 'balanced', 'thorough', 'extreme')
+
+
+def _clean_env(tmp):
+    """A run environment with no ambient SUTURA_INTENSITY and a private HOME
+    (no config.json), so the intensity resolves to the explicit flag only."""
+    env = dict(os.environ, HOME=tmp)
+    env.pop('SUTURA_INTENSITY', None)
+    return env
+
+
+def test_each_intensity_reports_itself(tmp):
+    path = os.path.join(tmp, 'sphere.stl')
+    _sphere_stl(path)
+    env = _clean_env(tmp)
+    for intensity in INTENSITIES:
+        r = _run(['--intensity', intensity, path], env=env)
+        d = _json(r)
+        assert r.returncode == 0, (intensity, r.stderr)
+        assert d.get('triage_intensity') == intensity, (intensity, d)
+
+
+def test_default_intensity_is_balanced(tmp):
+    path = os.path.join(tmp, 'sphere.stl')
+    _sphere_stl(path)
+    d = _json(_run([path], env=_clean_env(tmp)))
+    assert d.get('triage_intensity') == 'balanced', d.get('triage_intensity')
+    # balanced is byte-identical to passing the flag explicitly
+    explicit = _json(_run(['--intensity', 'balanced', path], env=_clean_env(tmp)))
+    for key in ('triage_intensity', 'repair_mode', 'detected_type',
+                'detected_confidence', 'tuning_applied', 'category'):
+        assert d.get(key) == explicit.get(key), (key, d.get(key), explicit.get(key))
+
+
+def test_intensity_env_and_cli_precedence(tmp):
+    path = os.path.join(tmp, 'sphere.stl')
+    _sphere_stl(path)
+    env = _clean_env(tmp)
+    env['SUTURA_INTENSITY'] = 'thorough'
+    assert _json(_run([path], env=env)).get('triage_intensity') == 'thorough'
+    # the CLI flag wins over the env var
+    assert _json(_run(['--intensity', 'quick', path], env=env)
+                 ).get('triage_intensity') == 'quick'
+
+
+def test_invalid_intensity_rejected(tmp):
+    path = os.path.join(tmp, 'sphere.stl')
+    _sphere_stl(path)
+    r = _run(['--intensity', 'bogus', path], env=_clean_env(tmp))
+    assert r.returncode != 0, r.stdout
+    assert 'invalid choice' in r.stderr, r.stderr
+
+
+def test_human_report_shows_intensity(tmp):
+    path = os.path.join(tmp, 'sphere.stl')
+    _sphere_stl(path)
+    r = _run(['--intensity', 'thorough', '--human', path], env=_clean_env(tmp))
+    assert r.returncode == 0, r.stderr
+    assert 'Intensity: thorough' in r.stdout, r.stdout
 
 
 def _tiny_cube_stl(path):
