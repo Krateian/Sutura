@@ -33,17 +33,20 @@ All notable changes to this project are documented here.
   `hausdorff_mean_rel` (one-sided output-to-input, relative to the bounding
   box diagonal). The GUI does not use the new modes yet. New suite
   `tests/test_deep_repair.py`, in CI.
-- **fTetWild shape guard.** An fTetWild result that passes the holes and
-  non-manifold guard is now also rejected when its one-sided
+- **fTetWild shape flag.** An adopted fTetWild result whose one-sided
   output-to-input Hausdorff distance exceeds
   `FTETWILD_MAX_HAUSDORFF_REL = 0.01` of the input bounding-box diagonal
-  (provisional). The report carries `hausdorff_rel` and `reject_reason`
-  (`shape`, or `holes_nm` for the existing guard); `--human` names the
-  distance; the benchmark adds `ftetwild_reject_reason` and
-  `ftetwild_hausdorff_rel`. Measured on macOS before the change, adopted
-  results reached 3.7 % (thingi10k_1038441), 1.8 % (1038439), 1.1 %
-  (224108) and 8 % and 5 % on two corpus meshes; those meshes are expected
-  to be left open now (strict watertight counts to be re-measured).
+  (provisional) is flagged instead of rejected: `experimental_ftetwild`
+  carries `hausdorff_rel` and `shape_changed`, the report a top-level
+  `shape_changed: true`, and `classification` adds the issue code
+  `shape_changed` ("Shape changed by the fTetWild fallback"; GUI EN/TR
+  labels) without changing the category. A rejecting variant was measured
+  first on macOS: it left thingi10k_1038441 (3.7 % on the 40 samples, 9.6 %
+  in the corpus), 1038439 (1.7 %), 224108 (1.1 %) and 1017012 (5 %) open
+  (strict watertight 39 -> 36 of 40, 109 -> 105 of 115). An fTetWild result
+  rejected by the holes/non-manifold guard reports `reject_reason:
+  holes_nm`. The benchmark adds `ftetwild_reject_reason`,
+  `ftetwild_hausdorff_rel` and `ftetwild_shape_changed`.
 - **fTetWild runs without its quality optimisation.** `ftetwild_bridge`
   calls `pytetwild.tetrahedralize` with `optimize=False` by default
   (`DEFAULT_PARAMS`; `run_bridge(..., params)`, a JSON third argument on the
