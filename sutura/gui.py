@@ -27,7 +27,8 @@ from PySide6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
-    QCheckBox, QDoubleSpinBox, QSpinBox,
+    QCheckBox, QDoubleSpinBox, QSpinBox, QLineEdit, QInputDialog,
+    QFormLayout, QGroupBox,
     QTabWidget, QTextBrowser, QComboBox)
 
 # the updater/repair modules live beside this file in both the repo and the
@@ -336,6 +337,63 @@ STRINGS = {
         'intensity_reset': 'Reset to recommended',
         'intensity_reset_tip': 'Set Balanced and restore the individual repair '
                                'options to their defaults.',
+        'intensity_preset_group': 'Built-in presets (read-only)',
+        'profile_btn_new': 'New',
+        'profile_btn_new_tip': 'Create a new profile from the current preset.',
+        'profile_btn_duplicate': 'Duplicate',
+        'profile_btn_duplicate_tip': 'Duplicate the selected profile.',
+        'profile_btn_rename': 'Rename',
+        'profile_btn_rename_tip': 'Rename the selected profile.',
+        'profile_btn_delete': 'Delete',
+        'profile_btn_delete_tip': 'Delete the selected profile (with confirmation).',
+        'profile_edit_title': 'Profile settings',
+        'profile_edit_hint': 'The watertight + Hausdorff shape guard is always '
+                             'applied and is not configurable.',
+        'profile_save': 'Save profile',
+        'profile_save_as_new': 'Save as new profile',
+        'profile_base_label': 'Base preset:',
+        'profile_name_prompt': 'Profile name:',
+        'profile_new_title': 'New intensity profile',
+        'profile_rename_title': 'Rename intensity profile',
+        'profile_delete_title': 'Delete intensity profile',
+        'profile_delete_msg': 'Delete the profile "%s"? This cannot be undone.',
+        'profile_default_name': 'My profile',
+        'profile_error_empty': 'The profile name must not be empty.',
+        'profile_error_reserved': 'That name is a built-in preset; pick another.',
+        'profile_error_duplicate': 'A profile with that name already exists.',
+        'profile_saved': 'Profile "%s" saved.',
+        'profile_ladder_invalid': 'The dense decimation ladder must be a '
+                                  'comma-separated list of positive numbers '
+                                  'and/or "threshold".',
+        'field_ftetwild_enabled': 'fTetWild fallback tier',
+        'field_ftetwild_max_faces': 'Max input faces',
+        'field_no_limit': 'No limit',
+        'field_ftetwild_timeout': 'fTetWild timeout (s)',
+        'field_optimize_retry': 'Optimise retry on dense failure',
+        'field_deep_repair': 'Deep-repair tier',
+        'field_ladder': 'Dense decimation ladder',
+        'field_ratio': 'Dense ratio',
+        'field_min_faces': 'Dense minimum faces',
+        'field_hausdorff': 'Hausdorff samples',
+        'deep_off': 'Off',
+        'deep_local': 'Local',
+        'deep_full': 'Full',
+        'field_ftetwild_enabled_tip': 'Run the fTetWild last-resort solidifier when '
+                                      'holes or non-manifold edges remain.',
+        'field_ftetwild_max_faces_tip': 'Skip fTetWild for inputs above this face '
+                                        'count ("No limit" disables the cap).',
+        'field_ftetwild_timeout_tip': 'Wall-clock budget for one fTetWild attempt.',
+        'field_optimize_retry_tip': 'Run one extra fTetWild attempt with '
+                                    'tetrahedron optimisation when every dense '
+                                    'decimation rung fails.',
+        'field_deep_repair_tip': 'Tier run when holes/non-manifold edges remain: '
+                                 'Off, Local re-mesh, or Full (fTetWild).',
+        'field_ladder_tip': 'Comma-separated multipliers of the input face count, '
+                            'or "threshold" for dense_ratio x max(input, min).',
+        'field_ratio_tip': 'Multiplier used by the "threshold" ladder rung.',
+        'field_min_faces_tip': 'Lower bound in the "threshold" ladder rung.',
+        'field_hausdorff_tip': 'Sample count for the shape guard; never below '
+                               '%d.',
         'sug_title': 'Suggestions:',
         'sug_si_many': "Extreme mode's extra cleanup passes may help with these self-intersections.",
         'sug_si_few': 'Extreme mode also tries to clean these up.',
@@ -628,6 +686,63 @@ STRINGS = {
         'intensity_reset': 'Önerilene sıfırla',
         'intensity_reset_tip': 'Dengeli seçer ve bireysel onarım seçeneklerini '
                                'varsayılana döndürür.',
+        'intensity_preset_group': 'Yerleşik ön ayarlar (salt-okunur)',
+        'profile_btn_new': 'Yeni',
+        'profile_btn_new_tip': 'Mevcut ön ayardan yeni bir profil oluştur.',
+        'profile_btn_duplicate': 'Çoğalt',
+        'profile_btn_duplicate_tip': 'Seçili profili çoğalt.',
+        'profile_btn_rename': 'Yeniden adlandır',
+        'profile_btn_rename_tip': 'Seçili profili yeniden adlandır.',
+        'profile_btn_delete': 'Sil',
+        'profile_btn_delete_tip': 'Seçili profili sil (onay istenir).',
+        'profile_edit_title': 'Profil ayarları',
+        'profile_edit_hint': 'Su geçirmezlik + Hausdorff şekil koruması her zaman '
+                             'uygulanır ve yapılandırılamaz.',
+        'profile_save': 'Profili kaydet',
+        'profile_save_as_new': 'Yeni profil olarak kaydet',
+        'profile_base_label': 'Temel ön ayar:',
+        'profile_name_prompt': 'Profil adı:',
+        'profile_new_title': 'Yeni yoğunluk profili',
+        'profile_rename_title': 'Yoğunluk profilini yeniden adlandır',
+        'profile_delete_title': 'Yoğunluk profilini sil',
+        'profile_delete_msg': '"%s" profili silinsin mi? Bu geri alınamaz.',
+        'profile_default_name': 'Profilim',
+        'profile_error_empty': 'Profil adı boş olamaz.',
+        'profile_error_reserved': 'Bu ad yerleşik bir ön ayar; başka bir ad seçin.',
+        'profile_error_duplicate': 'Bu adda bir profil zaten var.',
+        'profile_saved': '"%s" profili kaydedildi.',
+        'profile_ladder_invalid': 'Yoğun sadeleştirme merdiveni, virgülle '
+                                  'ayrılmış pozitif sayılar ve/veya "threshold" '
+                                  'listesi olmalıdır.',
+        'field_ftetwild_enabled': 'fTetWild yedek katmanı',
+        'field_ftetwild_max_faces': 'En fazla giriş yüzü',
+        'field_no_limit': 'Sınır yok',
+        'field_ftetwild_timeout': 'fTetWild zaman aşımı (sn)',
+        'field_optimize_retry': 'Yoğun başarısızlıkta optimize denemesi',
+        'field_deep_repair': 'Derin onarım katmanı',
+        'field_ladder': 'Yoğun sadeleştirme merdiveni',
+        'field_ratio': 'Yoğunluk oranı',
+        'field_min_faces': 'Yoğunluk en az yüz',
+        'field_hausdorff': 'Hausdorff örnekleri',
+        'deep_off': 'Kapalı',
+        'deep_local': 'Yerel',
+        'deep_full': 'Tam',
+        'field_ftetwild_enabled_tip': 'Delik veya non-manifold kenar kalınca '
+                                      'fTetWild son çare katılaştırıcısını çalıştır.',
+        'field_ftetwild_max_faces_tip': 'Bu yüz sayısının üzerindeki girdilerde '
+                                        'fTetWild atlanır ("Sınır yok" sınırı kapatır).',
+        'field_ftetwild_timeout_tip': 'Tek bir fTetWild denemesi için zaman bütçesi.',
+        'field_optimize_retry_tip': 'Her yoğun sadeleştirme basamağı başarısız '
+                                    'olursa tetrahedron optimizasyonlu bir '
+                                    'fTetWild denemesi daha çalıştır.',
+        'field_deep_repair_tip': 'Delik/non-manifold kenar kalınca çalışan katman: '
+                                 'Kapalı, Yerel yeniden örgü veya Tam (fTetWild).',
+        'field_ladder_tip': 'Giriş yüz sayısının virgülle ayrılmış katları veya '
+                            'dense_ratio x max(girdi, min) için "threshold".',
+        'field_ratio_tip': '"threshold" basamağında kullanılan çarpan.',
+        'field_min_faces_tip': '"threshold" basamağındaki alt sınır.',
+        'field_hausdorff_tip': 'Şekil koruması için örnek sayısı; hiçbir zaman '
+                               '%d altına inemez.',
         'sug_title': 'Öneriler:',
         'sug_si_many': "Extreme modun ekstra temizleme adımları bu self-intersection'lara işe yarayabilir.",
         'sug_si_few': 'Extreme mod bunları ayrıca temizlemeyi dener.',
@@ -1729,6 +1844,129 @@ class ChangelogWorker(QThread):
         self.fetched.emit(text)
 
 
+class ProfileEditor(QWidget):
+    """Inline editor for one IntensitySpec (a profile's base + overrides).
+
+    Exposes every editable Triage field with a typed widget; the Hausdorff
+    sample spin box is floored at ``triage.HAUSDORFF_FLOOR``. The watertight +
+    Hausdorff shape guard is never a field. ``diff_overrides`` returns only
+    the fields that differ from a base preset, so a saved profile stays
+    sparse.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        form = QFormLayout(self)
+        form.setContentsMargins(0, 0, 0, 0)
+
+        self.chk_ftetwild = QCheckBox()
+        self.chk_ftetwild.setToolTip(_t('field_ftetwild_enabled_tip'))
+        form.addRow(_t('field_ftetwild_enabled'), self.chk_ftetwild)
+
+        max_wrap = QWidget()
+        max_layout = QHBoxLayout(max_wrap)
+        max_layout.setContentsMargins(0, 0, 0, 0)
+        self.chk_no_limit = QCheckBox(_t('field_no_limit'))
+        self.spin_max_faces = QSpinBox()
+        self.spin_max_faces.setRange(1, 100000000)
+        self.chk_no_limit.toggled.connect(
+            lambda on: self.spin_max_faces.setEnabled(not on))
+        max_layout.addWidget(self.chk_no_limit)
+        max_layout.addWidget(self.spin_max_faces, 1)
+        max_wrap.setToolTip(_t('field_ftetwild_max_faces_tip'))
+        form.addRow(_t('field_ftetwild_max_faces'), max_wrap)
+
+        self.spin_timeout = QDoubleSpinBox()
+        self.spin_timeout.setRange(1.0, 36000.0)
+        self.spin_timeout.setDecimals(1)
+        self.spin_timeout.setSuffix(' s')
+        self.spin_timeout.setToolTip(_t('field_ftetwild_timeout_tip'))
+        form.addRow(_t('field_ftetwild_timeout'), self.spin_timeout)
+
+        self.chk_optimize = QCheckBox()
+        self.chk_optimize.setToolTip(_t('field_optimize_retry_tip'))
+        form.addRow(_t('field_optimize_retry'), self.chk_optimize)
+
+        self.cmb_deep = QComboBox()
+        for mode in triage.DEEP_REPAIR_MODES:
+            self.cmb_deep.addItem(_t('deep_' + mode), mode)
+        self.cmb_deep.setToolTip(_t('field_deep_repair_tip'))
+        form.addRow(_t('field_deep_repair'), self.cmb_deep)
+
+        self.edit_ladder = QLineEdit()
+        self.edit_ladder.setPlaceholderText('1.5, 3.0, threshold')
+        self.edit_ladder.setToolTip(_t('field_ladder_tip'))
+        form.addRow(_t('field_ladder'), self.edit_ladder)
+
+        self.spin_ratio = QSpinBox()
+        self.spin_ratio.setRange(1, 64)
+        self.spin_ratio.setToolTip(_t('field_ratio_tip'))
+        form.addRow(_t('field_ratio'), self.spin_ratio)
+
+        self.spin_min_faces = QSpinBox()
+        self.spin_min_faces.setRange(0, 100000000)
+        self.spin_min_faces.setToolTip(_t('field_min_faces_tip'))
+        form.addRow(_t('field_min_faces'), self.spin_min_faces)
+
+        self.spin_hausdorff = QSpinBox()
+        self.spin_hausdorff.setRange(triage.HAUSDORFF_FLOOR, 1000000000)
+        self.spin_hausdorff.setToolTip(
+            _t('field_hausdorff_tip', triage.HAUSDORFF_FLOOR))
+        form.addRow(_t('field_hausdorff'), self.spin_hausdorff)
+
+    def set_spec(self, spec):
+        self.chk_ftetwild.setChecked(bool(spec.ftetwild_enabled))
+        self.chk_no_limit.setChecked(spec.ftetwild_max_faces is None)
+        self.spin_max_faces.setValue(spec.ftetwild_max_faces or 300000)
+        self.spin_max_faces.setEnabled(spec.ftetwild_max_faces is not None)
+        self.spin_timeout.setValue(float(spec.ftetwild_timeout))
+        self.chk_optimize.setChecked(
+            bool(spec.ftetwild_optimize_retry_on_dense_fail))
+        idx = self.cmb_deep.findData(spec.deep_repair)
+        self.cmb_deep.setCurrentIndex(
+            idx if idx >= 0 else self.cmb_deep.findData('full'))
+        self.edit_ladder.setText(
+            ', '.join(str(x) for x in spec.dense_target_ladder))
+        self.spin_ratio.setValue(int(spec.dense_ratio))
+        self.spin_min_faces.setValue(int(spec.dense_min_faces))
+        self.spin_hausdorff.setValue(
+            max(int(spec.ftetwild_hausdorff_samples), triage.HAUSDORFF_FLOOR))
+
+    def values(self):
+        ladder = []
+        for part in self.edit_ladder.text().split(','):
+            part = part.strip()
+            if not part:
+                continue
+            if part == 'threshold':
+                ladder.append('threshold')
+                continue
+            try:
+                value = float(part)
+            except ValueError:
+                raise ValueError('invalid ladder entry: %r' % part)
+            if value <= 0:
+                raise ValueError('invalid ladder entry: %r' % part)
+            ladder.append(value)
+        return {
+            'ftetwild_enabled': self.chk_ftetwild.isChecked(),
+            'ftetwild_max_faces': (None if self.chk_no_limit.isChecked()
+                                   else self.spin_max_faces.value()),
+            'ftetwild_timeout': self.spin_timeout.value(),
+            'ftetwild_optimize_retry_on_dense_fail':
+                self.chk_optimize.isChecked(),
+            'deep_repair': self.cmb_deep.currentData(),
+            'dense_target_ladder': tuple(ladder),
+            'dense_ratio': self.spin_ratio.value(),
+            'dense_min_faces': self.spin_min_faces.value(),
+            'ftetwild_hausdorff_samples':
+                max(self.spin_hausdorff.value(), triage.HAUSDORFF_FLOOR),
+        }
+
+    def diff_overrides(self, base_spec):
+        return triage.profile_overrides(base_spec, self.values())
+
+
 class OptionsDialog(QDialog):
     """Non-modal, tabbed Options window.
 
@@ -1787,17 +2025,7 @@ class OptionsDialog(QDialog):
         int_row = QHBoxLayout()
         int_row.addWidget(QLabel(_t('intensity_label')))
         main.intensity_combo = QComboBox()
-        for name in triage.INTENSITIES:
-            main.intensity_combo.addItem(_t('intensity_name_' + name), name)
-            main.intensity_combo.setItemData(
-                main.intensity_combo.count() - 1,
-                _t('intensity_tip_' + name), Qt.ToolTipRole)
         main.intensity_combo.setToolTip(_t('intensity_tip'))
-        _idx = main.intensity_combo.findData(main._intensity)
-        if _idx >= 0:
-            main.intensity_combo.blockSignals(True)
-            main.intensity_combo.setCurrentIndex(_idx)
-            main.intensity_combo.blockSignals(False)
         main.intensity_combo.currentIndexChanged.connect(
             main._on_intensity_combo)
         int_row.addWidget(main.intensity_combo)
@@ -1807,6 +2035,52 @@ class OptionsDialog(QDialog):
         int_row.addWidget(main.btn_intensity_reset)
         int_row.addStretch(1)
         r.addLayout(int_row)
+
+        # User profiles: create / duplicate / rename / delete on top of the
+        # read-only built-in presets.
+        prof_row = QHBoxLayout()
+        prof_row.setContentsMargins(0, 0, 0, 0)
+        main.profile_btn_new = QPushButton(_t('profile_btn_new'))
+        main.profile_btn_new.setToolTip(_t('profile_btn_new_tip'))
+        main.profile_btn_duplicate = QPushButton(_t('profile_btn_duplicate'))
+        main.profile_btn_duplicate.setToolTip(_t('profile_btn_duplicate_tip'))
+        main.profile_btn_rename = QPushButton(_t('profile_btn_rename'))
+        main.profile_btn_rename.setToolTip(_t('profile_btn_rename_tip'))
+        main.profile_btn_delete = QPushButton(_t('profile_btn_delete'))
+        main.profile_btn_delete.setToolTip(_t('profile_btn_delete_tip'))
+        for btn in (main.profile_btn_new, main.profile_btn_duplicate,
+                    main.profile_btn_rename, main.profile_btn_delete):
+            prof_row.addWidget(btn)
+        prof_row.addStretch(1)
+        r.addLayout(prof_row)
+
+        main.profile_edit_group = QGroupBox(_t('profile_edit_title'))
+        edit_lay = QVBoxLayout(main.profile_edit_group)
+        base_row = QHBoxLayout()
+        base_row.addWidget(QLabel(_t('profile_base_label')))
+        main.profile_base_label = QLabel()
+        base_row.addWidget(main.profile_base_label)
+        base_row.addStretch(1)
+        edit_lay.addLayout(base_row)
+        main.profile_editor = ProfileEditor()
+        edit_lay.addWidget(main.profile_editor)
+        edit_hint = QLabel(_t('profile_edit_hint'))
+        edit_hint.setWordWrap(True)
+        edit_lay.addWidget(edit_hint)
+        save_row = QHBoxLayout()
+        main.btn_profile_save = QPushButton(_t('profile_save'))
+        main.btn_profile_save.clicked.connect(main._profile_save)
+        save_row.addStretch(1)
+        save_row.addWidget(main.btn_profile_save)
+        edit_lay.addLayout(save_row)
+        r.addWidget(main.profile_edit_group)
+
+        main.profile_btn_new.clicked.connect(main._profile_new)
+        main.profile_btn_duplicate.clicked.connect(main._profile_duplicate)
+        main.profile_btn_rename.clicked.connect(main._profile_rename)
+        main.profile_btn_delete.clicked.connect(main._profile_delete)
+        main._reload_intensity_combo()
+        main._refresh_profile_controls()
         r.addStretch(1)
         self.tabs.addTab(repair, _t('opt_tab_repair'))
 
@@ -1871,6 +2145,26 @@ class OptionsDialog(QDialog):
         cfg = updater.load_config()
         cfg[key] = value
         updater.save_config(cfg)
+
+    # --- profile name helpers (QMessageBox/QInputDialog wrappers so the
+    # offscreen tests can stub them without a modal event loop)
+    def _ask_profile_name(self, title, initial=''):
+        text, ok = QInputDialog.getText(self, title,
+                                        _t('profile_name_prompt'), text=initial)
+        return text.strip() if ok else None
+
+    def _warn_profile_name(self, code):
+        key = {'empty': 'profile_error_empty',
+               'reserved': 'profile_error_reserved',
+               'duplicate': 'profile_error_duplicate'}.get(
+                   code, 'profile_error_empty')
+        QMessageBox.warning(self, _t('profile_new_title'), _t(key))
+
+    def _confirm_delete(self, name):
+        answer = QMessageBox.question(
+            self, _t('profile_delete_title'), _t('profile_delete_msg', name),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
 
     def _on_auto_update(self, on):
         self._save_key('check_for_updates', bool(on))
@@ -1957,9 +2251,11 @@ class MainWindow(QMainWindow):
         self._before_after_zoom = None
         self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
         self._repair_profile = None   # batch-wide repair profile (not per file)
+        self._profiles = triage.load_profiles()  # named user profiles
         _int = updater.load_config().get('intensity', triage.DEFAULT_INTENSITY)
-        self._intensity = (_int if _int in triage.INTENSITIES
-                           else triage.DEFAULT_INTENSITY)  # Triage Engine preset
+        self._intensity = (_int if (_int in triage.PRESETS
+                                    or _int in self._profiles)
+                           else triage.DEFAULT_INTENSITY)  # preset or profile
         self._edge_tiebreak = False   # batch-wide opt-in edge-tiebreak head (FAZ11)
         self._join_components = False # batch-wide opt-in join-components (FAZ14)
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
@@ -2697,18 +2993,61 @@ class MainWindow(QMainWindow):
         """Batch-wide repair profile selection (None = auto/classifier)."""
         self._repair_profile = self.profile_combo.itemData(index)
 
+    def _reload_intensity_combo(self, select=None):
+        """Rebuild the intensity combo: presets, a separator, then profiles."""
+        combo = self.intensity_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for name in triage.INTENSITIES:
+            combo.addItem(_t('intensity_name_' + name), name)
+            combo.setItemData(combo.count() - 1,
+                              _t('intensity_tip_' + name), Qt.ToolTipRole)
+        if self._profiles:
+            combo.insertSeparator(combo.count())
+            for name in sorted(self._profiles):
+                combo.addItem(name, name)
+                combo.setItemData(combo.count() - 1,
+                                  _t('intensity_tip'), Qt.ToolTipRole)
+        target = select or self._intensity
+        idx = combo.findData(target)
+        if idx < 0:
+            idx = combo.findData(triage.DEFAULT_INTENSITY)
+        combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _refresh_profile_controls(self):
+        """Reflect the selected intensity in the profile editor/buttons."""
+        name = self.intensity_combo.currentData()
+        is_profile = name in self._profiles
+        self.profile_btn_duplicate.setEnabled(is_profile)
+        self.profile_btn_rename.setEnabled(is_profile)
+        self.profile_btn_delete.setEnabled(is_profile)
+        if name in triage.PRESETS:
+            spec = triage.PRESETS[name]
+            base = name
+            self.btn_profile_save.setText(_t('profile_save_as_new'))
+        else:
+            spec = triage.effective_spec(name, self._profiles)
+            base = self._profiles.get(name, {}).get('base', triage.DEFAULT_INTENSITY)
+            self.btn_profile_save.setText(_t('profile_save'))
+        if spec is not None:
+            self.profile_editor.set_spec(spec)
+        self.profile_base_label.setText(_t('intensity_name_' + base)
+                                        if base in triage.PRESETS else base)
+
     def _on_intensity_combo(self, index):
-        """Batch-wide Triage Engine intensity selection."""
+        """Batch-wide Triage Engine intensity (preset or user profile)."""
         name = self.intensity_combo.itemData(index)
         if name:
             self._set_intensity(name)
+        self._refresh_profile_controls()
 
     def _set_intensity(self, name):
         self._intensity = name
         OptionsDialog._save_key('intensity', name)
-        # Keep the fTetWild fallback checkbox in sync with the preset's
-        # default (Quick turns it off; the other presets turn it back on).
-        spec = triage.PRESETS.get(name)
+        # Keep the fTetWild fallback checkbox in sync with the effective
+        # intensity (Quick turns it off; the other presets turn it back on).
+        spec = triage.effective_spec(name, self._profiles)
         if spec is not None and self.chk_fallback_ftetwild.isChecked() != bool(
                 spec.ftetwild_enabled):
             self.chk_fallback_ftetwild.setChecked(bool(spec.ftetwild_enabled))
@@ -2716,7 +3055,7 @@ class MainWindow(QMainWindow):
 
     def _reset_intensity(self):
         """Reset to the recommended Balanced preset and restore every
-        individual repair option to its default."""
+        individual repair option to its default. User profiles are kept."""
         idx = self.intensity_combo.findData(triage.DEFAULT_INTENSITY)
         if idx >= 0 and self.intensity_combo.currentIndex() != idx:
             self.intensity_combo.setCurrentIndex(idx)
@@ -2725,13 +3064,108 @@ class MainWindow(QMainWindow):
             if chk.isChecked() != default:
                 chk.setChecked(default)
         self._update_options_label()
+        self._refresh_profile_controls()
 
     def _sync_intensity_checkboxes(self):
-        """On startup, reflect a non-default preset (e.g. Quick from the
-        config) in the fTetWild checkbox."""
-        spec = triage.PRESETS.get(self._intensity)
+        """On startup, reflect a non-default preset/profile (e.g. Quick from
+        the config) in the fTetWild checkbox."""
+        spec = triage.effective_spec(self._intensity, self._profiles)
         if spec is not None and not spec.ftetwild_enabled:
             self.chk_fallback_ftetwild.setChecked(False)
+
+    # --- user profiles
+    def _profile_new(self):
+        """Create a profile seeded from the current preset/editor values."""
+        current = self.intensity_combo.currentData()
+        if current in triage.PRESETS:
+            base = current
+        elif current in self._profiles:
+            base = self._profiles[current].get('base', triage.DEFAULT_INTENSITY)
+        else:
+            base = triage.DEFAULT_INTENSITY
+        name = self._options_dialog._ask_profile_name(
+            _t('profile_new_title'),
+            triage.unique_profile_name(self._profiles, _t('profile_default_name')))
+        if not name:
+            return
+        error = triage.name_error(name, self._profiles)
+        if error:
+            self._options_dialog._warn_profile_name(error)
+            return
+        try:
+            overrides = self.profile_editor.diff_overrides(
+                triage.PRESETS[base])
+        except ValueError:
+            overrides = {}
+        self._profiles[name] = {'base': base, 'overrides': overrides}
+        triage.save_profiles(self._profiles)
+        self._reload_intensity_combo(select=name)
+        self._set_intensity(name)
+        self._refresh_profile_controls()
+
+    def _profile_duplicate(self):
+        src = self.intensity_combo.currentData()
+        if src not in self._profiles:
+            return
+        new = triage.duplicate_profile(self._profiles, src)
+        triage.save_profiles(self._profiles)
+        self._reload_intensity_combo(select=new)
+        self._set_intensity(new)
+        self._refresh_profile_controls()
+
+    def _profile_rename(self):
+        old = self.intensity_combo.currentData()
+        if old not in self._profiles:
+            return
+        new = self._options_dialog._ask_profile_name(
+            _t('profile_rename_title'), old)
+        if not new or new == old:
+            return
+        error = triage.rename_profile(self._profiles, old, new)
+        if error:
+            self._options_dialog._warn_profile_name(error)
+            return
+        triage.save_profiles(self._profiles)
+        new = new.strip()
+        if self._intensity == old:
+            self._intensity = new
+            OptionsDialog._save_key('intensity', new)
+        self._reload_intensity_combo(select=self._intensity)
+        self._refresh_profile_controls()
+
+    def _profile_delete(self):
+        name = self.intensity_combo.currentData()
+        if name not in self._profiles:
+            return
+        if not self._options_dialog._confirm_delete(name):
+            return
+        self._profiles.pop(name, None)
+        triage.save_profiles(self._profiles)
+        if self._intensity == name:
+            self._intensity = triage.DEFAULT_INTENSITY
+            OptionsDialog._save_key('intensity', self._intensity)
+        self._reload_intensity_combo(select=self._intensity)
+        self._set_intensity(self._intensity)
+        self._refresh_profile_controls()
+
+    def _profile_save(self):
+        """Save the editor: overwrite a profile, or save-as-new for a preset."""
+        name = self.intensity_combo.currentData()
+        if name not in self._profiles:
+            self._profile_new()
+            return
+        base = self._profiles[name].get('base', triage.DEFAULT_INTENSITY)
+        try:
+            overrides = self.profile_editor.diff_overrides(
+                triage.PRESETS[base])
+        except ValueError:
+            QMessageBox.warning(self, _t('profile_edit_title'),
+                                _t('profile_ladder_invalid'))
+            return
+        self._profiles[name] = {'base': base, 'overrides': overrides}
+        triage.save_profiles(self._profiles)
+        self._set_intensity(name)
+        self._refresh_profile_controls()
 
     def _on_choose_repair_mode(self):
         """Open the repair-mode dialog (mode + repair budgets); apply to the
