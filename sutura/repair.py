@@ -1325,9 +1325,30 @@ DEEP_ESTIMATE_FTETWILD_A = 1e-3        # s, a * faces**b
 DEEP_ESTIMATE_FTETWILD_B = 1.0
 
 # Local tier: the largest hole (in boundary edges) the re-mesh closes, and
-# the Laplacian fairing steps on the new interior vertices.
+# the fairing steps on the new interior vertices.
 LOCAL_REMESH_MAX_HOLE = 5000
 LOCAL_REMESH_FAIR_STEPS = 3
+# Hole refinement is off: on the 90k-face samples meshing_close_holes with
+# refinehole=True took ~9 s (the refinement pass works on the whole mesh)
+# against ~0.04 s without it, and on the 40 real-world samples it changed no
+# local-tier outcome (same adopted meshes, same holes left). With it off the
+# fairing step has no new interior vertex to move.
+LOCAL_REMESH_REFINE = False
+# Scope gates: the local tier only runs on small, simple damage. Chosen from
+# the 40 real-world samples (2026-09-26), where it ran on 9 meshes and made
+# 3 strictly watertight (thingi10k_40886, 46012, 71691): all 9 had no
+# non-manifold edge, boundary loops of at most 14 edges, at most 6 damaged
+# regions and at most 822 deleted faces (the three gains: loops <= 11,
+# regions <= 2, <= 822 faces). On the 115-mesh corpus the tier gained
+# nothing and added 69 % run time, i.e. the remaining open meshes there are
+# outside this range. Non-manifold edges are excluded because no measured
+# case exists where the tier removed one; the gates are constants so a
+# later measurement can widen them.
+LOCAL_MAX_NM_EDGES = 0
+LOCAL_MAX_LOOP_LEN = 16
+LOCAL_MAX_REGIONS = 8
+LOCAL_MAX_REMOVED_FACES = 2000
+LOCAL_MAX_SECONDS = 10.0     # checked between steps; slowest sample 1.9 s
 
 
 def resolve_deep_repair(cli_value=None, environ=None, config_path=None):
@@ -1377,10 +1398,12 @@ def _edge_uses(tris):
     return keys, uniq, inv, counts
 
 
-def _damaged_region(tris):
+def _damaged_region(tris, max_faces=None):
     """Faces of the damaged region: every face with a boundary edge (used
     once) or a non-manifold edge (used more than twice), grown by one vertex
-    ring. Returns (face mask, number of connected regions)."""
+    ring. Returns (face mask, number of connected regions); the region count
+    is None when the region has more than ``max_faces`` faces (not
+    computed)."""
     tris = np.asarray(tris, dtype=np.int64)
     F = len(tris)
     _keys, _uniq, inv, counts = _edge_uses(tris)
@@ -1391,6 +1414,8 @@ def _damaged_region(tris):
     vmark = np.zeros(int(tris.max()) + 1, dtype=bool)
     vmark[tris[seed].ravel()] = True
     region = vmark[tris].any(axis=1)
+    if max_faces is not None and int(region.sum()) > max_faces:
+        return region, None
     # connected regions (faces sharing a vertex), union-find over vertices
     parent = np.arange(len(vmark))
 
@@ -1409,17 +1434,41 @@ def _damaged_region(tris):
     return region, len(roots)
 
 
-def _face_keys(verts, tris):
-    """Canonical, rotation-invariant keys of faces by their exact vertex
-    coordinates (index-independent), as a Counter."""
-    from collections import Counter
-    c = np.asarray(verts, dtype=np.float32)[np.asarray(tris, dtype=np.int64)]
-    rows = [tuple(map(bytes, f)) for f in c]  # 3 x 12-byte coordinate blobs
-    out = Counter()
-    for r in rows:
-        i = r.index(min(r))
-        out[r[i:] + r[:i]] += 1
-    return out
+def _faces_preserved(verts, tris, new_verts, new_tris):
+    """True when every face of (verts, tris) occurs in (new_verts,
+    new_tris) with bit-identical float32 vertex coordinates and the same
+    orientation, counted with multiplicity (index- and order-independent,
+    a face may start at any of its three corners)."""
+    a = np.asarray(verts, dtype=np.float32)[np.asarray(tris, dtype=np.int64)]
+    b = np.asarray(new_verts, dtype=np.float32)[np.asarray(new_tris, dtype=np.int64)]
+    pts = np.ascontiguousarray(np.concatenate([a.reshape(-1, 3), b.reshape(-1, 3)]))
+    _u, ids = np.unique(pts.view(np.dtype((np.void, 12))).ravel(), return_inverse=True)
+    ids = ids.reshape(-1, 3)
+    fa, fb = ids[:len(a)], ids[len(a):]
+
+    def canon(f):
+        # lexicographically smallest cyclic rotation (also well defined when
+        # two corners share a coordinate)
+        best = f
+        for k in (1, 2):
+            r = np.roll(f, -k, axis=1)
+            less = ((r[:, 0] < best[:, 0])
+                    | ((r[:, 0] == best[:, 0])
+                       & ((r[:, 1] < best[:, 1])
+                          | ((r[:, 1] == best[:, 1]) & (r[:, 2] < best[:, 2])))))
+            best = np.where(less[:, None], r, best)
+        return best
+    ua, ca = np.unique(canon(fa), axis=0, return_counts=True)
+    ub, cb = np.unique(canon(fb), axis=0, return_counts=True)
+    if len(ua) == 0:
+        return True
+    # count of each needed face among the available ones
+    both = np.concatenate([ub, ua])
+    _uu, inv = np.unique(both, axis=0, return_inverse=True)
+    inv = inv.ravel()
+    have = np.zeros(len(_uu), dtype=np.int64)
+    have[inv[:len(ub)]] = cb
+    return bool(np.all(have[inv[len(ub):]] >= ca))
 
 
 def _count_si(ml, ms):
@@ -1470,21 +1519,31 @@ def _local_remesh_tier(ml, ms, after):
     v = np.asarray(m.vertex_matrix(), dtype=np.float64)
     t = np.asarray(m.face_matrix(), dtype=np.int64)
     rep = {'ran': True, 'adopted': False}
-    base_holes = boundary_loop_stats(v, t)[0]
+    base_holes, base_loop = boundary_loop_stats(v, t)
     base_nm = after.get('non_two_manifold_edges', 0)
-    rep.update(holes_before=int(base_holes), nm_before=int(base_nm))
-    region, n_regions = _damaged_region(t)
-    rep['regions'] = int(n_regions)
-    rep['faces_removed'] = int(region.sum())
-    if n_regions == 0:
-        rep['reject_reason'] = 'no damaged region'
+    rep.update(holes_before=int(base_holes), nm_before=int(base_nm),
+               max_loop_len=int(base_loop))
+
+    def skip(reason):
+        rep['reject_reason'] = reason
         rep['time'] = round(time.perf_counter() - t0, 3)
         return ms, after, rep
+    if base_nm > LOCAL_MAX_NM_EDGES:
+        return skip('scope: non-manifold edges')
+    if base_loop > LOCAL_MAX_LOOP_LEN:
+        return skip('scope: boundary loop too long')
+    region, n_regions = _damaged_region(t, max_faces=LOCAL_MAX_REMOVED_FACES)
+    rep['faces_removed'] = int(region.sum())
+    if n_regions is None:
+        return skip('scope: region too large')
+    rep['regions'] = int(n_regions)
+    if n_regions == 0:
+        return skip('no damaged region')
+    if n_regions > LOCAL_MAX_REGIONS:
+        return skip('scope: too many regions')
     kept = t[~region]
     if len(kept) == 0:
-        rep['reject_reason'] = 'region covers the whole mesh'
-        rep['time'] = round(time.perf_counter() - t0, 3)
-        return ms, after, rep
+        return skip('region covers the whole mesh')
     rt = t[region]
     el = np.linalg.norm(v[rt] - v[np.roll(rt, 1, axis=1)], axis=2)
     edge_len = float(el.mean()) if el.size else 0.0
@@ -1500,9 +1559,11 @@ def _local_remesh_tier(ml, ms, after):
         nv0 = trial.current_mesh().vertex_number()
         trial.apply_filter('meshing_close_holes', maxholesize=LOCAL_REMESH_MAX_HOLE,
                            newfaceselected=True, selfintersection=True,
-                           refinehole=edge_len > 0,
+                           refinehole=LOCAL_REMESH_REFINE and edge_len > 0,
                            refineholeedgelen=ml.PureValue(edge_len))
         rep['faces_added'] = int(trial.current_mesh().face_number() - n0)
+        if time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
+            return skip('time')
         tm = trial.current_mesh()
         nv = np.asarray(tm.vertex_matrix(), dtype=np.float64)
         nt = np.asarray(tm.face_matrix(), dtype=np.int64)
@@ -1519,14 +1580,14 @@ def _local_remesh_tier(ml, ms, after):
         nm = t_after.get('non_two_manifold_edges', 0)
         rep.update(holes_after=int(holes), nm_after=int(nm))
         # guard 1: outside faces unchanged (exact coordinates, any order)
-        need = _face_keys(kv, kt)
-        have = _face_keys(nv, nt)
-        outside_ok = all(have[k] >= c for k, c in need.items())
+        outside_ok = _faces_preserved(kv, kt, nv, nt)
         rep['outside_unchanged'] = bool(outside_ok)
         # guard 2: holes / nm no worse, and some progress
         better = (holes <= base_holes and nm <= base_nm
                   and (holes, nm) != (base_holes, base_nm))
         si_ok = True
+        if outside_ok and better and time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
+            return skip('time')
         if outside_ok and better:
             base_si = _count_si(ml, ms)
             new_si = _count_si(ml, trial)

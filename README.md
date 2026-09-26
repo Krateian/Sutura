@@ -105,8 +105,13 @@ boundary or non-manifold edge and their one-vertex ring are deleted, the
 openings are closed with PyMeshLab's refined hole filling and the new
 interior vertices are smoothed with the boundary fixed; it is adopted only
 when holes and non-manifold edges do not get worse, self-intersections do not
-increase and every face outside the deleted region is unchanged. The local
-tier is not part of `full` and has not been measured on the corpora yet.
+increase and every face outside the deleted region is unchanged. It only
+runs on small, simple damage (no non-manifold edge, boundary loops of at most
+16 edges, at most 8 damaged regions and 2,000 deleted faces, 10 s); hole
+refinement is off because it cost ~9 s per 90k-face mesh without changing a
+result. Measured on the 40 real-world samples it made 3 more meshes strictly
+watertight (31 → 34); on the 115-mesh corpus it gained none, which is why it
+is not part of `full`.
 
 Every tier is adopted only when its result is no worse than the plain
 two-stage result on holes and non-manifold edges, so the two-stage path always

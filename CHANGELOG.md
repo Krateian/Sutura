@@ -33,6 +33,18 @@ All notable changes to this project are documented here.
   `hausdorff_mean_rel` (one-sided output-to-input, relative to the bounding
   box diagonal). The GUI does not use the new modes yet. New suite
   `tests/test_deep_repair.py`, in CI.
+- **Local tier limited to small, simple damage.** Measured on macOS, the
+  local tier made 3 of the 40 real-world samples strictly watertight
+  (31 → 34: thingi10k_40886, 46012, 71691) but none of the 115-mesh corpus,
+  where it added 69 % run time. It now runs only when there is no
+  non-manifold edge, the longest boundary loop has at most 16 edges and the
+  damaged region has at most 8 parts and 2,000 faces, and it stops after
+  10 s (`LOCAL_MAX_*`; `reject_reason` starts with `scope:` or is `time`).
+  Hole refinement is off (`LOCAL_REMESH_REFINE`): it took ~9 s of the
+  ~11 s per 90k-face mesh and changed no outcome on the 40 samples. The
+  outside-face guard is vectorized. Same three gains on the 40 samples; the
+  local tier's time there drops from 24.6 s to 6.0 s (x86_64 VM). The
+  report gains `deep_repair.local.max_loop_len`.
 
 ### Fixed
 

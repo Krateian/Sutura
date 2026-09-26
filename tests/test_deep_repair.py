@@ -61,13 +61,26 @@ def _same_output(a, b):
         json.dumps(rb, sort_keys=True, default=str)
 
 
-def _sphere_with_hole():
+def _face_counter(verts, tris):
+    """Reference multiset of faces by float32 corner coordinates, each face
+    keyed by its smallest cyclic rotation."""
+    from collections import Counter
+    out = Counter()
+    for f in np.asarray(verts, np.float32)[np.asarray(tris, np.int64)]:
+        r = tuple(c.tobytes() for c in f)
+        out[min(r, r[1:] + r[:1], r[2:] + r[:2])] += 1
+    return out
+
+
+def _sphere_with_hole(z_cut=0.95):
+    """Sphere with the cap above ``z_cut`` removed: 0.95 leaves one
+    16-edge hole (inside the local tier's scope), 0.8 a 36-edge hole."""
     ms = ml.MeshSet()
     ms.create_sphere(subdiv=3)
     m = ms.current_mesh()
     v = np.asarray(m.vertex_matrix(), np.float64)
     t = np.asarray(m.face_matrix(), np.int64)
-    keep = v[t][:, :, 2].mean(axis=1) < 0.8
+    keep = v[t][:, :, 2].mean(axis=1) < z_cut
     return v, t[keep]
 
 
@@ -134,8 +147,8 @@ def test_local_keeps_faces_outside_the_region():
     assert rep['adopted'] and rep['outside_unchanged'], rep
     assert rep['holes_after'] == 0 and rep['nm_after'] == 0, rep
     m = out_ms.current_mesh()
-    have = repair._face_keys(m.vertex_matrix(), m.face_matrix())
-    for key, c in repair._face_keys(v, t[~region]).items():
+    have = _face_counter(m.vertex_matrix(), m.face_matrix())
+    for key, c in _face_counter(v, t[~region]).items():
         assert have[key] >= c
 
 
@@ -153,6 +166,31 @@ def test_local_guard_rejects_moved_outside_faces():
     assert not rep['adopted'] and not rep['outside_unchanged'], rep
     assert rep['reject_reason'] == 'faces outside the region changed'
     assert out_ms is ms
+
+
+def test_local_scope_gate_skips_a_long_boundary_loop():
+    v, t = _sphere_with_hole(0.8)
+    assert repair.boundary_loop_stats(v, t)[1] > repair.LOCAL_MAX_LOOP_LEN
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
+    topo = ms.apply_filter('get_topological_measures')
+    out_ms, _topo, rep = repair._local_remesh_tier(ml, ms, topo)
+    assert not rep['adopted'] and out_ms is ms, rep
+    assert rep['reject_reason'] == 'scope: boundary loop too long', rep
+
+
+def test_faces_preserved_matches_the_counter_reference():
+    rng = np.random.default_rng(1)
+    v = rng.random((40, 3))
+    for _ in range(100):
+        t = rng.integers(0, 40, (25, 3))
+        cand = np.vstack([t[rng.permutation(25)[:rng.integers(18, 26)]],
+                          rng.integers(0, 40, (10, 3))])
+        cand = np.roll(cand, int(rng.integers(0, 3)), axis=1)
+        need = _face_counter(v, t)
+        have = _face_counter(v, cand)
+        ref = all(have[k] >= c for k, c in need.items())
+        assert repair._faces_preserved(v, t, v, cand) == ref
 
 
 def test_local_mode_through_the_ladder():
