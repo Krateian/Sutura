@@ -220,6 +220,29 @@ def test_ftetwild_retry_needs_budget():
     assert ft['attempts'][0]['retry_skipped'] == 'budget', ft
 
 
+def test_ftetwild_skipped_for_large_inputs():
+    calls = []
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        calls.append(params)
+        return {'error': 'must not run'}, False
+    rep = _run_with_fake_ftetwild(fake_run, FTETWILD_MAX_FACES=10)
+    ft = rep['experimental_ftetwild']
+    assert calls == [], calls
+    assert not ft['ran'] and ft['reject_reason'] == 'too_large', ft
+    assert ft['input_faces'] > ft['max_faces'] == 10, ft
+    assert rep['deep_repair']['tiers_run'] == []
+    # the off-mode offer does not list a tier that would be skipped
+    saved = repair.ftetwild_available, repair.FTETWILD_MAX_FACES
+    repair.ftetwild_available, repair.FTETWILD_MAX_FACES = (lambda: True), 10
+    try:
+        v, t = _load(OPEN_SAMPLE)
+        off = _repair(v, t, deep_repair='off')[0]
+    finally:
+        repair.ftetwild_available, repair.FTETWILD_MAX_FACES = saved
+    assert off['deep_repair']['available']['tiers'] == ['local'], off['deep_repair']
+
+
 def test_hausdorff_rel_is_zero_for_identical_meshes():
     v, t = _sphere_with_hole()
     hd_max, hd_mean = repair._hausdorff_rel(ml, v, t, v, t)

@@ -128,7 +128,11 @@ taşır, kategori düşürülmez. macOS ölçümünde 40 örnekten thingi10k_103
 geçişinden sonra bile delik ve non-manifold korumasından geçemezse, mesh
 180 sn'lik bütçenin kalanı içinde optimizasyon açık olarak bir kez daha
 tetrahedralize edilir; rapor iki koşuyu da listeler (`attempts`) ve
-benimseneni belirtir (`adopted_attempt`). fTetWild
+benimseneni belirtir (`adopted_attempt`). 300.000 yüzün üzerindeki
+girdilerde fTetWild katmanı atlanır (`reject_reason: too_large`): 40
+örnekte tamamlanan en yavaş koşu 90.000 yüzde ~55 sn sürdü, yani daha büyük
+taramalar bütçe içinde bitemez; 115 mesh'lik corpus'taki yoğun Artec
+taramaları da her koşuda zaman aşımına uğradı. fTetWild
 eki kurulu değilse ve hiçbir bayrak verilmezse davranış tam olarak
 yukarıdaki iki aşamadır.
 
