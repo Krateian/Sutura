@@ -6,6 +6,14 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **fTetWild tet optimisation is an explicit option.** It stays off by
+  default (measured: only the boundary surface is used, and on
+  thingi10k_46012 the optimisation pass took 34 s instead of 6 s with the
+  same shape fidelity). `--ftetwild-optimize`, `SUTURA_FTETWILD_OPTIMIZE=1`
+  or the `ftetwild_optimize` config key turn it on; in the GUI it is the
+  *Optimise tetrahedra (not recommended)* box under the fTetWild fallback on
+  the *Repair* tab, with a note that it can make complex repairs several
+  times slower.
 - **Options window (GUI).** The batch-wide switches moved from the *Options*
   drop-down into a separate, non-modal window with tabs *General* (anonymous
   usage history), *Repair* (fTetWild fallback, + self-intersections),
