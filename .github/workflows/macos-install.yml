@@ -1,0 +1,164 @@
+name: macOS Install E2E
+
+# End-to-end install regression on Apple Silicon, the macOS twin of
+# linux-install.yml. install-macos.sh expects Homebrew (present on the runner)
+# and an existing conda installation; setup-miniconda provides conda, so the
+# installer runs non-interactively without its Miniforge prompt path. Every
+# check after the install uses ONLY the installed artifacts (the CLI wrapper,
+# the sutura-gui launcher and the ~/Applications/Sutura.app bundle), never the
+# repo sources directly.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-install:
+    name: macOS Install E2E
+    runs-on: macos-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash -el {0}   # login shell so conda's base env is active
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Miniforge (conda base, Python 3.11)
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-variant: Miniforge3
+          python-version: "3.11"
+          use-only-tar-bz2: true
+
+      - name: Set fresh HOME
+        run: |
+          mkdir -p /tmp/fresh-home
+          echo "HOME=/tmp/fresh-home" >> "$GITHUB_ENV"
+
+      - name: Run installer non-interactively
+        env:
+          SUTURA_WITH_FTETWILD: "1"
+        run: ./install-macos.sh
+
+      - name: Resolve installed interpreter
+        run: |
+          ENV_PY="$(conda run -n sutura-env which python)"
+          test -x "$ENV_PY"
+          "$ENV_PY" --version
+          echo "ENV_PY=$ENV_PY" >> "$GITHUB_ENV"
+
+      - name: "Check a: CLI repair on broken mesh and 3 real-world samples"
+        run: |
+          python3 tests/make_broken_stl.py /tmp/broken.stl
+          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>&1 || true
+          cat /tmp/broken.json
+          "$ENV_PY" -c "import json; d=json.load(open('/tmp/broken.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
+
+          for sample in thingi10k_100173.stl thingi10k_475828.stl thingi10k_100077.stl; do
+            echo "Testing repair on $sample"
+            "$HOME/.local/bin/sutura" "tests/real-world-samples/$sample" -o "/tmp/${sample}_fixed.stl" > "/tmp/${sample}.json"
+            "$ENV_PY" -c "import json; d=json.load(open('/tmp/${sample}.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
+          done
+
+      - name: "Check b: Sutura.app bundle exists and is a valid app"
+        run: |
+          APP="$HOME/Applications/Sutura.app"
+          test -d "$APP"
+          test -x "$APP/Contents/MacOS/Sutura"
+          plutil -lint "$APP/Contents/Info.plist"
+          test -f "$APP/Contents/Resources/AppIcon.icns"
+
+      - name: "Check c: GUI smoke test (offscreen)"
+        run: |
+          export QT_QPA_PLATFORM=offscreen
+
+          # macOS has no GNU timeout(1). This fork/signal wrapper lets the
+          # child run for N seconds, terminates it, and exits 124 exactly like
+          # timeout(1); a premature exit is reported as 100 + its exit code.
+          run_timeout() {
+            local t="$1"; shift
+            perl -MPOSIX=WNOHANG -e '
+              my $t = shift;
+              my $pid = fork;
+              exit 127 unless defined $pid;
+              if ($pid == 0) { exec @ARGV or exit 127; }
+              my $ticks = 0;
+              while ($ticks < $t * 10) {
+                  my $r = waitpid($pid, WNOHANG);
+                  if ($r == $pid) { exit 100 + ($? >> 8); }
+                  select(undef, undef, undef, 0.1);
+                  $ticks++;
+              }
+              kill "TERM", $pid;
+              waitpid($pid, 0);
+              exit 124;
+            ' "$t" "$@"
+          }
+
+          echo "--- Part 1: Programmatic MainWindow construct & clean quit ---"
+          "$ENV_PY" -c '
+          import os, sys
+          sys.path.insert(0, os.path.expanduser("~/.local/share/sutura"))
+          from PySide6.QtWidgets import QApplication
+          from PySide6.QtCore import QTimer
+          import gui
+          app = QApplication([])
+          win = gui.MainWindow()
+          win.show()
+          QTimer.singleShot(200, app.quit)
+          ret = app.exec()
+          assert ret == 0, f"app.exec returned {ret}"
+          print("GUI-SMOKE-CONSTRUCT-OK")
+          '
+
+          echo "--- Part 2: Installed sutura-gui launcher (alive 15 s) ---"
+          set +e
+          run_timeout 15 "$HOME/.local/bin/sutura-gui" 2>/tmp/gui_stderr.log
+          gui_rc=$?
+          set -e
+          echo "sutura-gui exited with return code: $gui_rc"
+          echo "=== sutura-gui stderr ==="
+          cat /tmp/gui_stderr.log
+          echo "========================="
+          if [ "$gui_rc" -ne 124 ]; then
+            echo "::error::sutura-gui exited prematurely with unexpected return code $gui_rc!"
+            exit 1
+          fi
+          echo "sutura-gui stayed alive for 15s without crashing (PASS)."
+
+          echo "--- Part 3: Sutura.app bundle executable (alive 15 s) ---"
+          # The .app wrapper is a separate path from sutura-gui: it pins
+          # QT_PLUGIN_PATH itself and used to be Finder-only, so it must be
+          # exercised on its own, not only through the launcher.
+          BUNDLE_EXE="$(plutil -extract CFBundleExecutable raw "$HOME/Applications/Sutura.app/Contents/Info.plist")"
+          APP_EXE="$HOME/Applications/Sutura.app/Contents/MacOS/$BUNDLE_EXE"
+          test -x "$APP_EXE"
+          set +e
+          run_timeout 15 "$APP_EXE" 2>/tmp/app_stderr.log
+          app_rc=$?
+          set -e
+          echo "Sutura.app executable exited with return code: $app_rc"
+          echo "=== Sutura.app stderr ==="
+          cat /tmp/app_stderr.log
+          echo "========================="
+          if [ "$app_rc" -ne 124 ]; then
+            echo "::error::Sutura.app executable exited prematurely with unexpected return code $app_rc!"
+            exit 1
+          fi
+          echo "Sutura.app executable stayed alive for 15s without crashing (PASS)."
+
+      - name: "Check d: fTetWild real path exercised"
+        run: |
+          SUTURA_DIR="$HOME/.local/share/sutura" "$ENV_PY" tests/test_ftetwild_default.py > /tmp/ftetwild.log 2>&1
+          cat /tmp/ftetwild.log
+          if grep -q "skipped: fTetWild extra not installed" /tmp/ftetwild.log; then
+            echo "::error::Output contained 'skipped: fTetWild extra not installed'!"
+            exit 1
+          fi
+          grep -q "fTetWild default tests passed" /tmp/ftetwild.log
