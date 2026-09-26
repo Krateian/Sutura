@@ -31,6 +31,12 @@ from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
 import repair_score
 import history
+import triage
+
+# The Balanced intensity preset is the pre-triage behaviour; the module
+# constants below keep their names for backward compatibility and are derived
+# from it, so repair.py has a single source of truth (sutura/triage.py).
+_BALANCED_INTENSITY = triage.PRESETS[triage.DEFAULT_INTENSITY]
 
 SUTURA_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 VENV311 = os.path.join(SUTURA_DIR, 'venv311', 'bin', 'python')
@@ -655,7 +661,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
                             join_components=False, autorefine=False,
                             ftetwild=False, indirect_autorefine=False,
-                            extra_features=False, deep_repair=None):
+                            extra_features=False, deep_repair=None,
+                            triage_spec=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -683,6 +690,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ``deep_repair`` selects the deep-repair ladder mode ('off'/'local'/
     'full', see ``deep_repair_ladder``); None (library default) keeps the
     pre-ladder behaviour and adds no ``deep_repair`` report.
+    ``triage_spec`` is the resolved intensity preset (sutura/triage.py) that
+    supplies the post-Stage-1 knobs (deep-repair tier timeout/size cap,
+    decimation ladder, Hausdorff sample count); None resolves to Balanced
+    (the pre-triage behaviour). It never changes Stage 1.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -694,6 +705,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
     stats = {'stage1': {}}
+    if triage_spec is None:
+        triage_spec = triage.resolve_intensity(None)
+    stats['triage_intensity'] = triage_spec.name
 
     # Non-blocking unit warning: the size-based Stage 1 thresholds assume
     # millimetres, so a mesh that was probably authored in inches/cm deserves
@@ -896,7 +910,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # - True (--experimental-fallback-ftetwild): also when the closed result
     #   still self-intersects (slow: up to FTETWILD_TIMEOUT per mesh).
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
-                                   mode=deep_repair, ftetwild=ftetwild)
+                                   mode=deep_repair, ftetwild=ftetwild,
+                                   spec=triage_spec)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -907,7 +922,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     holes_after = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                       ms.current_mesh().face_matrix())[0]
     nm_after = after.get('non_two_manifold_edges', 0)
-    _deep_repair_offer(stats, holes_after, nm_after, len(t))
+    _deep_repair_offer(stats, holes_after, nm_after, len(t), spec=triage_spec)
 
     stats['stage1']['holes_closed'] = max(holes_before - holes_after, 0)
     stats['stage1']['holes_remaining'] = holes_after
@@ -1019,8 +1034,9 @@ def run_stage2(inter, out_obj):
 # on most meshes but default settings can stall for a long time on dense 3D
 # scans (measured: one artec_* mesh did not finish within ~2h), so the fallback
 # is time-boxed per mesh and a timeout is recorded as ftetwild_error='timeout'
-# instead of blocking the whole batch (FAZ17).
-FTETWILD_TIMEOUT = 180
+# instead of blocking the whole batch (FAZ17). The active budget comes from the
+# intensity spec (triage.py); this constant is the Balanced default.
+FTETWILD_TIMEOUT = _BALANCED_INTENSITY.ftetwild_timeout
 
 # Shape flag of the fTetWild tier: an adopted result whose one-sided
 # output-to-input Hausdorff distance exceeds this fraction of the input
@@ -1050,8 +1066,9 @@ FTETWILD_RETRY_MIN_SECONDS = 10.0
 # millions of faces) timed out at 180 s in every run; skipping them saves
 # ~18 min per corpus run. The 90k-face samples (the largest of the 40)
 # stay below the limit. Provisional; the corpus face counts are not in the
-# repository, the benchmark's input_faces column verifies the split.
-FTETWILD_MAX_FACES = 300000
+# repository, the benchmark's input_faces column verifies the split. The active
+# cap comes from the intensity spec (None = no cap, Extreme).
+FTETWILD_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
 
 # Decimation of a wastefully dense fTetWild boundary. fTetWild with
 # optimize=False can return a boundary far denser than the input (measured on
@@ -1064,10 +1081,12 @@ FTETWILD_MAX_FACES = 300000
 # wastefully dense?); the quality gate is the Hausdorff comparison against the
 # raw fTetWild boundary (DECIMATE_HD_MARGIN), so a coarse target is accepted
 # whenever it does not make the shape measurably worse.
-DENSE_RATIO = 4
-DENSE_MIN_FACES = 20000
-# Escalating target ladder: multiples of the input face count, tried in order.
-DENSE_TARGET_LADDER = (1.5, 3.0)
+DENSE_RATIO = _BALANCED_INTENSITY.dense_ratio
+DENSE_MIN_FACES = _BALANCED_INTENSITY.dense_min_faces
+# Escalating target ladder: multiples of the input face count, tried in order;
+# the special entry 'threshold' means dense_ratio * max(input, dense_min_faces).
+# The active ladder comes from the intensity spec.
+DENSE_TARGET_LADDER = _BALANCED_INTENSITY.dense_target_ladder
 # Quadric edge collapse quality threshold (0..1); 0.3 favours boundary/shape
 # preservation over aggressive simplification.
 DENSE_QUALITY = 0.3
@@ -1079,8 +1098,9 @@ DECIMATE_HD_MARGIN = 0.005
 
 # Fixed Hausdorff sample count, independent of the output face count, so a
 # dense output cannot inflate the measurement cost (the previous inline
-# formula scaled the sample count with the output size up to this cap).
-HAUSDORFF_SAMPLES = 200000
+# formula scaled the sample count with the output size up to this cap). The
+# active count comes from the intensity spec (never below 200000).
+HAUSDORFF_SAMPLES = _BALANCED_INTENSITY.ftetwild_hausdorff_samples
 
 _FTETWILD_AVAILABLE = None
 
@@ -1370,11 +1390,12 @@ def _decimate_boundary(ml, cand_v, cand_t, target):
         return None
 
 
-def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
+def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t, spec):
     """Decimate a wastefully dense fTetWild boundary and pick a candidate.
 
-    The escalating target ladder ``DENSE_TARGET_LADDER`` (multiples of the
-    input face count) is tried in order. A target is accepted only when its
+    The escalating target ladder ``spec.dense_target_ladder`` (multiples of the
+    input face count, plus the special 'threshold' entry) is tried in order. A
+    target is accepted only when its
     post-processed result is strictly watertight AND its one-sided Hausdorff
     distance to the input is at most the raw boundary's own distance plus
     ``DECIMATE_HD_MARGIN``; the raw distance is measured once on the raw
@@ -1392,7 +1413,8 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
     raw_faces = int(len(cand_t))
     info = {'ftetwild_decimated': False, 'ftetwild_faces_final': raw_faces,
             'ftetwild_decimate_time': 0.0}
-    hd_raw, _ = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+    hd_raw, _ = _hausdorff_rel(ml, v, t, cand_v, cand_t,
+                               samples=spec.ftetwild_hausdorff_samples)
     info['ftetwild_hausdorff_raw'] = hd_raw
     limit = (hd_raw if hd_raw is not None else 0.0) + DECIMATE_HD_MARGIN
     # A raw boundary already inside the shape threshold must not be pushed
@@ -1405,8 +1427,11 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
     raw_within_shape = (hd_raw is not None
                         and hd_raw <= FTETWILD_MAX_HAUSDORFF_REL)
     targets = []
-    for mult in DENSE_TARGET_LADDER:
-        tg = max(int(round(mult * input_faces)), DENSE_MIN_FACES)
+    for mult in spec.dense_target_ladder:
+        if mult == 'threshold':
+            tg = spec.dense_ratio * max(input_faces, spec.dense_min_faces)
+        else:
+            tg = max(int(round(mult * input_faces)), spec.dense_min_faces)
         if tg not in targets:
             targets.append(tg)
     attempts = []
@@ -1433,7 +1458,8 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
             rec['reason'] = 'not_watertight'
             attempts.append(rec)
             continue
-        hd_dec, _ = _hausdorff_rel(ml, v, t, cv, ct)
+        hd_dec, _ = _hausdorff_rel(ml, v, t, cv, ct,
+                                   samples=spec.ftetwild_hausdorff_samples)
         rec['hausdorff_rel'] = hd_dec
         if (hd_dec is None or hd_dec > limit
                 or (raw_within_shape
@@ -1460,64 +1486,98 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
     return None, info
 
 
-def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None):
-    """One fTetWild run on the written input ``inter``, followed by the
-    manifold3d post-process. A wastefully dense boundary
-    (``DENSE_RATIO * max(input_faces, DENSE_MIN_FACES)``) is decimated first
-    and the dense undecimated result is only post-processed when every
-    decimation target fails (see ``_ftetwild_decimate_and_postprocess``).
-    Returns ``(attempt_report, candidate)`` where candidate is
+def _ftetwild_boundary(ml, tmpdir, inter, tag, params, timeout, v, t, spec):
+    """One fTetWild run on ``inter`` plus the dense-boundary handling.
+
+    A wastefully dense boundary
+    (``spec.dense_ratio * max(input_faces, spec.dense_min_faces)``) is
+    decimated first; when every decimation target fails the undecimated
+    boundary is measured instead and ``dense_failed`` is True. Returns
+    ``(attempt_report, candidate, dense_failed)`` where candidate is
     ``(verts, tris, meshset, topo, holes, nm)`` or None."""
     out_obj = os.path.join(tmpdir, 'ftetwild_out_%s.obj' % tag)
     t0 = time.perf_counter()
-    if params is None:
-        mrep, _ok = run_ftetwild(inter, out_obj)
-    else:
-        mrep, _ok = run_ftetwild(inter, out_obj, params, timeout=timeout)
+    mrep, _ok = run_ftetwild(inter, out_obj, params, timeout=timeout)
     att = {'attempt': tag, 'wall_time': round(time.perf_counter() - t0, 2)}
     att.update(mrep)
     if 'error' in mrep or not os.path.exists(out_obj):
-        return att, None
+        return att, None, False
     cand_v, cand_t = read_obj(out_obj)
     if len(cand_t) == 0:
-        return att, None
+        return att, None, False
     raw_faces = int(len(cand_t))
     att['ftetwild_faces_raw'] = raw_faces
     att['ftetwild_decimated'] = False
     att['ftetwild_faces_final'] = raw_faces
     att['ftetwild_decimate_time'] = 0.0
-    if (v is not None and t is not None
-            and raw_faces > DENSE_RATIO * max(len(t), DENSE_MIN_FACES)):
+    dense_failed = False
+    if (v is not None and t is not None and spec.dense_target_ladder
+            and raw_faces > spec.dense_ratio * max(len(t), spec.dense_min_faces)):
         payload, dec_info = _ftetwild_decimate_and_postprocess(
-            ml, tmpdir, cand_v, cand_t, v, t)
+            ml, tmpdir, cand_v, cand_t, v, t, spec)
         att.update(dec_info)
         if payload is not None:
             cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp = payload
             att['manifold_postprocessed'] = pp
             att['output_holes'] = cand_holes
             att['output_non_manifold'] = cand_nm
-            return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+            return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm), False
         # every decimation target failed: fall through to the undecimated
-        # boundary exactly as before this change
+        # boundary, but flag the failure so the caller can retry (Extreme)
+        dense_failed = True
     (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \
         _ftetwild_candidate(ml, tmpdir, cand_v, cand_t)
     att['manifold_postprocessed'] = pp
     att['output_holes'] = cand_holes
     att['output_non_manifold'] = cand_nm
-    return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+    return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm), dense_failed
 
 
-def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
+def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None,
+                      spec=None):
+    """One attempt of the fTetWild tier. Returns ``(attempt_report,
+    candidate)``; candidate is ``(verts, tris, meshset, topo, holes, nm)`` or
+    None.
+
+    When the attempt used the bridge defaults and every dense decimation rung
+    failed, the Extreme preset makes one more run with the tetrahedron-quality
+    optimisation on before falling back to the undecimated boundary; Balanced
+    and Thorough keep the plain undecimated fallback."""
+    if spec is None:
+        spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
+    att, cand, dense_failed = _ftetwild_boundary(
+        ml, tmpdir, inter, tag, params, timeout, v, t, spec)
+    if (cand is not None and dense_failed
+            and spec.ftetwild_optimize_retry_on_dense_fail
+            and not (params or {}).get('optimize')):
+        o_att, o_cand, _ = _ftetwild_boundary(
+            ml, tmpdir, inter, tag + '_optimize', {'optimize': True},
+            timeout, v, t, spec)
+        att['optimize_retry'] = dict(o_att, ran=True)
+        if o_cand is not None:
+            att['optimize_retry_adopted'] = True
+            att['ftetwild_faces_final'] = int(len(o_cand[1]))
+            att['manifold_postprocessed'] = o_att.get('manifold_postprocessed')
+            att['output_holes'] = o_cand[4]
+            att['output_non_manifold'] = o_cand[5]
+            return att, o_cand
+        att['optimize_retry_adopted'] = False
+    return att, cand
+
+
+def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
     """fTetWild basamak of the deep-repair ladder. Returns ``(ms, after)``.
 
-    Skipped for inputs above FTETWILD_MAX_FACES (reject_reason
-    'too_large'). The first attempt uses the bridge defaults
-    (optimize=False); when its boundary fails the holes/non-manifold guard,
-    one retry with FTETWILD_RETRY_PARAMS runs within the remaining budget.
-    ``attempts`` lists every run, ``adopted_attempt`` names the adopted one;
-    the top-level report fields describe the adopted (or else the last)
-    attempt. An adopted result far from the input is flagged
-    (``shape_changed``), not rejected."""
+    Skipped for inputs above the intensity spec's fTetWild size cap
+    (reject_reason 'too_large'; None means no cap). The first attempt uses the
+    bridge defaults (optimize=False); when its boundary fails the
+    holes/non-manifold guard, one retry with FTETWILD_RETRY_PARAMS runs within
+    the remaining budget. ``attempts`` lists every run, ``adopted_attempt``
+    names the adopted one; the top-level report fields describe the adopted
+    (or else the last) attempt. An adopted result far from the input is
+    flagged (``shape_changed``), not rejected."""
+    if spec is None:
+        spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     stats['experimental_ftetwild'] = False
     if ftetwild == 'auto' and not ftetwild_available():
         ftetwild = False
@@ -1531,10 +1591,12 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
             ms.apply_filter('compute_selection_by_self_intersections_per_face')
             cur_si = int(ms.current_mesh().face_selection_array().sum())
         if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
-            if len(t) > FTETWILD_MAX_FACES:
+            if (spec.ftetwild_max_faces is not None
+                    and len(t) > spec.ftetwild_max_faces):
                 stats['experimental_ftetwild'] = {
                     'ran': False, 'adopted': False, 'reject_reason': 'too_large',
-                    'input_faces': int(len(t)), 'max_faces': FTETWILD_MAX_FACES,
+                    'input_faces': int(len(t)),
+                    'max_faces': spec.ftetwild_max_faces,
                     'trigger': ft_rep['trigger']}
                 return ms, after
             try:
@@ -1551,18 +1613,23 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
                 for tag, params in plan:
                     if attempts:
                         last = attempts[-1]
+                        # an Extreme dense-failure retry already ran the
+                        # optimising attempt inside _ftetwild_attempt
+                        if (tag == 'optimize'
+                                and (last.get('optimize_retry') or {}).get('ran')):
+                            break
                         # retry only when the first boundary exists but
                         # fails the holes/non-manifold guard
                         if last.get('reject_reason') != 'holes_nm':
                             break
-                        remaining = FTETWILD_TIMEOUT - (time.perf_counter() - t_start)
+                        remaining = spec.ftetwild_timeout - (time.perf_counter() - t_start)
                         if remaining < FTETWILD_RETRY_MIN_SECONDS:
                             last['retry_skipped'] = 'budget'
                             break
                     else:
-                        remaining = None
+                        remaining = spec.ftetwild_timeout
                     att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag,
-                                                  params, remaining, v, t)
+                                                  params, remaining, v, t, spec)
                     attempts.append(att)
                     if cand is None:
                         continue
@@ -1584,7 +1651,9 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
                     # so it is reused instead of recomputed.
                     hd_max = ft_rep.get('hausdorff_rel')
                     if hd_max is None:
-                        hd_max, _hd_mean = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+                        hd_max, _hd_mean = _hausdorff_rel(
+                            ml, v, t, cand_v, cand_t,
+                            samples=spec.ftetwild_hausdorff_samples)
                     ft_rep['hausdorff_rel'] = hd_max
                     ft_rep['shape_changed'] = bool(
                         hd_max is not None and hd_max > FTETWILD_MAX_HAUSDORFF_REL)
@@ -1607,7 +1676,7 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
 # fTetWild tier exactly as before the ladder existed (the local tier is not
 # part of 'full' until it has been measured on the corpora).
 DEEP_REPAIR_MODES = ('off', 'local', 'full')
-DEEP_REPAIR_DEFAULT = 'full'
+DEEP_REPAIR_DEFAULT = _BALANCED_INTENSITY.deep_repair
 DEEP_REPAIR_ENV = 'SUTURA_DEEP_REPAIR'
 DEEP_REPAIR_CONFIG = os.path.expanduser('~/.config/sutura/config.json')
 
@@ -1695,7 +1764,8 @@ def ftetwild_params():
     return {'optimize': True} if resolve_ftetwild_optimize() else None
 
 
-def estimate_deep_repair_time(n_faces, n_regions, tiers):
+def estimate_deep_repair_time(n_faces, n_regions, tiers,
+                              ftetwild_timeout=FTETWILD_TIMEOUT):
     """Rough per-tier run-time estimate in seconds (placeholder
     coefficients, see DEEP_ESTIMATE_*). Pure function, repairs nothing.
     The fTetWild estimate is capped at its time budget."""
@@ -1707,7 +1777,7 @@ def estimate_deep_repair_time(n_faces, n_regions, tiers):
     if 'ftetwild' in tiers:
         est['ftetwild'] = round(min(DEEP_ESTIMATE_FTETWILD_A
                                     * float(n_faces) ** DEEP_ESTIMATE_FTETWILD_B,
-                                    float(FTETWILD_TIMEOUT)), 1)
+                                    float(ftetwild_timeout)), 1)
     return est
 
 
@@ -1804,7 +1874,7 @@ def _referenced_only(verts, tris):
     return np.asarray(verts, np.float64)[used], remap[tris]
 
 
-def _hausdorff_rel(ml, in_v, in_t, out_v, out_t):
+def _hausdorff_rel(ml, in_v, in_t, out_v, out_t, samples=HAUSDORFF_SAMPLES):
     """One-sided Hausdorff distance, samples on the output, distance to the
     input, relative to the input bounding-box diagonal: ``(max, mean)``, or
     ``(None, None)`` for an empty mesh or a zero diagonal. Also used by
@@ -1839,7 +1909,7 @@ def _hausdorff_rel(ml, in_v, in_t, out_v, out_t):
                         face_matrix=np.asarray(out_t, np.int32)))     # id 1
     r = hd.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
                         samplevert=True, sampleface=True,
-                        samplenum=HAUSDORFF_SAMPLES,
+                        samplenum=samples,
                         maxdist=ml.PercentageValue(100))
     return (round(float(r.get('max') or 0) / diag, 6),
             round(float(r.get('mean') or 0) / diag, 6))
@@ -1985,16 +2055,20 @@ def _local_remesh_tier(ml, ms, after):
 
 
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
-                       ftetwild=False):
+                       ftetwild=False, spec=None):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
     default (no deep-repair report; ``ftetwild`` alone decides, as before
     the ladder existed). 'local' runs the local re-mesh tier; 'full' and None
     run the fTetWild tier (``ftetwild``: 'auto'/True/False, unchanged
-    semantics); 'off' runs nothing. Records ``stats['deep_repair']`` (mode,
-    tiers run, per-tier reports); the ``available`` offer is filled in by
-    ``_deep_repair_offer`` after the final stage-1 measurement.
-    Returns ``(ms, after)``."""
+    semantics); 'off' runs nothing. ``spec`` is the resolved intensity spec
+    (defaults to Balanced); it supplies the tier's timeout, size cap,
+    decimation ladder and Hausdorff sample count. Records
+    ``stats['deep_repair']`` (mode, tiers run, per-tier reports); the
+    ``available`` offer is filled in by ``_deep_repair_offer`` after the final
+    stage-1 measurement. Returns ``(ms, after)``."""
+    if spec is None:
+        spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     tiers_run = []
     cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                     ms.current_mesh().face_matrix())[0]
@@ -2008,7 +2082,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
     else:
         local_rep = None
     if mode in (None, 'full'):
-        ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild)
+        ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild,
+                                   spec=spec)
         if (stats.get('experimental_ftetwild') or {}).get('ran'):
             tiers_run.append('ftetwild')
     else:
@@ -2026,11 +2101,13 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
     return ms, after
 
 
-def _deep_repair_offer(stats, holes, nm, n_faces):
+def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):
     """Fill ``deep_repair.available`` and ``final_tier`` once the final
     stage-1 counts are known: when holes or non-manifold edges remain, list
     the tiers this mode did not run (fTetWild only when installed) with a
     rough time estimate."""
+    if spec is None:
+        spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     dr = stats.get('deep_repair')
     if not dr:
         return
@@ -2042,18 +2119,21 @@ def _deep_repair_offer(stats, holes, nm, n_faces):
     dr['final_tier'] = final
     if holes == 0 and nm == 0:
         return
+    within_cap = (spec.ftetwild_max_faces is None
+                  or n_faces <= spec.ftetwild_max_faces)
     tiers = []
     if dr['mode'] == 'off':
         tiers.append('local')
     if (dr['mode'] in ('off', 'local') and ftetwild_available()
-            and n_faces <= FTETWILD_MAX_FACES):
+            and within_cap):
         tiers.append('ftetwild')
     if tiers:
         dr['available'] = {
             'holes_remaining': int(holes),
             'nm_remaining': int(nm),
             'tiers': tiers,
-            'estimate_s': estimate_deep_repair_time(n_faces, holes + nm, tiers),
+            'estimate_s': estimate_deep_repair_time(
+                n_faces, holes + nm, tiers, spec.ftetwild_timeout),
         }
 
 
@@ -2274,7 +2354,8 @@ def obj_has_material_refs(path):
 
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                 join_components=False, autorefine=False, ftetwild=False,
-                indirect_autorefine=False, extra_features=False, deep_repair=None):
+                indirect_autorefine=False, extra_features=False, deep_repair=None,
+                triage_spec=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -2298,7 +2379,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         declared_unit=declared_unit, join_components=join_components,
         autorefine=autorefine, ftetwild=ftetwild,
         indirect_autorefine=indirect_autorefine,
-        extra_features=extra_features, deep_repair=deep_repair)
+        extra_features=extra_features, deep_repair=deep_repair,
+        triage_spec=triage_spec)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -2376,7 +2458,8 @@ def _read_zip_entry(z, name):
 
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                join_components=False, autorefine=False, ftetwild=False,
-               indirect_autorefine=False, extra_features=False, deep_repair=None):
+               indirect_autorefine=False, extra_features=False, deep_repair=None,
+               triage_spec=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -2417,7 +2500,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     ftetwild=ftetwild,
                     indirect_autorefine=indirect_autorefine,
                     extra_features=extra_features,
-                    deep_repair=deep_repair)
+                    deep_repair=deep_repair,
+                    triage_spec=triage_spec)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -2586,7 +2670,7 @@ def validate_file(src, engine='experimental'):
 
 
 def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='experimental',
-                             declared_unit=None):
+                             declared_unit=None, triage_spec=None):
     """Report what a repair WOULD do for one mesh, without doing it.
 
     Detects the type, resolves the mode/thresholds and counts the holes /
@@ -2594,7 +2678,8 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     meshing_remove_connected_component_by_face_number filter the repair
     chain runs, applied to an in-memory scratch mesh - nothing is written.
     ``declared_unit`` feeds the non-blocking unit-warning heuristic
-    (3MF only)."""
+    (3MF only). ``triage_spec`` is the resolved intensity preset (Balanced
+    when None); Stage 1 thresholds are unaffected by it."""
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -2641,6 +2726,9 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     result = {
         'repair_mode': mode,
         'repair_profile': profile,
+        'triage_intensity': (
+            triage_spec.name if triage_spec is not None
+            else triage.DEFAULT_INTENSITY),
         'detected_type': cls['type'],
         'detected_confidence': cls['confidence'],
         'classifier_engine': classifier_engine,
@@ -2664,7 +2752,8 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     return result
 
 
-def dry_run_file(src, mode='auto', profile=None, engine='experimental'):
+def dry_run_file(src, mode='auto', profile=None, engine='experimental',
+                 triage_spec=None):
     """Dry-run one mesh file. Returns the report dict; a hard error is a
     dict with an 'error' key. Never writes any output file."""
     result = {'input': src}
@@ -2682,7 +2771,8 @@ def dry_run_file(src, mode='auto', profile=None, engine='experimental'):
         for name, vs, ts in meshes:
             declared = units.get(name) if name is not None else None
             rep = dry_run_mesh_from_arrays(vs, ts, mode, profile, engine,
-                                           declared_unit=declared)
+                                           declared_unit=declared,
+                                           triage_spec=triage_spec)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -2733,6 +2823,7 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('Classifier: %s' % r['classifier_engine'])
     if r.get('repair_profile'):
         lines.append('Profile: %s' % r['repair_profile'])
+    lines.append('Intensity: %s' % r.get('triage_intensity', 'balanced'))
     dt = r.get('detected_type')
     if dt:
         conf = r.get('detected_confidence', 0.0)
@@ -3030,7 +3121,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
-                 extra_features=False, deep_repair=None):
+                 extra_features=False, deep_repair=None, triage_spec=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -3044,6 +3135,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     the experimental fTetWild fallback tier (flag-gated). ``indirect_autorefine``
     enables the experimental exact indirect-predicate arrangement-lite split
     (flag-gated).
+    ``triage_spec`` is the resolved intensity preset (sutura/triage.py),
+    forwarded to the repair; None resolves to Balanced.
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -3065,7 +3158,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                      ftetwild=ftetwild,
                                      indirect_autorefine=indirect_autorefine,
                                      extra_features=extra_features,
-                                     deep_repair=deep_repair))
+                                     deep_repair=deep_repair,
+                                     triage_spec=triage_spec))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
                                       profile=profile, engine=engine,
@@ -3074,7 +3168,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                       ftetwild=ftetwild,
                                       indirect_autorefine=indirect_autorefine,
                                       extra_features=extra_features,
-                                      deep_repair=deep_repair))
+                                      deep_repair=deep_repair,
+                                      triage_spec=triage_spec))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -3172,6 +3267,15 @@ def main():
                         help='named Stage 1 threshold preset: mechanical, '
                              'organic, scan, miniature or fast. Only effective '
                              'with mode auto; an explicit fixed mode wins.')
+    parser.add_argument('--intensity', choices=triage.INTENSITIES, default=None,
+                        help='Triage Engine intensity preset for the effort '
+                             'after Stage 1: quick (skip the deep-repair and '
+                             'fTetWild tiers), balanced (default; byte-'
+                             'identical to the historical defaults), thorough, '
+                             'extreme. Stage 1 is NOT affected (use '
+                             '--mode/--profile). Also from SUTURA_INTENSITY or '
+                             'the "intensity" key of '
+                             '~/.config/sutura/config.json')
     parser.add_argument('--no-history', action='store_true',
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
@@ -3276,6 +3380,7 @@ def main():
     mode = args.mode
     dry_run = args.dry_run
     engine = resolve_classifier_engine(args.classifier_engine)
+    triage_spec = triage.resolve_intensity(args.intensity)
 
     # Repair budgets: validate the ranges, then 0 / unset both mean "no
     # budget" (disabled), matching the GUI's 0 = no limit convention.
@@ -3340,7 +3445,8 @@ def main():
         if out is not None:
             print(json.dumps({'error': '-o is not valid with --dry-run'}))
             sys.exit(1)
-        results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine) for f in files]
+        results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine,
+                                triage_spec=triage_spec) for f in files]
         nerr = sum(1 for r in results if 'error' in r)
         if len(files) == 1:
             result = results[0]
@@ -3360,9 +3466,16 @@ def main():
     if args.ftetwild_optimize:
         # read by ftetwild_params() inside the fTetWild tier
         os.environ[FTETWILD_OPTIMIZE_ENV] = '1'
-    _dr_mode, _ft_arg = resolve_deep_repair_flags(
-        args.deep_repair, args.no_fallback_ftetwild,
-        args.experimental_fallback_ftetwild)
+    # An explicit deep-repair / fTetWild flag always wins over the intensity
+    # preset; otherwise the preset supplies the deep-repair tier defaults.
+    if (args.deep_repair is not None or args.no_fallback_ftetwild
+            or args.experimental_fallback_ftetwild):
+        _dr_mode, _ft_arg = resolve_deep_repair_flags(
+            args.deep_repair, args.no_fallback_ftetwild,
+            args.experimental_fallback_ftetwild)
+    else:
+        _dr_mode = triage_spec.deep_repair
+        _ft_arg = 'auto' if triage_spec.ftetwild_enabled else False
     results = [process_file(f, human, mode=mode, profile=args.profile,
                             no_history=args.no_history, engine=engine,
                             out=out, max_geom_change=max_geom_change,
@@ -3371,7 +3484,8 @@ def main():
                             autorefine=args.experimental_autorefine,
                             ftetwild=_ft_arg, deep_repair=_dr_mode,
                             indirect_autorefine=args.experimental_indirect_autorefine,
-                            extra_features=args.experimental_edge_tiebreak) for f in files]
+                            extra_features=args.experimental_edge_tiebreak,
+                            triage_spec=triage_spec) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')
