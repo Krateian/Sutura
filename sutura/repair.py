@@ -1053,6 +1053,35 @@ FTETWILD_RETRY_MIN_SECONDS = 10.0
 # repository, the benchmark's input_faces column verifies the split.
 FTETWILD_MAX_FACES = 300000
 
+# Decimation of a wastefully dense fTetWild boundary. fTetWild with
+# optimize=False can return a boundary far denser than the input (measured on
+# thingi10k_73444: 473,212 output faces at 7,882 input faces, against 14,012
+# with optimize=True at the same solver time); the extra faces cost ~65 s of
+# downstream work (manifold3d, Hausdorff, self-intersection/boundary passes)
+# and carry no more shape information. After such an attempt the boundary is
+# decimated with a pymeshlab quadric edge collapse before the manifold3d
+# post-process. The face counts below are only a SIZE BUDGET (is this output
+# wastefully dense?); the quality gate is the Hausdorff comparison against the
+# raw fTetWild boundary (DECIMATE_HD_MARGIN), so a coarse target is accepted
+# whenever it does not make the shape measurably worse.
+DENSE_RATIO = 4
+DENSE_MIN_FACES = 20000
+# Escalating target ladder: multiples of the input face count, tried in order.
+DENSE_TARGET_LADDER = (1.5, 3.0)
+# Quadric edge collapse quality threshold (0..1); 0.3 favours boundary/shape
+# preservation over aggressive simplification.
+DENSE_QUALITY = 0.3
+# A decimated candidate is accepted only when its one-sided Hausdorff distance
+# (relative to the input bbox diagonal) is at most the raw fTetWild boundary's
+# own distance plus this margin: decimation may not make the shape measurably
+# worse than fTetWild already did. 0.5 % of the diagonal.
+DECIMATE_HD_MARGIN = 0.005
+
+# Fixed Hausdorff sample count, independent of the output face count, so a
+# dense output cannot inflate the measurement cost (the previous inline
+# formula scaled the sample count with the output size up to this cap).
+HAUSDORFF_SAMPLES = 200000
+
 _FTETWILD_AVAILABLE = None
 
 
@@ -1290,10 +1319,135 @@ def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_aft
     return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, False
 
 
-def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout):
+def _ftetwild_candidate(ml, tmpdir, cand_v, cand_t):
+    """Measure a boundary candidate and run the manifold3d post-process on it.
+
+    Returns ``(verts, tris, meshset, topo, holes, nm, postprocessed)``; the
+    same measurement/post-process the tier always applied to a single fTetWild
+    boundary."""
+    cand_ms = ml.MeshSet()
+    cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
+                             face_matrix=np.asarray(cand_t, np.int32)))
+    cand_after = cand_ms.apply_filter('get_topological_measures')
+    cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
+    cand_nm = cand_after.get('non_two_manifold_edges', 0)
+    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \
+        _ftetwild_manifold_postprocess(
+            ml, tmpdir, cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+    return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp
+
+
+def _decimate_boundary(ml, cand_v, cand_t, target):
+    """Quadric edge collapse of an fTetWild boundary to ``target`` faces.
+
+    Boundary and topology are preserved and a planar quadric is used, so a
+    closed boundary stays closed. The raw bridge output carries every
+    tetrahedron vertex (interior ones included), so the unreferenced vertices
+    are dropped first. Returns ``(verts, tris)`` or None on failure/empty
+    output (the caller then falls back to the undecimated boundary)."""
+    try:
+        rv, rt = _referenced_only(cand_v, cand_t)
+        if len(rt) == 0:
+            return None
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=rv,
+                            face_matrix=np.asarray(rt, np.int32)))
+        ms.apply_filter('meshing_decimation_quadric_edge_collapse',
+                        targetfacenum=int(target),
+                        qualitythr=DENSE_QUALITY,
+                        preserveboundary=True,
+                        preservenormal=True,
+                        preservetopology=True,
+                        planarquadric=True,
+                        autoclean=True)
+        m = ms.current_mesh()
+        dv = np.asarray(m.vertex_matrix(), np.float64)
+        dt = np.asarray(m.face_matrix(), np.int64)
+        if len(dt) == 0:
+            return None
+        return dv, dt
+    except Exception:
+        return None
+
+
+def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
+    """Decimate a wastefully dense fTetWild boundary and pick a candidate.
+
+    The escalating target ladder ``DENSE_TARGET_LADDER`` (multiples of the
+    input face count) is tried in order. A target is accepted only when its
+    post-processed result is strictly watertight AND its one-sided Hausdorff
+    distance to the input is at most the raw boundary's own distance plus
+    ``DECIMATE_HD_MARGIN``; the raw distance is measured once on the raw
+    boundary, so decimation may not make the shape measurably worse than
+    fTetWild already did (its own result may already exceed the shape
+    threshold, which is a flag, not a rejection). Returns
+    ``(payload_or_None, info)`` where payload is the tuple built by
+    ``_ftetwild_candidate``; None means every target failed and the caller
+    falls back to the undecimated result. ``info`` carries the reported
+    ``ftetwild_*`` fields either way."""
+    input_faces = int(len(t))
+    raw_faces = int(len(cand_t))
+    info = {'ftetwild_decimated': False, 'ftetwild_faces_final': raw_faces,
+            'ftetwild_decimate_time': 0.0}
+    hd_raw, _ = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+    info['ftetwild_hausdorff_raw'] = hd_raw
+    limit = (hd_raw if hd_raw is not None else 0.0) + DECIMATE_HD_MARGIN
+    targets = []
+    for mult in DENSE_TARGET_LADDER:
+        tg = max(int(round(mult * input_faces)), DENSE_MIN_FACES)
+        if tg not in targets:
+            targets.append(tg)
+    attempts = []
+    for tg in targets:
+        t0 = time.perf_counter()
+        try:
+            dec = _decimate_boundary(ml, cand_v, cand_t, tg)
+        except Exception:
+            dec = None
+        info['ftetwild_decimate_time'] = round(
+            info['ftetwild_decimate_time'] + time.perf_counter() - t0, 3)
+        rec = {'target': tg}
+        if dec is None:
+            rec['reason'] = 'decimation_failed'
+            attempts.append(rec)
+            continue
+        dv, dt = dec
+        rec['faces'] = int(len(dt))
+        payload = _ftetwild_candidate(ml, tmpdir, dv, dt)
+        cv, ct, _cms, cafter, choles, cnm, _pp = payload
+        rec['holes'] = int(choles)
+        rec['non_manifold'] = int(cnm)
+        if not (choles == 0 and cnm == 0 and cafter.get('is_mesh_two_manifold')):
+            rec['reason'] = 'not_watertight'
+            attempts.append(rec)
+            continue
+        hd_dec, _ = _hausdorff_rel(ml, v, t, cv, ct)
+        rec['hausdorff_rel'] = hd_dec
+        if hd_dec is None or hd_dec > limit:
+            rec['reason'] = 'hausdorff'
+            attempts.append(rec)
+            continue
+        info.update({'ftetwild_decimated': True,
+                     'ftetwild_faces_final': int(len(dt)),
+                     'ftetwild_decimate_target': tg,
+                     'ftetwild_hausdorff_decimated': hd_dec,
+                     'ftetwild_decimate_attempts': attempts + [rec],
+                     'hausdorff_rel': hd_dec})
+        return payload, info
+    info['ftetwild_decimate_attempts'] = attempts
+    if attempts:
+        info['ftetwild_decimate_fallback'] = attempts[-1].get('reason')
+    return None, info
+
+
+def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None):
     """One fTetWild run on the written input ``inter``, followed by the
-    manifold3d post-process. Returns ``(attempt_report, candidate)`` where
-    candidate is ``(verts, tris, meshset, topo, holes, nm)`` or None."""
+    manifold3d post-process. A wastefully dense boundary
+    (``DENSE_RATIO * max(input_faces, DENSE_MIN_FACES)``) is decimated first
+    and the dense undecimated result is only post-processed when every
+    decimation target fails (see ``_ftetwild_decimate_and_postprocess``).
+    Returns ``(attempt_report, candidate)`` where candidate is
+    ``(verts, tris, meshset, topo, holes, nm)`` or None."""
     out_obj = os.path.join(tmpdir, 'ftetwild_out_%s.obj' % tag)
     t0 = time.perf_counter()
     if params is None:
@@ -1307,15 +1461,27 @@ def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout):
     cand_v, cand_t = read_obj(out_obj)
     if len(cand_t) == 0:
         return att, None
-    cand_ms = ml.MeshSet()
-    cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
-                             face_matrix=np.asarray(cand_t, np.int32)))
-    cand_after = cand_ms.apply_filter('get_topological_measures')
-    cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
-    cand_nm = cand_after.get('non_two_manifold_edges', 0)
-    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm,
-     att['manifold_postprocessed']) = _ftetwild_manifold_postprocess(
-        ml, tmpdir, cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+    raw_faces = int(len(cand_t))
+    att['ftetwild_faces_raw'] = raw_faces
+    att['ftetwild_decimated'] = False
+    att['ftetwild_faces_final'] = raw_faces
+    att['ftetwild_decimate_time'] = 0.0
+    if (v is not None and t is not None
+            and raw_faces > DENSE_RATIO * max(len(t), DENSE_MIN_FACES)):
+        payload, dec_info = _ftetwild_decimate_and_postprocess(
+            ml, tmpdir, cand_v, cand_t, v, t)
+        att.update(dec_info)
+        if payload is not None:
+            cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp = payload
+            att['manifold_postprocessed'] = pp
+            att['output_holes'] = cand_holes
+            att['output_non_manifold'] = cand_nm
+            return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
+        # every decimation target failed: fall through to the undecimated
+        # boundary exactly as before this change
+    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \
+        _ftetwild_candidate(ml, tmpdir, cand_v, cand_t)
+    att['manifold_postprocessed'] = pp
     att['output_holes'] = cand_holes
     att['output_non_manifold'] = cand_nm
     return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
@@ -1371,7 +1537,8 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
                             break
                     else:
                         remaining = None
-                    att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag, params, remaining)
+                    att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag,
+                                                  params, remaining, v, t)
                     attempts.append(att)
                     if cand is None:
                         continue
@@ -1388,8 +1555,12 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
                     ft_rep['adopted_attempt'] = att['attempt']
                     ft_rep.pop('reject_reason', None)
                     # shape flag: fTetWild can close openings and cavities,
-                    # adding surface far from the input
-                    hd_max, _hd_mean = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+                    # adding surface far from the input. A decimated candidate
+                    # already carries the distance measured during its ladder,
+                    # so it is reused instead of recomputed.
+                    hd_max = ft_rep.get('hausdorff_rel')
+                    if hd_max is None:
+                        hd_max, _hd_mean = _hausdorff_rel(ml, v, t, cand_v, cand_t)
                     ft_rep['hausdorff_rel'] = hd_max
                     ft_rep['shape_changed'] = bool(
                         hd_max is not None and hd_max > FTETWILD_MAX_HAUSDORFF_REL)
@@ -1605,7 +1776,7 @@ def _hausdorff_rel(ml, in_v, in_t, out_v, out_t):
                         face_matrix=np.asarray(out_t, np.int32)))     # id 1
     r = hd.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
                         samplevert=True, sampleface=True,
-                        samplenum=int(min(max(len(out_t), 10000), 200000)),
+                        samplenum=HAUSDORFF_SAMPLES,
                         maxdist=ml.PercentageValue(100))
     return (round(float(r.get('max') or 0) / diag, 6),
             round(float(r.get('mean') or 0) / diag, 6))
@@ -2585,6 +2756,9 @@ def human_report(r, show_defects=False, show_diff=False):
             pp = ' + manifold3d post-process' if ft_r.get('manifold_postprocessed') else ''
             if ft_r.get('adopted_attempt') == 'optimize':
                 pp += ' (second attempt, optimisation on)'
+            if ft_r.get('ftetwild_decimated'):
+                pp += ', decimated %d->%d faces' % (ft_r.get('ftetwild_faces_raw', 0),
+                                                    ft_r.get('ftetwild_faces_final', 0))
             lines.append('  fTetWild fallback : %d faces in %.2fs%s, '
                          'holes=%s non-manifold=%s%s' % (
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
