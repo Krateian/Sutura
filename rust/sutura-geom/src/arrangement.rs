@@ -252,6 +252,70 @@ fn weld_point(
     })
 }
 
+/// Order-independent key of the input edge between vertices `a` and `b`,
+/// by coordinates so that duplicated input vertices still share the key.
+fn edge_key(verts: &[[f64; 3]], a: usize, b: usize) -> [u64; 6] {
+    let pa = verts[a].map(f64::to_bits);
+    let pb = verts[b].map(f64::to_bits);
+    let (lo, hi) = if pa <= pb { (pa, pb) } else { (pb, pa) };
+    [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]]
+}
+
+/// For every input edge, the distinct segment endpoints lying strictly
+/// inside it (exact test in the host frame: `t = 0`, `s = 0` or
+/// `s + t = 1`, excluding the corners).
+fn collect_edge_points(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    segments: &[Vec<HostSegment>],
+) -> HashMap<[u64; 6], Vec<Point3>> {
+    use num_traits::{One, Zero};
+    let mut out: HashMap<[u64; 6], Vec<Point3>> = HashMap::new();
+    let mut seen: HashSet<([u64; 6], [RatKey; 3])> = HashSet::new();
+    let zero = BigRational::zero();
+    let one = BigRational::one();
+    for (ti, segs) in segments.iter().enumerate() {
+        if segs.is_empty() {
+            continue;
+        }
+        let t = tris[ti];
+        let frame = match HostFrame::from_points(
+            &Point3::Explicit(verts[t[0]]),
+            &Point3::Explicit(verts[t[1]]),
+            &Point3::Explicit(verts[t[2]]),
+        ) {
+            Some(f) => f,
+            None => continue,
+        };
+        for seg in segs {
+            for p in [&seg.p, &seg.q] {
+                let st = match frame.project(p) {
+                    Some(st) => st,
+                    None => continue,
+                };
+                let on_ab = st.t == zero;
+                let on_ac = st.s == zero;
+                let on_bc = &st.s + &st.t == one;
+                let edge = match (on_ab, on_ac, on_bc) {
+                    (true, false, false) => (t[0], t[1]),
+                    (false, true, false) => (t[0], t[2]),
+                    (false, false, true) => (t[1], t[2]),
+                    _ => continue, // interior point or a corner
+                };
+                let key = edge_key(verts, edge.0, edge.1);
+                let exact = match p.to_rational() {
+                    Some(r) => r.map(RatKey::new),
+                    None => continue,
+                };
+                if seen.insert((key, exact)) {
+                    out.entry(key).or_default().push(p.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Split a self-intersecting triangle soup along its proper-intersection
 /// segments.
 ///
@@ -339,6 +403,18 @@ pub fn arrangement_lite_core(
         }
     }
 
+    // Optional (experimental) edge conformity: a segment endpoint that lies
+    // in the interior of a host's edge is also a vertex of every other input
+    // triangle sharing that edge; without it the host is split there and
+    // its edge neighbour is not, which leaves a T-junction in the output.
+    let edge_points = if crate::cdt2d::experimental::enabled(
+        crate::cdt2d::experimental::PROPAGATE_EDGE_POINTS,
+    ) {
+        collect_edge_points(verts, tris, &segments)
+    } else {
+        HashMap::new()
+    };
+
     let mut pool: Vec<[BigRational; 3]> = Vec::new();
     let mut weld: HashMap<[RatKey; 3], usize> = HashMap::new();
     let mut out_tris: Vec<[usize; 3]> = Vec::new();
@@ -350,7 +426,36 @@ pub fn arrangement_lite_core(
         let b = verts[tri[1]];
         let c = verts[tri[2]];
 
-        if segments[ti].is_empty() {
+        let mut extra: Vec<&Point3> = Vec::new();
+        if !edge_points.is_empty() {
+            for k in 0..3 {
+                if let Some(pts) = edge_points.get(&edge_key(verts, tri[k], tri[(k + 1) % 3])) {
+                    extra.extend(pts.iter());
+                }
+            }
+        }
+
+        if !extra.is_empty()
+            && segments[ti].is_empty()
+            && (HostFrame::from_points(
+                &Point3::Explicit(a),
+                &Point3::Explicit(b),
+                &Point3::Explicit(c),
+            )
+            .is_none()
+                || Triangulation::from_host(
+                    &Point3::Explicit(a),
+                    &Point3::Explicit(b),
+                    &Point3::Explicit(c),
+                )
+                .is_none())
+        {
+            // A degenerate (zero-area) triangle with only propagated edge
+            // points cannot be triangulated; keep it unchanged, as before.
+            extra.clear();
+        }
+
+        if segments[ti].is_empty() && extra.is_empty() {
             let ia = weld_point(&mut pool, &mut weld, rat3(a));
             let ib = weld_point(&mut pool, &mut weld, rat3(b));
             let ic = weld_point(&mut pool, &mut weld, rat3(c));
@@ -393,6 +498,10 @@ pub fn arrangement_lite_core(
                     endpoints: (pi, qi),
                     source: seg.source.clone(),
                 });
+            }
+            for p in &extra {
+                // insert_vertex deduplicates the host's own endpoints.
+                cdt.insert_vertex(p).ok_or("unprojectable edge point")?;
             }
             cdt.add_constraints_batch(&constraint_segments);
 
@@ -484,4 +593,66 @@ mod tests {
         }
         assert_eq!(si_after, 0);
     }
+
+    /// Binary STL reader with exact vertex welding (test helper).
+    fn read_stl_welded(path: &str) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let data = std::fs::read(path).expect("read STL");
+        let n = u32::from_le_bytes(data[80..84].try_into().unwrap()) as usize;
+        let mut index: HashMap<[u32; 3], usize> = HashMap::new();
+        let mut verts = Vec::new();
+        let mut tris = Vec::new();
+        for f in 0..n {
+            let base = 84 + 50 * f + 12;
+            let mut tri = [0usize; 3];
+            for (k, slot) in tri.iter_mut().enumerate() {
+                let o = base + 12 * k;
+                let c: [u32; 3] = std::array::from_fn(|j| {
+                    u32::from_le_bytes(data[o + 4 * j..o + 4 * j + 4].try_into().unwrap())
+                });
+                *slot = *index.entry(c).or_insert_with(|| {
+                    verts.push(c.map(|b| f32::from_bits(b) as f64));
+                    verts.len() - 1
+                });
+            }
+            tris.push(tri);
+        }
+        (verts, tris)
+    }
+
+    /// Undirected edges used by an odd number of triangles.
+    fn odd_use_edges(tris: &[[usize; 3]]) -> usize {
+        let mut count: HashMap<(usize, usize), usize> = HashMap::new();
+        for t in tris {
+            for k in 0..3 {
+                let (u, v) = (t[k], t[(k + 1) % 3]);
+                *count.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+            }
+        }
+        count.values().filter(|&&c| c % 2 == 1).count()
+    }
+
+    /// thingi10k_100045 is closed (no odd-use edge).  The reference split
+    /// leaves T-junctions where a segment endpoint lies inside a host edge;
+    /// propagating those endpoints to the edge neighbours removes all of
+    /// them, and the default behaviour stays the reference one.
+    #[test]
+    fn propagated_edge_points_remove_t_junctions() {
+        use crate::cdt2d::experimental;
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/real-world-samples/thingi10k_100045.stl"
+        );
+        let (verts, tris) = read_stl_welded(path);
+        assert_eq!(odd_use_edges(&tris), 0, "input must be closed");
+
+        experimental::set_options(0);
+        let (_, reference, _) = arrangement_lite_core(&verts, &tris).unwrap();
+        assert!(odd_use_edges(&reference) > 0, "reference output has T-junctions");
+
+        experimental::set_options(experimental::PROPAGATE_EDGE_POINTS);
+        let (_, propagated, _) = arrangement_lite_core(&verts, &tris).unwrap();
+        experimental::set_options(0);
+        assert_eq!(odd_use_edges(&propagated), 0, "T-junctions left after propagation");
+    }
+
 }

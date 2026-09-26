@@ -4,6 +4,12 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 (VCG filter chain), stage 2 = manifold3d solid rebuild. Git repo, branch
 `main`, remote `Krateian/Sutura`.
 
+Project goal: a fast and effective repair tool first, in the spirit of CGAL
+and Netfabb. The default path stays simple and quick; the extras for advanced
+users — the own exact geometry core (`rust/sutura-geom`), the own mesh-type
+classifier, the opt-in experimental tiers — sit behind flags and the GUI's
+Options menu, never in the way of the plain repair.
+
 ## How it runs
 
 - Real entry point is `sutura/repair.py` (JSON report to stdout; `--human` for a readable report; exit 0 on success or a stage-1-only partial, exit 1 on a hard error like malformed input). `bin/sutura` is only a bash wrapper: `exec $HOME/.local/share/sutura/venv/bin/python .../repair.py "$@"`. Two read-only modes share the same entry point: `sutura validate model.stl` (first positional arg `validate`) analyzes without repairing, and `sutura model.stl --dry-run` reports the would-do plan — both write NO output file. Mode/eşik resolution for repair AND dry-run comes from the shared `repair.resolve_mode_params(mode, type, conf)` (single source of truth, like classification.py).
@@ -13,7 +19,7 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - Multi-object 3MF files are repaired object-by-object in memory (numpy arrays), preserving the original archive structure. An object that stage 1 closes gets a **per-object stage 2** watertight rebuild through the shared `repair.maybe_run_stage2` helper (the same gate/OBJ round-trip as single-mesh files); per-object `stage2` reports, `objects_watertight`/`objects_stage2_ok` aggregates, and an ALL-objects file verdict (`classification._classify_objects`) were added in the same change that fixed the layered-mesh Stage-1 collapse. Single-mesh files round-trip through OBJ for stage 2. Byte-identical objects reuse one repair (geometry cache) but each still gets its own per-object report.
 - Read-only analysis lives in `repair.validate_file` / `repair.dry_run_file` (per-mesh: `validate_mesh_from_arrays` / `dry_run_mesh_from_arrays`), both sharing `repair.load_meshes` (STL/OBJ via pymeshlab, 3MF via `parse_3mf_meshes`). `scan_bad_coordinates` skips `.3mf` (its XML parser silently drops non-numeric vertices) and is also the reason single-object 3MF repair works — do not make it treat 3MF as STL again.
 - **Usage history (anonymous, opt-out):** `sutura/history.py` (stdlib+numpy, no pymeshlab) records a purely-technical repair log to `~/.local/share/sutura/history.jsonl` — mesh sizes, defect counts, classifier outcome, mode, category, confidence, timing + a quantized geometry `mesh_fingerprint` (sha256, for dedup). HARD RULE: never store file names/paths/users/IPs — `repair_file`/`repair_3mf` compute the fingerprint and stash it as a transient `report['_fp']` key; `process_file` always runs `history.pop_fingerprints(result)` (so `_fp` never leaks into the JSON stdout report) and, unless `--no-history`, `history.write(...)` (which swallows its own errors — recording never breaks a repair). validate/`--dry-run` never record. `sutura export-history` prints a summary + the full JSON array (one command; `--summary-only`/`--last N`/`--clear`). GUI: `updater.py` `DEFAULT_CONFIG['history_enabled']` (default true) drives the first-run dialog checkbox and `RepairWorker` adding `--no-history`. history.py must stay in the explicit module lists of `install.sh`, `install-macos.sh` and `scripts/build_appimage.sh`.
-- The GUI (`sutura/gui.py`, PySide6) just shells out to the installed `sutura` CLI and parses the last stdout JSON line. Its **Repair Mode** picker (a small "Mode: Auto" button next to the heatmap/before-after buttons) opens `RepairModeDialog`: a five-step horizontal QSlider (low/medium/auto/aggressive/extreme) with a live localized description and OK/Cancel. The mode is stored **batch-wide** on the MainWindow (`self._repair_mode`, default `auto`), not per file, and `RepairWorker` passes it to the CLI as `--mode <mode>`; the chosen mode must therefore be verified in the JSON `repair_mode` of the batch results, not in per-file state.
+- The GUI (`sutura/gui.py`, PySide6) just shells out to the installed `sutura` CLI and parses the last stdout JSON line. The batch-wide `chk_*` checkboxes (fTetWild fallback + SI, autorefine, indirect autorefine, join components, edge tiebreak) are NOT laid out in the action row: they are embedded unchanged as `QWidgetAction`s in the `btn_options` drop-down (`_options_menu`, sections *Fallback tier* / *Experimental (opt-in)*); `_update_options_label` shows the count of options that differ from `_options_defaults`. A new batch-wide option goes into that menu (add it to `_options_defaults` too), not into the row. Its **Repair Mode** picker (a small "Mode: Auto" button next to the heatmap/before-after buttons) opens `RepairModeDialog`: a five-step horizontal QSlider (low/medium/auto/aggressive/extreme) with a live localized description and OK/Cancel. The mode is stored **batch-wide** on the MainWindow (`self._repair_mode`, default `auto`), not per file, and `RepairWorker` passes it to the CLI as `--mode <mode>`; the chosen mode must therefore be verified in the JSON `repair_mode` of the batch results, not in per-file state.
 - Result classification lives in `sutura/classification.py` (stdlib-only, no numpy/pymeshlab): `classify()` returns `(category, issues, summary_key)` and both the CLI (`repair.py`) and the GUI (`gui.py`) import it so they never diverge. "Watertight" is only claimed when stage 2 actually ran and returned `ok`; a stage-1-closed mesh with stage 2 skipped/errored/never-run (e.g. macOS in-process fallback unavailable) is a warning. CLI `--human`/JSON label issues via this module (English, not localized); the GUI localizes the same codes through its EN/TR dictionary.
 - `sutura/confidence.py` (stdlib-only) computes the repair confidence score: `repair_confidence()` (post-repair, category-anchored, stage 2 dominant, hard errors forced to 0/low) and `estimate_confidence_pre_repair()` (validate / `--dry-run` estimate, missing signals ignored). It lazy-imports the tuning gates from `repair.py` (`MECH_TUNE_GATE`/`ORG_TUNE_GATE`) so the score can never drift from the real repair thresholds; shared by the CLI and the GUI.
 - `sutura/defects.py` (stdlib+numpy only) detects the input mesh's holes and non-manifold regions from plain `verts`/`tris` arrays; `repair.py` calls `detect()` on the input and stores it in the report's `defects` key (always in JSON; `--human` only with `--defects`). The GUI renders the selected file's defects in a panel below the log. Keep it free of pymeshlab/trimesh so it stays importable anywhere. `detect(..., with_indices=True)` additionally returns each defect's `verts_idx`/`faces_idx` index lists for the heatmap; the CLI uses the default (False) so its JSON contract is unchanged.
@@ -39,6 +45,7 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - **Reference input and digest:** the OBJ is converted from `tests/real-world-samples/thingi10k_1038441.stl` with trimesh (5.x; its vertex welding is why the subsets differ slightly from the C1 table in the crate README). The reference digest for the full mesh, identical across C1–C4, is `7b05a6fc3b785f42` (37,323 output faces, 4,445 proper SI pairs). Corpus/test OBJs go to `/tmp`, never into the repo.
 - **Measurement (Linux):** `cd rust/sutura-geom && cargo run --release --example arrangement_digest -- /tmp/<mesh>.obj [...]` prints time, face counts and digest per file; `cargo run --release --example bench_arrangement --features profile -- /tmp/<mesh>.obj` gives the per-phase split.
 - **Measurement (macOS, conda env `sutura-env`):** build with `PYO3_PYTHON=/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/bin/python cargo build --release --example arrangement_digest`, then run `DYLD_LIBRARY_PATH=/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/lib ./target/release/examples/arrangement_digest /tmp/thingi10k_1038441.obj`. `DYLD_LIBRARY_PATH` must not be exported while cargo itself runs (libiconv conflict), and without `PYO3_PYTHON` the example links against a different libpython than the one on `DYLD_LIBRARY_PATH`.
+- **Evaluated CDT variants (developer switches, NOT the default):** `cdt2d::experimental` holds per-thread bits (thread-local, so parallel unit tests cannot interfere): 1 = keep constraint flags on `flip` (the default `flip` rebuilds with `Tri::new` and clears the outer-edge flags on the flipped side), 2 = Sloan queue flips instead of split vertices on the constraint, 4 = propagate segment endpoints lying inside a host edge to every triangle sharing that edge (`arrangement::collect_edge_points`; zero-area triangles are kept unchanged). Set them with `SUTURA_CDT_OPTS` (`arrangement_digest`), `sutura_geom._set_cdt_experimental(bits)` or `benchmark_repair_corpus.py --cdt-experimental BITS`. Findings: the reference output has T-junctions exactly where an endpoint lies inside a host edge (bit 4 removes them: 100045 56 -> 0 odd-use edges; regression `propagated_edge_points_remove_t_junctions`), Sloan cuts 1038441 from 37,323 to 32,481 faces and 17.8 s to 13.8 s (regression `sloan_flips_add_no_vertex`), bit 1 has no effect once Sloan is on. End to end on the 40 real-world samples (`--experimental-indirect-autorefine --no-fallback-ftetwild`) strict watertight stays 31/40 for all variants and for the pipeline without the tier; propagation costs ~35 % arrangement time. Default output therefore unchanged; results table in the crate README. Enabling one by default is an output-changing decision (see the rule above).
 - **Timing status, thingi10k_1038441 full mesh:** C1 (v0.4.0) 462.7 s on the Apple M2 / 830 s on the x86_64 VM (2 vCPU); C2 29.8 s / 52.5 s; C3 16.8 s / 28.1 s; C4 10.6 s / 17.6 s. Timings are compared only within one machine. Remaining cost on the VM after C4 (profile build): per-host triangulation 7.4 s, classification 4.6 s, implicit point construction 2.3 s, weld and output 0.06 s (the phases overlap in the profile). On the 90k-face meshes (46012, artec_metal-nut) C4 gains only 1–3 %; their cost lies outside these phases and has not been profiled yet.
 
 ## Backlog (v0.3 notes — diagnosed, NOT fixed yet)
@@ -72,14 +79,12 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - **Strict-watertight but `warning` after fTetWild.** thingi10k_224108 and
   thingi10k_248395 are strictly watertight after the fTetWild fallback, but
   stage 2 is skipped, so the category is `warning`. Not investigated yet.
-- **Sloan-style flipping in the per-host CDT (output-changing).** Non-convex
-  quadrilaterals fall back to a Steiner split; queue flipping would produce
-  fewer split vertices but changes the output, so it needs its own decision
-  and a corpus measurement (see the Rust core performance section).
-- **Pending release.** The changes under `[Unreleased]` in CHANGELOG.md
-  (Phase C2/C3, the fTetWild default, the headless GUI fix) are not tagged;
-  the last release is v0.4.1. The fTetWild default is a user-visible
-  behaviour change, so the next release is a v0.5.0 candidate.
+- **`indirect_bridge.py` rounds the exact arrangement to float32.** The
+  exact output of `--experimental-indirect-autorefine` is converted to
+  `float32` before the stage-1 chain, which can re-create near-coincident
+  or intersecting geometry; the `si_after: 0` in its report holds for the
+  exact output only. A float64 hand-off is the obvious next experiment for
+  the tier (not measured yet).
 
 ## Backlog resolved
 
@@ -173,6 +178,12 @@ Sutura: two-stage STL/3MF mesh repair for 3D printing. Stage 1 = PyMeshLab
 - **Push/commit discipline:** do not commit and push each small fix
   individually. Batch small fixes together and ship them under one
   version bump/release (see Release checklist below).
+- **Versioning (standing rule):** releases advance in small steps — the
+  patch number goes up by 0.0.1 per release (v0.4.1 -> v0.4.2 -> ...),
+  even when the batch contains a user-visible behaviour change. Changes
+  accumulate under `[Unreleased]` in CHANGELOG.md and ship together. A
+  minor bump (vX.(Y+1).0) is the user's explicit decision, never inferred
+  from the size or kind of the batch.
 - **Test/corpus output location:** corpus and test-run files always go to
   `/tmp`, never committed to the repo (see also Cleanup discipline below).
 
