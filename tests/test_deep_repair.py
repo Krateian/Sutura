@@ -85,11 +85,19 @@ def _sphere_with_hole(z_cut=0.95):
 
 
 def test_full_equals_pre_ladder_output():
-    v, t = _load(OPEN_SAMPLE)
-    _same_output(_repair(v, t, ftetwild='auto'),
-                 _repair(v, t, ftetwild='auto', deep_repair='full'))
-    _same_output(_repair(v, t, ftetwild=False),
-                 _repair(v, t, ftetwild=False, deep_repair='full'))
+    """Without fTetWild: fTetWild is not deterministic, so with the extra
+    installed two real 'auto' runs can differ. The fTetWild path is covered
+    with a fake bridge below."""
+    saved = repair.ftetwild_available
+    repair.ftetwild_available = lambda: False
+    try:
+        v, t = _load(OPEN_SAMPLE)
+        _same_output(_repair(v, t, ftetwild='auto'),
+                     _repair(v, t, ftetwild='auto', deep_repair='full'))
+        _same_output(_repair(v, t, ftetwild=False),
+                     _repair(v, t, ftetwild=False, deep_repair='full'))
+    finally:
+        repair.ftetwild_available = saved
 
 
 def test_full_equals_pre_ladder_with_fake_ftetwild():
