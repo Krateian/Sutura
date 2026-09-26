@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
     QCheckBox, QDoubleSpinBox, QSpinBox,
-    QTabWidget, QTextBrowser)
+    QTabWidget, QTextBrowser, QComboBox)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -37,6 +37,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import updater
+import triage
 
 # single source of truth: prefer the package, else the repair.py beside us
 try:
@@ -316,6 +317,25 @@ STRINGS = {
         'profile_name_scan': 'Scan',
         'profile_name_miniature': 'Miniature',
         'profile_name_fast': 'Fast',
+        'intensity_label': 'Intensity:',
+        'intensity_tip': 'Triage Engine effort after Stage 1 (batch-wide). '
+                         'Stage 1 itself is unaffected (use the repair mode).',
+        'intensity_name_quick': 'Quick',
+        'intensity_name_balanced': 'Balanced',
+        'intensity_name_thorough': 'Thorough',
+        'intensity_name_extreme': 'Extreme',
+        'intensity_tip_quick': 'Quick: skip the deep-repair and fTetWild tiers. '
+                               'Fastest; hard meshes can stay open.',
+        'intensity_tip_balanced': 'Balanced (recommended): the shipped default, '
+                                  'identical to Sutura without a preset.',
+        'intensity_tip_thorough': 'Thorough: longer fTetWild budget and an extra '
+                                  'dense decimation rung.',
+        'intensity_tip_extreme': 'Extreme: no input-size cap, long fTetWild '
+                                 'budget, extra decimation rung and an '
+                                 'optimising retry.',
+        'intensity_reset': 'Reset to recommended',
+        'intensity_reset_tip': 'Set Balanced and restore the individual repair '
+                               'options to their defaults.',
         'sug_title': 'Suggestions:',
         'sug_si_many': "Extreme mode's extra cleanup passes may help with these self-intersections.",
         'sug_si_few': 'Extreme mode also tries to clean these up.',
@@ -589,6 +609,25 @@ STRINGS = {
         'profile_name_scan': 'Tarama',
         'profile_name_miniature': 'Miniatür',
         'profile_name_fast': 'Hızlı',
+        'intensity_label': 'Yoğunluk:',
+        'intensity_tip': 'Aşama 1 sonrası Triage Engine çabası (batch geneli). '
+                         'Aşama 1 etkilenmez (onarım modunu kullanın).',
+        'intensity_name_quick': 'Hızlı',
+        'intensity_name_balanced': 'Dengeli',
+        'intensity_name_thorough': 'Kapsamlı',
+        'intensity_name_extreme': 'Ekstrem',
+        'intensity_tip_quick': 'Hızlı: derin onarım ve fTetWild katmanlarını '
+                               'atlar. En hızlısı; zor ağlar açık kalabilir.',
+        'intensity_tip_balanced': 'Dengeli (önerilen): varsayılan; ön ayarsız '
+                                  'Sutura ile aynı davranış.',
+        'intensity_tip_thorough': 'Kapsamlı: daha uzun fTetWild bütçesi ve fazladan '
+                                  'bir yoğun sadeleştirme basamağı.',
+        'intensity_tip_extreme': 'Ekstrem: giriş boyut sınırı yok, uzun fTetWild '
+                                 'bütçesi, fazladan sadeleştirme basamağı ve '
+                                 'optimizasyonlu bir yeniden deneme.',
+        'intensity_reset': 'Önerilene sıfırla',
+        'intensity_reset_tip': 'Dengeli seçer ve bireysel onarım seçeneklerini '
+                               'varsayılana döndürür.',
         'sug_title': 'Öneriler:',
         'sug_si_many': "Extreme modun ekstra temizleme adımları bu self-intersection'lara işe yarayabilir.",
         'sug_si_few': 'Extreme mod bunları ayrıca temizlemeyi dener.',
@@ -889,12 +928,13 @@ class RepairWorker(QThread):
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
-                 parent=None):
+                 intensity='balanced', parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._ftetwild_optimize = ftetwild_optimize
         self._mode = mode
         self._profile = profile
+        self._intensity = intensity
         self._force = force
         self._max_geom_change = max_geom_change
         self._max_risk = max_risk
@@ -936,6 +976,8 @@ class RepairWorker(QThread):
             args = [*SUTURA_CMD, '--mode', self._mode]
             if self._profile:
                 args += ['--profile', self._profile]
+            if self._intensity:
+                args += ['--intensity', self._intensity]
             if self._max_geom_change:
                 args += ['--max-geometry-change', str(self._max_geom_change)]
             if self._max_risk:
@@ -986,11 +1028,13 @@ class AnalyzeWorker(QThread):
     progress = Signal(int, int)          # current, total
     all_done = Signal(bool)              # cancelled
 
-    def __init__(self, files, mode='auto', profile=None, parent=None):
+    def __init__(self, files, mode='auto', profile=None, intensity='balanced',
+                 parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._mode = mode
         self._profile = profile
+        self._intensity = intensity
         self._cancelled = False
         self._proc = None
 
@@ -1021,6 +1065,8 @@ class AnalyzeWorker(QThread):
             _args = [*SUTURA_CMD, '--dry-run', '--mode', self._mode]
             if self._profile:
                 _args += ['--profile', self._profile]
+            if self._intensity:
+                _args += ['--intensity', self._intensity]
             _args.append(path)
             self._proc = subprocess.Popen(
                 _args,
@@ -1735,6 +1781,32 @@ class OptionsDialog(QDialog):
         opt_note.setWordWrap(True)
         opt_note.setContentsMargins(44, 0, 0, 0)
         r.addWidget(opt_note)
+        # Triage Engine intensity preset (batch-wide): controls the effort
+        # after Stage 1 (deep-repair ladder, fTetWild budget/cap, decimation
+        # ladder). Stage 1 stays on the repair mode/profile.
+        int_row = QHBoxLayout()
+        int_row.addWidget(QLabel(_t('intensity_label')))
+        main.intensity_combo = QComboBox()
+        for name in triage.INTENSITIES:
+            main.intensity_combo.addItem(_t('intensity_name_' + name), name)
+            main.intensity_combo.setItemData(
+                main.intensity_combo.count() - 1,
+                _t('intensity_tip_' + name), Qt.ToolTipRole)
+        main.intensity_combo.setToolTip(_t('intensity_tip'))
+        _idx = main.intensity_combo.findData(main._intensity)
+        if _idx >= 0:
+            main.intensity_combo.blockSignals(True)
+            main.intensity_combo.setCurrentIndex(_idx)
+            main.intensity_combo.blockSignals(False)
+        main.intensity_combo.currentIndexChanged.connect(
+            main._on_intensity_combo)
+        int_row.addWidget(main.intensity_combo)
+        main.btn_intensity_reset = QPushButton(_t('intensity_reset'))
+        main.btn_intensity_reset.setToolTip(_t('intensity_reset_tip'))
+        main.btn_intensity_reset.clicked.connect(main._reset_intensity)
+        int_row.addWidget(main.btn_intensity_reset)
+        int_row.addStretch(1)
+        r.addLayout(int_row)
         r.addStretch(1)
         self.tabs.addTab(repair, _t('opt_tab_repair'))
 
@@ -1885,6 +1957,9 @@ class MainWindow(QMainWindow):
         self._before_after_zoom = None
         self._repair_mode = 'auto'    # batch-wide repair mode (not per file)
         self._repair_profile = None   # batch-wide repair profile (not per file)
+        _int = updater.load_config().get('intensity', triage.DEFAULT_INTENSITY)
+        self._intensity = (_int if _int in triage.INTENSITIES
+                           else triage.DEFAULT_INTENSITY)  # Triage Engine preset
         self._edge_tiebreak = False   # batch-wide opt-in edge-tiebreak head (FAZ11)
         self._join_components = False # batch-wide opt-in join-components (FAZ14)
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
@@ -2019,6 +2094,7 @@ class MainWindow(QMainWindow):
             (self.chk_edge_tiebreak, False),
         )
         self._options_dialog = OptionsDialog(self)
+        self._sync_intensity_checkboxes()
         self.btn_options.clicked.connect(
             lambda: self._show_options(OptionsDialog.TAB_REPAIR))
         self._options_shortcut = QShortcut(QKeySequence.Preferences, self)
@@ -2519,6 +2595,7 @@ class MainWindow(QMainWindow):
                                    ftetwild=self._ftetwild,
                                    indirect_autorefine=self._indirect_autorefine,
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
+                                   intensity=self._intensity,
                                    parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
@@ -2542,7 +2619,7 @@ class MainWindow(QMainWindow):
         self.status.setText(_t('analyze_running'))
 
         self.worker = AnalyzeWorker(self.files, self._repair_mode,
-                                   self._repair_profile, self)
+                                    self._repair_profile, self._intensity, self)
         self.worker.file_done.connect(self._on_analyze_done)
         self.worker.progress.connect(self._on_analyze_progress)
         self.worker.all_done.connect(self._on_analyze_all_done)
@@ -2619,6 +2696,42 @@ class MainWindow(QMainWindow):
     def _on_profile_changed(self, index):
         """Batch-wide repair profile selection (None = auto/classifier)."""
         self._repair_profile = self.profile_combo.itemData(index)
+
+    def _on_intensity_combo(self, index):
+        """Batch-wide Triage Engine intensity selection."""
+        name = self.intensity_combo.itemData(index)
+        if name:
+            self._set_intensity(name)
+
+    def _set_intensity(self, name):
+        self._intensity = name
+        OptionsDialog._save_key('intensity', name)
+        # Keep the fTetWild fallback checkbox in sync with the preset's
+        # default (Quick turns it off; the other presets turn it back on).
+        spec = triage.PRESETS.get(name)
+        if spec is not None and self.chk_fallback_ftetwild.isChecked() != bool(
+                spec.ftetwild_enabled):
+            self.chk_fallback_ftetwild.setChecked(bool(spec.ftetwild_enabled))
+        self._update_options_label()
+
+    def _reset_intensity(self):
+        """Reset to the recommended Balanced preset and restore every
+        individual repair option to its default."""
+        idx = self.intensity_combo.findData(triage.DEFAULT_INTENSITY)
+        if idx >= 0 and self.intensity_combo.currentIndex() != idx:
+            self.intensity_combo.setCurrentIndex(idx)
+        self._set_intensity(triage.DEFAULT_INTENSITY)
+        for chk, default in self._options_defaults:
+            if chk.isChecked() != default:
+                chk.setChecked(default)
+        self._update_options_label()
+
+    def _sync_intensity_checkboxes(self):
+        """On startup, reflect a non-default preset (e.g. Quick from the
+        config) in the fTetWild checkbox."""
+        spec = triage.PRESETS.get(self._intensity)
+        if spec is not None and not spec.ftetwild_enabled:
+            self.chk_fallback_ftetwild.setChecked(False)
 
     def _on_choose_repair_mode(self):
         """Open the repair-mode dialog (mode + repair budgets); apply to the
