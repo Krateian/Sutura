@@ -1,0 +1,309 @@
+name: Linux Install E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ubuntu-install:
+    name: Ubuntu Install E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system GL/Qt libraries and desktop-file-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopengl0 libgl1 libglu1-mesa libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3 desktop-file-utils
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Verify python3.11 discovery
+        run: |
+          command -v python3.11
+          python3.11 --version
+
+      - name: Set fresh HOME
+        run: |
+          mkdir -p /tmp/fresh-home
+          echo "HOME=/tmp/fresh-home" >> "$GITHUB_ENV"
+
+      - name: Run installer non-interactively
+        env:
+          SUTURA_WITH_FTETWILD: "1"
+        run: ./install.sh
+
+      - name: "Check a: CLI repair on broken mesh and 3 real-world samples"
+        run: |
+          python3 tests/make_broken_stl.py /tmp/broken.stl
+          "$HOME/.local/bin/sutura" /tmp/broken.stl > /tmp/broken.json 2>&1 || true
+          cat /tmp/broken.json
+          "$HOME/.local/share/sutura/venv/bin/python" -c "import json; d=json.load(open('/tmp/broken.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
+
+          for sample in thingi10k_100173.stl thingi10k_475828.stl thingi10k_100077.stl; do
+            echo "Testing repair on $sample"
+            "$HOME/.local/bin/sutura" "tests/real-world-samples/$sample" -o "/tmp/${sample}_fixed.stl" > "/tmp/${sample}.json"
+            "$HOME/.local/share/sutura/venv/bin/python" -c "import json; d=json.load(open('/tmp/${sample}.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
+          done
+
+      - name: "Check b: desktop-file-validate on application and ServiceMenu structural checks"
+        run: |
+          echo "--- Validating application entry strictly ---"
+          desktop-file-validate "$HOME/.local/share/applications/sutura.desktop"
+
+          echo "--- Validating ServiceMenu structural requirements ---"
+          for f in "$HOME/.local/share/kio/servicemenus"/*.desktop; do
+            [ -f "$f" ] || continue
+            echo "Checking ServiceMenu: $f"
+
+            # 1. File must be executable (KDE 6 requirement)
+            if [ ! -x "$f" ]; then
+              echo "::error::$f is not executable (KDE 6 refuses non-executable servicemenus)!"
+              exit 1
+            fi
+
+            # 2. [Desktop Entry] has Type=Service, non-empty MimeType=, and Actions= list
+            if ! grep -q -E '^\[Desktop Entry\]' "$f"; then
+              echo "::error::$f is missing [Desktop Entry] section!"
+              exit 1
+            fi
+            if ! grep -q -E '^Type=Service[[:space:]]*$' "$f"; then
+              echo "::error::$f is missing Type=Service!"
+              exit 1
+            fi
+            if ! grep -q -E '^MimeType=[^[:space:]]+' "$f"; then
+              echo "::error::$f has missing or empty MimeType=!"
+              exit 1
+            fi
+            actions_val=$(grep -E '^Actions=[^[:space:]]+' "$f" | head -n1 | cut -d'=' -f2- || true)
+            if [ -z "$actions_val" ]; then
+              echo "::error::$f has missing or empty Actions= list!"
+              exit 1
+            fi
+
+            # 3. Every action id in Actions= has matching [Desktop Action <id>] with Name= and Exec=
+            IFS=';' read -ra action_ids <<< "$actions_val"
+            for action in "${action_ids[@]}"; do
+              action=$(echo "$action" | xargs)
+              [ -z "$action" ] && continue
+              echo "  Validating action group: [Desktop Action $action]"
+              if ! awk -v grp="[Desktop Action $action]" '
+                $0 ~ "^\\[" { in_grp = ($0 == grp) }
+                in_grp && /^Name=[^[:space:]]+/ { has_name = 1 }
+                in_grp && /^Exec=[^[:space:]]+/ { has_exec = 1 }
+                END { if (!has_name || !has_exec) exit 1 }
+              ' "$f"; then
+                echo "::error::Action [$action] in $f missing [Desktop Action $action] group, Name=, or Exec=!"
+                exit 1
+              fi
+              echo "  OK: [Desktop Action $action] has Name= and Exec="
+            done
+          done
+
+          echo "--- Checking Exec= targets ---"
+          for f in "$HOME/.local/share/applications/sutura.desktop" "$HOME/.local/share/kio/servicemenus"/*.desktop; do
+            [ -f "$f" ] || continue
+            echo "Scanning Exec lines in $f..."
+            while IFS='=' read -r key val; do
+              val=$(echo "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+              target=$(echo "$val" | awk '{print $1}')
+              echo "  Found Exec target token: '$target'"
+              if [[ "$target" == /* ]]; then
+                resolved="$target"
+              else
+                resolved=$(command -v "$target" || true)
+              fi
+              if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
+                echo "::error::Target '$target' in $f (resolved to '$resolved') does not exist or is not executable!"
+                exit 1
+              fi
+              echo "  OK: '$resolved' is executable"
+              # If second argument is a script path (starts with / and not freedesktop parameter %F), verify it exists
+              arg2=$(echo "$val" | awk '{print $2}')
+              if [[ "$arg2" == /* ]] && [[ "$arg2" != %* ]]; then
+                if [ ! -f "$arg2" ]; then
+                  echo "::error::Script argument '$arg2' in $f does not exist!"
+                  exit 1
+                fi
+                echo "  OK: script argument '$arg2' exists"
+              fi
+            done < <(grep -E '^[[:space:]]*Exec=' "$f")
+          done
+
+      - name: "Check c: GUI smoke test (offscreen)"
+        run: |
+          echo "--- Part 1: Programmatic MainWindow construct & clean quit ---"
+          timeout 30s "$HOME/.local/share/sutura/venv/bin/python" -c '
+          import os, sys
+          os.environ["QT_QPA_PLATFORM"] = "offscreen"
+          sys.path.insert(0, os.path.expanduser("~/.local/share/sutura"))
+          from PySide6.QtWidgets import QApplication
+          from PySide6.QtCore import QTimer
+          import gui
+          app = QApplication([])
+          win = gui.MainWindow()
+          win.show()
+          QTimer.singleShot(200, app.quit)
+          ret = app.exec()
+          assert ret == 0, f"app.exec returned {ret}"
+          print("GUI-SMOKE-CONSTRUCT-OK")
+          '
+
+          echo "--- Part 2: Real installed GUI launcher under offscreen (timeout 15) ---"
+          gui_exec=$(grep -E '^[[:space:]]*Exec=' "$HOME/.local/share/applications/sutura.desktop" | head -n1 | cut -d'=' -f2-)
+          echo "Executing: $gui_exec"
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 15 bash -c "$gui_exec" 2>/tmp/gui_stderr.log
+          gui_rc=$?
+          set -e
+
+          echo "GUI process exited with return code: $gui_rc"
+          echo "=== GUI stderr ==="
+          cat /tmp/gui_stderr.log
+          echo "=================="
+
+          if [ "$gui_rc" -eq 124 ]; then
+            echo "GUI stayed alive for 15s without crashing (PASS)."
+          elif [ "$gui_rc" -eq 0 ]; then
+            echo "GUI exited cleanly with code 0 (PASS)."
+          else
+            echo "::error::GUI launcher exited prematurely with unexpected return code $gui_rc!"
+            exit 1
+          fi
+
+      - name: "Check d: fTetWild real path exercised"
+        run: |
+          SUTURA_DIR="$HOME/.local/share/sutura" "$HOME/.local/share/sutura/venv/bin/python" tests/test_ftetwild_default.py > /tmp/ftetwild.log 2>&1
+          cat /tmp/ftetwild.log
+          if grep -q "skipped: fTetWild extra not installed" /tmp/ftetwild.log; then
+            echo "::error::Output contained 'skipped: fTetWild extra not installed'!"
+            exit 1
+          fi
+          grep -q "fTetWild default tests passed" /tmp/ftetwild.log
+
+  arch-install:
+    name: Arch Linux Install E2E
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install base dependencies
+        run: |
+          pacman -Syu --noconfirm base-devel git python desktop-file-utils sudo libglvnd fontconfig
+
+      - uses: actions/checkout@v7
+
+      - name: Setup non-root archuser
+        run: |
+          useradd -m -s /bin/bash archuser
+          echo "archuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R archuser:archuser "$GITHUB_WORKSPACE"
+
+      - name: Run install.sh and verify Python 3.11 standalone runtime
+        run: |
+          su - archuser -c "cd '$GITHUB_WORKSPACE' && ./install.sh"
+          su - archuser -c "test -x ~/.local/share/sutura/python311/bin/python3.11"
+          su - archuser -c "~/.local/share/sutura/venv311/bin/python -c \"import sys; assert sys.version_info[:2] == (3, 11), sys.version\""
+
+      - name: "Check a: CLI repair (if install succeeded)"
+        run: |
+          su - archuser -c "python3 '$GITHUB_WORKSPACE/tests/make_broken_stl.py' /tmp/broken.stl"
+          su - archuser -c "~/.local/bin/sutura /tmp/broken.stl > /tmp/broken.json 2>&1 || true"
+          su - archuser -c "~/.local/share/sutura/venv/bin/python -c \"import json; d=json.load(open('/tmp/broken.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d\""
+          for sample in thingi10k_100173.stl thingi10k_475828.stl thingi10k_100077.stl; do
+            su - archuser -c "~/.local/bin/sutura '$GITHUB_WORKSPACE/tests/real-world-samples/$sample' -o /tmp/${sample}_fixed.stl > /tmp/${sample}.json"
+            su - archuser -c "~/.local/share/sutura/venv/bin/python -c \"import json; d=json.load(open('/tmp/${sample}.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d\""
+          done
+
+      - name: "Check b: ServiceMenu validation (if install succeeded)"
+        run: |
+          su - archuser << 'EOF'
+          echo "--- Validating application entry strictly ---"
+          desktop-file-validate ~/.local/share/applications/sutura.desktop
+
+          echo "--- Validating ServiceMenu structural requirements ---"
+          for f in ~/.local/share/kio/servicemenus/*.desktop; do
+            [ -f "$f" ] || continue
+            echo "Checking ServiceMenu: $f"
+
+            # 1. File must be executable (KDE 6 requirement)
+            if [ ! -x "$f" ]; then
+              echo "::error::$f is not executable (KDE 6 refuses non-executable servicemenus)!"
+              exit 1
+            fi
+
+            # 2. [Desktop Entry] has Type=Service, non-empty MimeType=, and Actions= list
+            if ! grep -q -E '^\[Desktop Entry\]' "$f"; then
+              echo "::error::$f is missing [Desktop Entry] section!"
+              exit 1
+            fi
+            if ! grep -q -E '^Type=Service[[:space:]]*$' "$f"; then
+              echo "::error::$f is missing Type=Service!"
+              exit 1
+            fi
+            if ! grep -q -E '^MimeType=[^[:space:]]+' "$f"; then
+              echo "::error::$f has missing or empty MimeType=!"
+              exit 1
+            fi
+            actions_val=$(grep -E '^Actions=[^[:space:]]+' "$f" | head -n1 | cut -d'=' -f2- || true)
+            if [ -z "$actions_val" ]; then
+              echo "::error::$f has missing or empty Actions= list!"
+              exit 1
+            fi
+
+            # 3. Every action id in Actions= has matching [Desktop Action <id>] with Name= and Exec=
+            IFS=';' read -ra action_ids <<< "$actions_val"
+            for action in "${action_ids[@]}"; do
+              action=$(echo "$action" | xargs)
+              [ -z "$action" ] && continue
+              echo "  Validating action group: [Desktop Action $action]"
+              if ! awk -v grp="[Desktop Action $action]" '
+                $0 ~ "^\\[" { in_grp = ($0 == grp) }
+                in_grp && /^Name=[^[:space:]]+/ { has_name = 1 }
+                in_grp && /^Exec=[^[:space:]]+/ { has_exec = 1 }
+                END { if (!has_name || !has_exec) exit 1 }
+              ' "$f"; then
+                echo "::error::Action [$action] in $f missing [Desktop Action $action] group, Name=, or Exec=!"
+                exit 1
+              fi
+              echo "  OK: [Desktop Action $action] has Name= and Exec="
+            done
+          done
+
+          echo "--- Checking Exec= targets ---"
+          for f in ~/.local/share/applications/sutura.desktop ~/.local/share/kio/servicemenus/*.desktop; do
+            [ -f "$f" ] || continue
+            echo "Scanning Exec lines in $f..."
+            while IFS='=' read -r key val; do
+              val=$(echo "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+              target=$(echo "$val" | awk '{print $1}')
+              echo "  Found Exec target token: $target"
+              if [[ "$target" == /* ]]; then
+                resolved="$target"
+              else
+                resolved=$(command -v "$target" || true)
+              fi
+              if [ -z "$resolved" ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
+                echo "::error::Target '$target' in $f (resolved to '$resolved') does not exist or is not executable!"
+                exit 1
+              fi
+              echo "  OK: '$resolved' is executable"
+              arg2=$(echo "$val" | awk '{print $2}')
+              if [[ "$arg2" == /* ]] && [[ "$arg2" != %* ]]; then
+                if [ ! -f "$arg2" ]; then
+                  echo "::error::Script argument '$arg2' in $f does not exist!"
+                  exit 1
+                fi
+                echo "  OK: script argument '$arg2' exists"
+              fi
+            done < <(grep -E '^[[:space:]]*Exec=' "$f")
+          done
+          EOF

@@ -324,6 +324,15 @@ All notable changes to this project are documented here.
   entry, is adopted after the manifold3d post-process (25.8 s, watertight).
   The one remaining strict failure is artec_metal-nut, where fTetWild hits
   its 180 s budget.
+- **`install.sh` failed on Arch Linux due to non-existent `python311` package.**
+  On Arch Linux, where Python 3.11 is not available in the official repositories,
+  `install.sh` previously instructed users to run `sudo pacman -S python311`,
+  which fails. `install.sh` now automatically downloads and verifies a
+  relocatable `python-build-standalone` CPython 3.11 runtime (~30 MB download,
+  ~100 MB installed) into `~/.local/share/sutura/python311` for stage 2 if neither
+  system `python3.11` nor `MAIN_PY` is 3.11. Added SHA-256 verification against the
+  release checksums, architecture gating (`x86_64` and `aarch64`), and an opt-out
+  via `SUTURA_NO_PYTHON_DOWNLOAD=1`.
 
 ### Folded from the previously unreleased v0.4.2 batch
 

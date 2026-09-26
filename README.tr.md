@@ -327,7 +327,7 @@ macOS (Apple Silicon / Intel):
 
 Linux Python 3.11 kurulumu:
 
-* Arch / CachyOS: `sudo pacman -S python311`
+* Arch: Python 3.11 resmi depolarda bulunmaz; `install.sh` eksik olduğunda otomatik olarak taşınabilir bir çalışma zamanı indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir)
 * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
 * Fedora: `sudo dnf install python3.11`
 
@@ -336,12 +336,15 @@ Diğer dağıtımlarda, varsayılan `python3` *3.11 ise* ek kurulum gerekmez.
 ## Sorun Giderme
 
 * **`python3.11` bulunamadı.** Aşama 2 (manifold3d) Python 3.11 gerektirir
-  çünkü manifold3d yalnızca 3.13'e kadar wheel sunar. Dağıtıma göre kurun:
-  * Arch / CachyOS: `sudo pacman -S python311`
+  çünkü manifold3d yalnızca 3.13'e kadar wheel sunar. Sistemde `python3.11`
+  bulunmadığında (örneğin Python 3.11'in resmi depolarda bulunmadığı Arch Linux
+  gibi dağıtımlarda), `install.sh` otomatik olarak `~/.local/share/sutura/python311`
+  dizinine bağımsız bir CPython 3.11 çalışma zamanı indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1`
+  ile devre dışı bırakılabilir). İsteğe bağlı olarak dağıtıma göre de kurulabilir:
   * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
   * Fedora: `sudo dnf install python3.11`
-  Sonra `install.sh`'ı yeniden çalıştırın — mevcut sanal ortamları yeniden
-  kullanır.
+  Sonra `install.sh`'ı yeniden çalıştırın — mevcut çalışma zamanlarını ve sanal
+  ortamları yeniden kullanır.
 * **PySide6 kurulumu başarısız.** GUI, `venv`'e PyPI'dan kurulan
   `PySide6-Essentials` gerektirir. `pip install PySide6-Essentials`'ın
   başarısız olduğu dağıtımlarda (eksik derleme araçları veya engellenen PyPI),
@@ -449,7 +452,7 @@ Sutura ortamına kurar/kaldırır ve önce indirme ve disk boyutlarını göster
 Her ikisi de desteklenmeyen düzenleri (AppImage, `.dmg`, sistem Python'u)
 gerekçeyle reddeder.
 
-Arch'ta `python311` kurulu değilse önce kurun (yukarıya bakın).
+Arch'ta sistemde `python3.11` yoksa `install.sh` aşama 2 için bağımsız bir Python 3.11 çalışma zamanını otomatik olarak indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir).
 
 ### macOS
 
