@@ -254,6 +254,38 @@ def test_bowtie_with_real_stage2():
     assert done, 'manifold3d post-process not adopted'
     assert holes == 0 and nm == 0 and topo.get('is_mesh_two_manifold')
 
+
+def test_bridge_default_params_and_override():
+    """fTetWild runs with optimize=False unless the caller overrides it."""
+    import ftetwild_bridge
+    assert ftetwild_bridge.DEFAULT_PARAMS == {'optimize': False}
+    assert ftetwild_bridge.tetrahedralize_params() == {'optimize': False}
+    assert ftetwild_bridge.tetrahedralize_params(
+        {'optimize': True, 'edge_length_fac': 0.1}) == {
+            'optimize': True, 'edge_length_fac': 0.1}
+    assert ftetwild_bridge.DEFAULT_PARAMS == {'optimize': False}  # not mutated
+
+
+def test_run_ftetwild_passes_params_to_the_bridge():
+    """run_ftetwild forwards params as a JSON argument; without params the
+    bridge is called exactly as before (two arguments)."""
+    import json as _json
+    import types
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout='{"ok": true}\n', stderr='')
+    saved = repair.subprocess.run
+    repair.subprocess.run = fake_run
+    try:
+        repair.run_ftetwild('/tmp/in.obj', '/tmp/out.obj')
+        repair.run_ftetwild('/tmp/in.obj', '/tmp/out.obj', {'optimize': True})
+    finally:
+        repair.subprocess.run = saved
+    assert seen[0][-2:] == ['/tmp/in.obj', '/tmp/out.obj'], seen[0]
+    assert _json.loads(seen[1][-1]) == {'optimize': True}, seen[1]
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):
