@@ -1041,6 +1041,18 @@ FTETWILD_MAX_HAUSDORFF_REL = 0.01
 FTETWILD_RETRY_PARAMS = {'optimize': True}
 FTETWILD_RETRY_MIN_SECONDS = 10.0
 
+# Input size above which the fTetWild tier is not started
+# (reject_reason='too_large'). The limit follows from the budget: the
+# slowest completed runs on the 40 real-world samples took ~55 s
+# (thingi10k_100281) at 90,000 faces, so even with linear scaling a mesh
+# above ~300,000 faces cannot finish in FTETWILD_TIMEOUT=180 s. The six
+# Artec scans of the 115-mesh corpus that reach the tier (dense scans of
+# millions of faces) timed out at 180 s in every run; skipping them saves
+# ~18 min per corpus run. The 90k-face samples (the largest of the 40)
+# stay below the limit. Provisional; the corpus face counts are not in the
+# repository, the benchmark's input_faces column verifies the split.
+FTETWILD_MAX_FACES = 300000
+
 _FTETWILD_AVAILABLE = None
 
 
@@ -1312,7 +1324,8 @@ def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout):
 def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
     """fTetWild basamak of the deep-repair ladder. Returns ``(ms, after)``.
 
-    The first attempt uses the bridge defaults
+    Skipped for inputs above FTETWILD_MAX_FACES (reject_reason
+    'too_large'). The first attempt uses the bridge defaults
     (optimize=False); when its boundary fails the holes/non-manifold guard,
     one retry with FTETWILD_RETRY_PARAMS runs within the remaining budget.
     ``attempts`` lists every run, ``adopted_attempt`` names the adopted one;
@@ -1332,6 +1345,12 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
             ms.apply_filter('compute_selection_by_self_intersections_per_face')
             cur_si = int(ms.current_mesh().face_selection_array().sum())
         if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
+            if len(t) > FTETWILD_MAX_FACES:
+                stats['experimental_ftetwild'] = {
+                    'ran': False, 'adopted': False, 'reject_reason': 'too_large',
+                    'input_faces': int(len(t)), 'max_faces': FTETWILD_MAX_FACES,
+                    'trigger': ft_rep['trigger']}
+                return ms, after
             try:
                 inter = os.path.join(tmpdir, 'ftetwild_in.obj')
                 write_obj(inter, v, t)
@@ -1792,7 +1811,8 @@ def _deep_repair_offer(stats, holes, nm, n_faces):
     tiers = []
     if dr['mode'] == 'off':
         tiers.append('local')
-    if dr['mode'] in ('off', 'local') and ftetwild_available():
+    if (dr['mode'] in ('off', 'local') and ftetwild_available()
+            and n_faces <= FTETWILD_MAX_FACES):
         tiers.append('ftetwild')
     if tiers:
         dr['available'] = {
@@ -2548,7 +2568,10 @@ def human_report(r, show_defects=False, show_diff=False):
                                              ar_r.get('iterations', 0), conv, adopted))
     ft_r = r.get('experimental_ftetwild')
     if ft_r:
-        if ft_r.get('ran') and 'error' in ft_r:
+        if ft_r.get('reject_reason') == 'too_large':
+            lines.append('  fTetWild fallback : skipped (%d faces, limit %d)'
+                         % (ft_r.get('input_faces', 0), ft_r.get('max_faces', 0)))
+        elif ft_r.get('ran') and 'error' in ft_r:
             lines.append('  fTetWild fallback : error (%s)'
                          % ft_r['error'][:60])
         elif ft_r.get('ran'):
