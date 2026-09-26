@@ -89,8 +89,10 @@ their terms):
 
 - **fTetWild / pytetwild** — MPL-2.0. `sutura/ftetwild_bridge.py` calls the
   `pytetwild` wrapper around fTetWild (https://github.com/wildmeshing/fTetWild,
-  wrapper https://github.com/pyvista/pytetwild) behind the opt-in
-  `--experimental-fallback-ftetwild` flag / GUI checkbox (FAZ17). Used only as
+  wrapper https://github.com/pyvista/pytetwild). Since v0.5.0 the fallback is
+  active by default when the optional extra is installed; the CLI opt-out is
+  `--no-fallback-ftetwild`, while `--experimental-fallback-ftetwild` additionally
+  runs it on closed-but-self-intersecting results (GUI checkbox, FAZ17). Used only as
   an unmodified dependency: no Sutura source is converted to MPL (MPL-2.0 is
   file-level copyleft), and the MPL-2.0 license text + upstream URLs are the
   full notice required when distributing the dependency or a bundled wheel.

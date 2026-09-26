@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented here.
 
+## [0.5.1] - 2026-09-27
+
+### Fixed
+
+- **Self-update module list.** `sutura/updater.py`'s `_copy_python_files` and
+  `_install_linux` now copy every module the application imports: `triage.py`,
+  `history.py`, `autorefine.py` and `mesh_classifier_v2.py` were missing, so a
+  self-update could leave an installed module at its old version (or absent on
+  a fresh install) and silently degrade the engine layer. The lists are now a
+  single `APP_MODULES` constant, and `tests/test_updater.py` asserts it matches
+  install.sh's install list so the two can no longer drift.
+- **CI test coverage.** The triage (`tests/test_triage.py`,
+  `tests/test_triage_profiles.py`), external-engine (`tests/test_engines.py`,
+  `tests/test_engine_integration.py`, `tests/test_engines_gui.py`) and
+  fTetWild-manager (`tests/test_ftetwild_manager.py`) suites now run in
+  `.github/workflows/ci.yml`; they existed but were never executed by CI.
+- **Engine executable resolution.** `sutura/engines.py`'s
+  `resolve_executable` no longer follows symlinks, so an engine whose command
+  is a virtualenv interpreter (`.../venv/bin/python`) runs inside that venv
+  instead of the base interpreter (which lost the venv's site-packages). This
+  only surfaced once `tests/test_engine_integration.py` ran in CI.
+- **Documentation corrections.** In README.md / README.tr.md: the Turkish
+  preamble sentence that had been split across two sections was rejoined, the
+  localized Options tab is `Onarım` (not `Repair`), the original-view defect
+  RGB `(235,60,70)` was added to the Turkish text, the `ftetwild
+  install|uninstall` subcommands are no longer described as read-only, and the
+  test-suite list now includes triage. `docs/cli-gui-parity-notes.md` has a
+  missing bullet line break fixed, and `docs/ATTRIBUTION.md` now states that
+  the fTetWild fallback is active by default when installed rather than opt-in.
+
 ## [0.5.0] - 2026-09-26
 
 ### Added

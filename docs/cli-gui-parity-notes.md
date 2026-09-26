@@ -51,7 +51,8 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
-  CLI-only / GUI-only items above.- **Deep-repair ladder:** `--deep-repair {off,local,full}` (config key
+  CLI-only / GUI-only items above.
+- **Deep-repair ladder:** `--deep-repair {off,local,full}` (config key
   `deep_repair`) is CLI-only for now — an open, documented gap. The GUI
   side (first run without deep repair, a pop-up with the
   `deep_repair.available` estimate, an *Options* setting that writes the

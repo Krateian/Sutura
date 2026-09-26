@@ -109,6 +109,27 @@ def test_should_check():
     assert updater.should_check({'check_for_updates': True, 'check_on_startup': True, 'last_check': now - 10})
 
 
+def test_module_lists_match_install_sh():
+    """The self-update module lists must cover every module install.sh installs.
+
+    A module imported by repair.py/gui.py but missing from APP_MODULES
+    silently survives an update at its old version (the AGENTS.md standing
+    rule that triage.py/engines.py/ftetwild_manager.py stay listed). Comparing
+    against install.sh keeps one source of truth for the application modules.
+    """
+    import re
+    import updater
+
+    with open(os.path.join(REPO, 'install.sh')) as f:
+        src = f.read()
+    installed = set(re.findall(r'\$SRC/sutura/(\w+\.py)\b', src))
+    assert installed, 'no sutura modules found in install.sh'
+    listed = set(updater.APP_MODULES)
+    assert installed == listed, (
+        'updater.APP_MODULES != install.sh list; missing %s, extra %s'
+        % (sorted(installed - listed), sorted(listed - installed)))
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):
