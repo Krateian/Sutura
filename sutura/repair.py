@@ -1380,7 +1380,10 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
     ``DECIMATE_HD_MARGIN``; the raw distance is measured once on the raw
     boundary, so decimation may not make the shape measurably worse than
     fTetWild already did (its own result may already exceed the shape
-    threshold, which is a flag, not a rejection). Returns
+    threshold, which is a flag, not a rejection). A raw boundary already
+    within ``FTETWILD_MAX_HAUSDORFF_REL`` additionally requires the
+    decimated candidate to stay within it, so decimation can never turn an
+    unflagged result into a flagged one. Returns
     ``(payload_or_None, info)`` where payload is the tuple built by
     ``_ftetwild_candidate``; None means every target failed and the caller
     falls back to the undecimated result. ``info`` carries the reported
@@ -1392,6 +1395,15 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
     hd_raw, _ = _hausdorff_rel(ml, v, t, cand_v, cand_t)
     info['ftetwild_hausdorff_raw'] = hd_raw
     limit = (hd_raw if hd_raw is not None else 0.0) + DECIMATE_HD_MARGIN
+    # A raw boundary already inside the shape threshold must not be pushed
+    # over it by decimation: otherwise an UNFLAGGED fTetWild result becomes a
+    # FLAGGED one for a face-count gain (thingi10k_78968: raw 0.0087, a
+    # decimated 0.0126 within the margin but past the 0.01 threshold). When
+    # the raw boundary is already above the threshold the margin rule alone
+    # applies -- fTetWild's own result is the reference, and a flag is not a
+    # rejection there.
+    raw_within_shape = (hd_raw is not None
+                        and hd_raw <= FTETWILD_MAX_HAUSDORFF_REL)
     targets = []
     for mult in DENSE_TARGET_LADDER:
         tg = max(int(round(mult * input_faces)), DENSE_MIN_FACES)
@@ -1423,12 +1435,20 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t):
             continue
         hd_dec, _ = _hausdorff_rel(ml, v, t, cv, ct)
         rec['hausdorff_rel'] = hd_dec
-        if hd_dec is None or hd_dec > limit:
+        if (hd_dec is None or hd_dec > limit
+                or (raw_within_shape
+                    and hd_dec > FTETWILD_MAX_HAUSDORFF_REL)):
             rec['reason'] = 'hausdorff'
             attempts.append(rec)
             continue
         info.update({'ftetwild_decimated': True,
-                     'ftetwild_faces_final': int(len(dt)),
+                     # ``*_faces_final`` is the candidate actually adopted,
+                     # AFTER the in-tier manifold3d post-process (which can
+                     # add faces); ``*_faces_decimated`` is the quadric output
+                     # before it. Neither is the final file's face count --
+                     # stage 2 rebuilds the adopted boundary again.
+                     'ftetwild_faces_final': int(len(ct)),
+                     'ftetwild_faces_decimated': int(len(dt)),
                      'ftetwild_decimate_target': tg,
                      'ftetwild_hausdorff_decimated': hd_dec,
                      'ftetwild_decimate_attempts': attempts + [rec],
@@ -1769,6 +1789,16 @@ def _hausdorff_rel(ml, in_v, in_t, out_v, out_t):
     diag = float(np.linalg.norm(in_v.max(0) - in_v.min(0)))
     if not diag:
         return None, None
+    # The filter's ``maxdist`` is a ``PercentageValue`` and CLIPS every
+    # distance above it, reporting exactly the cap (a raw and a decimated
+    # candidate would then look equally far from the input). It is hard-capped
+    # at 100 by pymeshlab (``InvalidPercentageException`` above that), and
+    # 100 % is measured against the UNION bounding box of the two meshes, i.e.
+    # exactly the largest possible point-to-point distance between them
+    # (verified: displacements of 1.5x-100x the input diagonal come back
+    # unclipped). ``PercentageValue(100)`` is therefore the maximum the API
+    # allows AND provably clipping-free; smaller values do clip (5 %/50 %
+    # return a capped or empty result). Do not lower it.
     hd = ml.MeshSet()
     hd.add_mesh(ml.Mesh(vertex_matrix=in_v,
                         face_matrix=np.asarray(in_t, np.int32)))      # id 0
@@ -2757,8 +2787,10 @@ def human_report(r, show_defects=False, show_diff=False):
             if ft_r.get('adopted_attempt') == 'optimize':
                 pp += ' (second attempt, optimisation on)'
             if ft_r.get('ftetwild_decimated'):
-                pp += ', decimated %d->%d faces' % (ft_r.get('ftetwild_faces_raw', 0),
-                                                    ft_r.get('ftetwild_faces_final', 0))
+                pp += ', decimated %d->%d faces' % (
+                    ft_r.get('ftetwild_faces_raw', 0),
+                    ft_r.get('ftetwild_faces_decimated',
+                             ft_r.get('ftetwild_faces_final', 0)))
             lines.append('  fTetWild fallback : %d faces in %.2fs%s, '
                          'holes=%s non-manifold=%s%s' % (
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
