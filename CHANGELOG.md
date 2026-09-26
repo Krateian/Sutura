@@ -18,6 +18,11 @@ All notable changes to this project are documented here.
   `tests/test_engine_integration.py`, `tests/test_engines_gui.py`) and
   fTetWild-manager (`tests/test_ftetwild_manager.py`) suites now run in
   `.github/workflows/ci.yml`; they existed but were never executed by CI.
+- **Engine executable resolution.** `sutura/engines.py`'s
+  `resolve_executable` no longer follows symlinks, so an engine whose command
+  is a virtualenv interpreter (`.../venv/bin/python`) runs inside that venv
+  instead of the base interpreter (which lost the venv's site-packages). This
+  only surfaced once `tests/test_engine_integration.py` ran in CI.
 - **Documentation corrections.** In README.md / README.tr.md: the Turkish
   preamble sentence that had been split across two sections was rejoined, the
   localized Options tab is `Onarım` (not `Repair`), the original-view defect

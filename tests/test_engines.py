@@ -456,6 +456,24 @@ def test_validate_output_hook():
         assert msg is None
 
 
+def test_resolve_executable_preserves_venv_symlink():
+    """A virtualenv's bin/python is a symlink to the base interpreter.
+
+    resolve_executable must not follow it: running the base interpreter
+    directly loses the venv's site-packages (numpy import failed in CI).
+    """
+    with tempfile.TemporaryDirectory() as d:
+        real = os.path.join(d, "real-interp")
+        with open(real, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(real, 0o755)
+        link = os.path.join(d, "link-interp")
+        os.symlink(real, link)
+        got = engines.resolve_executable(link)
+        assert got == link, got
+        assert engines.resolve_executable(real) == real
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

@@ -100,7 +100,11 @@ def resolve_executable(cmd0: str) -> str | None:
         expanded = os.path.expanduser(cmd0)
         p = Path(expanded)
         if p.is_file() and os.access(p, os.X_OK):
-            return str(p.resolve())
+            # Keep the path as given (absolute, but unresolved): resolving a
+            # virtualenv's bin/python symlink would run the base interpreter
+            # and lose the venv's site-packages. The shutil.which branch below
+            # likewise returns the unresolved path.
+            return os.path.abspath(expanded)
         return None
     return shutil.which(cmd0)
 
