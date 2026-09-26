@@ -108,8 +108,13 @@ sınır veya non-manifold kenar üzerindeki yüzler ve bir vertex halkalık
 komşulukları silinir, açıklıklar PyMeshLab'ın refine edilen delik kapatmasıyla
 kapatılır ve yeni iç vertex'ler sınır sabit tutularak yumuşatılır; ancak delik
 ve non-manifold kenar sayısı kötüleşmez, self-intersection artmaz ve silinen
-bölge dışındaki her yüz değişmeden kalırsa benimsenir. Yerel katman `full`'un
-parçası değildir ve henüz corpus üzerinde ölçülmemiştir.
+bölge dışındaki her yüz değişmeden kalırsa benimsenir. Yalnızca küçük ve
+basit hasarda çalışır (non-manifold kenar yok, sınır döngüleri en fazla 16
+kenar, en fazla 8 hasarlı bölge ve 2.000 silinen yüz, 10 sn); delik
+refinement'ı kapalıdır, çünkü 90 bin yüzlü bir mesh'te ~9 sn sürüp hiçbir
+sonucu değiştirmedi. 40 gerçek örnekte 3 mesh'i daha kesin su geçirmez yaptı
+(31 → 34); 115 mesh'lik corpus'ta hiçbirini yapmadı, bu yüzden `full`'un
+parçası değildir.
 
 Her katman ancak sonucu, delik ve non-manifold kenar açısından düz iki
 aşamalı sonuçtan kötü değilse benimsenir; yani iki aşamalı yol her zaman
