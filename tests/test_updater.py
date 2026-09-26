@@ -90,6 +90,25 @@ def test_check_for_update_return_contract():
          updater.should_check, updater.fetch_latest_release) = orig
 
 
+def test_should_check():
+    import updater
+    import time
+    now = time.time()
+    interval = updater.CHECK_INTERVAL_SECONDS
+    
+    # auto updates off -> always False
+    assert not updater.should_check({'check_for_updates': False, 'check_on_startup': False})
+    assert not updater.should_check({'check_for_updates': False, 'check_on_startup': True})
+    
+    # auto updates on, no startup check -> interval based
+    assert updater.should_check({'check_for_updates': True, 'last_check': None})
+    assert updater.should_check({'check_for_updates': True, 'last_check': now - interval - 10})
+    assert not updater.should_check({'check_for_updates': True, 'last_check': now - 10})
+    
+    # auto updates on + startup check -> always True
+    assert updater.should_check({'check_for_updates': True, 'check_on_startup': True, 'last_check': now - 10})
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):

@@ -156,6 +156,9 @@ jobs:
       - name: "Test: pinched vertices on a closed result"
         run: ./venv/bin/python tests/test_pinched_vertices.py
 
+      - name: "Test: Options window (GUI)"
+        run: ./venv/bin/python tests/test_options_dialog.py
+
       - name: "Test: deep-repair ladder"
         run: ./venv/bin/python tests/test_deep_repair.py
 
