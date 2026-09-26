@@ -1022,6 +1022,14 @@ def run_stage2(inter, out_obj):
 # instead of blocking the whole batch (FAZ17).
 FTETWILD_TIMEOUT = 180
 
+# Shape guard of the fTetWild tier: the result is not adopted when its
+# one-sided output-to-input Hausdorff distance exceeds this fraction of the
+# input bounding-box diagonal (report reject_reason='shape'). Measured on
+# macOS (2026-09-26), adopted fTetWild results reached 3.7 % on
+# thingi10k_1038441, 1.8 % on 1038439, 1.1 % on 224108, 8 % and 5 % on two
+# corpus meshes, i.e. the shape changed visibly. Provisional value.
+FTETWILD_MAX_HAUSDORFF_REL = 0.01
+
 _FTETWILD_AVAILABLE = None
 
 
@@ -1293,6 +1301,16 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
                             ml, tmpdir, cand_v, cand_t, cand_ms, cand_after,
                             cand_holes, cand_nm)
                         adopted = bool(cand_holes <= cur_holes and cand_nm <= cur_nm)
+                        if not adopted:
+                            ft_rep['reject_reason'] = 'holes_nm'
+                        else:
+                            # shape guard: fTetWild can close openings and
+                            # cavities, adding surface far from the input
+                            hd_max, _hd_mean = _hausdorff_rel(ml, v, t, cand_v, cand_t)
+                            ft_rep['hausdorff_rel'] = hd_max
+                            if hd_max is None or hd_max > FTETWILD_MAX_HAUSDORFF_REL:
+                                adopted = False
+                                ft_rep['reject_reason'] = 'shape'
                         ft_rep['adopted'] = adopted
                         ft_rep['output_holes'] = cand_holes
                         ft_rep['output_non_manifold'] = cand_nm
@@ -2473,7 +2491,14 @@ def human_report(r, show_defects=False, show_diff=False):
             lines.append('  fTetWild fallback : error (%s)'
                          % ft_r['error'][:60])
         elif ft_r.get('ran'):
-            adopted = ' adopted' if ft_r.get('adopted') else ' NOT adopted (kept stage-1 output)'
+            if ft_r.get('adopted'):
+                adopted = ' adopted'
+            elif ft_r.get('reject_reason') == 'shape':
+                adopted = (' NOT adopted (shape changed: Hausdorff %.1f%% of the '
+                           'diagonal; kept stage-1 output)'
+                           % (100 * (ft_r.get('hausdorff_rel') or 0)))
+            else:
+                adopted = ' NOT adopted (kept stage-1 output)'
             pp = ' + manifold3d post-process' if ft_r.get('manifold_postprocessed') else ''
             lines.append('  fTetWild fallback : %d faces in %.2fs%s, '
                          'holes=%s non-manifold=%s%s' % (
