@@ -21,6 +21,7 @@ ISSUE_LABELS = {
     'malformed': 'Malformed input',
     'error': 'Error',
     'budget_exceeded': 'Repair budget exceeded',
+    'shape_changed': 'Shape changed by the fTetWild fallback',
 }
 
 # Stable summary keys returned by classify(); the GUI maps these to localized
@@ -44,6 +45,8 @@ def _classify_objects(reports, issues):
     open, the file is a partial repair. A volume_warning from any object is
     surfaced too."""
     n = len(reports)
+    if any(r.get('shape_changed') for r in reports):
+        issues.append('shape_changed')
     closed = [_obj_closed(r) for r in reports]
     all_closed = n > 0 and all(closed)
 
@@ -116,6 +119,13 @@ def classify(data):
 
     s1 = data.get('stage1', {})
     watertight_s1 = bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0
+
+    # An adopted fTetWild result that moved far from the input (Hausdorff
+    # above repair.FTETWILD_MAX_HAUSDORFF_REL): an issue of its own, it does
+    # not change the category (a closed, stage-2-confirmed result stays
+    # 'watertight').
+    if data.get('shape_changed'):
+        issues.append('shape_changed')
 
     # Stage 2 outcome: present-and-ok, explicitly skipped, or errored.
     s2 = data.get('stage2')

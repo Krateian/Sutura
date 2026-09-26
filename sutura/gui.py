@@ -241,6 +241,7 @@ STRINGS = {
         'budget_status_within': 'within budget',
         'res_budget_declined': 'budget declined',
         'issue_budget_exceeded': 'Repair budget exceeded',
+        'issue_shape_changed': 'Shape changed by the fTetWild fallback',
         'analyze': 'Analyze',
         'analyze_tip': ('Run read-only analysis (validate + dry-run) on the '
                         'selected files — never modifies the input.'),
@@ -478,6 +479,7 @@ STRINGS = {
         'budget_status_within': 'bütçe içinde',
         'res_budget_declined': 'bütçe reddedildi',
         'issue_budget_exceeded': 'Onarım bütçesi aşıldı',
+        'issue_shape_changed': 'Şekil fTetWild yedek katmanıyla değişti',
         'analyze': 'Analiz Et',
         'analyze_tip': ('Seçili dosyalar için salt-okunur analiz çalıştır '
                         '(validate + dry-run) — girdiyi asla değiştirmez.'),

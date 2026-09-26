@@ -95,32 +95,7 @@ def test_full_equals_pre_ladder_output():
 def test_full_equals_pre_ladder_with_fake_ftetwild():
     """The moved fTetWild block adopts a (fake) closed boundary exactly as
     before: same arrays and report with and without the ladder mode."""
-    def fake_run(inter, out_obj):
-        repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
-                         np.asarray(CUBE_T, np.int32))
-        return {'ok': True, 'output_faces': 12}, True
-    saved = (repair.ftetwild_available, repair.run_ftetwild,
-             repair.FTETWILD_MAX_HAUSDORFF_REL)
-    repair.ftetwild_available, repair.run_ftetwild = (lambda: True), fake_run
-    repair.FTETWILD_MAX_HAUSDORFF_REL = float('inf')   # the cube is far off
-    try:
-        v, t = _load(OPEN_SAMPLE)
-        a = _repair(v, t, ftetwild='auto')
-        b = _repair(v, t, ftetwild='auto', deep_repair='full')
-    finally:
-        (repair.ftetwild_available, repair.run_ftetwild,
-         repair.FTETWILD_MAX_HAUSDORFF_REL) = saved
-    assert a[0]['experimental_ftetwild']['adopted'], a[0]['experimental_ftetwild']
-    _same_output(a, b)
-    dr = b[0]['deep_repair']
-    assert dr['tiers_run'] == ['ftetwild'] and dr['final_tier'] == 'ftetwild', dr
-    assert dr['available'] is None
-
-
-def test_ftetwild_shape_guard_rejects_a_changed_shape():
-    """A closed fTetWild boundary that is far from the input (a unit cube
-    for thingi10k_100827) is not adopted: reject_reason 'shape'."""
-    def fake_run(inter, out_obj):
+    def fake_run(inter, out_obj, params=None, timeout=None):
         repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
                          np.asarray(CUBE_T, np.int32))
         return {'ok': True, 'output_faces': 12}, True
@@ -128,16 +103,42 @@ def test_ftetwild_shape_guard_rejects_a_changed_shape():
     repair.ftetwild_available, repair.run_ftetwild = (lambda: True), fake_run
     try:
         v, t = _load(OPEN_SAMPLE)
-        rep, ov, ot = _repair(v, t, ftetwild='auto', deep_repair='full')
-        base = _repair(v, t, ftetwild=False)
+        a = _repair(v, t, ftetwild='auto')
+        b = _repair(v, t, ftetwild='auto', deep_repair='full')
+    finally:
+        repair.ftetwild_available, repair.run_ftetwild = saved
+    assert a[0]['experimental_ftetwild']['adopted'], a[0]['experimental_ftetwild']
+    _same_output(a, b)
+    dr = b[0]['deep_repair']
+    assert dr['tiers_run'] == ['ftetwild'] and dr['final_tier'] == 'ftetwild', dr
+    assert dr['available'] is None
+
+
+def test_ftetwild_shape_change_is_flagged_not_rejected():
+    """A closed fTetWild boundary far from the input (a unit cube for
+    thingi10k_100827) is adopted, flagged shape_changed and reported with
+    the issue code 'shape_changed' (the category is not downgraded)."""
+    import classification
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
+                         np.asarray(CUBE_T, np.int32))
+        return {'ok': True, 'output_faces': 12}, True
+    saved = repair.ftetwild_available, repair.run_ftetwild
+    repair.ftetwild_available, repair.run_ftetwild = (lambda: True), fake_run
+    try:
+        v, t = _load(OPEN_SAMPLE)
+        rep, _ov, ot = _repair(v, t, ftetwild='auto', deep_repair='full')
     finally:
         repair.ftetwild_available, repair.run_ftetwild = saved
     ft = rep['experimental_ftetwild']
-    assert ft['ran'] and not ft['adopted'], ft
-    assert ft['reject_reason'] == 'shape', ft
+    assert ft['ran'] and ft['adopted'] and ft['shape_changed'], ft
     assert ft['hausdorff_rel'] > repair.FTETWILD_MAX_HAUSDORFF_REL, ft
-    assert np.array_equal(ov, base[1]) and np.array_equal(ot, base[2])
-    assert rep['deep_repair']['final_tier'] == 'stage1'
+    assert 'reject_reason' not in ft, ft
+    assert rep['shape_changed'] is True and len(ot) == 12
+    assert rep['deep_repair']['final_tier'] == 'ftetwild'
+    _cat, issues, _key = classification.classify(rep)
+    assert 'shape_changed' in issues, issues
 
 
 def test_hausdorff_rel_is_zero_for_identical_meshes():
