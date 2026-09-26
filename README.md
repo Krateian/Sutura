@@ -165,7 +165,7 @@ macOS (Apple Silicon / Intel):
 
 Linux Python 3.11 install:
 
-* Arch / CachyOS: `sudo pacman -S python311`
+* Arch: Python 3.11 is not in the official repositories; `install.sh` downloads a standalone runtime automatically (`SUTURA_NO_PYTHON_DOWNLOAD=1` to opt out)
 * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
 * Fedora: `sudo dnf install python3.11`
 
@@ -175,11 +175,15 @@ needed.
 ## Troubleshooting
 
 * **`python3.11` not found.** Stage 2 (manifold3d) needs Python 3.11 because
-  it ships wheels only up to 3.13. Install it per distro:
-  * Arch / CachyOS: `sudo pacman -S python311`
+  it ships wheels only up to 3.13. On systems without a system `python3.11`
+  (such as Arch Linux, where Python 3.11 is not in the official repositories),
+  `install.sh` automatically downloads a standalone CPython 3.11 build into
+  `~/.local/share/sutura/python311`. This automatic download can be disabled
+  with `SUTURA_NO_PYTHON_DOWNLOAD=1`. Alternatively, install Python 3.11 via
+  the system package manager:
   * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
   * Fedora: `sudo dnf install python3.11`
-  Then run `install.sh` again — it reuses the existing virtualenvs.
+  Then run `install.sh` again — it reuses existing runtimes and virtualenvs.
 * **PySide6 install fails.** The GUI needs `PySide6-Essentials`, which is
   installed into the `venv` from PyPI. On distros where `pip install
   PySide6-Essentials` fails (missing build tooling or a blocked PyPI), install
@@ -279,7 +283,7 @@ SUTURA_WITH_FTETWILD=1 ./install.sh
 Without it the default changes nothing (and the GUI checkbox has no
 effect); only `--experimental-fallback-ftetwild` reports an explicit skip.
 
-On Arch, if `python311` is not installed, install it first (see above).
+On Arch, `install.sh` automatically downloads a standalone Python 3.11 runtime for stage 2 if none is present (set `SUTURA_NO_PYTHON_DOWNLOAD=1` to disable).
 
 ### macOS
 
