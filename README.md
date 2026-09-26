@@ -88,7 +88,10 @@ whenever its optional extra is installed:
   `--no-fallback-ftetwild` (GUI: *Options* → *Repair* tab → uncheck *fTetWild fallback*) turns it off,
   `--experimental-fallback-ftetwild` (GUI: *Options* → *Repair* tab → *+ self-intersections
   (slow)*, below it) also runs it on a closed result that still
-  self-intersects.
+  self-intersects. fTetWild's own tetrahedron-quality optimisation is off
+  (only the boundary is used, and it mostly costs time);
+  `--ftetwild-optimize` (GUI: *Optimise tetrahedra*, not recommended)
+  turns it on.
 
 These after-stage-1 tiers form the **deep-repair ladder**, selected with
 `--deep-repair {off,local,full}` (or `SUTURA_DEEP_REPAIR`, or the

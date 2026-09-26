@@ -165,6 +165,14 @@ STRINGS = {
                         '(SUTURA_WITH_FTETWILD=1); without it this has no '
                         'effect. Uncheck to disable (--no-fallback-ftetwild).',
         'ftetwild_si_label': '+ self-intersections (slow)',
+        'ftetwild_opt_label': 'Optimise tetrahedra (not recommended)',
+        'ftetwild_opt_tip': 'Let fTetWild also optimise the quality of its '
+                            'inner tetrahedra (--ftetwild-optimize). Sutura '
+                            'only keeps the boundary surface, so this mainly '
+                            'costs time.',
+        'ftetwild_opt_note': 'Off is recommended: on complex parts the '
+                             'optimisation can make a repair several times '
+                             'slower without improving the result.',
         'ftetwild_si_tip': 'Also run the fTetWild fallback when the stage-1 '
                            'result is closed but still self-intersects. Such '
                            'meshes are remeshed; can take up to 3 minutes per '
@@ -429,6 +437,14 @@ STRINGS = {
                         '(SUTURA_WITH_FTETWILD=1); yoksa etkisi yoktur. '
                         'Kapatmak için işareti kaldırın (--no-fallback-ftetwild).',
         'ftetwild_si_label': '+ self-intersection (yavaş)',
+        'ftetwild_opt_label': 'Tetrahedra optimizasyonu (önerilmez)',
+        'ftetwild_opt_tip': 'fTetWild iç tetrahedraların kalitesini de '
+                            'iyileştirsin (--ftetwild-optimize). Sutura '
+                            'yalnızca dış yüzeyi kullandığı için bu çoğunlukla '
+                            'süre kaybıdır.',
+        'ftetwild_opt_note': 'Kapalı olması önerilir: karmaşık parçalarda '
+                             'optimizasyon, sonucu iyileştirmeden onarımı '
+                             'birkaç kat yavaşlatabilir.',
         'ftetwild_si_tip': 'Stage-1 sonucu kapalı ama hâlâ self-intersection '
                            'içeriyorsa da fTetWild fallback\'i çalıştırır. Bu '
                            'mesh\'ler yeniden örgülenir; mesh başına 3 dakikaya '
@@ -872,9 +888,11 @@ class RepairWorker(QThread):
     def __init__(self, files, mode='auto', profile=None, force=False,
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
-                 indirect_autorefine=False, parent=None):
+                 indirect_autorefine=False, ftetwild_optimize=False,
+                 parent=None):
         super().__init__(parent)
         self._files = list(files)
+        self._ftetwild_optimize = ftetwild_optimize
         self._mode = mode
         self._profile = profile
         self._force = force
@@ -938,6 +956,8 @@ class RepairWorker(QThread):
                 args.append('--experimental-fallback-ftetwild')
             if self._indirect_autorefine:
                 args.append('--experimental-indirect-autorefine')
+            if self._ftetwild_optimize:
+                args.append('--ftetwild-optimize')
             args.append(path)
             self._proc = subprocess.Popen(
                 args,
@@ -1707,6 +1727,14 @@ class OptionsDialog(QDialog):
         si_row.setContentsMargins(22, 0, 0, 0)
         si_row.addWidget(main.chk_ftetwild_si)
         r.addLayout(si_row)
+        opt_row = QHBoxLayout()
+        opt_row.setContentsMargins(22, 0, 0, 0)
+        opt_row.addWidget(main.chk_ftetwild_optimize)
+        r.addLayout(opt_row)
+        opt_note = QLabel(_t('ftetwild_opt_note'))
+        opt_note.setWordWrap(True)
+        opt_note.setContentsMargins(44, 0, 0, 0)
+        r.addWidget(opt_note)
         r.addStretch(1)
         self.tabs.addTab(repair, _t('opt_tab_repair'))
 
@@ -1964,6 +1992,8 @@ class MainWindow(QMainWindow):
         self.chk_fallback_ftetwild.setChecked(True)
         self.chk_ftetwild_si = QCheckBox(_t('ftetwild_si_label'))
         self.chk_ftetwild_si.setToolTip(_t('ftetwild_si_tip'))
+        self.chk_ftetwild_optimize = QCheckBox(_t('ftetwild_opt_label'))
+        self.chk_ftetwild_optimize.setToolTip(_t('ftetwild_opt_tip'))
         self.chk_fallback_ftetwild.toggled.connect(self._sync_ftetwild)
         self.chk_ftetwild_si.toggled.connect(self._sync_ftetwild)
         self._sync_ftetwild()
@@ -1982,6 +2012,7 @@ class MainWindow(QMainWindow):
         self._options_defaults = (
             (self.chk_fallback_ftetwild, True),
             (self.chk_ftetwild_si, False),
+            (self.chk_ftetwild_optimize, False),
             (self.chk_autorefine, False),
             (self.chk_indirect_autorefine, False),
             (self.chk_join_components, False),
@@ -2200,6 +2231,8 @@ class MainWindow(QMainWindow):
         """Map the two fTetWild checkboxes to the CLI tri-state."""
         on = self.chk_fallback_ftetwild.isChecked()
         self.chk_ftetwild_si.setEnabled(on)
+        if hasattr(self, 'chk_ftetwild_optimize'):
+            self.chk_ftetwild_optimize.setEnabled(on)
         if not on:
             self._ftetwild = False
         elif self.chk_ftetwild_si.isChecked():
@@ -2485,6 +2518,7 @@ class MainWindow(QMainWindow):
                                    autorefine=self._autorefine,
                                    ftetwild=self._ftetwild,
                                    indirect_autorefine=self._indirect_autorefine,
+                                   ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
                                    parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
