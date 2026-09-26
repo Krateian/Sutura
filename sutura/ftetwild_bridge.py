@@ -24,6 +24,22 @@ import time
 
 import numpy as np
 
+# pytetwild.tetrahedralize keyword arguments used unless the caller passes
+# its own. optimize=False skips fTetWild's mesh-quality optimisation, which
+# only improves the (discarded) interior tets: measured on macOS
+# (2026-09-26), thingi10k_46012 took 6 s instead of 34 s with a one-sided
+# output-to-input Hausdorff distance of 0.09 % of the bounding-box diagonal
+# (28 % in that default run). The unoptimised boundary can carry
+# non-manifold edges; the manifold3d post-process in repair.py removes them.
+DEFAULT_PARAMS = {'optimize': False}
+
+
+def tetrahedralize_params(params=None):
+    """DEFAULT_PARAMS overridden by ``params`` (a dict or None)."""
+    kw = dict(DEFAULT_PARAMS)
+    kw.update(params or {})
+    return kw
+
 
 def write_obj(path, verts, tris):
     with open(path, 'w') as f:
@@ -58,10 +74,12 @@ def extract_boundary(verts, tets):
     return out
 
 
-def run_bridge(src, dst):
+def run_bridge(src, dst, params=None):
     """Tetrahedralize the surface mesh at src and write the boundary surface
-    to dst. Returns the report dict; ``ok`` is True on success. Never raises
-    for missing dependencies (reports an explicit skip instead)."""
+    to dst. ``params`` overrides DEFAULT_PARAMS (pytetwild.tetrahedralize
+    keyword arguments). Returns the report dict; ``ok`` is True on success.
+    Never raises for missing dependencies (reports an explicit skip
+    instead)."""
     report = {}
     try:
         import trimesh
@@ -81,8 +99,10 @@ def run_bridge(src, dst):
         tris = np.asarray(mesh.faces, dtype=np.int32)
         report['input_vertices'] = int(len(verts))
         report['input_faces'] = int(len(tris))
+        kw = tetrahedralize_params(params)
+        report['params'] = kw
         tmesh_v, tmesh_c = pytetwild.tetrahedralize(
-            verts, tris, quiet=True)
+            verts, tris, quiet=True, **kw)
         report['time'] = round(time.perf_counter() - t0, 2)
         report['tet_vertices'] = int(len(tmesh_v))
         report['tet_cells'] = int(len(tmesh_c))
@@ -99,7 +119,8 @@ def run_bridge(src, dst):
 
 def main():
     src, dst = sys.argv[1], sys.argv[2]
-    report = run_bridge(src, dst)
+    params = json.loads(sys.argv[3]) if len(sys.argv) > 3 else None
+    report = run_bridge(src, dst, params)
     print(json.dumps(report))
 
 
