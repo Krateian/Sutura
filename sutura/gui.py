@@ -1085,7 +1085,14 @@ class UpdateCheckWorker(QThread):
         self.force = force
 
     def run(self):
+        # Bail out promptly when the app is shutting down. The check itself is
+        # unchanged (same call, same status/tag contract); interruption only
+        # decides whether the result is still worth reporting.
+        if self.isInterruptionRequested():
+            return
         status, tag, _cfg = updater.check_for_update(force=self.force)
+        if self.isInterruptionRequested():
+            return
         self.finished_check.emit((status, tag))
 
 
@@ -2958,9 +2965,7 @@ class MainWindow(QMainWindow):
         """Wait for background threads so none is still running when the
         interpreter exits (a running QThread at exit aborts the process)."""
         self._options_dialog.stop_workers()
-        chk = self.update_check
-        if chk is not None and chk.isRunning():
-            chk.wait(6000)
+        self._stop_update_check()
         super().closeEvent(event)
 
     def _sync_ftetwild(self, *_):
@@ -3048,6 +3053,28 @@ class MainWindow(QMainWindow):
             self.update_btn.setToolTip(_t('update_btn_tooltip', new_tag))
             self.update_btn.setEnabled(True)
             self.update_btn.setVisible(True)
+
+    def _stop_update_check(self):
+        """Stop the background update check before the window/app is torn down.
+
+        A parented QThread that is destroyed while its run() is still active
+        aborts the process ("QThread: Destroyed while thread '' is still
+        running", SIGABRT), which is what happened when the GUI was closed
+        during the startup network check. Request interruption (run() checks
+        it around the network call) and give the thread a bounded grace
+        period. If it is still blocked on the network call after that,
+        terminate() is used strictly as a last resort: the worker only does a
+        read-only release check and the process is exiting, so forcibly
+        stopping it is safe there, whereas leaving it running is not (Qt
+        aborts if a running QThread is destroyed; detaching it / keeping a
+        reference was measured not to prevent that abort)."""
+        t = self.update_check
+        if t is None or not t.isRunning():
+            return
+        t.requestInterruption()
+        if not t.wait(2000):
+            t.terminate()
+            t.wait()
 
     def _show_license_notice(self, tag):
         """Warn that the new version crosses the license boundary and open the
@@ -4100,7 +4127,11 @@ def main():
         win._add_path(p)
     win._refresh_buttons()
     win.show()
-    sys.exit(app.exec())
+    rc = app.exec()
+    # the window may be gone without closeEvent (e.g. app.quit()); make sure
+    # the update-check thread is not destroyed while still running
+    win._stop_update_check()
+    sys.exit(rc)
 
 
 if __name__ == '__main__':
