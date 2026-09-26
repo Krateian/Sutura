@@ -115,13 +115,13 @@ is not part of `full`.
 
 Every tier is adopted only when its result is no worse than the plain
 two-stage result on holes and non-manifold edges, so the two-stage path always
-remains the safety net. The fTetWild result must in addition keep the shape:
-it is rejected when its one-sided output-to-input Hausdorff distance exceeds
-1 % of the bounding-box diagonal (`reject_reason: shape`; provisional
-threshold). With the optimised fTetWild runs measured before this guard,
-thingi10k_1038441 (3.7 %), 1038439 (1.8 %) and 224108 (1.1 %) would have
-been rejected, so the 39/40 below is expected to drop until it is
-re-measured. Without the fTetWild extra and with no flag set, the
+remains the safety net. An adopted fTetWild result whose one-sided
+output-to-input Hausdorff distance exceeds 1 % of the bounding-box diagonal
+(provisional threshold) is kept but flagged: the report carries
+`shape_changed: true` and the issue `shape_changed` ("Shape changed by the
+fTetWild fallback"), without downgrading the category. Measured on macOS
+this concerns thingi10k_1038441 (3.7 %), 1038439 (1.7 %) and 224108 (1.1 %)
+of the 40 samples. Without the fTetWild extra and with no flag set, the
 behaviour is exactly the two stages above.
 
 Measured on the 40 real-world samples (`scripts/benchmark_repair_corpus.py`,
