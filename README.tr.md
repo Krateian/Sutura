@@ -91,7 +91,10 @@ açıktır:
   bırakıyorsa; `--no-fallback-ftetwild` (GUI: *Seçenekler* → *Onarım* sekmesi → *fTetWild fallback* işaretini
   kaldırın) kapatır, `--experimental-fallback-ftetwild` (GUI: *Seçenekler* → *Onarım* sekmesi → altındaki *+ self-intersection
   (yavaş)* kutusu) kapalı ama hâlâ self-intersection içeren
-  sonuçlarda da çalıştırır.
+  sonuçlarda da çalıştırır. fTetWild'ın kendi tetrahedra kalite
+  optimizasyonu kapalıdır (yalnızca dış yüzey kullanılır, çoğunlukla süre
+  kaybıdır); `--ftetwild-optimize` (GUI: *Tetrahedra optimizasyonu*,
+  önerilmez) açar.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya
