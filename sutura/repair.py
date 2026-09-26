@@ -662,7 +662,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             join_components=False, autorefine=False,
                             ftetwild=False, indirect_autorefine=False,
                             extra_features=False, deep_repair=None,
-                            triage_spec=None):
+                            triage_spec=None, engines=None, engine_chain=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -694,6 +694,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     supplies the post-Stage-1 knobs (deep-repair tier timeout/size cap,
     decimation ladder, Hausdorff sample count); None resolves to Balanced
     (the pre-triage behaviour). It never changes Stage 1.
+    ``engines``/``engine_chain`` are the configs and resolved chain from
+    ``load_engine_run``; None (library default) runs no external engine and
+    keeps the output byte-identical to the pre-engines behaviour.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -708,6 +711,26 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if triage_spec is None:
         triage_spec = triage.resolve_intensity(None)
     stats.update(triage.triage_report_fields(triage_spec))
+
+    # before_stage1 engines run on the ORIGINAL input, before anything else
+    # (including the unit heuristic and the classifier, which then see the
+    # engine output). Adoption uses the same holes/non-manifold guard as the
+    # fTetWild tier; a shape-changing output is flagged, not rejected.
+    if engines:
+        _entries = []
+        if engine_placement_order(engines, engine_chain, 'before_stage1'):
+            _base_ms = ml.MeshSet()
+            _base_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
+            _base_topo = _base_ms.apply_filter('get_topological_measures')
+            _cv, _ct, _adopted = run_engines(
+                ml, engines, engine_chain, 'before_stage1', tmpdir, v, t,
+                boundary_loop_stats(v, t)[0],
+                _base_topo.get('non_two_manifold_edges', 0), triage_spec, _entries)
+            if _adopted:
+                v = np.asarray(_cv, dtype=np.float32)
+                t = np.asarray(_ct, dtype=np.int32)
+                verts, tris = v, t
+        _record_engine_entries(stats, _entries)
 
     # Non-blocking unit warning: the size-based Stage 1 thresholds assume
     # millimetres, so a mesh that was probably authored in inches/cm deserves
@@ -909,15 +932,51 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     #   remeshed (its residual self-intersections are left alone).
     # - True (--experimental-fallback-ftetwild): also when the closed result
     #   still self-intersects (slow: up to FTETWILD_TIMEOUT per mesh).
+    # after_stage1 engines run on the current stage-1 result, before the deep
+    # ladder; replace_ftetwild engines replace the built-in fTetWild tier
+    # inside the ladder.
+    if engines:
+        _entries = []
+        if engine_placement_order(engines, engine_chain, 'after_stage1'):
+            _cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
+            _cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
+            _cv, _ct, _adopted = run_engines(
+                ml, engines, engine_chain, 'after_stage1', tmpdir, _cur_v, _cur_t,
+                boundary_loop_stats(_cur_v, _cur_t)[0],
+                after.get('non_two_manifold_edges', 0), triage_spec, _entries)
+            if _adopted:
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
+                after = ms.apply_filter('get_topological_measures')
+        _record_engine_entries(stats, _entries)
+
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
-                                   spec=triage_spec)
+                                   spec=triage_spec, engines=engines,
+                                   engine_chain=engine_chain)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
     # a vertex shared by two boundary loops; stage 2 then never runs and a
     # strictly watertight mesh is reported as a warning (thingi10k_145065).
     ms, after, stats['pinched_vertices_split'] = _split_pinched_vertices(ml, ms, after)
+
+    # final_fallback engines run once, on the ORIGINAL input, after every
+    # built-in tier (including replace_ftetwild) and after the pinch split.
+    if engines:
+        _entries = []
+        if engine_placement_order(engines, engine_chain, 'final_fallback'):
+            _cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
+            _cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
+            _cv, _ct, _adopted = run_engines(
+                ml, engines, engine_chain, 'final_fallback', tmpdir, v, t,
+                boundary_loop_stats(_cur_v, _cur_t)[0],
+                after.get('non_two_manifold_edges', 0), triage_spec, _entries)
+            if _adopted:
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
+                after = ms.apply_filter('get_topological_measures')
+        _record_engine_entries(stats, _entries)
 
     holes_after = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                       ms.current_mesh().face_matrix())[0]
@@ -1144,6 +1203,139 @@ def resolve_ftetwild(no_fallback=False, experimental=False):
     if experimental:
         return True
     return 'auto'
+
+
+# ---------------------------------------------------------------------------
+# External repair engines (sutura/engines.py, user-installed third-party
+# binaries). Engine configs are loaded ONCE per run and slotted into the
+# pipeline at their named placement. Every engine output passes through the
+# SAME holes/non-manifold guard as the fTetWild tier, and an adopted output
+# far from the input is flagged (``shape_changed``) exactly like fTetWild.
+# With no engines configured and no chain.toml the whole layer is inert: the
+# repair is byte-identical to the pre-engines behaviour.
+ENGINE_MESH_FORMATS = ('stl', 'obj', 'ply')
+
+
+def load_engine_run(engines_dir=None):
+    """Load engine configs and resolve the execution chain, ONCE per run.
+
+    Returns ``(engines, chain, warnings)``. ``sutura/engines.py`` is treated
+    as optional: a stale install without it, or a broken config, only yields a
+    warning and behaves as if no engine were configured (never a crash and
+    never a repair failure)."""
+    try:
+        import engines as _engines
+    except Exception as e:  # noqa: BLE001
+        return {}, [], ['external engines unavailable: %s' % e]
+    try:
+        eng, warns = _engines.load_all_engines(engines_dir)
+        chain, cwarns = _engines.resolve_chain(eng, config_dir=engines_dir)
+        return eng, chain, warns + cwarns
+    except Exception as e:  # noqa: BLE001 - ambient config never fails a repair
+        return {}, [], ['failed to load engines: %s' % e]
+
+
+def engine_placement_order(engines, chain, placement):
+    """Enabled engine names for one placement, in chain order."""
+    if not engines:
+        return []
+    order = list(chain or [])
+    names = [n for n in order if n in engines
+             and engines[n].enabled and engines[n].placement == placement]
+    # Engines present in the config dir but omitted from a custom chain.toml
+    # are not run; a default chain (build_default_chain) includes them all.
+    return names
+
+
+def _read_engine_mesh(path):
+    import pymeshlab as ml
+    ms = ml.MeshSet()
+    ms.load_new_mesh(path)
+    return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
+            np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
+
+
+def _write_engine_mesh(path, verts, tris):
+    import pymeshlab as ml
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
+                        face_matrix=np.asarray(tris, np.int32)))
+    ms.save_current_mesh(path)
+
+
+def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,
+                base_holes, base_nm, spec, entries):
+    """Run the enabled engines at ``placement`` on ``(in_v, in_t)``.
+
+    Engines run in chain order; the first output that passes the same
+    holes/non-manifold guard as the fTetWild tier is adopted and returned.
+    Returns ``(cand_v, cand_t, adopted)`` (cand arrays None when nothing was
+    adopted). One report entry per engine is appended to ``entries``."""
+    import engines as _engines
+    for name in engine_placement_order(engines, chain, placement):
+        eng = engines[name]
+        entry = {'name': name, 'placement': placement, 'adopted': False}
+        try:
+            in_path = os.path.join(tmpdir,
+                                   'engine_%s_in.%s' % (name, eng.input_format))
+            out_path = os.path.join(tmpdir,
+                                    'engine_%s_out.%s' % (name, eng.output_format))
+            _write_engine_mesh(in_path, in_v, in_t)
+            eng_tmp = os.path.join(tmpdir, 'engine_%s_tmp' % name)
+            os.makedirs(eng_tmp, exist_ok=True)
+            res = _engines.run_engine(eng, in_path, out_path, tmp_dir=eng_tmp)
+            entry['rc'] = res.get('returncode')
+            entry['time'] = round(float(res.get('duration_sec') or 0.0), 3)
+            entry['stdout_tail'] = res.get('stdout_tail', '')
+            entry['stderr_tail'] = res.get('stderr_tail', '')
+            if not res.get('success'):
+                entry['reject_reason'] = res.get('error') or 'engine failed'
+                entries.append(entry)
+                continue
+            ok, verr = _engines.validate_output(eng, in_path, out_path)
+            if not ok:
+                entry['reject_reason'] = verr
+                entries.append(entry)
+                continue
+            cand_v, cand_t = _read_engine_mesh(out_path)
+            if len(cand_t) == 0:
+                entry['reject_reason'] = 'engine output has no faces'
+                entries.append(entry)
+                continue
+            cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
+            cand_ms = ml.MeshSet()
+            cand_ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+            cand_after = cand_ms.apply_filter('get_topological_measures')
+            if cand_after.get('faces_number', 0) == 0:
+                entry['reject_reason'] = 'engine removed all geometry'
+                entries.append(entry)
+                continue
+            cand_nm = cand_after.get('non_two_manifold_edges', 0)
+            entry['output_holes'] = int(cand_holes)
+            entry['output_non_manifold'] = int(cand_nm)
+            if cand_holes <= base_holes and cand_nm <= base_nm:
+                hd, _ = _hausdorff_rel(ml, in_v, in_t, cand_v, cand_t,
+                                       samples=spec.ftetwild_hausdorff_samples)
+                entry['hausdorff_rel'] = hd
+                entry['shape_changed'] = bool(
+                    hd is not None and hd > FTETWILD_MAX_HAUSDORFF_REL)
+                entry['adopted'] = True
+                entries.append(entry)
+                return cand_v, cand_t, True
+            entry['reject_reason'] = 'holes_nm'
+        except Exception as e:  # noqa: BLE001 - an engine never fails a repair
+            entry['reject_reason'] = 'error: %s' % e
+        entries.append(entry)
+    return None, None, False
+
+
+def _record_engine_entries(stats, entries):
+    """Append engine entries to ``stats['engines']`` and flag shape changes."""
+    if not entries:
+        return
+    stats.setdefault('engines', []).extend(entries)
+    if any(e.get('shape_changed') for e in entries):
+        stats['shape_changed'] = True
 
 
 def resolve_deep_repair_flags(deep_repair=None, no_fallback=False,
@@ -2055,7 +2247,7 @@ def _local_remesh_tier(ml, ms, after):
 
 
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
-                       ftetwild=False, spec=None):
+                       ftetwild=False, spec=None, engines=None, engine_chain=None):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
     default (no deep-repair report; ``ftetwild`` alone decides, as before
@@ -2082,10 +2274,27 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
     else:
         local_rep = None
     if mode in (None, 'full'):
-        ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild,
-                                   spec=spec)
-        if (stats.get('experimental_ftetwild') or {}).get('ran'):
-            tiers_run.append('ftetwild')
+        # replace_ftetwild engines REPLACE the built-in fTetWild tier; they
+        # receive the original input, exactly like fTetWild. With a custom
+        # chain.toml that omits 'ftetwild' the built-in tier is skipped too.
+        replace_names = engine_placement_order(engines, engine_chain,
+                                               'replace_ftetwild')
+        if replace_names:
+            _entries = []
+            _cv, _ct, _adopted = run_engines(
+                ml, engines, engine_chain, 'replace_ftetwild', tmpdir, v, t,
+                cur_holes, cur_nm, spec, _entries)
+            _record_engine_entries(stats, _entries)
+            if _adopted:
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
+                after = ms.apply_filter('get_topological_measures')
+                tiers_run.append('replace_ftetwild')
+        elif (not engine_chain) or ('ftetwild' in engine_chain):
+            ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
+                                       ftetwild, spec=spec)
+            if (stats.get('experimental_ftetwild') or {}).get('ran'):
+                tiers_run.append('ftetwild')
     else:
         stats['experimental_ftetwild'] = False
     if mode is not None:
@@ -2352,10 +2561,33 @@ def obj_has_material_refs(path):
     return False
 
 
+def run_after_stage2_engines(ml, report, new_v, new_t, tmpdir, engines,
+                             engine_chain, spec):
+    """Run after_stage2 engines on the stage-2 result and adopt under the
+    shared guard. Returns the (possibly replaced) ``(new_v, new_t)`` and
+    appends one report entry per engine to ``report['engines']``."""
+    if not engine_placement_order(engines, engine_chain, 'after_stage2'):
+        return new_v, new_t
+    entries = []
+    base_holes = boundary_loop_stats(new_v, new_t)[0]
+    base_ms = ml.MeshSet()
+    base_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(new_v, np.float32),
+                             face_matrix=np.asarray(new_t, np.int32)))
+    base_nm = base_ms.apply_filter('get_topological_measures').get(
+        'non_two_manifold_edges', 0)
+    cand_v, cand_t, adopted = run_engines(
+        ml, engines, engine_chain, 'after_stage2', tmpdir, new_v, new_t,
+        base_holes, base_nm, spec, entries)
+    _record_engine_entries(report, entries)
+    if adopted:
+        return cand_v, cand_t
+    return new_v, new_t
+
+
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                 join_components=False, autorefine=False, ftetwild=False,
                 indirect_autorefine=False, extra_features=False, deep_repair=None,
-                triage_spec=None):
+                triage_spec=None, engines=None, engine_chain=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -2380,7 +2612,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         autorefine=autorefine, ftetwild=ftetwild,
         indirect_autorefine=indirect_autorefine,
         extra_features=extra_features, deep_repair=deep_repair,
-        triage_spec=triage_spec)
+        triage_spec=triage_spec, engines=engines, engine_chain=engine_chain)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -2390,6 +2622,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
     # mesh path and per-object 3MF repair on the same code (same gate, same
     # OBJ round-trip, same explicit skip reporting).
     new_v, new_t = maybe_run_stage2(report, new_v, new_t, tmpdir)
+
+    if engines:
+        new_v, new_t = run_after_stage2_engines(
+            ml, report, new_v, new_t, tmpdir, engines, engine_chain,
+            triage_spec or triage.resolve_intensity(None))
 
     save_mesh(out, new_v, new_t)
     return report
@@ -2459,7 +2696,7 @@ def _read_zip_entry(z, name):
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                join_components=False, autorefine=False, ftetwild=False,
                indirect_autorefine=False, extra_features=False, deep_repair=None,
-               triage_spec=None):
+               triage_spec=None, engines=None, engine_chain=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -2469,6 +2706,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     returns the rebuilt arrays). Objects that remain open after stage 1 are
     written as stage-1 output, mirroring the single-mesh behaviour.
     """
+    import pymeshlab as ml
     meshes = parse_3mf_meshes(src)
     if not meshes:
         return {'error': 'no mesh objects found in 3MF'}
@@ -2501,13 +2739,18 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     indirect_autorefine=indirect_autorefine,
                     extra_features=extra_features,
                     deep_repair=deep_repair,
-                    triage_spec=triage_spec)
+                    triage_spec=triage_spec, engines=engines,
+                    engine_chain=engine_chain)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
                 # rebuild (same helper/gate as the single-mesh path), and the
                 # confidence/health/risk below then see the stage2 outcome.
                 new_v, new_t = maybe_run_stage2(rep, new_v, new_t, tmpdir)
+                if engines:
+                    new_v, new_t = run_after_stage2_engines(
+                        ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
+                        triage_spec or triage.resolve_intensity(None))
                 _rc = repair_confidence(rep)
                 rep['repair_confidence'] = _rc['score']
                 rep['repair_confidence_label'] = _rc['label']
@@ -2918,6 +3161,22 @@ def human_report(r, show_defects=False, show_diff=False):
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
                              adopted))
+    eng_r = r.get('engines')
+    if eng_r:
+        lines.append('')
+        lines.append('External engines:')
+        for e in eng_r:
+            if e.get('adopted'):
+                if e.get('shape_changed'):
+                    state = ('adopted, SHAPE CHANGED (Hausdorff %.1f%% of the '
+                             'diagonal)' % (100 * (e.get('hausdorff_rel') or 0)))
+                else:
+                    state = 'adopted'
+            else:
+                state = 'NOT adopted (%s)' % (e.get('reject_reason') or '?')
+            lines.append('  %s [%s] : %s, rc=%s, %.2fs' % (
+                e.get('name'), e.get('placement'), state, e.get('rc'),
+                e.get('time', 0)))
     dr = r.get('deep_repair')
     if dr:
         lr = dr.get('local')
@@ -3119,7 +3378,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  out=None, engine='experimental', max_geom_change=None,
                  max_risk=None, force=False, join_components=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
-                 extra_features=False, deep_repair=None, triage_spec=None):
+                 extra_features=False, deep_repair=None, triage_spec=None,
+                 engines=None, engine_chain=None, engine_warnings=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -3135,9 +3395,15 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     (flag-gated).
     ``triage_spec`` is the resolved intensity preset (sutura/triage.py),
     forwarded to the repair; None resolves to Balanced.
+    ``engines``/``engine_chain``/``engine_warnings`` are the ``load_engine_run``
+    output; when the first two are None the engines are loaded here (once per
+    call). Load warnings are recorded in the report and never fail a repair.
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
+
+    if engines is None and engine_chain is None:
+        engines, engine_chain, engine_warnings = load_engine_run()
 
     stem, ext = os.path.splitext(src)
     if out is None:
@@ -3146,6 +3412,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     tmpdir = tempfile.mkdtemp(prefix='sutura-')
     tmp_out = os.path.join(tmpdir, 'out' + ext)
     result = {'input': src, 'output': out}
+    if engine_warnings:
+        result['engine_warnings'] = list(engine_warnings)
     t0 = time.perf_counter()
     try:
         if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
@@ -3157,7 +3425,9 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                      indirect_autorefine=indirect_autorefine,
                                      extra_features=extra_features,
                                      deep_repair=deep_repair,
-                                     triage_spec=triage_spec))
+                                     triage_spec=triage_spec,
+                                     engines=engines,
+                                     engine_chain=engine_chain))
         else:
             result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
                                       profile=profile, engine=engine,
@@ -3167,7 +3437,9 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                                       indirect_autorefine=indirect_autorefine,
                                       extra_features=extra_features,
                                       deep_repair=deep_repair,
-                                      triage_spec=triage_spec))
+                                      triage_spec=triage_spec,
+                                      engines=engines,
+                                      engine_chain=engine_chain))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -3231,6 +3503,146 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     if not no_history:
         history.write(result, VERSION, elapsed_ms, _fps)
     return result, category
+
+
+def _confirm_cli(action, yes):
+    """Require confirmation for a destructive CLI action (install/uninstall),
+    unless ``--yes``. Non-interactive without --yes refuses (never hangs)."""
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        return False
+    try:
+        ans = input('Proceed with %s? [y/N] ' % action).strip().lower()
+    except EOFError:
+        return False
+    return ans in ('y', 'yes')
+
+
+def run_engines_cli(args, human=False):
+    """``sutura engines list|check``: validate the TOML configs and resolve
+    the binaries WITHOUT running anything. Returns an exit code."""
+    sub = args[0] if args else 'list'
+    if sub not in ('list', 'check'):
+        print(json.dumps({'error': "engines: subcommand must be 'list' or 'check'"}))
+        return 1
+    try:
+        import engines as _engines
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({'error': 'engines module unavailable: %s' % e}))
+        return 1
+    eng, chain, warnings = load_engine_run()
+    ordered = [n for n in chain if n in eng]
+    ordered += [n for n in sorted(eng) if n not in ordered]
+    items = []
+    problems = list(warnings)
+    for name in ordered:
+        cfg = eng[name]
+        found = bool(_engines.is_engine_available(cfg))
+        item = {
+            'name': cfg.name,
+            'placement': cfg.placement,
+            'enabled': cfg.enabled,
+            'in_chain': name in chain,
+            'binary_found': found,
+            'command': cfg.command,
+            'input_format': cfg.input_format,
+            'output_format': cfg.output_format,
+            'timeout': cfg.timeout,
+            'source': str(cfg.source_path) if cfg.source_path else None,
+        }
+        items.append(item)
+        if cfg.enabled and not found:
+            problems.append("engine '%s': executable %r not found"
+                            % (name, cfg.command[0] if cfg.command else '?'))
+    report = {
+        'config_dir': str(_engines.get_engines_dir()),
+        'chain': chain,
+        'engines': items,
+        'warnings': problems,
+    }
+    if sub == 'check':
+        report['ok'] = not problems
+    if human:
+        print('Engines (%s):' % report['config_dir'])
+        if not items:
+            print('  none configured')
+        for it in items:
+            print('  %-20s %-16s enabled=%-5s binary=%s%s' % (
+                it['name'], it['placement'], it['enabled'],
+                'found' if it['binary_found'] else 'MISSING',
+                '' if it['in_chain'] else ' (not in chain)'))
+        for w in problems:
+            print('  ! %s' % w)
+    else:
+        print(json.dumps(report, ensure_ascii=False))
+    return 0 if not (sub == 'check' and problems) else 1
+
+
+def run_ftetwild_cli(args, dry_run=False, yes=False, human=False):
+    """``sutura ftetwild status|install|uninstall`` via ``ftetwild_manager``.
+
+    ``--dry-run`` never touches the environment (it prints the plan/estimate);
+    install/uninstall require ``--yes`` or an interactive confirmation, and
+    always show the download / installed / freed size first. Returns an exit
+    code."""
+    sub = args[0] if args else 'status'
+    if sub not in ('status', 'install', 'uninstall'):
+        print(json.dumps({'error': "ftetwild: subcommand must be "
+                                   "'status', 'install' or 'uninstall'"}))
+        return 1
+    try:
+        import ftetwild_manager as mgr
+    except Exception as e:  # noqa: BLE001
+        print(json.dumps({'error': 'ftetwild manager unavailable: %s' % e}))
+        return 1
+
+    if sub == 'status':
+        st = mgr.status()
+        st['estimate'] = mgr.estimate()
+        if human:
+            if not st.get('supported'):
+                print('fTetWild: unsupported (%s)' % st.get('reason'))
+            elif st.get('installed'):
+                print('fTetWild: installed v%s (%s) at %s'
+                      % (st.get('version'), st.get('size_human'), st.get('location')))
+            else:
+                print('fTetWild: not installed (supported; download ~%s, '
+                      'installed ~%s)' % (st['estimate']['download_human'],
+                                          st['estimate']['installed_human']))
+        else:
+            print(json.dumps(st, ensure_ascii=False))
+        return 0 if st.get('supported') else 1
+
+    if sub == 'install':
+        est = mgr.estimate()
+        if dry_run:
+            plan = mgr.install(dry_run=True)
+            print(json.dumps({'estimate': est, 'plan': plan}, ensure_ascii=False))
+            return 0 if plan.get('ok') else 1
+        print('fTetWild install: download ~%s, installed ~%s'
+              % (est['download_human'], est['installed_human']), file=sys.stderr)
+        if not _confirm_cli('fTetWild install', yes):
+            print(json.dumps({'error': 'install cancelled (use --yes to confirm)'}))
+            return 1
+        res = mgr.install(progress_cb=lambda s: print(s, file=sys.stderr))
+        print(json.dumps({'result': res, 'estimate': est}, ensure_ascii=False))
+        return 0 if res.get('ok') else 1
+
+    # uninstall
+    plan = mgr.uninstall(dry_run=True)
+    if dry_run:
+        print(json.dumps({'plan': plan}, ensure_ascii=False))
+        return 0 if plan.get('ok') else 1
+    print('fTetWild uninstall: %d package(s), frees ~%s'
+          % (len(plan.get('packages', [])), plan.get('freed_human', '0 B')),
+          file=sys.stderr)
+    if not _confirm_cli('fTetWild uninstall', yes):
+        print(json.dumps({'error': 'uninstall cancelled (use --yes to confirm)'}))
+        return 1
+    res = mgr.uninstall(progress_cb=lambda s: print(s, file=sys.stderr))
+    print(json.dumps({'result': res}, ensure_ascii=False))
+    return 0 if res.get('ok') else 1
 
 
 def main():
@@ -3307,6 +3719,9 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                         help='do not repair: report what would be done and '
                              'write no output file')
+    parser.add_argument('--yes', action='store_true',
+                        help='ftetwild install|uninstall: confirm without an '
+                             'interactive prompt')
     parser.add_argument('--experimental-join-components', action='store_true',
                         help='experimental prototype: move small connected '
                              'components onto the nearest larger component '
@@ -3400,6 +3815,20 @@ def main():
     engine = resolve_classifier_engine(args.classifier_engine)
     triage_spec = triage.resolve_intensity(args.intensity,
                                            user_profiles=_profiles)
+
+    # 'engines list|check' and 'ftetwild status|install|uninstall' are
+    # subcommands, dispatched before any repair (like validate/export-history).
+    if files and files[0] == 'engines':
+        if out is not None or dry_run:
+            print(json.dumps({'error': 'engines takes no -o/--dry-run'}))
+            sys.exit(1)
+        sys.exit(run_engines_cli(files[1:], human=human))
+    if files and files[0] == 'ftetwild':
+        if out is not None:
+            print(json.dumps({'error': 'ftetwild takes no -o'}))
+            sys.exit(1)
+        sys.exit(run_ftetwild_cli(files[1:], dry_run=dry_run, yes=args.yes,
+                                  human=human))
 
     # Repair budgets: validate the ranges, then 0 / unset both mean "no
     # budget" (disabled), matching the GUI's 0 = no limit convention.
@@ -3495,6 +3924,9 @@ def main():
     else:
         _dr_mode = triage_spec.deep_repair
         _ft_arg = 'auto' if triage_spec.ftetwild_enabled else False
+    # External engines are loaded ONCE for the whole batch; broken configs
+    # only warn and never fail a repair.
+    _engines, _engine_chain, _engine_warnings = load_engine_run()
     results = [process_file(f, human, mode=mode, profile=args.profile,
                             no_history=args.no_history, engine=engine,
                             out=out, max_geom_change=max_geom_change,
@@ -3504,7 +3936,9 @@ def main():
                             ftetwild=_ft_arg, deep_repair=_dr_mode,
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak,
-                            triage_spec=triage_spec) for f in files]
+                            triage_spec=triage_spec, engines=_engines,
+                            engine_chain=_engine_chain,
+                            engine_warnings=_engine_warnings) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')
