@@ -102,6 +102,11 @@ jobs:
           }
 
           echo "--- Part 1: Programmatic MainWindow construct & clean quit ---"
+          # Reuse the plugin pin exactly as install-macos.sh writes it into the
+          # sutura-gui launcher. The conda env also carries a Qt5 stack, so a
+          # bare interpreter does not find PySide6's own Qt6 offscreen plugin.
+          eval "$(sed -n '/^export QT_PLUGIN_PATH=/p' "$HOME/.local/bin/sutura-gui")"
+          test -n "$QT_PLUGIN_PATH"
           "$ENV_PY" -c '
           import os, sys
           sys.path.insert(0, os.path.expanduser("~/.local/share/sutura"))
