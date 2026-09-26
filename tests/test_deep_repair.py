@@ -99,19 +99,45 @@ def test_full_equals_pre_ladder_with_fake_ftetwild():
         repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
                          np.asarray(CUBE_T, np.int32))
         return {'ok': True, 'output_faces': 12}, True
-    saved = repair.ftetwild_available, repair.run_ftetwild
+    saved = (repair.ftetwild_available, repair.run_ftetwild,
+             repair.FTETWILD_MAX_HAUSDORFF_REL)
     repair.ftetwild_available, repair.run_ftetwild = (lambda: True), fake_run
+    repair.FTETWILD_MAX_HAUSDORFF_REL = float('inf')   # the cube is far off
     try:
         v, t = _load(OPEN_SAMPLE)
         a = _repair(v, t, ftetwild='auto')
         b = _repair(v, t, ftetwild='auto', deep_repair='full')
     finally:
-        repair.ftetwild_available, repair.run_ftetwild = saved
+        (repair.ftetwild_available, repair.run_ftetwild,
+         repair.FTETWILD_MAX_HAUSDORFF_REL) = saved
     assert a[0]['experimental_ftetwild']['adopted'], a[0]['experimental_ftetwild']
     _same_output(a, b)
     dr = b[0]['deep_repair']
     assert dr['tiers_run'] == ['ftetwild'] and dr['final_tier'] == 'ftetwild', dr
     assert dr['available'] is None
+
+
+def test_ftetwild_shape_guard_rejects_a_changed_shape():
+    """A closed fTetWild boundary that is far from the input (a unit cube
+    for thingi10k_100827) is not adopted: reject_reason 'shape'."""
+    def fake_run(inter, out_obj):
+        repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
+                         np.asarray(CUBE_T, np.int32))
+        return {'ok': True, 'output_faces': 12}, True
+    saved = repair.ftetwild_available, repair.run_ftetwild
+    repair.ftetwild_available, repair.run_ftetwild = (lambda: True), fake_run
+    try:
+        v, t = _load(OPEN_SAMPLE)
+        rep, ov, ot = _repair(v, t, ftetwild='auto', deep_repair='full')
+        base = _repair(v, t, ftetwild=False)
+    finally:
+        repair.ftetwild_available, repair.run_ftetwild = saved
+    ft = rep['experimental_ftetwild']
+    assert ft['ran'] and not ft['adopted'], ft
+    assert ft['reject_reason'] == 'shape', ft
+    assert ft['hausdorff_rel'] > repair.FTETWILD_MAX_HAUSDORFF_REL, ft
+    assert np.array_equal(ov, base[1]) and np.array_equal(ot, base[2])
+    assert rep['deep_repair']['final_tier'] == 'stage1'
 
 
 def test_hausdorff_rel_is_zero_for_identical_meshes():

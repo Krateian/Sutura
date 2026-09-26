@@ -139,6 +139,8 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False,
                 ft.get('manifold_postprocessed'))
             entry['ftetwild_time'] = ft.get('time')
             entry['ftetwild_error'] = ft.get('error')
+            entry['ftetwild_reject_reason'] = ft.get('reject_reason')
+            entry['ftetwild_hausdorff_rel'] = ft.get('hausdorff_rel')
         else:
             entry['ftetwild_ran'] = False
         # Deep-repair ladder (--deep-repair): tier run, per-tier time, the
@@ -365,6 +367,7 @@ def main():
         pp = [r for r in adopted if r.get('ftetwild_manifold_postprocessed')]
         not_adopted = [r for r in ft_meshes if not r.get('ftetwild_adopted')]
         err = [r for r in ft_meshes if r.get('ftetwild_error')]
+        shape = [r for r in ft_meshes if r.get('ftetwild_reject_reason') == 'shape']
         timeouts = [r for r in err if r.get('ftetwild_error') == 'timeout']
         times = [r.get('ftetwild_time') for r in ft_meshes
                  if isinstance(r.get('ftetwild_time'), (int, float))]
@@ -373,7 +376,8 @@ def main():
         print('meshes where it ran      : %d' % len(ft_meshes))
         print('adopted                  : %d' % len(adopted))
         print('  of which manifold3d post-processed : %d' % len(pp))
-        print('adopt=False (kept stage-1) : %d' % len(not_adopted))
+        print('adopt=False (kept stage-1) : %d (of which %d shape guard)' % (
+            len(not_adopted), len(shape)))
         print('errors                   : %d (of which %d timeout)' % (
             len(err), len(timeouts)))
         if timeouts:
