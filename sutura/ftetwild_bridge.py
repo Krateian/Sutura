@@ -27,10 +27,10 @@ import numpy as np
 # pytetwild.tetrahedralize keyword arguments used unless the caller passes
 # its own. optimize=False skips fTetWild's mesh-quality optimisation, which
 # only improves the (discarded) interior tets: measured on macOS
-# (2026-09-26), thingi10k_46012 took 6 s instead of 34 s with a one-sided
-# output-to-input Hausdorff distance of 0.09 % of the bounding-box diagonal
-# (28 % in that default run). The unoptimised boundary can carry
-# non-manifold edges; the manifold3d post-process in repair.py removes them.
+# (2026-09-26), thingi10k_46012 took 6 s instead of 34 s, with a one-sided
+# output-to-input Hausdorff distance of 0.09 % of the bounding-box diagonal.
+# The unoptimised boundary can carry non-manifold edges; the manifold3d
+# post-process in repair.py removes them.
 DEFAULT_PARAMS = {'optimize': False}
 
 

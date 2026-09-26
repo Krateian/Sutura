@@ -114,6 +114,22 @@ def test_full_equals_pre_ladder_with_fake_ftetwild():
     assert dr['available'] is None
 
 
+def test_hausdorff_rel_is_zero_for_identical_meshes():
+    v, t = _sphere_with_hole()
+    hd_max, hd_mean = repair._hausdorff_rel(ml, v, t, v, t)
+    assert hd_max is not None and hd_max < 1e-6 and hd_mean < 1e-6
+    assert repair._hausdorff_rel(ml, v, t, v, t[:0]) == (None, None)
+    # unreferenced vertices (the fTetWild bridge writes interior tet
+    # vertices too) must not be sampled
+    ms = ml.MeshSet()
+    ms.create_sphere(subdiv=3)
+    m = ms.current_mesh()
+    sv, st = np.asarray(m.vertex_matrix()), np.asarray(m.face_matrix())
+    inner = np.random.default_rng(0).random((200, 3)) * 0.6 - 0.3
+    hd_max, _mean = repair._hausdorff_rel(ml, sv, st, np.vstack([sv, inner]), st)
+    assert hd_max < 1e-6, hd_max
+
+
 def test_off_reports_available():
     v, t = _load(OPEN_SAMPLE)
     rep, ov, ot = _repair(v, t, deep_repair='off')

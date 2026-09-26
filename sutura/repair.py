@@ -1473,6 +1473,46 @@ def _faces_preserved(verts, tris, new_verts, new_tris):
     return bool(np.all(have[inv[len(ub):]] >= ca))
 
 
+def _referenced_only(verts, tris):
+    """(verts, tris) without the vertices no face references (float64)."""
+    tris = np.asarray(tris, dtype=np.int64)
+    used = np.unique(tris)
+    remap = np.full(len(verts), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return np.asarray(verts, np.float64)[used], remap[tris]
+
+
+def _hausdorff_rel(ml, in_v, in_t, out_v, out_t):
+    """One-sided Hausdorff distance, samples on the output, distance to the
+    input, relative to the input bounding-box diagonal: ``(max, mean)``, or
+    ``(None, None)`` for an empty mesh or a zero diagonal. Also used by
+    scripts/benchmark_repair_corpus.py.
+
+    Both meshes are reduced to the vertices their faces reference first:
+    ``get_hausdorff_distance(samplevert=True)`` also samples unreferenced
+    vertices, and the fTetWild bridge output carries every tetrahedron
+    vertex, interior ones included (a closed sphere plus random interior
+    points measures ~26 % instead of 0)."""
+    if len(in_t) == 0 or len(out_t) == 0:
+        return None, None
+    in_v, in_t = _referenced_only(in_v, in_t)
+    out_v, out_t = _referenced_only(out_v, out_t)
+    diag = float(np.linalg.norm(in_v.max(0) - in_v.min(0)))
+    if not diag:
+        return None, None
+    hd = ml.MeshSet()
+    hd.add_mesh(ml.Mesh(vertex_matrix=in_v,
+                        face_matrix=np.asarray(in_t, np.int32)))      # id 0
+    hd.add_mesh(ml.Mesh(vertex_matrix=np.asarray(out_v, np.float64),
+                        face_matrix=np.asarray(out_t, np.int32)))     # id 1
+    r = hd.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
+                        samplevert=True, sampleface=True,
+                        samplenum=int(min(max(len(out_t), 10000), 200000)),
+                        maxdist=ml.PercentageValue(100))
+    return (round(float(r.get('max') or 0) / diag, 6),
+            round(float(r.get('mean') or 0) / diag, 6))
+
+
 def _count_si(ml, ms):
     ms.apply_filter('compute_selection_by_self_intersections_per_face')
     n = int(ms.current_mesh().face_selection_array().sum())
@@ -1602,14 +1642,7 @@ def _local_remesh_tier(ml, ms, after):
         elif not si_ok:
             rep['reject_reason'] = 'more self-intersections'
         else:
-            diag = float(np.linalg.norm(v.max(0) - v.min(0)))
-            hd = ml.MeshSet()
-            hd.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
-            hd.add_mesh(ml.Mesh(vertex_matrix=nv, face_matrix=nt.astype(np.int32)))
-            r = hd.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
-                                samplevert=True, sampleface=True,
-                                maxdist=ml.PercentageValue(100))
-            rep['hausdorff_rel'] = round(float(r.get('max') or 0) / diag, 6) if diag else None
+            rep['hausdorff_rel'] = _hausdorff_rel(ml, v, t, nv, nt)[0]
             rep['adopted'] = True
             rep['time'] = round(time.perf_counter() - t0, 3)
             return trial, t_after, rep

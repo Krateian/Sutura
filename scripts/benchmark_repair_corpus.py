@@ -67,25 +67,10 @@ def count_self_intersections(v, t):
 
 def hausdorff_out_to_in(v_in, t_in, v_out, t_out):
     """One-sided Hausdorff distance, samples on the output, distance to the
-    input, relative to the input bounding-box diagonal: (max, mean)."""
+    input, relative to the input bounding-box diagonal: (max, mean). The same
+    function as the fTetWild shape guard (repair._hausdorff_rel)."""
     import pymeshlab as ml
-    if len(t_out) == 0 or len(t_in) == 0:
-        return None, None
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v_in, np.float64),
-                        face_matrix=np.asarray(t_in, np.int32)))      # id 0
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v_out, np.float64),
-                        face_matrix=np.asarray(t_out, np.int32)))     # id 1
-    r = ms.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
-                        samplevert=True, sampleface=True,
-                        samplenum=int(min(max(len(t_out), 10000), 200000)),
-                        maxdist=ml.PercentageValue(100))
-    v_in = np.asarray(v_in, np.float64)
-    diag = float(np.linalg.norm(v_in.max(0) - v_in.min(0)))
-    if not diag:
-        return None, None
-    return (round(float(r.get('max') or 0) / diag, 6),
-            round(float(r.get('mean') or 0) / diag, 6))
+    return repair._hausdorff_rel(ml, v_in, t_in, v_out, t_out)
 
 
 def run_one(src, tmpdir, autorefine=False, ftetwild=False,
