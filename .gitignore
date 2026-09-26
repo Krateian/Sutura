@@ -12,7 +12,7 @@ test-layered-multiobject.3mf
 screenshots/
 dist/
 target/
-graphify-out/cost.json
-graphify-out/cache/
-graphify-out/.graphify_root
 history.jsonl
+
+# graphify knowledge graph: regenerated locally by the graphify git hooks
+graphify-out/

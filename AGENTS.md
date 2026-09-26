@@ -207,7 +207,7 @@ Options window, never in the way of the plain repair.
   result, or a tiny well-known file can be read more directly, fall back to
   raw grep/find/cat immediately. The goal is efficiency, not a rigid rule
   that blocks work when the graph is stale or unavailable. Output lives in
-  `graphify-out/`.
+  `graphify-out/` (git-ignored, local per clone; the git hooks rebuild it, or run `graphify update .` once after a fresh clone).
   **On a new machine (graphify is pipx-installed per-machine, not
   repo-tracked), check first:** `which graphify` — if missing, run
   `pipx install graphifyy` (or `uv tool install graphifyy`), then
