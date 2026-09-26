@@ -160,8 +160,15 @@ jobs:
 
       - name: "Check d: fTetWild real path exercised"
         run: |
+          set +e
           SUTURA_DIR="$HOME/.local/share/sutura" "$ENV_PY" tests/test_ftetwild_default.py > /tmp/ftetwild.log 2>&1
+          ftetwild_rc=$?
+          set -e
           cat /tmp/ftetwild.log
+          if [ "$ftetwild_rc" -ne 0 ]; then
+            echo "::error::test_ftetwild_default.py exited with return code $ftetwild_rc!"
+            exit "$ftetwild_rc"
+          fi
           if grep -q "skipped: fTetWild extra not installed" /tmp/ftetwild.log; then
             echo "::error::Output contained 'skipped: fTetWild extra not installed'!"
             exit 1
