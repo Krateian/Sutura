@@ -81,9 +81,31 @@ All notable changes to this project are documented here.
   diagonal; the sweep's 28 % for the optimised run was a measurement
   artifact, see Fixed); the unoptimised boundary can carry non-manifold edges, which
   the manifold3d post-process removes. artec_metal-nut still does not finish
-  within the 180 s budget (only `optimize=False` with
-  `edge_length_fac=0.1` finished, in 806 s). Output-changing for every mesh
-  the fTetWild tier handles.
+   within the 180 s budget (only `optimize=False` with
+   `edge_length_fac=0.1` finished, in 806 s). Output-changing for every mesh
+   the fTetWild tier handles.
+- **Wastefully dense fTetWild boundaries are decimated; fixed Hausdorff
+  sample count.** `optimize=False` can return a boundary far denser than the
+  input (thingi10k_73444: 473,212 faces at 7,882 input faces against 14,012
+  with `optimize=True`, same solver time), and the extra faces cost ~65 s of
+  downstream work with no added shape. When an attempt's boundary exceeds
+  `DENSE_RATIO = 4 * max(input_faces, DENSE_MIN_FACES = 20000)` it is
+  decimated with a pymeshlab quadric edge collapse (boundary/topology
+  preserving, planar quadric) over an escalating target ladder
+  (`DENSE_TARGET_LADDER = (1.5, 3.0)` times the input face count); a target
+  is accepted only when its manifold3d-post-processed result is strictly
+  watertight and its Hausdorff distance to the input is at most the raw
+  boundary's own distance plus `DECIMATE_HD_MARGIN = 0.005` (the face count
+  is only a size budget, the Hausdorff comparison is the quality gate).
+  Otherwise the undecimated boundary is used exactly as before, and the
+  existing `optimize=True` retry is unchanged. The report's
+  `experimental_ftetwild` gains `ftetwild_decimated`, `ftetwild_faces_raw`,
+  `ftetwild_faces_final`, `ftetwild_decimate_time` and, when the ladder runs,
+  `ftetwild_hausdorff_raw`, `ftetwild_decimate_target`,
+  `ftetwild_hausdorff_decimated`, `ftetwild_decimate_attempts` and
+  `ftetwild_decimate_fallback`. `_hausdorff_rel` now samples a fixed
+  `HAUSDORFF_SAMPLES = 200000` points regardless of the output size. New tests
+  in `tests/test_deep_repair.py`.
 - **Local tier limited to small, simple damage.** Measured on macOS, the
   local tier made 3 of the 40 real-world samples strictly watertight
   (31 → 34: thingi10k_40886, 46012, 71691) but none of the 115-mesh corpus,

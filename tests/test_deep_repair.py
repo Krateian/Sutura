@@ -7,6 +7,9 @@
   non-manifold edges, tiers, estimate) when something is left.
 - 'local' never changes a face outside the deleted region, and its guard
   rejects a result that does.
+- A wastefully dense fTetWild boundary is decimated (target ladder, strict
+  watertight + Hausdorff-margin acceptance) or falls back to the undecimated
+  result, below-the-ratio outputs are left alone.
 - Mode resolution: CLI flag > env > config > default, and the pre-ladder
   fTetWild flags keep their meaning.
 
@@ -249,6 +252,105 @@ def test_ftetwild_skipped_for_large_inputs():
     finally:
         repair.ftetwild_available, repair.FTETWILD_MAX_FACES = saved
     assert off['deep_repair']['available']['tiers'] == ['local'], off['deep_repair']
+
+
+def _dense_sphere(subdiv=4):
+    """A closed, dense fake fTetWild boundary (5,120 faces at subdiv=4)."""
+    ms = ml.MeshSet()
+    ms.create_sphere(subdiv=subdiv)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), np.float64),
+            np.asarray(m.face_matrix(), np.int64))
+
+
+def _fake_hd(raw_value=0.02, dec_value=0.02):
+    """Deterministic stand-in for ``repair._hausdorff_rel``: a raw/undecimated
+    boundary (many faces) reports ``raw_value``, a decimated candidate reports
+    ``dec_value``. Returns ``(max, mean)`` like the real function."""
+    def _hd(_ml, _in_v, _in_t, _out_v, out_t):
+        return ((raw_value if len(out_t) > 1000 else dec_value), 0.0)
+    return _hd
+
+
+def test_dense_ftetwild_output_is_decimated():
+    """A fake dense boundary triggers the decimation ladder: decimation is
+    recorded, the final face count is inside the chosen target, the adopted
+    result is strictly watertight and both Hausdorff measurements are kept."""
+    v, t = _dense_sphere(4)
+    raw_faces = len(t)
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        repair.write_obj(out_obj, v, t)
+        return {'ok': True, 'output_faces': raw_faces}, True
+    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+                                  _hausdorff_rel=_fake_hd(0.02, 0.02))
+    ft = rep['experimental_ftetwild']
+    assert ft['adopted'] and ft['ftetwild_decimated'], ft
+    assert ft['ftetwild_faces_raw'] == raw_faces, ft
+    assert ft['ftetwild_decimate_target'] == max(int(round(1.5 * 71)), 100), ft
+    assert ft['ftetwild_faces_final'] <= ft['ftetwild_decimate_target'], ft
+    assert ft['ftetwild_hausdorff_raw'] == 0.02, ft
+    assert ft['ftetwild_hausdorff_decimated'] == 0.02, ft
+    assert rep['stage1']['holes_remaining'] == 0, rep['stage1']
+    assert rep['stage1']['non_manifold_edges_remaining'] == 0, rep['stage1']
+
+
+def test_ftetwild_output_below_the_ratio_is_not_decimated():
+    v = np.asarray(CUBE_V, np.float32)
+    t = np.asarray(CUBE_T, np.int32)
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        repair.write_obj(out_obj, v, t)
+        return {'ok': True, 'output_faces': len(t)}, True
+    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100)
+    ft = rep['experimental_ftetwild']
+    assert ft['adopted'] and not ft['ftetwild_decimated'], ft
+    assert ft['ftetwild_faces_raw'] == ft['ftetwild_faces_final'] == len(t), ft
+    assert 'ftetwild_decimate_target' not in ft, ft
+
+
+def test_decimation_failure_falls_back_to_the_undecimated_result():
+    v, t = _dense_sphere(4)
+    raw_faces = len(t)
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        repair.write_obj(out_obj, v, t)
+        return {'ok': True, 'output_faces': raw_faces}, True
+
+    def failing_decimate(_ml, _cv, _ct, _target):
+        return None
+    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+                                  _decimate_boundary=failing_decimate,
+                                  _hausdorff_rel=_fake_hd(0.02, 0.02))
+    ft = rep['experimental_ftetwild']
+    assert ft['adopted'] and not ft['ftetwild_decimated'], ft
+    assert ft['ftetwild_faces_final'] == raw_faces, ft
+    assert ft['ftetwild_decimate_fallback'] == 'decimation_failed', ft
+    assert rep['stage1']['holes_remaining'] == 0, rep['stage1']
+
+
+def test_decimation_worse_than_raw_beyond_the_margin_is_rejected():
+    """The ladder must not make the shape measurably worse than the raw
+    fTetWild boundary: when every target exceeds
+    ``hd_raw + DECIMATE_HD_MARGIN`` it falls through to the undecimated
+    boundary, which passes the holes/non-manifold guard as before."""
+    v, t = _dense_sphere(4)
+    raw_faces = len(t)
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        repair.write_obj(out_obj, v, t)
+        return {'ok': True, 'output_faces': raw_faces}, True
+    # raw 0.02, decimated 0.05 > 0.02 + DECIMATE_HD_MARGIN -> both rejected
+    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+                                  _hausdorff_rel=_fake_hd(0.02, 0.05))
+    ft = rep['experimental_ftetwild']
+    assert ft['adopted'] and not ft['ftetwild_decimated'], ft
+    assert ft['ftetwild_faces_final'] == raw_faces, ft
+    assert ft['ftetwild_decimate_fallback'] == 'hausdorff', ft
+    assert len(ft['ftetwild_decimate_attempts']) == 2, ft
+    assert [a.get('reason') for a in ft['ftetwild_decimate_attempts']] == \
+        ['hausdorff', 'hausdorff'], ft
+    assert rep['stage1']['holes_remaining'] == 0, rep['stage1']
 
 
 def test_hausdorff_rel_is_zero_for_identical_meshes():
