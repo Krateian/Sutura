@@ -6,6 +6,28 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Options window (GUI).** The batch-wide switches moved from the *Options*
+  drop-down into a separate, non-modal window with tabs *General* (anonymous
+  usage history), *Repair* (fTetWild fallback, + self-intersections),
+  *Experimental* (autorefine, indirect autorefine, join small components,
+  edge-tiebreak), *Updates* and *Changelog*. It opens from the *Options*
+  button or Ctrl+, / Cmd+,; the button still shows how many options differ
+  from their defaults, and the update indicator next to it opens the
+  *Updates* tab. The `chk_*` widgets are the same objects, so the CLI
+  mapping is unchanged.
+- **Update settings.** The *Updates* tab has a manual *Check for updates*
+  button, an *Automatic updates* checkbox (the existing `check_for_updates`
+  key) and, enabled only while it is on, *Check on every start* (new
+  `check_on_startup` key, default off). `updater.should_check`: automatic
+  updates off never checks; on checks on the existing 7-day interval; on plus
+  *Check on every start* checks at every start. AppImage builds keep their
+  download-from-the-releases-page behaviour.
+- **Release notes in the GUI.** The *Changelog* tab fetches the GitHub release
+  notes lazily in a background thread (4 s timeout, cached in the config
+  directory) and falls back to the cache or the bundled `CHANGELOG.md`
+  offline. No network access on headless Qt platforms (tests), and running
+  threads are waited for on close.
+
 - **Deep-repair ladder (`--deep-repair {off,local,full}`).** The tiers that
   run after the stage-1 chain now have one entry point,
   `repair.deep_repair_ladder`. The mode comes from the flag, then

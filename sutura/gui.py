@@ -20,13 +20,15 @@ import numpy as np
 
 from PySide6.QtCore import Qt, QThread, Signal, QLocale, QPoint, qVersion, QTimer
 from PySide6.QtGui import (
-    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QPolygon, QPalette, QPen)
+    QIcon, QFontDatabase, QPixmap, QPainter, QColor, QPolygon, QPalette, QPen,
+    QShortcut, QKeySequence)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTreeWidget, QTreeWidgetItem, QPushButton, QFileDialog,
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
-    QCheckBox, QDoubleSpinBox, QSpinBox, QMenu, QWidgetAction)
+    QCheckBox, QDoubleSpinBox, QSpinBox,
+    QTabWidget, QTextBrowser)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -268,9 +270,34 @@ STRINGS = {
         'mode_tip': 'Choose the repair mode for the whole batch',
         'options_btn': 'Options',
         'options_btn_n': 'Options (%d)',
-        'options_tip': 'Repair options for the whole batch: the fTetWild '
-                       'fallback tier and the opt-in experimental passes. The '
-                       'number counts options changed from their defaults.',
+        'options_tip': 'Open the Options window (Ctrl+,): repair tiers, '
+                       'opt-in experimental passes, updates and release '
+                       'notes. The number counts options changed from their '
+                       'defaults.',
+        'options_title': 'Sutura options',
+        'opt_tab_general': 'General',
+        'opt_tab_repair': 'Repair',
+        'opt_tab_experimental': 'Experimental',
+        'opt_tab_updates': 'Updates',
+        'opt_tab_changelog': 'Changelog',
+        'opt_experimental_warning': 'These passes are experimental and off by '
+                                    'default. Each one is adopted only when its '
+                                    'result is not worse than the default chain, '
+                                    'but it can make a repair much slower.',
+        'opt_history': 'Keep an anonymous usage history (no file names or paths)',
+        'opt_version': 'Installed version: v%s',
+        'opt_last_check': 'Last check: %s',
+        'opt_never': 'never',
+        'opt_check_now': 'Check for updates',
+        'opt_auto_updates': 'Automatic updates',
+        'opt_check_on_start': 'Check on every start',
+        'opt_auto_note': 'Automatic updates check every 7 days; with "Check on '
+                         'every start" they check each time Sutura opens. A new '
+                         'version is only installed after you confirm it.',
+        'opt_appimage_note': 'AppImage builds cannot update themselves; new '
+                             'versions are downloaded from the releases page.',
+        'opt_changelog_loading': 'Loading release notes…',
+        'opt_changelog_offline': 'Release notes could not be loaded (offline?).',
         'options_section_fallback': 'Fallback tier',
         'options_section_experimental': 'Experimental (opt-in)',
         'profile_tip': 'Repair profile (whole batch): Auto uses the classifier; '
@@ -506,9 +533,35 @@ STRINGS = {
         'mode_tip': 'Batch geneli onarım modunu seç',
         'options_btn': 'Seçenekler',
         'options_btn_n': 'Seçenekler (%d)',
-        'options_tip': 'Batch geneli onarım seçenekleri: fTetWild yedek '
-                       'katmanı ve isteğe bağlı deneysel adımlar. Sayı, '
-                       'varsayılandan değiştirilmiş seçenekleri gösterir.',
+        'options_tip': 'Seçenekler penceresini aç (Ctrl+,): onarım '
+                       'katmanları, isteğe bağlı deneysel adımlar, '
+                       'güncellemeler ve sürüm notları. Sayı, varsayılandan '
+                       'değiştirilmiş seçenekleri gösterir.',
+        'options_title': 'Sutura seçenekleri',
+        'opt_tab_general': 'Genel',
+        'opt_tab_repair': 'Onarım',
+        'opt_tab_experimental': 'Deneysel',
+        'opt_tab_updates': 'Güncellemeler',
+        'opt_tab_changelog': 'Değişiklikler',
+        'opt_experimental_warning': 'Bu adımlar deneyseldir ve varsayılan olarak '
+                                    'kapalıdır. Her biri yalnızca sonucu varsayılan '
+                                    'zincirden kötü değilse uygulanır, ama onarımı '
+                                    'belirgin şekilde yavaşlatabilir.',
+        'opt_history': 'Anonim kullanım geçmişi tut (dosya adı veya yol yok)',
+        'opt_version': 'Kurulu sürüm: v%s',
+        'opt_last_check': 'Son kontrol: %s',
+        'opt_never': 'hiç',
+        'opt_check_now': 'Güncellemeleri kontrol et',
+        'opt_auto_updates': 'Otomatik güncelleme',
+        'opt_check_on_start': 'Her açılışta kontrol et',
+        'opt_auto_note': 'Otomatik güncelleme 7 günde bir kontrol eder; "Her '
+                         'açılışta kontrol et" işaretliyse Sutura her '
+                         'açıldığında kontrol eder. Yeni sürüm yalnızca siz '
+                         'onayladıktan sonra kurulur.',
+        'opt_appimage_note': 'AppImage sürümleri kendini güncelleyemez; yeni '
+                             'sürümler releases sayfasından indirilir.',
+        'opt_changelog_loading': 'Sürüm notları yükleniyor…',
+        'opt_changelog_offline': 'Sürüm notları yüklenemedi (çevrimdışı mı?).',
         'options_section_fallback': 'Yedek katman',
         'options_section_experimental': 'Deneysel (isteğe bağlı)',
         'profile_tip': 'Onarım profili (batch geneli): Auto sınıflandırıcıyı '
@@ -1551,6 +1604,226 @@ def mode_suggestion_keys(a):
     return s
 
 
+RELEASES_API = 'https://api.github.com/repos/Krateian/Sutura/releases?per_page=15'
+CHANGELOG_CACHE = os.path.join(updater.CONFIG_DIR, 'release_notes_cache.json')
+
+
+def _bundled_changelog():
+    """CHANGELOG.md shipped beside the modules or at the repo root, or None."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, 'CHANGELOG.md'),
+                 os.path.join(os.path.dirname(here), 'CHANGELOG.md')):
+        try:
+            with open(cand, encoding='utf-8') as f:
+                return f.read()
+        except OSError:
+            continue
+    return None
+
+
+class ChangelogWorker(QThread):
+    """Fetch the GitHub release notes (short timeout) as one markdown text.
+
+    Emits the markdown, or '' when the fetch fails; a successful fetch is
+    cached in the config dir so an offline start still shows the last notes."""
+
+    fetched = Signal(str)
+
+    def run(self):
+        import urllib.request
+        text = ''
+        try:
+            req = urllib.request.Request(
+                RELEASES_API, headers={'Accept': 'application/vnd.github+json',
+                                       'User-Agent': 'Sutura/' + VERSION})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                releases = json.loads(resp.read().decode('utf-8'))
+            parts = []
+            for rel in releases:
+                if rel.get('draft'):
+                    continue
+                title = rel.get('name') or rel.get('tag_name') or ''
+                date = (rel.get('published_at') or '')[:10]
+                parts.append('## %s%s\n\n%s' % (
+                    title, ('  (%s)' % date) if date else '',
+                    (rel.get('body') or '').strip()))
+            text = '\n\n'.join(parts)
+            try:
+                os.makedirs(updater.CONFIG_DIR, exist_ok=True)
+                with open(CHANGELOG_CACHE, 'w', encoding='utf-8') as f:
+                    json.dump({'markdown': text}, f)
+            except OSError:
+                pass
+        except Exception:
+            try:
+                with open(CHANGELOG_CACHE, encoding='utf-8') as f:
+                    text = json.load(f).get('markdown', '')
+            except (OSError, ValueError):
+                text = ''
+        self.fetched.emit(text)
+
+
+class OptionsDialog(QDialog):
+    """Non-modal, tabbed Options window.
+
+    The batch-wide repair checkboxes are the MainWindow's own chk_* widgets,
+    re-parented here unchanged, so the CLI mapping, the default-count on the
+    Options button and the tests keep using the same attributes. Settings
+    that are not per batch (usage history, update checks) are written to
+    config.json immediately."""
+
+    TAB_GENERAL, TAB_REPAIR, TAB_EXPERIMENTAL, TAB_UPDATES, TAB_CHANGELOG = range(5)
+
+    def __init__(self, main):
+        super().__init__(main)
+        self.main = main
+        self.setWindowTitle(_t('options_title'))
+        self.setModal(False)
+        self.resize(560, 460)
+        self._changelog_worker = None
+        self._changelog_loaded = False
+
+        root = QVBoxLayout(self)
+        self.tabs = QTabWidget(self)
+        root.addWidget(self.tabs)
+
+        # General
+        general = QWidget()
+        g = QVBoxLayout(general)
+        cfg = updater.load_config()
+        self.chk_history = QCheckBox(_t('opt_history'))
+        self.chk_history.setChecked(bool(cfg.get('history_enabled', True)))
+        self.chk_history.toggled.connect(
+            lambda on: self._save_key('history_enabled', bool(on)))
+        g.addWidget(self.chk_history)
+        g.addStretch(1)
+        self.tabs.addTab(general, _t('opt_tab_general'))
+
+        # Repair
+        repair = QWidget()
+        r = QVBoxLayout(repair)
+        r.addWidget(main.chk_fallback_ftetwild)
+        si_row = QHBoxLayout()
+        si_row.setContentsMargins(22, 0, 0, 0)
+        si_row.addWidget(main.chk_ftetwild_si)
+        r.addLayout(si_row)
+        r.addStretch(1)
+        self.tabs.addTab(repair, _t('opt_tab_repair'))
+
+        # Experimental
+        exp = QWidget()
+        e = QVBoxLayout(exp)
+        warn = QLabel(_t('opt_experimental_warning'))
+        warn.setWordWrap(True)
+        warn.setObjectName('optWarning')
+        e.addWidget(warn)
+        for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
+                    main.chk_join_components, main.chk_edge_tiebreak):
+            e.addWidget(chk)
+        e.addStretch(1)
+        self.tabs.addTab(exp, _t('opt_tab_experimental'))
+
+        # Updates
+        upd = QWidget()
+        u = QVBoxLayout(upd)
+        u.addWidget(QLabel(_t('opt_version', VERSION)))
+        self.lbl_last_check = QLabel()
+        u.addWidget(self.lbl_last_check)
+        row = QHBoxLayout()
+        self.btn_check_now = QPushButton(_t('opt_check_now'))
+        self.btn_check_now.clicked.connect(main._on_update_clicked)
+        row.addWidget(self.btn_check_now)
+        self.chk_auto_update = QCheckBox(_t('opt_auto_updates'))
+        row.addWidget(self.chk_auto_update)
+        row.addStretch(1)
+        u.addLayout(row)
+        start_row = QHBoxLayout()
+        start_row.setContentsMargins(22, 0, 0, 0)
+        self.chk_check_on_start = QCheckBox(_t('opt_check_on_start'))
+        start_row.addWidget(self.chk_check_on_start)
+        start_row.addStretch(1)
+        u.addLayout(start_row)
+        note = QLabel(_t('opt_appimage_note') if updater.is_appimage()
+                      else _t('opt_auto_note'))
+        note.setWordWrap(True)
+        u.addWidget(note)
+        u.addStretch(1)
+        self.chk_auto_update.setChecked(bool(cfg.get('check_for_updates')))
+        self.chk_check_on_start.setChecked(bool(cfg.get('check_on_startup')))
+        if updater.is_appimage():
+            self.chk_auto_update.setEnabled(False)
+        self.chk_auto_update.toggled.connect(self._on_auto_update)
+        self.chk_check_on_start.toggled.connect(
+            lambda on: self._save_key('check_on_startup', bool(on)))
+        self._sync_update_boxes()
+        self.refresh_updates()
+        self.tabs.addTab(upd, _t('opt_tab_updates'))
+
+        # Changelog (fetched lazily the first time the tab is shown)
+        self.changelog = QTextBrowser()
+        self.changelog.setOpenExternalLinks(True)
+        self.tabs.addTab(self.changelog, _t('opt_tab_changelog'))
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    # --- config helpers
+    @staticmethod
+    def _save_key(key, value):
+        cfg = updater.load_config()
+        cfg[key] = value
+        updater.save_config(cfg)
+
+    def _on_auto_update(self, on):
+        self._save_key('check_for_updates', bool(on))
+        self._sync_update_boxes()
+
+    def _sync_update_boxes(self):
+        self.chk_check_on_start.setEnabled(
+            self.chk_auto_update.isEnabled() and self.chk_auto_update.isChecked())
+
+    def refresh_updates(self):
+        last = updater.load_config().get('last_check')
+        if last:
+            import time as _time
+            when = _time.strftime('%Y-%m-%d %H:%M', _time.localtime(last))
+        else:
+            when = _t('opt_never')
+        self.lbl_last_check.setText(_t('opt_last_check', when))
+
+    def open_tab(self, index):
+        self.tabs.setCurrentIndex(index)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    # --- changelog
+    def _on_tab_changed(self, index):
+        if index == self.TAB_UPDATES:
+            self.refresh_updates()
+        if index != self.TAB_CHANGELOG or self._changelog_loaded:
+            return
+        self._changelog_loaded = True
+        if QApplication.platformName() in HEADLESS_QPA_PLATFORMS:
+            # no network in headless runs (tests): a thread still running at
+            # interpreter exit aborts the process
+            self._show_changelog('')
+            return
+        self.changelog.setPlainText(_t('opt_changelog_loading'))
+        self._changelog_worker = ChangelogWorker(self)
+        self._changelog_worker.fetched.connect(self._show_changelog)
+        self._changelog_worker.start()
+
+    def _show_changelog(self, text):
+        self._changelog_worker = None
+        if not text:
+            text = _bundled_changelog() or _t('opt_changelog_offline')
+        self.changelog.setMarkdown(text)
+
+    def stop_workers(self):
+        w = self._changelog_worker
+        if w is not None and w.isRunning():
+            w.wait(6000)
+
+
 class MainWindow(QMainWindow):
     MESH_EXTS = ('.stl', '.3mf')
 
@@ -1639,13 +1912,13 @@ class MainWindow(QMainWindow):
         self.update_btn.setVisible(
             updater.is_appimage() or updater.config_exists()
             or updater.load_config().get('check_for_updates'))
-        self.update_btn.clicked.connect(self._on_update_clicked)
+        self.update_btn.clicked.connect(
+            lambda: self._show_options(OptionsDialog.TAB_UPDATES))
         buttons.addWidget(self.btn_add_files)
         buttons.addWidget(self.btn_add_folder)
         buttons.addWidget(self.btn_remove)
         buttons.addWidget(self.btn_clear)
         buttons.addStretch(1)
-        buttons.addWidget(self.update_btn)
         layout.addLayout(buttons)
 
         # second row: analysis/actions — Analyze + Mode (prep) | Repair + Stop
@@ -1700,14 +1973,12 @@ class MainWindow(QMainWindow):
         self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
         self.chk_indirect_autorefine.toggled.connect(
             lambda on: setattr(self, '_indirect_autorefine', on))
-        # The batch-wide options above live in one drop-down menu next to
-        # the mode button instead of a row of checkboxes. Each QCheckBox is
-        # embedded unchanged (QWidgetAction), so several can be toggled
-        # without the menu closing and every chk_* attribute keeps its
+        # The batch-wide options above live in a separate, non-modal Options
+        # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
+        # is re-parented there unchanged, so every chk_* attribute keeps its
         # behaviour; the button shows how many differ from their defaults.
         self.btn_options = QPushButton(_t('options_btn'))
         self.btn_options.setToolTip(_t('options_tip'))
-        menu = QMenu(self.btn_options)
         self._options_defaults = (
             (self.chk_fallback_ftetwild, True),
             (self.chk_ftetwild_si, False),
@@ -1716,39 +1987,21 @@ class MainWindow(QMainWindow):
             (self.chk_join_components, False),
             (self.chk_edge_tiebreak, False),
         )
-
-        def _menu_widget(widget, indent=0, header=False):
-            holder = QWidget(menu)
-            box = QHBoxLayout(holder)
-            box.setContentsMargins(10 + indent, 4 if header else 2, 12, 2)
-            box.addWidget(widget)
-            act = QWidgetAction(menu)
-            act.setDefaultWidget(holder)
-            if header:
-                act.setEnabled(False)
-            menu.addAction(act)
-
-        def _menu_header(key):
-            label = QLabel(_t(key))
-            f = label.font()
-            f.setBold(True)
-            label.setFont(f)
-            _menu_widget(label, header=True)
-
-        _menu_header('options_section_fallback')
-        _menu_widget(self.chk_fallback_ftetwild)
-        _menu_widget(self.chk_ftetwild_si, indent=18)
-        menu.addSeparator()
-        _menu_header('options_section_experimental')
-        for chk in (self.chk_autorefine, self.chk_indirect_autorefine,
-                    self.chk_join_components, self.chk_edge_tiebreak):
-            _menu_widget(chk)
-        self.btn_options.setMenu(menu)
-        self._options_menu = menu
+        self._options_dialog = OptionsDialog(self)
+        self.btn_options.clicked.connect(
+            lambda: self._show_options(OptionsDialog.TAB_REPAIR))
+        self._options_shortcut = QShortcut(QKeySequence.Preferences, self)
+        self._options_shortcut.activated.connect(
+            lambda: self._show_options(OptionsDialog.TAB_REPAIR))
+        self._options_shortcut_alt = QShortcut(QKeySequence('Ctrl+,'), self)
+        self._options_shortcut_alt.activated.connect(
+            lambda: self._show_options(OptionsDialog.TAB_REPAIR))
         for chk, _default in self._options_defaults:
             chk.toggled.connect(self._update_options_label)
         self._update_options_label()
         actions.addWidget(self.btn_options)
+        # update badge next to Options: opens the Updates tab
+        actions.addWidget(self.update_btn)
         # repair profile dropdown (batch-wide, like the mode): "Auto" = the
         # current classifier-driven default; the named profiles opt in to a
         # fixed Stage 1 threshold preset (see repair.PROFILES).
@@ -1931,6 +2184,18 @@ class MainWindow(QMainWindow):
         self.btn_options.setText(
             _t('options_btn_n', changed) if changed else _t('options_btn'))
 
+    def _show_options(self, tab=0):
+        self._options_dialog.open_tab(tab)
+
+    def closeEvent(self, event):
+        """Wait for background threads so none is still running when the
+        interpreter exits (a running QThread at exit aborts the process)."""
+        self._options_dialog.stop_workers()
+        chk = self.update_check
+        if chk is not None and chk.isRunning():
+            chk.wait(6000)
+        super().closeEvent(event)
+
     def _sync_ftetwild(self, *_):
         """Map the two fTetWild checkboxes to the CLI tri-state."""
         on = self.chk_fallback_ftetwild.isChecked()
@@ -1996,6 +2261,7 @@ class MainWindow(QMainWindow):
 
     def _on_update_check_done(self, result):
         self.update_check = None
+        self._options_dialog.refresh_updates()
         status, new_tag = result
         if status == 'license':
             self.available_tag = None
