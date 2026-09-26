@@ -707,7 +707,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     stats = {'stage1': {}}
     if triage_spec is None:
         triage_spec = triage.resolve_intensity(None)
-    stats['triage_intensity'] = triage_spec.name
+    stats.update(triage.triage_report_fields(triage_spec))
 
     # Non-blocking unit warning: the size-based Stage 1 thresholds assume
     # millimetres, so a mesh that was probably authored in inches/cm deserves
@@ -2726,9 +2726,6 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     result = {
         'repair_mode': mode,
         'repair_profile': profile,
-        'triage_intensity': (
-            triage_spec.name if triage_spec is not None
-            else triage.DEFAULT_INTENSITY),
         'detected_type': cls['type'],
         'detected_confidence': cls['confidence'],
         'classifier_engine': classifier_engine,
@@ -2745,6 +2742,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
         'estimated_confidence_label': est['label'],
         'estimated_confidence_factors': est['factors'],
     }
+    result.update(triage.triage_report_fields(triage_spec))
     _u = check_units(v, declared_unit)
     if _u:
         result['unit_warning'] = True
@@ -3267,15 +3265,20 @@ def main():
                         help='named Stage 1 threshold preset: mechanical, '
                              'organic, scan, miniature or fast. Only effective '
                              'with mode auto; an explicit fixed mode wins.')
-    parser.add_argument('--intensity', choices=triage.INTENSITIES, default=None,
-                        help='Triage Engine intensity preset for the effort '
-                             'after Stage 1: quick (skip the deep-repair and '
-                             'fTetWild tiers), balanced (default; byte-'
-                             'identical to the historical defaults), thorough, '
-                             'extreme. Stage 1 is NOT affected (use '
-                             '--mode/--profile). Also from SUTURA_INTENSITY or '
-                             'the "intensity" key of '
-                             '~/.config/sutura/config.json')
+    parser.add_argument('--intensity', default=None, metavar='NAME',
+                        help='Triage Engine intensity for the effort after '
+                             'Stage 1: a built-in preset (quick, balanced '
+                             '(default; byte-identical to the historical '
+                             'defaults), thorough, extreme) or a named user '
+                             'profile from ~/.config/sutura/profiles.json. '
+                             'Stage 1 is NOT affected (use --mode/--profile). '
+                             'Also from SUTURA_INTENSITY or the "intensity" '
+                             'key of ~/.config/sutura/config.json. See '
+                             '--list-intensities.')
+    parser.add_argument('--list-intensities', action='store_true',
+                        help='list the built-in intensity presets and the '
+                             'user profiles with their effective values, then '
+                             'exit (no repair)')
     parser.add_argument('--no-history', action='store_true',
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
@@ -3372,6 +3375,21 @@ def main():
                              'marginal (1 mesh on the 71-mesh labeled set).')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
+
+    # --list-intensities: print the presets and user profiles, then exit.
+    if args.list_intensities:
+        print(triage.format_intensities())
+        sys.exit(0)
+
+    # --intensity accepts a built-in preset OR a user profile; argparse cannot
+    # know the profiles at parser-construction time, so validate here.
+    _profiles = triage.load_profiles()
+    if (args.intensity is not None and args.intensity not in triage.PRESETS
+            and args.intensity not in _profiles):
+        _valid = list(triage.INTENSITIES) + sorted(_profiles)
+        parser.error("argument --intensity: invalid choice: %r (choose from %s)"
+                     % (args.intensity, ', '.join(map(repr, _valid))))
+
     files = args.files
     out = args.output
     human = args.human
@@ -3380,7 +3398,8 @@ def main():
     mode = args.mode
     dry_run = args.dry_run
     engine = resolve_classifier_engine(args.classifier_engine)
-    triage_spec = triage.resolve_intensity(args.intensity)
+    triage_spec = triage.resolve_intensity(args.intensity,
+                                           user_profiles=_profiles)
 
     # Repair budgets: validate the ranges, then 0 / unset both mean "no
     # budget" (disabled), matching the GUI's 0 = no limit convention.
