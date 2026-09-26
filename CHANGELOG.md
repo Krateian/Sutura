@@ -306,6 +306,15 @@ All notable changes to this project are documented here.
   running when the test subprocess exited (SIGABRT, return code -6). The
   background update check is now skipped on the windowless Qt platforms
   (`offscreen`/`minimal`), as the first-run dialog already was.
+- **Closing the GUI during the background update check aborted the process.**
+  With update checks enabled, `MainWindow` starts a parented `UpdateCheckWorker`
+  at construction; closing the window shortly after launch destroyed the
+  still-running `QThread` when `main()` returned (`QThread: Destroyed while
+  thread '' is still running`, SIGABRT). The worker now returns promptly when
+  interruption is requested, and the shutdown path (`MainWindow.closeEvent`
+  and after `app.exec()`) requests interruption and waits briefly for it,
+  stopping the thread as a last resort so it is never destroyed while running.
+  Regression test `tests/test_update_check_shutdown.py`.
 - **fTetWild results with a pinched vertex ended as `warning`.** fTetWild's
   boundary can be closed with no non-manifold edge and still not be
   two-manifold (two tetrahedra meeting in one vertex), so stage 2 never ran
