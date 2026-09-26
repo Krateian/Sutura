@@ -160,6 +160,11 @@ jobs:
 
       - name: "Check d: fTetWild real path exercised"
         run: |
+          # The test's GUI subprocess calls the bare interpreter like check c
+          # Part 1, so it needs the same launcher-derived plugin pin.
+          export QT_QPA_PLATFORM=offscreen
+          eval "$(sed -n '/^export QT_PLUGIN_PATH=/p' "$HOME/.local/bin/sutura-gui")"
+          test -n "$QT_PLUGIN_PATH"
           set +e
           SUTURA_DIR="$HOME/.local/share/sutura" "$ENV_PY" tests/test_ftetwild_default.py > /tmp/ftetwild.log 2>&1
           ftetwild_rc=$?
