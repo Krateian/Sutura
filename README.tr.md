@@ -123,7 +123,12 @@ girdiye tek yönlü Hausdorff mesafesi sınır kutusu köşegeninin %1'ini aşar
 (geçici eşik) sonuç korunur ama işaretlenir: rapor `shape_changed: true` ve
 `shape_changed` sorun kodunu ("Şekil fTetWild yedek katmanıyla değişti")
 taşır, kategori düşürülmez. macOS ölçümünde 40 örnekten thingi10k_1038441
-(%3,7), 1038439 (%1,7) ve 224108 (%1,1) bu durumdadır. fTetWild
+(%3,7), 1038439 (%1,7) ve 224108 (%1,1) bu durumdadır. Varsayılan
+(kalite optimizasyonu olmadan çalışan) fTetWild sınırı manifold3d
+geçişinden sonra bile delik ve non-manifold korumasından geçemezse, mesh
+180 sn'lik bütçenin kalanı içinde optimizasyon açık olarak bir kez daha
+tetrahedralize edilir; rapor iki koşuyu da listeler (`attempts`) ve
+benimseneni belirtir (`adopted_attempt`). fTetWild
 eki kurulu değilse ve hiçbir bayrak verilmezse davranış tam olarak
 yukarıdaki iki aşamadır.
 
