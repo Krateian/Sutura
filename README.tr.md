@@ -135,7 +135,10 @@ tekrarlanabilir değildir (ör. thingi10k_248395 tek iş parçacığıyla bile
 değişir, çoğunlukla daha kaba); girdinin her noktası çıktıya yakın kalır
 (kontrol edilen mesh'lerde sınır kutusu köşegeninin %0,2–1,4'ü), çıktı ise
 açıklıkların veya boşlukların kapatıldığı yerlerde girdiden uzakta yüzey
-ekleyebilir (thingi10k_46012'de %28'e kadar, ortalama ≤ %1). fTetWild artık
+ekleyebilir (çıktıdan girdiye tek yönlü Hausdorff mesafesi thingi10k_224108,
+1038439 ve 1038441'de %1–4, iki corpus mesh'inde %5–8; thingi10k_46012 için
+daha önce verilen %28, iç tetrahedron vertex'lerini de örnekleyen bir
+ölçümden geliyordu). fTetWild artık
 mesh kalitesi optimizasyonu olmadan çalışır (`optimize=False`; optimizasyon
 yalnızca atılan iç tetrahedronları iyileştirir): macOS'taki parametre
 taramasında thingi10k_46012'yi 34 sn'den 6 sn'ye indirdi, Hausdorff mesafesi

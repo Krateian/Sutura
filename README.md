@@ -131,8 +131,10 @@ thingi10k_248395 took 30–160 s, occasionally beyond the budget, even with one
 thread); the result is re-triangulated (face counts change, often coarser);
 every input point stays close to the output (0.2–1.4 % of the bounding-box
 diagonal on the checked meshes) while the output can add surface away from
-the input where openings or cavities are closed (up to 28 % on
-thingi10k_46012, mean ≤ 1 %). fTetWild now runs without its mesh-quality
+the input where openings or cavities are closed (one-sided output-to-input
+Hausdorff distance 1–4 % on thingi10k_224108, 1038439 and 1038441, 5–8 % on
+two corpus meshes; an earlier figure of 28 % on thingi10k_46012 came from a
+measurement that also sampled interior tetrahedron vertices). fTetWild now runs without its mesh-quality
 optimisation (`optimize=False`; the optimisation only improves the discarded
 interior tetrahedra): in a parameter sweep on macOS it cut thingi10k_46012
 from 34 s to 6 s with a 0.09 % Hausdorff distance, while artec_metal-nut
