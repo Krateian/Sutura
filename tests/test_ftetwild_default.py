@@ -286,6 +286,66 @@ def test_run_ftetwild_passes_params_to_the_bridge():
     assert seen[0][-2:] == ['/tmp/in.obj', '/tmp/out.obj'], seen[0]
     assert _json.loads(seen[1][-1]) == {'optimize': True}, seen[1]
 
+
+def test_ftetwild_optimize_resolution():
+    """CLI > SUTURA_FTETWILD_OPTIMIZE > config ftetwild_optimize > off."""
+    import json as _json
+    with tempfile.TemporaryDirectory() as td:
+        cfg = os.path.join(td, 'config.json')
+        assert repair.resolve_ftetwild_optimize(None, {}, cfg) is False
+        with open(cfg, 'w') as f:
+            _json.dump({'ftetwild_optimize': True}, f)
+        assert repair.resolve_ftetwild_optimize(None, {}, cfg) is True
+        env = {repair.FTETWILD_OPTIMIZE_ENV: '0'}
+        assert repair.resolve_ftetwild_optimize(None, env, cfg) is False
+        assert repair.resolve_ftetwild_optimize(True, env, cfg) is True
+    old = os.environ.pop(repair.FTETWILD_OPTIMIZE_ENV, None)
+    try:
+        os.environ[repair.FTETWILD_OPTIMIZE_ENV] = '1'
+        assert repair.ftetwild_params() == {'optimize': True}
+        os.environ[repair.FTETWILD_OPTIMIZE_ENV] = '0'
+        assert repair.ftetwild_params() is None
+    finally:
+        os.environ.pop(repair.FTETWILD_OPTIMIZE_ENV, None)
+        if old is not None:
+            os.environ[repair.FTETWILD_OPTIMIZE_ENV] = old
+
+
+def test_gui_ftetwild_optimize_flag():
+    """The Repair-tab checkbox maps to --ftetwild-optimize (off by default)
+    and is disabled with the fTetWild fallback. Subprocess, as above."""
+    code = (
+        "import os, sys\n"
+        "os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')\n"
+        "sys.path.insert(0, %r)\n"
+        "from PySide6.QtWidgets import QApplication\n"
+        "import gui\n"
+        "app = QApplication([])\n"
+        "w = gui.MainWindow()\n"
+        "assert not w.chk_ftetwild_optimize.isChecked()\n"
+        "w.chk_fallback_ftetwild.setChecked(False)\n"
+        "assert not w.chk_ftetwild_optimize.isEnabled()\n"
+        "w.chk_fallback_ftetwild.setChecked(True)\n"
+        "assert w.chk_ftetwild_optimize.isEnabled()\n"
+        "seen = []\n"
+        "def fake_popen(args, **kw):\n"
+        "    seen.append(list(args))\n"
+        "    raise OSError('captured')\n"
+        "gui.subprocess.Popen = fake_popen\n"
+        "gui.SUTURA_CMD = ['sutura']\n"
+        "for on in (False, True):\n"
+        "    wk = gui.RepairWorker(['x.stl'], ftetwild_optimize=on)\n"
+        "    wk._run_one('x.stl')\n"
+        "    assert ('--ftetwild-optimize' in seen[-1]) == on, seen[-1]\n"
+        "w.close()\n"
+        "print('GUI-OK')\n" % SUTURA
+    )
+    r = subprocess.run([sys.executable, '-c', code], capture_output=True,
+                       text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-800:]
+    assert 'GUI-OK' in r.stdout, r.stdout[-500:]
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):

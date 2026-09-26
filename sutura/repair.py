@@ -1542,10 +1542,14 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild):
                 write_obj(inter, v, t)
                 attempts = []
                 t_start = time.perf_counter()
-                plan = [('default', None), ('optimize', FTETWILD_RETRY_PARAMS)]
+                # the user option (--ftetwild-optimize / config) runs the
+                # optimising attempt directly; otherwise default, then retry
+                user_params = ftetwild_params()
+                plan = ([('optimize', user_params)] if user_params else
+                        [('default', None), ('optimize', FTETWILD_RETRY_PARAMS)])
                 chosen = None
                 for tag, params in plan:
-                    if tag != 'default':
+                    if attempts:
                         last = attempts[-1]
                         # retry only when the first boundary exists but
                         # fails the holes/non-manifold guard
@@ -1660,6 +1664,35 @@ def resolve_deep_repair(cli_value=None, environ=None, config_path=None):
     except (OSError, ValueError, AttributeError):
         pass
     return DEEP_REPAIR_DEFAULT
+
+
+FTETWILD_OPTIMIZE_ENV = 'SUTURA_FTETWILD_OPTIMIZE'
+
+
+def resolve_ftetwild_optimize(cli_value=None, environ=None, config_path=None):
+    """fTetWild tet-quality optimisation on/off: CLI ``--ftetwild-optimize``
+    > SUTURA_FTETWILD_OPTIMIZE (1/0) > config.json ``ftetwild_optimize`` >
+    False. Off is the measured default: only the boundary surface is kept,
+    and the optimisation pass cost 34 s vs 6 s on thingi10k_46012 with the
+    same shape fidelity; turning it on mainly lengthens complex repairs."""
+    if cli_value:
+        return True
+    env = (os.environ if environ is None else environ).get(FTETWILD_OPTIMIZE_ENV)
+    if env in ('1', 'true', 'yes', 'on'):
+        return True
+    if env in ('0', 'false', 'no', 'off'):
+        return False
+    path = DEEP_REPAIR_CONFIG if config_path is None else config_path
+    try:
+        with open(path) as f:
+            return bool(json.load(f).get('ftetwild_optimize', False))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def ftetwild_params():
+    """Parameter overrides for the fTetWild bridge (None = bridge defaults)."""
+    return {'optimize': True} if resolve_ftetwild_optimize() else None
 
 
 def estimate_deep_repair_time(n_faces, n_regions, tiers):
@@ -3199,6 +3232,13 @@ def main():
                              'self-intersects (slow: up to %d s per mesh; '
                              'remeshes such meshes), and report an explicit '
                              'skip when fTetWild is not installed' % FTETWILD_TIMEOUT)
+    parser.add_argument('--ftetwild-optimize', action='store_true',
+                        help='let fTetWild also optimise the quality of its '
+                             'tetrahedra (off by default: only the boundary '
+                             'surface is used, and the optimisation mostly '
+                             'lengthens repairs of complex parts). Default from '
+                             '%s or the "ftetwild_optimize" key of '
+                             '~/.config/sutura/config.json' % FTETWILD_OPTIMIZE_ENV)
     parser.add_argument('--deep-repair', choices=DEEP_REPAIR_MODES, default=None,
                         help='deep-repair ladder after the fast repair, when '
                              'holes or non-manifold edges remain: "full" '
@@ -3317,6 +3357,9 @@ def main():
             print(json.dumps({'files': results}, ensure_ascii=False))
         sys.exit(0 if nerr == 0 else 1)
 
+    if args.ftetwild_optimize:
+        # read by ftetwild_params() inside the fTetWild tier
+        os.environ[FTETWILD_OPTIMIZE_ENV] = '1'
     _dr_mode, _ft_arg = resolve_deep_repair_flags(
         args.deep_repair, args.no_fallback_ftetwild,
         args.experimental_fallback_ftetwild)
