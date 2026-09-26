@@ -371,6 +371,8 @@ def main():
         not_adopted = [r for r in ft_meshes if not r.get('ftetwild_adopted')]
         err = [r for r in ft_meshes if r.get('ftetwild_error')]
         shape = [r for r in ft_meshes if r.get('ftetwild_shape_changed')]
+        too_large = [r for r in results.values()
+                     if r.get('ftetwild_reject_reason') == 'too_large']
         timeouts = [r for r in err if r.get('ftetwild_error') == 'timeout']
         times = [r.get('ftetwild_time') for r in ft_meshes
                  if isinstance(r.get('ftetwild_time'), (int, float))]
@@ -381,6 +383,7 @@ def main():
         print('  of which manifold3d post-processed : %d' % len(pp))
         print('adopt=False (kept stage-1) : %d' % len(not_adopted))
         print('adopted with shape_changed : %d' % len(shape))
+        print('skipped as too large       : %d' % len(too_large))
         print('errors                   : %d (of which %d timeout)' % (
             len(err), len(timeouts)))
         if timeouts:

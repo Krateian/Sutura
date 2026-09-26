@@ -126,6 +126,10 @@ quality optimisation) fails the holes and non-manifold guard even after the
 manifold3d pass, the mesh is tetrahedralized once more with the
 optimisation on, within what remains of the 180 s budget; the report lists
 both runs (`attempts`) and names the adopted one (`adopted_attempt`).
+Inputs above 300,000 faces skip the fTetWild tier (`reject_reason:
+too_large`): the slowest completed run on the 40 samples took ~55 s at
+90,000 faces, so larger scans cannot finish within the budget, and the
+dense Artec scans of the 115-mesh corpus timed out on every run.
 Without the fTetWild extra and with no flag set, the
 behaviour is exactly the two stages above.
 

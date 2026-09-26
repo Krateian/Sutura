@@ -47,6 +47,18 @@ All notable changes to this project are documented here.
   rejected by the holes/non-manifold guard reports `reject_reason:
   holes_nm`. The benchmark adds `ftetwild_reject_reason`,
   `ftetwild_hausdorff_rel` and `ftetwild_shape_changed`.
+- **fTetWild skipped for large inputs.** Inputs with more than
+  `FTETWILD_MAX_FACES = 300000` faces no longer start the fTetWild tier;
+  the report carries `experimental_ftetwild = {ran: false, reject_reason:
+  too_large, input_faces, max_faces}`, `--human` a "skipped" line, and the
+  `off`-mode offer no longer lists fTetWild for such a mesh. The limit
+  follows from the budget: the slowest completed run on the 40 real-world
+  samples took ~55 s at 90,000 faces (thingi10k_100281), so above ~300,000
+  faces even linear scaling exceeds 180 s. On the 115-mesh corpus the six
+  dense Artec scans that reach the tier timed out at 180 s on every run
+  (expected saving ~18 min per corpus run). Provisional: the corpus face
+  counts are not stored in the repository; the benchmark's `input_faces`
+  column verifies the split.
 - **Second fTetWild attempt with the optimisation on.** When the default
   (optimize=False) boundary fails the holes/non-manifold guard after the
   manifold3d post-process, the tier runs fTetWild once more with
