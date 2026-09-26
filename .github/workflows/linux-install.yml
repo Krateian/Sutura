@@ -192,7 +192,6 @@ jobs:
   arch-install:
     name: Arch Linux Install E2E
     runs-on: ubuntu-latest
-    continue-on-error: true
     container:
       image: archlinux:latest
     steps:
@@ -208,18 +207,11 @@ jobs:
           echo "archuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown -R archuser:archuser "$GITHUB_WORKSPACE"
 
-      - name: Run install.sh and follow printed instructions for python3.11
+      - name: Run install.sh and verify Python 3.11 standalone runtime
         run: |
-          su - archuser -c "cd '$GITHUB_WORKSPACE' && ./install.sh" || {
-            echo "install.sh requested python3.11. Following printed instructions: 'sudo pacman -S python311'..."
-            if ! su - archuser -c "sudo pacman -S --noconfirm python311"; then
-              echo "::error::python311 is not obtainable from Arch Linux official repositories."
-              echo "install.sh prints 'On Arch/CachyOS: sudo pacman -S python311', but 'python311' is only in CachyOS repos or AUR."
-              echo "Failing job as expected without applying workarounds or AUR helpers."
-              exit 1
-            fi
-            su - archuser -c "cd '$GITHUB_WORKSPACE' && ./install.sh"
-          }
+          su - archuser -c "cd '$GITHUB_WORKSPACE' && ./install.sh"
+          su - archuser -c "test -x ~/.local/share/sutura/python311/bin/python3.11"
+          su - archuser -c "~/.local/share/sutura/venv311/bin/python -c \"import sys; assert sys.version_info[:2] == (3, 11), sys.version\""
 
       - name: "Check a: CLI repair (if install succeeded)"
         run: |
