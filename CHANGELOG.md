@@ -85,6 +85,15 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Closing the GUI during the background update check aborted the process.**
+  With update checks enabled, `MainWindow` starts a parented `UpdateCheckWorker`
+  at construction; closing the window shortly after launch destroyed the
+  still-running `QThread` when `main()` returned (`QThread: Destroyed while
+  thread '' is still running`, SIGABRT). The worker now returns promptly when
+  interruption is requested, and the shutdown path (`MainWindow.closeEvent`
+  and after `app.exec()`) requests interruption and waits briefly for it,
+  stopping the thread as a last resort so it is never destroyed while running.
+  Regression test `tests/test_update_check_shutdown.py`.
 - **GUI construction hung on headless systems.** With no
   `~/.config/sutura/config.json`, `MainWindow` opened the modal first-run
   dialog, which nobody can answer on Qt's `offscreen`/`minimal` platforms, so
