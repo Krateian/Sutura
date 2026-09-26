@@ -74,7 +74,7 @@ environment.` — it is never silently omitted.
 
 **Optional tiers.** Around the two stages sit tiers for self-intersecting
 and badly broken meshes. The experimental ones are off by default and enabled
-by their own CLI flag or a checkbox in the GUI's **Options** menu; the fTetWild fallback is on by default
+by their own CLI flag or a checkbox in the GUI's **Options** window; the fTetWild fallback is on by default
 whenever its optional extra is installed:
 
 * *Before stage 1:* `--experimental-autorefine` (splits intersecting
@@ -85,10 +85,13 @@ whenever its optional extra is installed:
   the original input with fTetWild and extracts a watertight boundary;
   optional ~1.1 GB extra, see Install). When the extra is installed it runs by
   default, but only when stage 1 still leaves holes or non-manifold edges;
-  `--no-fallback-ftetwild` (GUI: *Options* → uncheck *fTetWild fallback*) turns it off,
-  `--experimental-fallback-ftetwild` (GUI: *Options* → *+ self-intersections
+  `--no-fallback-ftetwild` (GUI: *Options* → *Repair* tab → uncheck *fTetWild fallback*) turns it off,
+  `--experimental-fallback-ftetwild` (GUI: *Options* → *Repair* tab → *+ self-intersections
   (slow)*, below it) also runs it on a closed result that still
-  self-intersects.
+  self-intersects. fTetWild's own tetrahedron-quality optimisation is off
+  (only the boundary is used, and it mostly costs time);
+  `--ftetwild-optimize` (GUI: *Optimise tetrahedra*, not recommended)
+  turns it on.
 
 These after-stage-1 tiers form the **deep-repair ladder**, selected with
 `--deep-repair {off,local,full}` (or `SUTURA_DEEP_REPAIR`, or the
@@ -616,9 +619,13 @@ sessions (the GUI is a Qt application, not XWayland). The GUI ships its own
 dark Fusion theme (teal accent), so it looks the same on every platform and
 Qt version regardless of the system desktop theme. The batch-wide repair
 options — the fTetWild fallback tier and the opt-in experimental passes — sit
-in one **Options** drop-down next to **Mode** (it stays open while several
-boxes are toggled); its label shows how many options differ from their
-defaults, e.g. *Options (2)*.
+in a separate **Options** window (button next to **Mode**, or Ctrl+, /
+Cmd+,) that can stay open while repairing; the button label shows how many
+options differ from their defaults, e.g. *Options (2)*. Its tabs: *General*
+(anonymous usage history), *Repair* (fTetWild fallback), *Experimental*
+(opt-in passes), *Updates* (manual check, automatic updates, optional check
+on every start) and *Changelog* (release notes from GitHub, with an offline
+fallback).
 
 #### Pre-repair analysis
 
@@ -1023,7 +1030,7 @@ the five strongest FAZ10 scan signals (`oppmax_std`, `don_mean`, `dihed_mean`,
 flip only ~1 mesh and overlap the dihedral features — no default-path risk
 taken). Instead they are available as an **opt-in 11-feature head** through
 `--experimental-edge-tiebreak` (CLI) or the *Edge-tiebreak classifier*
-checkbox in the GUI's **Options** menu (batch-wide). The 11-feature head was
+checkbox in the GUI's **Options** window (batch-wide). The 11-feature head was
 retrained on the same 71 labeled meshes (LOO-CV 0.845, 5-fold×20 mean 0.852 vs
 base 0.850). This is experimental and not the default; the gain is small but
 the underlying signals are statistically real.

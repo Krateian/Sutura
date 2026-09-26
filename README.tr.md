@@ -76,7 +76,7 @@ environment.` — asla sessizce atlanmaz.
 
 **İsteğe bağlı katmanlar.** İki aşamanın etrafında, self-intersection
 içeren ve ağır bozuk mesh'ler için katmanlar bulunur. Deneysel olanlar
-varsayılan olarak kapalıdır ve kendi CLI bayrağı ya da GUI'deki **Seçenekler** menüsündeki bir kutuyla açılır;
+varsayılan olarak kapalıdır ve kendi CLI bayrağı ya da GUI'deki **Seçenekler** penceresindeki bir kutuyla açılır;
 fTetWild yedek katmanı ise isteğe bağlı eki kuruluysa varsayılan olarak
 açıktır:
 
@@ -88,10 +88,13 @@ açıktır:
   girdiyi fTetWild ile tetrahedralize edip su geçirmez bir yüzey çıkarır;
   isteğe bağlı ~1,1 GB'lık ek, bkz. Kurulum). Ek kuruluysa varsayılan olarak
   çalışır, ama yalnızca stage 1 hâlâ delik veya non-manifold kenar
-  bırakıyorsa; `--no-fallback-ftetwild` (GUI: *Seçenekler* → *fTetWild fallback* işaretini
-  kaldırın) kapatır, `--experimental-fallback-ftetwild` (GUI: *Seçenekler* → altındaki *+ self-intersection
+  bırakıyorsa; `--no-fallback-ftetwild` (GUI: *Seçenekler* → *Onarım* sekmesi → *fTetWild fallback* işaretini
+  kaldırın) kapatır, `--experimental-fallback-ftetwild` (GUI: *Seçenekler* → *Onarım* sekmesi → altındaki *+ self-intersection
   (yavaş)* kutusu) kapalı ama hâlâ self-intersection içeren
-  sonuçlarda da çalıştırır.
+  sonuçlarda da çalıştırır. fTetWild'ın kendi tetrahedra kalite
+  optimizasyonu kapalıdır (yalnızca dış yüzey kullanılır, çoğunlukla süre
+  kaybıdır); `--ftetwild-optimize` (GUI: *Tetrahedra optimizasyonu*,
+  önerilmez) açar.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya
@@ -622,9 +625,13 @@ oturumlarında çalışır (GUI bir Qt uygulamasıdır, XWayland değildir). GUI
 kendi koyu Fusion temasıyla gelir (teal vurgu rengi), böylece sistem masaüstü
 temasından bağımsız olarak her platformda ve Qt sürümünde aynı görünür. Batch
 geneli onarım seçenekleri — fTetWild yedek katmanı ve isteğe bağlı deneysel
-adımlar — **Mod** düğmesinin yanındaki tek bir **Seçenekler** açılır
-menüsündedir (birden fazla kutu işaretlenirken açık kalır); etiketi,
-varsayılandan farklı seçenek sayısını gösterir, örneğin *Seçenekler (2)*.
+adımlar — ayrı bir **Seçenekler** penceresindedir (**Mod** düğmesinin
+yanındaki düğme ya da Ctrl+, / Cmd+,); onarım sürerken açık kalabilir, düğme
+etiketi varsayılandan farklı seçenek sayısını gösterir, örneğin *Seçenekler
+(2)*. Sekmeleri: *Genel* (anonim kullanım geçmişi), *Onarım* (fTetWild yedek
+katmanı), *Deneysel* (isteğe bağlı adımlar), *Güncellemeler* (elle kontrol,
+otomatik güncelleme, isteğe bağlı her açılışta kontrol) ve *Değişiklikler*
+(GitHub'dan sürüm notları, çevrimdışı yedekli).
 
 #### Onarım öncesi analiz
 

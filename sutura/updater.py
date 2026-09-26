@@ -89,6 +89,7 @@ DEFAULT_CONFIG = {
     # 'off' / 'local' / 'full'. The CLI and the file-manager menu run it
     # automatically; the GUI decides per run.
     'deep_repair': 'full',
+    'check_on_startup': False,
 }
 
 
@@ -214,6 +215,8 @@ def _latest_tag():
 def should_check(cfg):
     if not cfg.get('check_for_updates'):
         return False
+    if cfg.get('check_on_startup'):
+        return True
     last = cfg.get('last_check')
     if last is None:
         return True
