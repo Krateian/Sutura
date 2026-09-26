@@ -58,6 +58,28 @@ caps release assets at 2 GB), with a `SHA256SUMS` per-part checksum file.
   6. Re-verify: `scripts/fetch_benchmark_corpus.sh` on a clean machine and re-run
      `scripts/benchmark_repair_corpus.py` to confirm the corpus round-trips.
 
+## Typical-user corpus (50 meshes)
+
+The **typical-user repair corpus** represents everyday 3D print models curated
+from the Thingi10K dataset (Zhou & Jacobson 2016) with mild defects commonly
+encountered on sharing platforms (Printables, Thingiverse). It spans three
+strata (20 topologically open meshes, 20 self-intersecting meshes, and 10 solid
+clean controls) filtered to common consumer-print complexity (1,000–300,000
+facets, at most 20 components) under permissive licenses (CC0, Public Domain,
+CC BY, and CC BY-SA; no NonCommercial or NoDerivatives).
+
+To keep the git repository lightweight, mesh binaries are not committed. Only
+the model manifest containing IDs, strata, facet counts, licenses, and authors
+is tracked in `tests/typical-corpus-ids.csv`.
+
+- **Fetch**: `python3 scripts/fetch_typical_corpus.py` downloads the selected
+  meshes from the Thingi10K Hugging Face repository, caches them locally
+  (default `/tmp/thingi10k_cache`), and extracts standard STLs to
+  `/tmp/sutura_typical_corpus`.
+- **Licenses**: each model preserves its original permissive upstream license;
+  reuse outside the benchmark must respect the individual model's license terms
+  recorded in `tests/typical-corpus-ids.csv`.
+
 ## Third-party library dependencies
 
 Sutura's own code is licensed under the PolyForm Noncommercial 1.0.0 license.
