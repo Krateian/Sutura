@@ -142,6 +142,8 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False,
             entry['ftetwild_reject_reason'] = ft.get('reject_reason')
             entry['ftetwild_hausdorff_rel'] = ft.get('hausdorff_rel')
             entry['ftetwild_shape_changed'] = bool(ft.get('shape_changed'))
+            entry['ftetwild_adopted_attempt'] = ft.get('adopted_attempt')
+            entry['ftetwild_attempts'] = len(ft.get('attempts') or [])
         else:
             entry['ftetwild_ran'] = False
         # Deep-repair ladder (--deep-repair): tier run, per-tier time, the

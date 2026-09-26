@@ -141,6 +141,85 @@ def test_ftetwild_shape_change_is_flagged_not_rejected():
     assert 'shape_changed' in issues, issues
 
 
+def _cube_with_fin():
+    """Closed cube plus one extra face on an existing edge: a boundary that
+    has a non-manifold edge (fails the holes/nm guard on a nm-free mesh)."""
+    v = np.asarray(CUBE_V + [(0.5, -1.0, 0.5)], np.float32)
+    t = np.asarray(CUBE_T + [(0, 1, 8)], np.int32)
+    return v, t
+
+
+def _run_with_fake_ftetwild(fake_run, **patch):
+    """Repair thingi10k_100827 with a faked fTetWild bridge and no stage-2
+    post-process (so a fake boundary is judged as returned)."""
+    names = ['ftetwild_available', 'run_ftetwild', 'run_stage2'] + list(patch)
+    saved = {n: getattr(repair, n) for n in names}
+    repair.ftetwild_available = lambda: True
+    repair.run_ftetwild = fake_run
+    repair.run_stage2 = lambda inter, out: ({'error': 'disabled in test'}, False)
+    for n, val in patch.items():
+        setattr(repair, n, val)
+    try:
+        v, t = _load(OPEN_SAMPLE)
+        return _repair(v, t, ftetwild='auto', deep_repair='full')[0]
+    finally:
+        for n, val in saved.items():
+            setattr(repair, n, val)
+
+
+def test_ftetwild_retries_with_the_optimisation_on():
+    calls = []
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        calls.append((params, timeout))
+        cv, ct = (_cube_with_fin() if params is None
+                  else (np.asarray(CUBE_V, np.float32), np.asarray(CUBE_T, np.int32)))
+        repair.write_obj(out_obj, cv, ct)
+        return {'ok': True, 'output_faces': len(ct), 'time': 0.1}, True
+    rep = _run_with_fake_ftetwild(fake_run)
+    ft = rep['experimental_ftetwild']
+    assert [c[0] for c in calls] == [None, repair.FTETWILD_RETRY_PARAMS], calls
+    assert 0 < calls[1][1] <= repair.FTETWILD_TIMEOUT, calls
+    assert ft['adopted'] and ft['adopted_attempt'] == 'optimize', ft
+    assert [a['attempt'] for a in ft['attempts']] == ['default', 'optimize']
+    assert ft['attempts'][0]['reject_reason'] == 'holes_nm'
+    assert 'reject_reason' not in ft and ft['output_non_manifold'] == 0, ft
+
+
+def test_ftetwild_no_retry_after_success_or_timeout():
+    calls = []
+
+    def ok_run(inter, out_obj, params=None, timeout=None):
+        calls.append(params)
+        repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
+                         np.asarray(CUBE_T, np.int32))
+        return {'ok': True, 'output_faces': 12}, True
+    ft = _run_with_fake_ftetwild(ok_run)['experimental_ftetwild']
+    assert calls == [None] and ft['adopted_attempt'] == 'default', (calls, ft)
+
+    calls.clear()
+
+    def timeout_run(inter, out_obj, params=None, timeout=None):
+        calls.append(params)
+        return {'error': 'timeout'}, False
+    ft = _run_with_fake_ftetwild(timeout_run)['experimental_ftetwild']
+    assert calls == [None] and not ft['adopted'] and ft['error'] == 'timeout', ft
+
+
+def test_ftetwild_retry_needs_budget():
+    calls = []
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        calls.append(params)
+        cv, ct = _cube_with_fin()
+        repair.write_obj(out_obj, cv, ct)
+        return {'ok': True, 'output_faces': len(ct)}, True
+    ft = _run_with_fake_ftetwild(fake_run, FTETWILD_TIMEOUT=5)['experimental_ftetwild']
+    assert calls == [None], calls
+    assert not ft['adopted'] and ft['reject_reason'] == 'holes_nm', ft
+    assert ft['attempts'][0]['retry_skipped'] == 'budget', ft
+
+
 def test_hausdorff_rel_is_zero_for_identical_meshes():
     v, t = _sphere_with_hole()
     hd_max, hd_mean = repair._hausdorff_rel(ml, v, t, v, t)
