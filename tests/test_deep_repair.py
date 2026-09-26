@@ -353,6 +353,52 @@ def test_decimation_worse_than_raw_beyond_the_margin_is_rejected():
     assert rep['stage1']['holes_remaining'] == 0, rep['stage1']
 
 
+def test_decimation_crossing_the_shape_threshold_is_rejected():
+    """thingi10k_78968: the raw boundary is inside FTETWILD_MAX_HAUSDORFF_REL
+    (0.0087 <= 0.01) but a decimated candidate would cross it (0.0126), even
+    though it stays inside hd_raw + DECIMATE_HD_MARGIN. It must be rejected,
+    so decimation never turns an unflagged fTetWild result into a flagged one;
+    the undecimated boundary (0.0087, unflagged) is adopted instead."""
+    v, t = _dense_sphere(4)
+    raw_faces = len(t)
+    raw, dec = 0.0087, 0.0126
+    assert raw <= repair.FTETWILD_MAX_HAUSDORFF_REL < dec, (raw, dec)
+    assert dec <= raw + repair.DECIMATE_HD_MARGIN, (raw, dec)
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        repair.write_obj(out_obj, v, t)
+        return {'ok': True, 'output_faces': raw_faces}, True
+    rep = _run_with_fake_ftetwild(fake_run, DENSE_MIN_FACES=100,
+                                  _hausdorff_rel=_fake_hd(raw, dec))
+    ft = rep['experimental_ftetwild']
+    assert ft['adopted'] and not ft['ftetwild_decimated'], ft
+    assert ft['ftetwild_faces_final'] == raw_faces, ft
+    assert ft['ftetwild_decimate_fallback'] == 'hausdorff', ft
+    attempts = ft['ftetwild_decimate_attempts']
+    assert len(attempts) == 2, ft
+    assert [a.get('reason') for a in attempts] == ['hausdorff', 'hausdorff'], ft
+    assert ft['shape_changed'] is False, ft
+    assert rep['stage1']['holes_remaining'] == 0, rep['stage1']
+
+
+def test_hausdorff_rel_is_not_clipped_above_five_percent():
+    """The filter's maxdist cap must never clip a real distance: a true
+    one-sided Hausdorff distance clearly above 5 % of the diagonal has to be
+    reported as such. A 5 %-of-diagonal clip would hide how bad a result is
+    and make the raw/decimated comparison meaningless above 5 %. The sample
+    below straddles the 1 % FTETWILD_MAX_HAUSDORFF_REL guard as well."""
+    v = np.asarray(CUBE_V, np.float64)
+    t = np.asarray(CUBE_T, np.int64)
+    diag = float(np.linalg.norm(v.max(0) - v.min(0)))
+    hd = None
+    for rel in (0.008, 0.02, 0.06, 0.3):
+        ov = v.copy()
+        ov[:, 0] += rel * diag
+        hd, _mean = repair._hausdorff_rel(ml, v, t, ov, t)
+        assert abs(hd - rel) < 1e-4, (rel, hd)
+    assert hd > 0.05, hd
+
+
 def test_hausdorff_rel_is_zero_for_identical_meshes():
     v, t = _sphere_with_hole()
     hd_max, hd_mean = repair._hausdorff_rel(ml, v, t, v, t)

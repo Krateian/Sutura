@@ -97,15 +97,29 @@ All notable changes to this project are documented here.
   watertight and its Hausdorff distance to the input is at most the raw
   boundary's own distance plus `DECIMATE_HD_MARGIN = 0.005` (the face count
   is only a size budget, the Hausdorff comparison is the quality gate).
-  Otherwise the undecimated boundary is used exactly as before, and the
-  existing `optimize=True` retry is unchanged. The report's
+  A raw boundary already inside `FTETWILD_MAX_HAUSDORFF_REL` additionally
+  requires the decimated candidate to stay inside it, so decimation can never
+  turn an unflagged fTetWild result into a flagged one even while it stays
+  inside `hd_raw + DECIMATE_HD_MARGIN` (thingi10k_78968: raw 0.0087, a
+  decimated 0.0126). Otherwise the undecimated boundary is used exactly as
+  before, and the existing `optimize=True` retry is unchanged. The report's
   `experimental_ftetwild` gains `ftetwild_decimated`, `ftetwild_faces_raw`,
   `ftetwild_faces_final`, `ftetwild_decimate_time` and, when the ladder runs,
   `ftetwild_hausdorff_raw`, `ftetwild_decimate_target`,
   `ftetwild_hausdorff_decimated`, `ftetwild_decimate_attempts` and
-  `ftetwild_decimate_fallback`. `_hausdorff_rel` now samples a fixed
-  `HAUSDORFF_SAMPLES = 200000` points regardless of the output size. New tests
-  in `tests/test_deep_repair.py`.
+  `ftetwild_decimate_fallback`; `ftetwild_faces_final` is the adopted
+  boundary after the in-tier manifold3d post-process and the new
+  `ftetwild_faces_decimated` the quadric output before it (the final file's
+  face count is the separate stage-2 rebuild of that boundary).
+  `_hausdorff_rel` now samples a fixed `HAUSDORFF_SAMPLES = 200000` points
+  regardless of the output size, and keeps `maxdist = PercentageValue(100)`,
+  the pymeshlab maximum: it is measured against the union bounding box, so it
+  is the one value that cannot clip (smaller values cap or empty the result).
+  The exactly-5 %-of-diagonal distance some open inputs report is therefore
+  not a measurement cap but the fTetWild envelope (`edge_length_fac = 0.05`),
+  measured independently with
+  `compute_scalar_by_distance_from_another_mesh_per_vertex`. New tests in
+  `tests/test_deep_repair.py`.
 - **Local tier limited to small, simple damage.** Measured on macOS, the
   local tier made 3 of the 40 real-world samples strictly watertight
   (31 → 34: thingi10k_40886, 46012, 71691) but none of the 115-mesh corpus,
