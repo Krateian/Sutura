@@ -87,6 +87,44 @@ def test_options_button_count():
         "print('GUI-OK')\n")
 
 
+def test_intensity_combo_and_reset():
+    _run_gui(
+        "import sys\n"
+        "sys.path.insert(0, %r)\n"
+        "from PySide6.QtWidgets import QApplication\n"
+        "from PySide6.QtCore import Qt\n"
+        "import gui, updater\n"
+        "app = QApplication([])\n"
+        "w = gui.MainWindow()\n"
+        "combo = w.intensity_combo\n"
+        "assert combo.count() == 4, combo.count()\n"
+        "names = [combo.itemData(i) for i in range(combo.count())]\n"
+        "assert names == ['quick', 'balanced', 'thorough', 'extreme'], names\n"
+        "for i in range(combo.count()):\n"
+        "    assert combo.itemData(i, Qt.ToolTipRole), i\n"
+        "assert combo.currentData() == 'balanced', combo.currentData()\n"
+        "assert w._intensity == 'balanced'\n"
+        "# choosing a non-default preset updates state, the fTetWild checkbox\n"
+        "# and the persisted config value\n"
+        "w.chk_autorefine.setChecked(True)\n"
+        "w.chk_edge_tiebreak.setChecked(True)\n"
+        "combo.setCurrentIndex(combo.findData('quick'))\n"
+        "assert w._intensity == 'quick', w._intensity\n"
+        "assert not w.chk_fallback_ftetwild.isChecked()\n"
+        "assert updater.load_config().get('intensity') == 'quick'\n"
+        "# Reset to recommended restores Balanced AND every checkbox default\n"
+        "w.btn_intensity_reset.click()\n"
+        "assert w._intensity == 'balanced', w._intensity\n"
+        "assert combo.currentData() == 'balanced'\n"
+        "assert w.chk_fallback_ftetwild.isChecked()\n"
+        "assert not w.chk_autorefine.isChecked()\n"
+        "assert not w.chk_edge_tiebreak.isChecked()\n"
+        "assert updater.load_config().get('intensity') == 'balanced'\n"
+        "assert gui._t('intensity_tip_quick')\n"
+        "w.close()\n"
+        "print('GUI-OK')\n")
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):
