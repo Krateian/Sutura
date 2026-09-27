@@ -347,32 +347,51 @@ def _keep_largest_component(verts, tris):
 
 
 def _check_validity(verts, tris):
-    """Strict validity check: 2-manifold, 0 boundary edges, and manifold3d construction."""
+    """Dependency-free watertight validity check: 2-manifold, 0 boundary edges,
+    consistent orientation and positive volume.
+
+    Deliberately pure numpy, no ``manifold3d``: the main venv (Linux/AppImage)
+    has no manifold3d (it ships wheels only up to Python 3.13 and lives in the
+    stage-2 venv behind ``manifold_bridge.py``), so an in-process import would
+    make this tier unusable there. This mirrors the manifold3d verdict:
+      - every undirected edge is used by exactly two triangles (0 boundary, 0
+        non-manifold edges);
+      - the two uses of each interior edge are oppositely directed (consistent
+        orientation -- a directed edge reused by two faces means a flipped
+        face);
+      - the signed volume is positive (outward normals).
+    """
     if len(verts) < 4 or len(tris) < 4:
         return False, "Too few vertices or faces"
 
-    # Edge counts check
-    edges = np.sort(np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]]), axis=1)
-    n = int(edges.max()) + 1
-    keys = edges[:, 0].astype(np.int64) * n + edges[:, 1]
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
+
+    edges = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    und = np.sort(edges, axis=1)
+    n = int(und.max()) + 1
+    keys = und[:, 0] * n + und[:, 1]
     uniq, counts = np.unique(keys, return_counts=True)
     if not np.all(counts == 2):
         n_open = int(np.sum(counts == 1))
         n_nm = int(np.sum(counts > 2))
         return False, f"Not 2-manifold: {n_open} boundary edges, {n_nm} non-manifold edges"
 
-    try:
-        import manifold3d
-        mf = manifold3d.Manifold(mesh=manifold3d.Mesh(
-            vert_properties=np.asarray(verts, np.float64),
-            tri_verts=np.asarray(tris, np.int32),
-        ))
-        if mf.status() != manifold3d.Error.NoError:
-            return False, f"manifold3d status: {mf.status()}"
-        if mf.is_empty():
-            return False, "manifold3d is empty"
-    except Exception as e:
-        return False, f"manifold3d check failed: {e}"
+    # Consistent orientation: for a closed 2-manifold each directed edge is
+    # traversed by at most one face (the two faces sharing an edge traverse it
+    # in opposite directions).
+    dkeys = edges[:, 0] * n + edges[:, 1]
+    _duniq, dcounts = np.unique(dkeys, return_counts=True)
+    if np.any(dcounts > 1):
+        return False, ("Inconsistent face orientation: %d directed edge(s) "
+                       "traversed twice" % int(np.sum(dcounts > 1)))
+
+    v0 = verts[tris[:, 0]]
+    v1 = verts[tris[:, 1]]
+    v2 = verts[tris[:, 2]]
+    vol = float(np.sum(np.einsum('ij,ij->i', v0, np.cross(v1, v2))) / 6.0)
+    if vol <= 0.0:
+        return False, "Non-positive volume (%.6g): inverted or flat shell" % vol
 
     return True, ""
 
@@ -452,15 +471,23 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
         # 6. Validity check
         is_wt, err_msg = _check_validity(out_v, out_t)
 
+        if not is_wt:
+            # A failed validity NEVER returns an empty or invalid mesh: hand the
+            # input back unchanged and report the reason honestly.
+            return verts, tris, {
+                'faces': len(tris),
+                'watertight': False,
+                'depth': depth,
+                'error': err_msg,
+                'notes': [],
+            }
+
         report = {
             'faces': len(out_t),
-            'watertight': is_wt,
+            'watertight': True,
             'depth': depth,
             'notes': ['back surface was estimated (Poisson)'],
         }
-        if not is_wt:
-            report['error'] = err_msg
-
         return out_v, out_t, report
 
     except Exception as e:
@@ -500,13 +527,16 @@ def flat_back_close(verts, tris, thickness=None):
         in_v, in_t = _referenced_only(verts, tris)
         loops = boundary_loops(in_v, in_t)
         if not loops:
-            is_wt, _ = _check_validity(in_v, in_t)
-            return in_v, in_t, {
+            is_wt, err_msg = _check_validity(in_v, in_t)
+            report = {
                 'watertight': is_wt,
                 'faces': len(in_t),
                 'thickness': 0.0,
                 'notes': ['mesh is already closed'],
             }
+            if not is_wt:
+                report['error'] = err_msg
+            return in_v, in_t, report
 
         # Find dominant loop
         perims = [_loop_stats(in_v, l)[0] for l in loops]
@@ -529,13 +559,16 @@ def flat_back_close(verts, tris, thickness=None):
                 # Re-extract dominant loop on hole-closed mesh
                 loops = boundary_loops(in_v, in_t)
                 if not loops:
-                    is_wt, _ = _check_validity(in_v, in_t)
-                    return in_v, in_t, {
+                    is_wt, err_msg = _check_validity(in_v, in_t)
+                    report = {
                         'watertight': is_wt,
                         'faces': len(in_t),
                         'thickness': 0.0,
                         'notes': ['flat back added'],
                     }
+                    if not is_wt:
+                        report['error'] = err_msg
+                    return in_v, in_t, report
                 perims = [_loop_stats(in_v, l)[0] for l in loops]
                 dom_loop = loops[int(np.argmax(perims))]
 
@@ -629,14 +662,19 @@ def flat_back_close(verts, tris, thickness=None):
                 c_back = np.mean(loop_proj, axis=0)
                 c_idx = len(all_verts)
                 all_verts = np.vstack([all_verts, c_back[None, :]])
-                cap_tris = []
-                for i in range(n_loop):
-                    i_next = (i + 1) % n_loop
-                    p_curr = proj_indices[i]
-                    p_next = proj_indices[i_next]
-                    # Outward normal pointing -n
-                    cap_tris.append([p_next, p_curr, c_idx])
-                cap_tris = np.array(cap_tris, dtype=np.int32)
+                cap_tris = np.array(
+                    [[proj_indices[(i + 1) % n_loop], proj_indices[i], c_idx]
+                     for i in range(n_loop)], dtype=np.int32)
+                # Orient the fan so the cap faces outward (-n), independent of
+                # whether the boundary loop is ordered clockwise or
+                # counter-clockwise (the sign of cross_2d only detects
+                # star-convexity, it does not fix the winding).
+                v0_cap = all_verts[cap_tris[0, 0]]
+                v1_cap = all_verts[cap_tris[0, 1]]
+                v2_cap = all_verts[cap_tris[0, 2]]
+                cap_normal = np.cross(v1_cap - v0_cap, v2_cap - v0_cap)
+                if np.dot(cap_normal, -n) < 0:
+                    cap_tris = cap_tris[:, [0, 2, 1]]
                 all_tris = np.vstack([in_t, side_tris, cap_tris])
             else:
                 # Fallback for non-star large loops: PyMeshLab close-holes
@@ -653,15 +691,23 @@ def flat_back_close(verts, tris, thickness=None):
 
         is_wt, err_msg = _check_validity(all_verts, all_tris)
 
+        if not is_wt:
+            # A failed validity NEVER returns an empty or invalid mesh: hand the
+            # input back unchanged and report the reason honestly.
+            return verts, tris, {
+                'faces': len(tris),
+                'watertight': False,
+                'thickness': thickness_val,
+                'error': err_msg,
+                'notes': [],
+            }
+
         report = {
             'faces': len(all_tris),
-            'watertight': is_wt,
+            'watertight': True,
             'thickness': thickness_val,
             'notes': ['flat back added'],
         }
-        if not is_wt:
-            report['error'] = err_msg
-
         return all_verts, all_tris, report
 
     except Exception as e:

@@ -2446,8 +2446,12 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                 ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
                 after = ms.apply_filter('get_topological_measures')
                 rec['adopted'] = True
-                rec['watertight'] = True
-                rec['reason'] = 'strict-watertight'
+                # 5.2: this is a stage-1 strict-watertight CANDIDATE only --
+                # 'watertight' is claimed by the top-level verdict after stage 2
+                # actually runs and confirms it, not here.
+                rec['watertight'] = False
+                rec['candidate_watertight'] = True
+                rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
             elif rec['reason'] is None:
                 rec['reason'] = ('candidate not strict-watertight '
                                  '(holes=%d non-manifold=%d)'
@@ -3675,7 +3679,11 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         # escalates to ranked methods when that baseline is not strict-
         # watertight, so an untagged repair stays byte-identical to today.
         result.update(method_registry.repair_with_methods(
-            src, tmp_out, tmpdir, methods=methods, mode=mode, profile=profile,
+            src, tmp_out, tmpdir, methods=methods,
+            # An explicit --engines tag ("only these engines") must not silently
+            # auto-escalate to extra repair methods; --methods is unaffected.
+            auto_escalation=(engine_filter is None),
+            mode=mode, profile=profile,
             engine=engine, join_components=join_components,
             autorefine=autorefine, ftetwild=ftetwild,
             indirect_autorefine=indirect_autorefine,

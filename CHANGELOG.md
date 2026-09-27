@@ -83,6 +83,28 @@ All notable changes to this project are documented here.
   accept/reject guard uses the same check, so such a baseline counts as failed
   and the auto path escalates. A genuinely reload-watertight mesh keeps its
   report and output byte-identical.
+- **Closing/proxy methods work without an in-process `manifold3d`.** The
+  registry validity check in `sutura/closing.py` / `sutura/proxy_repair.py`
+  now uses a dependency-free topology test (each edge used twice, consistent
+  orientation, positive volume) instead of importing `manifold3d`, which is
+  absent from the main venv on Linux/AppImage (it ships wheels only up to
+  Python 3.13 and lives in the stage-2 venv). Methods 8/9/10 are therefore
+  usable on Linux; a failed validity now returns the input unchanged with an
+  explicit `error` instead of a degraded mesh. The flat-back centroid cap also
+  follows the boundary-loop orientation, so clockwise (>1500-vertex) loops no
+  longer build an inverted cap.
+- **Watertight claims require stage 2 everywhere.** `methods._evaluate` now
+  judges a candidate with the same rule as `classification.classify` (stage 1
+  closed AND stage 2 ran and returned ok), and the `closing` report records a
+  strict-watertight *candidate* rather than claiming watertight before stage 2.
+- **External-engine-only tags no longer auto-escalate.** A file tagged with
+  only an external engine (`--engines` without `--methods`) runs the baseline
+  and stops; the untagged method ranking is not invoked. Minor fixes: the
+  single-sided-scan template now prefers #8 (Poisson) over #9, `get_method`
+  tolerates `None`/non-integer input, the "Use method" order badges refresh on
+  untag, the macOS self-updater installs `scipy`, the GUI PyInstaller bundle
+  carries the `scipy.sparse` hidden imports, and the extreme-removed /
+  recommendation-reason strings are localized (EN/TR).
 
 ## [0.5.1] - 2026-09-27
 

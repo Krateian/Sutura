@@ -42,32 +42,51 @@ def _referenced_only(verts, tris):
 
 
 def _check_validity(verts, tris):
-    """Strict validity check: 2-manifold, 0 boundary edges, and manifold3d construction."""
+    """Dependency-free watertight validity check: 2-manifold, 0 boundary edges,
+    consistent orientation and positive volume.
+
+    Deliberately pure numpy, no ``manifold3d``: the main venv (Linux/AppImage)
+    has no manifold3d (it ships wheels only up to Python 3.13 and lives in the
+    stage-2 venv behind ``manifold_bridge.py``), so an in-process import would
+    make this tier unusable there. This mirrors the manifold3d verdict:
+      - every undirected edge is used by exactly two triangles (0 boundary, 0
+        non-manifold edges);
+      - the two uses of each interior edge are oppositely directed (consistent
+        orientation -- a directed edge reused by two faces means a flipped
+        face);
+      - the signed volume is positive (outward normals).
+    """
     if len(verts) < 4 or len(tris) < 4:
         return False, "Too few vertices or faces"
 
-    # Edge counts check
-    edges = np.sort(np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]]), axis=1)
-    n = int(edges.max()) + 1
-    keys = edges[:, 0].astype(np.int64) * n + edges[:, 1]
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
+
+    edges = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    und = np.sort(edges, axis=1)
+    n = int(und.max()) + 1
+    keys = und[:, 0] * n + und[:, 1]
     uniq, counts = np.unique(keys, return_counts=True)
     if not np.all(counts == 2):
         n_open = int(np.sum(counts == 1))
         n_nm = int(np.sum(counts > 2))
         return False, f"Not 2-manifold: {n_open} boundary edges, {n_nm} non-manifold edges"
 
-    try:
-        import manifold3d
-        mf = manifold3d.Manifold(mesh=manifold3d.Mesh(
-            vert_properties=np.asarray(verts, np.float64),
-            tri_verts=np.asarray(tris, np.int32),
-        ))
-        if mf.status() != manifold3d.Error.NoError:
-            return False, f"manifold3d status: {mf.status()}"
-        if mf.is_empty():
-            return False, "manifold3d is empty"
-    except Exception as e:
-        return False, f"manifold3d check failed: {e}"
+    # Consistent orientation: for a closed 2-manifold each directed edge is
+    # traversed by at most one face (the two faces sharing an edge traverse it
+    # in opposite directions).
+    dkeys = edges[:, 0] * n + edges[:, 1]
+    _duniq, dcounts = np.unique(dkeys, return_counts=True)
+    if np.any(dcounts > 1):
+        return False, ("Inconsistent face orientation: %d directed edge(s) "
+                       "traversed twice" % int(np.sum(dcounts > 1)))
+
+    v0 = verts[tris[:, 0]]
+    v1 = verts[tris[:, 1]]
+    v2 = verts[tris[:, 2]]
+    vol = float(np.sum(np.einsum('ij,ij->i', v0, np.cross(v1, v2))) / 6.0)
+    if vol <= 0.0:
+        return False, "Non-positive volume (%.6g): inverted or flat shell" % vol
 
     return True, ""
 
@@ -422,9 +441,20 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
         if not has_healthy:
             # Entire input was defective; return coarse proxy directly
             pv, pt, proxy_info = build_proxy(verts, tris, voxel=voxel)
-            is_wt, _ = _check_validity(pv, pt)
+            is_wt, err_msg = _check_validity(pv, pt)
+            if not is_wt:
+                return verts, tris, {
+                    'watertight': False,
+                    'output_faces': len(tris),
+                    'proxy_faces': len(pt),
+                    'projected_fraction': 0.0,
+                    'projected_fraction_healthy': 0.0,
+                    'reverted_count': 0,
+                    'error': err_msg,
+                    'notes': [],
+                }
             return pv, pt, {
-                'watertight': is_wt,
+                'watertight': True,
                 'proxy_faces': len(pt),
                 'output_faces': len(pt),
                 'projected_fraction': 0.0,
@@ -555,11 +585,25 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
             projected_pv = pv
             is_wt, err_msg = _check_validity(projected_pv, pt)
 
+        if not is_wt:
+            # A failed validity NEVER returns an empty or invalid mesh: hand the
+            # input back unchanged and report the reason honestly.
+            return verts, tris, {
+                'watertight': False,
+                'output_faces': len(tris),
+                'proxy_faces': proxy_faces_count,
+                'projected_fraction': 0.0,
+                'projected_fraction_healthy': 0.0,
+                'reverted_count': total_reverted,
+                'error': err_msg,
+                'notes': [],
+            }
+
         # 8. One-sided Hausdorff (healthy input surface to output)
         h_max, h_mean = one_sided_hausdorff(healthy_v, healthy_t, projected_pv, pt)
 
         report = {
-            'watertight': is_wt,
+            'watertight': True,
             'proxy_faces': proxy_faces_count,
             'output_faces': len(pt),
             'projected_fraction': round(projected_fraction, 4),
@@ -569,9 +613,6 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
             'hausdorff_mean': h_mean,
             'notes': ['regions without healthy source were reconstructed from a coarse proxy'],
         }
-        if not is_wt:
-            report['error'] = err_msg
-
         return projected_pv, pt, report
 
     except Exception as e:

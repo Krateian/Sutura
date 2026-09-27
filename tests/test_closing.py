@@ -254,6 +254,37 @@ def test_large_loop_flat_back():
     print(f"  ✓ test_large_loop_flat_back passed (5000-vertex loop in {elapsed:.3f} s)")
 
 
+def _signed_volume(v, t):
+    v0 = v[t[:, 0]]
+    v1 = v[t[:, 1]]
+    v2 = v[t[:, 2]]
+    return float(np.sum(np.einsum('ij,ij->i', v0, np.cross(v1, v2))) / 6.0)
+
+
+def test_large_loop_flat_back_clockwise():
+    """The centroid-fan cap must follow the loop orientation (2.3): a clockwise
+    boundary loop (reversed triangle winding, > 1500 vertices) must still close
+    into a positive-volume, outward-oriented shell, not an inverted cap."""
+    n_boundary = 5000
+    theta = np.linspace(0, 2 * np.pi, n_boundary, endpoint=False)
+    x, y = np.cos(theta), np.sin(theta)
+    z = 0.1 * np.cos(3 * theta)
+    center = np.array([[0.0, 0.0, 0.2]])
+    verts = np.vstack([center, np.column_stack([x, y, z])])
+    tris = []
+    for i in range(1, n_boundary + 1):
+        next_i = 1 if i == n_boundary else (i + 1)
+        tris.append([0, next_i, i])          # reversed winding -> CW loop
+    tris = np.array(tris, dtype=np.int64)
+
+    v_out, t_out, rep = cl.flat_back_close(verts, tris)
+    assert rep['watertight'] is True, f"clockwise loop not watertight: {rep}"
+    assert _signed_volume(v_out, t_out) > 0, "inverted cap: negative volume"
+    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
+    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    print("  ✓ test_large_loop_flat_back_clockwise passed")
+
+
 def main():
     t0 = time.time()
     print("Running scan closing tests (tests/test_closing.py)...")
@@ -265,6 +296,7 @@ def main():
     test_flat_back_secondary_hole()
     test_non_convex_l_relief()
     test_large_loop_flat_back()
+    test_large_loop_flat_back_clockwise()
     test_defensive_error_handling()
     elapsed = time.time() - t0
     print(f"\nAll tests passed in {elapsed:.2f} s (< 30 s target).")

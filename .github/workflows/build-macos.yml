@@ -110,6 +110,7 @@ jobs:
             --hidden-import methods --hidden-import object_analysis \
             --hidden-import templates \
             --hidden-import closing --hidden-import proxy_repair \
+            --hidden-import scipy.sparse --hidden-import scipy.sparse.csgraph \
             --collect-data pymeshlab --collect-data manifold3d \
             --name Sutura --windowed --icon assets/icon/Sutura.icns \
             sutura/gui.py

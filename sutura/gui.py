@@ -151,6 +151,26 @@ STRINGS = {
         'res_watertight': 'watertight', 'res_stage2_skipped': 'stage 2 skipped',
         'res_stage2_error': 'stage 2 error', 'res_holes': '%d hole(s)',
         'res_partial': 'partial', 'res_error': 'ERROR',
+        'res_extreme_removed_object': 'extreme removed all geometry',
+        # Recommendation reason sentences (localized from methods.reason_key).
+        'rec_reason_fast_light': 'light defect load',
+        'rec_reason_fast_deep': 'defects may need a deeper tier',
+        'rec_reason_deep_local': 'local re-mesh of small damaged regions',
+        'rec_reason_deep_full': 'full deep-repair ladder',
+        'rec_reason_components': '%d connected components',
+        'rec_reason_component_single': 'single connected component',
+        'rec_reason_no_si': 'no self-intersections',
+        'rec_reason_si': 'self-intersections present (%d)',
+        'rec_reason_ftetwild': 'large openings / heavy self-intersections',
+        'rec_reason_not_scan': 'not a single-sided open scan',
+        'rec_reason_poisson': 'single-sided open scan (%.2f)',
+        'rec_reason_not_relief': 'no relief-like opening',
+        'rec_reason_relief': 'relief / flat-back profile',
+        'rec_reason_no_damage': 'no holes/non-manifold to reconstruct',
+        'rec_reason_proxy': 'holes/non-manifold/debris with a mostly healthy surface',
+        'rec_reason_not_implemented': 'not implemented yet',
+        'rec_reason_template': 'template %s',
+        'method_note_back_surface': 'back surface estimated',
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
         'issue_malformed': 'Malformed input', 'issue_error': 'Error',
@@ -568,6 +588,26 @@ STRINGS = {
         'res_watertight': 'su geçirmez', 'res_stage2_skipped': 'stage 2 atlandı',
         'res_stage2_error': 'stage 2 hatası', 'res_holes': '%d delik',
         'res_partial': 'kısmi', 'res_error': 'HATA',
+        'res_extreme_removed_object': 'extreme tüm geometriyi sildi',
+        # Öneri gerekçeleri (methods.reason_key'den yerelleştirilir).
+        'rec_reason_fast_light': 'hafif kusur yükü',
+        'rec_reason_fast_deep': 'kusurlar daha derin bir katman gerektirebilir',
+        'rec_reason_deep_local': 'küçük hasarlı bölgelerin yerel yeniden örgüsü',
+        'rec_reason_deep_full': 'tam derin onarım merdiveni',
+        'rec_reason_components': '%d bağlı bileşen',
+        'rec_reason_component_single': 'tek bağlı bileşen',
+        'rec_reason_no_si': 'kendisiyle-kesişim yok',
+        'rec_reason_si': 'kendisiyle-kesişim var (%d)',
+        'rec_reason_ftetwild': 'büyük açıklıklar / yoğun kendisiyle-kesişim',
+        'rec_reason_not_scan': 'tek yönlü açık tarama değil',
+        'rec_reason_poisson': 'tek yönlü açık tarama (%.2f)',
+        'rec_reason_not_relief': 'kabartma benzeri açıklık yok',
+        'rec_reason_relief': 'kabartma / düz arka profili',
+        'rec_reason_no_damage': 'yeniden kurulacak delik/non-manifold yok',
+        'rec_reason_proxy': 'çoğunlukla sağlıklı yüzeyli delik/non-manifold/döküntü',
+        'rec_reason_not_implemented': 'henüz uygulanmadı',
+        'rec_reason_template': 'şablon %s',
+        'method_note_back_surface': 'arka yüzey tahmin edildi',
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
         'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
@@ -916,6 +956,29 @@ def _method_name(num):
     return _t(key) if key in STRINGS['en'] else m.name
 
 
+_METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface'}
+
+
+def _method_note(note):
+    """Localized method-adoption note (falls back to the report text)."""
+    key = _METHOD_NOTE_KEYS.get(note)
+    return _t(key) if key else note
+
+
+def _rec_reason(rec):
+    """Localized recommendation reason, falling back to the English sentence."""
+    key = rec.get('reason_key')
+    if key and key in STRINGS['en']:
+        try:
+            text = _t(key, *(rec.get('reason_args') or []))
+        except Exception:  # noqa: BLE001 - never crash on a bad format arg
+            return rec.get('reason') or ''
+        if rec.get('template'):
+            text += '; ' + _t('rec_reason_template', rec['template'])
+        return text
+    return rec.get('reason') or ''
+
+
 def _score_bar(score, width=8):
     """A tiny text score bar (filled/empty blocks) for menu labels/tooltips."""
     value = max(0.0, min(1.0, float(score or 0.0)))
@@ -1093,7 +1156,10 @@ def summarize(data):
         label = _t('res_' + key)
     mu = data.get('method_used') or {}
     if mu.get('num') is not None:
-        return '%s \u00b7 #%s %s' % (label, mu['num'], _method_name(mu['num']))
+        text = '%s \u00b7 #%s %s' % (label, mu['num'], _method_name(mu['num']))
+        if mu.get('note'):
+            text += ' (%s)' % _method_note(mu['note'])
+        return text
     return label
 
 
@@ -4013,7 +4079,7 @@ class MainWindow(QMainWindow):
                 lines.append('  #%s %s  %s %d%%  %s' % (
                     num, _method_name(num), _score_bar(r.get('score')),
                     int(round(float(r.get('score') or 0.0) * 100)),
-                    r.get('reason') or ''))
+                    _rec_reason(r)))
         tags = self._method_tags_by_path.get(path) or []
         if tags:
             lines.append(_t('menu_use_method') + ':')
@@ -4064,10 +4130,17 @@ class MainWindow(QMainWindow):
             label += '   \u2713 %d' % order
         action.setText(label)
 
-    def _on_use_action(self, method, paths, primary, action):
+    def _on_use_action(self, method, paths, primary, action, menu=None):
         self._on_tag_toggle(paths, 'method', method.num)
-        self._refresh_use_action(action, method,
-                                 self._primary_path(paths) or primary)
+        primary = self._primary_path(paths) or primary
+        # Refresh EVERY checkable action, not just the clicked one: toggling a
+        # method off renumbers the order badges of the siblings (4.1).
+        targets = menu.actions() if menu is not None else [action]
+        for act in targets:
+            num = act.data()
+            sibling = methods.get_method(num) if num is not None else None
+            if sibling is not None:
+                self._refresh_use_action(act, sibling, primary)
 
     def _build_recommended_menu(self, menu, paths, primary):
         menu.setToolTipsVisible(True)
@@ -4086,7 +4159,7 @@ class MainWindow(QMainWindow):
                 num, _method_name(num), _score_bar(rec.get('score')), pct))
             act.setCheckable(True)
             act.setChecked(self._is_tagged(primary, 'method', num))
-            act.setToolTip(rec.get('reason') or '')
+            act.setToolTip(_rec_reason(rec))
             act.triggered.connect(
                 lambda checked=False, n=num: self._on_tag_toggle(
                     paths, 'method', n))
@@ -4104,9 +4177,10 @@ class MainWindow(QMainWindow):
                 act.setToolTip(_t('menu_unavailable', reason or ''))
             else:
                 act.setToolTip(method.description)
+            act.setData(method.num)
             act.triggered.connect(
-                lambda checked=False, m=method, a=act: self._on_use_action(
-                    m, paths, primary, a))
+                lambda checked=False, m=method, a=act, mn=menu: (
+                    self._on_use_action(m, paths, primary, a, mn)))
             self._refresh_use_action(act, method, primary)
 
     def _build_engines_menu(self, menu, paths, primary):

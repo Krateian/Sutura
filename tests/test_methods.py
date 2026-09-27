@@ -216,6 +216,24 @@ def test_rank_methods_closing_signals(tmp):
     assert methods._score('proxy_template', clean)[0] == 0.0
 
 
+def test_single_side_scan_prefers_poisson(tmp):
+    """The single-sided-scan template prefers #8 (Poisson close), not #9
+    (flat-back, which belongs to the relief template) -- 3.1."""
+    import templates
+    scan = templates.by_id('single_side_scan')
+    assert scan.preferred[0] == 8, scan.preferred
+    assert 9 not in scan.preferred, scan.preferred
+    assert templates.by_id('relief').preferred[0] == 9
+
+
+def test_get_method_none_is_safe(tmp):
+    """get_method(None / non-integer) returns None instead of raising -- 2.2."""
+    import methods
+    assert methods.get_method(None) is None
+    assert methods.get_method('nope') is None
+    assert methods.get_method(1).id == 'fast'
+
+
 def test_external_engines_are_separate(tmp):
     import methods
     from object_analysis import ObjectAnalysis as A
@@ -337,7 +355,114 @@ def test_enforce_reload_verdict_downgrades_false_watertight(tmp):
     assert clean == fake_watertight(), clean
 
 
+def test_evaluate_requires_stage2_for_watertight(tmp):
+    """_evaluate must not claim watertight when stage 2 did not confirm the
+    solid (5.1): a stage-1-closed mesh with stage 2 skipped is a warning."""
+    import methods
+    v, t = _cube()
+    path = os.path.join(tmp, 'stage2_cube.stl')
+    _write_stl(path, v, t)
+    method = methods.get_method(1)
+    skipped = {'stage1': {'two_manifold': True, 'holes_remaining': 0},
+               'stage2': {'error': 'Stage 2 skipped: bridge missing'}}
+    rec = methods._evaluate(skipped, path, False, None, method)
+    assert rec['holes'] == 0 and rec['non_manifold'] == 0, rec
+    assert rec['watertight'] is False, rec
+    confirmed = {'stage1': {'two_manifold': True, 'holes_remaining': 0},
+                 'stage2': {'ok': True}}
+    rec2 = methods._evaluate(confirmed, path, False, None, method)
+    assert rec2['watertight'] is True, rec2
+
+
 # --- execution policy (fakes, no real pipeline run) -------------------------
+
+def test_auto_skips_generative_below_min_score(tmp):
+    """A generative method whose recommendation score is below
+    AUTO_INVENT_MIN_SCORE must never be auto-adopted (1.1)."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods)
+    calls = []
+
+    def fake_attempt(src, out, tmpdir, kwargs, multi):
+        calls.append(1)
+        with open(out, 'w') as f:
+            f.write('ok')
+        return {'stage1': {}, 'simulated': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        return {'watertight': False, 'holes': 1, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None,
+                'reason': 'holes=1 remain'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(8, 'poisson_close', 'Poisson close',
+                                       0.5, 'low signal', 'single_side_scan')]
+
+    methods._attempt, methods._evaluate, methods.rank_methods = \
+        fake_attempt, fake_evaluate, fake_rank
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            res = methods.repair_with_methods(
+                src, os.path.join(td, 'out.stl'), td, None, mode='auto',
+                deep_repair='full', ftetwild='auto')
+            # only the baseline ran; the 0.5-score generative method was gated
+            assert len(calls) == 1, calls
+            assert res['method_reached_watertight'] is False, res
+    finally:
+        methods._attempt, methods._evaluate, methods.rank_methods = real
+
+
+def test_engine_only_tag_disables_auto_escalation(tmp):
+    """A file tagged only with an external engine (auto_escalation=False) runs
+    the baseline but never escalates to extra methods (4.2)."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods)
+
+    def run(auto_escalation):
+        calls = []
+
+        def fake_attempt(src, out, tmpdir, kwargs, multi):
+            first = not calls
+            calls.append(1)
+            with open(out, 'w') as f:
+                f.write('ok')
+            return {'stage1': {}, 'simulated': not first}
+
+        def fake_evaluate(result, path, multi, in_objs, method):
+            ok = bool(result.get('simulated'))
+            return {'watertight': ok, 'holes': 0 if ok else 2,
+                    'non_manifold': 0, 'hausdorff_rel': None,
+                    'geom_change_pct': None, 'reason': 'x'}
+
+        def fake_rank(analysis, top_n=6):
+            return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
+                                           0.9, 'x', 'mechanical')]
+
+        methods._attempt, methods._evaluate, methods.rank_methods = \
+            fake_attempt, fake_evaluate, fake_rank
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            out = os.path.join(td, 'out.stl')
+            res = methods.repair_with_methods(
+                src, out, td, None, auto_escalation=auto_escalation,
+                mode='auto', deep_repair='full', ftetwild='auto')
+            return calls, res
+
+    try:
+        calls, res = run(False)
+        assert len(calls) == 1, calls
+        assert res['method_used']['source'] == 'auto_baseline', res
+        # control: with escalation allowed the ranked method runs and is adopted
+        calls, res = run(True)
+        assert len(calls) == 2, calls
+        assert res['method_used']['source'] == 'auto_escalated', res
+    finally:
+        methods._attempt, methods._evaluate, methods.rank_methods = real
 
 def test_auto_escalation_uses_a_ranked_method(tmp):
     import methods

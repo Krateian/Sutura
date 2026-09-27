@@ -33,6 +33,7 @@ from typing import Callable, Optional
 
 import templates
 import object_analysis
+import classification
 
 # --- execution policy constants (documented) --------------------------------
 
@@ -49,7 +50,9 @@ GENERATIVE_MAX_HAUSDORFF_REL = 0.01
 PREFERENCE_BOOST = 1.25
 
 Recommendation = namedtuple(
-    'Recommendation', 'num id name score reason template')
+    'Recommendation', 'num id name score reason template reason_key reason_args')
+# Backward-compatible defaults: older 6-field constructions stay valid.
+Recommendation.__new__.__defaults__ = (None, ())
 
 
 # --- registry ---------------------------------------------------------------
@@ -86,7 +89,10 @@ class RepairMethod:
             return False, 'availability check failed: %s' % e
 
     def score(self, analysis):
-        """``(0..1, reason)`` suitability for the analyzed object."""
+        """``(0..1, reason, reason_key, reason_args)`` for the analyzed object.
+
+        ``reason`` is the English text (CLI / fallback); ``reason_key`` +
+        ``reason_args`` let the GUI localize the same sentence."""
         return _score(self.id, analysis)
 
     def run(self, verts, tris, tmpdir, ctx):
@@ -134,7 +140,15 @@ def all_methods():
 
 
 def get_method(num):
-    return _METHODS.get(int(num))
+    """The registered method for ``num``, or None (never raises).
+
+    A defensive lookup: ``num`` may be ``None``/a non-integer when a report
+    from an external CLI run is formatted (``method_used.num`` can be null).
+    """
+    try:
+        return _METHODS.get(int(num))
+    except (TypeError, ValueError):
+        return None
 
 
 def available_methods():
@@ -281,7 +295,11 @@ def _clamp01(value):
 
 
 def _score(method_id, analysis):
-    """Readable per-method suitability score in 0..1 with a short reason."""
+    """Readable per-method suitability ``(score, reason, reason_key, args)``.
+
+    ``reason`` is the English sentence (used by the CLI and as the GUI
+    fallback); ``reason_key`` is the i18n key and ``reason_args`` the format
+    arguments so the GUI can localize the identical sentence (EN/TR)."""
     holes = _a(analysis, 'boundary_loops')
     nm = _a(analysis, 'non_manifold_edges')
     si = _a(analysis, 'self_intersections')
@@ -292,56 +310,67 @@ def _score(method_id, analysis):
     if method_id == 'fast':
         penalty = (0.5 * min(nm / 5.0, 1.0) + 0.3 * min(holes / 5.0, 1.0)
                    + 0.2 * min(si / 50.0, 1.0))
-        reason = ('light defect load' if penalty < 0.3
-                  else 'defects may need a deeper tier')
-        return _clamp01(1.0 - penalty), reason
+        light = penalty < 0.3
+        return (_clamp01(1.0 - penalty),
+                'light defect load' if light else 'defects may need a deeper tier',
+                'rec_reason_fast_light' if light else 'rec_reason_fast_deep', ())
     if method_id == 'deep_local':
         score = (0.75 if (nm <= 0 and holes <= 2 and largest <= 0.3)
                  else 0.6 * (1.0 - min(max(holes - 2, 0) / 5.0, 1.0))
                  * (1.0 - min(nm / 3.0, 1.0)))
-        return _clamp01(score), 'local re-mesh of small damaged regions'
+        return (_clamp01(score), 'local re-mesh of small damaged regions',
+                'rec_reason_deep_local', ())
     if method_id == 'deep_full':
         return (_clamp01(0.55 + 0.35 * min((holes + nm) / 5.0, 1.0)),
-                'full deep-repair ladder')
+                'full deep-repair ladder', 'rec_reason_deep_full', ())
     if method_id == 'join_components':
         if components > 1:
             return _clamp01(min((components - 1) / 2.0, 1.0)), \
-                '%d connected components' % int(components)
-        return 0.0, 'single connected component'
+                '%d connected components' % int(components), \
+                'rec_reason_components', (int(components),)
+        return 0.0, 'single connected component', \
+            'rec_reason_component_single', ()
     if method_id in ('autorefine', 'indirect_autorefine'):
         if si <= 0:
-            return 0.0, 'no self-intersections'
+            return 0.0, 'no self-intersections', 'rec_reason_no_si', ()
         return (_clamp01(0.4 + 0.6 * min(si / 200.0, 1.0)),
-                'self-intersections present (%d)' % int(si))
+                'self-intersections present (%d)' % int(si),
+                'rec_reason_si', (int(si),))
     if method_id == 'ftetwild':
         score = (0.4 * _clamp01(open_ratio / 0.05)
                  + 0.3 * _clamp01((holes + nm) / 3.0)
                  + 0.3 * _clamp01(si / 200.0))
-        return _clamp01(score), 'large openings / heavy self-intersections'
+        return (_clamp01(score), 'large openings / heavy self-intersections',
+                'rec_reason_ftetwild', ())
     if method_id == 'poisson_close':
         single = _clamp01(_a(analysis, 'single_side_score'))
         relief = _clamp01(_a(analysis, 'relief_score'))
         score = single * (1.0 - relief)
         if score <= 0:
-            return 0.0, 'not a single-sided open scan'
-        return _clamp01(score), ('single-sided open scan (%.2f)' % single)
+            return 0.0, 'not a single-sided open scan', \
+                'rec_reason_not_scan', ()
+        return (_clamp01(score), 'single-sided open scan (%.2f)' % single,
+                'rec_reason_poisson', (single,))
     if method_id == 'flat_back_close':
         relief = _clamp01(_a(analysis, 'relief_score'))
         if relief <= 0:
-            return 0.0, 'no relief-like opening'
-        return _clamp01(relief), 'relief / flat-back profile'
+            return 0.0, 'no relief-like opening', 'rec_reason_not_relief', ()
+        return (_clamp01(relief), 'relief / flat-back profile',
+                'rec_reason_relief', ())
     if method_id == 'proxy_template':
         damage = holes + nm + max(components - 1, 0)
         if damage <= 0:
-            return 0.0, 'no holes/non-manifold to reconstruct'
+            return 0.0, 'no holes/non-manifold to reconstruct', \
+                'rec_reason_no_damage', ()
         open_pen = min(open_ratio / 0.5, 1.0)
         si_pen = min(si / 200.0, 1.0)
         score = (0.45 * min(damage / 4.0, 1.0)
                  + 0.35 * (1.0 - open_pen)
                  + 0.20 * (1.0 - si_pen))
         return (_clamp01(score),
-                'holes/non-manifold/debris with a mostly healthy surface')
-    return 0.0, 'not implemented yet'
+                'holes/non-manifold/debris with a mostly healthy surface',
+                'rec_reason_proxy', ())
+    return 0.0, 'not implemented yet', 'rec_reason_not_implemented', ()
 
 
 # --- ranking ----------------------------------------------------------------
@@ -360,7 +389,7 @@ def rank_methods(analysis, top_n=6):
         ok, _reason = method.available()
         if not ok or method.needs_user_input:
             continue
-        base, method_reason = method.score(analysis)
+        base, method_reason, reason_key, reason_args = method.score(analysis)
         best_combined = None
         best_template = None
         best_score = base
@@ -382,7 +411,7 @@ def rank_methods(analysis, top_n=6):
             continue
         out.append(Recommendation(method.num, method.id, method.name,
                                   round(_clamp01(best_score), 3), reason,
-                                  best_template))
+                                  best_template, reason_key, reason_args))
     out.sort(key=lambda r: (-r.score, r.num))
     return out[:top_n]
 
@@ -553,6 +582,16 @@ def _evaluate(result, path, multi, in_objs, method):
     if holes or nm:
         rec['reason'] = 'holes=%d non-manifold=%d remain' % (holes, nm)
         return rec
+    # 5.1: the same rule as the top-level verdict (classification.classify):
+    # "watertight" requires stage 1 closed AND stage 2 (manifold3d) actually
+    # ran and returned ok. A stage-1-closed mesh with stage 2 skipped/errored
+    # is a warning, so a method must never be recorded as reach-watertight on
+    # the index topology alone.
+    category, _issues, _key = classification.classify(result)
+    if category != 'watertight':
+        rec['reason'] = ('stage 1 closed but stage 2 did not confirm the solid '
+                         '(%s)' % (_key or 'warning'))
+        return rec
     rec['watertight'] = True
     # A geometry-inventing method is held to a one-sided Hausdorff guard; a
     # cleaning/topology/SI method is not -- its own adopt/fallback guards
@@ -652,7 +691,8 @@ def _multi_note(multi):
 
 # --- execution policy -------------------------------------------------------
 
-def repair_with_methods(src, out, tmpdir, methods=None, **kwargs):
+def repair_with_methods(src, out, tmpdir, methods=None, auto_escalation=True,
+                         **kwargs):
     """Repair a file, optionally through an explicit list of method numbers.
 
     ``methods=None`` is auto: run today's default pipeline first (baseline);
@@ -661,13 +701,17 @@ def repair_with_methods(src, out, tmpdir, methods=None, **kwargs):
     most ``AUTO_MAX_ATTEMPTS`` extras, geometry-inventing ones only above
     ``AUTO_INVENT_MIN_SCORE``). ``methods=[2,3,5]`` tries exactly those, in
     order, and keeps the best candidate when none reaches watertight.
+
+    ``auto_escalation=False`` keeps the auto baseline but never escalates to
+    extra methods (used when the user tagged only an external engine: the tags
+    mean "exactly these", so the untagged method ranking must not run).
     """
     ctx = dict(kwargs)
     ext = os.path.splitext(src)[1].lower()
     multi = (ext == '.3mf'
              and len(_repair_mod().parse_3mf_meshes(src)) > 1)
     if methods is None:
-        return _auto(src, out, tmpdir, ctx, multi, ext)
+        return _auto(src, out, tmpdir, ctx, multi, ext, bool(auto_escalation))
     return _explicit(src, out, tmpdir, ctx, multi, ext, list(methods))
 
 
@@ -684,7 +728,7 @@ def _auto_escalation_allowed(ctx):
             and ctx.get('ftetwild') is not False)
 
 
-def _auto(src, out, tmpdir, ctx, multi, ext):
+def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
     base_method = get_method(_baseline_num(ctx))
     result = _attempt(src, out, tmpdir, ctx, multi)
     evaluation = _evaluate(result, out, multi, None, base_method)
@@ -696,7 +740,9 @@ def _auto(src, out, tmpdir, ctx, multi, ext):
         _attach(result, base_method, tried, None, None, source='auto_baseline',
                 reached=evaluation['watertight'])
         return result
-    if not _auto_escalation_allowed(ctx):
+    # Escalation requires the default deep-repair configuration AND that the
+    # user did not pin an external engine (tags mean "exactly these").
+    if not allow_escalation or not _auto_escalation_allowed(ctx):
         _attach(result, base_method, tried, None, None, source='auto_baseline',
                 reached=False)
         return result

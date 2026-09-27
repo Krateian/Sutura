@@ -110,7 +110,9 @@ def _dense_scan_heavy_si(a):
 TEMPLATES = (
     Template('mechanical', 'Mechanical part', (1, 3, 4, 5, 2), _mechanical),
     Template('organic', 'Organic surface', (1, 2, 3, 7, 5), _organic),
-    Template('single_side_scan', 'Single-sided scan', (9, 7, 3, 2),
+    # #8 (Poisson close) is the designed method for a single-sided open scan;
+    # #9 (flat-back) belongs to the planar relief template below.
+    Template('single_side_scan', 'Single-sided scan', (8, 7, 3, 2),
              _single_side_scan),
     Template('relief', 'Relief / shell', (9, 10, 3, 8), _relief),
     Template('repeated_pattern', 'Repeated pattern', (11, 12, 1),

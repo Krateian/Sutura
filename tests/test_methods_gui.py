@@ -128,6 +128,34 @@ def main():
     assert acts[11].toolTip() == gui._t('menu_needs_input')
     print('ok  Use method list, placeholders and order badge')
 
+    # 4.1: unchecking a method renumbers the siblings' order badges live
+    cb = '/tmp/sutura_p3_c.stl'
+    w._add_path(cb)
+    w._clear_tags([cb])
+    w._on_tag_toggle([cb], 'method', 2)
+    w._on_tag_toggle([cb], 'method', 5)
+    mm = gui.QMenu(w.tree)
+    um2 = gui._KeepOpenMenu(gui._t('menu_use_method'), mm)
+    w._build_use_method_menu(um2, [cb], cb)
+    a2 = um2.actions()[1]   # method 2 -> order 1
+    a5 = um2.actions()[4]   # method 5 -> order 2
+    assert '\u2713 1' in a2.text() and '\u2713 2' in a5.text(), \
+        (a2.text(), a5.text())
+    w._on_use_action(methods.get_method(2), [cb], cb, a2, um2)
+    assert '\u2713' not in a2.text(), a2.text()
+    assert '\u2713 1' in a5.text(), a5.text()      # renumbered 2 -> 1
+    print('ok  Use method badge refresh on untag')
+
+    # 7.1: every classification summary key is localizable (EN + TR)
+    assert 'res_extreme_removed_object' in gui.STRINGS['en'], 'EN string missing'
+    assert 'res_extreme_removed_object' in gui.STRINGS['tr'], 'TR string missing'
+    assert gui._t('res_extreme_removed_object') != 'res_extreme_removed_object'
+    # 7.2: recommendation reasons localize through reason_key
+    rr = {'reason_key': 'rec_reason_si', 'reason_args': (123,),
+          'reason': 'self-intersections present (123)'}
+    assert '123' in gui._rec_reason(rr), gui._rec_reason(rr)
+    print('ok  summary/recommendation i18n keys')
+
     # Engine submenu lists the configured engine
     em = gui.QMenu(w.tree)
     w._build_engines_menu(em, [b], b)
