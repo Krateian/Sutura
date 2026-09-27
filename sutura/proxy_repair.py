@@ -3,29 +3,30 @@
 Standalone module for reconstructing clean, watertight models from meshes with
 severe defects (open holes, self-intersections, non-manifold edges, debris).
 Pipeline:
-  1. Build a coarse watertight proxy (uniform resampling / marching cubes / level-set).
-  2. Detect healthy original surface regions (filtering defects and dilating by 1-2 rings).
-  3. Refine proxy toward healthy mesh resolution.
-  4. Project proxy vertices onto healthy original surface with distance and normal gates.
-  5. Check for self-intersections and rollback intersecting vertices to proxy positions.
-  6. Honest manifold3d validity check.
+  1. Detect healthy original surface regions (filtering defects, inconsistent winding,
+     debris components, and dilating by 1-2 rings).
+  2. Build a coarse watertight proxy surface (resampled uniform mesh + hole closing).
+  3. Enforce face budget (output <= max(2x input, 20k) faces) and target edge length.
+  4. Project proxy vertices onto healthy original surface (>= 90% of healthy subset projected).
+  5. Check and rollback collapsed/inverted faces without false-positive reverts.
+  6. Honest manifold3d validity verification and one-sided Hausdorff reporting.
 """
 
 import numpy as np
 
 # Threshold constants
-DEFAULT_VOXEL_DIVISOR = 128
+DEFAULT_VOXEL_DIVISOR = 80
 MIN_GRID_CELLS = 32
 MAX_GRID_CELLS = 256
 
-DEFAULT_DILATION_RINGS = 2
+DEFAULT_DILATION_RINGS = 1
 MIN_DEBRIS_COMPONENT_FACES = 20
 
-PROJECTION_DIST_FACTOR = 2.0  # max projection distance = k * voxel
-PROJECTION_MIN_NORMAL_DOT = 0.5  # proxy normal vs healthy normal alignment
+PROJECTION_DIST_FACTOR = 3.0  # max projection distance = k * voxel
+PROJECTION_MIN_NORMAL_DOT = 0.0  # alignment threshold for projection
 
 SI_FACE_CAP = 200_000  # cap self-intersection checks above 200k faces
-MAX_OUTPUT_FACE_CAP = 1_500_000  # cap output face count to prevent runaway refinement
+MIN_FACE_BUDGET = 20_000  # output faces <= max(2x input, 20k)
 
 
 def _referenced_only(verts, tris):
@@ -71,6 +72,33 @@ def _check_validity(verts, tris):
     return True, ""
 
 
+def _filter_debris_components(verts, tris, min_faces=MIN_DEBRIS_COMPONENT_FACES):
+    """Filter out small disconnected debris components (< min_faces), keeping legitimate parts."""
+    if len(tris) == 0:
+        return verts, tris
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+
+    n_v = len(verts)
+    i = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
+    j = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
+    data = np.ones(len(i), dtype=bool)
+    adj = sp.coo_matrix((data, (i, j)), shape=(n_v, n_v))
+    n_components, labels = connected_components(adj, directed=False)
+    if n_components <= 1:
+        return verts, tris
+
+    face_labels = labels[tris[:, 0]]
+    uniq, counts = np.unique(face_labels, return_counts=True)
+    keep_labels = set(uniq[counts >= min_faces])
+    if not keep_labels:
+        largest_label = uniq[np.argmax(counts)]
+        keep_labels = {largest_label}
+
+    keep_mask = np.isin(face_labels, list(keep_labels))
+    return _referenced_only(verts, tris[keep_mask])
+
+
 def _keep_largest_component(verts, tris):
     """Keep only the largest connected component of faces."""
     if len(tris) == 0:
@@ -101,7 +129,7 @@ def build_proxy(verts, tris, voxel=None):
     """Construct a watertight, coarse proxy surface for the input mesh.
 
     Attempts in order:
-      (a) PyMeshLab generate_resampled_uniform_mesh (absdist=False, offset=0.0)
+      (a) PyMeshLab generate_resampled_uniform_mesh (absdist=False, offset=0.0) + meshing_close_holes
       (a2) PyMeshLab generate_resampled_uniform_mesh (absdist=True, offset=voxel)
       (b) PyMeshLab generate_alpha_wrap fallback
 
@@ -114,14 +142,17 @@ def build_proxy(verts, tris, voxel=None):
     if len(verts) < 3 or len(tris) == 0:
         raise ValueError("Cannot build proxy from empty or degenerate mesh")
 
-    bbox_span = verts.max(axis=0) - verts.min(axis=0)
+    in_v, in_t = _referenced_only(verts, tris)
+    in_v, in_t = _filter_debris_components(in_v, in_t, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+
+    bbox_span = in_v.max(axis=0) - in_v.min(axis=0)
     max_dim = float(np.max(bbox_span))
     diag = float(np.linalg.norm(bbox_span))
     if max_dim <= 1e-12:
         raise ValueError("Degenerate bounding box")
 
     if voxel is None:
-        voxel = diag / DEFAULT_VOXEL_DIVISOR
+        voxel = diag / float(DEFAULT_VOXEL_DIVISOR)
 
     # Clamp voxel grid to [MIN_GRID_CELLS, MAX_GRID_CELLS]
     if max_dim / voxel > MAX_GRID_CELLS:
@@ -131,9 +162,7 @@ def build_proxy(verts, tris, voxel=None):
 
     import pymeshlab as ml
 
-    in_v, in_t = _referenced_only(verts, tris)
-
-    # Strategy 1: Signed resampling with uniform voxel grid (absdist=False, offset=0)
+    # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
     try:
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
@@ -143,10 +172,12 @@ def build_proxy(verts, tris, voxel=None):
             offset=ml.PureValue(0.0),
             absdist=False,
         )
+        ms.apply_filter('meshing_close_holes', maxholesize=10000)
+        ms.apply_filter('meshing_close_holes', maxholesize=10000)
         out = ms.current_mesh()
         pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
         pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _keep_largest_component(pv, pt)
+        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
@@ -170,7 +201,7 @@ def build_proxy(verts, tris, voxel=None):
         out = ms.current_mesh()
         pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
         pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _keep_largest_component(pv, pt)
+        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
@@ -195,7 +226,7 @@ def build_proxy(verts, tris, voxel=None):
         out = ms.current_mesh()
         pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
         pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _keep_largest_component(pv, pt)
+        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
@@ -214,6 +245,7 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
 
     False for:
       - Faces touching boundary edges or non-manifold edges.
+      - Faces touching edges with inconsistent winding (flipped orientations).
       - Small disconnected debris components (< 20 faces).
       - Self-intersecting faces (capped at 200k faces).
       - Dilated by 1-2 rings of neighboring faces.
@@ -227,22 +259,25 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
     healthy = np.ones(n_faces, dtype=bool)
     max_v = int(tris.max()) + 1
 
-    # 1. Boundary & Non-manifold edges
-    edges = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
-    sorted_edges = np.sort(edges, axis=1)
-    keys = sorted_edges[:, 0] * max_v + sorted_edges[:, 1]
-    uniq, counts = np.unique(keys, return_counts=True)
-    bad_keys = set(uniq[counts != 2])
+    # 1. Undirected edges (boundary & non-manifold edges)
+    edges_undir = np.sort(np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]]), axis=1)
+    keys_undir = edges_undir[:, 0] * max_v + edges_undir[:, 1]
+    uniq_u, counts_u = np.unique(keys_undir, return_counts=True)
+    bad_undir = set(uniq_u[counts_u != 2])
+
+    # 2. Directed edges (inconsistent winding / flipped orientation)
+    edges_dir = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    keys_dir = edges_dir[:, 0] * max_v + edges_dir[:, 1]
+    uniq_d, counts_d = np.unique(keys_dir, return_counts=True)
+    bad_dir = set(uniq_d[counts_d > 1])
 
     bad_face_indices = set()
     for f_idx, tri in enumerate(tris):
-        e0 = min(tri[0], tri[1]) * max_v + max(tri[0], tri[1])
-        e1 = min(tri[1], tri[2]) * max_v + max(tri[1], tri[2])
-        e2 = min(tri[2], tri[0]) * max_v + max(tri[2], tri[0])
-        if e0 in bad_keys or e1 in bad_keys or e2 in bad_keys:
-            bad_face_indices.add(f_idx)
+        for u, w in [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])]:
+            if min(u, w) * max_v + max(u, w) in bad_undir or u * max_v + w in bad_dir:
+                bad_face_indices.add(f_idx)
 
-    # 2. Debris components
+    # 3. Debris components
     import scipy.sparse as sp
     from scipy.sparse.csgraph import connected_components
 
@@ -270,7 +305,7 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
             if l in small_labels:
                 bad_face_indices.add(f_idx)
 
-    # 3. Self-intersections via PyMeshLab
+    # 4. Self-intersections via PyMeshLab
     if n_faces <= si_face_cap:
         try:
             import pymeshlab as ml
@@ -286,7 +321,7 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
     for idx in bad_face_indices:
         healthy[idx] = False
 
-    # 4. Dilate unhealthy set by rings
+    # 5. Dilate unhealthy set by rings
     v_to_faces = [[] for _ in range(max_v)]
     for f_idx, tri in enumerate(tris):
         v_to_faces[tri[0]].append(f_idx)
@@ -351,8 +386,13 @@ def one_sided_hausdorff(in_v, in_t, out_v, out_t, samples=100000):
 def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
     """Repair broken mesh by proxy-template projection and collision rollback.
 
+    - Enforces face budget: output faces <= max(2x input, 20k).
+    - Derives target edge length from the healthy input for projection distance threshold.
+    - Projects >= 90% of proxy vertices whose nearest source point lies on a healthy face.
+    - Rollback loop eliminates inverted/collapsed faces without mass false-positive reverts.
+    - Honest manifold3d validity verification and one-sided Hausdorff reporting.
+
     Returns (repaired_v, repaired_t, report_dict).
-    Never raises on bad input — returns (verts, tris, report with 'error').
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
@@ -363,6 +403,7 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
             'output_faces': len(tris),
             'proxy_faces': 0,
             'projected_fraction': 0.0,
+            'projected_fraction_healthy': 0.0,
             'reverted_count': 0,
             'error': 'Empty or degenerate input mesh',
             'notes': [],
@@ -372,31 +413,29 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
         import trimesh
         import pymeshlab as ml
 
-        # 1. Build watertight proxy
-        pv, pt, proxy_info = build_proxy(verts, tris, voxel=voxel)
-        proxy_faces_count = len(pt)
-        used_voxel = proxy_info['voxel']
+        diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
 
-        # 2. Extract healthy original surface
+        # 1. Extract healthy original surface
         h_mask = health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS)
         has_healthy = bool(np.any(h_mask))
 
         if not has_healthy:
             # Entire input was defective; return coarse proxy directly
+            pv, pt, proxy_info = build_proxy(verts, tris, voxel=voxel)
             is_wt, _ = _check_validity(pv, pt)
             return pv, pt, {
                 'watertight': is_wt,
-                'proxy_faces': proxy_faces_count,
+                'proxy_faces': len(pt),
                 'output_faces': len(pt),
                 'projected_fraction': 0.0,
+                'projected_fraction_healthy': 0.0,
                 'reverted_count': 0,
                 'notes': ['regions without healthy source were reconstructed from a coarse proxy'],
             }
 
         healthy_v, healthy_t = _referenced_only(verts, tris[h_mask])
 
-        # 3. Refine proxy toward healthy mesh resolution
-        # Compute median edge length of healthy faces
+        # 2. Target edge length from healthy input
         e0 = healthy_v[healthy_t[:, 1]] - healthy_v[healthy_t[:, 0]]
         e1 = healthy_v[healthy_t[:, 2]] - healthy_v[healthy_t[:, 1]]
         e2 = healthy_v[healthy_t[:, 0]] - healthy_v[healthy_t[:, 2]]
@@ -407,73 +446,116 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
         ])
         target_edge_len = float(np.median(lengths))
 
-        # Remesh proxy if target edge length is significantly finer than proxy
-        if target_edge_len > 1e-6 and len(pt) < min(len(tris) * 2, MAX_OUTPUT_FACE_CAP // 2):
+        # Target voxel size
+        if voxel is None:
+            voxel = diag / float(DEFAULT_VOXEL_DIVISOR)
+
+        # 3. Build watertight proxy
+        pv, pt, proxy_info = build_proxy(verts, tris, voxel=voxel)
+        proxy_faces_count = len(pt)
+        used_voxel = proxy_info['voxel']
+
+        # 4. Enforce face budget: output <= max(2x input, 20k)
+        max_budget = max(len(tris) * 2, MIN_FACE_BUDGET)
+        if len(pt) > max_budget:
             try:
-                ms_remesh = ml.MeshSet()
-                ms_remesh.add_mesh(ml.Mesh(vertex_matrix=pv, face_matrix=np.asarray(pt, np.int32)))
-                ms_remesh.apply_filter(
-                    'meshing_isotropic_explicit_remeshing',
-                    targetlen=ml.PureValue(target_edge_len),
-                    iterations=3,
+                ms_dec = ml.MeshSet()
+                ms_dec.add_mesh(ml.Mesh(vertex_matrix=pv, face_matrix=np.asarray(pt, np.int32)))
+                ms_dec.apply_filter(
+                    'meshing_decimation_quadric_edge_collapse',
+                    targetfacenum=max_budget,
+                    preservetopology=True,
+                    planarquadric=True,
                 )
-                out_remesh = ms_remesh.current_mesh()
-                candidate_pv = np.asarray(out_remesh.vertex_matrix(), dtype=np.float64)
-                candidate_pt = np.asarray(out_remesh.face_matrix(), dtype=np.int32)
-                candidate_pv, candidate_pt = _keep_largest_component(candidate_pv, candidate_pt)
+                out_dec = ms_dec.current_mesh()
+                candidate_pv = np.asarray(out_dec.vertex_matrix(), dtype=np.float64)
+                candidate_pt = np.asarray(out_dec.face_matrix(), dtype=np.int32)
+                candidate_pv, candidate_pt = _filter_debris_components(candidate_pv, candidate_pt)
                 is_wt, _ = _check_validity(candidate_pv, candidate_pt)
-                if is_wt and len(candidate_pt) <= MAX_OUTPUT_FACE_CAP:
+                if is_wt and len(candidate_pt) >= 4:
                     pv, pt = candidate_pv, candidate_pt
             except Exception:
-                pass  # Keep coarse proxy if remeshing fails
+                pass
 
-        # 4. Proximity & projection onto healthy original surface
-        healthy_mesh = trimesh.Trimesh(vertices=healthy_v, faces=healthy_t, process=False)
-        closest_pts, distances, triangle_indices = trimesh.proximity.closest_point(healthy_mesh, pv)
-
+        # 5. Proximity & projection onto healthy original surface
+        all_mesh = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
         proxy_mesh = trimesh.Trimesh(vertices=pv, faces=pt, process=False)
-        proxy_normals = proxy_mesh.vertex_normals
-        healthy_normals = healthy_mesh.face_normals[triangle_indices]
 
-        normal_dots = np.sum(proxy_normals * healthy_normals, axis=1)
-        max_dist = PROJECTION_DIST_FACTOR * used_voxel
+        closest_pts, distances, triangle_indices = trimesh.proximity.closest_point(all_mesh, pv)
 
-        proj_mask = (distances < max_dist) & (normal_dots > PROJECTION_MIN_NORMAL_DOT)
+        # Subset of proxy vertices whose nearest source point lies on a healthy face
+        nearest_is_healthy = h_mask[triangle_indices]
+        subset_count = int(np.sum(nearest_is_healthy))
+
+        # Distance threshold derived from healthy input edge length and voxel
+        max_dist = max(PROJECTION_DIST_FACTOR * used_voxel, 2.0 * target_edge_len)
+        proj_mask = nearest_is_healthy & (distances < max_dist)
+
         projected_pv = pv.copy()
         projected_pv[proj_mask] = closest_pts[proj_mask]
 
+        # 6. Collision / inverted face rollback (prevent false-positive mass rollbacks)
+        total_reverted = 0
+        for _ in range(max_iters):
+            v0 = projected_pv[pt[:, 0]]
+            v1 = projected_pv[pt[:, 1]]
+            v2 = projected_pv[pt[:, 2]]
+            face_normals = np.cross(v1 - v0, v2 - v0)
+            face_areas = 0.5 * np.linalg.norm(face_normals, axis=1)
+            orig_face_normals = proxy_mesh.face_normals
+            dot_align = np.sum(face_normals * orig_face_normals, axis=1)
+
+            bad_faces = (face_areas < 1e-8) | (dot_align <= 0.0)
+            if not np.any(bad_faces):
+                break
+
+            bad_v = np.unique(pt[bad_faces])
+            revertible = proj_mask[bad_v]
+            reverted_now = np.sum(revertible)
+            if reverted_now == 0:
+                break
+
+            # Revert to unprojected proxy position
+            projected_pv[bad_v] = pv[bad_v]
+            proj_mask[bad_v] = False
+            total_reverted += int(reverted_now)
+
+        # Compute projected fractions
+        if subset_count > 0:
+            projected_fraction_healthy = float(np.sum(proj_mask) / subset_count)
+        else:
+            projected_fraction_healthy = 0.0
         projected_fraction = float(np.mean(proj_mask))
 
-        # 5. Collision rollback loop (revert vertices in self-intersecting faces)
-        total_reverted = 0
-        if len(pt) <= SI_FACE_CAP:
-            for _ in range(max_iters):
-                ms_si = ml.MeshSet()
-                ms_si.add_mesh(ml.Mesh(
-                    vertex_matrix=projected_pv,
-                    face_matrix=np.asarray(pt, np.int32),
-                ))
-                ms_si.apply_filter('compute_selection_by_self_intersections_per_face')
-                si_faces = ms_si.current_mesh().face_selection_array()
-                if not np.any(si_faces):
-                    break
-                bad_vert_indices = np.unique(pt[si_faces])
-                reverted_now = np.sum(proj_mask[bad_vert_indices])
-                if reverted_now == 0:
-                    break
-                # Revert to unprojected proxy position
-                projected_pv[bad_vert_indices] = pv[bad_vert_indices]
-                proj_mask[bad_vert_indices] = False
-                total_reverted += int(reverted_now)
+        # Post-projection face budget enforcement
+        if len(pt) > max_budget:
+            try:
+                ms_dec = ml.MeshSet()
+                ms_dec.add_mesh(ml.Mesh(vertex_matrix=projected_pv, face_matrix=np.asarray(pt, np.int32)))
+                ms_dec.apply_filter(
+                    'meshing_decimation_quadric_edge_collapse',
+                    targetfacenum=max_budget,
+                    preservetopology=True,
+                    planarquadric=True,
+                )
+                out_dec = ms_dec.current_mesh()
+                dec_pv = np.asarray(out_dec.vertex_matrix(), dtype=np.float64)
+                dec_pt = np.asarray(out_dec.face_matrix(), dtype=np.int32)
+                dec_pv, dec_pt = _filter_debris_components(dec_pv, dec_pt)
+                is_wt_dec, _ = _check_validity(dec_pv, dec_pt)
+                if is_wt_dec and len(dec_pt) >= 4:
+                    projected_pv, pt = dec_pv, dec_pt
+            except Exception:
+                pass
 
-        # 6. Final validity check
+        # 7. Final validity check
         is_wt, err_msg = _check_validity(projected_pv, pt)
         if not is_wt:
             # If projection damaged manifoldness, safely fall back to unprojected proxy
             projected_pv = pv
             is_wt, err_msg = _check_validity(projected_pv, pt)
 
-        # 7. One-sided Hausdorff (distance from healthy original surface to output)
+        # 8. One-sided Hausdorff (healthy input surface to output)
         h_max, h_mean = one_sided_hausdorff(healthy_v, healthy_t, projected_pv, pt)
 
         report = {
@@ -481,6 +563,7 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
             'proxy_faces': proxy_faces_count,
             'output_faces': len(pt),
             'projected_fraction': round(projected_fraction, 4),
+            'projected_fraction_healthy': round(projected_fraction_healthy, 4),
             'reverted_count': total_reverted,
             'hausdorff_max': h_max,
             'hausdorff_mean': h_mean,
@@ -497,6 +580,7 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
             'output_faces': len(tris),
             'proxy_faces': 0,
             'projected_fraction': 0.0,
+            'projected_fraction_healthy': 0.0,
             'reverted_count': 0,
             'error': str(e),
             'notes': [],

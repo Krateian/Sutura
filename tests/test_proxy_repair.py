@@ -7,6 +7,7 @@ Checks:
   3. proxy_template_repair repairs broken sphere with hole, flipped face, and debris.
   4. proxy_template_repair repairs broken torus while preserving topology.
   5. Defensive error handling returns honest error reports without raising.
+  6. Enforces face budget (output <= max(2x input, 20k)) and projected_fraction_healthy >= 90%.
 
 Runtime target: < 15 s (< 30 s limit).
 Usage: python3 tests/test_proxy_repair.py
@@ -79,7 +80,12 @@ def test_proxy_template_repair_sphere():
 
     assert rep['watertight'] is True, f"Repaired sphere not watertight: {rep}"
     assert rep['output_faces'] > 0, "Output mesh has 0 faces"
-    assert rep['projected_fraction'] > 0.0, "At least some proxy vertices should be projected"
+    assert rep['output_faces'] <= max(len(t) * 2, pr.MIN_FACE_BUDGET), (
+        f"Face budget violated: {rep['output_faces']} > {max(len(t) * 2, pr.MIN_FACE_BUDGET)}"
+    )
+    assert rep['projected_fraction_healthy'] >= 0.90, (
+        f"Healthy subset projection too low: {rep['projected_fraction_healthy']:.1%} (< 90%)"
+    )
     assert any('proxy' in n for n in rep['notes']), f"Missing required note: {rep['notes']}"
     assert rep['hausdorff_mean'] is not None and rep['hausdorff_mean'] < 0.02, (
         f"Mean Hausdorff distance too high: {rep['hausdorff_mean']}"
@@ -89,7 +95,7 @@ def test_proxy_template_repair_sphere():
     assert mf.status() == manifold3d.Error.NoError, f"Manifold error: {mf.status()}"
     print(
         f"  ✓ test_proxy_template_repair_sphere passed "
-        f"(faces: {len(t_out)}, proj: {rep['projected_fraction']:.1%}, H_mean: {rep['hausdorff_mean']:.5f})"
+        f"(faces: {len(t_out)}, proj_healthy: {rep['projected_fraction_healthy']:.1%}, H_mean: {rep['hausdorff_mean']:.5f})"
     )
 
 
@@ -98,6 +104,12 @@ def test_proxy_template_repair_torus():
     v_out, t_out, rep = pr.proxy_template_repair(v, t)
 
     assert rep['watertight'] is True, f"Repaired torus not watertight: {rep}"
+    assert rep['output_faces'] <= max(len(t) * 2, pr.MIN_FACE_BUDGET), (
+        f"Face budget violated: {rep['output_faces']} > {max(len(t) * 2, pr.MIN_FACE_BUDGET)}"
+    )
+    assert rep['projected_fraction_healthy'] >= 0.90, (
+        f"Healthy subset projection too low: {rep['projected_fraction_healthy']:.1%} (< 90%)"
+    )
     mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
     assert mf.status() == manifold3d.Error.NoError, f"Manifold error: {mf.status()}"
     print(f"  ✓ test_proxy_template_repair_torus passed (faces: {len(t_out)}, genus: {mf.genus()})")
