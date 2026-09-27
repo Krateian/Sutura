@@ -32,6 +32,7 @@ from mesh_classifier import classify_mesh
 import repair_score
 import history
 import triage
+import methods as method_registry
 
 # The Balanced intensity preset is the pre-triage behaviour; the module
 # constants below keep their names for backward compatibility and are derived
@@ -148,7 +149,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -662,7 +663,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             join_components=False, autorefine=False,
                             ftetwild=False, indirect_autorefine=False,
                             extra_features=False, deep_repair=None,
-                            triage_spec=None, engines=None, engine_chain=None):
+                            triage_spec=None, engines=None, engine_chain=None,
+                            closing=None, proxy_template=False, repeat=None,
+                            repeat_source=None, repeat_target=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -697,6 +700,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ``engines``/``engine_chain`` are the configs and resolved chain from
     ``load_engine_run``; None (library default) runs no external engine and
     keeps the output byte-identical to the pre-engines behaviour.
+    ``closing`` selects the standalone scan-closing tier (registry methods 8/9):
+    ``'poisson'`` (screened Poisson reconstruction, ``sutura/closing.py``) or
+    ``'flat_back'`` (flat back plane + side walls); ``proxy_template`` selects
+    the proxy-template rebuild (registry method 10, ``sutura/proxy_repair.py``).
+    Both run on the ORIGINAL input arrays (like the fTetWild tier) and the
+    candidate is adopted only when it is strict-watertight (no holes, no
+    non-manifold edges) and no worse than the stage-1 baseline; None/False
+    (library default) keeps the output byte-identical to today.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -950,10 +961,23 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 after = ms.apply_filter('get_topological_measures')
         _record_engine_entries(stats, _entries)
 
+    # Registry methods 8/9/10 (P-INT): standalone closing / proxy-template
+    # modules. They run on the ORIGINAL input arrays, before the deep-repair
+    # ladder, and adopt only a strict-watertight, no-worse candidate (see
+    # ``closing_ladder``).
+    ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
+                               closing=closing, proxy_template=proxy_template)
+
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
                                    spec=triage_spec, engines=engines,
                                    engine_chain=engine_chain)
+
+    # Registry methods 11/12 (P-REP): repeated-element transplant, after the
+    # whole stage-1 chain (the transplant needs a watertight M).
+    ms, after = repeat_tier(ml, ms, after, stats, mode=repeat,
+                            source_point=repeat_source,
+                            target_point=repeat_target)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -2246,6 +2270,447 @@ def _local_remesh_tier(ml, ms, after):
     return ms, after, rep
 
 
+def weld_reload_equivalent(verts, tris):
+    """Weld a mesh into the form an STL save/reload reproduces.
+
+    STL stores no vertex sharing: on reload a loader re-welds vertices whose
+    stored float32 positions are exactly equal. Two positions that are distinct
+    in the in-memory float64 arrays can therefore collapse after a float32
+    write/read, creating edges used by more than two triangles that the
+    in-memory index topology does not show (observed on the proxy/closing
+    seam vertices: 3052 vertices, 3046 unique in float64 but 3040 in float32,
+    i.e. 5 non-manifold edges after reload).
+
+    Returns ``(verts, tris)`` in that reload-equivalent form: positions cast
+    to float32, exactly-coincident positions merged, degenerate and duplicate
+    faces dropped, unreferenced vertices removed. Pure numpy (no pymeshlab) so
+    the method registry's guard can apply the same rule without importing it.
+    """
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(v) == 0 or len(t) == 0:
+        return v, t
+    unique, inverse = np.unique(v, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    t = inverse[t.reshape(-1)].reshape(t.shape).astype(np.int64)
+    nondeg = ((t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2])
+              & (t[:, 0] != t[:, 2]))
+    t = t[nondeg]
+    if len(t) == 0:
+        return np.zeros((0, 3), dtype=np.float32), t
+    # drop duplicate faces (same unordered vertex set), keep first occurrence
+    keys = np.sort(t, axis=1)
+    _uniq, first = np.unique(keys, axis=0, return_index=True)
+    t = t[np.sort(first)]
+    # drop unreferenced vertices and remap
+    used = np.unique(t)
+    remap = np.full(len(unique), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return unique[used], remap[t]
+
+
+def _repair_welded_topology(ml, verts, tris):
+    """Topology repair of a reload-equivalent mesh (P-FIX).
+
+    Merging coincident positions can leave non-manifold edges / duplicate
+    faces; this runs the same repair subset the Stage-1 chain uses so a
+    legitimately repairable candidate is not falsely rejected. Never raises.
+    """
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
+                        face_matrix=np.asarray(tris, np.int32)))
+    for name, params in (('meshing_repair_non_manifold_edges', {}),
+                         ('meshing_remove_duplicate_faces', {}),
+                         ('meshing_repair_non_manifold_vertices', {}),
+                         ('meshing_remove_unreferenced_vertices', {})):
+        try:
+            ms.apply_filter(name, **params)
+        except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
+            pass
+    return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
+            np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
+
+
+def reload_strict_holes_nm(verts, tris):
+    """Strict (holes, non-manifold) on the STL save/reload-equivalent mesh.
+
+    Applies ``weld_reload_equivalent`` (positions cast to float32 with
+    exactly-coincident positions merged) and then ``defects.detect`` -- the
+    same strict metric the repair guards use, measured on the mesh the user
+    gets back after a save/reload rather than the in-memory index topology.
+    Pure numpy (no pymeshlab)."""
+    wv, wt = weld_reload_equivalent(verts, tris)
+    d = detect_defects(wv, wt)
+    return len(d['holes']), len(d['non_manifold'])
+
+
+P_WELD_MAX_NUDGE_ATTEMPTS = 12
+P_WELD_MAX_HOLE = 200
+P_WELD_MIN_FACE_FRACTION = 0.98
+
+
+def _separate_weld_collisions(verts, tris):
+    """Split vertices that are distinct by index but coincide after the float32
+    STL write.
+
+    STL stores no vertex sharing, so two in-memory vertices whose float32
+    positions are exactly equal are welded by the loader; when the in-memory
+    index topology is a clean 2-manifold this weld is the ONLY reason the
+    reloaded mesh is non-manifold. Keeping the vertices distinct by nudging
+    all but one member of each collision group by a few float32 ULPs preserves
+    the in-memory (manifold) topology on reload, with a geometry change below
+    one part in 1e6. Pure numpy.
+    """
+    v64 = np.asarray(verts, dtype=np.float64).copy()
+    t = np.asarray(tris, dtype=np.int64)
+    if len(v64) == 0 or len(t) == 0:
+        return v64.astype(np.float32), t
+    v32 = v64.astype(np.float32)
+    inv = np.asarray(np.unique(v32, axis=0, return_inverse=True)[1]).reshape(-1)
+    counts = np.bincount(inv, minlength=int(inv.max()) + 1)
+    if (counts <= 1).all():
+        return v32, t
+    order = np.argsort(inv, kind='stable')
+    pos = np.empty(len(inv), dtype=np.int64)
+    pos[order] = np.arange(len(inv))
+    group_start = (np.cumsum(counts) - counts)[inv]
+    rank = (pos - group_start).astype(np.float64)
+    nonrep = rank > 0
+    mag = np.maximum(np.abs(v32), np.float32(1.0))
+    ulp = np.maximum(np.spacing(mag).max(axis=1).astype(np.float64), 1e-7)
+    direction = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+    for attempt in range(P_WELD_MAX_NUDGE_ATTEMPTS):
+        d = v64.copy()
+        step = ulp[nonrep] * rank[nonrep] * (2.0 ** (attempt + 1))
+        d[nonrep] += step[:, None] * direction[None, :]
+        d32 = d.astype(np.float32)
+        if len(np.unique(d32, axis=0)) == len(d32):
+            return d32, t
+    return v32, t
+
+
+def _close_small_holes(ml, verts, tris):
+    """Repair non-manifold vertices then cap small boundary loops.
+
+    Only used by the P-WELD fallback for a welded mesh that is not a clean
+    in-memory topology; a failure leaves the input unchanged."""
+    try:
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
+                            face_matrix=np.asarray(tris, np.int32)))
+        ms.apply_filter('meshing_repair_non_manifold_vertices')
+        ms.apply_filter('meshing_close_holes', maxholesize=P_WELD_MAX_HOLE)
+        ms.apply_filter('meshing_remove_unreferenced_vertices')
+        m = ms.current_mesh()
+        return (np.asarray(m.vertex_matrix(), dtype=np.float32),
+                np.asarray(m.face_matrix(), dtype=np.int32))
+    except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
+        return np.asarray(verts, np.float32), np.asarray(tris, np.int32)
+
+
+def p_weld_final(ml, verts, tris):
+    """Reload-safe final pass (P-WELD).
+
+    The last mesh of every STL repair is checked in the form the user reloads
+    (float32 positions with exactly-coincident vertices welded). When that form
+    is not strict-watertight the pass tries, in order:
+
+      1. splitting float32-coincidence collisions when the in-memory index
+         topology is already a clean 2-manifold (the common stage-2 seam case);
+      2. topologically repairing the welded mesh (remove/split the extra faces)
+         and capping the small holes that creates.
+
+    A candidate is adopted only when it is strict-watertight after the weld
+    (0 holes, 0 non-manifold) and, for the fallback, keeps at least
+    ``P_WELD_MIN_FACE_FRACTION`` of the welded faces. The untouched mesh is
+    returned otherwise, so the pass can never make the output worse. Returns
+    ``(verts, tris, report)`` with ``report`` None when the mesh was already
+    reload-watertight.
+    """
+    v0 = np.asarray(verts)
+    t0 = np.asarray(tris)
+    base_h, base_nm = reload_strict_holes_nm(v0, t0)
+    if base_h == 0 and base_nm == 0:
+        return v0, t0, None
+    rec = {'applied': False, 'method': None,
+           'holes_before': int(base_h),
+           'non_manifold_before': int(base_nm),
+           'holes_after': int(base_h),
+           'non_manifold_after': int(base_nm),
+           'vertices_nudged': 0, 'faces_before': int(len(t0)),
+           'faces_after': int(len(t0))}
+    try:
+        d = detect_defects(v0, t0)
+        if len(d['holes']) == 0 and len(d['non_manifold']) == 0:
+            cv, ct = _separate_weld_collisions(v0, t0)
+            ch, cnm = reload_strict_holes_nm(cv, ct)
+            if ch == 0 and cnm == 0:
+                nudged = int((np.asarray(cv, np.float32)
+                              != np.asarray(v0, np.float32)).any(axis=1).sum())
+                rec.update(applied=True, method='split-collisions',
+                           holes_after=0, non_manifold_after=0,
+                           vertices_nudged=nudged,
+                           faces_after=int(len(ct)))
+                return cv, ct, rec
+        wv, wt = weld_reload_equivalent(v0, t0)
+        welded_faces = max(len(wt), 1)
+        cands = [('weld-repair', _repair_welded_topology(ml, wv, wt))]
+        rep_v, rep_t = cands[0][1]
+        cands.append(('weld-repair+close', _close_small_holes(ml, rep_v, rep_t)))
+        for name, (cv, ct) in cands:
+            cv = np.asarray(cv, np.float32)
+            ct = np.asarray(ct, np.int32)
+            if len(ct) < P_WELD_MIN_FACE_FRACTION * welded_faces:
+                continue
+            ch, cnm = reload_strict_holes_nm(cv, ct)
+            if ch == 0 and cnm == 0:
+                rec.update(applied=True, method=name, holes_after=0,
+                           non_manifold_after=0, faces_after=int(len(ct)))
+                return cv, ct, rec
+    except Exception:  # noqa: BLE001 - the final pass never crashes a repair
+        pass
+    return v0, t0, rec
+
+
+def enforce_reload_verdict(report, verts, tris):
+    """Honest top-level verdict: never claim watertight for a mesh that is
+    not strict-watertight after the reload-equivalent weld (P-HONEST).
+
+    Only a report that currently claims watertight is considered: stage 1
+    two-manifold with no hole AND a successful stage-2 rebuild. If the saved
+    mesh fails the reload check, the fields ``classification.classify()``
+    reads are rewritten so the category can no longer be watertight, plus
+    explicit reload markers. A genuinely watertight mesh returns False with
+    NO report change, so its report and output stay byte-identical.
+    Returns True when the report was downgraded."""
+    if not isinstance(report, dict):
+        return False
+    s1 = report.get('stage1')
+    if not isinstance(s1, dict):
+        return False
+    s2 = report.get('stage2')
+    claims = (bool(s1.get('two_manifold'))
+              and s1.get('holes_remaining', 0) == 0
+              and bool(s2 and s2.get('ok')))
+    if not claims:
+        return False
+    holes, nm = reload_strict_holes_nm(verts, tris)
+    if holes == 0 and nm == 0:
+        return False
+    s1['reload_holes'] = int(holes)
+    s1['reload_non_manifold'] = int(nm)
+    s1['two_manifold'] = bool(nm == 0)
+    s1['holes_remaining'] = int(holes)
+    report['reload_watertight'] = False
+    if isinstance(s2, dict):
+        s2['watertight_after_reload'] = False
+    return True
+
+
+def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
+                   closing=None, proxy_template=False):
+    """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
+
+    ``closing='poisson'`` runs ``closing.poisson_close``; ``'flat_back'`` runs
+    ``closing.flat_back_close``; ``proxy_template=True`` runs
+    ``proxy_repair.proxy_template_repair``. All three operate on the ORIGINAL
+    input arrays ``(v, t)`` rather than the stage-1 result: stage 1's own
+    ``meshing_close_holes`` already flat-caps a single boundary loop
+    (``maxholesize`` is raised to cover the largest loop), so a closing method
+    run on the cleaned arrays would only ever see an already-closed mesh. This
+    mirrors the fTetWild tier, which also works from the original input.
+
+    The candidate is adopted only when it is strict-watertight (the same
+    ``defects.detect`` metric ``methods._evaluate`` uses: zero holes and zero
+    non-manifold edges) and no worse than the stage-1 baseline on holes +
+    non-manifold edges. The per-method one-sided (input -> output) Hausdorff
+    shape guard is applied later by ``methods._evaluate`` for
+    ``invents_geometry`` methods. Records ``stats['closing']`` (tier, ran,
+    adopted, counts, the module's ``notes``); never raises.
+    """
+    if not closing and not proxy_template:
+        return ms, after
+    tier = 'proxy_template' if proxy_template else closing
+    base_v = np.asarray(ms.current_mesh().vertex_matrix())
+    base_t = np.asarray(ms.current_mesh().face_matrix())
+    base_holes = boundary_loop_stats(base_v, base_t)[0]
+    base_nm = int(after.get('non_two_manifold_edges', 0))
+    rec = {'tier': tier, 'ran': True, 'adopted': False, 'watertight': False,
+           'holes': None, 'non_manifold': None, 'faces': None,
+           'notes': [], 'reason': None}
+    try:
+        in_v = np.asarray(v, dtype=np.float64)
+        in_t = np.asarray(t, dtype=np.int64)
+        if proxy_template:
+            import proxy_repair as _proxy
+            cand_v, cand_t, rep = _proxy.proxy_template_repair(in_v, in_t)
+        else:
+            import closing as _closing
+            if closing == 'poisson':
+                cand_v, cand_t, rep = _closing.poisson_close(
+                    in_v, in_t, tmpdir=tmpdir)
+            elif closing == 'flat_back':
+                cand_v, cand_t, rep = _closing.flat_back_close(in_v, in_t)
+            else:
+                rec.update(ran=False, reason='unknown closing mode %r' % closing)
+                stats['closing'] = rec
+                return ms, after
+        rec['notes'] = list(rep.get('notes') or [])
+        if 'error' in rep:
+            rec['reason'] = 'module error: %s' % rep['error']
+        if len(cand_t):
+            # P-FIX: validate the mesh the user will actually reload. STL drops
+            # vertex sharing and the loader re-welds coincident float32
+            # positions, which can expose non-manifold edges the in-memory
+            # index arrays do not show. Weld into that reload-equivalent form,
+            # repair what the weld exposes, then check -- never adopt a
+            # candidate that is not strict-watertight after a save/reload.
+            cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v = np.asarray(cand_v, dtype=np.float32)
+            cand_t = np.asarray(cand_t, dtype=np.int32)
+            det = detect_defects(cand_v, cand_t)
+            cand_holes = len(det['holes'])
+            cand_nm = len(det['non_manifold'])
+            rec['holes'] = cand_holes
+            rec['non_manifold'] = cand_nm
+            rec['faces'] = int(len(cand_t))
+            if (len(cand_t) and cand_holes == 0 and cand_nm == 0
+                    and cand_holes + cand_nm <= base_holes + base_nm):
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+                after = ms.apply_filter('get_topological_measures')
+                rec['adopted'] = True
+                # 5.2: this is a stage-1 strict-watertight CANDIDATE only --
+                # 'watertight' is claimed by the top-level verdict after stage 2
+                # actually runs and confirms it, not here.
+                rec['watertight'] = False
+                rec['candidate_watertight'] = True
+                rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
+            elif rec['reason'] is None:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+        else:
+            rec['reason'] = 'module returned no geometry'
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['ran'] = False
+        rec['reason'] = 'error: %s' % e
+    stats['closing'] = rec
+    return ms, after
+
+
+# One-sided (original -> result, outside the repaired boxes) Hausdorff guard
+# for the repeated-element transplant tier: the transplanted copy must not move
+# the untouched geometry. Mirrors methods.GENERATIVE_MAX_HAUSDORFF_REL.
+REPEAT_MAX_HAUSDORFF_OUTSIDE = 0.01
+
+
+def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
+                target_point=None):
+    """Repeated-element transplant tier (registry methods 11/12, P-REP).
+
+    Runs AFTER the whole stage-1 chain because the transplant needs a
+    watertight (closed 2-manifold) ``M``: if stage 1 left holes or non-manifold
+    edges the tier is skipped. ``mode='auto'`` detects the repeated pattern
+    (``repeat_repair.detect_repetition``) and repairs the damaged copies;
+    ``mode='manual'`` transplants the element nearest ``source_point`` onto the
+    one nearest ``target_point``. The candidate is adopted only when it is
+    reload-equivalent strict-watertight, no worse than the stage-1 baseline,
+    and the untouched geometry did not move (one-sided Hausdorff outside the
+    repaired boxes <= ``REPEAT_MAX_HAUSDORFF_OUTSIDE``). Records
+    ``stats['repeat']``; never raises.
+    """
+    if not mode:
+        return ms, after
+    rec = {'mode': mode, 'ran': False, 'adopted': False, 'watertight': False,
+           'pattern_type': None, 'positions_repaired': None,
+           'hausdorff_outside': None, 'notes': [], 'reason': None}
+    try:
+        cur_v = np.asarray(ms.current_mesh().vertex_matrix())
+        cur_t = np.asarray(ms.current_mesh().face_matrix())
+        holes = boundary_loop_stats(cur_v, cur_t)[0]
+        nm = int(after.get('non_two_manifold_edges', 0))
+        if holes or nm or not after.get('is_mesh_two_manifold'):
+            rec['reason'] = ('repeated-element transplant needs a watertight '
+                             'input; stage 1 left holes=%d non-manifold=%d'
+                             % (holes, nm))
+            stats['repeat'] = rec
+            return ms, after
+        rec['ran'] = True
+        import repeat_repair as _rr
+        if mode == 'manual':
+            if source_point is None or target_point is None:
+                rec['reason'] = ('manual repeat repair needs a source and a '
+                                 'target point')
+                stats['repeat'] = rec
+                return ms, after
+            rv, rt, rep = _rr.repair_repeat_manual(
+                np.asarray(cur_v, dtype=np.float64),
+                np.asarray(cur_t, dtype=np.int64),
+                np.asarray(source_point, dtype=np.float64),
+                np.asarray(target_point, dtype=np.float64))
+        else:
+            rv, rt, rep = _rr.repair_repeat_auto(
+                np.asarray(cur_v, dtype=np.float64),
+                np.asarray(cur_t, dtype=np.int64))
+        rec['notes'] = list(rep.get('notes') or [])
+        rec['pattern_type'] = rep.get('pattern_type')
+        rec['positions_repaired'] = rep.get('positions_repaired')
+        rec['hausdorff_outside'] = rep.get('hausdorff_outside')
+        if 'error' in rep:
+            rec['reason'] = 'module error: %s' % rep['error']
+        if not rep.get('repaired') or not len(rt):
+            if rec['reason'] is None:
+                notes = rep.get('notes') or []
+                rec['reason'] = notes[0] if notes else 'nothing to repair'
+            stats['repeat'] = rec
+            return ms, after
+        # Validate the raw manifold3d transplant (in-memory). unlike the
+        # closing tiers it is NOT float32-welded here: the CSG output has
+        # coincident cut-seam vertices whose pymeshlab weld-repair opens holes,
+        # while the later stage-2 manifold3d rebuild makes the mesh reload-safe
+        # as a side effect. The reload-equivalent counts are still recorded for
+        # transparency; the top-level P-HONEST verdict remains authoritative.
+        cand_v = np.asarray(rv, dtype=np.float32)
+        cand_t = np.asarray(rt, dtype=np.int32)
+        det = detect_defects(cand_v, cand_t)
+        cand_holes = len(det['holes'])
+        cand_nm = len(det['non_manifold'])
+        rec['holes'] = cand_holes
+        rec['non_manifold'] = cand_nm
+        try:
+            rh, rnm = reload_strict_holes_nm(rv, rt)
+            rec['reload_holes'] = int(rh)
+            rec['reload_non_manifold'] = int(rnm)
+        except Exception:  # noqa: BLE001 - reporting only
+            pass
+        hd = rep.get('hausdorff_outside')
+        if (len(cand_t) and cand_holes == 0 and cand_nm == 0
+                and cand_holes + cand_nm <= holes + nm
+                and hd is not None and hd <= REPEAT_MAX_HAUSDORFF_OUTSIDE):
+            ms = ml.MeshSet()
+            ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+            after = ms.apply_filter('get_topological_measures')
+            rec['adopted'] = True
+            rec['watertight'] = False
+            rec['candidate_watertight'] = True
+            rec['reason'] = 'repeated element(s) transplanted (stage 2 pending)'
+        elif rec['reason'] is None:
+            if hd is not None and hd > REPEAT_MAX_HAUSDORFF_OUTSIDE:
+                rec['reason'] = ('untouched geometry moved (Hausdorff %.3f > %.3f)'
+                                 % (hd, REPEAT_MAX_HAUSDORFF_OUTSIDE))
+            else:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['ran'] = False
+        rec['reason'] = 'error: %s' % e
+    stats['repeat'] = rec
+    return ms, after
+
+
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        ftetwild=False, spec=None, engines=None, engine_chain=None):
     """Single entry point of the deep-repair ladder, called after the stage-1
@@ -2587,7 +3052,9 @@ def run_after_stage2_engines(ml, report, new_v, new_t, tmpdir, engines,
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                 join_components=False, autorefine=False, ftetwild=False,
                 indirect_autorefine=False, extra_features=False, deep_repair=None,
-                triage_spec=None, engines=None, engine_chain=None):
+                triage_spec=None, engines=None, engine_chain=None,
+                closing=None, proxy_template=False, repeat=None,
+                repeat_source=None, repeat_target=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -2612,7 +3079,9 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         autorefine=autorefine, ftetwild=ftetwild,
         indirect_autorefine=indirect_autorefine,
         extra_features=extra_features, deep_repair=deep_repair,
-        triage_spec=triage_spec, engines=engines, engine_chain=engine_chain)
+        triage_spec=triage_spec, engines=engines, engine_chain=engine_chain,
+        closing=closing, proxy_template=proxy_template, repeat=repeat,
+        repeat_source=repeat_source, repeat_target=repeat_target)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -2627,6 +3096,21 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         new_v, new_t = run_after_stage2_engines(
             ml, report, new_v, new_t, tmpdir, engines, engine_chain,
             triage_spec or triage.resolve_intensity(None))
+
+    # P-WELD: reload-safe final pass. STL re-welds exactly-coincident float32
+    # vertices on load, so a clean index-topology mesh can reload non-manifold
+    # (the stage-2 / closing seam case). Separate those coincidences (or, when
+    # the welded mesh is itself repairable, repair it) and adopt only a strictly
+    # reload-watertight result; never make the output worse.
+    if os.path.splitext(src)[1].lower() == '.stl':
+        new_v, new_t, _pwel = p_weld_final(ml, new_v, new_t)
+        if _pwel is not None:
+            report['p_weld'] = _pwel
+
+    # P-HONEST: the verdict must describe the mesh actually saved, not the
+    # in-memory index topology. The final mesh is chosen above; judge it in
+    # the save/reload-equivalent form and let that verdict win.
+    enforce_reload_verdict(report, new_v, new_t)
 
     save_mesh(out, new_v, new_t)
     return report
@@ -2696,7 +3180,9 @@ def _read_zip_entry(z, name):
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                join_components=False, autorefine=False, ftetwild=False,
                indirect_autorefine=False, extra_features=False, deep_repair=None,
-               triage_spec=None, engines=None, engine_chain=None):
+               triage_spec=None, engines=None, engine_chain=None,
+               closing=None, proxy_template=False, repeat=None,
+               repeat_source=None, repeat_target=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -2740,7 +3226,10 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     extra_features=extra_features,
                     deep_repair=deep_repair,
                     triage_spec=triage_spec, engines=engines,
-                    engine_chain=engine_chain)
+                    engine_chain=engine_chain,
+                    closing=closing, proxy_template=proxy_template,
+                    repeat=repeat, repeat_source=repeat_source,
+                    repeat_target=repeat_target)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -2751,6 +3240,10 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     new_v, new_t = run_after_stage2_engines(
                         ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
                         triage_spec or triage.resolve_intensity(None))
+                # P-HONEST: judge the per-object mesh actually written into the
+                # archive (reload-equivalent form) before the confidence/score
+                # below, so those see the honest verdict too.
+                enforce_reload_verdict(rep, new_v, new_t)
                 _rc = repair_confidence(rep)
                 rep['repair_confidence'] = _rc['score']
                 rep['repair_confidence_label'] = _rc['label']
@@ -3114,6 +3607,14 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('  Pinched vertices split  : %d -> %d (%d pass(es))%s'
                      % (pv.get('before', 0), pv.get('after', 0), pv.get('passes', 0),
                         '' if pv.get('adopted') else ', not kept'))
+    pw = r.get('p_weld')
+    if pw:
+        state = ('%s adopted' % pw.get('method')) if pw.get('applied') \
+            else 'no improvement (kept reload-welded state)'
+        lines.append('  Reload-safe final pass  : holes %d -> %d, non-manifold %d -> %d (%s)'
+                     % (pw.get('holes_before', 0), pw.get('holes_after', 0),
+                        pw.get('non_manifold_before', 0),
+                        pw.get('non_manifold_after', 0), state))
     if r.get('extreme_passes_applied'):
         lines.append('  Extreme passes          : applied (%d self-intersecting face(s) removed)'
                      % r.get('self_intersections_removed', 0))
@@ -3198,6 +3699,33 @@ def human_report(r, show_defects=False, show_diff=False):
             lines.append('  Deep repair available : %d hole(s), %d non-manifold '
                          'edge(s) left; %s' % (av['holes_remaining'],
                                                av['nm_remaining'], est))
+    cl_r = r.get('closing')
+    if cl_r:
+        if not cl_r.get('ran'):
+            lines.append('  Closing (method %s) : not run (%s)'
+                         % (cl_r.get('tier'), cl_r.get('reason')))
+        else:
+            state = ('adopted' if cl_r.get('adopted')
+                     else 'NOT adopted (%s)' % (cl_r.get('reason') or '?'))
+            note = (' - %s' % '; '.join(cl_r.get('notes') or [])
+                    if cl_r.get('notes') else '')
+            lines.append('  Closing (method %s) : %s faces, holes=%s '
+                         'non-manifold=%s, %s%s' % (
+                             cl_r.get('tier'), cl_r.get('faces'),
+                             cl_r.get('holes'), cl_r.get('non_manifold'),
+                             state, note))
+    rp_r = r.get('repeat')
+    if rp_r:
+        if not rp_r.get('ran'):
+            lines.append('  Repeat repair (method %s) : not run (%s)'
+                         % (rp_r.get('mode'), rp_r.get('reason')))
+        else:
+            state = ('transplanted' if rp_r.get('adopted')
+                     else 'NOT adopted (%s)' % (rp_r.get('reason') or '?'))
+            lines.append('  Repeat repair (method %s) : pattern=%s, %s '
+                         'position(s) repaired, %s' % (
+                             rp_r.get('mode'), rp_r.get('pattern_type'),
+                             rp_r.get('positions_repaired'), state))
     ia_r = r.get('experimental_indirect_autorefine')
     if ia_r:
         if ia_r.get('skipped'):
@@ -3379,7 +3907,9 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  max_risk=None, force=False, join_components=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
-                 engines=None, engine_chain=None, engine_warnings=None):
+                 engines=None, engine_chain=None, engine_warnings=None,
+                 methods=None, engine_filter=None, repeat_source=None,
+                 repeat_target=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -3398,12 +3928,22 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     ``engines``/``engine_chain``/``engine_warnings`` are the ``load_engine_run``
     output; when the first two are None the engines are loaded here (once per
     call). Load warnings are recorded in the report and never fail a repair.
+    ``methods`` is the optional user-tagged method list (``--methods``); None
+    means auto mode (today's default pipeline first, ranked fallbacks only when
+    it fails), implemented by ``sutura/methods.py``.
+    ``engine_filter`` is the optional list of external-engine names
+    (``--engines``): when given, only those engines run (at their configured
+    placement); None keeps the default of running every enabled engine.
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
 
     if engines is None and engine_chain is None:
         engines, engine_chain, engine_warnings = load_engine_run()
+    if engine_filter is not None:
+        _want = set(engine_filter)
+        engines = {n: c for n, c in (engines or {}).items() if n in _want}
+        engine_chain = [n for n in (engine_chain or []) if n in _want]
 
     stem, ext = os.path.splitext(src)
     if out is None:
@@ -3416,30 +3956,23 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         result['engine_warnings'] = list(engine_warnings)
     t0 = time.perf_counter()
     try:
-        if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
-            result.update(repair_3mf(src, tmp_out, tmpdir, mode=mode,
-                                     profile=profile, engine=engine,
-                                     join_components=join_components,
-                                     autorefine=autorefine,
-                                     ftetwild=ftetwild,
-                                     indirect_autorefine=indirect_autorefine,
-                                     extra_features=extra_features,
-                                     deep_repair=deep_repair,
-                                     triage_spec=triage_spec,
-                                     engines=engines,
-                                     engine_chain=engine_chain))
-        else:
-            result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
-                                      profile=profile, engine=engine,
-                                      join_components=join_components,
-                                      autorefine=autorefine,
-                                      ftetwild=ftetwild,
-                                      indirect_autorefine=indirect_autorefine,
-                                      extra_features=extra_features,
-                                      deep_repair=deep_repair,
-                                      triage_spec=triage_spec,
-                                      engines=engines,
-                                      engine_chain=engine_chain))
+        # Method registry / exec policy (sutura/methods.py): with methods=None
+        # this is auto mode -- it runs today's default pipeline first and only
+        # escalates to ranked methods when that baseline is not strict-
+        # watertight, so an untagged repair stays byte-identical to today.
+        result.update(method_registry.repair_with_methods(
+            src, tmp_out, tmpdir, methods=methods,
+            # An explicit --engines tag ("only these engines") must not silently
+            # auto-escalate to extra repair methods; --methods is unaffected.
+            auto_escalation=(engine_filter is None),
+            mode=mode, profile=profile,
+            engine=engine, join_components=join_components,
+            autorefine=autorefine, ftetwild=ftetwild,
+            indirect_autorefine=indirect_autorefine,
+            extra_features=extra_features, deep_repair=deep_repair,
+            triage_spec=triage_spec, engines=engines,
+            engine_chain=engine_chain, repeat_source=repeat_source,
+            repeat_target=repeat_target))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -3691,6 +4224,35 @@ def main():
                         help='list the built-in intensity presets and the '
                              'user profiles with their effective values, then '
                              'exit (no repair)')
+    parser.add_argument('--list-methods', action='store_true',
+                        help='list the repair methods (num, id, family, '
+                             'availability) and exit (no repair)')
+    parser.add_argument('--analyze', action='store_true',
+                        help='analyze the input object(s) -- defects, mesh '
+                             'type, self-intersection load -- and print the '
+                             'ranked method recommendations plus the external '
+                             'engines. Writes no output file.')
+    parser.add_argument('--methods', default=None, metavar='LIST',
+                        help='tag the repair methods to try, in order, e.g. '
+                             '--methods 2,3,5. Without it the repair is auto: '
+                             "today's default pipeline first, with ranked "
+                             'fallbacks only when it fails.')
+    parser.add_argument('--engines', default=None, metavar='LIST',
+                        help='tag the configured external engines to run, e.g. '
+                             '--engines meshfix,my-engine. When given, only '
+                             'those enabled engines run (at their configured '
+                             'placement); without it every enabled engine runs '
+                             'as configured. Engines are never mixed into the '
+                             'method ranking (see `engines list`).')
+    parser.add_argument('--repeat-source', default=None, metavar='X,Y,Z',
+                        help='method 12 (repeat_manual): the 3D point on the '
+                             'healthy repeated element to copy from.')
+    parser.add_argument('--repeat-target', default=None, metavar='X,Y,Z',
+                        help='method 12 (repeat_manual): the 3D point on the '
+                             'damaged repeated element to replace.')
+    parser.add_argument('--json', action='store_true',
+                        help='force machine-readable JSON output (the default '
+                             'format; overrides --human)')
     parser.add_argument('--no-history', action='store_true',
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
@@ -3796,6 +4358,14 @@ def main():
         print(triage.format_intensities())
         sys.exit(0)
 
+    # --list-methods: print the method registry, then exit (no repair).
+    if args.list_methods:
+        if args.json:
+            print(json.dumps(method_registry.methods_json(), ensure_ascii=False))
+        else:
+            print(method_registry.format_methods())
+        sys.exit(0)
+
     # --intensity accepts a built-in preset OR a user profile; argparse cannot
     # know the profiles at parser-construction time, so validate here.
     _profiles = triage.load_profiles()
@@ -3807,7 +4377,7 @@ def main():
 
     files = args.files
     out = args.output
-    human = args.human
+    human = args.human and not args.json
     show_defects = args.defects
     show_diff = args.diff
     mode = args.mode
@@ -3815,6 +4385,53 @@ def main():
     engine = resolve_classifier_engine(args.classifier_engine)
     triage_spec = triage.resolve_intensity(args.intensity,
                                            user_profiles=_profiles)
+
+    # --methods: tag the repair methods (validated against the registry).
+    methods_sel = None
+    if args.methods:
+        parts = [p.strip() for p in args.methods.split(',') if p.strip()]
+        if not parts:
+            parser.error('argument --methods: empty list')
+        nums = []
+        for part in parts:
+            if not part.isdigit():
+                parser.error('argument --methods: %r is not a method number'
+                             % part)
+            num = int(part)
+            if method_registry.get_method(num) is None:
+                parser.error('argument --methods: unknown method %d '
+                             '(see --list-methods)' % num)
+            nums.append(num)
+        methods_sel = nums
+
+    # --repeat-source / --repeat-target: the 3D points method 12 transplants
+    # between. Validated as "X,Y,Z" and required together when 12 is tagged.
+    def _parse_point(text, flag):
+        parts = [p.strip() for p in text.split(',')]
+        if len(parts) != 3:
+            parser.error('argument %s: expected X,Y,Z' % flag)
+        try:
+            return tuple(float(p) for p in parts)
+        except ValueError:
+            parser.error('argument %s: coordinates must be numbers' % flag)
+
+    repeat_source = (_parse_point(args.repeat_source, '--repeat-source')
+                     if args.repeat_source else None)
+    repeat_target = (_parse_point(args.repeat_target, '--repeat-target')
+                     if args.repeat_target else None)
+    if methods_sel is not None and 12 in methods_sel:
+        if repeat_source is None or repeat_target is None:
+            parser.error('--methods 12 requires --repeat-source X,Y,Z and '
+                         '--repeat-target X,Y,Z')
+
+    # --engines: tag specific external engines (names validated against the
+    # configured engines below, after they are loaded).
+    engines_sel = None
+    if args.engines:
+        parts = [p.strip() for p in args.engines.split(',') if p.strip()]
+        if not parts:
+            parser.error('argument --engines: empty list')
+        engines_sel = parts
 
     # 'engines list|check' and 'ftetwild status|install|uninstall' are
     # subcommands, dispatched before any repair (like validate/export-history).
@@ -3871,6 +4488,12 @@ def main():
         if dry_run:
             print(json.dumps({'error': '--dry-run is not valid with validate'}))
             sys.exit(1)
+        if methods_sel is not None:
+            print(json.dumps({'error': '--methods is not valid with validate'}))
+            sys.exit(1)
+        if engines_sel is not None:
+            print(json.dumps({'error': '--engines is not valid with validate'}))
+            sys.exit(1)
         results = [validate_file(f, engine) for f in targets]
         nerr = sum(1 for r in results if 'error' in r)
         if len(targets) == 1:
@@ -3888,10 +4511,51 @@ def main():
             print(json.dumps({'files': results}, ensure_ascii=False))
         sys.exit(0 if nerr == 0 else 1)
 
+    # --analyze: read-only per-object analysis + ranked method recommendations.
+    if args.analyze:
+        if out is not None:
+            print(json.dumps({'error': '-o is not valid with --analyze'}))
+            sys.exit(1)
+        if dry_run:
+            print(json.dumps({'error': '--analyze is not valid with --dry-run'}))
+            sys.exit(1)
+        if methods_sel is not None:
+            print(json.dumps({'error': '--methods is not valid with --analyze'}))
+            sys.exit(1)
+        if engines_sel is not None:
+            print(json.dumps({'error': '--engines is not valid with --analyze'}))
+            sys.exit(1)
+        if not files:
+            print(json.dumps({'error': '--analyze requires at least one input file'}))
+            sys.exit(1)
+        results = [method_registry.analyze_report(
+            f, engine, args.experimental_edge_tiebreak) for f in files]
+        nerr = sum(1 for r in results if 'error' in r)
+        if len(files) == 1:
+            result = results[0]
+            if human:
+                print(method_registry.format_analyze_human(result))
+            else:
+                print(json.dumps(result, ensure_ascii=False))
+            sys.exit(0 if nerr == 0 else 1)
+        if human:
+            for result in results:
+                print(method_registry.format_analyze_human(result))
+                print()
+        else:
+            print(json.dumps({'files': results}, ensure_ascii=False))
+        sys.exit(0 if nerr == 0 else 1)
+
     # --dry-run: analyze and report the plan, write no output file at all.
     if dry_run:
         if out is not None:
             print(json.dumps({'error': '-o is not valid with --dry-run'}))
+            sys.exit(1)
+        if methods_sel is not None:
+            print(json.dumps({'error': '--methods is not valid with --dry-run'}))
+            sys.exit(1)
+        if engines_sel is not None:
+            print(json.dumps({'error': '--engines is not valid with --dry-run'}))
             sys.exit(1)
         results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine,
                                 triage_spec=triage_spec) for f in files]
@@ -3927,6 +4591,11 @@ def main():
     # External engines are loaded ONCE for the whole batch; broken configs
     # only warn and never fail a repair.
     _engines, _engine_chain, _engine_warnings = load_engine_run()
+    if engines_sel is not None:
+        _unknown = [n for n in engines_sel if n not in _engines]
+        if _unknown:
+            parser.error('argument --engines: unknown engine(s): %s '
+                         '(see `sutura engines list`)' % ', '.join(_unknown))
     results = [process_file(f, human, mode=mode, profile=args.profile,
                             no_history=args.no_history, engine=engine,
                             out=out, max_geom_change=max_geom_change,
@@ -3938,7 +4607,11 @@ def main():
                             extra_features=args.experimental_edge_tiebreak,
                             triage_spec=triage_spec, engines=_engines,
                             engine_chain=_engine_chain,
-                            engine_warnings=_engine_warnings) for f in files]
+                            engine_warnings=_engine_warnings,
+                            methods=methods_sel,
+                            engine_filter=engines_sel,
+                            repeat_source=repeat_source,
+                            repeat_target=repeat_target) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

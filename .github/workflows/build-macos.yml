@@ -48,10 +48,10 @@ jobs:
         run: |
           conda install -y -c conda-forge pymeshlab
           pip install --quiet \
-            manifold3d trimesh PySide6-Essentials pyinstaller numpy \
+            manifold3d trimesh scipy PySide6-Essentials pyinstaller numpy \
             pyrobust-predicates
           python -c \
-            "import pymeshlab, manifold3d, trimesh, PySide6; print('deps OK')"
+            "import pymeshlab, manifold3d, trimesh, scipy, PySide6; print('deps OK')"
 
       # --- shared PyInstaller flags (proven recipe) -----------------------
       # - hidden imports for sutura's flat modules (repair.py imports them
@@ -72,11 +72,19 @@ jobs:
             "--hidden-import" "autorefine" "--hidden-import" "mesh_classifier_v2"
             "--hidden-import" "triage" "--hidden-import" "engines"
             "--hidden-import" "ftetwild_manager"
+            "--hidden-import" "methods" "--hidden-import" "object_analysis"
+            "--hidden-import" "templates"
+            "--hidden-import" "closing" "--hidden-import" "proxy_repair"
+            "--hidden-import" "repeat_repair"
+            "--hidden-import" "csg_bridge"
+            "--hidden-import" "scipy.sparse" "--hidden-import" "scipy.sparse.csgraph"
+            "--hidden-import" "scipy.spatial"
             "--hidden-import" "pyrobust_predicates"
             "--collect-data" "pymeshlab" "--collect-data" "manifold3d")
           for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
                      before-after-render:before_after_render.py \
-                     viewer-data-render:viewer_data_render.py; do
+                     viewer-data-render:viewer_data_render.py \
+                     repeat-picker-render:repeat_picker_render.py; do
             name="${t%%:*}"; entry="sutura/${t#*:}"
             python -m PyInstaller "${PYS[@]}" --name "$name" --onedir "$entry"
           done
@@ -86,6 +94,7 @@ jobs:
           cp sutura/manifold_bridge.py dist/sutura-cli/
           cp sutura/ftetwild_bridge.py dist/sutura-cli/
           cp sutura/indirect_bridge.py dist/sutura-cli/
+          cp sutura/csg_bridge.py dist/sutura-cli/
 
       - name: Build GUI .app (windowed onedir)
         run: |
@@ -103,6 +112,13 @@ jobs:
             --hidden-import updater --hidden-import numpy \
             --hidden-import triage --hidden-import engines \
             --hidden-import ftetwild_manager \
+            --hidden-import methods --hidden-import object_analysis \
+            --hidden-import templates \
+            --hidden-import closing --hidden-import proxy_repair \
+            --hidden-import repeat_repair \
+            --hidden-import csg_bridge \
+            --hidden-import scipy.sparse --hidden-import scipy.sparse.csgraph \
+            --hidden-import scipy.spatial \
             --collect-data pymeshlab --collect-data manifold3d \
             --name Sutura --windowed --icon assets/icon/Sutura.icns \
             sutura/gui.py

@@ -425,6 +425,43 @@ def draw_frame(ctx, rotation=None, scale=None):
     return img
 
 
+def draw_face_index(ctx, rotation=None, scale=None):
+    """Per-pixel face-index map for click picking (painter's algorithm).
+
+    Each face is filled with the colour ``face_index + 1`` (a unique 24-bit
+    value); the frontmost face wins. The caller reads a pixel and subtracts 1
+    to recover the face index (a 0 pixel is background). Uses the same
+    projection/sort as ``draw_frame`` and the same ``rotation``/``scale`` so a
+    click on a displayed frame maps back to the face actually shown. Pure numpy
+    + QPainter (CPU), like the rest of this module. Returns a QImage (RGB32).
+    """
+    img = QImage(ctx.w, ctx.h, QImage.Format_RGB32)
+    img.fill(0)
+    if len(ctx.tris) == 0:
+        return img
+    frame = ctx.frame
+    if scale is not None and frame is not None:
+        frame = (frame[0], scale)
+    try:
+        px, py, z = _project(ctx.verts, ctx.w, ctx.h, ctx.pad,
+                             frame=frame, rotation=rotation)
+    except Exception:
+        return img
+    order = np.argsort(z[ctx.tris].mean(axis=1))
+    p = QPainter(img)
+    p.setPen(Qt.NoPen)
+    for i in order:
+        t = ctx.tris[i]
+        p.setBrush(QColor(int(i) + 1))
+        p.drawPolygon(QPolygon([
+            QPoint(int(px[t[0]]), int(py[t[0]])),
+            QPoint(int(px[t[1]]), int(py[t[1]])),
+            QPoint(int(px[t[2]]), int(py[t[2]])),
+        ]))
+    p.end()
+    return img
+
+
 def render(verts, tris, holes=None, non_manifold=None, w=240, h=180,
            pad=24, bg=(18, 22, 26), mesh=(178, 186, 194), defect=(235, 60, 70),
            healed=None, healed_color=(46, 204, 113), frame=None, rotation=None,

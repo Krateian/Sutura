@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QPlainTextEdit, QLabel, QAbstractItemView, QToolButton,
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
     QCheckBox, QDoubleSpinBox, QSpinBox, QLineEdit, QInputDialog,
-    QFormLayout, QGroupBox, QListWidget,
+    QFormLayout, QGroupBox, QListWidget, QMenu,
     QTabWidget, QTextBrowser, QComboBox)
 
 # the updater/repair modules live beside this file in both the repo and the
@@ -40,6 +40,10 @@ if _HERE not in sys.path:
 
 import updater
 import triage
+# method registry / per-object recommendations (stdlib+numpy at import time;
+# pymeshlab and repair are imported lazily inside its functions, so importing
+# it here keeps the GUI process pymeshlab-free)
+import methods
 
 # single source of truth: prefer the package, else the repair.py beside us
 try:
@@ -56,13 +60,54 @@ import classification
 
 # interactive mesh rendering (numpy + QPainter only, no pymeshlab - it stays
 # in the subprocesses that load/render the meshes)
-from heatmap import _ISOMETRIC, draw_frame, prepare_render
+from heatmap import (_ISOMETRIC, draw_frame, draw_face_index, prepare_render,
+                    shared_frame)
 
 # --- i18n ---------------------------------------------------------------
 STRINGS = {
     'en': {
         'app_title': 'Sutura',
-        'col_file': 'File', 'col_result': 'Result',
+        'col_file': 'File', 'col_result': 'Result', 'col_method': 'Method',
+        'col_method_tip': 'Right-click a file to analyze it and tag repair methods.',
+        'menu_analyze': 'Analyze', 'menu_analyze_first': 'Analyze first',
+        'menu_recommended': 'Recommended methods', 'menu_use_method': 'Use method',
+        'menu_engines': 'External engines', 'menu_clear_tags': 'Clear tags (use Auto)',
+        'menu_unavailable': 'Unavailable: %s',
+        'menu_needs_input': 'Needs user input (not selectable yet)',
+        'menu_no_engines': 'No external engines configured',
+        'engine_tag_disabled': 'disabled', 'engine_tag_unavailable': 'not found',
+        'engine_tag_tip': 'External engine (placement: %s)',
+        'method_auto': 'Auto', 'method_auto_rec': 'Auto (rec. #%d %s %d%%)',
+        'analyze_methods_running': 'Analyzing methods…',
+        'analyze_methods_n': 'Analyzing methods… %d/%d',
+        'method_analysis_failed': 'Method analysis failed: %s',
+        'report_methods_header': 'Methods:',
+        'report_method_used': 'Method used:',
+        'method_source_auto_baseline': 'auto, baseline',
+        'method_source_auto_escalated': 'auto, escalated',
+        'method_source_tagged': 'tagged',
+        'repair_log_method_used': 'Method used: %s',
+        'repair_log_method_tried': 'Methods tried: %s',
+        'method_name_fast': 'Fast cleanup',
+        'method_name_deep_local': 'Local deep repair',
+        'method_name_deep_full': 'Full deep repair',
+        'method_name_join_components': 'Join components',
+        'method_name_autorefine': 'Autorefine (SI)',
+        'method_name_indirect_autorefine': 'Indirect autorefine (SI, exact)',
+        'method_name_ftetwild': 'fTetWild envelope',
+        'method_name_poisson_close': 'Poisson close',
+        'method_name_flat_back_close': 'Flat-back close',
+        'method_name_proxy_template': 'Proxy template match',
+        'method_name_repeat_auto': 'Repeat-aware auto',
+        'method_name_repeat_manual': 'Repeat-aware manual',
+        'repeat_pick_title': 'Pick repeated elements',
+        'repeat_pick_source': 'Click the HEALTHY element to copy from',
+        'repeat_pick_target': 'Now click the DAMAGED element to replace',
+        'repeat_pick_ready': 'Both elements selected.',
+        'repeat_pick_loading': 'Loading the object…',
+        'repeat_pick_failed': 'Could not load the object for picking',
+        'repeat_pick_reset': 'Reset picks',
+        'dlg_cancel': 'Cancel',
         'add_files': 'Add files…', 'add_folder': 'Add folder…',
         'remove': 'Remove selected', 'clear': 'Clear',
         'repair': 'Repair', 'stop': 'Stop',
@@ -115,6 +160,28 @@ STRINGS = {
         'res_watertight': 'watertight', 'res_stage2_skipped': 'stage 2 skipped',
         'res_stage2_error': 'stage 2 error', 'res_holes': '%d hole(s)',
         'res_partial': 'partial', 'res_error': 'ERROR',
+        'res_extreme_removed_object': 'extreme removed all geometry',
+        # Recommendation reason sentences (localized from methods.reason_key).
+        'rec_reason_fast_light': 'light defect load',
+        'rec_reason_fast_deep': 'defects may need a deeper tier',
+        'rec_reason_deep_local': 'local re-mesh of small damaged regions',
+        'rec_reason_deep_full': 'full deep-repair ladder',
+        'rec_reason_components': '%d connected components',
+        'rec_reason_component_single': 'single connected component',
+        'rec_reason_no_si': 'no self-intersections',
+        'rec_reason_si': 'self-intersections present (%d)',
+        'rec_reason_ftetwild': 'large openings / heavy self-intersections',
+        'rec_reason_not_scan': 'not a single-sided open scan',
+        'rec_reason_poisson': 'single-sided open scan (%.2f)',
+        'rec_reason_not_relief': 'no relief-like opening',
+        'rec_reason_relief': 'relief / flat-back profile',
+        'rec_reason_no_damage': 'no holes/non-manifold to reconstruct',
+        'rec_reason_proxy': 'holes/non-manifold/debris with a mostly healthy surface',
+        'rec_reason_no_repeat': 'no repeated pattern detected',
+        'rec_reason_repeat': 'repeated pattern (%.2f)',
+        'rec_reason_not_implemented': 'not implemented yet',
+        'rec_reason_template': 'template %s',
+        'method_note_back_surface': 'back surface estimated',
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
         'issue_malformed': 'Malformed input', 'issue_error': 'Error',
@@ -447,7 +514,47 @@ STRINGS = {
     },
     'tr': {
         'app_title': 'Sutura',
-        'col_file': 'Dosya', 'col_result': 'Sonuç',
+        'col_file': 'Dosya', 'col_result': 'Sonuç', 'col_method': 'Yöntem',
+        'col_method_tip': 'Bir dosyaya sağ tıklayarak analiz edin ve onarım yöntemlerini etiketleyin.',
+        'menu_analyze': 'Analiz et', 'menu_analyze_first': 'Önce analiz et',
+        'menu_recommended': 'Önerilen yöntemler', 'menu_use_method': 'Yöntem kullan',
+        'menu_engines': 'Harici motorlar', 'menu_clear_tags': 'Etiketleri temizle (Otomatik)',
+        'menu_unavailable': 'Kullanılamıyor: %s',
+        'menu_needs_input': 'Kullanıcı girdisi gerekir (henüz seçilemez)',
+        'menu_no_engines': 'Yapılandırılmış harici motor yok',
+        'engine_tag_disabled': 'devre dışı', 'engine_tag_unavailable': 'bulunamadı',
+        'engine_tag_tip': 'Harici motor (yerleşim: %s)',
+        'method_auto': 'Otomatik', 'method_auto_rec': 'Otomatik (öneri #%d %s %d%%)',
+        'analyze_methods_running': 'Yöntemler analiz ediliyor…',
+        'analyze_methods_n': 'Yöntemler analiz ediliyor… %d/%d',
+        'method_analysis_failed': 'Yöntem analizi başarısız: %s',
+        'report_methods_header': 'Yöntemler:',
+        'report_method_used': 'Kullanılan yöntem:',
+        'method_source_auto_baseline': 'otomatik, temel',
+        'method_source_auto_escalated': 'otomatik, yükseltildi',
+        'method_source_tagged': 'etiketli',
+        'repair_log_method_used': 'Kullanılan yöntem: %s',
+        'repair_log_method_tried': 'Denenen yöntemler: %s',
+        'method_name_fast': 'Hızlı temizlik',
+        'method_name_deep_local': 'Yerel derin onarım',
+        'method_name_deep_full': 'Tam derin onarım',
+        'method_name_join_components': 'Bileşenleri birleştir',
+        'method_name_autorefine': 'Kendini kesme onarımı (SI)',
+        'method_name_indirect_autorefine': 'Dolaylı kesin onarım (SI)',
+        'method_name_ftetwild': 'fTetWild zarfı',
+        'method_name_poisson_close': 'Poisson kapatma',
+        'method_name_flat_back_close': 'Düz arka kapatma',
+        'method_name_proxy_template': 'Vekil şablon eşleme',
+        'method_name_repeat_auto': 'Yineleme farkında otomatik',
+        'method_name_repeat_manual': 'Yineleme farkında elle',
+        'repeat_pick_title': 'Yinelenen ögeleri seç',
+        'repeat_pick_source': 'Kopyalanacak SAĞLAM ögeye tıklayın',
+        'repeat_pick_target': 'Şimdi değiştirilecek HASARLI ögeye tıklayın',
+        'repeat_pick_ready': 'İki öge de seçildi.',
+        'repeat_pick_loading': 'Nesne yükleniyor…',
+        'repeat_pick_failed': 'Seçim için nesne yüklenemedi',
+        'repeat_pick_reset': 'Seçimi sıfırla',
+        'dlg_cancel': 'İptal',
         'add_files': 'Dosya ekle…', 'add_folder': 'Klasör ekle…',
         'remove': 'Seçileni kaldır', 'clear': 'Temizle',
         'repair': 'Onar', 'stop': 'Durdur',
@@ -500,6 +607,28 @@ STRINGS = {
         'res_watertight': 'su geçirmez', 'res_stage2_skipped': 'stage 2 atlandı',
         'res_stage2_error': 'stage 2 hatası', 'res_holes': '%d delik',
         'res_partial': 'kısmi', 'res_error': 'HATA',
+        'res_extreme_removed_object': 'extreme tüm geometriyi sildi',
+        # Öneri gerekçeleri (methods.reason_key'den yerelleştirilir).
+        'rec_reason_fast_light': 'hafif kusur yükü',
+        'rec_reason_fast_deep': 'kusurlar daha derin bir katman gerektirebilir',
+        'rec_reason_deep_local': 'küçük hasarlı bölgelerin yerel yeniden örgüsü',
+        'rec_reason_deep_full': 'tam derin onarım merdiveni',
+        'rec_reason_components': '%d bağlı bileşen',
+        'rec_reason_component_single': 'tek bağlı bileşen',
+        'rec_reason_no_si': 'kendisiyle-kesişim yok',
+        'rec_reason_si': 'kendisiyle-kesişim var (%d)',
+        'rec_reason_ftetwild': 'büyük açıklıklar / yoğun kendisiyle-kesişim',
+        'rec_reason_not_scan': 'tek yönlü açık tarama değil',
+        'rec_reason_poisson': 'tek yönlü açık tarama (%.2f)',
+        'rec_reason_not_relief': 'kabartma benzeri açıklık yok',
+        'rec_reason_relief': 'kabartma / düz arka profili',
+        'rec_reason_no_damage': 'yeniden kurulacak delik/non-manifold yok',
+        'rec_reason_proxy': 'çoğunlukla sağlıklı yüzeyli delik/non-manifold/döküntü',
+        'rec_reason_no_repeat': 'yineleme deseni bulunamadı',
+        'rec_reason_repeat': 'yineleme deseni (%.2f)',
+        'rec_reason_not_implemented': 'henüz uygulanmadı',
+        'rec_reason_template': 'şablon %s',
+        'method_note_back_surface': 'arka yüzey tahmin edildi',
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
         'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
@@ -839,6 +968,45 @@ def _t(key, *args):
     return s % args if args else s
 
 
+def _method_name(num):
+    """Localized name of a registry method (falls back to the registry name)."""
+    m = methods.get_method(num)
+    if m is None:
+        return '#%s' % num
+    key = 'method_name_' + m.id
+    return _t(key) if key in STRINGS['en'] else m.name
+
+
+_METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface'}
+
+
+def _method_note(note):
+    """Localized method-adoption note (falls back to the report text)."""
+    key = _METHOD_NOTE_KEYS.get(note)
+    return _t(key) if key else note
+
+
+def _rec_reason(rec):
+    """Localized recommendation reason, falling back to the English sentence."""
+    key = rec.get('reason_key')
+    if key and key in STRINGS['en']:
+        try:
+            text = _t(key, *(rec.get('reason_args') or []))
+        except Exception:  # noqa: BLE001 - never crash on a bad format arg
+            return rec.get('reason') or ''
+        if rec.get('template'):
+            text += '; ' + _t('rec_reason_template', rec['template'])
+        return text
+    return rec.get('reason') or ''
+
+
+def _score_bar(score, width=8):
+    """A tiny text score bar (filled/empty blocks) for menu labels/tooltips."""
+    value = max(0.0, min(1.0, float(score or 0.0)))
+    filled = int(round(value * width))
+    return '\u2588' * filled + '\u2591' * (width - filled)
+
+
 def _bundle_tool(name):
     """Path of a sibling executable in a PyInstaller bundle, or None.
 
@@ -998,11 +1166,22 @@ def parse_cli_output(out, err):
 
 
 def summarize(data):
-    """Short per-file result label, using the shared classifier, localized."""
+    """Short per-file result label, using the shared classifier, localized.
+
+    Appends the method that produced the result when the report carries one
+    (``method_used``; P0 registry / executed via the CLI ``--methods``)."""
     _cat, _issues, key = classification.classify(data)
     if key == 'holes':
-        return _t('res_holes', *classification.summary_args(data))
-    return _t('res_' + key)
+        label = _t('res_holes', *classification.summary_args(data))
+    else:
+        label = _t('res_' + key)
+    mu = data.get('method_used') or {}
+    if mu.get('num') is not None:
+        text = '%s \u00b7 #%s %s' % (label, mu['num'], _method_name(mu['num']))
+        if mu.get('note'):
+            text += ' (%s)' % _method_note(mu['note'])
+        return text
+    return label
 
 
 def format_report(data):
@@ -1072,6 +1251,30 @@ def format_report(data):
                 s1o.get('holes_remaining', 0), 'YES' if s1o.get('two_manifold') else 'NO'))
             if rep.get('unit_warning'):
                 lines.append('    WARNING: %s' % rep.get('unit_hint'))
+    mu = data.get('method_used') or {}
+    tried = data.get('methods_tried') or []
+    if mu.get('num') is not None or tried:
+        lines.append('')
+        lines.append(_t('report_methods_header'))
+        if mu.get('num') is not None:
+            src = mu.get('source')
+            src_key = 'method_source_' + src if src else ''
+            src_label = (_t(src_key) if src_key in STRINGS['en'] else (src or ''))
+            note = mu.get('note')
+            used = '  %s #%s %s' % (_t('report_method_used'), mu['num'],
+                                    _method_name(mu['num']))
+            if src_label:
+                used += ' (%s)' % src_label
+            if note:
+                used += ' \u2014 %s' % note
+            lines.append(used)
+        for t in tried:
+            num = t.get('num')
+            name = _method_name(num) if num is not None else '?'
+            outcome = t.get('outcome') or '?'
+            reason = t.get('reason') or ''
+            lines.append('    #%s %s: %s%s' % (
+                num, name, outcome, (' \u2014 %s' % reason) if reason else ''))
     return '\n'.join(lines)
 
 
@@ -1123,7 +1326,8 @@ class RepairWorker(QThread):
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
-                 intensity='balanced', parent=None):
+                 intensity='balanced', methods_by_path=None,
+                 engines_by_path=None, repeat_points_by_path=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._ftetwild_optimize = ftetwild_optimize
@@ -1138,6 +1342,10 @@ class RepairWorker(QThread):
         self._autorefine = autorefine
         self._ftetwild = ftetwild
         self._indirect_autorefine = indirect_autorefine
+        # P3 per-file tags: path -> ordered method numbers / engine names.
+        self._methods_by_path = dict(methods_by_path or {})
+        self._engines_by_path = dict(engines_by_path or {})
+        self._repeat_points_by_path = dict(repeat_points_by_path or {})
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -1195,6 +1403,19 @@ class RepairWorker(QThread):
                 args.append('--experimental-indirect-autorefine')
             if self._ftetwild_optimize:
                 args.append('--ftetwild-optimize')
+            method_nums = self._methods_by_path.get(path)
+            if method_nums:
+                args += ['--methods', ','.join(str(n) for n in method_nums)]
+            engine_names = self._engines_by_path.get(path)
+            if engine_names:
+                args += ['--engines', ','.join(engine_names)]
+            if method_nums and 12 in method_nums:
+                pts = self._repeat_points_by_path.get(path)
+                if pts:
+                    args += ['--repeat-source',
+                             ','.join('%g' % c for c in pts[0])]
+                    args += ['--repeat-target',
+                             ','.join('%g' % c for c in pts[1])]
             args.append(path)
             self._proc = subprocess.Popen(
                 args,
@@ -1312,6 +1533,59 @@ class AnalyzeWorker(QThread):
         elif 'error' in val and 'error' not in result:
             result['error'] = val['error']
         return result
+
+
+class MethodAnalyzeWorker(QThread):
+    """Runs the read-only ``--analyze`` (per-object analysis + ranked method
+    recommendations + external engines) for each file, sequentially, in a
+    background thread. Same subprocess pattern as AnalyzeWorker: the CLI does
+    all the pymeshlab work, so the GUI process never imports it. Never writes
+    or modifies anything."""
+
+    file_done = Signal(str, object)      # path, analyze result dict
+    progress = Signal(int, int)          # current, total
+    all_done = Signal(bool)              # cancelled
+
+    def __init__(self, files, edge_tiebreak=False, parent=None):
+        super().__init__(parent)
+        self._files = list(files)
+        self._edge_tiebreak = edge_tiebreak
+        self._cancelled = False
+        self._proc = None
+
+    def cancel(self):
+        self._cancelled = True
+        if self._proc is not None and self._proc.poll() is None:
+            self._proc.terminate()
+
+    def run(self):
+        n = len(self._files)
+        for idx, path in enumerate(self._files, 1):
+            if self._cancelled:
+                self.file_done.emit(path, {})
+                continue
+            self.file_done.emit(path, self._analyze_one(path))
+            self.progress.emit(idx, n)
+        self.all_done.emit(self._cancelled)
+
+    def _analyze_one(self, path):
+        if SUTURA_CMD is None:
+            return {'error': 'sutura not found: no $SUTURA, no '
+                             '~/.local/bin/sutura, and no repair.py next to '
+                             'the GUI'}
+        args = [*SUTURA_CMD, '--analyze']
+        if self._edge_tiebreak:
+            args.append('--experimental-edge-tiebreak')
+        args.append(path)
+        try:
+            self._proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            out, err = self._proc.communicate(timeout=600)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return {'error': 'could not run --analyze: %s' % e}
+        finally:
+            self._proc = None
+        return parse_cli_output(out, err)
 
 
 class HeatmapWorker(QThread):
@@ -1472,6 +1746,159 @@ class ViewerDataWorker(QThread):
             except OSError:
                 pass
         self.done.emit(self._path, data)
+
+
+class RepeatPickerWorker(QThread):
+    """Loads the method-12 picker mesh (npz) in a subprocess.
+
+    Same isolation rule as the other workers: pymeshlab stays out of the GUI
+    process. Runs ``repeat_picker_render.py`` and loads the resulting
+    ``verts``/``tris`` arrays back into a dict. Never imports pymeshlab.
+    """
+
+    done = Signal(str, object)      # path, {verts, tris}
+    failed = Signal(str, str)       # path, message
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._path = path
+
+    def run(self):
+        renderer = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'repeat_picker_render.py')
+        tmpdir = tempfile.mkdtemp(prefix='sutura-rp-')
+        outfile = os.path.join(tmpdir, 'picker.npz')
+        try:
+            proc = subprocess.run(
+                [*_script_cmd('repeat-picker-render', renderer), self._path,
+                 outfile],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+            if proc.returncode != 0 or not os.path.getsize(outfile):
+                self.failed.emit(self._path, _t('repeat_pick_failed'))
+                return
+            with np.load(outfile) as d:
+                data = {k: d[k] for k in d.files}
+        except (OSError, subprocess.TimeoutExpired):
+            self.failed.emit(self._path, _t('repeat_pick_failed'))
+            return
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        self.done.emit(self._path, data)
+
+
+class _RepeatPickerView(QWidget):
+    """Static CPU-rendered mesh view that reports the face the user clicks.
+
+    Renders with ``heatmap`` (pure numpy + QPainter, no OpenGL draw calls) and
+    keeps a parallel per-pixel face-index image so a click maps back to the
+    frontmost face; the picked 3D point is that face's centroid. First click =
+    healthy source, second click = damaged target.
+    """
+
+    W, H = 640, 480
+
+    def __init__(self, data, parent=None):
+        super().__init__(parent)
+        self.verts = np.asarray(data['verts'], dtype=np.float64)
+        self.tris = np.asarray(data['tris'], dtype=np.int64)
+        frame = shared_frame([self.verts], self.W, self.H, 24)
+        self.ctx = prepare_render(self.verts, self.tris, w=self.W, h=self.H,
+                                  frame=frame)
+        self._base = QPixmap.fromImage(
+            draw_frame(self.ctx, rotation=_ISOMETRIC))
+        self._ids = draw_face_index(self.ctx, rotation=_ISOMETRIC)
+        self.source_point = None
+        self.target_point = None
+        self._source_px = None
+        self._target_px = None
+        self.on_change = None
+        self.setFixedSize(self.W, self.H)
+        self.setCursor(Qt.CrossCursor)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._base)
+        for px, color in ((self._source_px, QColor(46, 204, 113)),
+                          (self._target_px, QColor(235, 60, 70))):
+            if px is None:
+                continue
+            p.setPen(QPen(color, 3))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPoint(int(px[0]), int(px[1])), 9, 9)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        pos = event.position()
+        x, y = int(pos.x()), int(pos.y())
+        if not (0 <= x < self.W and 0 <= y < self.H):
+            return
+        fid = int(self._ids.pixel(x, y)) & 0xFFFFFF
+        if fid <= 0 or fid > len(self.tris):
+            return
+        point = tuple(float(c) for c in
+                      self.verts[self.tris[fid - 1]].mean(axis=0))
+        if self.source_point is None:
+            self.source_point, self._source_px = point, (x, y)
+        elif self.target_point is None:
+            self.target_point, self._target_px = point, (x, y)
+        else:
+            self.source_point, self._source_px = point, (x, y)
+            self.target_point, self._target_px = None, None
+        self.update()
+        if self.on_change:
+            self.on_change()
+
+
+class RepeatPickerDialog(QDialog):
+    """Pick the method-12 source (healthy) and target (damaged) 3D points."""
+
+    def __init__(self, data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_t('repeat_pick_title'))
+        self.view = _RepeatPickerView(data, self)
+        self.view.on_change = self._on_change
+        self.prompt = QLabel(_t('repeat_pick_source'))
+        self.btn_reset = QPushButton(_t('repeat_pick_reset'))
+        self.btn_reset.clicked.connect(self._reset)
+        self.btn_ok = QPushButton('OK')
+        self.btn_ok.setEnabled(False)
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_cancel = QPushButton(_t('dlg_cancel'))
+        self.btn_cancel.clicked.connect(self.reject)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.btn_reset)
+        buttons.addStretch(1)
+        buttons.addWidget(self.btn_ok)
+        buttons.addWidget(self.btn_cancel)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.view)
+        layout.addWidget(self.prompt)
+        layout.addLayout(buttons)
+
+    def _reset(self):
+        self.view.source_point = None
+        self.view.target_point = None
+        self.view._source_px = None
+        self.view._target_px = None
+        self.view.update()
+        self._on_change()
+
+    def _on_change(self):
+        have_src = self.view.source_point is not None
+        have_tgt = self.view.target_point is not None
+        if not have_src:
+            self.prompt.setText(_t('repeat_pick_source'))
+        elif not have_tgt:
+            self.prompt.setText(_t('repeat_pick_target'))
+        else:
+            self.prompt.setText(_t('repeat_pick_ready'))
+        self.btn_ok.setEnabled(have_src and have_tgt)
+
+    def points(self):
+        return self.view.source_point, self.view.target_point
 
 
 class _ClickableLabel(QLabel):
@@ -2589,6 +3016,22 @@ class OptionsDialog(QDialog):
             w.wait(6000)
 
 
+class _KeepOpenMenu(QMenu):
+    """A QMenu that does not close when a checkable action is clicked.
+
+    Used by the "Use method" submenu so several methods can be checked in the
+    order that becomes the try-order; the menu closes on a normal (non
+    checkable) action, Escape, or a click outside."""
+
+    def mouseReleaseEvent(self, event):
+        action = self.activeAction()
+        if action is not None and action.isEnabled() and action.isCheckable():
+            action.trigger()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class MainWindow(QMainWindow):
     MESH_EXTS = ('.stl', '.3mf')
 
@@ -2615,6 +3058,14 @@ class MainWindow(QMainWindow):
         self._output_by_path = {}
         self._repair_log_by_path = {} # path -> repair result dict (FAZ11 log)
         self._analysis_by_path = {}   # path -> analyze worker result dict
+        # P3 method tagging: per-file ordered tags and the --analyze result.
+        # A tag is ('method', num) or ('engine', name); list order = try-order.
+        self._method_tags_by_path = {}
+        self._method_analysis_by_path = {}
+        self._repeat_points_by_path = {}   # path -> (source_xyz, target_xyz)
+        self._repeat_picker_data = {}       # path -> {verts, tris} cache
+        self._method_worker = None
+        self._repeat_picker_worker = None
         self._heatmap_cache = {}      # path -> {size_key: QPixmap}
         self.heatmap_worker = None
         self._heatmap_zoom = None
@@ -2649,10 +3100,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(2)
-        self.tree.setHeaderLabels([_t('col_file'), _t('col_result')])
-        self.tree.setColumnWidth(0, 580)
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(
+            [_t('col_file'), _t('col_method'), _t('col_result')])
+        self.tree.setColumnWidth(0, 330)
+        self.tree.setColumnWidth(1, 300)
+        self.tree.setColumnWidth(2, 140)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         layout.addWidget(self.tree)
 
         buttons = QHBoxLayout()
@@ -2965,6 +3421,12 @@ class MainWindow(QMainWindow):
         """Wait for background threads so none is still running when the
         interpreter exits (a running QThread at exit aborts the process)."""
         self._options_dialog.stop_workers()
+        if self._method_worker is not None and self._method_worker.isRunning():
+            self._method_worker.cancel()
+            self._method_worker.wait(6000)
+        if (self._repeat_picker_worker is not None
+                and self._repeat_picker_worker.isRunning()):
+            self._repeat_picker_worker.wait(6000)
         self._stop_update_check()
         super().closeEvent(event)
 
@@ -3147,9 +3609,10 @@ class MainWindow(QMainWindow):
         if not path or path in self.files:
             return False
         self.files.append(path)
-        item = QTreeWidgetItem([path, ''])
+        item = QTreeWidgetItem([path, _t('method_auto'), ''])
         self.tree.addTopLevelItem(item)
         self._item_by_path[path] = item
+        item.setToolTip(1, _t('col_method_tip'))
         # select the newly added file so the analysis/defect panels update to
         # it (QTreeWidget only auto-selects the FIRST item implicitly)
         self.tree.setCurrentItem(item)
@@ -3197,6 +3660,10 @@ class MainWindow(QMainWindow):
             if path in self.files:
                 self.files.remove(path)
             self._item_by_path.pop(path, None)
+            self._method_tags_by_path.pop(path, None)
+            self._method_analysis_by_path.pop(path, None)
+            self._repeat_points_by_path.pop(path, None)
+            self._repeat_picker_data.pop(path, None)
             self._heatmap_cache.pop(path, None)
             self._output_by_path.pop(path, None)
             self._unit_by_path.pop(path, None)
@@ -3209,6 +3676,10 @@ class MainWindow(QMainWindow):
     def clear_files(self):
         self.files.clear()
         self._item_by_path.clear()
+        self._method_tags_by_path.clear()
+        self._method_analysis_by_path.clear()
+        self._repeat_points_by_path.clear()
+        self._repeat_picker_data.clear()
         self._heatmap_cache.clear()
         self._output_by_path.clear()
         self._unit_by_path.clear()
@@ -3247,7 +3718,7 @@ class MainWindow(QMainWindow):
         self._declined_by_path = {}
         self._rerun = False
         for i in range(self.tree.topLevelItemCount()):
-            self.tree.topLevelItem(i).setText(1, '')
+            self.tree.topLevelItem(i).setText(2, '')
         self._batch_results = []
         self._defects_by_path = {}
         self._type_by_path = {}
@@ -3272,6 +3743,22 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.status.setText(_t('repairing'))
 
+        # Per-file tags (P3): ordered method numbers and engine names.
+        methods_by_path = {}
+        engines_by_path = {}
+        repeat_points_by_path = {}
+        for path in files:
+            tags = self._method_tags_by_path.get(path) or []
+            nums = [ref for kind, ref in tags if kind == 'method']
+            names = [ref for kind, ref in tags if kind == 'engine']
+            if nums:
+                methods_by_path[path] = nums
+            if names:
+                engines_by_path[path] = names
+            pts = self._repeat_points_by_path.get(path)
+            if pts:
+                repeat_points_by_path[path] = pts
+
         self.worker = RepairWorker(files, self._repair_mode,
                                    self._repair_profile, force=force,
                                    max_geom_change=self._max_geom_change,
@@ -3283,6 +3770,9 @@ class MainWindow(QMainWindow):
                                    indirect_autorefine=self._indirect_autorefine,
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
                                    intensity=self._intensity,
+                                   methods_by_path=methods_by_path,
+                                   engines_by_path=engines_by_path,
+                                   repeat_points_by_path=repeat_points_by_path,
                                    parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
@@ -3378,6 +3868,9 @@ class MainWindow(QMainWindow):
     def stop(self):
         if self.worker is not None:
             self.worker.cancel()
+            self.btn_stop.setEnabled(False)
+        if self._method_worker is not None:
+            self._method_worker.cancel()
             self.btn_stop.setEnabled(False)
 
     def _on_profile_changed(self, index):
@@ -3572,8 +4065,9 @@ class MainWindow(QMainWindow):
     def _on_file_done(self, path, summary, report, data):
         item = self._item_by_path.get(path)
         if item is not None:
-            item.setText(1, summary)
+            item.setText(2, summary)
         if data:
+            self._refresh_method_cell(path)
             self._batch_results.append(data)
             self._defects_by_path[path] = data.get('defects')
             self._type_by_path[path] = (data.get('detected_type'),
@@ -3734,7 +4228,300 @@ class MainWindow(QMainWindow):
         if data.get('objects') is not None and data.get('objects_watertight') is not None:
             lines.append(_t('repair_log_objects', data['objects_watertight'],
                             data.get('objects')))
+        mu = data.get('method_used') or {}
+        if mu.get('num') is not None:
+            lines.append(_t('repair_log_method_used',
+                            _method_name(mu['num'])))
+        tried = data.get('methods_tried') or []
+        nums = [t.get('num') for t in tried if t.get('num') is not None]
+        if len(nums) > 1:
+            lines.append(_t('repair_log_method_tried',
+                            ' \u2192 '.join('#%s' % n for n in nums)))
         self.repair_log.setPlainText('\n'.join(lines))
+
+    # --- method tagging / per-file recommendations (P3) --------------------
+    def _is_tagged(self, path, kind, ref):
+        return (kind, ref) in (self._method_tags_by_path.get(path) or [])
+
+    def _primary_path(self, paths):
+        cur = self._current_path()
+        if cur in paths:
+            return cur
+        return paths[0] if paths else None
+
+    def _method_cell_text(self, path):
+        tags = self._method_tags_by_path.get(path) or []
+        if tags:
+            parts = []
+            for kind, ref in tags:
+                parts.append('#%d' % ref if kind == 'method' else '@%s' % ref)
+            return ' \u2192 '.join(parts)
+        data = self._method_analysis_by_path.get(path) or {}
+        recs = data.get('recommendations') or []
+        if recs:
+            r = recs[0]
+            num = r.get('num')
+            pct = int(round(float(r.get('score') or 0.0) * 100))
+            return _t('method_auto_rec', num, _method_name(num), pct)
+        return _t('method_auto')
+
+    def _method_cell_tip(self, path):
+        lines = []
+        data = self._method_analysis_by_path.get(path) or {}
+        recs = data.get('recommendations') or []
+        if recs:
+            lines.append(_t('menu_recommended') + ':')
+            for r in recs:
+                num = r.get('num')
+                lines.append('  #%s %s  %s %d%%  %s' % (
+                    num, _method_name(num), _score_bar(r.get('score')),
+                    int(round(float(r.get('score') or 0.0) * 100)),
+                    _rec_reason(r)))
+        tags = self._method_tags_by_path.get(path) or []
+        if tags:
+            lines.append(_t('menu_use_method') + ':')
+            for i, (kind, ref) in enumerate(tags, 1):
+                if kind == 'method':
+                    lines.append('  %d. #%d %s' % (i, ref, _method_name(ref)))
+                else:
+                    lines.append('  %d. @%s' % (i, ref))
+        if not lines:
+            lines.append(_t('col_method_tip'))
+        return '\n'.join(lines)
+
+    def _refresh_method_cell(self, path):
+        item = self._item_by_path.get(path)
+        if item is None:
+            return
+        item.setText(1, self._method_cell_text(path))
+        item.setToolTip(1, self._method_cell_tip(path))
+
+    def _clear_tags(self, paths):
+        for path in paths:
+            self._method_tags_by_path.pop(path, None)
+            self._refresh_method_cell(path)
+
+    def _on_tag_toggle(self, paths, kind, ref):
+        """Toggle one tag on every selected path (direction from the primary)."""
+        primary = self._primary_path(paths)
+        has = self._is_tagged(primary, kind, ref)
+        for path in paths:
+            tags = self._method_tags_by_path.get(path)
+            if tags is None:
+                tags = []
+                self._method_tags_by_path[path] = tags
+            tags[:] = [t for t in tags if t != (kind, ref)]
+            if not has:
+                tags.append((kind, ref))
+            elif kind == 'method' and ref == 12:
+                # method 12 needs picked points; dropping the tag drops them too
+                self._repeat_points_by_path.pop(path, None)
+            if not tags:
+                self._method_tags_by_path.pop(path, None)
+            self._refresh_method_cell(path)
+
+    def _refresh_use_action(self, action, method, primary):
+        tags = self._method_tags_by_path.get(primary) or []
+        checked = ('method', method.num) in tags
+        action.setChecked(checked)
+        label = '#%d %s' % (method.num, _method_name(method.num))
+        if checked:
+            order = tags.index(('method', method.num)) + 1
+            label += '   \u2713 %d' % order
+        action.setText(label)
+
+    def _on_use_action(self, method, paths, primary, action, menu=None):
+        self._on_tag_toggle(paths, 'method', method.num)
+        primary = self._primary_path(paths) or primary
+        # Refresh EVERY checkable action, not just the clicked one: toggling a
+        # method off renumbers the order badges of the siblings (4.1).
+        targets = menu.actions() if menu is not None else [action]
+        for act in targets:
+            num = act.data()
+            sibling = methods.get_method(num) if num is not None else None
+            if sibling is not None:
+                self._refresh_use_action(act, sibling, primary)
+
+    def _build_recommended_menu(self, menu, paths, primary):
+        menu.setToolTipsVisible(True)
+        recs = (self._method_analysis_by_path.get(primary) or {}).get(
+            'recommendations') or []
+        if not recs:
+            act = menu.addAction(_t('menu_analyze_first'))
+            act.triggered.connect(lambda: self._analyze_methods(paths))
+            return
+        for rec in recs:
+            num = rec.get('num')
+            if num is None:
+                continue
+            pct = int(round(float(rec.get('score') or 0.0) * 100))
+            act = menu.addAction('#%d  %s  %s %d%%' % (
+                num, _method_name(num), _score_bar(rec.get('score')), pct))
+            act.setCheckable(True)
+            act.setChecked(self._is_tagged(primary, 'method', num))
+            act.setToolTip(_rec_reason(rec))
+            act.triggered.connect(
+                lambda checked=False, n=num: self._on_tag_toggle(
+                    paths, 'method', n))
+
+    def _build_use_method_menu(self, menu, paths, primary):
+        menu.setToolTipsVisible(True)
+        for method in methods.all_methods():
+            ok, reason = method.available()
+            act = menu.addAction('')
+            act.setCheckable(True)
+            act.setEnabled(ok)
+            if not ok:
+                act.setToolTip(_t('menu_unavailable', reason or ''))
+            else:
+                act.setToolTip(method.description)
+            act.setData(method.num)
+            if method.num == 12:
+                # method 12 needs the user to pick the source/target elements:
+                # open the picker instead of a plain toggle.
+                act.triggered.connect(
+                    lambda checked=False, m=method, a=act, mn=menu: (
+                        self._pick_repeat_points(m, paths, primary, a, mn)))
+            else:
+                act.triggered.connect(
+                    lambda checked=False, m=method, a=act, mn=menu: (
+                        self._on_use_action(m, paths, primary, a, mn)))
+            self._refresh_use_action(act, method, primary)
+
+    def _pick_repeat_points(self, method, paths, primary, action, menu):
+        """Method 12: load the object (subprocess) then open the picker."""
+        path = self._primary_path(paths)
+        if path is None:
+            return
+        data = self._repeat_picker_data.get(path)
+        if data is not None:
+            self._open_repeat_picker(path, data, method, paths, primary, menu)
+            return
+        if (self._repeat_picker_worker is not None
+                and self._repeat_picker_worker.isRunning()):
+            return
+        self.status.setText(_t('repeat_pick_loading'))
+        worker = RepeatPickerWorker(path, self)
+
+        def _done(p, d):
+            self._repeat_picker_data[p] = d
+            self._open_repeat_picker(p, d, method, paths, primary, menu)
+
+        worker.done.connect(_done)
+        worker.failed.connect(lambda _p, msg: self._log(msg))
+        self._repeat_picker_worker = worker
+        worker.start()
+
+    def _open_repeat_picker(self, path, data, method, paths, primary, menu):
+        if data.get('verts') is None or len(data.get('tris', [])) == 0:
+            self._log(_t('repeat_pick_failed'))
+            return
+        dlg = RepeatPickerDialog(data, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        src, tgt = dlg.points()
+        if src is None or tgt is None:
+            return
+        self._repeat_points_by_path[path] = (src, tgt)
+        if not self._is_tagged(path, 'method', method.num):
+            self._on_tag_toggle(paths, 'method', method.num)
+        primary = self._primary_path(paths) or primary
+        for act in menu.actions():
+            num = act.data()
+            sibling = methods.get_method(num) if num is not None else None
+            if sibling is not None:
+                self._refresh_use_action(act, sibling, primary)
+
+    def _build_engines_menu(self, menu, paths, primary):
+        menu.setToolTipsVisible(True)
+        engines = methods.external_engines()
+        if not engines:
+            act = menu.addAction(_t('menu_no_engines'))
+            act.setEnabled(False)
+            return
+        for engine in engines:
+            name = engine.get('name')
+            usable = bool(engine.get('enabled')) and bool(engine.get('available'))
+            label = name
+            if not engine.get('enabled'):
+                label += '  (%s)' % _t('engine_tag_disabled')
+            elif not engine.get('available'):
+                label += '  (%s)' % _t('engine_tag_unavailable')
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(self._is_tagged(primary, 'engine', name))
+            act.setEnabled(usable)
+            act.setToolTip(_t('engine_tag_tip', engine.get('placement') or ''))
+            act.triggered.connect(
+                lambda checked=False, n=name: self._on_tag_toggle(
+                    paths, 'engine', n))
+
+    def _build_context_menu(self, paths):
+        """Build (do not show) the right-click menu for the given paths."""
+        if not paths:
+            return None
+        primary = paths[0]
+        menu = QMenu(self.tree)
+        menu.setToolTipsVisible(True)
+        act = menu.addAction(_t('menu_analyze'))
+        act.triggered.connect(lambda: self._analyze_methods(paths))
+        menu.addSeparator()
+        self._build_recommended_menu(menu.addMenu(_t('menu_recommended')),
+                                     paths, primary)
+        use_menu = _KeepOpenMenu(_t('menu_use_method'), menu)
+        menu.addMenu(use_menu)
+        self._build_use_method_menu(use_menu, paths, primary)
+        self._build_engines_menu(menu.addMenu(_t('menu_engines')),
+                                 paths, primary)
+        menu.addSeparator()
+        act_clear = menu.addAction(_t('menu_clear_tags'))
+        act_clear.triggered.connect(lambda: self._clear_tags(paths))
+        return menu
+
+    def _on_tree_context_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        paths = [it.text(0) for it in self.tree.selectedItems()
+                 if it.text(0) in self._item_by_path]
+        if item is not None and item.text(0) in self._item_by_path:
+            if item.text(0) not in paths:
+                paths = [item.text(0)]
+        menu = self._build_context_menu(paths)
+        if menu is not None:
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _analyze_methods(self, paths):
+        if not paths or self._method_worker is not None or self.worker is not None:
+            return
+        self.btn_analyze.setEnabled(False)
+        self.btn_repair.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.progress.setRange(0, len(paths))
+        self.progress.setValue(0)
+        self.status.setText(_t('analyze_methods_running'))
+        self._method_worker = MethodAnalyzeWorker(
+            paths, self._edge_tiebreak, self)
+        self._method_worker.file_done.connect(self._on_method_analysis_done)
+        self._method_worker.progress.connect(self._on_method_analysis_progress)
+        self._method_worker.all_done.connect(self._on_method_analysis_all_done)
+        self._method_worker.start()
+
+    def _on_method_analysis_done(self, path, data):
+        if data and 'error' not in data:
+            self._method_analysis_by_path[path] = data
+        elif data and data.get('error'):
+            self._log(_t('method_analysis_failed', data['error']))
+        self._refresh_method_cell(path)
+
+    def _on_method_analysis_progress(self, current, total):
+        self.progress.setValue(current)
+        self.status.setText(_t('analyze_methods_n', current, total))
+
+    def _on_method_analysis_all_done(self, cancelled):
+        self._method_worker = None
+        self.status.setText(_t('done_stopped') if cancelled else _t('done'))
+        self.btn_stop.setEnabled(False)
+        self.btn_analyze.setEnabled(bool(self.files))
+        self.btn_repair.setEnabled(bool(self.files))
 
     # --- heatmap -----------------------------------------------------------
     def _refresh_heatmap_thumb(self, path):
@@ -4115,8 +4902,9 @@ class MainWindow(QMainWindow):
         self.log.verticalScrollBar().setValue(self.log.verticalScrollBar().maximum())
 
     def _refresh_buttons(self):
-        self.btn_repair.setEnabled(bool(self.files) and self.worker is None)
-        self.btn_analyze.setEnabled(bool(self.files) and self.worker is None)
+        busy = self.worker is not None or self._method_worker is not None
+        self.btn_repair.setEnabled(bool(self.files) and not busy)
+        self.btn_analyze.setEnabled(bool(self.files) and not busy)
 
 
 def main():
