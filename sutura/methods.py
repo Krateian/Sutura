@@ -107,6 +107,10 @@ class RepairMethod:
             verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
             **merged)
         out_v, out_t = repair.maybe_run_stage2(report, out_v, out_t, tmpdir)
+        # P-HONEST: same reload-honest verdict at this API exit point as the
+        # file-level orchestrator applies, so a caller that saves out_v/out_t
+        # cannot get a watertight claim the saved mesh would not honour.
+        repair.enforce_reload_verdict(report, out_v, out_t)
         report = dict(report)
         report['_verts'] = out_v
         report['_tris'] = out_t
@@ -535,11 +539,15 @@ def _evaluate(result, path, multi, in_objs, method):
     except Exception as e:  # noqa: BLE001
         rec['reason'] = 'cannot read output: %s' % e
         return rec
-    # A geometry-inventing method is judged on the reload-equivalent mesh (its
-    # adversarial case is exactly the coincident seam vertices the STL round
-    # trip welds, which would otherwise pass as watertight in memory).
-    _weld = bool(method is not None and method.invents_geometry)
-    holes, nm = _strict_holes_nm(out_objs, weld=_weld)
+    # Every method is judged on the reload-equivalent mesh (P-HONEST): the
+    # top-level verdict now never claims watertight unless the saved mesh is
+    # strict-watertight after the save/reload weld, so the registry's
+    # accept/reject guard must use the same check -- otherwise it would accept
+    # a candidate the top-level report then has to downgrade. In particular a
+    # baseline that fails the reload check counts as failed here, so the auto
+    # path escalates. (Previously the weld applied only to invents_geometry
+    # methods; geometry-inventing ones are still covered.)
+    holes, nm = _strict_holes_nm(out_objs, weld=True)
     rec['holes'] = holes
     rec['non_manifold'] = nm
     if holes or nm:

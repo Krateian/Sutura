@@ -2324,6 +2324,54 @@ def _repair_welded_topology(ml, verts, tris):
             np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
 
 
+def reload_strict_holes_nm(verts, tris):
+    """Strict (holes, non-manifold) on the STL save/reload-equivalent mesh.
+
+    Applies ``weld_reload_equivalent`` (positions cast to float32 with
+    exactly-coincident positions merged) and then ``defects.detect`` -- the
+    same strict metric the repair guards use, measured on the mesh the user
+    gets back after a save/reload rather than the in-memory index topology.
+    Pure numpy (no pymeshlab)."""
+    wv, wt = weld_reload_equivalent(verts, tris)
+    d = detect_defects(wv, wt)
+    return len(d['holes']), len(d['non_manifold'])
+
+
+def enforce_reload_verdict(report, verts, tris):
+    """Honest top-level verdict: never claim watertight for a mesh that is
+    not strict-watertight after the reload-equivalent weld (P-HONEST).
+
+    Only a report that currently claims watertight is considered: stage 1
+    two-manifold with no hole AND a successful stage-2 rebuild. If the saved
+    mesh fails the reload check, the fields ``classification.classify()``
+    reads are rewritten so the category can no longer be watertight, plus
+    explicit reload markers. A genuinely watertight mesh returns False with
+    NO report change, so its report and output stay byte-identical.
+    Returns True when the report was downgraded."""
+    if not isinstance(report, dict):
+        return False
+    s1 = report.get('stage1')
+    if not isinstance(s1, dict):
+        return False
+    s2 = report.get('stage2')
+    claims = (bool(s1.get('two_manifold'))
+              and s1.get('holes_remaining', 0) == 0
+              and bool(s2 and s2.get('ok')))
+    if not claims:
+        return False
+    holes, nm = reload_strict_holes_nm(verts, tris)
+    if holes == 0 and nm == 0:
+        return False
+    s1['reload_holes'] = int(holes)
+    s1['reload_non_manifold'] = int(nm)
+    s1['two_manifold'] = bool(nm == 0)
+    s1['holes_remaining'] = int(holes)
+    report['reload_watertight'] = False
+    if isinstance(s2, dict):
+        s2['watertight_after_reload'] = False
+    return True
+
+
 def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                    closing=None, proxy_template=False):
     """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
@@ -2797,6 +2845,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             ml, report, new_v, new_t, tmpdir, engines, engine_chain,
             triage_spec or triage.resolve_intensity(None))
 
+    # P-HONEST: the verdict must describe the mesh actually saved, not the
+    # in-memory index topology. The final mesh is chosen above; judge it in
+    # the save/reload-equivalent form and let that verdict win.
+    enforce_reload_verdict(report, new_v, new_t)
+
     save_mesh(out, new_v, new_t)
     return report
 
@@ -2922,6 +2975,10 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     new_v, new_t = run_after_stage2_engines(
                         ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
                         triage_spec or triage.resolve_intensity(None))
+                # P-HONEST: judge the per-object mesh actually written into the
+                # archive (reload-equivalent form) before the confidence/score
+                # below, so those see the honest verdict too.
+                enforce_reload_verdict(rep, new_v, new_t)
                 _rc = repair_confidence(rep)
                 rep['repair_confidence'] = _rc['score']
                 rep['repair_confidence_label'] = _rc['label']

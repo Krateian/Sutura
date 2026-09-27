@@ -281,6 +281,62 @@ def test_weld_reload_equivalent_flags_reload_non_manifold(tmp):
     assert nm == 0, nm
 
 
+def _two_cubes_sharing_edge():
+    """Two unit cubes sharing an edge, with that edge stored as separate
+    vertices in each cube (indices 0..7 and 8..15). The in-memory index
+    topology is two closed 2-manifolds (0 holes, 0 nm); after the STL
+    save/reload weld the shared edge has four incident faces (nm = 1)."""
+    va, ta = _cube()
+    vb = va + np.array([1, 1, 0], dtype=np.float32)
+    tb = ta + 8
+    v = np.vstack([va, vb]).astype(np.float32)
+    t = np.vstack([ta, tb]).astype(np.int32)
+    return v, t
+
+
+def test_reload_strict_holes_nm_flags_weld_only(tmp):
+    """reload_strict_holes_nm judges the save/reload-equivalent mesh: two
+    closed cubes that only share an edge after the float32 weld report nm=0
+    in memory but nm=1 after the weld (P-HONEST)."""
+    import defects
+    import methods
+    repair = methods._repair_mod()
+    v, t = _two_cubes_sharing_edge()
+    d = defects.detect(v, t)
+    assert len(d['holes']) == 0 and len(d['non_manifold']) == 0, d
+    assert repair.reload_strict_holes_nm(v, t) == (0, 1)
+
+
+def test_enforce_reload_verdict_downgrades_false_watertight(tmp):
+    """A report that claims watertight but whose saved mesh is not
+    strict-watertight after the reload weld must be downgraded; the fields
+    classify() reads are rewritten so the category can no longer be
+    watertight, and a genuinely watertight report is left untouched
+    (P-HONEST)."""
+    import classification
+    import methods
+    repair = methods._repair_mod()
+
+    def fake_watertight():
+        return {'stage1': {'two_manifold': True, 'holes_remaining': 0},
+                'stage2': {'ok': True}}
+
+    v, t = _two_cubes_sharing_edge()
+    rep = fake_watertight()
+    assert repair.enforce_reload_verdict(rep, v, t) is True
+    assert rep['stage1']['two_manifold'] is False, rep
+    assert rep['reload_watertight'] is False, rep
+    assert rep['stage2']['watertight_after_reload'] is False, rep
+    category, _issues, _key = classification.classify(rep)
+    assert category == 'warning', (category, rep)
+
+    # a clean, single closed cube is genuinely watertight: no report change
+    clean = fake_watertight()
+    cv, ct = _cube()
+    assert repair.enforce_reload_verdict(clean, cv, ct) is False
+    assert clean == fake_watertight(), clean
+
+
 # --- execution policy (fakes, no real pipeline run) -------------------------
 
 def test_auto_escalation_uses_a_ranked_method(tmp):

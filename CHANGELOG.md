@@ -69,6 +69,21 @@ All notable changes to this project are documented here.
   `--deep-repair`/`--no-fallback-ftetwild` keeps the previous behaviour with no
   escalation. New modules added to the install/updater/PyInstaller lists.
 
+### Fixed
+
+- **A repair is no longer reported watertight unless the SAVED mesh is
+  strict-watertight after reload.** STL stores no vertex sharing, so a result
+  that is watertight on the in-memory index topology can reload with
+  non-manifold edges once the loader re-welds coincident float32 positions
+  (measured on 7 of the 40 real-world samples, e.g. `thingi10k_1038439`). The
+  final mesh is now judged in its save/reload-equivalent form
+  (`repair.weld_reload_equivalent` + the strict holes/non-manifold check) and
+  that verdict overrides the report fields the classification reads, in the
+  single-mesh, per-object 3MF and registry paths; the method registry's
+  accept/reject guard uses the same check, so such a baseline counts as failed
+  and the auto path escalates. A genuinely reload-watertight mesh keeps its
+  report and output byte-identical.
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed
