@@ -218,6 +218,36 @@ def test_defensive_error_handling():
     print("  ✓ test_defensive_error_handling passed")
 
 
+def test_large_loop_flat_back():
+    """Verify size-guarded fast closing on a ~5000-vertex boundary loop (< 5 s)."""
+    n_boundary = 5000
+    theta = np.linspace(0, 2 * np.pi, n_boundary, endpoint=False)
+    x = np.cos(theta)
+    y = np.sin(theta)
+    z = 0.1 * np.cos(3 * theta)
+
+    center = np.array([[0.0, 0.0, 0.2]])
+    boundary_verts = np.column_stack([x, y, z])
+    verts = np.vstack([center, boundary_verts])
+
+    tris = []
+    for i in range(1, n_boundary + 1):
+        next_i = 1 if i == n_boundary else (i + 1)
+        tris.append([0, i, next_i])
+    tris = np.array(tris, dtype=np.int64)
+
+    t0 = time.time()
+    v_out, t_out, rep = cl.flat_back_close(verts, tris)
+    elapsed = time.time() - t0
+
+    assert rep['watertight'] is True, f"5000-vertex loop not watertight: {rep}"
+    assert elapsed < 5.0, f"Large loop closing took too long: {elapsed:.2f} s"
+
+    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
+    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    print(f"  ✓ test_large_loop_flat_back passed (5000-vertex loop in {elapsed:.3f} s)")
+
+
 def main():
     t0 = time.time()
     print("Running scan closing tests (tests/test_closing.py)...")
@@ -228,6 +258,7 @@ def main():
     test_flat_back_close_relief()
     test_flat_back_secondary_hole()
     test_non_convex_l_relief()
+    test_large_loop_flat_back()
     test_defensive_error_handling()
     elapsed = time.time() - t0
     print(f"\nAll tests passed in {elapsed:.2f} s (< 30 s target).")

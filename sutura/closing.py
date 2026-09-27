@@ -23,6 +23,7 @@ RELIEF_MIN_ONE_SIDED = 0.90  # Min fraction of vertices on one side of plane
 
 DEFAULT_FLAT_BACK_THICKNESS_REL = 0.005  # Default thickness = 0.005 * bbox_diag
 POISSON_DEFAULT_SCALE = 2.0  # Poisson octree scale padding to ensure bubble closes watertight
+EAR_CLIP_MAX_VERTICES = 1500  # Max loop size for O(n^2) ear clipping; larger loops use O(n) / O(n log n)
 
 
 def _referenced_only(verts, tris):
@@ -591,7 +592,7 @@ def flat_back_close(verts, tris, thickness=None):
             side_tris.append([v_curr, p_curr, v_next])
             side_tris.append([v_next, p_curr, p_next])
 
-        # Planar back cap via 2D ear clipping
+        # Planar back cap
         # Build 2D orthonormal basis (u_axis, v_axis) on plane
         u_axis = vh[0]
         u_axis = u_axis - np.dot(u_axis, n) * n
@@ -599,19 +600,56 @@ def flat_back_close(verts, tris, thickness=None):
         v_axis = np.cross(n, u_axis)
 
         pts_2d = np.column_stack([np.dot(loop_proj - c, u_axis), np.dot(loop_proj - c, v_axis)])
-        cap_local = _ear_clip_2d(pts_2d)
 
-        # Check cap winding: outward normal must point in -n
-        v0_cap = loop_proj[cap_local[0, 0]]
-        v1_cap = loop_proj[cap_local[0, 1]]
-        v2_cap = loop_proj[cap_local[0, 2]]
-        cap_normal = np.cross(v1_cap - v0_cap, v2_cap - v0_cap)
-        if np.dot(cap_normal, -n) > 0:
-            cap_tris = proj_indices[cap_local]
+        if n_loop <= EAR_CLIP_MAX_VERTICES:
+            # Small/moderate loops: pure-Python 2D ear clipping (handles non-convex shapes)
+            cap_local = _ear_clip_2d(pts_2d)
+
+            # Check cap winding: outward normal must point in -n
+            v0_cap = loop_proj[cap_local[0, 0]]
+            v1_cap = loop_proj[cap_local[0, 1]]
+            v2_cap = loop_proj[cap_local[0, 2]]
+            cap_normal = np.cross(v1_cap - v0_cap, v2_cap - v0_cap)
+            if np.dot(cap_normal, -n) > 0:
+                cap_tris = proj_indices[cap_local]
+            else:
+                cap_tris = proj_indices[cap_local[:, [0, 2, 1]]]
+
+            all_tris = np.vstack([in_t, side_tris, cap_tris])
         else:
-            cap_tris = proj_indices[cap_local[:, [0, 2, 1]]]
+            # Large loops (> 1500 vertices): O(n) / O(n log n) route
+            c_2d = np.mean(pts_2d, axis=0)
+            v_diff = pts_2d - c_2d
+            v_next = np.roll(v_diff, -1, axis=0)
+            cross_2d = v_diff[:, 0] * v_next[:, 1] - v_diff[:, 1] * v_next[:, 0]
+            is_star = bool(np.all(cross_2d > 1e-12) or np.all(cross_2d < -1e-12))
 
-        all_tris = np.vstack([in_t, side_tris, cap_tris])
+            if is_star:
+                # O(n) centroid fan: add centroid vertex at back plane
+                c_back = np.mean(loop_proj, axis=0)
+                c_idx = len(all_verts)
+                all_verts = np.vstack([all_verts, c_back[None, :]])
+                cap_tris = []
+                for i in range(n_loop):
+                    i_next = (i + 1) % n_loop
+                    p_curr = proj_indices[i]
+                    p_next = proj_indices[i_next]
+                    # Outward normal pointing -n
+                    cap_tris.append([p_next, p_curr, c_idx])
+                cap_tris = np.array(cap_tris, dtype=np.int32)
+                all_tris = np.vstack([in_t, side_tris, cap_tris])
+            else:
+                # Fallback for non-star large loops: PyMeshLab close-holes
+                ms_cap = ml.MeshSet()
+                open_bottom_tris = np.vstack([in_t, side_tris])
+                ms_cap.add_mesh(ml.Mesh(
+                    vertex_matrix=all_verts,
+                    face_matrix=np.asarray(open_bottom_tris, np.int32),
+                ))
+                ms_cap.apply_filter('meshing_close_holes', maxholesize=n_loop + 100)
+                out_cap = ms_cap.current_mesh()
+                all_verts = np.asarray(out_cap.vertex_matrix(), dtype=np.float64)
+                all_tris = np.asarray(out_cap.face_matrix(), dtype=np.int32)
 
         is_wt, err_msg = _check_validity(all_verts, all_tris)
 
