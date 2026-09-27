@@ -221,6 +221,64 @@ every field; editing a built-in preset offers *Save as new profile*, and
 The original file is never overwritten. Output is written with a `_fixed`
 suffix in the same directory.
 
+### Repair method registry and per-object recommendations
+
+`sutura/methods.py` is a stable registry of repair **methods**, each with a
+user-facing integer that never changes (`--list-methods` prints num, id,
+family and availability). Methods 1–7 are thin selectors over the existing
+pipeline (fast / local deep repair / full deep repair / join components /
+autorefine / indirect autorefine / fTetWild envelope); 8–10 are the standalone
+closing / proxy tiers — #8 screened-Poisson close and #9 flat-back close for
+single-sided scans and reliefs (`sutura/closing.py`), #10 proxy-template
+rebuild for heavily broken but otherwise healthy meshes
+(`sutura/proxy_repair.py`); #11 *repeat-aware auto* and #12 *repeat-aware
+manual* are the repeated-element transplant tiers (`sutura/repeat_repair.py`).
+Methods 8–10 run on the original input (like the fTetWild tier) and adopt their
+result only when it is strict-watertight and the original surface is still
+covered (a one-sided input→output Hausdorff guard), so the estimated back
+surface cannot silently move the model; the module's notes (e.g. "back
+surface was estimated") are surfaced in the top-level `closing` report key.
+Methods 11–12 run after the stage-1 chain on the watertight result: #11 detects
+a rotational/translational/helical repeated pattern and transplants a healthy
+copy onto each damaged or missing element, #12 transplants the element nearest
+the user's `--repeat-source X,Y,Z` point onto the one nearest
+`--repeat-target X,Y,Z`. The transplant is adopted only when it stays
+watertight, no worse than the baseline, and the untouched geometry did not move
+(`hausdorff_outside`); its `repeat` report key carries the pattern type and the
+number of positions repaired.
+
+`--analyze <file>` performs a cheap per-object analysis (faces, components,
+boundary loops, open-area ratio, single-side/relief scores, repetition score,
+non-manifold edges, self-intersecting faces, mesh type) and prints ranked
+method recommendations; third-party engines are
+listed in a **separate** section and are never mixed into the ranking. The
+self-intersection probe is capped at 200,000 faces — above that it samples and
+flags the value as an estimate. `--methods 2,3,5` tags the methods to try, in
+order. Without a flag the repair is **auto**: today's default pipeline runs
+first and, when its result is already strict-watertight, the output is
+byte-identical to before. Only when that baseline fails are ranked methods
+tried (at most three extras; a geometry-inventing method such as fTetWild only
+when its recommendation score is high enough), and an explicit
+`--deep-repair`/`--no-fallback-ftetwild` keeps today's exact behaviour instead
+of escalating. The report adds `method_used`, `methods_tried`,
+`method_reached_watertight` and, when escalation ran, `analysis` and
+`recommendations`.
+
+The same registry is exposed in the GUI. The file list has a **Method**
+column that shows *Auto*, *Auto (rec. #3 … 82%)* after an analysis, or the
+tag chain the user chose. Right-clicking one or several files opens a menu:
+*Analyze* runs the per-object analysis (`--analyze`) in the background,
+*Recommended methods* lists the ranked top methods with a score bar and the
+reason in the tooltip, *Use method* lists all twelve methods (#1–#12) as a
+checkable, order-preserving popup (the order in which they are checked is the
+try-order, e.g. `#2 → #3 → #5`); picking #12 opens a small picker that
+CPU-rasterises the object (no OpenGL) so the user can click the healthy source
+element and then the damaged target element, and *External engines* lists the
+configured third-party engines (kept separate from the ranking). *Clear tags* returns a
+file to Auto. Tagged files run exactly their methods, in order; untagged files
+keep the auto behaviour. Engines tagged per file are selected with the CLI
+`--engines NAME[,NAME]` (`None` runs every enabled engine as configured).
+
 ### External repair engines and the fTetWild manager
 
 Sutura can call user-installed third-party repair **engines** and manage the

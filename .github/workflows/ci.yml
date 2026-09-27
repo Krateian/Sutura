@@ -43,7 +43,7 @@ jobs:
         run: |
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip
-          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-gui.txt trimesh==5.1.0
+          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-gui.txt trimesh==5.1.0 'scipy>=1.16,<1.17'
 
       - name: Import check (pymeshlab)
         run: ./venv/bin/python -c "import pymeshlab; print('pymeshlab OK')"
@@ -122,6 +122,18 @@ jobs:
 
       - name: "Test: repair mode"
         run: ./venv/bin/python tests/test_repair_mode.py
+
+      - name: "Test: method registry / analysis / ranking"
+        run: ./venv/bin/python tests/test_methods.py
+
+      - name: "Test: method tagging GUI (offscreen)"
+        run: ./venv/bin/python tests/test_methods_gui.py
+
+      - name: "Test: scan closing"
+        run: ./venv/bin/python tests/test_closing.py
+
+      - name: "Test: proxy-template repair"
+        run: ./venv/bin/python tests/test_proxy_repair.py
 
       - name: "Test: repair budget"
         if: matrix.python-version == '3.11'   # asserts a stage-2 watertight result

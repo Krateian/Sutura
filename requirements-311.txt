@@ -1,3 +1,7 @@
 manifold3d==3.5.3
 trimesh==5.1.0
 numpy==2.4.6
+# Scan-closing / proxy-template tiers (P-INT) run in the MAIN venv, but scipy
+# is declared here too so a bundled venv311 (AppImage/macOS) matches the main
+# environment the methods expect. scipy ~99 MB installed; trimesh ~4.6 MB.
+scipy>=1.16,<1.17

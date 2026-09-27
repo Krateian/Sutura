@@ -2,6 +2,128 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Repair method registry, per-object analysis and recommendations
+  (`--list-methods`, `--analyze`, `--methods`).** `sutura/methods.py` registers
+  twelve repair methods with stable user-facing numbers (1–7 selector over the
+  existing pipeline: fast, local deep repair, full deep repair, join
+  components, autorefine, indirect autorefine, fTetWild envelope; 8–12 reserved
+  placeholders plugged in through a `register_method` hook — 8–10 are filled by
+  the standalone closing/proxy tiers in the entry below, 11–12 stay reserved).
+  `--list-methods`
+  prints num/id/family/availability; `--analyze` reports a cheap per-object
+  summary (`sutura/object_analysis.py`: faces, components, boundary loops,
+  open-area ratio, non-manifold edges, self-intersections, mesh type) plus
+  ranked recommendations (`sutura/templates.py` drives six object profiles);
+  third-party engines are listed separately and never mixed into the ranking.
+  `--methods 2,3,5` tags methods to try in order. `--json` forces JSON output
+  (already the default). The self-intersection probe is capped at 200,000 faces
+  (sampled and flagged above). New report keys: `method_used`, `methods_tried`,
+  `method_reached_watertight`, and `analysis`/`recommendations` when escalation
+  ran.
+
+- **Standalone closing / proxy-template methods (#8–#10).** Registry methods
+  #8 `poisson_close` and #9 `flat_back_close` now run the scan-closing module
+  (`sutura/closing.py`): screened-Poisson reconstruction for single-sided
+  scans and a flat back plane with side walls for reliefs. Method #10
+  `proxy_template` runs `sutura/proxy_repair.py` (coarse watertight proxy plus
+  re-projection of the healthy original regions) for heavily broken but
+  otherwise healthy meshes. All three are geometry-inventing methods: they run
+  on the **original** input (like the fTetWild tier — stage 1 already
+  flat-caps a single boundary loop, so a closing method on the cleaned arrays
+  would only see a closed mesh), and adopt their result only when it is
+  strict-watertight and passes a one-sided **input→output** Hausdorff guard
+  (reusing `closing.one_sided_hausdorff`), so the estimated back surface cannot
+  silently move the model. `--analyze` gains `single_side_score`/`relief_score`
+  signals (from `closing.py`) that drive the #8/#9 recommendations, and the
+  per-method `closing` report key carries the module's notes (e.g. "back
+  surface was estimated"). Methods #11/#12 remain reserved placeholders. New
+  runtime dependencies: `scipy` (~99 MB installed) and `trimesh==5.1.0`
+  (~4.6 MB); `closing.py` and `proxy_repair.py` were added to the
+  install/updater/AppImage/PyInstaller module lists.
+
+- **GUI per-file method tagging (`--analyze`, `--methods`, `--engines`).** The
+  file list gains a **Method** column (*Auto*, *Auto (rec. #N … NN%)* after an
+  analysis, or the chosen tag chain) and a right-click menu: *Analyze* runs the
+  per-object analysis in a background thread; *Recommended methods* lists the
+  ranked top methods with a score bar and the reason in the tooltip; *Use
+  method* lists all twelve methods (#1–#12) as a checkable, order-preserving
+  popup (the check order is the try-order); *External engines* lists the
+  configured engines separately; *Clear tags* returns a file to Auto. The new
+  CLI flag `--engines NAME[,NAME]` selects the engines for a tagged run
+  (default `None` runs every enabled engine as before). `RepairWorker` accepts a
+  per-file method/engine mapping, `method_used` and the attempts list are shown
+  in the result summary, the detailed report and the repair-log panel. EN/TR
+  strings added; documented in the CLI/GUI parity notes and the READMEs.
+
+- **Repeated-element repair (methods #11/#12).** The standalone
+  `sutura/repeat_repair.py` (feature-edge segmentation, PCA+ICP alignment,
+  rotational/translational/helical pattern detection, volumetric manifold3d
+  transplant) is wired into the registry: #11 `repeat_auto` detects a repeated
+  pattern and transplants healthy copies onto the damaged/missing elements,
+  #12 `repeat_manual` transplants the element nearest `--repeat-source X,Y,Z`
+  onto the one nearest `--repeat-target X,Y,Z`. Both run after the stage-1
+  chain on the watertight result and adopt only a watertight, no-worse
+  candidate that leaves the untouched geometry in place (`hausdorff_outside`);
+  the new `repeat` report key carries the pattern type and positions repaired.
+  `object_analysis` fills `repetition_score` from the detector (face-capped for
+  the ~1 s analysis budget) so the `repeated_pattern` template and the ranking
+  are live. GUI: the *Use method* entry for #12 opens a CPU-rasterised picker
+  (drag-free: the user clicks the healthy source then the damaged target; the
+  mesh loads in the `repeat_picker_render.py` subprocess so the GUI process
+  stays pymeshlab-free). `--repeat-source`/`--repeat-target` documented in the
+  CLI/GUI parity notes.
+
+### Changed
+
+- **Untagged repair is now auto with a method fallback.**
+  `methods.repair_with_methods` runs today's default pipeline first; when it
+  is strict-watertight the output is byte-identical to before. Only when that
+  baseline fails are ranked methods tried (at most three extras, a
+  geometry-inventing method only above a score threshold). An explicit
+  `--deep-repair`/`--no-fallback-ftetwild` keeps the previous behaviour with no
+  escalation. New modules added to the install/updater/PyInstaller lists.
+
+### Fixed
+
+- **A repair is no longer reported watertight unless the SAVED mesh is
+  strict-watertight after reload.** STL stores no vertex sharing, so a result
+  that is watertight on the in-memory index topology can reload with
+  non-manifold edges once the loader re-welds coincident float32 positions
+  (measured on 7 of the 40 real-world samples, e.g. `thingi10k_1038439`). The
+  final mesh is now judged in its save/reload-equivalent form
+  (`repair.weld_reload_equivalent` + the strict holes/non-manifold check) and
+  that verdict overrides the report fields the classification reads, in the
+  single-mesh, per-object 3MF and registry paths; the method registry's
+  accept/reject guard uses the same check, so such a baseline counts as failed
+  and the auto path escalates. A genuinely reload-watertight mesh keeps its
+  report and output byte-identical.
+- **Closing/proxy methods work without an in-process `manifold3d`.** The
+  registry validity check in `sutura/closing.py` / `sutura/proxy_repair.py`
+  now uses a dependency-free topology test (each edge used twice, consistent
+  orientation, positive volume) instead of importing `manifold3d`, which is
+  absent from the main venv on Linux/AppImage (it ships wheels only up to
+  Python 3.13 and lives in the stage-2 venv). Methods 8/9/10 are therefore
+  usable on Linux; a failed validity now returns the input unchanged with an
+  explicit `error` instead of a degraded mesh. The flat-back centroid cap also
+  follows the boundary-loop orientation, so clockwise (>1500-vertex) loops no
+  longer build an inverted cap.
+- **Watertight claims require stage 2 everywhere.** `methods._evaluate` now
+  judges a candidate with the same rule as `classification.classify` (stage 1
+  closed AND stage 2 ran and returned ok), and the `closing` report records a
+  strict-watertight *candidate* rather than claiming watertight before stage 2.
+- **External-engine-only tags no longer auto-escalate.** A file tagged with
+  only an external engine (`--engines` without `--methods`) runs the baseline
+  and stops; the untagged method ranking is not invoked. Minor fixes: the
+  single-sided-scan template now prefers #8 (Poisson) over #9, `get_method`
+  tolerates `None`/non-integer input, the "Use method" order badges refresh on
+  untag, the macOS self-updater installs `scipy`, the GUI PyInstaller bundle
+  carries the `scipy.sparse` hidden imports, and the extreme-removed /
+  recommendation-reason strings are localized (EN/TR).
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed

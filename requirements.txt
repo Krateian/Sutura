@@ -6,6 +6,16 @@ numpy>=2.4.0,<2.6
 # macOS conda env). Only imported by sutura/autorefine.py behind
 # --experimental-autorefine; the default repair path does not require it.
 pyrobust-predicates==0.1.0
+# Scan-closing / proxy-template tiers (registry methods 8/9/10, P-INT):
+# scipy powers the connected-component labeling in sutura/closing.py and
+# sutura/proxy_repair.py (scipy.sparse.csgraph); trimesh powers the
+# closest-point projection in sutura/proxy_repair.py. Both run in the main
+# venv, so they are hard dependencies of the method registry. Approximate
+# installed size: scipy ~99 MB (cp314 manylinux/arm64 wheel ~36-40 MB),
+# trimesh ~4.6 MB. rtree is NOT required (trimesh.proximity.closest_point
+# uses a scipy cKDTree, not rtree).
+scipy>=1.16,<1.17
+trimesh==5.1.0
 # Optional/heavy cross-validation dependency (FAZ10): manifold3d powers the
 # independent watertight check in scripts/benchmark_repair_corpus.py (and stage
 # 2). It ships prebuilt wheels only up to Python 3.13, so it CANNOT be added to

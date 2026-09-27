@@ -67,6 +67,13 @@ APP_MODULES = (
     'triage.py',
     'engines.py',
     'ftetwild_manager.py',
+    'methods.py',
+    'object_analysis.py',
+    'templates.py',
+    'closing.py',
+    'proxy_repair.py',
+    'repeat_repair.py',
+    'repeat_picker_render.py',
     'history.py',
     'repair_score.py',
     'updater.py',
@@ -406,9 +413,12 @@ def _install_macos(src_dir, req_files):
         # conda-forge only; pymeshlab cannot come from pip on Apple Silicon.
         subprocess.run(['conda', 'install', '-y', '-n', env_name, '-c', 'conda-forge',
                         'pymeshlab'], check=True)
-        # pip-only deps inside the conda env (manifold3d/trimesh/PySide6)
+        # pip-only deps inside the conda env. Must match install-macos.sh
+        # (scipy powers the closing/proxy tiers' connected components;
+        # pyrobust-predicates powers the autorefine predicates).
         subprocess.run(['conda', 'run', '-n', env_name, 'pip', 'install',
-                        'manifold3d', 'trimesh', 'PySide6-Essentials'], check=True)
+                        'manifold3d', 'trimesh', 'scipy', 'pyrobust-predicates',
+                        'PySide6-Essentials'], check=True)
 
 
 def install_source(src_dir):

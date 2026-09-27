@@ -226,6 +226,67 @@ yerleşik bir preset düzenlenirse *Yeni profil olarak kaydet* sunulur ve
 Orijinal dosya asla üzerine yazılmaz. Çıktı aynı dizinde `_fixed` sonekiyle
 yazılır.
 
+### Onarım yöntem kayıt defteri ve nesne-başına öneriler
+
+`sutura/methods.py`, her biri asla değişmeyen kullanıcı-görünür bir tamsayıya
+sahip onarım **yöntemlerinin** kararlı bir kayıt defteridir (`--list-methods`
+num, kimlik, aile ve kullanılabilirliği yazdırır). 1–7 numaralı yöntemler
+mevcut boru hattı üzerinde ince seçicilerdir (hızlı / yerel derin onarım / tam
+derin onarım / bileşenleri birleştir / autorefine / dolaylı autorefine /
+fTetWild zarfı); 8–10 bağımsız kapama / vekil katmanlarıdır — #8 taramalı
+Poisson kapatma ve #9 düz-arka kapatma tek-taraflı taramalar ve kabartmalar
+için (`sutura/closing.py`), #10 ağır hasarlı ama başka yönden sağlıklı
+mesh'ler için vekil-şablon yeniden inşası (`sutura/proxy_repair.py`); #11
+*tekrar-farkında otomatik* ve #12 *tekrar-farkında elle* ise yinelenen öge
+nakli katmanlarıdır (`sutura/repeat_repair.py`).
+8–10 numaralı yöntemler girdi üzerinde çalışır (fTetWild katmanı gibi) ve
+sonuçlarını yalnızca katı-su geçirmez olduğunda ve özgün yüzey hâlâ
+kapsandığında (tek-taraflı girdi→çıktı Hausdorff koruması) benimser, böylece
+tahmin edilen arka yüzey modeli sessizce kaydıramaz; modülün notları (örneğin
+"back surface was estimated") üst düzey `closing` rapor anahtarında görünür.
+11–12 numaralı yöntemler stage-1 zincirinden sonra su geçirmez sonuç üzerinde
+çalışır: #11 döner/ötelemeli/helisel bir yineleme deseni bulup hasarlı veya
+eksik her ögeye sağlam bir kopyayı nakleder, #12 kullanıcının
+`--repeat-source X,Y,Z` noktasına en yakın ögeyi `--repeat-target X,Y,Z`
+noktasına en yakın ögenin üzerine nakleder. Nakil yalnızca su geçirmez
+kaldığında, temelden daha kötü olmadığında ve dokunulmamış geometri
+kaymadığında (`hausdorff_outside`) benimsenir; `repeat` rapor anahtarı desen
+tipini ve onarılan konum sayısını taşır.
+
+`--analyze <dosya>` ucuz bir nesne-başına analiz yapar (yüz/tepe sayısı,
+bileşenler, sınır döngüleri, açık-alan oranı, tek-taraflı/kabartma ve
+yineleme puanları, manifold olmayan kenarlar, kendini kesen yüzler, mesh tipi)
+ve sıralanmış
+yöntem önerilerini yazdırır;
+üçüncü taraf motorlar **ayrı** bir bölümde listelenir ve sıralamaya asla
+karıştırılmaz. Kendini-kesme ölçümü 200.000 yüzle sınırlıdır — bunun üzerinde
+örnekleme yapılır ve değer tahmin olarak işaretlenir. `--methods 2,3,5`
+denenecek yöntemleri sırayla etiketler. Bayrak verilmezse onarım **otomatik**tir:
+önce bugünkü varsayılan boru hattı çalışır ve sonucu zaten katı-su geçirmezse
+çıktı öncekiyle bayt-birebirdir. Yalnızca bu temel başarısız olursa sıralanmış
+yöntemler denenir (en fazla üç ek deneme; fTetWild gibi geometri uyduran bir
+yöntem yalnızca öneri puanı yeterince yüksekse), ve açık bir
+`--deep-repair`/`--no-fallback-ftetwild` bugünkü davranışı korur, ek denemeye
+geçmez. Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
+ek deneme çalıştıysa `analysis` ile `recommendations` alanlarını ekler.
+
+Aynı kayıt defteri GUI'de de açığa çıkar. Dosya listesinde bir **Yöntem**
+sütunu *Otomatik*, analizden sonra *Otomatik (öneri #3 … %82)* ya da
+kullanıcının seçtiği etiket zincirini gösterir. Bir veya birkaç dosyaya sağ
+tıklamak bir menü açar: *Analiz et* nesne-başına analizi (`--analyze`) arka
+planda çalıştırır, *Önerilen yöntemler* sıralanmış en iyi yöntemleri bir puan
+çubuğu ve gerekçesi ipucunda olacak şekilde listeler, *Yöntem kullan* on iki
+yöntemin (#1–#12) tümünü sırayı koruyan işaretlenebilir bir açılır menü olarak
+listeler (işaretlenme sırası deneme sırasıdır, örn. `#2 → #3 → #5`); #12'yi
+seçmek, nesneyi CPU ile tarayan (OpenGL yok) küçük bir seçici açar; kullanıcı
+önce sağlam kaynak ögeye, sonra hasarlı hedef ögeye tıklar ve *Harici
+motorlar* yapılandırılmış üçüncü taraf motorları listeler (sıralamadan ayrı
+tutulur). *Etiketleri temizle* bir dosyayı Otomatik'e döndürür. Etiketli
+dosyalar tam olarak kendi yöntemlerini sırayla çalıştırır; etiketsiz dosyalar
+otomatik davranışı korur. Dosya başına etiketlenen motorlar CLI'de
+`--engines AD[,AD]` ile seçilir (`None` yapılandırılmış tüm etkin motorları
+çalıştırır).
+
 ### Harici onarım motorları ve fTetWild yöneticisi
 
 Sutura, kullanıcının kurduğu üçüncü taraf onarım **motorlarını**

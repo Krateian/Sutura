@@ -39,6 +39,16 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all six
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
+`--methods 11/12` and `--repeat-source`/`--repeat-target` (GUI *Use method*
+lists #11 *Repeat-aware auto* and #12 *Repeat-aware manual*; picking #12 opens
+a CPU-rasterised picker dialog where the user clicks the healthy source and the
+damaged target element; the two 3D points are stored with the file's tags and
+passed as the CLI flags) ·
+`--list-methods` / `--analyze` / `--methods` (GUI right-click menu: *Analyze*
+runs `--analyze`; *Recommended methods* and *Use method* tag methods in order;
+the new **Method** column shows *Auto* / the top recommendation / the tag
+chain) · `--engines` (GUI *External engines* submenu, tagged the same way;
+separate from the method ranking) ·
 `engines list|check` (GUI *Engines* tab engine list with Reload / *Open
 engines folder* / docs link) ·
 `ftetwild status|install|uninstall` and `--yes`/`--dry-run` (GUI *Engines*
@@ -62,3 +72,17 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   subcommands and the GUI *Engines* tab were added together, so the parity
   rule holds. The engine *configuration* (the TOML files) is edited outside
   the app in both cases; the GUI only lists, reloads and opens the folder.
+- **P0 (method registry):** `--list-methods`, `--analyze` and `--methods`
+  were CLI-only initially; the GUI controls were the explicit P3 follow-up.
+- **P-REP (repeated-element repair, methods 11/12):** the standalone
+  `repeat_repair.py` was integrated into the registry (11 `repeat_auto`,
+  12 `repeat_manual`) with `--repeat-source X,Y,Z` / `--repeat-target X,Y,Z`
+  for the manual method; the GUI *Use method* entry for #12 opens a picker
+  dialog (kept off the GUI's pymeshlab-free process by loading the mesh in the
+  `repeat_picker_render.py` subprocess) so both sides are covered.
+- **P3 (GUI method tagging):** closed that gap. The GUI file list gained a
+  third **Method** column and a right-click menu (*Analyze*, *Recommended
+  methods*, *Use method* with a checkable keep-open popup, *External engines*,
+  *Clear tags*). `--engines NAME[,NAME]` was added with the GUI *External
+  engines* submenu in the same change (per-file engine selection; default
+  `None` runs every enabled engine as before), so the parity rule holds.
