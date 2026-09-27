@@ -26,6 +26,9 @@ Outputs (overwrites in assets/):
                        Static/Interactive mode switch, the main
                        original/repaired image, the worst-defect detail
                        close-up and the toggle button
+  method-menu.png    - the file-list right-click menu (Analyze, Recommended
+                       methods, Use method, External engines, Clear tags)
+                       after a per-file method analysis
 
 The meshes used are generated into a temp dir and removed afterwards.
 """
@@ -34,7 +37,7 @@ import subprocess
 import sys
 import tempfile
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QPoint, QTimer
 from PySide6.QtWidgets import QApplication
 
 # The README screenshots are always the English UI, whatever the system
@@ -218,6 +221,50 @@ def run_before_after(m, files, size, out_path):
     print('wrote', out_path)
 
 
+def run_context_menu(m, files, out_path):
+    """Grab the file-list right-click menu with the ranked recommendations.
+
+    Runs the per-file method analysis first (so *Recommended methods* is
+    populated), builds the menu without showing it interactively, pops it up
+    and grabs the QMenu popup itself (a popup is not part of ``win.grab()``)."""
+    app = QApplication.instance() or QApplication([])
+    m.apply_dark_theme(app)
+    win = m.MainWindow()
+    win.resize(*MAIN_SIZE)
+    win.show()
+    for f in files:
+        win._add_path(f)
+    paths = [files[0]]
+    state = {'menu': None}
+    done = {}
+
+    def poll():
+        if win._method_worker is None and win.worker is None:
+            app.processEvents()
+            state['menu'] = win._build_context_menu(paths)
+            if state['menu'] is None:
+                raise RuntimeError('no context menu built')
+            state['menu'].popup(QPoint(20, 20))
+            app.processEvents()
+            QTimer.singleShot(200, do_grab)
+        else:
+            QTimer.singleShot(200, poll)
+
+    def do_grab():
+        menu = state['menu']
+        menu.grab().save(out_path)
+        done['ok'] = True
+        menu.close()
+        app.quit()
+
+    win._analyze_methods(paths)
+    QTimer.singleShot(200, poll)
+    app.exec()
+    if not done.get('ok'):
+        raise RuntimeError('context-menu screenshot render did not finish')
+    print('wrote', out_path)
+
+
 def main():
     os.environ['SUTURA'] = _repo_cli_wrapper()
     m = load_gui()
@@ -232,6 +279,8 @@ def main():
                     out_path=os.path.join(ASSETS, 'analyze-panel.png'))
         run_before_after(m, files, MAIN_SIZE,
                          out_path=os.path.join(ASSETS, 'before-after-panel.png'))
+        run_context_menu(m, files,
+                         out_path=os.path.join(ASSETS, 'method-menu.png'))
     print('done')
 
 

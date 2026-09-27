@@ -308,6 +308,8 @@ file to Auto. Tagged files run exactly their methods, in order; untagged files
 keep the auto behaviour. Engines tagged per file are selected with the CLI
 `--engines NAME[,NAME]` (`None` runs every enabled engine as configured).
 
+![File-list right-click method menu](assets/method-menu.png)
+
 #### Repeated-element repair (auto/manual picker)
 
 `--methods 11` (auto) and `--methods 12` (manual) target models that repeat a
