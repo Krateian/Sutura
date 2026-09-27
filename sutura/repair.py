@@ -32,6 +32,7 @@ from mesh_classifier import classify_mesh
 import repair_score
 import history
 import triage
+import methods as method_registry
 
 # The Balanced intensity preset is the pre-triage behaviour; the module
 # constants below keep their names for backward compatibility and are derived
@@ -3379,7 +3380,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  max_risk=None, force=False, join_components=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
-                 engines=None, engine_chain=None, engine_warnings=None):
+                 engines=None, engine_chain=None, engine_warnings=None,
+                 methods=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -3398,6 +3400,9 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     ``engines``/``engine_chain``/``engine_warnings`` are the ``load_engine_run``
     output; when the first two are None the engines are loaded here (once per
     call). Load warnings are recorded in the report and never fail a repair.
+    ``methods`` is the optional user-tagged method list (``--methods``); None
+    means auto mode (today's default pipeline first, ranked fallbacks only when
+    it fails), implemented by ``sutura/methods.py``.
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
@@ -3416,30 +3421,18 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         result['engine_warnings'] = list(engine_warnings)
     t0 = time.perf_counter()
     try:
-        if ext.lower() == '.3mf' and len(parse_3mf_meshes(src)) > 1:
-            result.update(repair_3mf(src, tmp_out, tmpdir, mode=mode,
-                                     profile=profile, engine=engine,
-                                     join_components=join_components,
-                                     autorefine=autorefine,
-                                     ftetwild=ftetwild,
-                                     indirect_autorefine=indirect_autorefine,
-                                     extra_features=extra_features,
-                                     deep_repair=deep_repair,
-                                     triage_spec=triage_spec,
-                                     engines=engines,
-                                     engine_chain=engine_chain))
-        else:
-            result.update(repair_file(src, tmp_out, tmpdir, mode=mode,
-                                      profile=profile, engine=engine,
-                                      join_components=join_components,
-                                      autorefine=autorefine,
-                                      ftetwild=ftetwild,
-                                      indirect_autorefine=indirect_autorefine,
-                                      extra_features=extra_features,
-                                      deep_repair=deep_repair,
-                                      triage_spec=triage_spec,
-                                      engines=engines,
-                                      engine_chain=engine_chain))
+        # Method registry / exec policy (sutura/methods.py): with methods=None
+        # this is auto mode -- it runs today's default pipeline first and only
+        # escalates to ranked methods when that baseline is not strict-
+        # watertight, so an untagged repair stays byte-identical to today.
+        result.update(method_registry.repair_with_methods(
+            src, tmp_out, tmpdir, methods=methods, mode=mode, profile=profile,
+            engine=engine, join_components=join_components,
+            autorefine=autorefine, ftetwild=ftetwild,
+            indirect_autorefine=indirect_autorefine,
+            extra_features=extra_features, deep_repair=deep_repair,
+            triage_spec=triage_spec, engines=engines,
+            engine_chain=engine_chain))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -3691,6 +3684,22 @@ def main():
                         help='list the built-in intensity presets and the '
                              'user profiles with their effective values, then '
                              'exit (no repair)')
+    parser.add_argument('--list-methods', action='store_true',
+                        help='list the repair methods (num, id, family, '
+                             'availability) and exit (no repair)')
+    parser.add_argument('--analyze', action='store_true',
+                        help='analyze the input object(s) -- defects, mesh '
+                             'type, self-intersection load -- and print the '
+                             'ranked method recommendations plus the external '
+                             'engines. Writes no output file.')
+    parser.add_argument('--methods', default=None, metavar='LIST',
+                        help='tag the repair methods to try, in order, e.g. '
+                             '--methods 2,3,5. Without it the repair is auto: '
+                             "today's default pipeline first, with ranked "
+                             'fallbacks only when it fails.')
+    parser.add_argument('--json', action='store_true',
+                        help='force machine-readable JSON output (the default '
+                             'format; overrides --human)')
     parser.add_argument('--no-history', action='store_true',
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
@@ -3796,6 +3805,14 @@ def main():
         print(triage.format_intensities())
         sys.exit(0)
 
+    # --list-methods: print the method registry, then exit (no repair).
+    if args.list_methods:
+        if args.json:
+            print(json.dumps(method_registry.methods_json(), ensure_ascii=False))
+        else:
+            print(method_registry.format_methods())
+        sys.exit(0)
+
     # --intensity accepts a built-in preset OR a user profile; argparse cannot
     # know the profiles at parser-construction time, so validate here.
     _profiles = triage.load_profiles()
@@ -3807,7 +3824,7 @@ def main():
 
     files = args.files
     out = args.output
-    human = args.human
+    human = args.human and not args.json
     show_defects = args.defects
     show_diff = args.diff
     mode = args.mode
@@ -3815,6 +3832,24 @@ def main():
     engine = resolve_classifier_engine(args.classifier_engine)
     triage_spec = triage.resolve_intensity(args.intensity,
                                            user_profiles=_profiles)
+
+    # --methods: tag the repair methods (validated against the registry).
+    methods_sel = None
+    if args.methods:
+        parts = [p.strip() for p in args.methods.split(',') if p.strip()]
+        if not parts:
+            parser.error('argument --methods: empty list')
+        nums = []
+        for part in parts:
+            if not part.isdigit():
+                parser.error('argument --methods: %r is not a method number'
+                             % part)
+            num = int(part)
+            if method_registry.get_method(num) is None:
+                parser.error('argument --methods: unknown method %d '
+                             '(see --list-methods)' % num)
+            nums.append(num)
+        methods_sel = nums
 
     # 'engines list|check' and 'ftetwild status|install|uninstall' are
     # subcommands, dispatched before any repair (like validate/export-history).
@@ -3871,6 +3906,9 @@ def main():
         if dry_run:
             print(json.dumps({'error': '--dry-run is not valid with validate'}))
             sys.exit(1)
+        if methods_sel is not None:
+            print(json.dumps({'error': '--methods is not valid with validate'}))
+            sys.exit(1)
         results = [validate_file(f, engine) for f in targets]
         nerr = sum(1 for r in results if 'error' in r)
         if len(targets) == 1:
@@ -3888,10 +3926,45 @@ def main():
             print(json.dumps({'files': results}, ensure_ascii=False))
         sys.exit(0 if nerr == 0 else 1)
 
+    # --analyze: read-only per-object analysis + ranked method recommendations.
+    if args.analyze:
+        if out is not None:
+            print(json.dumps({'error': '-o is not valid with --analyze'}))
+            sys.exit(1)
+        if dry_run:
+            print(json.dumps({'error': '--analyze is not valid with --dry-run'}))
+            sys.exit(1)
+        if methods_sel is not None:
+            print(json.dumps({'error': '--methods is not valid with --analyze'}))
+            sys.exit(1)
+        if not files:
+            print(json.dumps({'error': '--analyze requires at least one input file'}))
+            sys.exit(1)
+        results = [method_registry.analyze_report(
+            f, engine, args.experimental_edge_tiebreak) for f in files]
+        nerr = sum(1 for r in results if 'error' in r)
+        if len(files) == 1:
+            result = results[0]
+            if human:
+                print(method_registry.format_analyze_human(result))
+            else:
+                print(json.dumps(result, ensure_ascii=False))
+            sys.exit(0 if nerr == 0 else 1)
+        if human:
+            for result in results:
+                print(method_registry.format_analyze_human(result))
+                print()
+        else:
+            print(json.dumps({'files': results}, ensure_ascii=False))
+        sys.exit(0 if nerr == 0 else 1)
+
     # --dry-run: analyze and report the plan, write no output file at all.
     if dry_run:
         if out is not None:
             print(json.dumps({'error': '-o is not valid with --dry-run'}))
+            sys.exit(1)
+        if methods_sel is not None:
+            print(json.dumps({'error': '--methods is not valid with --dry-run'}))
             sys.exit(1)
         results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine,
                                 triage_spec=triage_spec) for f in files]
@@ -3938,7 +4011,8 @@ def main():
                             extra_features=args.experimental_edge_tiebreak,
                             triage_spec=triage_spec, engines=_engines,
                             engine_chain=_engine_chain,
-                            engine_warnings=_engine_warnings) for f in files]
+                            engine_warnings=_engine_warnings,
+                            methods=methods_sel) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

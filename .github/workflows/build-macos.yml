@@ -72,6 +72,8 @@ jobs:
             "--hidden-import" "autorefine" "--hidden-import" "mesh_classifier_v2"
             "--hidden-import" "triage" "--hidden-import" "engines"
             "--hidden-import" "ftetwild_manager"
+            "--hidden-import" "methods" "--hidden-import" "object_analysis"
+            "--hidden-import" "templates"
             "--hidden-import" "pyrobust_predicates"
             "--collect-data" "pymeshlab" "--collect-data" "manifold3d")
           for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
@@ -103,6 +105,8 @@ jobs:
             --hidden-import updater --hidden-import numpy \
             --hidden-import triage --hidden-import engines \
             --hidden-import ftetwild_manager \
+            --hidden-import methods --hidden-import object_analysis \
+            --hidden-import templates \
             --collect-data pymeshlab --collect-data manifold3d \
             --name Sutura --windowed --icon assets/icon/Sutura.icns \
             sutura/gui.py

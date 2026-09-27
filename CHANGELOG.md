@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Repair method registry, per-object analysis and recommendations
+  (`--list-methods`, `--analyze`, `--methods`).** `sutura/methods.py` registers
+  twelve repair methods with stable user-facing numbers (1–7 selector over the
+  existing pipeline: fast, local deep repair, full deep repair, join
+  components, autorefine, indirect autorefine, fTetWild envelope; 8–12 reserved
+  placeholders plugged in through a `register_method` hook). `--list-methods`
+  prints num/id/family/availability; `--analyze` reports a cheap per-object
+  summary (`sutura/object_analysis.py`: faces, components, boundary loops,
+  open-area ratio, non-manifold edges, self-intersections, mesh type) plus
+  ranked recommendations (`sutura/templates.py` drives six object profiles);
+  third-party engines are listed separately and never mixed into the ranking.
+  `--methods 2,3,5` tags methods to try in order. `--json` forces JSON output
+  (already the default). The self-intersection probe is capped at 200,000 faces
+  (sampled and flagged above). New report keys: `method_used`, `methods_tried`,
+  `method_reached_watertight`, and `analysis`/`recommendations` when escalation
+  ran.
+
+### Changed
+
+- **Untagged repair is now auto with a method fallback.**
+  `methods.repair_with_methods` runs today's default pipeline first; when it
+  is strict-watertight the output is byte-identical to before. Only when that
+  baseline fails are ranked methods tried (at most three extras, a
+  geometry-inventing method only above a score threshold). An explicit
+  `--deep-repair`/`--no-fallback-ftetwild` keeps the previous behaviour with no
+  escalation. New modules added to the install/updater/PyInstaller lists.
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed

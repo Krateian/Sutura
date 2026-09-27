@@ -226,6 +226,32 @@ yerleşik bir preset düzenlenirse *Yeni profil olarak kaydet* sunulur ve
 Orijinal dosya asla üzerine yazılmaz. Çıktı aynı dizinde `_fixed` sonekiyle
 yazılır.
 
+### Onarım yöntem kayıt defteri ve nesne-başına öneriler
+
+`sutura/methods.py`, her biri asla değişmeyen kullanıcı-görünür bir tamsayıya
+sahip onarım **yöntemlerinin** kararlı bir kayıt defteridir (`--list-methods`
+num, kimlik, aile ve kullanılabilirliği yazdırır). 1–7 numaralı yöntemler
+mevcut boru hattı üzerinde ince seçicilerdir (hızlı / yerel derin onarım / tam
+derin onarım / bileşenleri birleştir / autorefine / dolaylı autorefine /
+fTetWild zarfı); 8–12 ayrılmış yer tutuculardır (Poisson close, flat-back
+close, proxy şablonu, tekrar-farkında otomatik/manuel) ve bir kanca üzerinden
+kaydedilir, böylece sonraki aşamalar liste sırasını bozmadan doldurabilir.
+
+`--analyze <dosya>` ucuz bir nesne-başına analiz yapar (yüz/tepe sayısı,
+bileşenler, sınır döngüleri, açık-alan oranı, manifold olmayan kenarlar,
+kendini kesen yüzler, mesh tipi) ve sıralanmış yöntem önerilerini yazdırır;
+üçüncü taraf motorlar **ayrı** bir bölümde listelenir ve sıralamaya asla
+karıştırılmaz. Kendini-kesme ölçümü 200.000 yüzle sınırlıdır — bunun üzerinde
+örnekleme yapılır ve değer tahmin olarak işaretlenir. `--methods 2,3,5`
+denenecek yöntemleri sırayla etiketler. Bayrak verilmezse onarım **otomatik**tir:
+önce bugünkü varsayılan boru hattı çalışır ve sonucu zaten katı-su geçirmezse
+çıktı öncekiyle bayt-birebirdir. Yalnızca bu temel başarısız olursa sıralanmış
+yöntemler denenir (en fazla üç ek deneme; fTetWild gibi geometri uyduran bir
+yöntem yalnızca öneri puanı yeterince yüksekse), ve açık bir
+`--deep-repair`/`--no-fallback-ftetwild` bugünkü davranışı korur, ek denemeye
+geçmez. Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
+ek deneme çalıştıysa `analysis` ile `recommendations` alanlarını ekler.
+
 ### Harici onarım motorları ve fTetWild yöneticisi
 
 Sutura, kullanıcının kurduğu üçüncü taraf onarım **motorlarını**

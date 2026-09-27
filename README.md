@@ -221,6 +221,33 @@ every field; editing a built-in preset offers *Save as new profile*, and
 The original file is never overwritten. Output is written with a `_fixed`
 suffix in the same directory.
 
+### Repair method registry and per-object recommendations
+
+`sutura/methods.py` is a stable registry of repair **methods**, each with a
+user-facing integer that never changes (`--list-methods` prints num, id,
+family and availability). Methods 1–7 are thin selectors over the existing
+pipeline (fast / local deep repair / full deep repair / join components /
+autorefine / indirect autorefine / fTetWild envelope); 8–12 are reserved
+placeholders (Poisson close, flat-back close, proxy template, repeat-aware
+auto/manual) registered through a hook, so later phases can fill them without
+reordering the list.
+
+`--analyze <file>` performs a cheap per-object analysis (faces, components,
+boundary loops, open-area ratio, non-manifold edges, self-intersecting faces,
+mesh type) and prints ranked method recommendations; third-party engines are
+listed in a **separate** section and are never mixed into the ranking. The
+self-intersection probe is capped at 200,000 faces — above that it samples and
+flags the value as an estimate. `--methods 2,3,5` tags the methods to try, in
+order. Without a flag the repair is **auto**: today's default pipeline runs
+first and, when its result is already strict-watertight, the output is
+byte-identical to before. Only when that baseline fails are ranked methods
+tried (at most three extras; a geometry-inventing method such as fTetWild only
+when its recommendation score is high enough), and an explicit
+`--deep-repair`/`--no-fallback-ftetwild` keeps today's exact behaviour instead
+of escalating. The report adds `method_used`, `methods_tried`,
+`method_reached_watertight` and, when escalation ran, `analysis` and
+`recommendations`.
+
 ### External repair engines and the fTetWild manager
 
 Sutura can call user-installed third-party repair **engines** and manage the

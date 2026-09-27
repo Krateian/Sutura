@@ -14,6 +14,7 @@ omission must be documented here. This file records the current parity gaps
 | `-o/--output` | GUI always writes the default `_fixed` file in place; a custom output path is a scripting need. |
 | `--human`, `--defects`, `--diff` | Text-report presentation flags; the GUI renders the same data graphically (defect panel, repair log, before/after). |
 | `export-history` (`--last`/`--clear`/`--summary-only`) | Usage-history is an anonymous CLI/telemetry feature; no GUI viewer yet. |
+| `--list-methods`, `--analyze`, `--methods` | P0 adds the method registry, per-object analysis and method tagging on the CLI only. The GUI equivalents (method picker + recommendation view + batch-wide method tag) are scheduled for P3; the GUI keeps its current fTetWild checkboxes until then. |
 
 ## GUI-only (allowed exceptions — visual features)
 
@@ -62,3 +63,6 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   subcommands and the GUI *Engines* tab were added together, so the parity
   rule holds. The engine *configuration* (the TOML files) is edited outside
   the app in both cases; the GUI only lists, reloads and opens the folder.
+- **P0 (method registry):** `--list-methods`, `--analyze` and `--methods`
+  are CLI-only for now; the GUI controls are the explicit P3 follow-up (see
+  the CLI-only table above).
