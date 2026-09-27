@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.6.0] - 2026-09-28
 
 ### Added
 
@@ -77,6 +77,31 @@ All notable changes to this project are documented here.
   stays pymeshlab-free). `--repeat-source`/`--repeat-target` documented in the
   CLI/GUI parity notes.
 
+- **Repeated-element repair on real models: segmentation-free detection,
+  similarity/mirror alignment, outer-shell extraction and the CSG bridge.**
+  The detector no longer needs feature-edge-bounded patches: it samples the
+  surface, builds candidate axes from the principal inertia frame plus the
+  canonical axes and tests rotational orders 2–64 (and high knurl counts
+  72/80/90/100/120) and 2D/3D translational lattices with multi-step
+  verification and fundamental-order de-aliasing (`n=8` vs `n=24` on a
+  24-tooth gear). Alignment gained uniform **similarity** (scale) and
+  **mirror** transforms. `extract_outer_shell` dilates and boolean-unions a
+  multi-component assembly into one outer shell before repair (Rubik's cube:
+  118,956 → 64,380 faces). Missing material and an extraneous bump are both
+  detected (forward + reverse deviation) and the cavity cut is shrunk by
+  0.1 % so donor and cavity overlap instead of leaving a coplanar boundary
+  that collapses into non-manifold edges on a float32 STL write.
+  `sutura/csg_bridge.py` runs the CSG booleans out-of-process under Python
+  3.11 (NPZ/OBJ IO, box/intersection/difference/union/transform, a JSON
+  status report) with an in-process fast path when `manifold3d` is
+  importable; it is added to every install/updater/AppImage/PyInstaller list.
+  Verified on the owner's `patterned samples`: `gear 24teeth 2x.stl` (C₂₄,
+  dent repaired, outside Hausdorff 0, reload-watertight), `PET Bottle Cap.stl`
+  (C₁₂₀ knurls, outside Hausdorff 0.0849 mm, watertight), `rubics-cubestl.stl`
+  (3D lattice, outer-shell repair, watertight); the pistachio bowl, Sea Shell
+  Vase and `large-shell.stl` are honestly reported as a continuous/scaling
+  shell / organic morphology with no transplant rather than forced.
+
 ### Changed
 
 - **Untagged repair is now auto with a method fallback.**
@@ -101,6 +126,20 @@ All notable changes to this project are documented here.
   accept/reject guard uses the same check, so such a baseline counts as failed
   and the auto path escalates. A genuinely reload-watertight mesh keeps its
   report and output byte-identical.
+- **Reload-safe final pass (P-WELD): the reload seam is healed, not only
+  reported.** `repair.p_weld_final` runs on STL outputs just before the honest
+  verdict. When the in-memory index topology is already a clean 2-manifold it
+  splits the `float32`-coincidence vertex groups with a sub-ULP nudge (face
+  count preserved, geometry moved by less than one part in 10⁶), so the saved
+  file no longer welds them into non-manifold edges; otherwise it repairs the
+  welded mesh and caps the small holes that creates. A candidate is adopted
+  only when the saved mesh reloads strict-watertight and (fallback) keeps at
+  least 98 % of the faces, so the pass can never make the output worse. All
+  seven real-world samples that P-HONEST had downgraded to `warning`
+  (`thingi10k_100281`, `1038439`, `1038441`, `145065`, `224108`, `248395`,
+  `71691`) now reload strictly watertight with unchanged face counts; control
+  meshes are left untouched. Report key `p_weld`; `--human` prints a
+  *Reload-safe final pass* line; regression in `tests/test_methods.py`.
 - **Closing/proxy methods work without an in-process `manifold3d`.** The
   registry validity check in `sutura/closing.py` / `sutura/proxy_repair.py`
   now uses a dependency-free topology test (each edge used twice, consistent

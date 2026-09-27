@@ -40,6 +40,66 @@ Options window, never in the way of the plain repair.
 
 - **Deep-repair ladder (`repair.deep_repair_ladder`).** The single entry point for the tiers after the stage-1 chain, called where the fTetWild block used to be (before `_split_pinched_vertices` and the final stage-1 measurement). Mode `deep_repair` in `DEEP_REPAIR_MODES` = `off`/`local`/`full`, resolved by `resolve_deep_repair` (CLI `--deep-repair` > `SUTURA_DEEP_REPAIR` > config `deep_repair` > `DEEP_REPAIR_DEFAULT='full'`) and, for the CLI, `resolve_deep_repair_flags` (`--no-fallback-ftetwild` -> `off`, `--experimental-fallback-ftetwild` -> `full` when no `--deep-repair` is given; `ftetwild` is only non-False in `full`). Library default `deep_repair=None` keeps the pre-ladder behaviour and adds no report key. `full` runs `_ftetwild_tier` (the old block, moved verbatim): output identical to 53cb9a7 (byte-compared on six real-world samples; `tests/test_deep_repair.py` compares `None` vs `full` with a faked fTetWild). `local` runs `_local_remesh_tier`, a PyMeshLab prototype: `_damaged_region` (faces with an edge used != 2 times, grown by one vertex ring), delete, `meshing_repair_non_manifold_vertices`, `meshing_close_holes(maxholesize=LOCAL_REMESH_MAX_HOLE, refinehole=True, refineholeedgelen=mean region edge length)`, then `_umbrella_fair` on the vertices appended after the deletion (PyMeshLab's selected-only Laplacian moved surrounding vertices, measured, hence the numpy umbrella operator). Guards: exact-coordinate face multiset outside the region preserved (`_face_keys`), holes and nm edges no worse and not both unchanged, pymeshlab SI count not higher. Scope gates (`LOCAL_MAX_NM_EDGES=0`, `LOCAL_MAX_LOOP_LEN=16`, `LOCAL_MAX_REGIONS=8`, `LOCAL_MAX_REMOVED_FACES=2000`, `LOCAL_MAX_SECONDS=10`, checked between steps; reject reasons `scope: ...`/`time`) come from the 40-sample run: the tier ran on 9 meshes (all nm-free, loops <= 14, regions <= 6, <= 822 deleted faces) and gained 3 (40886, 46012, 71691; strict 31 -> 34), while the 115 corpus gained 0 at +69 % time. `LOCAL_REMESH_REFINE=False`: `close_holes(refinehole=True)` cost ~9 s per 90k-face mesh (whole-mesh pass) and changed no outcome, so the fairing step currently has no interior vertex to move. The outside-face guard is `_faces_preserved` (vectorized, smallest-cyclic-rotation canonical form). The local tier is NOT part of `full`. `_deep_repair_offer` fills `deep_repair.available` (`holes_remaining`, `nm_remaining`, `tiers`, `estimate_s`) when holes/nm remain and a tier was not run (fTetWild only if installed). `estimate_deep_repair_time` uses PLACEHOLDER coefficients `DEEP_ESTIMATE_*`, to be fitted from the benchmark's `estimate_s`/`actual_s` columns. GUI integration (first run without deep repair, pop-up with the estimate, Options setting writing the config key) is done on the Mac side and is NOT in this change; until then the GUI keeps its current fTetWild checkboxes. The Liepa 2003 variant (minimum-weight DP triangulation, density refinement, bilaplacian fairing) is planned but not implemented.
 
+- **Repair method registry (`sutura/methods.py`, v0.6.0).** Twelve methods with
+  stable user-facing numbers (1 `fast`, 2 `deep_local`, 3 `deep_full`,
+  4 `join_components`, 5 `autorefine`, 6 `indirect_autorefine`, 7 `ftetwild`,
+  8 `poisson_close`, 9 `flat_back_close`, 10 `proxy_template`, 11 `repeat_auto`,
+  12 `repeat_manual`). `--list-methods`/`--analyze`/`--methods` are the CLI
+  surface; the GUI exposes the same via the file list's **Method** column and a
+  right-click menu (*Analyze*, *Recommended methods*, *Use method*, *External
+  engines*, *Clear tags*). `process_file` routes through
+  `methods.repair_with_methods` (`methods=None` = auto: the default pipeline
+  first, ranked fallbacks only when the baseline is not strict-watertight;
+  `_auto_escalation_allowed` keeps `--deep-repair off|local` / no-fTetWild
+  runs non-escalating). Geometry-inventing methods are guarded — #7
+  output→input Hausdorff, #8/#9/#10 input→output, #11/#12 self-guarded by
+  `hausdorff_outside` — and `_evaluate` judges every candidate on the
+  reload-equivalent weld. `object_analysis.py` + `templates.py` drive
+  `--analyze` and the ranking; third-party engines are listed separately and
+  never mixed into it. New runtime deps: scipy (~99 MB) and trimesh (~4.6 MB).
+- **Scan-closing / proxy-template tiers (`sutura/closing.py`,
+  `sutura/proxy_repair.py`, v0.6.0).** Methods #8/#9/#10 run on the ORIGINAL
+  input (stage 1 already flat-caps a single loop, so they would otherwise only
+  see a closed mesh), validate with a dependency-free topology test (NOT
+  `import manifold3d`, which is absent from the Linux py3.14 venv), and adopt
+  only a strict-watertight result that passes the input→output Hausdorff guard.
+  `flat_back_close` follows the boundary-loop orientation (clockwise >1500-vtx
+  loops no longer invert the cap). Module notes land in the `closing` report
+  key.
+- **Repeated-element repair (`sutura/repeat_repair.py` + `sutura/csg_bridge.py`,
+  v0.6.0).** Methods #11/#12. Detection is segmentation-free (surface sampling,
+  PCA + canonical axes, rotational orders 2–64 + knurl counts 72–120, 2D/3D
+  translational lattices, multi-step verification, fundamental-order
+  de-aliasing); `align` supports similarity (scale) and mirror; `extract_outer_shell`
+  unions a multi-component assembly into one outer shell; missing material and
+  bumps are both detected (forward/reverse deviation); the cavity cut is shrunk
+  0.1 % so donor/cavity overlap (avoids the coplanar boundary that collapses to
+  nm edges on float32 STL). The CSG transplant runs out-of-process via
+  `csg_bridge.py` under Python 3.11 (NPZ/OBJ IO; box/intersection/difference/
+  union/transform; JSON status) with an in-process fast path. `csg_bridge.py`
+  MUST stay in the module lists of `install.sh`, `install-macos.sh`,
+  `scripts/build_appimage.sh`, `updater.APP_MODULES`, `build-macos.yml` and
+  `ci.yml` (see the install bullet above). It is a deliberate geometry change,
+  so it stays behind the method flags; adopt-only-if-watertight + no-worse +
+  `hausdorff_outside`.
+- **Reload-honest watertight verdict (P-HONEST + P-WELD, v0.6.0).** STL drops
+  vertex sharing, so an index-watertight mesh can reload non-manifold once the
+  loader re-welds exactly-coincident float32 positions.
+  `repair.weld_reload_equivalent` + `reload_strict_holes_nm` are the
+  reload-equivalent metric; `enforce_reload_verdict` downgrades a
+  false-watertight claim (`reload_watertight=false`,
+  `stage1.reload_holes`/`reload_non_manifold`,
+  `stage2.watertight_after_reload=false`). `p_weld_final` (STL outputs, before
+  the verdict) HEALS the seam: `_separate_weld_collisions` nudges all-but-one
+  vertex per float32-coincidence group by a few float32 ULPs when the in-memory
+  topology is already clean (face count unchanged, move < 1e-6 relative);
+  otherwise it repairs the welded mesh + caps small holes. Adopt only when the
+  saved mesh reloads strict-watertight (fallback also needs >= 98 % of the
+  welded faces), so it can never worsen the output. Report key `p_weld`;
+  `--human` prints *Reload-safe final pass*. It turned all 7 previously-downgraded
+  real-world samples watertight again with unchanged face counts. Regression:
+  `tests/test_methods.py::test_p_weld_final_separates_float32_collisions`.
+
 ## Rust core performance work (`rust/sutura-geom`)
 
 - **Output-identity rule:** a performance change to the exact arrangement keeps the output identical, not merely equal in face count. Verification is the order-independent digest of `examples/arrangement_digest.rs` (exact rational vertex coordinates + winding; independent of triangle order, vertex numbering and cyclic rotation), compared before/after on thingi10k_1038441, its subsets (produced by `examples/bench_arrangement.rs`) and at least thingi10k_1038439, 55772, 502009, 46012 and artec_metal-nut. `cargo test --release --features cdt-check` additionally asserts every accelerated triangulation query against the linear reference scan; CI runs the Rust tests with and without that feature.

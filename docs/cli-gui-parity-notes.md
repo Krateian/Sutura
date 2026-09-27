@@ -86,3 +86,13 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   *Clear tags*). `--engines NAME[,NAME]` was added with the GUI *External
   engines* submenu in the same change (per-file engine selection; default
   `None` runs every enabled engine as before), so the parity rule holds.
+- **Closing / proxy-template methods (#8–#10):** the standalone
+  `closing.py` / `proxy_repair.py` tiers are reachable from the CLI
+  (`--methods 8/9/10`) and from the GUI *Use method* list (all twelve methods);
+  no separate flag exists, so parity holds without a dedicated control.
+- **P-FINAL (reload-honest verdict + P-WELD + csg_bridge):** P-HONEST and
+  P-WELD are automatic pipeline behaviour, not user-facing options, so they
+  apply identically to CLI and GUI repairs and need no parity control. The
+  repeated-element CSG bridge (`csg_bridge.py`) is an implementation detail
+  behind method #11/#12; it is added to every packaging list in the same
+  change.
