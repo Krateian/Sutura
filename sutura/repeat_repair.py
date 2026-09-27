@@ -422,6 +422,13 @@ def _execute_boolean_transplant_inprocess(verts, tris, template_pts, transforms,
     current_mf = mf
     dst_boxes = []
 
+    # Shrunk box for cavity cut: shrunk by relative epsilon = 1e-3 of element size
+    # to avoid coincident coplanar faces between cut cavity and unioned element
+    eps = 1e-3
+    ext_cut = ext_src * (1.0 - eps)
+    cube_cut = manifold3d.Manifold.cube(ext_cut, center=True)
+    box_src_cut_m = cube_cut.transform(T_box[:3, :])
+
     for T in transforms:
         box_dst_m = box_src_m.transform(T[:3, :])
         c_dst = T[:3, :3] @ c_src + T[:3, 3]
@@ -429,8 +436,10 @@ def _execute_boolean_transplant_inprocess(verts, tris, template_pts, transforms,
         frame_dst = T[:3, :3] @ frame_src
         dst_boxes.append((c_dst, ext_dst, frame_dst))
 
+        box_dst_cut_m = box_src_cut_m.transform(T[:3, :])
+        cavity_m = current_mf - box_dst_cut_m
         element_prime = element_solid.transform(T[:3, :])
-        current_mf = current_mf + element_prime
+        current_mf = cavity_m + element_prime
 
     out_mesh = current_mf.to_mesh()
     rep_v = np.asarray(out_mesh.vert_properties, dtype=np.float64)
@@ -449,12 +458,22 @@ def _execute_boolean_transplant_bridge(verts, tris, template_pts, transforms, ma
     py311 = _resolve_python311()
     c_src, ext_src, frame_src = _compute_obb(template_pts, margin=margin)
 
+    eps = 1e-3
+    ext_cut = ext_src * (1.0 - eps)
+
     ops = [
         {
             'op': 'box',
             'result': 'src_box',
             'center': c_src.tolist(),
             'extents': ext_src.tolist(),
+            'frame': frame_src.tolist(),
+        },
+        {
+            'op': 'box',
+            'result': 'src_box_cut',
+            'center': c_src.tolist(),
+            'extents': ext_cut.tolist(),
             'frame': frame_src.tolist(),
         },
         {
@@ -473,15 +492,21 @@ def _execute_boolean_transplant_bridge(verts, tris, template_pts, transforms, ma
         frame_dst = T_mat[:3, :3] @ frame_src
         dst_boxes.append((c_dst, ext_dst, frame_dst))
 
-        box_dst_name = f'dst_box_{idx}'
+        box_dst_cut_name = f'dst_box_cut_{idx}'
         elem_dst_name = f'element_{idx}'
 
         ops.extend([
             {
                 'op': 'transform',
-                'input': 'src_box',
+                'input': 'src_box_cut',
                 'matrix': T_mat.tolist(),
-                'result': box_dst_name,
+                'result': box_dst_cut_name,
+            },
+            {
+                'op': 'difference',
+                'a': 'base',
+                'b': box_dst_cut_name,
+                'result': 'base',
             },
             {
                 'op': 'transform',
@@ -607,13 +632,19 @@ def _compute_hausdorff_outside(orig_tm, result_tm, dst_boxes, samples=5000):
     return float(np.max(dists)) / diag
 
 
-def extract_outer_shell(verts, tris, dilation=0.05):
+def extract_outer_shell(verts, tris, dilation=None):
     """Extract the outer surface shell of a multi-component mesh, removing internal geometry.
 
     For assemblies of touching or overlapping watertight parts (e.g. Rubik's cube cubies),
-    slightly dilates each component by `dilation` mm around its centroid so touching
-    interfaces dissolve, performs boolean union via manifold3d, and retains the single
-    largest outer component.
+    slightly dilates each component around its centroid so touching interfaces dissolve,
+    performs boolean union via manifold3d, and retains the single largest outer component.
+
+    Parameters:
+        verts: (N, 3) float64 array of vertex coordinates.
+        tris: (M, 3) int array of triangle indices.
+        dilation: float or None. Absolute dilation in mm. When None, dynamically
+            computes dilation relative to the bounding box diagonal:
+            `dilation = 5e-4 * bbox_diagonal` (~0.05 mm for a 100 mm object).
 
     Returns:
         (shell_verts, shell_tris)
@@ -625,6 +656,10 @@ def extract_outer_shell(verts, tris, dilation=0.05):
     comps = tm.split(only_watertight=False)
     if len(comps) <= 1:
         return verts, tris
+
+    diag = float(np.linalg.norm(np.ptp(verts, axis=0)))
+    if dilation is None:
+        dilation = 5e-4 * (diag if diag > 1e-6 else 100.0)
 
     import manifold3d
 
@@ -860,7 +895,8 @@ def _detect_repetition_patches(verts, tris):
         except Exception:
             pass
 
-    if best_axis is not None and best_circle[2] > 1e-3 and best_rel_std < 0.08:
+    centroids_span = float(np.linalg.norm(np.ptp(centroids, axis=0)))
+    if best_axis is not None and best_circle[2] > 1e-3 and best_rel_std < 0.08 and best_circle[2] <= 2.5 * (centroids_span if centroids_span > 1e-4 else 1.0):
         u, v_vec = best_basis
         cx, cy, fit_r = best_circle
         c_circle_3d = c_rough + cx * u + cy * v_vec
@@ -913,10 +949,18 @@ def _detect_repetition_patches(verts, tris):
             if len(nz_dz) > 0:
                 h_min = np.min(nz_dz)
                 ratios = dz / h_min
-                if np.all(np.abs(ratios - np.round(ratios)) < 0.20):
-                    h_step = float(np.median(dz / np.round(ratios)))
-                    k_fit = np.round((z_sorted - z_sorted[0]) / h_step).astype(int)
-                    err_z = np.abs((z_sorted - z_sorted[0]) - k_fit * h_step) / h_step
+                nz_r = np.round(ratios) > 0
+                if np.all(np.abs(ratios - np.round(ratios)) < 0.20) and np.any(nz_r):
+                    h_step = float(np.median(dz[nz_r] / np.round(ratios)[nz_r]))
+                    if h_step > 1e-4:
+                        k_fit = np.round((z_sorted - z_sorted[0]) / h_step).astype(int)
+                        err_z = np.abs((z_sorted - z_sorted[0]) - k_fit * h_step) / h_step
+                    else:
+                        k_fit = None
+                else:
+                    k_fit = None
+
+                if k_fit is not None:
 
                     dth = np.diff(th_sorted)
                     dth_wrap = (dth + np.pi) % (2.0 * np.pi) - np.pi
@@ -975,7 +1019,8 @@ def _detect_repetition_patches(verts, tris):
         q_max = int(np.max(q_idx))
 
         # Check for 3D lattice grid (e.g. rubik 3x3x3)
-        if step_w > 1e-2 and len(np.unique(np.round((w_coords - np.min(w_coords)) / step_w))) > 1:
+        min_planar_step = min(step_u, step_v) if step_v > 1e-2 else step_u
+        if step_w >= 0.2 * min_planar_step and len(np.unique(np.round((w_coords - np.min(w_coords)) / step_w))) > 1:
             r_idx = np.round((w_coords - np.min(w_coords)) / step_w).astype(int)
             r_max = int(np.max(r_idx))
             if (p_max + 1) * (q_max + 1) * (r_max + 1) <= 128:
@@ -1221,6 +1266,25 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             template = members[best_template_idx]
             template_pts = verts[template['verts_idx']]
             elem_diag = template['diag']
+            c_templ = np.mean(template_pts, axis=0)
+            def _calc_deviation(pred_pts):
+                # Forward distance: clean template to target mesh (detects dents / missing features)
+                _, dists_fwd, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                dev_dent = float(np.sqrt(np.mean(dists_fwd ** 2))) / (elem_diag + 1e-12)
+
+                # Reverse distance: target member patch to template (detects bumps / extra features)
+                c_p = np.mean(pred_pts, axis=0)
+                d_m = [np.linalg.norm(m['centroid'] - c_p) for m in members]
+                if min(d_m) <= 0.5 * elem_diag:
+                    best_m = members[int(np.argmin(d_m))]
+                    m_pts = verts[best_m['verts_idx']]
+                    tree_p = cKDTree(pred_pts)
+                    d_rev, _ = tree_p.query(m_pts)
+                    dev_bump = float(np.sqrt(np.mean(d_rev ** 2))) / (elem_diag + 1e-12)
+                else:
+                    dev_bump = 0.0
+
+                return max(dev_dent, dev_bump)
 
             positions_checked = 0
             per_pos_devs = []
@@ -1250,8 +1314,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                     R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_rot)
                     pred_pts = (template_pts @ R_k[:3, :3].T) + R_k[:3, 3]
 
-                    _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
-                    dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                    dev = _calc_deviation(pred_pts)
                     per_pos_devs.append({'index': k, 'deviation': round(dev, 4)})
 
                     if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
@@ -1296,8 +1359,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
 
                             pred_pts = template_pts + shift
 
-                            _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
-                            dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                            dev = _calc_deviation(pred_pts)
                             idx_key = (p_val, q_val, r_val) if has_w else (p_val, q_val)
                             per_pos_devs.append({'index': idx_key, 'deviation': round(dev, 4)})
 
@@ -1326,8 +1388,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
 
                     pred_pts = (template_pts @ T_k[:3, :3].T) + T_k[:3, 3]
 
-                    _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
-                    dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                    dev = _calc_deviation(pred_pts)
                     per_pos_devs.append({'index': k_val, 'deviation': round(dev, 4)})
 
                     if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
