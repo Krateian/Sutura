@@ -126,6 +126,18 @@ All notable changes to this project are documented here.
   accept/reject guard uses the same check, so such a baseline counts as failed
   and the auto path escalates. A genuinely reload-watertight mesh keeps its
   report and output byte-identical.
+- **The method registry no longer re-reads an already-watertight output, and a
+  tagged run skips the per-object analysis.** `methods._evaluate` trusted the
+  reload verdict `repair_file`/`repair_3mf` already computed, so a watertight
+  result no longer triggers a second pymeshlab load of its own output;
+  `methods._explicit` (an explicit `--methods` tag) no longer runs the
+  expensive `--analyze` analysis/ranking it does not need. On the 40-sample
+  real-world corpus the bounded default-baseline repair went from ~631 s (the
+  untagged ranked fallback on every non-watertight scan) back to ~131 s for
+  validate + dry-run + repair, so the CI corpus regression also runs with the
+  explicit baseline (`--methods 3`) to stay within its budget. The untagged
+  ranked fallback itself is unchanged and is what the default CLI path still
+  does.
 - **Reload-safe final pass (P-WELD): the reload seam is healed, not only
   reported.** `repair.p_weld_final` runs on STL outputs just before the honest
   verdict. When the in-memory index topology is already a clean 2-manifold it

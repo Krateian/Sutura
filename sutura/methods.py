@@ -601,31 +601,39 @@ def _evaluate(result, path, multi, in_objs, method):
     if not isinstance(result, dict) or 'error' in result:
         rec['reason'] = (result or {}).get('error', 'no result')
         return rec
-    try:
-        out_objs = _load_objects(path)
-    except Exception as e:  # noqa: BLE001
-        rec['reason'] = 'cannot read output: %s' % e
-        return rec
-    # Every method is judged on the reload-equivalent mesh (P-HONEST): the
-    # top-level verdict now never claims watertight unless the saved mesh is
-    # strict-watertight after the save/reload weld, so the registry's
-    # accept/reject guard must use the same check -- otherwise it would accept
-    # a candidate the top-level report then has to downgrade. In particular a
-    # baseline that fails the reload check counts as failed here, so the auto
-    # path escalates. (Previously the weld applied only to invents_geometry
-    # methods; geometry-inventing ones are still covered.)
-    holes, nm = _strict_holes_nm(out_objs, weld=True)
-    rec['holes'] = holes
-    rec['non_manifold'] = nm
-    if holes or nm:
-        rec['reason'] = 'holes=%d non-manifold=%d remain' % (holes, nm)
-        return rec
     # 5.1: the same rule as the top-level verdict (classification.classify):
     # "watertight" requires stage 1 closed AND stage 2 (manifold3d) actually
     # ran and returned ok. A stage-1-closed mesh with stage 2 skipped/errored
     # is a warning, so a method must never be recorded as reach-watertight on
     # the index topology alone.
     category, _issues, _key = classification.classify(result)
+    needs_objs = bool(method is not None and method.invents_geometry and in_objs
+                      and not getattr(method, 'self_guarded', False))
+    out_objs = None
+    if category == 'watertight':
+        # Every method is judged on the reload-equivalent mesh (P-HONEST): the
+        # top-level verdict never claims watertight unless the SAVED mesh is
+        # strict-watertight after the save/reload weld. ``repair_file`` /
+        # ``repair_3mf`` already ran ``enforce_reload_verdict``, so a
+        # watertight classify means the reload check passed -- no need to
+        # re-read every output (an already-watertight result does no extra
+        # work). A candidate that fails the reload check was downgraded by
+        # enforce, so it does not classify watertight here.
+        holes = nm = 0
+    else:
+        # Not watertight: measure the saved mesh so the reject reason and the
+        # holes/non-manifold counts are the real reload-equivalent ones.
+        try:
+            out_objs = _load_objects(path)
+        except Exception as e:  # noqa: BLE001
+            rec['reason'] = 'cannot read output: %s' % e
+            return rec
+        holes, nm = _strict_holes_nm(out_objs, weld=True)
+    rec['holes'] = holes
+    rec['non_manifold'] = nm
+    if holes or nm:
+        rec['reason'] = 'holes=%d non-manifold=%d remain' % (holes, nm)
+        return rec
     if category != 'watertight':
         rec['reason'] = ('stage 1 closed but stage 2 did not confirm the solid '
                          '(%s)' % (_key or 'warning'))
@@ -638,8 +646,13 @@ def _evaluate(result, path, multi, in_objs, method):
     # (guard_input_to_output=True) are measured input -> output (is the
     # original surface still covered?), the envelope methods output -> input
     # (does the output stray from the input?). The geometry change is recorded.
-    if (method is not None and method.invents_geometry and in_objs
-            and not getattr(method, 'self_guarded', False)):
+    if needs_objs:
+        if out_objs is None:
+            try:
+                out_objs = _load_objects(path)
+            except Exception as e:  # noqa: BLE001
+                rec['reason'] = 'cannot read output: %s' % e
+                return rec
         if method.guard_input_to_output:
             hd = _worst_hausdorff_input_to_output(in_objs, out_objs)
         else:
@@ -825,10 +838,12 @@ def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
 
 def _explicit(src, out, tmpdir, ctx, multi, ext, methods):
     in_objs = _safe_load(src) if os.path.exists(src) else []
-    analysis_objects = _analyze_objects(src, ctx)
-    combined = object_analysis.combine(analysis_objects) if analysis_objects \
-        else object_analysis.ObjectAnalysis()
-    recs = rank_methods(combined)
+    # An explicitly tagged run already knows which methods to execute, so the
+    # (expensive) per-object analysis/ranking is not needed here: recommendations
+    # come from ``--analyze`` / the GUI *Analyze* action. Skipping it keeps a
+    # tagged run as quick as the plain pipeline.
+    analysis_objects = []
+    recs = []
     tried = []
     candidates = []
     for num in methods:

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Real-world corpus regression (tests/real-world-samples/*.stl).
 
-Runs validate + dry-run + auto repair on every real-world sample mesh and
-asserts the pipeline never crashes (every phase must exit 0 with a clean JSON
-report; partial repairs are fine, hard errors/crashes are not). Also prints a
-compact result table so the expected outcomes stay visible.
+Runs validate + dry-run + repair (default baseline method 3, bounded) on every
+real-world sample mesh and asserts the pipeline never crashes (every phase must
+exit 0 with a clean JSON report; partial repairs are fine, hard errors/crashes
+are not). Also prints a compact result table so the expected outcomes stay
+visible. The untagged ranked fallback is intentionally not run here (see the
+comment in main); it is covered by tests/test_methods.py.
 
 The corpus is deliberately bounded (97 MB, 40 meshes): Artec scan decimations (CC BY 4.0,
 decimated with preservetopology so defect counts stay close to the originals)
@@ -43,9 +45,15 @@ def main():
             out = os.path.join(tmp, name + '_fixed.stl')
             row = [name]
             ok = True
+            # Repair with the default baseline method explicitly (3 = full deep
+            # repair). The untagged default also runs the ranked fallback on a
+            # non-watertight result, which re-runs whole extra pipelines and is
+            # deliberately not exercised here: this suite guards crash-safety on
+            # the real corpus within a bounded CI budget, while the ranked-auto
+            # policy is covered by tests/test_methods.py.
             for label, args in (('val', ['validate']),
                                 ('dry', ['--dry-run', '--mode', 'auto']),
-                                ('rep', ['--mode', 'auto'])):
+                                ('rep', ['--mode', 'auto', '--methods', '3'])):
                 r = run(args, path, out if label == 'rep' else None)
                 # partial repairs are expected; only hard errors/crashes fail
                 if r.returncode != 0:

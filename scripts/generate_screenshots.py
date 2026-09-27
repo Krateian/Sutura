@@ -28,7 +28,8 @@ Outputs (overwrites in assets/):
                        close-up and the toggle button
   method-menu.png    - the file-list right-click menu (Analyze, Recommended
                        methods, Use method, External engines, Clear tags)
-                       after a per-file method analysis
+                       after a per-file method analysis, with the ranked
+                       *Recommended methods* submenu expanded beside it
 
 The meshes used are generated into a temp dir and removed afterwards.
 """
@@ -37,7 +38,8 @@ import subprocess
 import sys
 import tempfile
 
-from PySide6.QtCore import QPoint, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 # The README screenshots are always the English UI, whatever the system
@@ -222,11 +224,13 @@ def run_before_after(m, files, size, out_path):
 
 
 def run_context_menu(m, files, out_path):
-    """Grab the file-list right-click menu with the ranked recommendations.
+    """Grab the file-list right-click menu with *Recommended methods* expanded.
 
-    Runs the per-file method analysis first (so *Recommended methods* is
-    populated), builds the menu without showing it interactively, pops it up
-    and grabs the QMenu popup itself (a popup is not part of ``win.grab()``)."""
+    Runs the per-file method analysis first (so the ranked recommendations are
+    populated), builds the menu without showing it interactively, pops it up,
+    pops the *Recommended methods* submenu next to it, then composites the two
+    QMenu popups side by side (a popup is not part of ``win.grab()``), so the
+    ranked entries with their score bars are visible in one image."""
     app = QApplication.instance() or QApplication([])
     m.apply_dark_theme(app)
     win = m.MainWindow()
@@ -235,24 +239,47 @@ def run_context_menu(m, files, out_path):
     for f in files:
         win._add_path(f)
     paths = [files[0]]
-    state = {'menu': None}
+    state = {'menu': None, 'sub': None, 'action': None}
     done = {}
 
     def poll():
         if win._method_worker is None and win.worker is None:
             app.processEvents()
-            state['menu'] = win._build_context_menu(paths)
-            if state['menu'] is None:
+            menu = win._build_context_menu(paths)
+            if menu is None:
                 raise RuntimeError('no context menu built')
-            state['menu'].popup(QPoint(20, 20))
+            state['menu'] = menu
+            sub_actions = [a for a in menu.actions() if a.menu() is not None]
+            if sub_actions:
+                state['action'] = sub_actions[0]          # Recommended methods
+                state['sub'] = sub_actions[0].menu()
+            menu.popup(QPoint(20, 20))
             app.processEvents()
-            QTimer.singleShot(200, do_grab)
+            if state['sub'] is not None:
+                state['sub'].popup(QPoint(160, 60))
+                app.processEvents()
+            QTimer.singleShot(250, do_grab)
         else:
             QTimer.singleShot(200, poll)
 
     def do_grab():
         menu = state['menu']
-        menu.grab().save(out_path)
+        pm = menu.grab()
+        sub = state['sub']
+        if sub is not None and state['action'] is not None:
+            pms = sub.grab()
+            canvas = QPixmap(pm.width() + pms.width() - 8,
+                             max(pm.height(), pms.height()))
+            canvas.fill(Qt.transparent)
+            painter = QPainter(canvas)
+            painter.drawPixmap(0, 0, pm)
+            y = menu.actionGeometry(state['action']).y()
+            painter.drawPixmap(pm.width() - 8, y, pms)
+            painter.end()
+            canvas.save(out_path)
+            sub.close()
+        else:
+            pm.save(out_path)
         done['ok'] = True
         menu.close()
         app.quit()
