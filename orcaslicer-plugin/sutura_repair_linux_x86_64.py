@@ -4,9 +4,9 @@
 #
 # [tool.orcaslicer.plugin]
 # name = "Sutura Repair"
-# description = "EXPERIMENTAL: repairs the SELECTED model in-memory via orca.host, runs the Sutura pipeline and loads the result back."
+# description = "EXPERIMENTAL: repairs the SELECTED model via orca.host with the Sutura CLI (Triage Engine: your Sutura intensity preset or profile is used) and loads the watertight result back."
 # author = "Krateian"
-# version = "0.4.1"
+# version = "0.5.2"
 # ///
 """Sutura Repair — OrcaSlicer script plugin.
 
@@ -29,6 +29,13 @@ real-device verification layer.
 
 EXPERIMENTAL — the OrcaSlicer plugin system exists only in nightly builds /
 releases NEWER than 2.4.2; stable 2.4.2 has no "Plugins" menu.
+
+Triage Engine: the plugin passes no intensity flag, so the CLI uses the
+intensity preset or user profile chosen in Sutura (Options > Repair, the
+`intensity` config key or SUTURA_INTENSITY): Quick, Balanced (default),
+Thorough, Extreme or a named profile. The watertight + Hausdorff shape guard
+is always on. The subprocess timeout covers the slowest preset (Extreme runs
+fTetWild for up to 1800 s).
 
 Output naming: every run writes a UNIQUE repaired file
 (`<stem>_fixed_<timestamp>_<short-uuid>.<ext>`) so consecutive runs never
@@ -166,7 +173,7 @@ def _run_subprocess(src, out_path):
     try:
         proc = subprocess.run(
             [SUTURA_CLI, src, '--mode', 'auto', '-o', out_path],
-            capture_output=True, text=True, timeout=300)
+            capture_output=True, text=True, timeout=1900)
         if proc.returncode == 0 and os.path.exists(out_path):
             return True, ''
         return False, ((proc.stdout or '') + (proc.stderr or '')).strip() or 'exit %d' % proc.returncode

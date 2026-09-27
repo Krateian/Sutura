@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## [0.5.2] - 2026-09-27
+
+### Changed
+- OrcaSlicer plugin: its description, docstring and README now explain that it
+  runs the Triage Engine with the intensity preset or user profile chosen in
+  Sutura (Options > Repair, the `intensity` config key or `SUTURA_INTENSITY`),
+  and that registered external engines are used the same way. Plugin metadata
+  version is now 0.5.2 (it had been left at 0.4.1).
+
+### Fixed
+- OrcaSlicer plugin: the CLI subprocess timeout was 300 s, which killed
+  Thorough/Extreme repairs (Extreme lets fTetWild run for up to 1800 s). It is
+  now 1900 s.
+
 ## [0.5.1] - 2026-09-27
 
 ### Fixed

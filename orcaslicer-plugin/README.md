@@ -7,6 +7,17 @@ accessors — the embedded Python ships only `pip`, no numpy), repaired with the
 repaired result is loaded back into the slicer. The plugin does not bundle
 numpy/pymeshlab/manifold3d into OrcaSlicer's embedded Python.
 
+## Triage Engine (Sutura v0.5+)
+
+The plugin runs the installed Sutura CLI without an intensity flag, so every
+repair uses the **intensity preset or user profile you picked in Sutura**
+(Options > Repair, the `intensity` config key, or `SUTURA_INTENSITY`):
+Quick, Balanced (recommended, default), Thorough, Extreme, or one of your
+named profiles. External engines you registered in
+`~/.config/sutura/engines/` are used the same way. The watertight + Hausdorff
+shape guard is always on. A repair may take up to ~30 minutes on the Extreme
+preset; the plugin waits for it.
+
 ## ⚠️ Version requirement — nightly / newer than 2.4.2 REQUIRED
 
 The OrcaSlicer Python plugin system exists **only in nightly builds / releases
