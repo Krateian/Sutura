@@ -76,6 +76,7 @@ jobs:
             "--hidden-import" "templates"
             "--hidden-import" "closing" "--hidden-import" "proxy_repair"
             "--hidden-import" "repeat_repair"
+            "--hidden-import" "csg_bridge"
             "--hidden-import" "scipy.sparse" "--hidden-import" "scipy.sparse.csgraph"
             "--hidden-import" "scipy.spatial"
             "--hidden-import" "pyrobust_predicates"
@@ -93,6 +94,7 @@ jobs:
           cp sutura/manifold_bridge.py dist/sutura-cli/
           cp sutura/ftetwild_bridge.py dist/sutura-cli/
           cp sutura/indirect_bridge.py dist/sutura-cli/
+          cp sutura/csg_bridge.py dist/sutura-cli/
 
       - name: Build GUI .app (windowed onedir)
         run: |
@@ -114,6 +116,7 @@ jobs:
             --hidden-import templates \
             --hidden-import closing --hidden-import proxy_repair \
             --hidden-import repeat_repair \
+            --hidden-import csg_bridge \
             --hidden-import scipy.sparse --hidden-import scipy.sparse.csgraph \
             --hidden-import scipy.spatial \
             --collect-data pymeshlab --collect-data manifold3d \

@@ -135,6 +135,9 @@ jobs:
       - name: "Test: proxy-template repair"
         run: ./venv/bin/python tests/test_proxy_repair.py
 
+      - name: "Test: repeated-element repair"
+        run: ./venv/bin/python tests/test_repeat_repair.py
+
       - name: "Test: repair budget"
         if: matrix.python-version == '3.11'   # asserts a stage-2 watertight result
         run: ./venv/bin/python tests/test_budget.py

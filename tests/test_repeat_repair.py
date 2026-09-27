@@ -362,6 +362,12 @@ def test_extract_outer_shell():
 def main():
     t0 = time.time()
     print("Running repeated-element repair tests (tests/test_repeat_repair.py)...")
+    if manifold3d is None:
+        # The synthetic fixtures are built with manifold3d, which ships wheels
+        # only up to Python 3.13; the Linux py3.14 venv has no manifold3d. The
+        # CSG transplant itself also needs it. Skip honestly rather than fail.
+        print("  SKIP: manifold3d not available in this interpreter")
+        return
     test_closing_free_validity()
     test_segment_elements()
     test_align()
