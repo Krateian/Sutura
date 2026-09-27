@@ -303,12 +303,51 @@ def test_csg_bridge_env_var():
             os.environ['SUTURA_FORCE_CSG_BRIDGE'] = old_env
 
 
+def test_align_similarity_scale():
+    src = np.random.RandomState(42).randn(60, 3) * 5.0
+    s_true = 1.45
+    R_true = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=float)
+    t_true = np.array([15.0, -10.0, 5.0])
+    dst = s_true * (src @ R_true.T) + t_true
+
+    T, rms = rr.align(src, dst, allow_scale=True)
+    mapped = (src @ T[:3, :3].T) + T[:3, 3]
+    err = float(np.max(np.linalg.norm(mapped - dst, axis=1)))
+    assert err < 1e-8, f"Similarity alignment error too large: {err}"
+    print(f"  ✓ test_align_similarity_scale passed (scale: {s_true}, max_err: {err:.2e})")
+
+
+def test_align_mirror_reflection():
+    src = np.random.RandomState(42).randn(60, 3) * 5.0
+    R_refl = np.array([[-1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float)
+    t_true = np.array([10.0, -5.0, 2.0])
+    dst = (src @ R_refl.T) + t_true
+
+    T, rms = rr.align(src, dst, allow_reflection=True)
+    mapped = (src @ T[:3, :3].T) + T[:3, 3]
+    err = float(np.max(np.linalg.norm(mapped - dst, axis=1)))
+    assert err < 1e-8, f"Mirror alignment error too large: {err}"
+    print(f"  ✓ test_align_mirror_reflection passed (max_err: {err:.2e})")
+
+
+def test_rotational_symmetry_free():
+    v, t = _make_knurl_cylinder(damaged_idx=None)
+    score, info = rr.detect_rotational_symmetry_free(v, t, n_samples=3000)
+    assert score > 0.60, f"Expected score > 0.60, got {score}"
+    assert info.get('pattern_type') == 'rotational'
+    assert info.get('order') == 12, f"Expected order 12, got {info.get('order')} (info={info})"
+    print(f"  ✓ test_rotational_symmetry_free passed (order: {info.get('order')}, score: {score:.4f})")
+
+
 def main():
     t0 = time.time()
     print("Running repeated-element repair tests (tests/test_repeat_repair.py)...")
     test_closing_free_validity()
     test_segment_elements()
     test_align()
+    test_align_similarity_scale()
+    test_align_mirror_reflection()
+    test_rotational_symmetry_free()
     test_knurl_cylinder_auto()
     test_tile_grid_auto()
     test_helical_cylinder_auto()

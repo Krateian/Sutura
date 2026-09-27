@@ -125,6 +125,14 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
     if n_faces == 0:
         return []
 
+    # If unmerged STL (where len(verts) ~ 3 * n_faces), weld coincident vertices
+    # so dihedral angles across shared edges can be determined.
+    if len(verts) >= 2 * n_faces:
+        _, u_idx, inv_idx = np.unique(np.round(verts, 4), axis=0, return_index=True, return_inverse=True)
+        if len(u_idx) < len(verts):
+            verts = verts[u_idx]
+            tris = inv_idx[tris]
+
     # 1. Compute face normals and areas
     v0 = verts[tris[:, 0]]
     v1 = verts[tris[:, 1]]
@@ -223,10 +231,18 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
     return patches
 
 
-def align(src_pts, dst_pts, allow_reflection=False, max_iters=20):
-    """Rigid alignment: PCA initial frame search + point-to-point ICP refinement.
+def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters=20):
+    """Rigid or similarity alignment: PCA initial frame search + point-to-point ICP refinement.
 
-    Returns (T, rel_rms) where T is a 4x4 matrix and rel_rms is normalized RMS residual.
+    Parameters:
+        src_pts: (N, 3) float64 array of source points.
+        dst_pts: (M, 3) float64 array of destination points.
+        allow_reflection: bool, whether improper rotations (reflections) are allowed.
+        allow_scale: bool, whether uniform scale is estimated and applied.
+        max_iters: int, maximum ICP iterations.
+
+    Returns:
+        (T, rel_rms) where T is a 4x4 matrix and rel_rms is normalized RMS residual.
     """
     src_pts = np.asarray(src_pts, dtype=np.float64)
     dst_pts = np.asarray(dst_pts, dtype=np.float64)
@@ -237,8 +253,19 @@ def align(src_pts, dst_pts, allow_reflection=False, max_iters=20):
     c_src = np.mean(src_pts, axis=0)
     c_dst = np.mean(dst_pts, axis=0)
 
+    # Estimate uniform scale if requested
+    scale_factor = 1.0
+    if allow_scale:
+        r_src = np.sqrt(np.mean(np.sum((src_pts - c_src) ** 2, axis=1)))
+        r_dst = np.sqrt(np.mean(np.sum((dst_pts - c_dst) ** 2, axis=1)))
+        s_cand = float(r_dst / (r_src + 1e-12))
+        if 0.5 <= s_cand <= 2.0:
+            scale_factor = s_cand
+
+    src_scaled = (src_pts - c_src) * scale_factor + c_src
+
     # PCA frames
-    cov_src = (src_pts - c_src).T @ (src_pts - c_src) / max(len(src_pts), 1)
+    cov_src = (src_scaled - c_src).T @ (src_scaled - c_src) / max(len(src_scaled), 1)
     cov_dst = (dst_pts - c_dst).T @ (dst_pts - c_dst) / max(len(dst_pts), 1)
 
     _, v_src = np.linalg.eigh(cov_src)
@@ -269,22 +296,24 @@ def align(src_pts, dst_pts, allow_reflection=False, max_iters=20):
 
     tree = cKDTree(dst_pts)
     best_msd = float('inf')
-    best_T = np.eye(4)
+    best_R = np.eye(3)
+    best_t = c_dst - c_src
 
     for S in signs:
         R_cand = r_dst @ S @ r_src.T
         t_cand = c_dst - R_cand @ c_src
-        transformed = (src_pts @ R_cand.T) + t_cand
+        transformed = (src_scaled @ R_cand.T) + t_cand
         dists, _ = tree.query(transformed)
         msd = float(np.mean(dists ** 2))
         if msd < best_msd:
             best_msd = msd
-            best_T[:3, :3] = R_cand
-            best_T[:3, 3] = t_cand
+            best_R = R_cand
+            best_t = t_cand
 
     # ICP refinement
-    T = best_T.copy()
-    current_pts = (src_pts @ T[:3, :3].T) + T[:3, 3]
+    R_total = best_R.copy()
+    t_total = best_t.copy()
+    current_pts = (src_scaled @ R_total.T) + t_total
 
     for _ in range(max_iters):
         dists, idxs = tree.query(current_pts)
@@ -303,20 +332,23 @@ def align(src_pts, dst_pts, allow_reflection=False, max_iters=20):
 
         t_step = q_bar - R_step @ p_bar
 
-        T_step = np.eye(4)
-        T_step[:3, :3] = R_step
-        T_step[:3, 3] = t_step
-        T = T_step @ T
+        R_total = R_step @ R_total
+        t_total = R_step @ t_total + t_step
 
         current_pts = (current_pts @ R_step.T) + t_step
 
         if np.linalg.norm(t_step) < 1e-5 and np.linalg.norm(R_step - np.eye(3)) < 1e-5:
             break
 
+    # Build final 4x4 matrix T that maps original src_pts -> dst_pts:
+    T = np.eye(4)
+    T[:3, :3] = scale_factor * R_total
+    T[:3, 3] = t_total + (1.0 - scale_factor) * (R_total @ c_src)
+
     dists, _ = tree.query(current_pts)
     rms = float(np.sqrt(np.mean(dists ** 2)))
-    scale = float(np.linalg.norm(src_pts.max(axis=0) - src_pts.min(axis=0)))
-    rel_rms = rms / (scale + 1e-12)
+    orig_scale = float(np.linalg.norm(dst_pts.max(axis=0) - dst_pts.min(axis=0)))
+    rel_rms = rms / (orig_scale + 1e-12)
 
     return T, rel_rms
 
@@ -582,19 +614,112 @@ def _compute_hausdorff_outside(orig_tm, result_tm, dst_boxes, samples=5000):
     return float(np.max(dists)) / diag
 
 
-def detect_repetition(verts, tris):
-    """Analyze mesh for repeated congruent elements and identify pattern parameters.
+def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
+    """Segmentation-free detection of rotational symmetry ($C_n$) across candidate orders.
 
-    Returns (score, info_dict) where score is 0.0..1.0 and info_dict provides details.
+    Estimates candidate axes from PCA, samples the mesh surface, and uses cKDTree
+    overlap testing across candidate rotation orders with multi-step verification.
+
+    Returns:
+        (score, info_dict)
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
+    if len(verts) < 4 or len(tris) < 4:
+        return 0.0, {'pattern_type': 'none', 'reason': 'Too few vertices or triangles'}
 
+    tm = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+    n_pts = n_samples
+    dense_pts, _ = trimesh.sample.sample_surface(tm, n_pts * 2, seed=42)
+    query_pts, _ = trimesh.sample.sample_surface(tm, n_pts, seed=123)
+
+    c = np.mean(dense_pts, axis=0)
+    span = dense_pts.max(axis=0) - dense_pts.min(axis=0)
+    diag = float(np.linalg.norm(span))
+    if diag <= 1e-12:
+        return 0.0, {'pattern_type': 'none', 'reason': 'Zero bounding box diagonal'}
+
+    tol = 0.015 * diag
+    cov = (dense_pts - c).T @ (dense_pts - c) / max(len(dense_pts), 1)
+    _, eigvecs = np.linalg.eigh(cov)
+    tree = cKDTree(dense_pts)
+
+    candidate_orders = list(range(2, max_order + 1)) + [72, 80, 90, 100, 120]
+    best_match = None
+    best_score = 0.0
+
+    for ax_i in range(3):
+        ax = eigvecs[:, ax_i]
+        norm_ax = np.linalg.norm(ax)
+        if norm_ax < 1e-6:
+            continue
+        ax = ax / norm_ax
+
+        if abs(ax[0]) < 0.9:
+            u = np.cross(ax, [1.0, 0.0, 0.0])
+        else:
+            u = np.cross(ax, [0.0, 1.0, 0.0])
+        u = u / (np.linalg.norm(u) + 1e-12)
+        v_vec = np.cross(ax, u)
+        v_vec = v_vec / (np.linalg.norm(v_vec) + 1e-12)
+
+        for n in candidate_orders:
+            th = 2.0 * np.pi / n
+            R = trimesh.transformations.rotation_matrix(th, ax, point=c)[:3, :3]
+            rot = (query_pts - c) @ R.T + c
+            dists, _ = tree.query(rot)
+            frac = float((dists < tol).mean())
+            mean_d = float(dists.mean())
+            move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
+            rel_dev = mean_d / (move_d + 1e-6)
+
+            if frac >= 0.70 and rel_dev < 0.30:
+                steps_to_check = [2]
+                if n >= 4:
+                    steps_to_check.append(n // 2)
+                step_fracs = []
+                for s_k in steps_to_check:
+                    R_k = trimesh.transformations.rotation_matrix(s_k * th, ax, point=c)[:3, :3]
+                    rot_k = (query_pts - c) @ R_k.T + c
+                    d_k, _ = tree.query(rot_k)
+                    step_fracs.append(float((d_k < tol).mean()))
+
+                if all(sf >= 0.55 for sf in step_fracs):
+                    avg_frac = (frac + sum(step_fracs)) / (1.0 + len(step_fracs))
+                    score = float(np.clip(avg_frac * (1.0 - min(mean_d / tol, 1.0) * 0.4), 0.0, 1.0))
+                    is_better = score > best_score
+                    if best_match is not None and not is_better:
+                        prev_n = best_match['order']
+                        if n > prev_n and n % prev_n == 0 and score >= best_score * 0.90:
+                            is_better = True
+                    if is_better:
+                        best_score = score
+                        best_match = {
+                            'pattern_type': 'rotational',
+                            'order': n,
+                            'center': c,
+                            'axis': ax,
+                            'u_axis': u,
+                            'v_axis': v_vec,
+                            'step_angle': th,
+                            'score': score,
+                            'match_fraction': frac,
+                            'mean_distance': mean_d,
+                            'method': 'segmentation_free',
+                        }
+
+    if best_match is not None and best_score >= 0.60:
+        return best_score, best_match
+    return 0.0, {'pattern_type': 'none', 'reason': 'No rotational symmetry detected'}
+
+
+def _detect_repetition_patches(verts, tris):
+    """Analyze mesh using dihedral feature-edge patch segmentation."""
     patches = segment_elements(verts, tris)
     if len(patches) < REPETITION_MIN_MEMBERS:
         return 0.0, {'reason': f'Too few segmented patches ({len(patches)})'}
 
-    # 1. Cluster candidate patches by invariant descriptors (area, scale, eigenvalue ratios)
+    # 1. Cluster candidate patches by invariant descriptors
     n_p = len(patches)
     sim_pairs = []
     for i in range(n_p):
@@ -724,7 +849,7 @@ def detect_repetition(verts, tris):
                     'group_size': len(members),
                 }
 
-        # 2b. Helical (Screw) Pattern (rotation around axis combined with axial translation)
+        # 2b. Helical (Screw) Pattern
         if z_span >= 0.05 * fit_r and z_std >= 0.02 * fit_r:
             s = np.argsort(z_coords)
             z_sorted = z_coords[s]
@@ -767,24 +892,56 @@ def detect_repetition(verts, tris):
                                 'group_size': len(members),
                             }
 
-    # 3. Check for Translational / Grid Pattern
-    ax1, ax2 = V_p[:, 2], V_p[:, 1]
+    # 3. Check for Translational / Grid Pattern (2D planar or 3D lattice)
+    ax1, ax2, ax3 = V_p[:, 2], V_p[:, 1], V_p[:, 0]
     u_coords = (centroids - c_rough) @ ax1
     v_coords = (centroids - c_rough) @ ax2
+    w_coords = (centroids - c_rough) @ ax3
 
-    u_diffs = np.abs(u_coords[:, None] - u_coords[None, :])
-    nz_u = u_diffs[u_diffs > 1e-2]
-    step_u = float(np.min(nz_u)) if len(nz_u) > 0 else 0.0
+    def _find_step(coords):
+        span = float(coords.max() - coords.min())
+        if span <= 1e-4:
+            return 0.0
+        sorted_c = np.sort(coords)
+        diffs = np.diff(sorted_c)
+        gaps = diffs[diffs > 0.08 * span]
+        if len(gaps) > 0:
+            return float(np.median(gaps))
+        nz = diffs[diffs > 1e-2]
+        return float(np.min(nz)) if len(nz) > 0 else 0.0
 
-    v_diffs = np.abs(v_coords[:, None] - v_coords[None, :])
-    nz_v = v_diffs[v_diffs > 1e-2]
-    step_v = float(np.min(nz_v)) if len(nz_v) > 0 else 0.0
+    step_u = _find_step(u_coords)
+    step_v = _find_step(v_coords)
+    step_w = _find_step(w_coords)
 
     if step_u > 1e-2:
         p_idx = np.round((u_coords - np.min(u_coords)) / step_u).astype(int)
         q_idx = np.round((v_coords - np.min(v_coords)) / step_v).astype(int) if step_v > 1e-2 else np.zeros_like(p_idx)
         p_max = int(np.max(p_idx))
         q_max = int(np.max(q_idx))
+
+        # Check for 3D lattice grid (e.g. rubik 3x3x3)
+        if step_w > 1e-2 and len(np.unique(np.round((w_coords - np.min(w_coords)) / step_w))) > 1:
+            r_idx = np.round((w_coords - np.min(w_coords)) / step_w).astype(int)
+            r_max = int(np.max(r_idx))
+            if (p_max + 1) * (q_max + 1) * (r_max + 1) <= 128:
+                score = 0.85
+                return score, {
+                    'pattern_type': 'translational',
+                    'origin': c_rough,
+                    'axis_u': ax1,
+                    'axis_v': ax2,
+                    'axis_w': ax3,
+                    'step_u': step_u,
+                    'step_v': step_v,
+                    'step_w': step_w,
+                    'p_indices': p_idx,
+                    'q_indices': q_idx,
+                    'r_indices': r_idx,
+                    'members': members,
+                    'group_size': len(members),
+                }
+
         if (p_max + 1) * (q_max + 1) <= 64:
             score = 0.85
             return score, {
@@ -805,6 +962,54 @@ def detect_repetition(verts, tris):
         'members': members,
         'group_size': len(members),
     }
+
+
+def detect_repetition(verts, tris):
+    """Analyze mesh for repeated congruent elements and identify pattern parameters.
+
+    Uses a dual-route architecture:
+      1. Segmentation-free surface sampling + KD-tree rotational symmetry detection ($C_n$).
+      2. Feature-edge dihedral patch segmentation + descriptor clustering for discrete
+         patches, rotational arrays, helical screw threads, and 2D/3D translational grids.
+
+    Returns:
+        (score, info_dict) where score is 0.0..1.0 and info_dict provides details.
+    """
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
+
+    if len(verts) < 4 or len(tris) < 4:
+        return 0.0, {'pattern_type': 'none', 'reason': 'Too few vertices or triangles'}
+
+    # 1. Fast segmentation-free rotational symmetry check
+    free_score, free_info = detect_rotational_symmetry_free(verts, tris)
+
+    # 2. Patch-based segmentation route
+    if len(tris) <= 125000:
+        patch_score, patch_info = _detect_repetition_patches(verts, tris)
+    elif len(tris) <= 500000:
+        try:
+            tm_full = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+            tm_low = tm_full.simplify_quadric_decimation(35000)
+            patch_score, patch_info = _detect_repetition_patches(tm_low.vertices, tm_low.faces)
+        except Exception:
+            patch_score, patch_info = 0.0, {'reason': f'Decimation failed on mesh with {len(tris)} faces'}
+    else:
+        patch_score, patch_info = 0.0, {'reason': f'Mesh face count ({len(tris)}) exceeds patch segmentation cap'}
+
+    # Prefer patch route if confident, otherwise segmentation-free route
+    if patch_score >= 0.50 and patch_score >= free_score:
+        return patch_score, patch_info
+    if free_score >= 0.60:
+        return free_score, free_info
+    if patch_score >= 0.50:
+        return patch_score, patch_info
+    if free_score >= 0.50:
+        return free_score, free_info
+
+    if free_score > patch_score and free_score > 0.0:
+        return free_score, free_info
+    return patch_score, patch_info
 
 
 def repair_repeat_manual(verts, tris, source_point, target_point, margin=OBB_EXPANSION_MARGIN, force_bridge=None):
@@ -953,20 +1158,129 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                 'notes': ['No regular repeating pattern detected with sufficient confidence'],
             }
 
-        members = info['members']
-        # Choose healthy template closest to median area and scale
-        areas = [m['area'] for m in members]
-        med_area = float(np.median(areas))
-        best_template_idx = int(np.argmin([abs(m['area'] - med_area) for m in members]))
-        template = members[best_template_idx]
-        template_pts = verts[template['verts_idx']]
-        elem_diag = template['diag']
+        if 'members' in info:
+            members = info['members']
+            # Choose healthy template closest to median area and scale
+            areas = [m['area'] for m in members]
+            med_area = float(np.median(areas))
+            best_template_idx = int(np.argmin([abs(m['area'] - med_area) for m in members]))
+            template = members[best_template_idx]
+            template_pts = verts[template['verts_idx']]
+            elem_diag = template['diag']
 
-        positions_checked = 0
-        per_pos_devs = []
-        transforms_to_repair = []
+            positions_checked = 0
+            per_pos_devs = []
+            transforms_to_repair = []
 
-        if pattern_type == 'rotational':
+            if pattern_type == 'rotational':
+                order = info['order']
+                c_rot = info['center']
+                axis = info['axis']
+                step_angle = info['step_angle']
+                u_ax = info['u_axis']
+                v_ax = info['v_axis']
+
+                th_template = np.arctan2(
+                    (template['centroid'] - c_rot) @ v_ax,
+                    (template['centroid'] - c_rot) @ u_ax,
+                ) % (2.0 * np.pi)
+                th_base = np.arctan2(
+                    (members[0]['centroid'] - c_rot) @ v_ax,
+                    (members[0]['centroid'] - c_rot) @ u_ax,
+                ) % (2.0 * np.pi)
+                k_template = int(np.round(((th_template - th_base) % (2.0 * np.pi)) / step_angle))
+
+                for k in range(order):
+                    positions_checked += 1
+                    rot_angle = (k - k_template) * step_angle
+                    R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_rot)
+                    pred_pts = (template_pts @ R_k[:3, :3].T) + R_k[:3, 3]
+
+                    _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                    dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                    per_pos_devs.append({'index': k, 'deviation': round(dev, 4)})
+
+                    if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
+                        transforms_to_repair.append(R_k)
+
+            elif pattern_type == 'translational':
+                origin = info['origin']
+                ax_u = info['axis_u']
+                ax_v = info['axis_v']
+                step_u = info['step_u']
+                step_v = info['step_v']
+                p_indices = info['p_indices']
+                q_indices = info['q_indices']
+                has_w = 'axis_w' in info and 'step_w' in info and 'r_indices' in info
+                if has_w:
+                    ax_w = info['axis_w']
+                    step_w = info['step_w']
+                    r_indices = info['r_indices']
+                    r_max = int(np.max(r_indices))
+                    template_r = r_indices[best_template_idx]
+                else:
+                    ax_w = np.zeros(3)
+                    step_w = 0.0
+                    r_max = 0
+                    template_r = 0
+
+                p_max = int(np.max(p_indices))
+                q_max = int(np.max(q_indices))
+
+                template_p = p_indices[best_template_idx]
+                template_q = q_indices[best_template_idx]
+
+                for p_val in range(p_max + 1):
+                    for q_val in range(q_max + 1):
+                        for r_val in range(r_max + 1):
+                            positions_checked += 1
+                            shift = ((p_val - template_p) * step_u * ax_u +
+                                     (q_val - template_q) * step_v * ax_v +
+                                     (r_val - template_r) * step_w * ax_w)
+                            T_shift = np.eye(4)
+                            T_shift[:3, 3] = shift
+
+                            pred_pts = template_pts + shift
+
+                            _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                            dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                            idx_key = (p_val, q_val, r_val) if has_w else (p_val, q_val)
+                            per_pos_devs.append({'index': idx_key, 'deviation': round(dev, 4)})
+
+                            if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
+                                transforms_to_repair.append(T_shift)
+
+            elif pattern_type == 'helical':
+                c_circle = info['center']
+                axis = info['axis']
+                th_step = info['step_angle']
+                h_step = info['step_h']
+                k_min = info['k_min']
+                k_max = info['k_max']
+                k_indices = info['k_indices']
+
+                template_k = k_indices[best_template_idx]
+
+                for k_val in range(k_min, k_max + 1):
+                    positions_checked += 1
+                    delta_k = k_val - template_k
+                    rot_angle = delta_k * th_step
+                    R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_circle)
+                    T_k = np.eye(4)
+                    T_k[:3, :3] = R_k[:3, :3]
+                    T_k[:3, 3] = R_k[:3, 3] + delta_k * h_step * axis
+
+                    pred_pts = (template_pts @ T_k[:3, :3].T) + T_k[:3, 3]
+
+                    _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                    dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                    per_pos_devs.append({'index': k_val, 'deviation': round(dev, 4)})
+
+                    if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
+                        transforms_to_repair.append(T_k)
+
+        else:
+            # Segmentation-free rotational pattern: sector-based predict-and-verify
             order = info['order']
             c_rot = info['center']
             axis = info['axis']
@@ -974,87 +1288,55 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             u_ax = info['u_axis']
             v_ax = info['v_axis']
 
-            th_template = np.arctan2(
-                (template['centroid'] - c_rot) @ v_ax,
-                (template['centroid'] - c_rot) @ u_ax,
-            ) % (2.0 * np.pi)
-            th_base = np.arctan2(
-                (members[0]['centroid'] - c_rot) @ v_ax,
-                (members[0]['centroid'] - c_rot) @ u_ax,
-            ) % (2.0 * np.pi)
-            k_template = int(np.round(((th_template - th_base) % (2.0 * np.pi)) / step_angle))
+            v_proj = verts - c_rot
+            v_u = np.dot(v_proj, u_ax)
+            v_v = np.dot(v_proj, v_ax)
+            v_theta = np.arctan2(v_v, v_u) % (2.0 * np.pi)
 
+            diag_total = float(np.linalg.norm(orig_mesh.extents)) or 1.0
+            sector_devs = []
+            sector_pts_list = []
+            positions_checked = 0
+            per_pos_devs = []
+            transforms_to_repair = []
+
+            # 1. Identify healthiest sector with minimal variation
+            for k in range(order):
+                th_k = k * step_angle
+                mask_k = np.abs((v_theta - th_k + np.pi) % (2.0 * np.pi) - np.pi) <= (step_angle * 0.55)
+                pts_k = verts[mask_k]
+                sector_pts_list.append(pts_k)
+                if len(pts_k) < 4:
+                    sector_devs.append(1.0)
+                    continue
+
+                R_step = trimesh.transformations.rotation_matrix(step_angle, axis, point=c_rot)[:3, :3]
+                pred_pts = (pts_k - c_rot) @ R_step.T + c_rot
+                _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                dev = float(np.mean(dists))
+                sector_devs.append(dev)
+
+            best_k = int(np.argmin(sector_devs))
+            template_pts = sector_pts_list[best_k]
+            elem_diag = float(np.linalg.norm(template_pts.max(0) - template_pts.min(0))) or 1.0
+
+            # 2. Compare each sector directly to the template sector
             for k in range(order):
                 positions_checked += 1
-                rot_angle = (k - k_template) * step_angle
+                rot_angle = (k - best_k) * step_angle
                 R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_rot)
-                pred_pts = (template_pts @ R_k[:3, :3].T) + R_k[:3, 3]
-
+                pts_k = sector_pts_list[k]
+                if len(pts_k) >= 4:
+                    T_k, _ = align(template_pts, pts_k, max_iters=5)
+                else:
+                    T_k = R_k
+                pred_pts = (template_pts @ T_k[:3, :3].T) + T_k[:3, 3]
                 _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
-                dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                dev = float(np.sqrt(np.mean(dists ** 2))) / elem_diag
+                max_dev = float(np.max(dists)) / elem_diag
                 per_pos_devs.append({'index': k, 'deviation': round(dev, 4)})
 
-                if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
-                    transforms_to_repair.append(R_k)
-
-        elif pattern_type == 'translational':
-            origin = info['origin']
-            ax_u = info['axis_u']
-            ax_v = info['axis_v']
-            step_u = info['step_u']
-            step_v = info['step_v']
-            p_indices = info['p_indices']
-            q_indices = info['q_indices']
-
-            p_max = int(np.max(p_indices))
-            q_max = int(np.max(q_indices))
-
-            template_p = p_indices[best_template_idx]
-            template_q = q_indices[best_template_idx]
-
-            for p_val in range(p_max + 1):
-                for q_val in range(q_max + 1):
-                    positions_checked += 1
-                    shift = (p_val - template_p) * step_u * ax_u + (q_val - template_q) * step_v * ax_v
-                    T_shift = np.eye(4)
-                    T_shift[:3, 3] = shift
-
-                    pred_pts = template_pts + shift
-
-                    _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
-                    dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
-                    per_pos_devs.append({'index': (p_val, q_val), 'deviation': round(dev, 4)})
-
-                    if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
-                        transforms_to_repair.append(T_shift)
-
-        elif pattern_type == 'helical':
-            c_circle = info['center']
-            axis = info['axis']
-            th_step = info['step_angle']
-            h_step = info['step_h']
-            k_min = info['k_min']
-            k_max = info['k_max']
-            k_indices = info['k_indices']
-
-            template_k = k_indices[best_template_idx]
-
-            for k_val in range(k_min, k_max + 1):
-                positions_checked += 1
-                delta_k = k_val - template_k
-                rot_angle = delta_k * th_step
-                R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_circle)
-                T_k = np.eye(4)
-                T_k[:3, :3] = R_k[:3, :3]
-                T_k[:3, 3] = R_k[:3, 3] + delta_k * h_step * axis
-
-                pred_pts = (template_pts @ T_k[:3, :3].T) + T_k[:3, 3]
-
-                _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
-                dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
-                per_pos_devs.append({'index': k_val, 'deviation': round(dev, 4)})
-
-                if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
+                if max_dev >= 0.04 or dev >= 0.015:
                     transforms_to_repair.append(T_k)
 
         if transforms_to_repair:

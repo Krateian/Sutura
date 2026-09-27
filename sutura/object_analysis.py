@@ -32,13 +32,11 @@ SI_SAMPLE_SEED = 12345
 # are pure numpy, imported lazily so this module stays importable without it.
 CLOSING_SIGNAL_MAX_FACES = 200000
 
-# Repeated-element detection (repeat_repair.detect_repetition) segments the mesh
-# by dihedral features and clusters patch descriptors. It cannot be sampled
-# (segmentation needs the topology), so above this face count the probe is
-# skipped (repetition_score stays 0.0, which only lowers the repeat methods'
-# recommendation) to keep the analysis under ~1 s: measured ~0.3 s at this cap,
-# ~0.6 s at 90k. Pure numpy + scipy/trimesh, imported lazily.
-REPETITION_MAX_FACES = 50000
+# Repeated-element detection (repeat_repair.detect_repetition) uses a dual-route
+# architecture: fast segmentation-free surface sampling + KD-tree rotational
+# symmetry detection (scales to dense meshes in <0.5 s), plus feature-edge
+# patch segmentation below 60k faces.
+REPETITION_MAX_FACES = 500000
 
 
 @dataclass
