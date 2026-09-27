@@ -64,8 +64,8 @@ def _make_knurl_cylinder(damaged_idx=3):
     return np.asarray(mesh.vert_properties, np.float64), np.asarray(mesh.tri_verts, np.int64)
 
 
-def _make_tile_grid(damaged_ij=(1, 2)):
-    """Synthetic plate with 3x3 grid of raised square tiles, 1 damaged."""
+def _make_tile_grid(damaged_ij=(1, 2), damage_type='dent'):
+    """Synthetic plate with 3x3 grid of raised square tiles, 1 damaged (dent or bump)."""
     plate_w = 12.0
     plate_h = 1.0
     plate = manifold3d.Manifold.cube([plate_w, plate_w, plate_h], center=True)
@@ -81,7 +81,12 @@ def _make_tile_grid(damaged_ij=(1, 2)):
             y = (j - 1) * tile_spacing
             z = plate_h / 2 + tile_height / 2
             if (i, j) == damaged_ij:
-                t = manifold3d.Manifold.cube([tile_size * 0.5, tile_size * 0.5, tile_height * 0.3], center=True)
+                if damage_type == 'bump':
+                    base_t = manifold3d.Manifold.cube([tile_size, tile_size, tile_height], center=True)
+                    bump = manifold3d.Manifold.cube([tile_size * 0.6, tile_size * 0.6, tile_height * 0.3], center=True).translate([0, 0, tile_height * 0.4])
+                    t = base_t + bump
+                else:
+                    t = manifold3d.Manifold.cube([tile_size * 0.5, tile_size * 0.5, tile_height * 0.3], center=True)
             else:
                 t = manifold3d.Manifold.cube([tile_size, tile_size, tile_height], center=True)
             t = t.translate([x, y, z])
@@ -188,6 +193,22 @@ def test_tile_grid_auto():
     print(
         f"  ✓ test_tile_grid_auto passed "
         f"(pattern: {rep['pattern_type']}, repaired: {rep['positions_repaired']}, H_outside: {rep['hausdorff_outside']:.6f})"
+    )
+
+
+def test_tile_grid_bump_auto():
+    v, t = _make_tile_grid(damaged_ij=(1, 2), damage_type='bump')
+    v_out, t_out, rep = rr.repair_repeat_auto(v, t)
+
+    assert rep['watertight'] is True, f"Repaired bump grid not watertight: {rep}"
+    assert rep['repaired'] is True, "Auto repair failed to repair bump tile"
+    assert rep['pattern_type'] == 'translational', f"Wrong pattern type: {rep['pattern_type']}"
+    assert rep['positions_repaired'] == 1, f"Expected 1 repaired position, got {rep['positions_repaired']}"
+    assert np.max(v_out[:, 2]) <= 1.305, f"Bump was not excised: max Z = {np.max(v_out[:, 2])}"
+    assert rep['hausdorff_outside'] < 1e-4, f"Untouched region changed: H={rep['hausdorff_outside']}"
+    print(
+        f"  ✓ test_tile_grid_bump_auto passed "
+        f"(pattern: {rep['pattern_type']}, repaired: {rep['positions_repaired']}, max_z: {np.max(v_out[:, 2]):.4f})"
     )
 
 
@@ -371,6 +392,7 @@ def main():
     test_extract_outer_shell()
     test_knurl_cylinder_auto()
     test_tile_grid_auto()
+    test_tile_grid_bump_auto()
     test_helical_cylinder_auto()
     test_manual_repair()
     test_csg_bridge_forced()
