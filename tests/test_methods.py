@@ -360,6 +360,34 @@ def test_enforce_reload_verdict_downgrades_false_watertight(tmp):
     assert clean == fake_watertight(), clean
 
 
+def test_p_weld_final_separates_float32_collisions(tmp):
+    """P-WELD: two cubes that only weld together after the float32 STL write
+    are separated by a sub-ULP nudge, so the saved mesh reloads strict-
+    watertight with the SAME face count; an already reload-watertight mesh is
+    returned untouched (report None)."""
+    import methods
+    repair = methods._repair_mod()
+    v, t = _two_cubes_sharing_edge()
+    assert repair.reload_strict_holes_nm(v, t) == (0, 1)
+    try:
+        import pymeshlab  # noqa: F401
+    except ImportError:
+        return
+    nv, nt, rec = repair.p_weld_final(None, v, t)
+    assert rec is not None and rec['applied'], rec
+    assert rec['method'] == 'split-collisions', rec
+    assert repair.reload_strict_holes_nm(nv, nt) == (0, 0), rec
+    assert len(nt) == len(t), (len(nt), len(t))
+    # geometry moved by at most a few float32 ULPs
+    assert np.abs(nv.astype(np.float64) - v.astype(np.float64)).max() < 1e-5
+    # a genuinely reload-watertight mesh is left alone
+    cv, ct = _cube()
+    assert repair.reload_strict_holes_nm(cv, ct) == (0, 0)
+    nv2, nt2, rec2 = repair.p_weld_final(None, cv, ct)
+    assert rec2 is None, rec2
+    assert np.array_equal(nv2, cv) and np.array_equal(nt2, ct)
+
+
 def test_evaluate_requires_stage2_for_watertight(tmp):
     """_evaluate must not claim watertight when stage 2 did not confirm the
     solid (5.1): a stage-1-closed mesh with stage 2 skipped is a warning."""

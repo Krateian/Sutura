@@ -2344,6 +2344,134 @@ def reload_strict_holes_nm(verts, tris):
     return len(d['holes']), len(d['non_manifold'])
 
 
+P_WELD_MAX_NUDGE_ATTEMPTS = 12
+P_WELD_MAX_HOLE = 200
+P_WELD_MIN_FACE_FRACTION = 0.98
+
+
+def _separate_weld_collisions(verts, tris):
+    """Split vertices that are distinct by index but coincide after the float32
+    STL write.
+
+    STL stores no vertex sharing, so two in-memory vertices whose float32
+    positions are exactly equal are welded by the loader; when the in-memory
+    index topology is a clean 2-manifold this weld is the ONLY reason the
+    reloaded mesh is non-manifold. Keeping the vertices distinct by nudging
+    all but one member of each collision group by a few float32 ULPs preserves
+    the in-memory (manifold) topology on reload, with a geometry change below
+    one part in 1e6. Pure numpy.
+    """
+    v64 = np.asarray(verts, dtype=np.float64).copy()
+    t = np.asarray(tris, dtype=np.int64)
+    if len(v64) == 0 or len(t) == 0:
+        return v64.astype(np.float32), t
+    v32 = v64.astype(np.float32)
+    inv = np.asarray(np.unique(v32, axis=0, return_inverse=True)[1]).reshape(-1)
+    counts = np.bincount(inv, minlength=int(inv.max()) + 1)
+    if (counts <= 1).all():
+        return v32, t
+    order = np.argsort(inv, kind='stable')
+    pos = np.empty(len(inv), dtype=np.int64)
+    pos[order] = np.arange(len(inv))
+    group_start = (np.cumsum(counts) - counts)[inv]
+    rank = (pos - group_start).astype(np.float64)
+    nonrep = rank > 0
+    mag = np.maximum(np.abs(v32), np.float32(1.0))
+    ulp = np.maximum(np.spacing(mag).max(axis=1).astype(np.float64), 1e-7)
+    direction = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+    for attempt in range(P_WELD_MAX_NUDGE_ATTEMPTS):
+        d = v64.copy()
+        step = ulp[nonrep] * rank[nonrep] * (2.0 ** (attempt + 1))
+        d[nonrep] += step[:, None] * direction[None, :]
+        d32 = d.astype(np.float32)
+        if len(np.unique(d32, axis=0)) == len(d32):
+            return d32, t
+    return v32, t
+
+
+def _close_small_holes(ml, verts, tris):
+    """Repair non-manifold vertices then cap small boundary loops.
+
+    Only used by the P-WELD fallback for a welded mesh that is not a clean
+    in-memory topology; a failure leaves the input unchanged."""
+    try:
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
+                            face_matrix=np.asarray(tris, np.int32)))
+        ms.apply_filter('meshing_repair_non_manifold_vertices')
+        ms.apply_filter('meshing_close_holes', maxholesize=P_WELD_MAX_HOLE)
+        ms.apply_filter('meshing_remove_unreferenced_vertices')
+        m = ms.current_mesh()
+        return (np.asarray(m.vertex_matrix(), dtype=np.float32),
+                np.asarray(m.face_matrix(), dtype=np.int32))
+    except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
+        return np.asarray(verts, np.float32), np.asarray(tris, np.int32)
+
+
+def p_weld_final(ml, verts, tris):
+    """Reload-safe final pass (P-WELD).
+
+    The last mesh of every STL repair is checked in the form the user reloads
+    (float32 positions with exactly-coincident vertices welded). When that form
+    is not strict-watertight the pass tries, in order:
+
+      1. splitting float32-coincidence collisions when the in-memory index
+         topology is already a clean 2-manifold (the common stage-2 seam case);
+      2. topologically repairing the welded mesh (remove/split the extra faces)
+         and capping the small holes that creates.
+
+    A candidate is adopted only when it is strict-watertight after the weld
+    (0 holes, 0 non-manifold) and, for the fallback, keeps at least
+    ``P_WELD_MIN_FACE_FRACTION`` of the welded faces. The untouched mesh is
+    returned otherwise, so the pass can never make the output worse. Returns
+    ``(verts, tris, report)`` with ``report`` None when the mesh was already
+    reload-watertight.
+    """
+    v0 = np.asarray(verts)
+    t0 = np.asarray(tris)
+    base_h, base_nm = reload_strict_holes_nm(v0, t0)
+    if base_h == 0 and base_nm == 0:
+        return v0, t0, None
+    rec = {'applied': False, 'method': None,
+           'holes_before': int(base_h),
+           'non_manifold_before': int(base_nm),
+           'holes_after': int(base_h),
+           'non_manifold_after': int(base_nm),
+           'vertices_nudged': 0, 'faces_before': int(len(t0)),
+           'faces_after': int(len(t0))}
+    try:
+        d = detect_defects(v0, t0)
+        if len(d['holes']) == 0 and len(d['non_manifold']) == 0:
+            cv, ct = _separate_weld_collisions(v0, t0)
+            ch, cnm = reload_strict_holes_nm(cv, ct)
+            if ch == 0 and cnm == 0:
+                nudged = int((np.asarray(cv, np.float32)
+                              != np.asarray(v0, np.float32)).any(axis=1).sum())
+                rec.update(applied=True, method='split-collisions',
+                           holes_after=0, non_manifold_after=0,
+                           vertices_nudged=nudged,
+                           faces_after=int(len(ct)))
+                return cv, ct, rec
+        wv, wt = weld_reload_equivalent(v0, t0)
+        welded_faces = max(len(wt), 1)
+        cands = [('weld-repair', _repair_welded_topology(ml, wv, wt))]
+        rep_v, rep_t = cands[0][1]
+        cands.append(('weld-repair+close', _close_small_holes(ml, rep_v, rep_t)))
+        for name, (cv, ct) in cands:
+            cv = np.asarray(cv, np.float32)
+            ct = np.asarray(ct, np.int32)
+            if len(ct) < P_WELD_MIN_FACE_FRACTION * welded_faces:
+                continue
+            ch, cnm = reload_strict_holes_nm(cv, ct)
+            if ch == 0 and cnm == 0:
+                rec.update(applied=True, method=name, holes_after=0,
+                           non_manifold_after=0, faces_after=int(len(ct)))
+                return cv, ct, rec
+    except Exception:  # noqa: BLE001 - the final pass never crashes a repair
+        pass
+    return v0, t0, rec
+
+
 def enforce_reload_verdict(report, verts, tris):
     """Honest top-level verdict: never claim watertight for a mesh that is
     not strict-watertight after the reload-equivalent weld (P-HONEST).
@@ -2969,6 +3097,16 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             ml, report, new_v, new_t, tmpdir, engines, engine_chain,
             triage_spec or triage.resolve_intensity(None))
 
+    # P-WELD: reload-safe final pass. STL re-welds exactly-coincident float32
+    # vertices on load, so a clean index-topology mesh can reload non-manifold
+    # (the stage-2 / closing seam case). Separate those coincidences (or, when
+    # the welded mesh is itself repairable, repair it) and adopt only a strictly
+    # reload-watertight result; never make the output worse.
+    if os.path.splitext(src)[1].lower() == '.stl':
+        new_v, new_t, _pwel = p_weld_final(ml, new_v, new_t)
+        if _pwel is not None:
+            report['p_weld'] = _pwel
+
     # P-HONEST: the verdict must describe the mesh actually saved, not the
     # in-memory index topology. The final mesh is chosen above; judge it in
     # the save/reload-equivalent form and let that verdict win.
@@ -3469,6 +3607,14 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('  Pinched vertices split  : %d -> %d (%d pass(es))%s'
                      % (pv.get('before', 0), pv.get('after', 0), pv.get('passes', 0),
                         '' if pv.get('adopted') else ', not kept'))
+    pw = r.get('p_weld')
+    if pw:
+        state = ('%s adopted' % pw.get('method')) if pw.get('applied') \
+            else 'no improvement (kept reload-welded state)'
+        lines.append('  Reload-safe final pass  : holes %d -> %d, non-manifold %d -> %d (%s)'
+                     % (pw.get('holes_before', 0), pw.get('holes_after', 0),
+                        pw.get('non_manifold_before', 0),
+                        pw.get('non_manifold_after', 0), state))
     if r.get('extreme_passes_applied'):
         lines.append('  Extreme passes          : applied (%d self-intersecting face(s) removed)'
                      % r.get('self_intersections_removed', 0))
