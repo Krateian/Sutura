@@ -23,6 +23,20 @@ All notable changes to this project are documented here.
   `method_reached_watertight`, and `analysis`/`recommendations` when escalation
   ran.
 
+- **GUI per-file method tagging (`--analyze`, `--methods`, `--engines`).** The
+  file list gains a **Method** column (*Auto*, *Auto (rec. #N … NN%)* after an
+  analysis, or the chosen tag chain) and a right-click menu: *Analyze* runs the
+  per-object analysis in a background thread; *Recommended methods* lists the
+  ranked top methods with a score bar and the reason in the tooltip; *Use
+  method* lists all twelve methods (#1–#12) as a checkable, order-preserving
+  popup (the check order is the try-order); *External engines* lists the
+  configured engines separately; *Clear tags* returns a file to Auto. The new
+  CLI flag `--engines NAME[,NAME]` selects the engines for a tagged run
+  (default `None` runs every enabled engine as before). `RepairWorker` accepts a
+  per-file method/engine mapping, `method_used` and the attempts list are shown
+  in the result summary, the detailed report and the repair-log panel. EN/TR
+  strings added; documented in the CLI/GUI parity notes and the READMEs.
+
 ### Changed
 
 - **Untagged repair is now auto with a method fallback.**

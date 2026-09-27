@@ -126,6 +126,9 @@ jobs:
       - name: "Test: method registry / analysis / ranking"
         run: ./venv/bin/python tests/test_methods.py
 
+      - name: "Test: method tagging GUI (offscreen)"
+        run: ./venv/bin/python tests/test_methods_gui.py
+
       - name: "Test: repair budget"
         if: matrix.python-version == '3.11'   # asserts a stage-2 watertight result
         run: ./venv/bin/python tests/test_budget.py

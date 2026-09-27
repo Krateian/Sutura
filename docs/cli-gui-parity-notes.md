@@ -14,7 +14,6 @@ omission must be documented here. This file records the current parity gaps
 | `-o/--output` | GUI always writes the default `_fixed` file in place; a custom output path is a scripting need. |
 | `--human`, `--defects`, `--diff` | Text-report presentation flags; the GUI renders the same data graphically (defect panel, repair log, before/after). |
 | `export-history` (`--last`/`--clear`/`--summary-only`) | Usage-history is an anonymous CLI/telemetry feature; no GUI viewer yet. |
-| `--list-methods`, `--analyze`, `--methods` | P0 adds the method registry, per-object analysis and method tagging on the CLI only. The GUI equivalents (method picker + recommendation view + batch-wide method tag) are scheduled for P3; the GUI keeps its current fTetWild checkboxes until then. |
 
 ## GUI-only (allowed exceptions — visual features)
 
@@ -40,6 +39,11 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all six
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
+`--list-methods` / `--analyze` / `--methods` (GUI right-click menu: *Analyze*
+runs `--analyze`; *Recommended methods* and *Use method* tag methods in order;
+the new **Method** column shows *Auto* / the top recommendation / the tag
+chain) · `--engines` (GUI *External engines* submenu, tagged the same way;
+separate from the method ranking) ·
 `engines list|check` (GUI *Engines* tab engine list with Reload / *Open
 engines folder* / docs link) ·
 `ftetwild status|install|uninstall` and `--yes`/`--dry-run` (GUI *Engines*
@@ -64,5 +68,10 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   rule holds. The engine *configuration* (the TOML files) is edited outside
   the app in both cases; the GUI only lists, reloads and opens the folder.
 - **P0 (method registry):** `--list-methods`, `--analyze` and `--methods`
-  are CLI-only for now; the GUI controls are the explicit P3 follow-up (see
-  the CLI-only table above).
+  were CLI-only initially; the GUI controls were the explicit P3 follow-up.
+- **P3 (GUI method tagging):** closed that gap. The GUI file list gained a
+  third **Method** column and a right-click menu (*Analyze*, *Recommended
+  methods*, *Use method* with a checkable keep-open popup, *External engines*,
+  *Clear tags*). `--engines NAME[,NAME]` was added with the GUI *External
+  engines* submenu in the same change (per-file engine selection; default
+  `None` runs every enabled engine as before), so the parity rule holds.

@@ -248,6 +248,19 @@ of escalating. The report adds `method_used`, `methods_tried`,
 `method_reached_watertight` and, when escalation ran, `analysis` and
 `recommendations`.
 
+The same registry is exposed in the GUI. The file list has a **Method**
+column that shows *Auto*, *Auto (rec. #3 … 82%)* after an analysis, or the
+tag chain the user chose. Right-clicking one or several files opens a menu:
+*Analyze* runs the per-object analysis (`--analyze`) in the background,
+*Recommended methods* lists the ranked top methods with a score bar and the
+reason in the tooltip, *Use method* lists all twelve methods (#1–#12) as a
+checkable, order-preserving popup (the order in which they are checked is the
+try-order, e.g. `#2 → #3 → #5`), and *External engines* lists the configured
+third-party engines (kept separate from the ranking). *Clear tags* returns a
+file to Auto. Tagged files run exactly their methods, in order; untagged files
+keep the auto behaviour. Engines tagged per file are selected with the CLI
+`--engines NAME[,NAME]` (`None` runs every enabled engine as configured).
+
 ### External repair engines and the fTetWild manager
 
 Sutura can call user-installed third-party repair **engines** and manage the

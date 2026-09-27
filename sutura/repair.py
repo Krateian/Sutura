@@ -3381,7 +3381,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
-                 methods=None):
+                 methods=None, engine_filter=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -3403,12 +3403,19 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     ``methods`` is the optional user-tagged method list (``--methods``); None
     means auto mode (today's default pipeline first, ranked fallbacks only when
     it fails), implemented by ``sutura/methods.py``.
+    ``engine_filter`` is the optional list of external-engine names
+    (``--engines``): when given, only those engines run (at their configured
+    placement); None keeps the default of running every enabled engine.
     """
     if not os.path.exists(src):
         return ({'input': src, 'error': 'file not found: %s' % src}, 'error')
 
     if engines is None and engine_chain is None:
         engines, engine_chain, engine_warnings = load_engine_run()
+    if engine_filter is not None:
+        _want = set(engine_filter)
+        engines = {n: c for n, c in (engines or {}).items() if n in _want}
+        engine_chain = [n for n in (engine_chain or []) if n in _want]
 
     stem, ext = os.path.splitext(src)
     if out is None:
@@ -3697,6 +3704,13 @@ def main():
                              '--methods 2,3,5. Without it the repair is auto: '
                              "today's default pipeline first, with ranked "
                              'fallbacks only when it fails.')
+    parser.add_argument('--engines', default=None, metavar='LIST',
+                        help='tag the configured external engines to run, e.g. '
+                             '--engines meshfix,my-engine. When given, only '
+                             'those enabled engines run (at their configured '
+                             'placement); without it every enabled engine runs '
+                             'as configured. Engines are never mixed into the '
+                             'method ranking (see `engines list`).')
     parser.add_argument('--json', action='store_true',
                         help='force machine-readable JSON output (the default '
                              'format; overrides --human)')
@@ -3851,6 +3865,15 @@ def main():
             nums.append(num)
         methods_sel = nums
 
+    # --engines: tag specific external engines (names validated against the
+    # configured engines below, after they are loaded).
+    engines_sel = None
+    if args.engines:
+        parts = [p.strip() for p in args.engines.split(',') if p.strip()]
+        if not parts:
+            parser.error('argument --engines: empty list')
+        engines_sel = parts
+
     # 'engines list|check' and 'ftetwild status|install|uninstall' are
     # subcommands, dispatched before any repair (like validate/export-history).
     if files and files[0] == 'engines':
@@ -3909,6 +3932,9 @@ def main():
         if methods_sel is not None:
             print(json.dumps({'error': '--methods is not valid with validate'}))
             sys.exit(1)
+        if engines_sel is not None:
+            print(json.dumps({'error': '--engines is not valid with validate'}))
+            sys.exit(1)
         results = [validate_file(f, engine) for f in targets]
         nerr = sum(1 for r in results if 'error' in r)
         if len(targets) == 1:
@@ -3936,6 +3962,9 @@ def main():
             sys.exit(1)
         if methods_sel is not None:
             print(json.dumps({'error': '--methods is not valid with --analyze'}))
+            sys.exit(1)
+        if engines_sel is not None:
+            print(json.dumps({'error': '--engines is not valid with --analyze'}))
             sys.exit(1)
         if not files:
             print(json.dumps({'error': '--analyze requires at least one input file'}))
@@ -3965,6 +3994,9 @@ def main():
             sys.exit(1)
         if methods_sel is not None:
             print(json.dumps({'error': '--methods is not valid with --dry-run'}))
+            sys.exit(1)
+        if engines_sel is not None:
+            print(json.dumps({'error': '--engines is not valid with --dry-run'}))
             sys.exit(1)
         results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine,
                                 triage_spec=triage_spec) for f in files]
@@ -4000,6 +4032,11 @@ def main():
     # External engines are loaded ONCE for the whole batch; broken configs
     # only warn and never fail a repair.
     _engines, _engine_chain, _engine_warnings = load_engine_run()
+    if engines_sel is not None:
+        _unknown = [n for n in engines_sel if n not in _engines]
+        if _unknown:
+            parser.error('argument --engines: unknown engine(s): %s '
+                         '(see `sutura engines list`)' % ', '.join(_unknown))
     results = [process_file(f, human, mode=mode, profile=args.profile,
                             no_history=args.no_history, engine=engine,
                             out=out, max_geom_change=max_geom_change,
@@ -4012,7 +4049,8 @@ def main():
                             triage_spec=triage_spec, engines=_engines,
                             engine_chain=_engine_chain,
                             engine_warnings=_engine_warnings,
-                            methods=methods_sel) for f in files]
+                            methods=methods_sel,
+                            engine_filter=engines_sel) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

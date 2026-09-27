@@ -354,6 +354,24 @@ def test_cli_invalid_method_rejected(tmp):
     assert 'unknown method 99' in r.stderr, r.stderr
 
 
+def test_cli_engines_validation(tmp):
+    """--engines is validated against the configured engines and rejected in
+    the read-only modes (P3 CLI/GUI parity for per-file engine tagging)."""
+    path = os.path.join(tmp, 'cube.stl')
+    v, t = _cube()
+    _write_stl(path, v, t)
+    # isolate the engine config dir: no engines configured -> unknown name
+    env = dict(_env(tmp),
+               XDG_CONFIG_HOME=os.path.join(tmp, 'cfg-empty'))
+    r = _run(['--engines', 'nope', '--no-fallback-ftetwild', path], env=env)
+    assert r.returncode != 0, r.stdout
+    assert 'unknown engine' in r.stderr, r.stderr
+    # read-only modes reject --engines like they reject --methods
+    r2 = _run(['--engines', 'x', 'validate', path], env=env)
+    assert r2.returncode != 0, r2.stdout
+    assert 'not valid with validate' in r2.stdout, r2.stdout
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='sutura-methods-') as tmp:
         for name, fn in sorted(globals().items()):

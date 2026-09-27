@@ -252,6 +252,21 @@ yöntem yalnızca öneri puanı yeterince yüksekse), ve açık bir
 geçmez. Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
 ek deneme çalıştıysa `analysis` ile `recommendations` alanlarını ekler.
 
+Aynı kayıt defteri GUI'de de açığa çıkar. Dosya listesinde bir **Yöntem**
+sütunu *Otomatik*, analizden sonra *Otomatik (öneri #3 … %82)* ya da
+kullanıcının seçtiği etiket zincirini gösterir. Bir veya birkaç dosyaya sağ
+tıklamak bir menü açar: *Analiz et* nesne-başına analizi (`--analyze`) arka
+planda çalıştırır, *Önerilen yöntemler* sıralanmış en iyi yöntemleri bir puan
+çubuğu ve gerekçesi ipucunda olacak şekilde listeler, *Yöntem kullan* on iki
+yöntemin (#1–#12) tümünü sırayı koruyan işaretlenebilir bir açılır menü olarak
+listeler (işaretlenme sırası deneme sırasıdır, örn. `#2 → #3 → #5`) ve *Harici
+motorlar* yapılandırılmış üçüncü taraf motorları listeler (sıralamadan ayrı
+tutulur). *Etiketleri temizle* bir dosyayı Otomatik'e döndürür. Etiketli
+dosyalar tam olarak kendi yöntemlerini sırayla çalıştırır; etiketsiz dosyalar
+otomatik davranışı korur. Dosya başına etiketlenen motorlar CLI'de
+`--engines AD[,AD]` ile seçilir (`None` yapılandırılmış tüm etkin motorları
+çalıştırır).
+
 ### Harici onarım motorları ve fTetWild yöneticisi
 
 Sutura, kullanıcının kurduğu üçüncü taraf onarım **motorlarını**
