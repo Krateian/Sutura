@@ -91,6 +91,43 @@ def _make_tile_grid(damaged_ij=(1, 2)):
     return np.asarray(mesh.vert_properties, np.float64), np.asarray(mesh.tri_verts, np.int64)
 
 
+def _make_helical_thread_cylinder(damaged_idx=3):
+    """Synthetic cylinder with 6 helical thread segments along Z, 1 damaged."""
+    R = 5.0
+    H = 8.0
+    n_threads = 6
+    theta_step = 2.0 * np.pi / n_threads
+    h_step = 1.0
+
+    cylinder = manifold3d.Manifold.cylinder(
+        height=H, radius_low=R, radius_high=R, circular_segments=64
+    ).translate([0, 0, -H / 2])
+
+    threads = []
+    for i in range(n_threads):
+        angle = i * theta_step
+        z = -2.5 + i * h_step
+        if i == damaged_idx:
+            bump = manifold3d.Manifold.cube([0.3, 0.4, 0.3], center=True).translate([R, 0, 0])
+        else:
+            bump = manifold3d.Manifold.cube([0.8, 1.2, 0.6], center=True).translate([R, 0, 0])
+        T = np.eye(4)
+        T[:3, :3] = [
+            [np.cos(angle), -np.sin(angle), 0],
+            [np.sin(angle),  np.cos(angle), 0],
+            [0,              0,             1]
+        ]
+        bump = bump.transform(T[:3, :]).translate([0, 0, z])
+        threads.append(bump)
+
+    mesh_m = cylinder
+    for b in threads:
+        mesh_m = mesh_m + b
+
+    mesh = mesh_m.to_mesh()
+    return np.asarray(mesh.vert_properties, np.float64), np.asarray(mesh.tri_verts, np.int64)
+
+
 def test_segment_elements():
     v, t = _make_knurl_cylinder(damaged_idx=3)
     patches = rr.segment_elements(v, t)
@@ -150,6 +187,45 @@ def test_tile_grid_auto():
     )
 
 
+def test_helical_cylinder_auto():
+    v, t = _make_helical_thread_cylinder(damaged_idx=3)
+    v_out, t_out, rep = rr.repair_repeat_auto(v, t)
+
+    assert rep['watertight'] is True, f"Repaired helical cylinder not watertight: {rep}"
+    assert rep['repaired'] is True, "Auto repair failed to repair damaged thread segment"
+    assert rep['pattern_type'] == 'helical', f"Wrong pattern type: {rep['pattern_type']}"
+    assert rep['positions_repaired'] == 1, f"Expected 1 repaired position, got {rep['positions_repaired']}"
+    assert rep['hausdorff_outside'] < 1e-4, f"Untouched region changed: H={rep['hausdorff_outside']}"
+    print(
+        f"  ✓ test_helical_cylinder_auto passed "
+        f"(pattern: {rep['pattern_type']}, repaired: {rep['positions_repaired']}, H_outside: {rep['hausdorff_outside']:.6f})"
+    )
+
+
+def test_closing_free_validity():
+    # Valid box
+    v_box = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]
+    ], dtype=np.float64)
+    t_box = np.array([
+        [0, 1, 2], [0, 2, 3],  # bottom
+        [4, 6, 5], [4, 7, 6],  # top
+        [0, 4, 5], [0, 5, 1],  # front
+        [2, 6, 7], [2, 7, 3],  # back
+        [0, 3, 7], [0, 7, 4],  # left
+        [1, 5, 6], [1, 6, 2],  # right
+    ], dtype=np.int64)
+
+    is_valid, msg = rr.check_mesh_validity(v_box, t_box)
+    assert is_valid is True, f"Valid box failed check: {msg}"
+
+    # Open box (missing 1 face)
+    is_valid_open, _ = rr.check_mesh_validity(v_box, t_box[:-1])
+    assert is_valid_open is False, "Open box should not be valid"
+    print("  ✓ test_closing_free_validity passed")
+
+
 def test_manual_repair():
     v, t = _make_tile_grid(damaged_ij=(1, 2))
     # Source: healthy tile at (0, 0)
@@ -186,10 +262,12 @@ def test_defensive_error_handling():
 def main():
     t0 = time.time()
     print("Running repeated-element repair tests (tests/test_repeat_repair.py)...")
+    test_closing_free_validity()
     test_segment_elements()
     test_align()
     test_knurl_cylinder_auto()
     test_tile_grid_auto()
+    test_helical_cylinder_auto()
     test_manual_repair()
     test_defensive_error_handling()
     elapsed = time.time() - t0

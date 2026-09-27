@@ -16,7 +16,6 @@ import scipy.sparse as sp
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 import trimesh
-import manifold3d
 
 # Threshold constants
 DEFAULT_FEATURE_ANGLE_DEG = 30.0
@@ -43,25 +42,37 @@ def _referenced_only(verts, tris):
     return verts[used], remap[tris]
 
 
-def _build_manifold(verts, tris):
-    """Build a manifold3d Manifold from verts and tris, verifying validity."""
-    verts = np.asarray(verts, dtype=np.float64)
-    tris = np.asarray(tris, dtype=np.int32)
-    if len(verts) < 4 or len(tris) < 4:
-        return None, "Mesh has too few vertices or triangles"
+def check_mesh_validity(verts, tris):
+    """Check mesh validity (watertight 2-manifold) without closing or manifold3d.
 
-    try:
-        mf = manifold3d.Manifold(mesh=manifold3d.Mesh(
-            vert_properties=verts,
-            tri_verts=tris,
-        ))
-        if mf.status() != manifold3d.Error.NoError:
-            return None, f"manifold3d error status: {mf.status()}"
-        if mf.is_empty():
-            return None, "manifold3d solid is empty"
-        return mf, ""
-    except Exception as e:
-        return None, f"Failed to build manifold3d solid: {e}"
+    Pure NumPy/topology check that does not require importing manifold3d.
+    Returns (is_valid, err_msg).
+    """
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
+    if len(verts) < 4 or len(tris) < 4:
+        return False, "Mesh has too few vertices or triangles"
+
+    # Degenerate face check
+    if np.any(tris[:, 0] == tris[:, 1]) or np.any(tris[:, 1] == tris[:, 2]) or np.any(tris[:, 2] == tris[:, 0]):
+        return False, "Mesh contains degenerate triangles with duplicate vertices"
+
+    # Edge topology check: each undirected edge must appear exactly twice
+    edges = np.vstack([
+        tris[:, [0, 1]],
+        tris[:, [1, 2]],
+        tris[:, [2, 0]]
+    ])
+    sorted_edges = np.ascontiguousarray(np.sort(edges, axis=1))
+    edge_dtype = [('v0', sorted_edges.dtype), ('v1', sorted_edges.dtype)]
+    struct_edges = sorted_edges.view(edge_dtype).reshape(-1)
+    _, counts = np.unique(struct_edges, return_counts=True)
+    if np.any(counts != 2):
+        n_open = int(np.sum(counts == 1))
+        n_nm = int(np.sum(counts > 2))
+        return False, f"Non-watertight mesh: {n_open} boundary edges, {n_nm} non-manifold edges"
+
+    return True, ""
 
 
 def _compute_obb(pts, margin=OBB_EXPANSION_MARGIN, epsilon=OBB_MIN_EPSILON):
@@ -86,15 +97,6 @@ def _compute_obb(pts, margin=OBB_EXPANSION_MARGIN, epsilon=OBB_MIN_EPSILON):
     extents = np.maximum(extents, epsilon * 2.0)
 
     return center, extents, frame
-
-
-def _make_obb_manifold(center, extents, frame):
-    """Create a manifold3d solid for an oriented bounding box."""
-    cube = manifold3d.Manifold.cube(extents, center=True)
-    T_box = np.eye(4)
-    T_box[:3, :3] = frame
-    T_box[:3, 3] = center
-    return cube.transform(T_box[:3, :])
 
 
 def _is_inside_obb(pts, center, extents, frame, margin_factor=1.0):
@@ -313,25 +315,77 @@ def align(src_pts, dst_pts, allow_reflection=False, max_iters=20):
     return T, rel_rms
 
 
-def _volumetric_transplant(manifold_m, src_pts, T, margin=OBB_EXPANSION_MARGIN):
-    """Execute robust volumetric transplantation: (M - Box_dst) | T(M & Box_src)."""
-    c_src, ext_src, frame_src = _compute_obb(src_pts, margin=margin)
-    box_src_m = _make_obb_manifold(c_src, ext_src, frame_src)
+def _execute_boolean_transplant(verts, tris, template_pts, transforms, margin=OBB_EXPANSION_MARGIN):
+    """Execute volumetric boolean transplant operations using manifold3d CSG.
 
-    # Destination OBB
-    box_dst_m = box_src_m.transform(T[:3, :])
-    c_dst = T[:3, :3] @ c_src + T[:3, 3]
-    ext_dst = ext_src
-    frame_dst = T[:3, :3] @ frame_src
+    All manifold3d imports and solid CSG operations are isolated strictly within
+    this single function so that repeat_repair can be imported and executed
+    (mesh validity checking, pattern detection, alignment) without requiring
+    manifold3d in-process in environments that lack it (e.g. Linux main venv).
 
-    # Boolean operations
-    element_solid = manifold_m ^ box_src_m
-    element_prime = element_solid.transform(T[:3, :])
+    Parameters:
+        verts: (N, 3) float64 array of input mesh vertices.
+        tris: (M, 3) int64 array of input mesh triangles.
+        template_pts: (P, 3) vertices of the healthy template element.
+        transforms: list of 4x4 rigid transformation matrices (one per transplant site).
+        margin: OBB expansion margin fraction.
 
-    cavity_m = manifold_m - box_dst_m
-    result_m = cavity_m + element_prime
+    Returns:
+        rep_v: (N_out, 3) vertices of repaired mesh.
+        rep_t: (M_out, 3) triangle indices of repaired mesh.
+        vol_change: float absolute volume change.
+        dst_boxes: list of (center, extents, frame) tuples for repaired regions.
+        is_watertight: bool whether the resulting solid is a valid watertight manifold.
+    """
+    try:
+        import manifold3d
+    except ImportError as e:
+        raise RuntimeError(
+            "manifold3d is required for volumetric boolean transplantation. "
+            "On Linux, manifold3d runs under venv311 (Python 3.11)."
+        ) from e
 
-    return result_m, (c_dst, ext_dst, frame_dst)
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int32)
+    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(
+        vert_properties=verts,
+        tri_verts=tris,
+    ))
+    if mf.status() != manifold3d.Error.NoError:
+        raise ValueError(f"manifold3d error status on input mesh: {mf.status()}")
+    if mf.is_empty():
+        raise ValueError("manifold3d solid is empty")
+
+    initial_vol = mf.volume()
+    c_src, ext_src, frame_src = _compute_obb(template_pts, margin=margin)
+
+    cube = manifold3d.Manifold.cube(ext_src, center=True)
+    T_box = np.eye(4)
+    T_box[:3, :3] = frame_src
+    T_box[:3, 3] = c_src
+    box_src_m = cube.transform(T_box[:3, :])
+
+    element_solid = mf ^ box_src_m
+    current_mf = mf
+    dst_boxes = []
+
+    for T in transforms:
+        box_dst_m = box_src_m.transform(T[:3, :])
+        c_dst = T[:3, :3] @ c_src + T[:3, 3]
+        ext_dst = ext_src
+        frame_dst = T[:3, :3] @ frame_src
+        dst_boxes.append((c_dst, ext_dst, frame_dst))
+
+        element_prime = element_solid.transform(T[:3, :])
+        cavity_m = current_mf - box_dst_m
+        current_mf = cavity_m + element_prime
+
+    out_mesh = current_mf.to_mesh()
+    rep_v = np.asarray(out_mesh.vert_properties, dtype=np.float64)
+    rep_t = np.asarray(out_mesh.tri_verts, dtype=np.int64)
+    vol_change = float(abs(current_mf.volume() - initial_vol))
+    is_watertight = bool(current_mf.status() == manifold3d.Error.NoError)
+    return rep_v, rep_t, vol_change, dst_boxes, is_watertight
 
 
 def _compute_hausdorff_outside(orig_tm, result_tm, dst_boxes, samples=5000):
@@ -399,68 +453,150 @@ def detect_repetition(verts, tris):
     members = [patches[idx] for idx in member_indices]
     centroids = np.array([m['centroid'] for m in members])
 
-    # 2. Check for Rotational Pattern
+    # 2. Check for Rotational and Helical Patterns on Cylinder
     c_rough = np.mean(centroids, axis=0)
-    cov = (centroids - c_rough).T @ (centroids - c_rough) / len(centroids)
-    w, v_eig = np.linalg.eigh(cov)
-    axis = v_eig[:, 0]
-    u_ax = v_eig[:, 2]
-    v_ax = v_eig[:, 1]
+    cov_p = (centroids - c_rough).T @ (centroids - c_rough) / len(centroids)
+    w_p, V_p = np.linalg.eigh(cov_p)
 
-    # Project centroids onto 2D plane
-    x_2d = centroids @ u_ax
-    y_2d = centroids @ v_ax
+    patch_normals = []
+    for m in members:
+        f_in_e = m['faces']
+        v0 = verts[tris[f_in_e, 0]]
+        v1 = verts[tris[f_in_e, 1]]
+        v2 = verts[tris[f_in_e, 2]]
+        cross = np.cross(v1 - v0, v2 - v0)
+        norm = np.sum(cross, axis=0)
+        patch_normals.append(norm / (np.linalg.norm(norm) + 1e-12))
+    cov_n = np.array(patch_normals).T @ np.array(patch_normals)
+    w_n, Vn = np.linalg.eigh(cov_n)
 
-    # Algebraic circle fit: A [2cx, 2cy, k] = x^2 + y^2
-    try:
-        A = np.column_stack([2.0 * x_2d, 2.0 * y_2d, np.ones(len(x_2d))])
-        b = x_2d ** 2 + y_2d ** 2
-        sol, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-        cx, cy = float(sol[0]), float(sol[1])
-        r_sq = sol[2] + cx ** 2 + cy ** 2
-        if r_sq > 0:
-            fit_r = float(np.sqrt(r_sq))
-            radial_dists = np.sqrt((x_2d - cx) ** 2 + (y_2d - cy) ** 2)
-            rel_std = float(np.std(radial_dists) / fit_r)
+    candidates = [Vn[:, 0], V_p[:, 0], V_p[:, 1], V_p[:, 2]]
 
-            if fit_r > 1e-3 and rel_std < 0.08:
-                plane_z = float(np.mean(centroids @ axis))
-                c_circle_3d = cx * u_ax + cy * v_ax + plane_z * axis
-                theta_vals = np.arctan2(y_2d - cy, x_2d - cx) % (2.0 * np.pi)
+    best_axis = None
+    best_rel_std = 1.0
+    best_basis = None
+    best_circle = None
 
-                best_n = None
-                for n_cand in range(3, 33):
-                    step = 2.0 * np.pi / n_cand
-                    th0 = theta_vals[0]
-                    diffs = (theta_vals - th0) % step
-                    diffs = np.minimum(diffs, step - diffs)
-                    if (np.max(diffs) / step) < 0.05:
-                        best_n = n_cand
-                        break
+    for ax in candidates:
+        norm_ax = np.linalg.norm(ax)
+        if norm_ax < 1e-6:
+            continue
+        ax = ax / norm_ax
+        if abs(ax[0]) < 0.9:
+            u = np.cross(ax, [1, 0, 0])
+        else:
+            u = np.cross(ax, [0, 1, 0])
+        u /= np.linalg.norm(u)
+        v_vec = np.cross(ax, u)
 
-                if best_n is not None:
-                    step = 2.0 * np.pi / best_n
-                    th0 = theta_vals[0]
-                    diffs = (theta_vals - th0) % step
-                    diffs = np.minimum(diffs, step - diffs)
-                    score = float(np.clip(1.0 - (np.mean(diffs) / step), 0.0, 1.0))
-                    return score, {
-                        'pattern_type': 'rotational',
-                        'order': best_n,
-                        'center': c_circle_3d,
-                        'axis': axis,
-                        'u_axis': u_ax,
-                        'v_axis': v_ax,
-                        'radius': fit_r,
-                        'step_angle': 2.0 * np.pi / best_n,
-                        'members': members,
-                        'group_size': len(members),
-                    }
-    except Exception:
-        pass
+        x_2d = (centroids - c_rough) @ u
+        y_2d = (centroids - c_rough) @ v_vec
+        try:
+            A = np.column_stack([2.0 * x_2d, 2.0 * y_2d, np.ones(len(x_2d))])
+            b = x_2d ** 2 + y_2d ** 2
+            sol, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+            cx, cy = float(sol[0]), float(sol[1])
+            r_sq = sol[2] + cx ** 2 + cy ** 2
+            if r_sq > 0:
+                fit_r = float(np.sqrt(r_sq))
+                radial_dists = np.sqrt((x_2d - cx) ** 2 + (y_2d - cy) ** 2)
+                rel_std = float(np.std(radial_dists) / fit_r)
+                if rel_std < best_rel_std:
+                    best_rel_std = rel_std
+                    best_axis = ax
+                    best_basis = (u, v_vec)
+                    best_circle = (cx, cy, fit_r)
+        except Exception:
+            pass
+
+    if best_axis is not None and best_circle[2] > 1e-3 and best_rel_std < 0.08:
+        u, v_vec = best_basis
+        cx, cy, fit_r = best_circle
+        c_circle_3d = c_rough + cx * u + cy * v_vec
+        z_coords = (centroids - c_circle_3d) @ best_axis
+        x_rel = (centroids - c_circle_3d) @ u
+        y_rel = (centroids - c_circle_3d) @ v_vec
+        theta_vals = np.arctan2(y_rel, x_rel) % (2.0 * np.pi)
+
+        z_span = float(np.max(z_coords) - np.min(z_coords))
+        z_std = float(np.std(z_coords))
+
+        # 2a. Pure Rotational Pattern (planar circular array)
+        if z_span < 0.05 * fit_r or z_std < 0.02 * fit_r:
+            best_n = None
+            for n_cand in range(3, 33):
+                step = 2.0 * np.pi / n_cand
+                th0 = theta_vals[0]
+                diffs = (theta_vals - th0) % step
+                diffs = np.minimum(diffs, step - diffs)
+                if (np.max(diffs) / step) < 0.05:
+                    best_n = n_cand
+                    break
+
+            if best_n is not None:
+                step = 2.0 * np.pi / best_n
+                th0 = theta_vals[0]
+                diffs = (theta_vals - th0) % step
+                diffs = np.minimum(diffs, step - diffs)
+                score = float(np.clip(1.0 - (np.mean(diffs) / step), 0.0, 1.0))
+                return score, {
+                    'pattern_type': 'rotational',
+                    'order': best_n,
+                    'center': c_circle_3d,
+                    'axis': best_axis,
+                    'u_axis': u,
+                    'v_axis': v_vec,
+                    'radius': fit_r,
+                    'step_angle': 2.0 * np.pi / best_n,
+                    'members': members,
+                    'group_size': len(members),
+                }
+
+        # 2b. Helical (Screw) Pattern (rotation around axis combined with axial translation)
+        if z_span >= 0.05 * fit_r and z_std >= 0.02 * fit_r:
+            s = np.argsort(z_coords)
+            z_sorted = z_coords[s]
+            th_sorted = theta_vals[s]
+            dz = np.diff(z_sorted)
+            nz_dz = dz[dz > 1e-3 * fit_r]
+            if len(nz_dz) > 0:
+                h_min = np.min(nz_dz)
+                ratios = dz / h_min
+                if np.all(np.abs(ratios - np.round(ratios)) < 0.20):
+                    h_step = float(np.median(dz / np.round(ratios)))
+                    k_fit = np.round((z_sorted - z_sorted[0]) / h_step).astype(int)
+                    err_z = np.abs((z_sorted - z_sorted[0]) - k_fit * h_step) / h_step
+
+                    dth = np.diff(th_sorted)
+                    dth_wrap = (dth + np.pi) % (2.0 * np.pi) - np.pi
+                    dk = np.diff(k_fit)
+                    valid = dk >= 1
+                    if np.any(valid):
+                        th_step = float(np.median(dth_wrap[valid] / dk[valid]))
+                        th_pred = th_sorted[0] + k_fit * th_step
+                        err_th = np.abs((th_sorted - th_pred + np.pi) % (2.0 * np.pi) - np.pi)
+                        if np.max(err_th) < 0.15 and np.max(err_z) < 0.15:
+                            score = float(np.clip(1.0 - (np.mean(err_th) / 0.15 + np.mean(err_z) / 0.15) / 2.0, 0.0, 1.0))
+                            k_members = np.zeros(len(members), dtype=int)
+                            k_members[s] = k_fit
+                            return score, {
+                                'pattern_type': 'helical',
+                                'center': c_circle_3d,
+                                'axis': best_axis,
+                                'u_axis': u,
+                                'v_axis': v_vec,
+                                'radius': fit_r,
+                                'step_angle': th_step,
+                                'step_h': h_step,
+                                'k_indices': k_members,
+                                'k_min': int(np.min(k_fit)),
+                                'k_max': int(np.max(k_fit)),
+                                'members': members,
+                                'group_size': len(members),
+                            }
 
     # 3. Check for Translational / Grid Pattern
-    ax1, ax2 = v_eig[:, 2], v_eig[:, 1]
+    ax1, ax2 = V_p[:, 2], V_p[:, 1]
     u_coords = (centroids - c_rough) @ ax1
     v_coords = (centroids - c_rough) @ ax2
 
@@ -523,8 +659,8 @@ def repair_repeat_manual(verts, tris, source_point, target_point, margin=OBB_EXP
     diag = float(np.linalg.norm(orig_mesh.extents))
 
     # Precondition: must be solid manifold
-    mf, err_msg = _build_manifold(verts, tris)
-    if mf is None:
+    is_valid, err_msg = check_mesh_validity(verts, tris)
+    if not is_valid:
         return verts, tris, {
             'watertight': False,
             'repaired': False,
@@ -565,18 +701,14 @@ def repair_repeat_manual(verts, tris, source_point, target_point, margin=OBB_EXP
         T, rel_rms = align(src_pts, dst_pts)
 
         # Volumetric transplant
-        result_mf, dst_box = _volumetric_transplant(mf, src_pts, T, margin=margin)
-
-        out_mesh = result_mf.to_mesh()
-        rep_v = np.asarray(out_mesh.vert_properties, dtype=np.float64)
-        rep_t = np.asarray(out_mesh.tri_verts, dtype=np.int64)
+        rep_v, rep_t, vol_change, dst_boxes, is_watertight = _execute_boolean_transplant(
+            verts, tris, src_pts, [T], margin=margin
+        )
         rep_tm = trimesh.Trimesh(vertices=rep_v, faces=rep_t, process=False)
-
-        vol_change = float(abs(result_mf.volume() - mf.volume()))
-        h_outside = _compute_hausdorff_outside(orig_mesh, rep_tm, [dst_box])
+        h_outside = _compute_hausdorff_outside(orig_mesh, rep_tm, dst_boxes)
 
         return rep_v, rep_t, {
-            'watertight': bool(result_mf.status() == manifold3d.Error.NoError),
+            'watertight': bool(is_watertight),
             'repaired': True,
             'volume_change': round(vol_change, 6),
             'hausdorff_outside': round(h_outside, 6),
@@ -619,8 +751,8 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN):
 
     orig_mesh = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
 
-    mf, err_msg = _build_manifold(verts, tris)
-    if mf is None:
+    is_valid, err_msg = check_mesh_validity(verts, tris)
+    if not is_valid:
         return verts, tris, {
             'watertight': False,
             'repaired': False,
@@ -637,7 +769,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN):
         score, info = detect_repetition(verts, tris)
         pattern_type = info.get('pattern_type', 'none')
 
-        if score < 0.5 or pattern_type not in ('rotational', 'translational'):
+        if score < 0.5 or pattern_type not in ('rotational', 'translational', 'helical'):
             return verts, tris, {
                 'watertight': True,
                 'repaired': False,
@@ -659,47 +791,39 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN):
         elem_diag = template['diag']
 
         positions_checked = 0
-        positions_repaired = 0
         per_pos_devs = []
-        dst_boxes = []
-
-        current_mf = mf
+        transforms_to_repair = []
 
         if pattern_type == 'rotational':
             order = info['order']
             c_rot = info['center']
             axis = info['axis']
             step_angle = info['step_angle']
-
-            # Find base angle of template
             u_ax = info['u_axis']
             v_ax = info['v_axis']
-            th_base = np.arctan2(
+
+            th_template = np.arctan2(
                 (template['centroid'] - c_rot) @ v_ax,
                 (template['centroid'] - c_rot) @ u_ax,
-            )
+            ) % (2.0 * np.pi)
+            th_base = np.arctan2(
+                (members[0]['centroid'] - c_rot) @ v_ax,
+                (members[0]['centroid'] - c_rot) @ u_ax,
+            ) % (2.0 * np.pi)
+            k_template = int(np.round(((th_template - th_base) % (2.0 * np.pi)) / step_angle))
 
             for k in range(order):
                 positions_checked += 1
-                rot_angle = k * step_angle
-                # Rotation matrix around axis through c_rot
+                rot_angle = (k - k_template) * step_angle
                 R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_rot)
-
-                # Predict template vertex locations
                 pred_pts = (template_pts @ R_k[:3, :3].T) + R_k[:3, 3]
 
-                # Verify against actual surface
                 _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
                 dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
                 per_pos_devs.append({'index': k, 'deviation': round(dev, 4)})
 
                 if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
-                    # Broken position: transplant
-                    current_mf, dst_box = _volumetric_transplant(
-                        current_mf, template_pts, R_k, margin=margin
-                    )
-                    dst_boxes.append(dst_box)
-                    positions_repaired += 1
+                    transforms_to_repair.append(R_k)
 
         elif pattern_type == 'translational':
             origin = info['origin']
@@ -730,28 +854,55 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN):
                     per_pos_devs.append({'index': (p_val, q_val), 'deviation': round(dev, 4)})
 
                     if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
-                        current_mf, dst_box = _volumetric_transplant(
-                            current_mf, template_pts, T_shift, margin=margin
-                        )
-                        dst_boxes.append(dst_box)
-                        positions_repaired += 1
+                        transforms_to_repair.append(T_shift)
 
-        out_mesh = current_mf.to_mesh()
-        rep_v = np.asarray(out_mesh.vert_properties, dtype=np.float64)
-        rep_t = np.asarray(out_mesh.tri_verts, dtype=np.int64)
-        rep_tm = trimesh.Trimesh(vertices=rep_v, faces=rep_t, process=False)
+        elif pattern_type == 'helical':
+            c_circle = info['center']
+            axis = info['axis']
+            th_step = info['step_angle']
+            h_step = info['step_h']
+            k_min = info['k_min']
+            k_max = info['k_max']
+            k_indices = info['k_indices']
 
-        vol_change = float(abs(current_mf.volume() - mf.volume()))
-        h_outside = _compute_hausdorff_outside(orig_mesh, rep_tm, dst_boxes) if dst_boxes else 0.0
+            template_k = k_indices[best_template_idx]
 
-        notes = []
-        if positions_repaired > 0:
-            notes.append(f"{positions_repaired} repeated elements were replaced by healthy copies")
+            for k_val in range(k_min, k_max + 1):
+                positions_checked += 1
+                delta_k = k_val - template_k
+                rot_angle = delta_k * th_step
+                R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_circle)
+                T_k = np.eye(4)
+                T_k[:3, :3] = R_k[:3, :3]
+                T_k[:3, 3] = R_k[:3, 3] + delta_k * h_step * axis
+
+                pred_pts = (template_pts @ T_k[:3, :3].T) + T_k[:3, 3]
+
+                _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                dev = float(np.sqrt(np.mean(dists ** 2))) / (elem_diag + 1e-12)
+                per_pos_devs.append({'index': k_val, 'deviation': round(dev, 4)})
+
+                if DAMAGE_DEVIATION_MIN <= dev <= DAMAGE_DEVIATION_MAX:
+                    transforms_to_repair.append(T_k)
+
+        if transforms_to_repair:
+            rep_v, rep_t, vol_change, dst_boxes, is_watertight = _execute_boolean_transplant(
+                verts, tris, template_pts, transforms_to_repair, margin=margin
+            )
+            positions_repaired = len(transforms_to_repair)
+            rep_tm = trimesh.Trimesh(vertices=rep_v, faces=rep_t, process=False)
+            h_outside = _compute_hausdorff_outside(orig_mesh, rep_tm, dst_boxes) if dst_boxes else 0.0
+            notes = [f"{positions_repaired} repeated elements were replaced by healthy copies"]
         else:
-            notes.append("All detected pattern positions are healthy")
+            rep_v, rep_t = verts, tris
+            vol_change = 0.0
+            h_outside = 0.0
+            is_watertight = True
+            positions_repaired = 0
+            notes = ["All detected pattern positions are healthy"]
 
         return rep_v, rep_t, {
-            'watertight': bool(current_mf.status() == manifold3d.Error.NoError),
+            'watertight': bool(is_watertight),
             'repaired': bool(positions_repaired > 0),
             'pattern_type': pattern_type,
             'group_size': info.get('group_size', 0),
