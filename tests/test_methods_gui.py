@@ -119,9 +119,11 @@ def main():
     acts = um.actions()
     assert len(acts) == 12, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
-    for num in (8, 9, 10, 11):
-        assert not acts[num - 1].isEnabled(), num
-        assert 'not implemented' in acts[num - 1].toolTip(), acts[num - 1].toolTip()
+    # 8/9/10 are implemented and enabled; 11 is still a placeholder, 12 needs input
+    for num in (8, 9, 10):
+        assert acts[num - 1].isEnabled(), num
+    assert not acts[10].isEnabled(), 11
+    assert 'not implemented' in acts[10].toolTip(), acts[10].toolTip()
     assert not acts[11].isEnabled(), 'repeat_manual must be disabled (needs input)'
     assert acts[11].toolTip() == gui._t('menu_needs_input')
     print('ok  Use method list, placeholders and order badge')

@@ -119,11 +119,21 @@ def test_register_method_hook(tmp):
 
 def test_placeholders_unavailable(tmp):
     import methods
-    for num in (8, 9, 10, 11, 12):
+    for num in (11, 12):
         ok, reason = methods.get_method(num).available()
         assert ok is False, num
         assert 'not implemented' in reason, (num, reason)
     assert methods.get_method(12).needs_user_input is True
+
+
+def test_closing_methods_available(tmp):
+    import methods
+    # 8/9 need closing.py, 10 needs proxy_repair + scipy + trimesh; in the test
+    # environment all are installed, so each reports available with no reason.
+    for num in (8, 9, 10):
+        ok, reason = methods.get_method(num).available()
+        assert ok is True, (num, reason)
+        assert methods.get_method(num).invents_geometry is True, num
 
 
 def test_kwargs_mapping(tmp):
@@ -137,6 +147,12 @@ def test_kwargs_mapping(tmp):
     assert methods.get_method(6).kwargs['indirect_autorefine'] is True
     assert methods.get_method(7).kwargs['ftetwild'] is True
     assert methods.get_method(7).invents_geometry is True
+    assert methods.get_method(8).kwargs['closing'] == 'poisson'
+    assert methods.get_method(9).kwargs['closing'] == 'flat_back'
+    assert methods.get_method(10).kwargs['proxy_template'] is True
+    for num in (8, 9, 10):
+        assert methods.get_method(num).kwargs['deep_repair'] == 'off'
+        assert methods.get_method(num).kwargs['ftetwild'] is False
 
 
 # --- templates / ranking ----------------------------------------------------
@@ -177,6 +193,27 @@ def test_rank_methods_prefers_si_methods_for_si_mesh(tmp):
     a = A(mesh_type='mechanical', type_confidence=0.9, self_intersections=900)
     nums = [r.num for r in methods.rank_methods(a)]
     assert 5 in nums or 6 in nums, nums
+
+
+def test_rank_methods_closing_signals(tmp):
+    """The closing signals route methods 8/9/10 (P-INT)."""
+    import methods
+    from object_analysis import ObjectAnalysis as A
+    scan = A(single_side_score=0.9, boundary_loops=1, open_area_ratio=0.05)
+    scores = {r.num: r.score for r in methods.rank_methods(scan)}
+    assert scores.get(8, 0.0) > 0, scores
+    relief = A(relief_score=0.9, boundary_loops=1, open_area_ratio=0.05)
+    scores = {r.num: r.score for r in methods.rank_methods(relief)}
+    assert scores.get(9, 0.0) > 0, scores
+    broken = A(boundary_loops=3, non_manifold_edges=2, components=2,
+               open_area_ratio=0.1)
+    scores = {r.num: r.score for r in methods.rank_methods(broken)}
+    assert scores.get(10, 0.0) > 0, scores
+    # a clean mesh must not attract any of the three
+    clean = A(single_side_score=0.0, relief_score=0.0)
+    assert methods._score('poisson_close', clean)[0] == 0.0
+    assert methods._score('flat_back_close', clean)[0] == 0.0
+    assert methods._score('proxy_template', clean)[0] == 0.0
 
 
 def test_external_engines_are_separate(tmp):
@@ -303,7 +340,9 @@ def test_cli_list_methods(tmp):
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
     assert [m['num'] for m in data] == list(range(1, 13))
-    assert data[7]['available'] is False
+    # 8/9/10 are implemented (available); 11/12 are still placeholders.
+    assert all(data[n - 1]['available'] is True for n in (8, 9, 10)), data
+    assert all(data[n - 1]['available'] is False for n in (11, 12)), data
 
 
 def test_cli_analyze_json(tmp):
@@ -340,7 +379,7 @@ def test_cli_explicit_methods(tmp):
     assert d.get('method_used', {}).get('source') == 'tagged', d
     assert d['method_used']['num'] == 1, d
     # unavailable placeholders are reported honestly and produce no output
-    r = _run(['--methods', '8,9', '--no-history', path], env=_env(tmp))
+    r = _run(['--methods', '11', '--no-history', path], env=_env(tmp))
     assert r.returncode == 1, r.stdout
     assert 'no requested method could run' in _json(r).get('error', ''), r.stdout
 

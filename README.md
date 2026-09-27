@@ -227,14 +227,21 @@ suffix in the same directory.
 user-facing integer that never changes (`--list-methods` prints num, id,
 family and availability). Methods 1–7 are thin selectors over the existing
 pipeline (fast / local deep repair / full deep repair / join components /
-autorefine / indirect autorefine / fTetWild envelope); 8–12 are reserved
-placeholders (Poisson close, flat-back close, proxy template, repeat-aware
-auto/manual) registered through a hook, so later phases can fill them without
-reordering the list.
+autorefine / indirect autorefine / fTetWild envelope); 8–10 are the standalone
+closing / proxy tiers — #8 screened-Poisson close and #9 flat-back close for
+single-sided scans and reliefs (`sutura/closing.py`), #10 proxy-template
+rebuild for heavily broken but otherwise healthy meshes
+(`sutura/proxy_repair.py`); 11–12 remain reserved repeat-aware placeholders
+registered through a hook, so later phases can fill them without reordering
+the list. Methods 8–10 run on the original input (like the fTetWild tier) and
+adopt their result only when it is strict-watertight and the original surface
+is still covered (a one-sided input→output Hausdorff guard), so the estimated
+back surface cannot silently move the model; the module's notes (e.g. "back
+surface was estimated") are surfaced in the top-level `closing` report key.
 
 `--analyze <file>` performs a cheap per-object analysis (faces, components,
-boundary loops, open-area ratio, non-manifold edges, self-intersecting faces,
-mesh type) and prints ranked method recommendations; third-party engines are
+boundary loops, open-area ratio, single-side/relief scores, non-manifold edges,
+self-intersecting faces, mesh type) and prints ranked method recommendations; third-party engines are
 listed in a **separate** section and are never mixed into the ranking. The
 self-intersection probe is capped at 200,000 faces — above that it samples and
 flags the value as an estimate. `--methods 2,3,5` tags the methods to try, in

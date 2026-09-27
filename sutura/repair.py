@@ -663,7 +663,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             join_components=False, autorefine=False,
                             ftetwild=False, indirect_autorefine=False,
                             extra_features=False, deep_repair=None,
-                            triage_spec=None, engines=None, engine_chain=None):
+                            triage_spec=None, engines=None, engine_chain=None,
+                            closing=None, proxy_template=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -698,6 +699,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ``engines``/``engine_chain`` are the configs and resolved chain from
     ``load_engine_run``; None (library default) runs no external engine and
     keeps the output byte-identical to the pre-engines behaviour.
+    ``closing`` selects the standalone scan-closing tier (registry methods 8/9):
+    ``'poisson'`` (screened Poisson reconstruction, ``sutura/closing.py``) or
+    ``'flat_back'`` (flat back plane + side walls); ``proxy_template`` selects
+    the proxy-template rebuild (registry method 10, ``sutura/proxy_repair.py``).
+    Both run on the ORIGINAL input arrays (like the fTetWild tier) and the
+    candidate is adopted only when it is strict-watertight (no holes, no
+    non-manifold edges) and no worse than the stage-1 baseline; None/False
+    (library default) keeps the output byte-identical to today.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -950,6 +959,13 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
                 after = ms.apply_filter('get_topological_measures')
         _record_engine_entries(stats, _entries)
+
+    # Registry methods 8/9/10 (P-INT): standalone closing / proxy-template
+    # modules. They run on the ORIGINAL input arrays, before the deep-repair
+    # ladder, and adopt only a strict-watertight, no-worse candidate (see
+    # ``closing_ladder``).
+    ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
+                               closing=closing, proxy_template=proxy_template)
 
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
@@ -2247,6 +2263,87 @@ def _local_remesh_tier(ml, ms, after):
     return ms, after, rep
 
 
+def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
+                   closing=None, proxy_template=False):
+    """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
+
+    ``closing='poisson'`` runs ``closing.poisson_close``; ``'flat_back'`` runs
+    ``closing.flat_back_close``; ``proxy_template=True`` runs
+    ``proxy_repair.proxy_template_repair``. All three operate on the ORIGINAL
+    input arrays ``(v, t)`` rather than the stage-1 result: stage 1's own
+    ``meshing_close_holes`` already flat-caps a single boundary loop
+    (``maxholesize`` is raised to cover the largest loop), so a closing method
+    run on the cleaned arrays would only ever see an already-closed mesh. This
+    mirrors the fTetWild tier, which also works from the original input.
+
+    The candidate is adopted only when it is strict-watertight (the same
+    ``defects.detect`` metric ``methods._evaluate`` uses: zero holes and zero
+    non-manifold edges) and no worse than the stage-1 baseline on holes +
+    non-manifold edges. The per-method one-sided (input -> output) Hausdorff
+    shape guard is applied later by ``methods._evaluate`` for
+    ``invents_geometry`` methods. Records ``stats['closing']`` (tier, ran,
+    adopted, counts, the module's ``notes``); never raises.
+    """
+    if not closing and not proxy_template:
+        return ms, after
+    tier = 'proxy_template' if proxy_template else closing
+    base_v = np.asarray(ms.current_mesh().vertex_matrix())
+    base_t = np.asarray(ms.current_mesh().face_matrix())
+    base_holes = boundary_loop_stats(base_v, base_t)[0]
+    base_nm = int(after.get('non_two_manifold_edges', 0))
+    rec = {'tier': tier, 'ran': True, 'adopted': False, 'watertight': False,
+           'holes': None, 'non_manifold': None, 'faces': None,
+           'notes': [], 'reason': None}
+    try:
+        in_v = np.asarray(v, dtype=np.float64)
+        in_t = np.asarray(t, dtype=np.int64)
+        if proxy_template:
+            import proxy_repair as _proxy
+            cand_v, cand_t, rep = _proxy.proxy_template_repair(in_v, in_t)
+        else:
+            import closing as _closing
+            if closing == 'poisson':
+                cand_v, cand_t, rep = _closing.poisson_close(
+                    in_v, in_t, tmpdir=tmpdir)
+            elif closing == 'flat_back':
+                cand_v, cand_t, rep = _closing.flat_back_close(in_v, in_t)
+            else:
+                rec.update(ran=False, reason='unknown closing mode %r' % closing)
+                stats['closing'] = rec
+                return ms, after
+        rec['notes'] = list(rep.get('notes') or [])
+        if 'error' in rep:
+            rec['reason'] = 'module error: %s' % rep['error']
+        if len(cand_t):
+            cand_v = np.asarray(cand_v, dtype=np.float32)
+            cand_t = np.asarray(cand_t, dtype=np.int32)
+            det = detect_defects(cand_v, cand_t)
+            cand_holes = len(det['holes'])
+            cand_nm = len(det['non_manifold'])
+            rec['holes'] = cand_holes
+            rec['non_manifold'] = cand_nm
+            rec['faces'] = int(len(cand_t))
+            if (cand_holes == 0 and cand_nm == 0
+                    and cand_holes + cand_nm <= base_holes + base_nm):
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+                after = ms.apply_filter('get_topological_measures')
+                rec['adopted'] = True
+                rec['watertight'] = True
+                rec['reason'] = 'strict-watertight'
+            elif rec['reason'] is None:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+        else:
+            rec['reason'] = 'module returned no geometry'
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['ran'] = False
+        rec['reason'] = 'error: %s' % e
+    stats['closing'] = rec
+    return ms, after
+
+
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        ftetwild=False, spec=None, engines=None, engine_chain=None):
     """Single entry point of the deep-repair ladder, called after the stage-1
@@ -2588,7 +2685,8 @@ def run_after_stage2_engines(ml, report, new_v, new_t, tmpdir, engines,
 def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                 join_components=False, autorefine=False, ftetwild=False,
                 indirect_autorefine=False, extra_features=False, deep_repair=None,
-                triage_spec=None, engines=None, engine_chain=None):
+                triage_spec=None, engines=None, engine_chain=None,
+                closing=None, proxy_template=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -2613,7 +2711,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         autorefine=autorefine, ftetwild=ftetwild,
         indirect_autorefine=indirect_autorefine,
         extra_features=extra_features, deep_repair=deep_repair,
-        triage_spec=triage_spec, engines=engines, engine_chain=engine_chain)
+        triage_spec=triage_spec, engines=engines, engine_chain=engine_chain,
+        closing=closing, proxy_template=proxy_template)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -2697,7 +2796,8 @@ def _read_zip_entry(z, name):
 def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental',
                join_components=False, autorefine=False, ftetwild=False,
                indirect_autorefine=False, extra_features=False, deep_repair=None,
-               triage_spec=None, engines=None, engine_chain=None):
+               triage_spec=None, engines=None, engine_chain=None,
+               closing=None, proxy_template=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -2741,7 +2841,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     extra_features=extra_features,
                     deep_repair=deep_repair,
                     triage_spec=triage_spec, engines=engines,
-                    engine_chain=engine_chain)
+                    engine_chain=engine_chain,
+                    closing=closing, proxy_template=proxy_template)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -3199,6 +3300,21 @@ def human_report(r, show_defects=False, show_diff=False):
             lines.append('  Deep repair available : %d hole(s), %d non-manifold '
                          'edge(s) left; %s' % (av['holes_remaining'],
                                                av['nm_remaining'], est))
+    cl_r = r.get('closing')
+    if cl_r:
+        if not cl_r.get('ran'):
+            lines.append('  Closing (method %s) : not run (%s)'
+                         % (cl_r.get('tier'), cl_r.get('reason')))
+        else:
+            state = ('adopted' if cl_r.get('adopted')
+                     else 'NOT adopted (%s)' % (cl_r.get('reason') or '?'))
+            note = (' - %s' % '; '.join(cl_r.get('notes') or [])
+                    if cl_r.get('notes') else '')
+            lines.append('  Closing (method %s) : %s faces, holes=%s '
+                         'non-manifold=%s, %s%s' % (
+                             cl_r.get('tier'), cl_r.get('faces'),
+                             cl_r.get('holes'), cl_r.get('non_manifold'),
+                             state, note))
     ia_r = r.get('experimental_indirect_autorefine')
     if ia_r:
         if ia_r.get('skipped'):

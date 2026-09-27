@@ -70,6 +70,8 @@ APP_MODULES = (
     'methods.py',
     'object_analysis.py',
     'templates.py',
+    'closing.py',
+    'proxy_repair.py',
     'history.py',
     'repair_score.py',
     'updater.py',

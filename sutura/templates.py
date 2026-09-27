@@ -67,23 +67,31 @@ def _organic(a):
 
 
 def _single_side_scan(a):
+    # The real signal comes from closing.single_side_score (one dominant open
+    # boundary loop whose spanned area is a significant surface fraction); the
+    # open-area heuristic stays as a fallback for meshes too large to probe.
+    signal = _clamp01(_a(a, 'single_side_score'))
     open_ratio = _a(a, 'open_area_ratio')
     loops = _a(a, 'boundary_loops')
     largest = _a(a, 'largest_loop_ratio')
-    if open_ratio < OPEN_AREA_SCAN or loops > MANY_LOOPS:
-        return 0.0
-    score = min(1.0, open_ratio / OPEN_AREA_RELIEF)
-    if largest >= LARGE_LOOP_RATIO:
-        score = min(1.0, score + 0.2)
-    return score
+    legacy = 0.0
+    if open_ratio >= OPEN_AREA_SCAN and loops <= MANY_LOOPS:
+        legacy = min(1.0, open_ratio / OPEN_AREA_RELIEF)
+        if largest >= LARGE_LOOP_RATIO:
+            legacy = min(1.0, legacy + 0.2)
+    return max(legacy, signal)
 
 
 def _relief(a):
+    # closing.relief_score (planar dominant loop, one-sided heightfield) is the
+    # real signal; the open-area heuristic is the fallback.
+    signal = _clamp01(_a(a, 'relief_score'))
     open_ratio = _a(a, 'open_area_ratio')
     loops = _a(a, 'boundary_loops')
-    if open_ratio < OPEN_AREA_SCAN or loops > 2:
-        return 0.0
-    return min(1.0, open_ratio / OPEN_AREA_RELIEF)
+    legacy = 0.0
+    if open_ratio >= OPEN_AREA_SCAN and loops <= 2:
+        legacy = min(1.0, open_ratio / OPEN_AREA_RELIEF)
+    return max(legacy, signal)
 
 
 def _repeated_pattern(a):

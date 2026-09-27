@@ -11,7 +11,9 @@ All notable changes to this project are documented here.
   twelve repair methods with stable user-facing numbers (1–7 selector over the
   existing pipeline: fast, local deep repair, full deep repair, join
   components, autorefine, indirect autorefine, fTetWild envelope; 8–12 reserved
-  placeholders plugged in through a `register_method` hook). `--list-methods`
+  placeholders plugged in through a `register_method` hook — 8–10 are filled by
+  the standalone closing/proxy tiers in the entry below, 11–12 stay reserved).
+  `--list-methods`
   prints num/id/family/availability; `--analyze` reports a cheap per-object
   summary (`sutura/object_analysis.py`: faces, components, boundary loops,
   open-area ratio, non-manifold edges, self-intersections, mesh type) plus
@@ -22,6 +24,26 @@ All notable changes to this project are documented here.
   (sampled and flagged above). New report keys: `method_used`, `methods_tried`,
   `method_reached_watertight`, and `analysis`/`recommendations` when escalation
   ran.
+
+- **Standalone closing / proxy-template methods (#8–#10).** Registry methods
+  #8 `poisson_close` and #9 `flat_back_close` now run the scan-closing module
+  (`sutura/closing.py`): screened-Poisson reconstruction for single-sided
+  scans and a flat back plane with side walls for reliefs. Method #10
+  `proxy_template` runs `sutura/proxy_repair.py` (coarse watertight proxy plus
+  re-projection of the healthy original regions) for heavily broken but
+  otherwise healthy meshes. All three are geometry-inventing methods: they run
+  on the **original** input (like the fTetWild tier — stage 1 already
+  flat-caps a single boundary loop, so a closing method on the cleaned arrays
+  would only see a closed mesh), and adopt their result only when it is
+  strict-watertight and passes a one-sided **input→output** Hausdorff guard
+  (reusing `closing.one_sided_hausdorff`), so the estimated back surface cannot
+  silently move the model. `--analyze` gains `single_side_score`/`relief_score`
+  signals (from `closing.py`) that drive the #8/#9 recommendations, and the
+  per-method `closing` report key carries the module's notes (e.g. "back
+  surface was estimated"). Methods #11/#12 remain reserved placeholders. New
+  runtime dependencies: `scipy` (~99 MB installed) and `trimesh==5.1.0`
+  (~4.6 MB); `closing.py` and `proxy_repair.py` were added to the
+  install/updater/AppImage/PyInstaller module lists.
 
 - **GUI per-file method tagging (`--analyze`, `--methods`, `--engines`).** The
   file list gains a **Method** column (*Auto*, *Auto (rec. #N … NN%)* after an

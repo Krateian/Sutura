@@ -66,6 +66,14 @@ class RepairMethod:
     kwargs: dict = field(default_factory=dict, compare=False)
     available_fn: Optional[Callable] = field(default=None, compare=False,
                                              repr=False)
+    # Shape-guard direction for an invents_geometry method. False (default)
+    # uses the P0 output -> input Hausdorff (does the output stray from the
+    # input? -- right for an envelope like fTetWild). True uses the
+    # input -> output direction (is every original surface point still covered?
+    # -- right for the closing methods, whose whole point is to invent a back
+    # surface that is BY DESIGN far from the open input).
+    guard_input_to_output: bool = field(default=False, compare=False,
+                                        repr=False)
 
     def available(self):
         """``(bool, reason|None)`` availability, never raising."""
@@ -159,6 +167,27 @@ def _ftetwild_available():
         return False, 'fTetWild unavailable: %s' % e
 
 
+def _closing_available():
+    """Registry methods 8/9 need the standalone ``sutura/closing.py`` tier."""
+    try:
+        if importlib.util.find_spec('closing') is None:
+            return False, 'closing.py is not available'
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        return False, 'closing unavailable: %s' % e
+
+
+def _proxy_available():
+    """Registry method 10 needs ``proxy_repair.py`` plus its deps."""
+    try:
+        for mod in ('proxy_repair', 'trimesh', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        return False, 'proxy repair unavailable: %s' % e
+
+
 def _not_implemented(phase):
     def check():
         return False, 'not implemented yet (%s)' % phase
@@ -203,16 +232,25 @@ register_method(RepairMethod(
     available_fn=_ftetwild_available))
 register_method(RepairMethod(
     8, 'poisson_close', 'Poisson close',
-    'Screened-Poisson surface reconstruction to close large openings (P1).',
-    'closing', invents_geometry=True, available_fn=_not_implemented('P1')))
+    'Screened-Poisson surface reconstruction that closes the large opening '
+    'of a single-sided scan (estimates the missing back surface).',
+    'closing', invents_geometry=True, guard_input_to_output=True,
+    kwargs={'closing': 'poisson', 'deep_repair': 'off', 'ftetwild': False},
+    available_fn=_closing_available))
 register_method(RepairMethod(
     9, 'flat_back_close', 'Flat-back close',
-    'Close a single dominant opening with a flat back surface (P1).',
-    'closing', invents_geometry=True, available_fn=_not_implemented('P1')))
+    'Close a single dominant opening of a relief / plate with a flat back '
+    'surface and side walls (the input surface is preserved exactly).',
+    'closing', invents_geometry=True, guard_input_to_output=True,
+    kwargs={'closing': 'flat_back', 'deep_repair': 'off', 'ftetwild': False},
+    available_fn=_closing_available))
 register_method(RepairMethod(
     10, 'proxy_template', 'Proxy template match',
-    'Snap the object to a proxy template profile (P2).',
-    'template', invents_geometry=True, available_fn=_not_implemented('P2')))
+    'Rebuild a heavily broken mesh from a coarse watertight proxy, '
+    're-projecting the healthy original regions (proxy_repair.py).',
+    'template', invents_geometry=True, guard_input_to_output=True,
+    kwargs={'proxy_template': True, 'deep_repair': 'off', 'ftetwild': False},
+    available_fn=_proxy_available))
 register_method(RepairMethod(
     11, 'repeat_auto', 'Repeat-aware auto',
     'Detect a repeated pattern and repair one instance, then repeat (P5).',
@@ -276,6 +314,29 @@ def _score(method_id, analysis):
                  + 0.3 * _clamp01((holes + nm) / 3.0)
                  + 0.3 * _clamp01(si / 200.0))
         return _clamp01(score), 'large openings / heavy self-intersections'
+    if method_id == 'poisson_close':
+        single = _clamp01(_a(analysis, 'single_side_score'))
+        relief = _clamp01(_a(analysis, 'relief_score'))
+        score = single * (1.0 - relief)
+        if score <= 0:
+            return 0.0, 'not a single-sided open scan'
+        return _clamp01(score), ('single-sided open scan (%.2f)' % single)
+    if method_id == 'flat_back_close':
+        relief = _clamp01(_a(analysis, 'relief_score'))
+        if relief <= 0:
+            return 0.0, 'no relief-like opening'
+        return _clamp01(relief), 'relief / flat-back profile'
+    if method_id == 'proxy_template':
+        damage = holes + nm + max(components - 1, 0)
+        if damage <= 0:
+            return 0.0, 'no holes/non-manifold to reconstruct'
+        open_pen = min(open_ratio / 0.5, 1.0)
+        si_pen = min(si / 200.0, 1.0)
+        score = (0.45 * min(damage / 4.0, 1.0)
+                 + 0.35 * (1.0 - open_pen)
+                 + 0.20 * (1.0 - si_pen))
+        return (_clamp01(score),
+                'holes/non-manifold/debris with a mostly healthy surface')
     return 0.0, 'not implemented yet'
 
 
@@ -401,6 +462,32 @@ def _worst_hausdorff(in_objs, out_objs):
     return worst
 
 
+def _worst_hausdorff_input_to_output(in_objs, out_objs):
+    """Worst per-object input -> output Hausdorff, or None when not comparable.
+
+    Samples the INPUT and measures the distance to the output (relative to the
+    input bbox diagonal): does the output still cover every original surface
+    point? Reuses ``closing.one_sided_hausdorff`` (the closing modules' own
+    fidelity metric), so the guard is not duplicated. Used for the closing /
+    proxy methods, whose invented back surface is far from the open input by
+    design -- the output -> input direction would reject them all.
+    """
+    if not in_objs or len(in_objs) != len(out_objs):
+        return None
+    try:
+        import closing as _closing
+    except Exception:  # noqa: BLE001 - optional module
+        return None
+    worst = None
+    for (_in_name, in_v, in_t), (_out_name, out_v, out_t) in zip(in_objs,
+                                                                 out_objs):
+        mx, _mean = _closing.one_sided_hausdorff(in_v, in_t, out_v, out_t)
+        if mx is None:
+            continue
+        worst = mx if worst is None else max(worst, mx)
+    return worst
+
+
 def _strict_holes_nm(objs):
     import defects
     holes = 0
@@ -444,12 +531,18 @@ def _evaluate(result, path, multi, in_objs, method):
         rec['reason'] = 'holes=%d non-manifold=%d remain' % (holes, nm)
         return rec
     rec['watertight'] = True
-    # A geometry-inventing method is held to the one-sided (input -> output)
-    # Hausdorff guard; a cleaning/topology/SI method is not -- its own
-    # adopt/fallback guards already protect the geometry, so strict
-    # watertightness is the guard here. The geometry change is still recorded.
+    # A geometry-inventing method is held to a one-sided Hausdorff guard; a
+    # cleaning/topology/SI method is not -- its own adopt/fallback guards
+    # already protect the geometry, so strict watertightness is the guard here.
+    # The direction depends on the method: the closing/proxy methods
+    # (guard_input_to_output=True) are measured input -> output (is the
+    # original surface still covered?), the envelope methods output -> input
+    # (does the output stray from the input?). The geometry change is recorded.
     if method is not None and method.invents_geometry and in_objs:
-        hd = _worst_hausdorff(in_objs, out_objs)
+        if method.guard_input_to_output:
+            hd = _worst_hausdorff_input_to_output(in_objs, out_objs)
+        else:
+            hd = _worst_hausdorff(in_objs, out_objs)
         rec['hausdorff_rel'] = hd
         if hd is not None and hd > GENERATIVE_MAX_HAUSDORFF_REL:
             rec['watertight'] = False

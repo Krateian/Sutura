@@ -233,13 +233,22 @@ sahip onarım **yöntemlerinin** kararlı bir kayıt defteridir (`--list-methods
 num, kimlik, aile ve kullanılabilirliği yazdırır). 1–7 numaralı yöntemler
 mevcut boru hattı üzerinde ince seçicilerdir (hızlı / yerel derin onarım / tam
 derin onarım / bileşenleri birleştir / autorefine / dolaylı autorefine /
-fTetWild zarfı); 8–12 ayrılmış yer tutuculardır (Poisson close, flat-back
-close, proxy şablonu, tekrar-farkında otomatik/manuel) ve bir kanca üzerinden
-kaydedilir, böylece sonraki aşamalar liste sırasını bozmadan doldurabilir.
+fTetWild zarfı); 8–10 bağımsız kapama / vekil katmanlarıdır — #8 taramalı
+Poisson kapatma ve #9 düz-arka kapatma tek-taraflı taramalar ve kabartmalar
+için (`sutura/closing.py`), #10 ağır hasarlı ama başka yönden sağlıklı
+mesh'ler için vekil-şablon yeniden inşası (`sutura/proxy_repair.py`); 11–12
+ise bir kanca üzerinden kaydedilen, tekrar-farkında ayrılmış yer tutucular
+olarak kalır, böylece sonraki aşamalar liste sırasını bozmadan doldurabilir.
+8–10 numaralı yöntemler girdi üzerinde çalışır (fTetWild katmanı gibi) ve
+sonuçlarını yalnızca katı-su geçirmez olduğunda ve özgün yüzey hâlâ
+kapsandığında (tek-taraflı girdi→çıktı Hausdorff koruması) benimser, böylece
+tahmin edilen arka yüzey modeli sessizce kaydıramaz; modülün notları (örneğin
+"back surface was estimated") üst düzey `closing` rapor anahtarında görünür.
 
 `--analyze <dosya>` ucuz bir nesne-başına analiz yapar (yüz/tepe sayısı,
-bileşenler, sınır döngüleri, açık-alan oranı, manifold olmayan kenarlar,
-kendini kesen yüzler, mesh tipi) ve sıralanmış yöntem önerilerini yazdırır;
+bileşenler, sınır döngüleri, açık-alan oranı, tek-taraflı/kabartma puanları,
+manifold olmayan kenarlar, kendini kesen yüzler, mesh tipi) ve sıralanmış
+yöntem önerilerini yazdırır;
 üçüncü taraf motorlar **ayrı** bir bölümde listelenir ve sıralamaya asla
 karıştırılmaz. Kendini-kesme ölçümü 200.000 yüzle sınırlıdır — bunun üzerinde
 örnekleme yapılır ve değer tahmin olarak işaretlenir. `--methods 2,3,5`

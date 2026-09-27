@@ -25,6 +25,13 @@ SI_COUNT_MAX_FACES = 200000
 SI_SAMPLE_FACES = 200000
 SI_SAMPLE_SEED = 12345
 
+# The scan-closing / relief signals (closing.single_side_score /
+# closing.relief_score) walk every boundary edge in Python; above this face
+# count the probe is skipped so the analysis stays under ~1 s (the signals
+# default to 0.0, which only lowers a closing method's recommendation). They
+# are pure numpy, imported lazily so this module stays importable without it.
+CLOSING_SIGNAL_MAX_FACES = 200000
+
 
 @dataclass
 class ObjectAnalysis:
@@ -42,6 +49,8 @@ class ObjectAnalysis:
     mesh_type: str = 'unknown'
     type_confidence: float = 0.0
     repetition_score: float = 0.0
+    single_side_score: float = 0.0
+    relief_score: float = 0.0
     bbox_diagonal: float = 0.0
     surface_area: float = 0.0
     model: Optional[str] = None
@@ -172,6 +181,19 @@ def analyze_mesh(verts, tris, engine='experimental', extra_features=False,
         analysis.self_intersections = sec
         analysis.self_intersections_estimated = bool(estimated)
 
+    # Scan-closing / relief signals (registry methods 8/9): pure numpy, but the
+    # boundary-loop walk is capped (see CLOSING_SIGNAL_MAX_FACES). Best-effort:
+    # a missing closing.py or a failure leaves both signals at 0.0.
+    if len(t) <= CLOSING_SIGNAL_MAX_FACES:
+        try:
+            import closing as _closing
+            analysis.single_side_score = round(
+                float(_closing.single_side_score(v, t)[0]), 4)
+            analysis.relief_score = round(
+                float(_closing.relief_score(v, t)[0]), 4)
+        except Exception:  # noqa: BLE001 - analysis is best-effort
+            pass
+
     try:
         cls, _engine = _repair_mod().classify_with_engine(
             v, t, engine, extra_features=extra_features)
@@ -213,6 +235,8 @@ def combine(objs):
         o.self_intersections_estimated for o in objs)
     c.type_confidence = min(o.type_confidence for o in objs)
     c.repetition_score = max(o.repetition_score for o in objs)
+    c.single_side_score = max(o.single_side_score for o in objs)
+    c.relief_score = max(o.relief_score for o in objs)
     c.bbox_diagonal = max(o.bbox_diagonal for o in objs)
     c.surface_area = sum(o.surface_area for o in objs)
     return c
@@ -234,6 +258,8 @@ def to_dict(analysis):
         'mesh_type': analysis.mesh_type,
         'type_confidence': round(float(analysis.type_confidence), 3),
         'repetition_score': round(float(analysis.repetition_score), 3),
+        'single_side_score': round(float(analysis.single_side_score), 4),
+        'relief_score': round(float(analysis.relief_score), 4),
         'bbox_diagonal': round(float(analysis.bbox_diagonal), 4),
         'surface_area': round(float(analysis.surface_area), 3),
         'model': analysis.model,
