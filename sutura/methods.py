@@ -77,6 +77,11 @@ class RepairMethod:
     # surface that is BY DESIGN far from the open input).
     guard_input_to_output: bool = field(default=False, compare=False,
                                         repr=False)
+    # True when the method's own tier already enforces the shape guard (e.g.
+    # the repeated-element transplant measures the untouched geometry with
+    # ``hausdorff_outside``); ``_evaluate`` then skips the generic one-sided
+    # Hausdorff, which would wrongly penalize the intended local replacement.
+    self_guarded: bool = field(default=False, compare=False, repr=False)
 
     def available(self):
         """``(bool, reason|None)`` availability, never raising."""
@@ -206,6 +211,23 @@ def _proxy_available():
         return False, 'proxy repair unavailable: %s' % e
 
 
+def _repeat_available():
+    """Registry methods 11/12 need ``sutura/repeat_repair.py`` + its deps.
+
+    The transplant itself uses in-process manifold3d CSG (isolated behind
+    ``repeat_repair._execute_boolean_transplant``); detection and alignment run
+    without it, so the module imports and the availability check does not
+    require manifold3d. When a transplant is actually attempted on a host
+    without manifold3d the tier reports a clean error rather than crashing."""
+    try:
+        for mod in ('repeat_repair', 'trimesh', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        return False, 'repeat repair unavailable: %s' % e
+
+
 def _not_implemented(phase):
     def check():
         return False, 'not implemented yet (%s)' % phase
@@ -271,12 +293,19 @@ register_method(RepairMethod(
     available_fn=_proxy_available))
 register_method(RepairMethod(
     11, 'repeat_auto', 'Repeat-aware auto',
-    'Detect a repeated pattern and repair one instance, then repeat (P5).',
-    'pattern', available_fn=_not_implemented('P5')))
+    'Detect a rotational/translational/helical repeated pattern and transplant '
+    'a healthy copy onto each damaged or missing one (repeat_repair.py).',
+    'pattern', invents_geometry=True, self_guarded=True,
+    kwargs={'repeat': 'auto', 'deep_repair': 'off', 'ftetwild': False},
+    available_fn=_repeat_available))
 register_method(RepairMethod(
     12, 'repeat_manual', 'Repeat-aware manual',
-    'Repair a user-marked repeated instance and propagate (P4).',
-    'pattern', needs_user_input=True, available_fn=_not_implemented('P4')))
+    'Transplant the repeated element marked by the user (--repeat-source) onto '
+    'the damaged one (--repeat-target); never runs automatically.',
+    'pattern', invents_geometry=True, self_guarded=True,
+    needs_user_input=True,
+    kwargs={'repeat': 'manual', 'deep_repair': 'off', 'ftetwild': False},
+    available_fn=_repeat_available))
 
 
 # --- scoring ----------------------------------------------------------------
@@ -370,6 +399,13 @@ def _score(method_id, analysis):
         return (_clamp01(score),
                 'holes/non-manifold/debris with a mostly healthy surface',
                 'rec_reason_proxy', ())
+    if method_id in ('repeat_auto', 'repeat_manual'):
+        rep = _clamp01(_a(analysis, 'repetition_score'))
+        if rep <= 0:
+            return 0.0, 'no repeated pattern detected', \
+                'rec_reason_no_repeat', ()
+        return (_clamp01(rep), 'repeated pattern (%.2f)' % rep,
+                'rec_reason_repeat', (rep,))
     return 0.0, 'not implemented yet', 'rec_reason_not_implemented', ()
 
 
@@ -600,7 +636,8 @@ def _evaluate(result, path, multi, in_objs, method):
     # (guard_input_to_output=True) are measured input -> output (is the
     # original surface still covered?), the envelope methods output -> input
     # (does the output stray from the input?). The geometry change is recorded.
-    if method is not None and method.invents_geometry and in_objs:
+    if (method is not None and method.invents_geometry and in_objs
+            and not getattr(method, 'self_guarded', False)):
         if method.guard_input_to_output:
             hd = _worst_hausdorff_input_to_output(in_objs, out_objs)
         else:

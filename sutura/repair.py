@@ -664,7 +664,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             ftetwild=False, indirect_autorefine=False,
                             extra_features=False, deep_repair=None,
                             triage_spec=None, engines=None, engine_chain=None,
-                            closing=None, proxy_template=False):
+                            closing=None, proxy_template=False, repeat=None,
+                            repeat_source=None, repeat_target=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -971,6 +972,12 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                    mode=deep_repair, ftetwild=ftetwild,
                                    spec=triage_spec, engines=engines,
                                    engine_chain=engine_chain)
+
+    # Registry methods 11/12 (P-REP): repeated-element transplant, after the
+    # whole stage-1 chain (the transplant needs a watertight M).
+    ms, after = repeat_tier(ml, ms, after, stats, mode=repeat,
+                            source_point=repeat_source,
+                            target_point=repeat_target)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -2465,6 +2472,117 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
     return ms, after
 
 
+# One-sided (original -> result, outside the repaired boxes) Hausdorff guard
+# for the repeated-element transplant tier: the transplanted copy must not move
+# the untouched geometry. Mirrors methods.GENERATIVE_MAX_HAUSDORFF_REL.
+REPEAT_MAX_HAUSDORFF_OUTSIDE = 0.01
+
+
+def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
+                target_point=None):
+    """Repeated-element transplant tier (registry methods 11/12, P-REP).
+
+    Runs AFTER the whole stage-1 chain because the transplant needs a
+    watertight (closed 2-manifold) ``M``: if stage 1 left holes or non-manifold
+    edges the tier is skipped. ``mode='auto'`` detects the repeated pattern
+    (``repeat_repair.detect_repetition``) and repairs the damaged copies;
+    ``mode='manual'`` transplants the element nearest ``source_point`` onto the
+    one nearest ``target_point``. The candidate is adopted only when it is
+    reload-equivalent strict-watertight, no worse than the stage-1 baseline,
+    and the untouched geometry did not move (one-sided Hausdorff outside the
+    repaired boxes <= ``REPEAT_MAX_HAUSDORFF_OUTSIDE``). Records
+    ``stats['repeat']``; never raises.
+    """
+    if not mode:
+        return ms, after
+    rec = {'mode': mode, 'ran': False, 'adopted': False, 'watertight': False,
+           'pattern_type': None, 'positions_repaired': None,
+           'hausdorff_outside': None, 'notes': [], 'reason': None}
+    try:
+        cur_v = np.asarray(ms.current_mesh().vertex_matrix())
+        cur_t = np.asarray(ms.current_mesh().face_matrix())
+        holes = boundary_loop_stats(cur_v, cur_t)[0]
+        nm = int(after.get('non_two_manifold_edges', 0))
+        if holes or nm or not after.get('is_mesh_two_manifold'):
+            rec['reason'] = ('repeated-element transplant needs a watertight '
+                             'input; stage 1 left holes=%d non-manifold=%d'
+                             % (holes, nm))
+            stats['repeat'] = rec
+            return ms, after
+        rec['ran'] = True
+        import repeat_repair as _rr
+        if mode == 'manual':
+            if source_point is None or target_point is None:
+                rec['reason'] = ('manual repeat repair needs a source and a '
+                                 'target point')
+                stats['repeat'] = rec
+                return ms, after
+            rv, rt, rep = _rr.repair_repeat_manual(
+                np.asarray(cur_v, dtype=np.float64),
+                np.asarray(cur_t, dtype=np.int64),
+                np.asarray(source_point, dtype=np.float64),
+                np.asarray(target_point, dtype=np.float64))
+        else:
+            rv, rt, rep = _rr.repair_repeat_auto(
+                np.asarray(cur_v, dtype=np.float64),
+                np.asarray(cur_t, dtype=np.int64))
+        rec['notes'] = list(rep.get('notes') or [])
+        rec['pattern_type'] = rep.get('pattern_type')
+        rec['positions_repaired'] = rep.get('positions_repaired')
+        rec['hausdorff_outside'] = rep.get('hausdorff_outside')
+        if 'error' in rep:
+            rec['reason'] = 'module error: %s' % rep['error']
+        if not rep.get('repaired') or not len(rt):
+            if rec['reason'] is None:
+                notes = rep.get('notes') or []
+                rec['reason'] = notes[0] if notes else 'nothing to repair'
+            stats['repeat'] = rec
+            return ms, after
+        # Validate the raw manifold3d transplant (in-memory). unlike the
+        # closing tiers it is NOT float32-welded here: the CSG output has
+        # coincident cut-seam vertices whose pymeshlab weld-repair opens holes,
+        # while the later stage-2 manifold3d rebuild makes the mesh reload-safe
+        # as a side effect. The reload-equivalent counts are still recorded for
+        # transparency; the top-level P-HONEST verdict remains authoritative.
+        cand_v = np.asarray(rv, dtype=np.float32)
+        cand_t = np.asarray(rt, dtype=np.int32)
+        det = detect_defects(cand_v, cand_t)
+        cand_holes = len(det['holes'])
+        cand_nm = len(det['non_manifold'])
+        rec['holes'] = cand_holes
+        rec['non_manifold'] = cand_nm
+        try:
+            rh, rnm = reload_strict_holes_nm(rv, rt)
+            rec['reload_holes'] = int(rh)
+            rec['reload_non_manifold'] = int(rnm)
+        except Exception:  # noqa: BLE001 - reporting only
+            pass
+        hd = rep.get('hausdorff_outside')
+        if (len(cand_t) and cand_holes == 0 and cand_nm == 0
+                and cand_holes + cand_nm <= holes + nm
+                and hd is not None and hd <= REPEAT_MAX_HAUSDORFF_OUTSIDE):
+            ms = ml.MeshSet()
+            ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+            after = ms.apply_filter('get_topological_measures')
+            rec['adopted'] = True
+            rec['watertight'] = False
+            rec['candidate_watertight'] = True
+            rec['reason'] = 'repeated element(s) transplanted (stage 2 pending)'
+        elif rec['reason'] is None:
+            if hd is not None and hd > REPEAT_MAX_HAUSDORFF_OUTSIDE:
+                rec['reason'] = ('untouched geometry moved (Hausdorff %.3f > %.3f)'
+                                 % (hd, REPEAT_MAX_HAUSDORFF_OUTSIDE))
+            else:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['ran'] = False
+        rec['reason'] = 'error: %s' % e
+    stats['repeat'] = rec
+    return ms, after
+
+
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        ftetwild=False, spec=None, engines=None, engine_chain=None):
     """Single entry point of the deep-repair ladder, called after the stage-1
@@ -2807,7 +2925,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 join_components=False, autorefine=False, ftetwild=False,
                 indirect_autorefine=False, extra_features=False, deep_repair=None,
                 triage_spec=None, engines=None, engine_chain=None,
-                closing=None, proxy_template=False):
+                closing=None, proxy_template=False, repeat=None,
+                repeat_source=None, repeat_target=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -2833,7 +2952,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         indirect_autorefine=indirect_autorefine,
         extra_features=extra_features, deep_repair=deep_repair,
         triage_spec=triage_spec, engines=engines, engine_chain=engine_chain,
-        closing=closing, proxy_template=proxy_template)
+        closing=closing, proxy_template=proxy_template, repeat=repeat,
+        repeat_source=repeat_source, repeat_target=repeat_target)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -2923,7 +3043,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                join_components=False, autorefine=False, ftetwild=False,
                indirect_autorefine=False, extra_features=False, deep_repair=None,
                triage_spec=None, engines=None, engine_chain=None,
-               closing=None, proxy_template=False):
+               closing=None, proxy_template=False, repeat=None,
+               repeat_source=None, repeat_target=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -2968,7 +3089,9 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     deep_repair=deep_repair,
                     triage_spec=triage_spec, engines=engines,
                     engine_chain=engine_chain,
-                    closing=closing, proxy_template=proxy_template)
+                    closing=closing, proxy_template=proxy_template,
+                    repeat=repeat, repeat_source=repeat_source,
+                    repeat_target=repeat_target)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -3445,6 +3568,18 @@ def human_report(r, show_defects=False, show_diff=False):
                              cl_r.get('tier'), cl_r.get('faces'),
                              cl_r.get('holes'), cl_r.get('non_manifold'),
                              state, note))
+    rp_r = r.get('repeat')
+    if rp_r:
+        if not rp_r.get('ran'):
+            lines.append('  Repeat repair (method %s) : not run (%s)'
+                         % (rp_r.get('mode'), rp_r.get('reason')))
+        else:
+            state = ('transplanted' if rp_r.get('adopted')
+                     else 'NOT adopted (%s)' % (rp_r.get('reason') or '?'))
+            lines.append('  Repeat repair (method %s) : pattern=%s, %s '
+                         'position(s) repaired, %s' % (
+                             rp_r.get('mode'), rp_r.get('pattern_type'),
+                             rp_r.get('positions_repaired'), state))
     ia_r = r.get('experimental_indirect_autorefine')
     if ia_r:
         if ia_r.get('skipped'):
@@ -3627,7 +3762,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  autorefine=False, ftetwild=False, indirect_autorefine=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
-                 methods=None, engine_filter=None):
+                 methods=None, engine_filter=None, repeat_source=None,
+                 repeat_target=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -3689,7 +3825,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             indirect_autorefine=indirect_autorefine,
             extra_features=extra_features, deep_repair=deep_repair,
             triage_spec=triage_spec, engines=engines,
-            engine_chain=engine_chain))
+            engine_chain=engine_chain, repeat_source=repeat_source,
+            repeat_target=repeat_target))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -3961,6 +4098,12 @@ def main():
                              'placement); without it every enabled engine runs '
                              'as configured. Engines are never mixed into the '
                              'method ranking (see `engines list`).')
+    parser.add_argument('--repeat-source', default=None, metavar='X,Y,Z',
+                        help='method 12 (repeat_manual): the 3D point on the '
+                             'healthy repeated element to copy from.')
+    parser.add_argument('--repeat-target', default=None, metavar='X,Y,Z',
+                        help='method 12 (repeat_manual): the 3D point on the '
+                             'damaged repeated element to replace.')
     parser.add_argument('--json', action='store_true',
                         help='force machine-readable JSON output (the default '
                              'format; overrides --human)')
@@ -4114,6 +4257,26 @@ def main():
                              '(see --list-methods)' % num)
             nums.append(num)
         methods_sel = nums
+
+    # --repeat-source / --repeat-target: the 3D points method 12 transplants
+    # between. Validated as "X,Y,Z" and required together when 12 is tagged.
+    def _parse_point(text, flag):
+        parts = [p.strip() for p in text.split(',')]
+        if len(parts) != 3:
+            parser.error('argument %s: expected X,Y,Z' % flag)
+        try:
+            return tuple(float(p) for p in parts)
+        except ValueError:
+            parser.error('argument %s: coordinates must be numbers' % flag)
+
+    repeat_source = (_parse_point(args.repeat_source, '--repeat-source')
+                     if args.repeat_source else None)
+    repeat_target = (_parse_point(args.repeat_target, '--repeat-target')
+                     if args.repeat_target else None)
+    if methods_sel is not None and 12 in methods_sel:
+        if repeat_source is None or repeat_target is None:
+            parser.error('--methods 12 requires --repeat-source X,Y,Z and '
+                         '--repeat-target X,Y,Z')
 
     # --engines: tag specific external engines (names validated against the
     # configured engines below, after they are loaded).
@@ -4300,7 +4463,9 @@ def main():
                             engine_chain=_engine_chain,
                             engine_warnings=_engine_warnings,
                             methods=methods_sel,
-                            engine_filter=engines_sel) for f in files]
+                            engine_filter=engines_sel,
+                            repeat_source=repeat_source,
+                            repeat_target=repeat_target) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

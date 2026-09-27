@@ -32,6 +32,14 @@ SI_SAMPLE_SEED = 12345
 # are pure numpy, imported lazily so this module stays importable without it.
 CLOSING_SIGNAL_MAX_FACES = 200000
 
+# Repeated-element detection (repeat_repair.detect_repetition) segments the mesh
+# by dihedral features and clusters patch descriptors. It cannot be sampled
+# (segmentation needs the topology), so above this face count the probe is
+# skipped (repetition_score stays 0.0, which only lowers the repeat methods'
+# recommendation) to keep the analysis under ~1 s: measured ~0.3 s at this cap,
+# ~0.6 s at 90k. Pure numpy + scipy/trimesh, imported lazily.
+REPETITION_MAX_FACES = 50000
+
 
 @dataclass
 class ObjectAnalysis:
@@ -202,8 +210,16 @@ def analyze_mesh(verts, tris, engine='experimental', extra_features=False,
     except Exception:  # noqa: BLE001
         pass
 
-    # repetition_score is a P5 stub: no repetition detector yet.
-    analysis.repetition_score = 0.0
+    # Repeated-element signal (registry methods 11/12): repeat_repair's
+    # detect_repetition returns (score, info). Best-effort and face-capped; a
+    # missing module or a failure leaves repetition_score at 0.0.
+    if len(t) <= REPETITION_MAX_FACES:
+        try:
+            import repeat_repair as _rr
+            analysis.repetition_score = round(
+                float(_rr.detect_repetition(v, t)[0]), 4)
+        except Exception:  # noqa: BLE001 - analysis is best-effort
+            pass
     return analysis
 
 

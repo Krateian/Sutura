@@ -59,6 +59,24 @@ All notable changes to this project are documented here.
   in the result summary, the detailed report and the repair-log panel. EN/TR
   strings added; documented in the CLI/GUI parity notes and the READMEs.
 
+- **Repeated-element repair (methods #11/#12).** The standalone
+  `sutura/repeat_repair.py` (feature-edge segmentation, PCA+ICP alignment,
+  rotational/translational/helical pattern detection, volumetric manifold3d
+  transplant) is wired into the registry: #11 `repeat_auto` detects a repeated
+  pattern and transplants healthy copies onto the damaged/missing elements,
+  #12 `repeat_manual` transplants the element nearest `--repeat-source X,Y,Z`
+  onto the one nearest `--repeat-target X,Y,Z`. Both run after the stage-1
+  chain on the watertight result and adopt only a watertight, no-worse
+  candidate that leaves the untouched geometry in place (`hausdorff_outside`);
+  the new `repeat` report key carries the pattern type and positions repaired.
+  `object_analysis` fills `repetition_score` from the detector (face-capped for
+  the ~1 s analysis budget) so the `repeated_pattern` template and the ranking
+  are live. GUI: the *Use method* entry for #12 opens a CPU-rasterised picker
+  (drag-free: the user clicks the healthy source then the damaged target; the
+  mesh loads in the `repeat_picker_render.py` subprocess so the GUI process
+  stays pymeshlab-free). `--repeat-source`/`--repeat-target` documented in the
+  CLI/GUI parity notes.
+
 ### Changed
 
 - **Untagged repair is now auto with a method fallback.**

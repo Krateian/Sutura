@@ -72,6 +72,8 @@ APP_MODULES = (
     'templates.py',
     'closing.py',
     'proxy_repair.py',
+    'repeat_repair.py',
+    'repeat_picker_render.py',
     'history.py',
     'repair_score.py',
     'updater.py',

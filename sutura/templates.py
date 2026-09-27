@@ -95,8 +95,8 @@ def _relief(a):
 
 
 def _repeated_pattern(a):
-    # repetition_score is a P5 stub today (always 0.0), so this template stays
-    # quiet until the repetition detector lands.
+    # repetition_score comes from repeat_repair.detect_repetition (filled by
+    # object_analysis); 0.0 when no pattern is detected or the probe is skipped.
     return _clamp01(_a(a, 'repetition_score'))
 
 

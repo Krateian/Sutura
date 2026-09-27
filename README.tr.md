@@ -236,18 +236,27 @@ derin onarım / bileşenleri birleştir / autorefine / dolaylı autorefine /
 fTetWild zarfı); 8–10 bağımsız kapama / vekil katmanlarıdır — #8 taramalı
 Poisson kapatma ve #9 düz-arka kapatma tek-taraflı taramalar ve kabartmalar
 için (`sutura/closing.py`), #10 ağır hasarlı ama başka yönden sağlıklı
-mesh'ler için vekil-şablon yeniden inşası (`sutura/proxy_repair.py`); 11–12
-ise bir kanca üzerinden kaydedilen, tekrar-farkında ayrılmış yer tutucular
-olarak kalır, böylece sonraki aşamalar liste sırasını bozmadan doldurabilir.
+mesh'ler için vekil-şablon yeniden inşası (`sutura/proxy_repair.py`); #11
+*tekrar-farkında otomatik* ve #12 *tekrar-farkında elle* ise yinelenen öge
+nakli katmanlarıdır (`sutura/repeat_repair.py`).
 8–10 numaralı yöntemler girdi üzerinde çalışır (fTetWild katmanı gibi) ve
 sonuçlarını yalnızca katı-su geçirmez olduğunda ve özgün yüzey hâlâ
 kapsandığında (tek-taraflı girdi→çıktı Hausdorff koruması) benimser, böylece
 tahmin edilen arka yüzey modeli sessizce kaydıramaz; modülün notları (örneğin
 "back surface was estimated") üst düzey `closing` rapor anahtarında görünür.
+11–12 numaralı yöntemler stage-1 zincirinden sonra su geçirmez sonuç üzerinde
+çalışır: #11 döner/ötelemeli/helisel bir yineleme deseni bulup hasarlı veya
+eksik her ögeye sağlam bir kopyayı nakleder, #12 kullanıcının
+`--repeat-source X,Y,Z` noktasına en yakın ögeyi `--repeat-target X,Y,Z`
+noktasına en yakın ögenin üzerine nakleder. Nakil yalnızca su geçirmez
+kaldığında, temelden daha kötü olmadığında ve dokunulmamış geometri
+kaymadığında (`hausdorff_outside`) benimsenir; `repeat` rapor anahtarı desen
+tipini ve onarılan konum sayısını taşır.
 
 `--analyze <dosya>` ucuz bir nesne-başına analiz yapar (yüz/tepe sayısı,
-bileşenler, sınır döngüleri, açık-alan oranı, tek-taraflı/kabartma puanları,
-manifold olmayan kenarlar, kendini kesen yüzler, mesh tipi) ve sıralanmış
+bileşenler, sınır döngüleri, açık-alan oranı, tek-taraflı/kabartma ve
+yineleme puanları, manifold olmayan kenarlar, kendini kesen yüzler, mesh tipi)
+ve sıralanmış
 yöntem önerilerini yazdırır;
 üçüncü taraf motorlar **ayrı** bir bölümde listelenir ve sıralamaya asla
 karıştırılmaz. Kendini-kesme ölçümü 200.000 yüzle sınırlıdır — bunun üzerinde
@@ -268,7 +277,9 @@ tıklamak bir menü açar: *Analiz et* nesne-başına analizi (`--analyze`) arka
 planda çalıştırır, *Önerilen yöntemler* sıralanmış en iyi yöntemleri bir puan
 çubuğu ve gerekçesi ipucunda olacak şekilde listeler, *Yöntem kullan* on iki
 yöntemin (#1–#12) tümünü sırayı koruyan işaretlenebilir bir açılır menü olarak
-listeler (işaretlenme sırası deneme sırasıdır, örn. `#2 → #3 → #5`) ve *Harici
+listeler (işaretlenme sırası deneme sırasıdır, örn. `#2 → #3 → #5`); #12'yi
+seçmek, nesneyi CPU ile tarayan (OpenGL yok) küçük bir seçici açar; kullanıcı
+önce sağlam kaynak ögeye, sonra hasarlı hedef ögeye tıklar ve *Harici
 motorlar* yapılandırılmış üçüncü taraf motorları listeler (sıralamadan ayrı
 tutulur). *Etiketleri temizle* bir dosyayı Otomatik'e döndürür. Etiketli
 dosyalar tam olarak kendi yöntemlerini sırayla çalıştırır; etiketsiz dosyalar

@@ -60,7 +60,8 @@ import classification
 
 # interactive mesh rendering (numpy + QPainter only, no pymeshlab - it stays
 # in the subprocesses that load/render the meshes)
-from heatmap import _ISOMETRIC, draw_frame, prepare_render
+from heatmap import (_ISOMETRIC, draw_frame, draw_face_index, prepare_render,
+                    shared_frame)
 
 # --- i18n ---------------------------------------------------------------
 STRINGS = {
@@ -99,6 +100,14 @@ STRINGS = {
         'method_name_proxy_template': 'Proxy template match',
         'method_name_repeat_auto': 'Repeat-aware auto',
         'method_name_repeat_manual': 'Repeat-aware manual',
+        'repeat_pick_title': 'Pick repeated elements',
+        'repeat_pick_source': 'Click the HEALTHY element to copy from',
+        'repeat_pick_target': 'Now click the DAMAGED element to replace',
+        'repeat_pick_ready': 'Both elements selected.',
+        'repeat_pick_loading': 'Loading the object…',
+        'repeat_pick_failed': 'Could not load the object for picking',
+        'repeat_pick_reset': 'Reset picks',
+        'dlg_cancel': 'Cancel',
         'add_files': 'Add files…', 'add_folder': 'Add folder…',
         'remove': 'Remove selected', 'clear': 'Clear',
         'repair': 'Repair', 'stop': 'Stop',
@@ -168,6 +177,8 @@ STRINGS = {
         'rec_reason_relief': 'relief / flat-back profile',
         'rec_reason_no_damage': 'no holes/non-manifold to reconstruct',
         'rec_reason_proxy': 'holes/non-manifold/debris with a mostly healthy surface',
+        'rec_reason_no_repeat': 'no repeated pattern detected',
+        'rec_reason_repeat': 'repeated pattern (%.2f)',
         'rec_reason_not_implemented': 'not implemented yet',
         'rec_reason_template': 'template %s',
         'method_note_back_surface': 'back surface estimated',
@@ -536,6 +547,14 @@ STRINGS = {
         'method_name_proxy_template': 'Vekil şablon eşleme',
         'method_name_repeat_auto': 'Yineleme farkında otomatik',
         'method_name_repeat_manual': 'Yineleme farkında elle',
+        'repeat_pick_title': 'Yinelenen ögeleri seç',
+        'repeat_pick_source': 'Kopyalanacak SAĞLAM ögeye tıklayın',
+        'repeat_pick_target': 'Şimdi değiştirilecek HASARLI ögeye tıklayın',
+        'repeat_pick_ready': 'İki öge de seçildi.',
+        'repeat_pick_loading': 'Nesne yükleniyor…',
+        'repeat_pick_failed': 'Seçim için nesne yüklenemedi',
+        'repeat_pick_reset': 'Seçimi sıfırla',
+        'dlg_cancel': 'İptal',
         'add_files': 'Dosya ekle…', 'add_folder': 'Klasör ekle…',
         'remove': 'Seçileni kaldır', 'clear': 'Temizle',
         'repair': 'Onar', 'stop': 'Durdur',
@@ -605,6 +624,8 @@ STRINGS = {
         'rec_reason_relief': 'kabartma / düz arka profili',
         'rec_reason_no_damage': 'yeniden kurulacak delik/non-manifold yok',
         'rec_reason_proxy': 'çoğunlukla sağlıklı yüzeyli delik/non-manifold/döküntü',
+        'rec_reason_no_repeat': 'yineleme deseni bulunamadı',
+        'rec_reason_repeat': 'yineleme deseni (%.2f)',
         'rec_reason_not_implemented': 'henüz uygulanmadı',
         'rec_reason_template': 'şablon %s',
         'method_note_back_surface': 'arka yüzey tahmin edildi',
@@ -1306,7 +1327,7 @@ class RepairWorker(QThread):
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
                  intensity='balanced', methods_by_path=None,
-                 engines_by_path=None, parent=None):
+                 engines_by_path=None, repeat_points_by_path=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
         self._ftetwild_optimize = ftetwild_optimize
@@ -1324,6 +1345,7 @@ class RepairWorker(QThread):
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
         self._engines_by_path = dict(engines_by_path or {})
+        self._repeat_points_by_path = dict(repeat_points_by_path or {})
         self._cancelled = False
         self._proc = None
         cfg = updater.load_config()
@@ -1387,6 +1409,13 @@ class RepairWorker(QThread):
             engine_names = self._engines_by_path.get(path)
             if engine_names:
                 args += ['--engines', ','.join(engine_names)]
+            if method_nums and 12 in method_nums:
+                pts = self._repeat_points_by_path.get(path)
+                if pts:
+                    args += ['--repeat-source',
+                             ','.join('%g' % c for c in pts[0])]
+                    args += ['--repeat-target',
+                             ','.join('%g' % c for c in pts[1])]
             args.append(path)
             self._proc = subprocess.Popen(
                 args,
@@ -1717,6 +1746,159 @@ class ViewerDataWorker(QThread):
             except OSError:
                 pass
         self.done.emit(self._path, data)
+
+
+class RepeatPickerWorker(QThread):
+    """Loads the method-12 picker mesh (npz) in a subprocess.
+
+    Same isolation rule as the other workers: pymeshlab stays out of the GUI
+    process. Runs ``repeat_picker_render.py`` and loads the resulting
+    ``verts``/``tris`` arrays back into a dict. Never imports pymeshlab.
+    """
+
+    done = Signal(str, object)      # path, {verts, tris}
+    failed = Signal(str, str)       # path, message
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self._path = path
+
+    def run(self):
+        renderer = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'repeat_picker_render.py')
+        tmpdir = tempfile.mkdtemp(prefix='sutura-rp-')
+        outfile = os.path.join(tmpdir, 'picker.npz')
+        try:
+            proc = subprocess.run(
+                [*_script_cmd('repeat-picker-render', renderer), self._path,
+                 outfile],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
+            if proc.returncode != 0 or not os.path.getsize(outfile):
+                self.failed.emit(self._path, _t('repeat_pick_failed'))
+                return
+            with np.load(outfile) as d:
+                data = {k: d[k] for k in d.files}
+        except (OSError, subprocess.TimeoutExpired):
+            self.failed.emit(self._path, _t('repeat_pick_failed'))
+            return
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        self.done.emit(self._path, data)
+
+
+class _RepeatPickerView(QWidget):
+    """Static CPU-rendered mesh view that reports the face the user clicks.
+
+    Renders with ``heatmap`` (pure numpy + QPainter, no OpenGL draw calls) and
+    keeps a parallel per-pixel face-index image so a click maps back to the
+    frontmost face; the picked 3D point is that face's centroid. First click =
+    healthy source, second click = damaged target.
+    """
+
+    W, H = 640, 480
+
+    def __init__(self, data, parent=None):
+        super().__init__(parent)
+        self.verts = np.asarray(data['verts'], dtype=np.float64)
+        self.tris = np.asarray(data['tris'], dtype=np.int64)
+        frame = shared_frame([self.verts], self.W, self.H, 24)
+        self.ctx = prepare_render(self.verts, self.tris, w=self.W, h=self.H,
+                                  frame=frame)
+        self._base = QPixmap.fromImage(
+            draw_frame(self.ctx, rotation=_ISOMETRIC))
+        self._ids = draw_face_index(self.ctx, rotation=_ISOMETRIC)
+        self.source_point = None
+        self.target_point = None
+        self._source_px = None
+        self._target_px = None
+        self.on_change = None
+        self.setFixedSize(self.W, self.H)
+        self.setCursor(Qt.CrossCursor)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._base)
+        for px, color in ((self._source_px, QColor(46, 204, 113)),
+                          (self._target_px, QColor(235, 60, 70))):
+            if px is None:
+                continue
+            p.setPen(QPen(color, 3))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(QPoint(int(px[0]), int(px[1])), 9, 9)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        pos = event.position()
+        x, y = int(pos.x()), int(pos.y())
+        if not (0 <= x < self.W and 0 <= y < self.H):
+            return
+        fid = int(self._ids.pixel(x, y)) & 0xFFFFFF
+        if fid <= 0 or fid > len(self.tris):
+            return
+        point = tuple(float(c) for c in
+                      self.verts[self.tris[fid - 1]].mean(axis=0))
+        if self.source_point is None:
+            self.source_point, self._source_px = point, (x, y)
+        elif self.target_point is None:
+            self.target_point, self._target_px = point, (x, y)
+        else:
+            self.source_point, self._source_px = point, (x, y)
+            self.target_point, self._target_px = None, None
+        self.update()
+        if self.on_change:
+            self.on_change()
+
+
+class RepeatPickerDialog(QDialog):
+    """Pick the method-12 source (healthy) and target (damaged) 3D points."""
+
+    def __init__(self, data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_t('repeat_pick_title'))
+        self.view = _RepeatPickerView(data, self)
+        self.view.on_change = self._on_change
+        self.prompt = QLabel(_t('repeat_pick_source'))
+        self.btn_reset = QPushButton(_t('repeat_pick_reset'))
+        self.btn_reset.clicked.connect(self._reset)
+        self.btn_ok = QPushButton('OK')
+        self.btn_ok.setEnabled(False)
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_cancel = QPushButton(_t('dlg_cancel'))
+        self.btn_cancel.clicked.connect(self.reject)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.btn_reset)
+        buttons.addStretch(1)
+        buttons.addWidget(self.btn_ok)
+        buttons.addWidget(self.btn_cancel)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.view)
+        layout.addWidget(self.prompt)
+        layout.addLayout(buttons)
+
+    def _reset(self):
+        self.view.source_point = None
+        self.view.target_point = None
+        self.view._source_px = None
+        self.view._target_px = None
+        self.view.update()
+        self._on_change()
+
+    def _on_change(self):
+        have_src = self.view.source_point is not None
+        have_tgt = self.view.target_point is not None
+        if not have_src:
+            self.prompt.setText(_t('repeat_pick_source'))
+        elif not have_tgt:
+            self.prompt.setText(_t('repeat_pick_target'))
+        else:
+            self.prompt.setText(_t('repeat_pick_ready'))
+        self.btn_ok.setEnabled(have_src and have_tgt)
+
+    def points(self):
+        return self.view.source_point, self.view.target_point
 
 
 class _ClickableLabel(QLabel):
@@ -2880,7 +3062,10 @@ class MainWindow(QMainWindow):
         # A tag is ('method', num) or ('engine', name); list order = try-order.
         self._method_tags_by_path = {}
         self._method_analysis_by_path = {}
+        self._repeat_points_by_path = {}   # path -> (source_xyz, target_xyz)
+        self._repeat_picker_data = {}       # path -> {verts, tris} cache
         self._method_worker = None
+        self._repeat_picker_worker = None
         self._heatmap_cache = {}      # path -> {size_key: QPixmap}
         self.heatmap_worker = None
         self._heatmap_zoom = None
@@ -3239,6 +3424,9 @@ class MainWindow(QMainWindow):
         if self._method_worker is not None and self._method_worker.isRunning():
             self._method_worker.cancel()
             self._method_worker.wait(6000)
+        if (self._repeat_picker_worker is not None
+                and self._repeat_picker_worker.isRunning()):
+            self._repeat_picker_worker.wait(6000)
         self._stop_update_check()
         super().closeEvent(event)
 
@@ -3474,6 +3662,8 @@ class MainWindow(QMainWindow):
             self._item_by_path.pop(path, None)
             self._method_tags_by_path.pop(path, None)
             self._method_analysis_by_path.pop(path, None)
+            self._repeat_points_by_path.pop(path, None)
+            self._repeat_picker_data.pop(path, None)
             self._heatmap_cache.pop(path, None)
             self._output_by_path.pop(path, None)
             self._unit_by_path.pop(path, None)
@@ -3488,6 +3678,8 @@ class MainWindow(QMainWindow):
         self._item_by_path.clear()
         self._method_tags_by_path.clear()
         self._method_analysis_by_path.clear()
+        self._repeat_points_by_path.clear()
+        self._repeat_picker_data.clear()
         self._heatmap_cache.clear()
         self._output_by_path.clear()
         self._unit_by_path.clear()
@@ -3554,6 +3746,7 @@ class MainWindow(QMainWindow):
         # Per-file tags (P3): ordered method numbers and engine names.
         methods_by_path = {}
         engines_by_path = {}
+        repeat_points_by_path = {}
         for path in files:
             tags = self._method_tags_by_path.get(path) or []
             nums = [ref for kind, ref in tags if kind == 'method']
@@ -3562,6 +3755,9 @@ class MainWindow(QMainWindow):
                 methods_by_path[path] = nums
             if names:
                 engines_by_path[path] = names
+            pts = self._repeat_points_by_path.get(path)
+            if pts:
+                repeat_points_by_path[path] = pts
 
         self.worker = RepairWorker(files, self._repair_mode,
                                    self._repair_profile, force=force,
@@ -3576,6 +3772,7 @@ class MainWindow(QMainWindow):
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
                                    engines_by_path=engines_by_path,
+                                   repeat_points_by_path=repeat_points_by_path,
                                    parent=self)
         self.worker.file_done.connect(self._on_file_done)
         self.worker.progress.connect(self._on_progress)
@@ -4116,6 +4313,9 @@ class MainWindow(QMainWindow):
             tags[:] = [t for t in tags if t != (kind, ref)]
             if not has:
                 tags.append((kind, ref))
+            elif kind == 'method' and ref == 12:
+                # method 12 needs picked points; dropping the tag drops them too
+                self._repeat_points_by_path.pop(path, None)
             if not tags:
                 self._method_tags_by_path.pop(path, None)
             self._refresh_method_cell(path)
@@ -4170,18 +4370,67 @@ class MainWindow(QMainWindow):
             ok, reason = method.available()
             act = menu.addAction('')
             act.setCheckable(True)
-            act.setEnabled(ok and not method.needs_user_input)
-            if method.needs_user_input:
-                act.setToolTip(_t('menu_needs_input'))
-            elif not ok:
+            act.setEnabled(ok)
+            if not ok:
                 act.setToolTip(_t('menu_unavailable', reason or ''))
             else:
                 act.setToolTip(method.description)
             act.setData(method.num)
-            act.triggered.connect(
-                lambda checked=False, m=method, a=act, mn=menu: (
-                    self._on_use_action(m, paths, primary, a, mn)))
+            if method.num == 12:
+                # method 12 needs the user to pick the source/target elements:
+                # open the picker instead of a plain toggle.
+                act.triggered.connect(
+                    lambda checked=False, m=method, a=act, mn=menu: (
+                        self._pick_repeat_points(m, paths, primary, a, mn)))
+            else:
+                act.triggered.connect(
+                    lambda checked=False, m=method, a=act, mn=menu: (
+                        self._on_use_action(m, paths, primary, a, mn)))
             self._refresh_use_action(act, method, primary)
+
+    def _pick_repeat_points(self, method, paths, primary, action, menu):
+        """Method 12: load the object (subprocess) then open the picker."""
+        path = self._primary_path(paths)
+        if path is None:
+            return
+        data = self._repeat_picker_data.get(path)
+        if data is not None:
+            self._open_repeat_picker(path, data, method, paths, primary, menu)
+            return
+        if (self._repeat_picker_worker is not None
+                and self._repeat_picker_worker.isRunning()):
+            return
+        self.status.setText(_t('repeat_pick_loading'))
+        worker = RepeatPickerWorker(path, self)
+
+        def _done(p, d):
+            self._repeat_picker_data[p] = d
+            self._open_repeat_picker(p, d, method, paths, primary, menu)
+
+        worker.done.connect(_done)
+        worker.failed.connect(lambda _p, msg: self._log(msg))
+        self._repeat_picker_worker = worker
+        worker.start()
+
+    def _open_repeat_picker(self, path, data, method, paths, primary, menu):
+        if data.get('verts') is None or len(data.get('tris', [])) == 0:
+            self._log(_t('repeat_pick_failed'))
+            return
+        dlg = RepeatPickerDialog(data, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        src, tgt = dlg.points()
+        if src is None or tgt is None:
+            return
+        self._repeat_points_by_path[path] = (src, tgt)
+        if not self._is_tagged(path, 'method', method.num):
+            self._on_tag_toggle(paths, 'method', method.num)
+        primary = self._primary_path(paths) or primary
+        for act in menu.actions():
+            num = act.data()
+            sibling = methods.get_method(num) if num is not None else None
+            if sibling is not None:
+                self._refresh_use_action(act, sibling, primary)
 
     def _build_engines_menu(self, menu, paths, primary):
         menu.setToolTipsVisible(True)

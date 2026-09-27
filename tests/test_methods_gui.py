@@ -119,14 +119,10 @@ def main():
     acts = um.actions()
     assert len(acts) == 12, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
-    # 8/9/10 are implemented and enabled; 11 is still a placeholder, 12 needs input
-    for num in (8, 9, 10):
+    # 8-12 are implemented and enabled (12 opens the repeat picker)
+    for num in (8, 9, 10, 11, 12):
         assert acts[num - 1].isEnabled(), num
-    assert not acts[10].isEnabled(), 11
-    assert 'not implemented' in acts[10].toolTip(), acts[10].toolTip()
-    assert not acts[11].isEnabled(), 'repeat_manual must be disabled (needs input)'
-    assert acts[11].toolTip() == gui._t('menu_needs_input')
-    print('ok  Use method list, placeholders and order badge')
+    print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live
     cb = '/tmp/sutura_p3_c.stl'
@@ -155,6 +151,28 @@ def main():
           'reason': 'self-intersections present (123)'}
     assert '123' in gui._rec_reason(rr), gui._rec_reason(rr)
     print('ok  summary/recommendation i18n keys')
+
+    # Repeat picker dialog (P-REP): builds offscreen and maps clicks to points
+    import numpy as _np
+    dv = _np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
+    dt = _np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+                    [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+                    [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]], _np.int64)
+    dlg = gui.RepeatPickerDialog({'verts': dv, 'tris': dt})
+    assert dlg.btn_ok.isEnabled() is False
+    from PySide6.QtCore import QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+    for _ in range(2):
+        ev = QMouseEvent(QEvent.MouseButtonPress, QPointF(320.0, 240.0),
+                         gui.Qt.LeftButton, gui.Qt.LeftButton,
+                         gui.Qt.NoModifier)
+        dlg.view.mousePressEvent(ev)
+    assert dlg.view.source_point is not None, 'first click picked no source'
+    assert dlg.view.target_point is not None, 'second click picked no target'
+    assert dlg.btn_ok.isEnabled()
+    dlg.close()
+    print('ok  repeat picker dialog builds and picks points')
 
     # Engine submenu lists the configured engine
     em = gui.QMenu(w.tree)

@@ -117,12 +117,15 @@ def test_register_method_hook(tmp):
     assert methods.get_method(99) is None
 
 
-def test_placeholders_unavailable(tmp):
+def test_repeat_methods_registered(tmp):
+    """Methods 11/12 are now real (repeat_repair): available when the module
+    and its scipy/trimesh deps are importable; 12 needs user input, 11 invents
+    geometry."""
     import methods
     for num in (11, 12):
         ok, reason = methods.get_method(num).available()
-        assert ok is False, num
-        assert 'not implemented' in reason, (num, reason)
+        assert ok is True, (num, reason)
+    assert methods.get_method(11).invents_geometry is True
     assert methods.get_method(12).needs_user_input is True
 
 
@@ -153,6 +156,8 @@ def test_kwargs_mapping(tmp):
     for num in (8, 9, 10):
         assert methods.get_method(num).kwargs['deep_repair'] == 'off'
         assert methods.get_method(num).kwargs['ftetwild'] is False
+    assert methods.get_method(11).kwargs['repeat'] == 'auto'
+    assert methods.get_method(12).kwargs['repeat'] == 'manual'
 
 
 # --- templates / ranking ----------------------------------------------------
@@ -545,9 +550,8 @@ def test_cli_list_methods(tmp):
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
     assert [m['num'] for m in data] == list(range(1, 13))
-    # 8/9/10 are implemented (available); 11/12 are still placeholders.
-    assert all(data[n - 1]['available'] is True for n in (8, 9, 10)), data
-    assert all(data[n - 1]['available'] is False for n in (11, 12)), data
+    # 8-12 are implemented (available in an env with their deps).
+    assert all(data[n - 1]['available'] is True for n in (8, 9, 10, 11, 12)), data
 
 
 def test_cli_analyze_json(tmp):
@@ -583,10 +587,10 @@ def test_cli_explicit_methods(tmp):
                     '--no-history', path], env=_env(tmp)))
     assert d.get('method_used', {}).get('source') == 'tagged', d
     assert d['method_used']['num'] == 1, d
-    # unavailable placeholders are reported honestly and produce no output
-    r = _run(['--methods', '11', '--no-history', path], env=_env(tmp))
-    assert r.returncode == 1, r.stdout
-    assert 'no requested method could run' in _json(r).get('error', ''), r.stdout
+    # method 12 needs the picked points: tagging it without them is rejected
+    r = _run(['--methods', '12', '--no-history', path], env=_env(tmp))
+    assert r.returncode != 0, r.stdout
+    assert '--repeat-source' in r.stderr, r.stderr
 
 
 def test_cli_invalid_method_rejected(tmp):
