@@ -185,7 +185,9 @@ def _indirect_available():
 
 def _ftetwild_available():
     try:
-        return (bool(_repair_mod().ftetwild_available()), None)
+        if _repair_mod().ftetwild_available():
+            return True, None
+        return False, 'fTetWild (pytetwild + pyvista) is not installed'
     except Exception as e:  # noqa: BLE001
         return False, 'fTetWild unavailable: %s' % e
 
