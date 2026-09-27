@@ -2263,6 +2263,67 @@ def _local_remesh_tier(ml, ms, after):
     return ms, after, rep
 
 
+def weld_reload_equivalent(verts, tris):
+    """Weld a mesh into the form an STL save/reload reproduces.
+
+    STL stores no vertex sharing: on reload a loader re-welds vertices whose
+    stored float32 positions are exactly equal. Two positions that are distinct
+    in the in-memory float64 arrays can therefore collapse after a float32
+    write/read, creating edges used by more than two triangles that the
+    in-memory index topology does not show (observed on the proxy/closing
+    seam vertices: 3052 vertices, 3046 unique in float64 but 3040 in float32,
+    i.e. 5 non-manifold edges after reload).
+
+    Returns ``(verts, tris)`` in that reload-equivalent form: positions cast
+    to float32, exactly-coincident positions merged, degenerate and duplicate
+    faces dropped, unreferenced vertices removed. Pure numpy (no pymeshlab) so
+    the method registry's guard can apply the same rule without importing it.
+    """
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(v) == 0 or len(t) == 0:
+        return v, t
+    unique, inverse = np.unique(v, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    t = inverse[t.reshape(-1)].reshape(t.shape).astype(np.int64)
+    nondeg = ((t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2])
+              & (t[:, 0] != t[:, 2]))
+    t = t[nondeg]
+    if len(t) == 0:
+        return np.zeros((0, 3), dtype=np.float32), t
+    # drop duplicate faces (same unordered vertex set), keep first occurrence
+    keys = np.sort(t, axis=1)
+    _uniq, first = np.unique(keys, axis=0, return_index=True)
+    t = t[np.sort(first)]
+    # drop unreferenced vertices and remap
+    used = np.unique(t)
+    remap = np.full(len(unique), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return unique[used], remap[t]
+
+
+def _repair_welded_topology(ml, verts, tris):
+    """Topology repair of a reload-equivalent mesh (P-FIX).
+
+    Merging coincident positions can leave non-manifold edges / duplicate
+    faces; this runs the same repair subset the Stage-1 chain uses so a
+    legitimately repairable candidate is not falsely rejected. Never raises.
+    """
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
+                        face_matrix=np.asarray(tris, np.int32)))
+    for name, params in (('meshing_repair_non_manifold_edges', {}),
+                         ('meshing_remove_duplicate_faces', {}),
+                         ('meshing_repair_non_manifold_vertices', {}),
+                         ('meshing_remove_unreferenced_vertices', {})):
+        try:
+            ms.apply_filter(name, **params)
+        except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
+            pass
+    return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
+            np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
+
+
 def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                    closing=None, proxy_template=False):
     """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
@@ -2315,6 +2376,14 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
         if 'error' in rep:
             rec['reason'] = 'module error: %s' % rep['error']
         if len(cand_t):
+            # P-FIX: validate the mesh the user will actually reload. STL drops
+            # vertex sharing and the loader re-welds coincident float32
+            # positions, which can expose non-manifold edges the in-memory
+            # index arrays do not show. Weld into that reload-equivalent form,
+            # repair what the weld exposes, then check -- never adopt a
+            # candidate that is not strict-watertight after a save/reload.
+            cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
             cand_v = np.asarray(cand_v, dtype=np.float32)
             cand_t = np.asarray(cand_t, dtype=np.int32)
             det = detect_defects(cand_v, cand_t)
@@ -2323,7 +2392,7 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
             rec['holes'] = cand_holes
             rec['non_manifold'] = cand_nm
             rec['faces'] = int(len(cand_t))
-            if (cand_holes == 0 and cand_nm == 0
+            if (len(cand_t) and cand_holes == 0 and cand_nm == 0
                     and cand_holes + cand_nm <= base_holes + base_nm):
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))

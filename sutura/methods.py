@@ -488,11 +488,22 @@ def _worst_hausdorff_input_to_output(in_objs, out_objs):
     return worst
 
 
-def _strict_holes_nm(objs):
+def _strict_holes_nm(objs, weld=False):
+    """Total holes + non-manifold regions over ``objs``.
+
+    ``weld=True`` first converts each mesh into its STL save/reload-equivalent
+    form (``repair.weld_reload_equivalent``): positions cast to float32 with
+    exactly-coincident positions merged. A generative method's output can be
+    index-watertight in memory yet non-manifold after the float32 round-trip
+    (coincident seam vertices weld on reload), so the guard must judge the mesh
+    the user will actually reload -- not the in-memory index topology."""
     import defects
+    weld_fn = _repair_mod().weld_reload_equivalent if weld else None
     holes = 0
     nm = 0
     for _name, v, t in objs:
+        if weld_fn is not None:
+            v, t = weld_fn(v, t)
         d = defects.detect(v, t)
         holes += len(d['holes'])
         nm += len(d['non_manifold'])
@@ -524,7 +535,11 @@ def _evaluate(result, path, multi, in_objs, method):
     except Exception as e:  # noqa: BLE001
         rec['reason'] = 'cannot read output: %s' % e
         return rec
-    holes, nm = _strict_holes_nm(out_objs)
+    # A geometry-inventing method is judged on the reload-equivalent mesh (its
+    # adversarial case is exactly the coincident seam vertices the STL round
+    # trip welds, which would otherwise pass as watertight in memory).
+    _weld = bool(method is not None and method.invents_geometry)
+    holes, nm = _strict_holes_nm(out_objs, weld=_weld)
     rec['holes'] = holes
     rec['non_manifold'] = nm
     if holes or nm:

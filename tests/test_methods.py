@@ -257,6 +257,30 @@ def test_one_sided_hausdorff_identical(tmp):
     assert mx == 0.0 and mean == 0.0, (mx, mean)
 
 
+def test_weld_reload_equivalent_flags_reload_non_manifold(tmp):
+    """A mesh index-watertight in memory can stop being watertight after the
+    STL float32 round-trip (coincident positions weld on reload). The
+    generative guard must judge the welded form (P-FIX)."""
+    import defects
+    import methods
+    repair = methods._repair_mod()
+    v = np.array([
+        (0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (0, -1, 0),
+        (1e-46, 0, 0),  # underflows to (0, 0, 0) in float32 -> welds to v0
+    ], dtype=np.float64)
+    t = np.array([[0, 1, 2], [0, 1, 3], [5, 1, 4]], dtype=np.int64)
+    # in-memory index topology: edge (0,1) is used twice, no non-manifold edge
+    assert len(defects.detect(v, t)['non_manifold']) == 0
+    wv, wt = repair.weld_reload_equivalent(v, t)
+    assert len(wv) == 5 and len(wt) == 3, (len(wv), len(wt))
+    # after welding the coincident vertex the shared edge has three faces
+    assert len(defects.detect(wv, wt)['non_manifold']) == 1
+    holes, nm = methods._strict_holes_nm([(None, v, t)], weld=True)
+    assert nm == 1, nm
+    holes, nm = methods._strict_holes_nm([(None, v, t)], weld=False)
+    assert nm == 0, nm
+
+
 # --- execution policy (fakes, no real pipeline run) -------------------------
 
 def test_auto_escalation_uses_a_ranked_method(tmp):
