@@ -27,6 +27,7 @@ try:
     import manifold3d  # noqa: F401, E402
 except ImportError:
     manifold3d = None
+import trimesh  # noqa: E402
 import sutura.repeat_repair as rr  # noqa: E402
 
 
@@ -339,6 +340,25 @@ def test_rotational_symmetry_free():
     print(f"  ✓ test_rotational_symmetry_free passed (order: {info.get('order')}, score: {score:.4f})")
 
 
+def test_extract_outer_shell():
+    c1 = manifold3d.Manifold.cube([1.0, 1.0, 1.0], center=True).translate([-0.5, 0, 0])
+    c2 = manifold3d.Manifold.cube([1.0, 1.0, 1.0], center=True).translate([0.5, 0, 0])
+    m1 = c1.to_mesh()
+    m2 = c2.to_mesh()
+
+    v1, t1 = np.asarray(m1.vert_properties, float), np.asarray(m1.tri_verts, int)
+    v2, t2 = np.asarray(m2.vert_properties, float), np.asarray(m2.tri_verts, int)
+    v_combined = np.vstack([v1, v2])
+    t_combined = np.vstack([t1, t2 + len(v1)])
+
+    sv, st = rr.extract_outer_shell(v_combined, t_combined)
+    tm = trimesh.Trimesh(vertices=sv, faces=st, process=False)
+    assert tm.is_watertight, "Extracted outer shell must be watertight"
+    assert len(tm.split(only_watertight=False)) == 1, "Must be a single outer component"
+    assert 1.9 < tm.volume < 2.3, f"Unexpected volume: {tm.volume}"
+    print(f"  ✓ test_extract_outer_shell passed (verts: {len(sv)}, faces: {len(st)}, vol: {tm.volume:.3f})")
+
+
 def main():
     t0 = time.time()
     print("Running repeated-element repair tests (tests/test_repeat_repair.py)...")
@@ -348,6 +368,7 @@ def main():
     test_align_similarity_scale()
     test_align_mirror_reflection()
     test_rotational_symmetry_free()
+    test_extract_outer_shell()
     test_knurl_cylinder_auto()
     test_tile_grid_auto()
     test_helical_cylinder_auto()

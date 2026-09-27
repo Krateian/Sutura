@@ -430,8 +430,7 @@ def _execute_boolean_transplant_inprocess(verts, tris, template_pts, transforms,
         dst_boxes.append((c_dst, ext_dst, frame_dst))
 
         element_prime = element_solid.transform(T[:3, :])
-        cavity_m = current_mf - box_dst_m
-        current_mf = cavity_m + element_prime
+        current_mf = current_mf + element_prime
 
     out_mesh = current_mf.to_mesh()
     rep_v = np.asarray(out_mesh.vert_properties, dtype=np.float64)
@@ -483,12 +482,6 @@ def _execute_boolean_transplant_bridge(verts, tris, template_pts, transforms, ma
                 'input': 'src_box',
                 'matrix': T_mat.tolist(),
                 'result': box_dst_name,
-            },
-            {
-                'op': 'difference',
-                'a': 'base',
-                'b': box_dst_name,
-                'result': 'base',
             },
             {
                 'op': 'transform',
@@ -614,6 +607,62 @@ def _compute_hausdorff_outside(orig_tm, result_tm, dst_boxes, samples=5000):
     return float(np.max(dists)) / diag
 
 
+def extract_outer_shell(verts, tris, dilation=0.05):
+    """Extract the outer surface shell of a multi-component mesh, removing internal geometry.
+
+    For assemblies of touching or overlapping watertight parts (e.g. Rubik's cube cubies),
+    slightly dilates each component by `dilation` mm around its centroid so touching
+    interfaces dissolve, performs boolean union via manifold3d, and retains the single
+    largest outer component.
+
+    Returns:
+        (shell_verts, shell_tris)
+    """
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int32)
+
+    tm = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+    comps = tm.split(only_watertight=False)
+    if len(comps) <= 1:
+        return verts, tris
+
+    import manifold3d
+
+    mf_list = []
+    for comp in comps:
+        c = comp.centroid
+        ext = comp.extents
+        scale = (ext + dilation) / np.maximum(ext, 1e-6)
+        v_scaled = (comp.vertices - c) * scale + c
+        v = np.ascontiguousarray(v_scaled, dtype=np.float32)
+        t = np.ascontiguousarray(comp.faces, dtype=np.uint32)
+        try:
+            mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v, tri_verts=t))
+            if mf.status() == manifold3d.Error.NoError and not mf.is_empty():
+                mf_list.append(mf)
+        except Exception:
+            continue
+
+    if not mf_list:
+        return verts, tris
+
+    united = mf_list[0]
+    for mf in mf_list[1:]:
+        united = united + mf
+
+    out_m = united.to_mesh()
+    v_out = np.asarray(out_m.vert_properties, dtype=np.float64)
+    t_out = np.asarray(out_m.tri_verts, dtype=np.int64)
+
+    tm_out = trimesh.Trimesh(vertices=v_out, faces=t_out, process=False)
+    sub_comps = tm_out.split(only_watertight=False)
+    if not sub_comps:
+        return v_out, t_out
+
+    largest = max(sub_comps, key=lambda c: float(np.prod(c.extents)))
+    return np.asarray(largest.vertices, dtype=np.float64), np.asarray(largest.faces, dtype=np.int32)
+
+
 def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     """Segmentation-free detection of rotational symmetry ($C_n$) across candidate orders.
 
@@ -648,8 +697,13 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     best_match = None
     best_score = 0.0
 
-    for ax_i in range(3):
-        ax = eigvecs[:, ax_i]
+    candidate_axes = [
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, 1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+    ] + [eigvecs[:, i] for i in range(3)]
+
+    for ax in candidate_axes:
         norm_ax = np.linalg.norm(ax)
         if norm_ax < 1e-6:
             continue
@@ -673,7 +727,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
             move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
             rel_dev = mean_d / (move_d + 1e-6)
 
-            if frac >= 0.70 and rel_dev < 0.30:
+            if frac >= 0.70 and (rel_dev < 0.30 or (n >= 40 and rel_dev < 0.65)):
                 steps_to_check = [2]
                 if n >= 4:
                     steps_to_check.append(n // 2)
@@ -690,7 +744,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
                     is_better = score > best_score
                     if best_match is not None and not is_better:
                         prev_n = best_match['order']
-                        if n > prev_n and n % prev_n == 0 and score >= best_score * 0.90:
+                        if n > prev_n and n % prev_n == 0 and (n // prev_n) <= 4 and score >= best_score * 0.90:
                             is_better = True
                     if is_better:
                         best_score = score
@@ -1338,6 +1392,15 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
 
                 if max_dev >= 0.04 or dev >= 0.015:
                     transforms_to_repair.append(T_k)
+                    dam_pts_mask = dists >= max(0.4 * np.max(dists), 0.005 * elem_diag)
+                    if np.sum(dam_pts_mask) >= 3:
+                        dam_template_pts = template_pts[dam_pts_mask]
+                        dam_span = dam_template_pts.max(0) - dam_template_pts.min(0)
+                        if np.max(dam_span) < 0.8 * elem_diag:
+                            c_dam_loc = np.mean(dam_template_pts, axis=0)
+                            local_mask = np.linalg.norm(template_pts - c_dam_loc, axis=1) <= (np.linalg.norm(dam_span) * 0.75 + 1.5)
+                            if np.sum(local_mask) >= 8:
+                                template_pts = template_pts[local_mask]
 
         if transforms_to_repair:
             rep_v, rep_t, vol_change, dst_boxes, is_watertight = _execute_boolean_transplant(
