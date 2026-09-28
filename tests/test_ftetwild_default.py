@@ -28,8 +28,25 @@ import repair  # noqa: E402
 
 # Stage 1 leaves this 80-face mesh open (strict watertight only with fTetWild).
 OPEN_AFTER_STAGE1 = os.path.join(SAMPLES, 'thingi10k_100827.stl')
-# Stage 1 closes this one, but 33 self-intersecting faces remain.
-CLOSED_WITH_SI = os.path.join(SAMPLES, 'thingi10k_100045.stl')
+
+
+def _write_closed_with_si(path):
+    """A closed, topologically manifold mesh that still self-intersects after
+    stage 1: an icosphere with the north vertex pulled through to the south
+    pole.  Connectivity is untouched, so stage 1 closes it (0 holes, 0
+    non-manifold edges) but does NOT remove the self-intersection, which is the
+    precondition for the fTetWild trigger test.
+
+    (Previously `thingi10k_100045.stl` served this role, but the current stage-1
+    chain removes its self-intersections, so it no longer exercises the
+    trigger.)"""
+    import numpy as np
+    import trimesh
+    mesh = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+    verts = np.asarray(mesh.vertices, dtype=np.float64)
+    verts[int(np.argmax(verts[:, 2]))] = [0.0, 0.0, -1.3]
+    mesh.vertices = verts
+    mesh.export(path)
 
 
 def _repair(src, ftetwild):
@@ -116,11 +133,18 @@ def test_auto_leaves_closed_si_result_alone():
     if not repair.ftetwild_available():
         print('   (skipped: fTetWild extra not installed)')
         return
-    rep = _repair(CLOSED_WITH_SI, 'auto')
-    assert rep.get('experimental_ftetwild') is False, rep.get('experimental_ftetwild')
-    rep = _repair(CLOSED_WITH_SI, True)
-    ft = rep.get('experimental_ftetwild')
-    assert ft and ft.get('ran') and ft.get('trigger') == 'always', ft
+    with tempfile.TemporaryDirectory(prefix='sutura-si-fixture-') as d:
+        src = os.path.join(d, 'closed_with_si.stl')
+        _write_closed_with_si(src)
+        # auto: a closed result (0 holes, 0 non-manifold) must NOT trigger the
+        # tier even though it self-intersects.
+        rep = _repair(src, 'auto')
+        assert rep.get('experimental_ftetwild') is False, \
+            rep.get('experimental_ftetwild')
+        # experimental flag: it must run with trigger 'always'.
+        rep = _repair(src, True)
+        ft = rep.get('experimental_ftetwild')
+        assert ft and ft.get('ran') and ft.get('trigger') == 'always', ft
 
 
 def test_gui_checkboxes_map_to_cli_flags():
