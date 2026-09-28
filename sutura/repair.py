@@ -4496,7 +4496,17 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(
         prog='sutura',
-        description='Repair one or more STL/OBJ/3MF meshes. Output files get a "_fixed" suffix.')
+        description='Sutura Triage Engine: two-stage robust mesh repair for STL, OBJ, and 3MF files.',
+        epilog=(
+            'subcommands (first argument):\n'
+            '  validate FILE          read-only mesh validation (no repair, no output file)\n'
+            '  clear-cache            clear content-addressed Chart cache (~/.cache/sutura/)\n'
+            '  clear-learning         reset learning-triage history (triage_learning.json)\n'
+            '  export-history         view or export anonymous technical usage history\n'
+            '  engines list|check     inspect configured third-party repair engines\n'
+            '  ftetwild status|install|uninstall  manage optional fTetWild fallback extra\n'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='*', metavar='FILE',
                         help='input mesh file(s)')
     parser.add_argument('-o', '--output', metavar='OUTPUT',
@@ -4585,7 +4595,7 @@ def main():
                              '(mesh geometry + repair results only, never file '
                              'names or paths)')
     parser.add_argument('--no-cache', action='store_true',
-                        help='disable content-addressed geometry and analysis caching')
+                        help='disable content-addressed Sutura Chart cache (~/.cache/sutura/)')
     parser.add_argument('--max-geometry-change', type=float, default=None,
                         metavar='PCT',
                         help='repair budget: warn/block when the actual geometry '

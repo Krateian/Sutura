@@ -402,7 +402,7 @@ def format_methods() -> str:
         ok, reason = method.available()
         lines.append('  %-4d %-21s %-11s %-10s %s%s' % (
             method.num, method.id, method.family, 'yes' if ok else 'no',
-            method.name, '' if ok else '  (%s)' % reason))
+            method.display_name or method.name, '' if ok else '  (%s)' % reason))
     return '\n'.join(lines)
 
 

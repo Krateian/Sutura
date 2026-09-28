@@ -100,8 +100,13 @@ STRINGS = {
         'method_name_scaffold': 'Scaffold (proxy template)',
         'method_name_transplant': 'Transplant (repeat auto)',
         'method_name_transplant_plus': 'Transplant+ (repeat manual)',
+        'method_name_graft': 'Graft (shell wrap)',
         'method_name_mirror_complete': 'Mirror Complete',
         'method_name_wall_thicken': 'Wall Thicken',
+        'method_tip_graft': 'GRAFT (#13) — morphology shell wrap: close '
+            'damaged regions with a generalized-winding signed-distance '
+            'envelope, keep healthy geometry verbatim, and report detail loss. '
+            'Reload-watertight.',
         'method_tip_mirror_complete': 'MIRROR COMPLETE (#14) — complete the '
             'missing back of a single-sided scan by mirroring the visible '
             'surface across its detected symmetry plane. Falls back to Poisson '
@@ -109,6 +114,38 @@ STRINGS = {
         'method_tip_wall_thicken': 'WALL THICKEN (#15) — opt-in: measure '
             'per-vertex wall thickness from an SDF grid and thicken walls below '
             'the target by a morphological offset. Never runs automatically.',
+        'btn_about': 'About',
+        'about_tip': 'About Sutura Triage Engine',
+        'dlg_close': 'Close',
+        'about_title': 'About Sutura',
+        'about_heading': 'Sutura Triage Engine (sutura_engine)',
+        'about_desc': (
+            "Sutura is a two-stage mesh repair system engineered for 3D printing.\n\n"
+            "Core Architecture (sutura_engine):\n"
+            "• Triage: Intelligent auto-escalation policy enforcing intensity presets and time budgets.\n"
+            "• Diagnosis: Geometric feature extraction, surface analysis, and defect classification.\n"
+            "• Chart: High-performance content-addressed cache (~/.cache/sutura/) with 500 MB LRU.\n"
+            "• Stitch (P-WELD): Reload-safe float32 seam healing preserving vertex and face counts.\n"
+            "• X-Ray (P-HONEST): Strict post-save reload verification ensuring honest watertightness.\n"
+            "• Hull: Exterior shell extraction and degenerate multi-component resolution.\n"
+            "• Cast: High-performance exact geometry core in Rust (sutura_geom).\n\n"
+            "Methods #1–#15:\n"
+            "Quick Clean (#1), Local Mend (#2), Full Mend (#3), Join (#4), Autorefine (#5), "
+            "Exact Refine (#6), fTetWild (#7), Balloon (#8), Backplate (#9), Scaffold (#10), "
+            "Transplant (#11), Transplant+ (#12), Graft (#13), Mirror Complete (#14), Wall Thicken (#15)."
+        ),
+        'about_credits': (
+            "Third-Party Adapters & Algorithms:\n"
+            "• PyMeshLab / VCG Library (GPL-3.0) — Stage 1 topological repair and surface filtering.\n"
+            "• Manifold3D (Apache-2.0) — Stage 2 volumetric manifold solid rebuilding.\n"
+            "• pytetwild / fTetWild (MPL-2.0) — Robust tetrahedralization envelope fallback.\n"
+            "• pyrobust-predicates / Shewchuk (Public Domain) — Exact 3D geometric orientation.\n"
+            "• PySide6 / Qt (LGPL-3.0) — Native graphical user interface framework."
+        ),
+        'about_license': (
+            "Licensed under the PolyForm Noncommercial 1.0.0 License.\n"
+            "Free for personal, educational, and non-commercial 3D printing."
+        ),
         'repeat_pick_title': 'Pick repeated elements',
         'repeat_pick_source': 'Click the HEALTHY element to copy from',
         'repeat_pick_target': 'Now click the DAMAGED element to replace',
@@ -386,7 +423,7 @@ STRINGS = {
         'opt_clear_learning': 'Reset learning',
         'opt_learning_cleared': 'Learning triage data was reset.',
         'opt_learning_empty': 'No learning data to reset.',
-        'opt_cache': 'Enable geometry and analysis cache (~/.cache/sutura/)',
+        'opt_cache': 'Enable Sutura Chart cache (~/.cache/sutura/)',
         'opt_cache_size': 'Cache size: %s',
         'opt_clear_cache': 'Clear Cache',
         'opt_cache_cleared': 'Cache cleared successfully (%s freed).',
@@ -574,8 +611,13 @@ STRINGS = {
         'method_name_scaffold': 'İskelet (vekil şablon)',
         'method_name_transplant': 'Nakil (yineleme, otomatik)',
         'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
+        'method_name_graft': 'Graft (kabuk sarma)',
         'method_name_mirror_complete': 'Aynalı Tamamlama',
         'method_name_wall_thicken': 'Duvar Kalınlaştır',
+        'method_tip_graft': 'GRAFT (#13) — morfoloji kabuk sarma: hasarlı '
+            'bölgeleri genelleştirilmiş sarımlı işaretli mesafe zarfıyla kapatır, '
+            'sağlıklı geometriyi birebir korur ve ayrıntı kaybını raporlar. '
+            'Yeniden yüklemede su geçirmez.',
         'method_tip_mirror_complete': 'AYNALI TAMAMLAMA (#14) — tek taraflı '
             'taramada eksik arka yüzeyi, görünen yüzeyi algılanan simetri '
             'düzleminde aynalayarak tamamlar. Simetri güveni düşükse Poisson '
@@ -584,6 +626,38 @@ STRINGS = {
             'SDF ızgarasından her tepe için duvar kalınlığını ölçer ve hedefin '
             'altındaki duvarları morfolojik öteleme ile kalınlaştırır. Asla '
             'otomatik çalışmaz.',
+        'btn_about': 'Hakkında',
+        'about_tip': 'Sutura Triyaj Motoru Hakkında',
+        'dlg_close': 'Kapat',
+        'about_title': 'Sutura Hakkında',
+        'about_heading': 'Sutura Triyaj Motoru (sutura_engine)',
+        'about_desc': (
+            "Sutura, 3D baskı için tasarlanmış iki aşamalı gelişmiş bir mesh onarım sistemidir.\n\n"
+            "Çekirdek Mimari (sutura_engine):\n"
+            "• Triage (Triyaj): Yoğunluk profillerini ve süre bütçelerini yöneten akıllı kademelendirme.\n"
+            "• Diagnosis (Tanı): Geometrik özellik analizi, yüzey tanısı ve kusur sınıflandırma.\n"
+            "• Chart (Çizelge): ~/.cache/sutura/ altında 500 MB LRU içerik adresli hızlı önbellek.\n"
+            "• Stitch (P-WELD): Yüz sayısını koruyarak kayıtta dikişleri onaran güvenli kaynak.\n"
+            "• X-Ray (P-HONEST): Kayıt sonrası yeniden yüklemeyle doğrulanan dürüst su geçirmezlik.\n"
+            "• Hull (Kabuk): Çok bileşenli montajlarda dış yüzey kabuğu çıkarımı.\n"
+            "• Cast (Döküm): Rust tabanlı yüksek başarımlı kesin geometri çekirdeği (sutura_geom).\n\n"
+            "Onarım Yöntemleri #1–#15:\n"
+            "Hızlı Temizlik (#1), Yerel Onarım (#2), Tam Onarım (#3), Birleştir (#4), Kendini Onarım (#5), "
+            "Kesin Onarım (#6), fTetWild (#7), Balon (#8), Arka Plaka (#9), İskelet (#10), "
+            "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15)."
+        ),
+        'about_credits': (
+            "Üçüncü Taraf Uyarlayıcılar ve Algoritmalar:\n"
+            "• PyMeshLab / VCG Kütüphanesi (GPL-3.0) — Aşama 1 topolojik onarım ve filtreleme.\n"
+            "• Manifold3D (Apache-2.0) — Aşama 2 hacimsel manifold katı yeniden inşası.\n"
+            "• pytetwild / fTetWild (MPL-2.0) — Sağlam tetrahedralizasyon son-çare zarfı.\n"
+            "• pyrobust-predicates / Shewchuk (Kamu Malı) — Kesin 3D geometrik yönelim.\n"
+            "• PySide6 / Qt (LGPL-3.0) — Yerel grafik kullanıcı arayüzü çatısı."
+        ),
+        'about_license': (
+            "PolyForm Noncommercial 1.0.0 Lisansı ile lisanslanmıştır.\n"
+            "Kişisel, eğitim ve ticari olmayan 3D baskı kullanımları için ücretsizdir."
+        ),
         'repeat_pick_title': 'Yinelenen ögeleri seç',
         'repeat_pick_source': 'Kopyalanacak SAĞLAM ögeye tıklayın',
         'repeat_pick_target': 'Şimdi değiştirilecek HASARLI ögeye tıklayın',
@@ -861,7 +935,7 @@ STRINGS = {
         'opt_clear_learning': 'Öğrenmeyi sıfırla',
         'opt_learning_cleared': 'Öğrenen triyaj verisi sıfırlandı.',
         'opt_learning_empty': 'Sıfırlanacak öğrenme verisi yok.',
-        'opt_cache': 'Geometri ve analiz önbelleğini etkinleştir (~/.cache/sutura/)',
+        'opt_cache': 'Sutura Chart önbelleğini etkinleştir (~/.cache/sutura/)',
         'opt_cache_size': 'Önbellek boyutu: %s',
         'opt_clear_cache': 'Önbelleği Temizle',
         'opt_cache_cleared': 'Önbellek başarıyla temizlendi (%s boşaltıldı).',
@@ -2649,6 +2723,46 @@ class EnginesProgressDialog(QDialog):
             event.ignore()
 
 
+class AboutDialog(QDialog):
+    """About dialog describing Sutura Triage Engine, components, methods, and credits."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_t('about_title'))
+        self.setModal(True)
+        self.resize(540, 480)
+        layout = QVBoxLayout(self)
+
+        title = QLabel(f"<h2>{_t('app_title')} v{VERSION}</h2>")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        heading = QLabel(f"<b>{_t('about_heading')}</b>")
+        heading.setAlignment(Qt.AlignCenter)
+        layout.addWidget(heading)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        desc_html = _t('about_desc').replace('\n', '<br>')
+        credits_html = _t('about_credits').replace('\n', '<br>')
+        license_html = _t('about_license').replace('\n', '<br>')
+        browser.setHtml(
+            f"<p>{desc_html}</p>"
+            f"<hr>"
+            f"<p>{credits_html}</p>"
+            f"<hr>"
+            f"<p><small>{license_html}</small></p>"
+        )
+        layout.addWidget(browser)
+
+        btn_box = QHBoxLayout()
+        btn_box.addStretch(1)
+        btn_close = QPushButton(_t('dlg_close'))
+        btn_close.clicked.connect(self.accept)
+        btn_box.addWidget(btn_close)
+        layout.addLayout(btn_box)
+
+
 class OptionsDialog(QDialog):
     """Non-modal, tabbed Options window.
 
@@ -3404,6 +3518,11 @@ class MainWindow(QMainWindow):
         self.version_label = QLabel('v' + VERSION)
         self.version_label.setObjectName('versionLabel')
         row.addWidget(self.version_label)
+        self.btn_about = QPushButton(_t('btn_about'))
+        self.btn_about.setObjectName('aboutBtn')
+        self.btn_about.setToolTip(_t('about_tip'))
+        self.btn_about.clicked.connect(self._show_about)
+        row.addWidget(self.btn_about)
         layout.addLayout(row)
 
         # batch summary strip (populated when a batch finishes)
@@ -3561,6 +3680,10 @@ class MainWindow(QMainWindow):
 
     def _show_options(self, tab=0):
         self._options_dialog.open_tab(tab)
+
+    def _show_about(self):
+        dlg = AboutDialog(self)
+        dlg.exec()
 
     def closeEvent(self, event):
         """Wait for background threads so none is still running when the
