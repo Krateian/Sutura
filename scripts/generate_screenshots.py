@@ -34,6 +34,7 @@ Outputs (overwrites in assets/):
 The meshes used are generated into a temp dir and removed afterwards.
 """
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -295,8 +296,10 @@ def run_context_menu(m, files, out_path):
 def main():
     os.environ['SUTURA'] = _repo_cli_wrapper()
     m = load_gui()
-    with tempfile.TemporaryDirectory(prefix='sutura-ss-') as tmp:
-        broken, clean = make_meshes(tmp)
+    sample_dir = os.path.join('/tmp', 'models') if os.path.exists('/tmp') else os.path.join(tempfile.gettempdir(), 'models')
+    os.makedirs(sample_dir, exist_ok=True)
+    try:
+        broken, clean = make_meshes(sample_dir)
         files = [broken, clean]
         run(m, files, MAIN_SIZE, select_broken=True, show_heatmap=True,
             out_path=os.path.join(ASSETS, 'screenshot.png'))
@@ -308,6 +311,8 @@ def main():
                          out_path=os.path.join(ASSETS, 'before-after-panel.png'))
         run_context_menu(m, files,
                          out_path=os.path.join(ASSETS, 'method-menu.png'))
+    finally:
+        shutil.rmtree(sample_dir, ignore_errors=True)
     print('done')
 
 
