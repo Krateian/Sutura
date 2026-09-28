@@ -4309,6 +4309,8 @@ def main():
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
                              'names or paths)')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='disable content-addressed geometry and analysis caching')
     parser.add_argument('--max-geometry-change', type=float, default=None,
                         metavar='PCT',
                         help='repair budget: warn/block when the actual geometry '
@@ -4513,6 +4515,27 @@ def main():
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
         sys.exit(1)
+
+    if getattr(args, 'no_cache', False):
+        try:
+            from sutura_engine import cache
+            cache.set_cache_enabled(False)
+        except Exception:
+            pass
+
+    # 'clear-cache' as the first positional argument clears ~/.cache/sutura/
+    if files and files[0] == 'clear-cache':
+        try:
+            from sutura_engine import cache
+            freed = cache.clear_cache()
+            if human:
+                print('Cache cleared: %s freed' % cache._human_bytes(freed))
+            else:
+                print(json.dumps({'cleared': True, 'freed_bytes': freed, 'freed_human': cache._human_bytes(freed)}))
+        except Exception as e:
+            print(json.dumps({'error': 'clear-cache failed: %s' % e}))
+            sys.exit(1)
+        sys.exit(0)
 
     # 'export-history' as the first positional argument prints the anonymous
     # usage history (summary + full JSON array) instead of repairing.

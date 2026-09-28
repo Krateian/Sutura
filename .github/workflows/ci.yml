@@ -192,6 +192,15 @@ jobs:
       - name: "Test: engine integration"
         run: ./venv/bin/python tests/test_engine_integration.py
 
+      - name: "Test: sutura_engine cache"
+        run: ./venv/bin/python tests/test_engine_cache.py
+
+      - name: "Test: sutura_engine import isolation (no pymeshlab)"
+        run: ./venv/bin/python tests/test_engine_no_pymeshlab.py
+
+      - name: "Test: sutura_engine plugin / protocol"
+        run: ./venv/bin/python tests/test_engine_plugin.py
+
       - name: "Test: engines GUI"
         run: ./venv/bin/python tests/test_engines_gui.py
 

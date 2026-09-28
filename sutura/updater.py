@@ -136,6 +136,7 @@ DEFAULT_CONFIG = {
     # extreme. Balanced is the historical default.
     'intensity': 'balanced',
     'check_on_startup': False,
+    'cache_enabled': True,
 }
 
 
@@ -356,7 +357,17 @@ def requirements_changed(src_dir, req_files):
     return changed
 
 
-# ---------------------------------------------------------------- install
+def _copy_sutura_engine(src_dir):
+    engine_src = os.path.join(src_dir, 'sutura', 'sutura_engine')
+    if not os.path.exists(engine_src):
+        engine_src = os.path.join(src_dir, 'sutura_engine')
+    if os.path.isdir(engine_src):
+        for dst_sub in ('sutura_engine', os.path.join('sutura', 'sutura_engine')):
+            dst = os.path.join(APP_DIR, dst_sub)
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(engine_src, dst)
+
 
 def _copy_python_files(src_dir):
     for f in APP_MODULES + COPY_EXTRA_MODULES:
@@ -367,6 +378,7 @@ def _copy_python_files(src_dir):
     _score_cfg = os.path.join(src_dir, 'sutura', 'repair_score_config.json')
     if os.path.exists(_score_cfg):
         shutil.copy2(_score_cfg, os.path.join(APP_DIR, 'repair_score_config.json'))
+    _copy_sutura_engine(src_dir)
 
 
 def _install_linux(src_dir, req_files):
@@ -380,6 +392,7 @@ def _install_linux(src_dir, req_files):
     _score_cfg = os.path.join(sutura_src, 'repair_score_config.json')
     if os.path.exists(_score_cfg):
         shutil.copy2(_score_cfg, os.path.join(APP_DIR, 'repair_score_config.json'))
+    _copy_sutura_engine(src_dir)
     for f in ('install.sh', 'uninstall.sh'):
         src = os.path.join(src_dir, f)
         if os.path.exists(src):

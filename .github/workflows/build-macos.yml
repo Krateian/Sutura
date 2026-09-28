@@ -77,6 +77,10 @@ jobs:
             "--hidden-import" "closing" "--hidden-import" "proxy_repair"
             "--hidden-import" "repeat_repair"
             "--hidden-import" "csg_bridge"
+            "--hidden-import" "sutura_engine"
+            "--collect-submodules" "sutura_engine"
+            "--collect-submodules" "sutura.sutura_engine"
+            "--paths" "."
             "--hidden-import" "scipy.sparse" "--hidden-import" "scipy.sparse.csgraph"
             "--hidden-import" "scipy.spatial"
             "--hidden-import" "pyrobust_predicates"
@@ -117,6 +121,9 @@ jobs:
             --hidden-import closing --hidden-import proxy_repair \
             --hidden-import repeat_repair \
             --hidden-import csg_bridge \
+            --hidden-import sutura_engine \
+            --collect-submodules sutura_engine \
+            --collect-submodules sutura.sutura_engine \
             --hidden-import scipy.sparse --hidden-import scipy.sparse.csgraph \
             --hidden-import scipy.spatial \
             --collect-data pymeshlab --collect-data manifold3d \

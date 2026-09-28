@@ -94,6 +94,9 @@ for f in repair.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py clas
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/sutura/$f"
 done
 install -m 0644 "$REPO_DIR/LICENSE" "$APP_DIR/LICENSE"
+rm -rf "$APP_DIR/sutura_engine" "$APP_DIR/sutura/sutura_engine"
+cp -r "$REPO_DIR/sutura/sutura_engine" "$APP_DIR/sutura_engine"
+cp -r "$REPO_DIR/sutura/sutura_engine" "$APP_DIR/sutura/sutura_engine"
 
 # developer/security: when installing from a git checkout, install the
 # pre-push secret scan hook (harmless no-op for end-user installs)

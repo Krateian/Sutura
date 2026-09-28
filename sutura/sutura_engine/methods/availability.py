@@ -1,0 +1,71 @@
+# Copyright (C) 2026 Sutura Authors
+# SPDX-License-Identifier: Apache-2.0
+"""Availability checks for repair method tiers."""
+import importlib.util
+from typing import Optional, Tuple
+
+
+def always_available() -> Tuple[bool, Optional[str]]:
+    return True, None
+
+
+def indirect_available() -> Tuple[bool, Optional[str]]:
+    """The exact indirect-predicate tier needs the Rust extension + bridge."""
+    try:
+        if importlib.util.find_spec('sutura_geom') is None:
+            return False, 'rust extension sutura_geom is not installed'
+        if importlib.util.find_spec('indirect_bridge') is None:
+            return False, 'indirect_bridge.py is not available'
+        return True, None
+    except Exception as e:
+        return False, 'indirect autorefine unavailable: %s' % e
+
+
+def ftetwild_available() -> Tuple[bool, Optional[str]]:
+    """Check fTetWild availability."""
+    try:
+        from sutura_engine.methods.protocol import _repair_mod
+        if _repair_mod().ftetwild_available():
+            return True, None
+        return False, 'fTetWild (pytetwild + pyvista) is not installed'
+    except Exception as e:
+        return False, 'fTetWild unavailable: %s' % e
+
+
+def closing_available() -> Tuple[bool, Optional[str]]:
+    """Registry methods 8/9 need the standalone closing tier."""
+    try:
+        if (importlib.util.find_spec('sutura_engine.methods.closing') is None and
+                importlib.util.find_spec('closing') is None):
+            return False, 'closing.py is not available'
+        return True, None
+    except Exception as e:
+        return False, 'closing unavailable: %s' % e
+
+
+def proxy_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 10 needs proxy_repair plus its deps."""
+    try:
+        if (importlib.util.find_spec('sutura_engine.methods.proxy') is None and
+                importlib.util.find_spec('proxy_repair') is None):
+            return False, 'proxy_repair is not available'
+        for mod in ('trimesh', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:
+        return False, 'proxy repair unavailable: %s' % e
+
+
+def repeat_available() -> Tuple[bool, Optional[str]]:
+    """Registry methods 11/12 need repeat_repair + its deps."""
+    try:
+        if (importlib.util.find_spec('sutura_engine.methods.repeat') is None and
+                importlib.util.find_spec('repeat_repair') is None):
+            return False, 'repeat_repair is not available'
+        for mod in ('trimesh', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:
+        return False, 'repeat repair unavailable: %s' % e

@@ -1554,6 +1554,17 @@ güvenilir şekilde algılayabilir.
   yazılır, böylece hiçbir nesne kaybolmaz. Nesne başına sonuç (her nesnenin
   aşama 2 kararı dahil) CLI çıktısında ve GUI'de raporlanır.
 
+## Mimari
+
+Sutura, güvenilirlik, katman izolasyonu ve genişletilebilirlik için tasarlanmış modüler bir motor paketi (`sutura_engine`) etrafında yapılandırılmıştır:
+
+* **`sutura_engine.core`** — Saf geometri ve doğrulama: mesh dizi G/Ç (STL, OBJ, 3MF), topolojik ölçümler, yeniden yüklemeye eşdeğer kaynak (`P-WELD`), dürüst su geçirmezlik kararları ve Hausdorff mesafe kontrolleri.
+* **`sutura_engine.analysis`** — Yüzey ve kusur analizleri: parça analizi, genişletilebilir geometrik şablonlar (mekanik, organik, rölyefler, ince yüzeyler, kafesler) ve mesh sınıflandırıcı entegrasyonu.
+* **`sutura_engine.methods`** — `RepairMethodProtocol` standardına uyan eklenebilir onarım yöntemleri: izole modüllerden otomatik olarak keşfedilen yerleşik yöntemler (`#1` Hızlı - `#12` Tekrarlayan Eleman), tarama kapatma, vekil şablon ve tekrarlayan geometri katmanları.
+* **`sutura_engine.triage`** — Akıllı kademelendirme politikası: geometrik analize göre onarım yöntemlerini puanlar, kullanıcı yoğunluk profillerini (*Hızlı*, *Dengeli*, *Kapsamlı*, *Ekstrem*) uygular ve çalışma süresi bütçelerini yönetir.
+* **`sutura_engine.adapters`** — Harici ve üçüncü parti kütüphaneler için katı izolasyon sınırları (PyMeshLab, Manifold3D, fTetWild ve harici CLI motorları). Yalnızca ilgili yöntem çalıştırıldığında tembel (lazy) olarak yüklenir.
+* **`sutura_engine.cache`** — `~/.cache/sutura/` altında 500 MB LRU boyut sınırına sahip SHA-256 içerik adresli önbellek; sürüm güncellemelerinde otomatik geçersiz kılma, CLI (`--no-cache`, `sutura clear-cache`) ve GUI seçenekleri.
+
 ## Kullanım geçmişi (anonim, isteğe bağlı kapatılabilir)
 
 Sutura, onarımların *teknik kullanım geçmişini* kaydeder; böylece topluluk,

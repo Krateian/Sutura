@@ -1547,6 +1547,17 @@ Pinned in `requirements.txt`, `requirements-311.txt` and (optional)
   (including each object's stage-2 verdict) is reported in the CLI output
   and the GUI.
 
+## Architecture
+
+Sutura is organized as a modular engine (`sutura_engine`) designed for reliability, strict layer boundaries, and extensibility:
+
+* **`sutura_engine.core`** — Pure geometry and validation: mesh array I/O (STL, OBJ, 3MF), topological measurements, reload-equivalent welding (`P-WELD`), honest watertight verdicts, and Hausdorff distance guards.
+* **`sutura_engine.analysis`** — Surface and defect diagnostics: component analysis, extensible geometric templates (mechanical, organic, reliefs, thin sheets, lattices), and mesh classifier integration.
+* **`sutura_engine.methods`** — Pluggable repair methods conforming to `RepairMethodProtocol`: built-in methods (`#1` Fast through `#12` Repeated Element) discovered automatically from isolated modules, plus closing, proxy, and repeated-element repair tiers.
+* **`sutura_engine.triage`** — Intelligent escalation policy: ranks repair methods based on geometric analysis, enforces user intensity presets (*Quick*, *Balanced*, *Thorough*, *Extreme*), and respects strict runtime budgets.
+* **`sutura_engine.adapters`** — Strict isolation boundaries for external and third-party tools (PyMeshLab, Manifold3D, fTetWild, and external CLI engines). Adapters are imported lazily only when a specific method executes.
+* **`sutura_engine.cache`** — Content-addressed SHA-256 caching under `~/.cache/sutura/` with 500 MB LRU eviction, automatic invalidation across version updates, and CLI (`--no-cache`, `sutura clear-cache`) / GUI options.
+
 ## Usage history (anonymous, opt-out)
 
 Sutura records a *technical usage history* of repairs so the community can

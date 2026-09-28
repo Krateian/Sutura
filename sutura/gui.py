@@ -365,6 +365,10 @@ STRINGS = {
                                     'result is not worse than the default chain, '
                                     'but it can make a repair much slower.',
         'opt_history': 'Keep an anonymous usage history (no file names or paths)',
+        'opt_cache': 'Enable geometry and analysis cache (~/.cache/sutura/)',
+        'opt_cache_size': 'Cache size: %s',
+        'opt_clear_cache': 'Clear Cache',
+        'opt_cache_cleared': 'Cache cleared successfully (%s freed).',
         'opt_version': 'Installed version: v%s',
         'opt_last_check': 'Last check: %s',
         'opt_never': 'never',
@@ -813,6 +817,10 @@ STRINGS = {
                                     'zincirden kötü değilse uygulanır, ama onarımı '
                                     'belirgin şekilde yavaşlatabilir.',
         'opt_history': 'Anonim kullanım geçmişi tut (dosya adı veya yol yok)',
+        'opt_cache': 'Geometri ve analiz önbelleğini etkinleştir (~/.cache/sutura/)',
+        'opt_cache_size': 'Önbellek boyutu: %s',
+        'opt_clear_cache': 'Önbelleği Temizle',
+        'opt_cache_cleared': 'Önbellek başarıyla temizlendi (%s boşaltıldı).',
         'opt_version': 'Kurulu sürüm: v%s',
         'opt_last_check': 'Son kontrol: %s',
         'opt_never': 'hiç',
@@ -1357,6 +1365,7 @@ class RepairWorker(QThread):
         self._proc = None
         cfg = updater.load_config()
         self._no_history = not bool(cfg.get('history_enabled', True))
+        self._no_cache = not bool(cfg.get('cache_enabled', True))
 
     def cancel(self):
         self._cancelled = True
@@ -1396,6 +1405,8 @@ class RepairWorker(QThread):
                 args.append('--force')
             if self._no_history:
                 args.append('--no-history')
+            if self._no_cache:
+                args.append('--no-cache')
             if self._edge_tiebreak:
                 args.append('--experimental-edge-tiebreak')
             if self._join_components:
@@ -2624,6 +2635,24 @@ class OptionsDialog(QDialog):
         self.chk_history.toggled.connect(
             lambda on: self._save_key('history_enabled', bool(on)))
         g.addWidget(self.chk_history)
+
+        self.chk_cache = QCheckBox(_t('opt_cache'))
+        self.chk_cache.setChecked(bool(cfg.get('cache_enabled', True)))
+        self.chk_cache.toggled.connect(
+            lambda on: self._save_cache_setting(bool(on)))
+        g.addWidget(self.chk_cache)
+
+        cache_row = QHBoxLayout()
+        cache_row.setContentsMargins(22, 0, 0, 0)
+        self.lbl_cache_size = QLabel()
+        self.btn_clear_cache = QPushButton(_t('opt_clear_cache'))
+        self.btn_clear_cache.clicked.connect(self._on_clear_cache)
+        cache_row.addWidget(self.lbl_cache_size)
+        cache_row.addStretch(1)
+        cache_row.addWidget(self.btn_clear_cache)
+        g.addLayout(cache_row)
+        self._update_cache_size_label()
+
         g.addStretch(1)
         self.tabs.addTab(general, _t('opt_tab_general'))
 
@@ -2817,6 +2846,32 @@ class OptionsDialog(QDialog):
         cfg = updater.load_config()
         cfg[key] = value
         updater.save_config(cfg)
+
+    def _save_cache_setting(self, on):
+        self._save_key('cache_enabled', on)
+        try:
+            from sutura_engine import cache
+            cache.set_cache_enabled(on)
+        except Exception:
+            pass
+
+    def _update_cache_size_label(self):
+        try:
+            from sutura_engine import cache
+            sz = cache.get_cache_size()
+            self.lbl_cache_size.setText(_t('opt_cache_size') % cache.format_bytes(sz))
+        except Exception:
+            self.lbl_cache_size.setText('')
+
+    def _on_clear_cache(self):
+        try:
+            from sutura_engine import cache
+            freed = cache.clear_cache()
+            self._update_cache_size_label()
+            QMessageBox.information(self, _t('opt_clear_cache'),
+                                    _t('opt_cache_cleared') % cache.format_bytes(freed))
+        except Exception as e:
+            QMessageBox.warning(self, _t('opt_clear_cache'), str(e))
 
     # --- profile name helpers (QMessageBox/QInputDialog wrappers so the
     # offscreen tests can stub them without a modal event loop)

@@ -91,6 +91,9 @@ install -m 0644 "$REPO_ROOT/sutura/repair_score_config.json" "$LIB/repair_score_
 install -m 0644 "$REPO_ROOT/requirements.txt" \
     "$REPO_ROOT/requirements-gui.txt" "$REPO_ROOT/requirements-311.txt" "$LIB/"
 install -m 0644 "$REPO_ROOT/LICENSE" "$LIB/LICENSE"
+cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura_engine"
+mkdir -p "$LIB/sutura"
+cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura/sutura_engine"
 
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'

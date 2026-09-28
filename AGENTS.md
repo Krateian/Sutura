@@ -100,6 +100,83 @@ Options window, never in the way of the plain repair.
   real-world samples watertight again with unchanged face counts. Regression:
   `tests/test_methods.py::test_p_weld_final_separates_float32_collisions`.
 
+## Sutura Engine Architecture (`sutura_engine`)
+
+The core repair functionality is organized under `sutura/sutura_engine/` (aliased at repository root via `sutura_engine` symlink). It enforces strict layer separation, lazy third-party imports, content-addressed caching, and a pluggable method registry:
+
+- `sutura_engine.core`: Low-level mesh I/O (STL, OBJ, 3MF arrays), geometric validation, reload-equivalent welding (`weld_reload_equivalent`, `reload_strict_holes_nm`, P-WELD reload seam repair), honest watertightness verdicts, and Hausdorff distance computations.
+- `sutura_engine.analysis`: Object feature analysis (`analyze_object`), geometric template matching (`match_templates`, `REGISTRY` of templates), classifier glue (`detect_mesh_type`), and outer-shell auto extraction heuristics.
+- `sutura_engine.methods`: Pluggable repair method registry conforming to `RepairMethodProtocol`. Built-in methods (`m01`–`m12`) live in `sutura_engine/methods/builtin/` and are auto-discovered on import. Special tiers (closing, proxy, repeat, P-WELD) are modularized here.
+- `sutura_engine.triage`: Budget-aware auto-escalation policy (`repair_with_methods`, `_auto`, `_auto_multi`), intensity profiles (`quick`, `balanced`, `thorough`, `extreme`), and per-object 3MF escalation loops. Triage remains strictly stdlib-only on import.
+- `sutura_engine.adapters`: Strict boundaries around third-party libraries:
+  - `pymeshlab_adapter`: Stage 1 VCG repair filter chains (lazy import, never imported at engine top-level).
+  - `manifold_adapter`: Manifold3d in-process execution and subprocess bridge dispatch (`manifold_bridge.py`, `csg_bridge.py`).
+  - `ftetwild_adapter`: fTetWild tetrahedralization fallback tier and status checks.
+  - `external_adapter`: User-configured external CLI repair engines (`~/.config/sutura/engines/*.toml`).
+- `sutura_engine.cache`: Content-addressed cache located in `~/.cache/sutura/`. Keys are SHA-256 hashes of input mesh arrays + engine version + parameters. Enforces a 500 MB LRU size limit, auto-invalidates on version change, and supports `--no-cache` CLI flag and GUI Options toggle/button.
+- Public Python API: `sutura_engine.repair(path_or_arrays, methods=None, intensity=..., ...) -> Report`.
+- Backward Compatibility: Shims exist at the original module paths (`closing.py`, `proxy_repair.py`, `repeat_repair.py`, `object_analysis.py`, `templates.py`, `engines.py`, `methods.py`, `triage.py`) re-exporting symbols from `sutura_engine`.
+
+## How to add a repair method
+
+Sutura's repair engine is designed to be easily extensible. Any new repair method can be added without modifying the core pipeline or triage logic.
+
+### 1. Implement `RepairMethodProtocol`
+A repair method is a callable class or object conforming to `RepairMethodProtocol` (defined in `sutura_engine.methods.protocol`):
+```python
+from dataclasses import dataclass
+from typing import Optional, Tuple
+import numpy as np
+from sutura_engine.methods.protocol import (
+    RepairContext, MethodResult, Recommendation
+)
+
+class MyCustomMethod:
+    name: str = "my_custom"
+    title: str = "My Custom Repair"
+    description: str = "Repairs specific defect patterns using custom algorithm."
+    number: Optional[int] = 13  # Unique integer number or None for custom plugins
+    category: str = "custom"   # e.g., 'fast', 'deep', 'closing', 'repeat', 'custom'
+
+    def is_available(self) -> bool:
+        """Return True if required dependencies or tools are installed."""
+        return True
+
+    def recommend(self, ctx: RepairContext) -> Optional[Recommendation]:
+        """Evaluate ctx.analysis and defects to return score (0.0-1.0) and reason."""
+        if ctx.analysis.get("my_defect_flag"):
+            return Recommendation(
+                score=0.85,
+                reason="Detected specific defect pattern suitable for custom repair."
+            )
+        return None
+
+    def execute(self, ctx: RepairContext) -> MethodResult:
+        """Execute repair on ctx.verts, ctx.tris and return MethodResult."""
+        repaired_verts, repaired_tris = my_algorithm(ctx.verts, ctx.tris)
+        return MethodResult(
+            verts=repaired_verts,
+            tris=repaired_tris,
+            success=True,
+            method_name=self.name,
+            report_extra={"custom_stat": 42},
+        )
+```
+
+### 2. Auto-Discovery via `builtin/` or Manual Registration
+- **Built-in method:** Place your module as `sutura_engine/methods/builtin/m<NN>_<name>.py`. Export an instance named `METHOD` (or a subclass of `RepairMethod`). When `sutura_engine.methods` initializes, `discover_builtin_methods()` scans the `builtin/` package and registers any discovered methods automatically.
+- **Dynamic / Plugin registration:** Register at runtime using:
+  ```python
+  from sutura_engine.methods import register_method
+  register_method(MyCustomMethod())
+  ```
+- **Custom Templates:** Custom geometric templates can also be registered pluggably via:
+  ```python
+  from sutura_engine.analysis import register_template
+  register_template("my_template", my_detection_function)
+  ```
+The new method immediately participates in `--list-methods`, `--analyze` recommendations, GUI method column selection, and budget-governed triage ranking.
+
 ## Rust core performance work (`rust/sutura-geom`)
 
 - **Output-identity rule:** a performance change to the exact arrangement keeps the output identical, not merely equal in face count. Verification is the order-independent digest of `examples/arrangement_digest.rs` (exact rational vertex coordinates + winding; independent of triangle order, vertex numbering and cyclic rotation), compared before/after on thingi10k_1038441, its subsets (produced by `examples/bench_arrangement.rs`) and at least thingi10k_1038439, 55772, 502009, 46012 and artec_metal-nut. `cargo test --release --features cdt-check` additionally asserts every accelerated triangulation query against the linear reference scan; CI runs the Rust tests with and without that feature.

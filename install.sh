@@ -172,6 +172,12 @@ install -m 0755 "$SRC/sutura/viewer_data_render.py"  "$APP_DIR/viewer_data_rende
 install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
 install -m 0644 "$SRC/LICENSE"                   "$APP_DIR/LICENSE"
 
+echo "==> copying sutura_engine package"
+rm -rf "$APP_DIR/sutura_engine" "$APP_DIR/sutura/sutura_engine"
+cp -r "$SRC/sutura/sutura_engine" "$APP_DIR/sutura_engine"
+mkdir -p "$APP_DIR/sutura"
+cp -r "$SRC/sutura/sutura_engine" "$APP_DIR/sutura/sutura_engine"
+
 # developer/security: when installing from a git checkout, install the
 # pre-push secret scan hook (harmless no-op for end-user installs)
 if [ -d "$SRC/.git/hooks" ] && [ -f "$SRC/scripts/pre-push-security-check.sh" ]; then
