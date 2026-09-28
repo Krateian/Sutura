@@ -271,7 +271,7 @@ jobs:
       # Graft (#13) needs the Rust extension plus trimesh/scipy; the real
       # repair venv has pymeshlab (the verbatim-hybrid test skips without it).
       - name: Install Graft test deps
-        run: ./.venv/bin/pip install --quiet trimesh scipy
+        run: ./.venv/bin/pip install --quiet trimesh scipy manifold3d
 
       - name: "Test: Graft / shell wrap (method #13)"
         run: ./.venv/bin/python tests/test_shell_wrap.py

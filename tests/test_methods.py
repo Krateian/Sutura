@@ -760,8 +760,17 @@ def test_cli_list_methods(tmp):
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
     assert [m['num'] for m in data] == ALL_NUMS
-    # 8-13 are implemented (available in an env with their deps).
-    assert all(data[n - 1]['available'] is True for n in (8, 9, 10, 11, 12, 13)), data
+    # 8-12 are implemented (available in an env with their deps).  #13 Graft
+    # additionally needs the Rust `sutura_geom` extension, which the plain
+    # PyMeshLab test job does not build: assert it matches graft_available()
+    # (True when the extension is present, otherwise False with a reason that
+    # names the missing dependency) instead of hard-coding True.
+    assert all(data[n - 1]['available'] is True for n in (8, 9, 10, 11, 12)), data
+    import methods
+    g_ok, g_reason = methods.get_method(13).available()
+    assert data[12]['available'] is g_ok, (data[12], g_ok, g_reason)
+    if not g_ok:
+        assert 'sutura_geom' in (g_reason or ''), (g_reason, data[12])
 
 
 def test_cli_analyze_json(tmp):
