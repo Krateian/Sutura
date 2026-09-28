@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented here.
 
+## [0.7.0] - Unreleased
+
+### Breaking / renamed
+
+- **`--methods 13` / `--methods graft` now mean method #13 Graft (shell
+  wrap).** In v0.6.0 the number `13` and the slug `graft` were aliases for the
+  manual picked-points method; that method is now #12 `transplant_plus` (tried
+  with either `--methods 12` / `--methods transplant_plus` / `--methods
+  transplant+`). A script or saved tag using `13`/`graft` therefore changes
+  meaning: it now selects the new shell-wrap Graft, not the manual transplant.
+  The numeric ids `1`–`12` and `14`/`15` are unchanged.
+
+### Added
+
+- **Method #13 Graft (`sutura_engine.graft`, legacy `sutura/shell_wrap.py`).**
+  A morphology shell-wrap last-resort tier: the generalized-winding signed
+  distance (Cast core, `sutura_geom.morph_close`) drives a dilate -> true-EDT
+  re-distance -> erode envelope whose radius starts at ~1.5 voxels and grows
+  only while the result is not reload-watertight; the envelope is refined to
+  the median healthy edge and projected onto the original, and a verbatim
+  hybrid keeps the healthy triangles byte-identical and closes only the
+  damaged region. Reports `fidelity_ok` and EN/TR detail-loss warnings. Auto
+  tries Graft before fTetWild and, when Graft's `fidelity_ok` is false, also
+  tries fTetWild and keeps the watertight result with the lower healthy
+  deviation.
+
 ## [0.6.1] - 2026-09-28
 
 ### Added

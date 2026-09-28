@@ -76,6 +76,7 @@ APP_MODULES = (
     'repeat_picker_render.py',
     'mirror_repair.py',
     'wall_thickness.py',
+    'shell_wrap.py',
     'csg_bridge.py',
     'history.py',
     'repair_score.py',

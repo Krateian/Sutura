@@ -267,3 +267,11 @@ jobs:
 
       - name: "Test: sutura_geom arrangement"
         run: ./.venv/bin/python tests/test_sutura_geom_arrangement.py
+
+      # Graft (#13) needs the Rust extension plus trimesh/scipy; the real
+      # repair venv has pymeshlab (the verbatim-hybrid test skips without it).
+      - name: Install Graft test deps
+        run: ./.venv/bin/pip install --quiet trimesh scipy
+
+      - name: "Test: Graft / shell wrap (method #13)"
+        run: ./.venv/bin/python tests/test_shell_wrap.py
