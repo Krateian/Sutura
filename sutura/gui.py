@@ -120,7 +120,8 @@ STRINGS = {
         'about_title': 'About Sutura',
         'about_heading': 'Sutura Triage Engine (sutura_engine)',
         'about_desc': (
-            "Sutura is a two-stage mesh repair system engineered for 3D printing.\n\n"
+            "Sutura is a two-stage mesh repair system engineered for 3D printing.\n"
+            "Sutura Triage Engine — X-Ray, Graft, Transplant\n\n"
             "Core Architecture (sutura_engine):\n"
             "• Triage: Intelligent auto-escalation policy enforcing intensity presets and time budgets.\n"
             "• Diagnosis: Geometric feature extraction, surface analysis, and defect classification.\n"
@@ -632,7 +633,8 @@ STRINGS = {
         'about_title': 'Sutura Hakkında',
         'about_heading': 'Sutura Triyaj Motoru (sutura_engine)',
         'about_desc': (
-            "Sutura, 3D baskı için tasarlanmış iki aşamalı gelişmiş bir mesh onarım sistemidir.\n\n"
+            "Sutura, 3D baskı için tasarlanmış iki aşamalı gelişmiş bir mesh onarım sistemidir.\n"
+            "Sutura Triage Engine — X-Ray, Graft, Transplant\n\n"
             "Çekirdek Mimari (sutura_engine):\n"
             "• Triage (Triyaj): Yoğunluk profillerini ve süre bütçelerini yöneten akıllı kademelendirme.\n"
             "• Diagnosis (Tanı): Geometrik özellik analizi, yüzey tanısı ve kusur sınıflandırma.\n"
