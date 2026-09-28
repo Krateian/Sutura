@@ -661,25 +661,108 @@ def stl_write_binary(path, verts, tris):
 def should_extract_outer_shell(verts, tris, mesh_type=None, si_count=0):
     """True ONLY when mesh fits mechanical or dense_scan_heavy_si templates,
     components > 1, and the closed components overlap or touch.
+
+    Pure-numpy replacement for the former ``trimesh.Trimesh(...).split()`` path:
+    the unconditional ``import trimesh`` (and its scipy stack) cost ~0.5 s on
+    every mechanical repair even when this pre-check returned False.  Faces are
+    grouped into connected components through edges shared by exactly two faces
+    (trimesh's ``face_adjacency`` rule); a component counts as closed only when
+    every edge of its own faces appears exactly twice.  A component that is open
+    (>=4 faces and a genuine boundary loop) makes the whole check decline, which
+    preserves the previous trimesh ``fill_holes`` outcome.
     """
     is_mech = (mesh_type == 'mechanical')
     is_heavy_si = (si_count >= 200)
     if not (is_mech or is_heavy_si):
         return False
     try:
-        import trimesh
-        tm = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
-        comps = tm.split(only_watertight=False)
-        if len(comps) <= 1:
+        verts = np.asarray(verts)
+        tris = np.asarray(tris, dtype=np.int64)
+        n_faces = len(tris)
+        if n_faces == 0 or len(verts) == 0:
             return False
-        # Components must be closed (or predominantly closed)
-        closed_count = sum(1 for c in comps if c.is_watertight)
-        if closed_count < len(comps) * 0.7:
+        # Per-face edges, sorted so that the two faces sharing an edge agree on
+        # its vertex pair.  Each edge is tagged with the face it came from.
+        face_of_edge = np.concatenate(
+            [np.arange(n_faces), np.arange(n_faces), np.arange(n_faces)])
+        edges = np.concatenate(
+            [tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0)
+        edges = np.sort(edges, axis=1)
+        order = np.lexsort((edges[:, 1], edges[:, 0]))
+        edges = edges[order]
+        face_of_edge = face_of_edge[order]
+        starts = np.concatenate(
+            [[0], np.nonzero(np.any(edges[1:] != edges[:-1], axis=1))[0] + 1])
+        sizes = np.diff(np.append(starts, len(edges)))
+        # Connected components over faces, joined only by edges used by exactly
+        # two faces.  Vectorised union-find: hook each edge's endpoint roots to
+        # their minimum, shortcut, repeat until stable (converges in a handful
+        # of passes on real meshes).
+        pair_starts = starts[sizes == 2]
+        edge_a = face_of_edge[pair_starts].astype(np.int64)
+        edge_b = face_of_edge[pair_starts + 1].astype(np.int64)
+        parent = np.arange(n_faces, dtype=np.int64)
+
+        def _roots(x):
+            while True:
+                px = parent[x]
+                if np.array_equal(px, x):
+                    return x
+                x = px
+
+        while True:
+            root_a = _roots(edge_a)
+            root_b = _roots(edge_b)
+            low = np.minimum(root_a, root_b)
+            new_parent = parent.copy()
+            np.minimum.at(new_parent, root_a, low)
+            np.minimum.at(new_parent, root_b, low)
+            new_parent = new_parent[new_parent]
+            if np.array_equal(new_parent, parent):
+                break
+            parent = new_parent
+        roots = _roots(np.arange(n_faces, dtype=np.int64))
+        _, roots = np.unique(roots, return_inverse=True)
+        n_comp = int(roots.max()) + 1 if n_faces else 0
+        if n_comp <= 1:
             return False
+        # Per-component edge multiset (a component's own faces only, matching
+        # trimesh's reindexed submesh): group edge occurrences by
+        # (component, vertex pair).
+        edge_comp = roots[face_of_edge]
+        order = np.lexsort((edges[:, 1], edges[:, 0], edge_comp))
+        grouped_comp = edge_comp[order]
+        grouped_lo = edges[order, 0]
+        grouped_hi = edges[order, 1]
+        changed = ((grouped_comp[1:] != grouped_comp[:-1]) |
+                   (grouped_lo[1:] != grouped_lo[:-1]) |
+                   (grouped_hi[1:] != grouped_hi[:-1]))
+        grp_start = np.concatenate([[0], np.nonzero(changed)[0] + 1])
+        grp_size = np.diff(np.append(grp_start, len(grouped_comp)))
+        grp_comp = grouped_comp[grp_start]
+        comp_faces = np.bincount(roots, minlength=n_comp)
+        boundary_edges = np.bincount(grp_comp[grp_size == 1], minlength=n_comp)
+        not_closed = np.zeros(n_comp, dtype=bool)
+        not_closed[grp_comp[grp_size != 2]] = True
+        # The former trimesh fill_holes path declined whenever a component with
+        # >=4 faces had a genuine boundary loop (>=3 boundary edges).
+        if np.any((comp_faces >= 4) & (boundary_edges >= 3)):
+            return False
+        closed_count = int((~not_closed).sum())
+        if closed_count < n_comp * 0.7:
+            return False
+        # Per-component bounding boxes from the referenced vertices.
+        vert_comp = np.repeat(roots, 3)
+        vert_idx = tris.reshape(-1)
+        vorder = np.argsort(vert_comp, kind='stable')
+        sorted_comp = vert_comp[vorder]
+        sorted_verts = verts[vert_idx][vorder]
+        comp_start = np.searchsorted(sorted_comp, np.arange(n_comp), side='left')
+        bounds = list(zip(np.minimum.reduceat(sorted_verts, comp_start, axis=0),
+                          np.maximum.reduceat(sorted_verts, comp_start, axis=0)))
         # Pairwise bounding-box overlap check
         diag = float(np.linalg.norm(np.ptp(verts, axis=0)))
         eps = 1e-4 * (diag if diag > 1e-6 else 1.0)
-        bounds = [c.bounds for c in comps]
         n = len(bounds)
         for i in range(n):
             min_i, max_i = bounds[i][0], bounds[i][1]
