@@ -13,7 +13,7 @@ import os
 import pkgutil
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from sutura_engine.analysis import SCORE_TEMPLATES, to_dict, analyze_file, combine
+from sutura_engine.diagnosis import SCORE_TEMPLATES, to_dict, analyze_file, combine
 from sutura_engine.methods.availability import (
     always_available,
     closing_available,
@@ -52,6 +52,34 @@ def _not_implemented(phase: str) -> Callable[[], Tuple[bool, str]]:
 
 _METHODS: Dict[int, RepairMethod] = {}
 
+_METHOD_ALIASES: Dict[str, int] = {
+    # 1: Quick Clean
+    '1': 1, 'm01': 1, 'm1': 1, 'quick_clean': 1, 'fast': 1, 'quick': 1,
+    # 2: Local Mend
+    '2': 2, 'm02': 2, 'm2': 2, 'local_mend': 2, 'deep_local': 2, 'local': 2,
+    # 3: Full Mend
+    '3': 3, 'm03': 3, 'm3': 3, 'full_mend': 3, 'deep_full': 3, 'full': 3, 'deep': 3,
+    # 4: Join
+    '4': 4, 'm04': 4, 'm4': 4, 'join': 4, 'join_components': 4,
+    # 5: Autorefine
+    '5': 5, 'm05': 5, 'm5': 5, 'autorefine': 5,
+    # 6: Exact Refine
+    '6': 6, 'm06': 6, 'm6': 6, 'exact_refine': 6, 'indirect_autorefine': 6, 'exact': 6,
+    # 7: fTetWild
+    '7': 7, 'm07': 7, 'm7': 7, 'ftetwild': 7,
+    # 8: Balloon
+    '8': 8, 'm08': 8, 'm8': 8, 'balloon': 8, 'poisson_close': 8, 'poisson': 8,
+    # 9: Backplate
+    '9': 9, 'm09': 9, 'm9': 9, 'backplate': 9, 'flat_back_close': 9, 'flat_back': 9, 'relief': 9,
+    # 10: Scaffold
+    '10': 10, 'm10': 10, 'scaffold': 10, 'proxy_template': 10, 'proxy': 10,
+    # 11: Transplant (Auto)
+    '11': 11, 'm11': 11, 'transplant': 11, 'repeat_auto': 11, 'repeat': 11,
+    # 12: Transplant+ (Manual) (graft and 13 are valid aliases)
+    '12': 12, 'm12': 12, '13': 12, 'm13': 12, 'transplant_plus': 12, 'transplant+': 12,
+    'graft': 12, 'repeat_manual': 12,
+}
+
 
 def register_method(method: Any, replace: bool = False) -> Any:
     """Register a repair method. Raises on a num clash by default."""
@@ -67,10 +95,28 @@ def all_methods() -> List[RepairMethod]:
     return [_METHODS[num] for num in sorted(_METHODS)]
 
 
-def get_method(num: Any) -> Optional[RepairMethod]:
-    """The registered method for ``num``, or None (never raises)."""
+def get_method(num_or_name: Any) -> Optional[RepairMethod]:
+    """The registered method for ``num_or_name`` (num, slug, or alias), or None."""
+    if num_or_name is None:
+        return None
+    if isinstance(num_or_name, int):
+        method = _METHODS.get(num_or_name)
+        if method is not None:
+            return method
+        alias = _METHOD_ALIASES.get(str(num_or_name))
+        return _METHODS.get(alias) if alias is not None else None
+    key_str = str(num_or_name).strip()
+    key_lower = key_str.lower()
+    if key_lower in _METHOD_ALIASES:
+        return _METHODS.get(_METHOD_ALIASES[key_lower])
+    for m in _METHODS.values():
+        if m.id == key_str or m.id.lower() == key_lower:
+            return m
+        disp = getattr(m, 'display_name', '')
+        if disp and (disp == key_str or disp.lower() == key_lower):
+            return m
     try:
-        return _METHODS.get(int(num))
+        return _METHODS.get(int(key_str))
     except (TypeError, ValueError):
         return None
 
@@ -96,14 +142,21 @@ def discover_builtin_methods() -> None:
     pkg_path = os.path.dirname(builtin_pkg.__file__)
     modules = []
     for _, modname, ispkg in pkgutil.iter_modules([pkg_path]):
-        if not ispkg and modname.startswith('m'):
+        if not ispkg and not modname.startswith('_'):
+            if modname.startswith('m') and len(modname) > 3 and modname[1:3].isdigit():
+                continue
             modules.append(modname)
     for modname in sorted(modules):
         try:
             mod = importlib.import_module(f'sutura_engine.methods.builtin.{modname}')
-            m = getattr(mod, 'METHOD', None)
-            if m is not None:
-                register_method(m, replace=True)
+            methods = getattr(mod, 'METHODS', None)
+            if methods is not None:
+                for m in methods:
+                    register_method(m, replace=True)
+            else:
+                m = getattr(mod, 'METHOD', None)
+                if m is not None:
+                    register_method(m, replace=True)
         except Exception:
             pass
 
@@ -123,8 +176,25 @@ def _clamp01(value: Any) -> float:
     return max(0.0, min(1.0, value))
 
 
+# Canonical scoring key per method number (the user-facing slug).
+_CANONICAL_BY_NUM = {
+    1: 'quick_clean', 2: 'local_mend', 3: 'full_mend', 4: 'join',
+    5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild', 8: 'balloon',
+    9: 'backplate', 10: 'scaffold', 11: 'transplant', 12: 'transplant_plus',
+}
+
+
 def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, ...]]:
-    """Readable per-method suitability ``(score, reason, reason_key, args)``."""
+    """Readable per-method suitability ``(score, reason, reason_key, args)``.
+
+    ``method_id`` accepts the canonical slug, a legacy slug or a numeric id
+    (resolved through the registry aliases).
+    """
+    method = get_method(method_id)
+    if method is not None:
+        method_id = _CANONICAL_BY_NUM.get(method.num, str(method_id).lower())
+    else:
+        method_id = str(method_id).lower()
     holes = _a(analysis, 'boundary_loops')
     nm = _a(analysis, 'non_manifold_edges')
     si = _a(analysis, 'self_intersections')
@@ -132,30 +202,30 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
     largest = _a(analysis, 'largest_loop_ratio')
     open_ratio = _a(analysis, 'open_area_ratio')
 
-    if method_id == 'fast':
+    if method_id == 'quick_clean':
         penalty = (0.5 * min(nm / 5.0, 1.0) + 0.3 * min(holes / 5.0, 1.0)
                    + 0.2 * min(si / 50.0, 1.0))
         light = penalty < 0.3
         return (_clamp01(1.0 - penalty),
                 'light defect load' if light else 'defects may need a deeper tier',
                 'rec_reason_fast_light' if light else 'rec_reason_fast_deep', ())
-    if method_id == 'deep_local':
+    if method_id == 'local_mend':
         score = (0.75 if (nm <= 0 and holes <= 2 and largest <= 0.3)
                  else 0.6 * (1.0 - min(max(holes - 2, 0) / 5.0, 1.0))
                  * (1.0 - min(nm / 3.0, 1.0)))
         return (_clamp01(score), 'local re-mesh of small damaged regions',
                 'rec_reason_deep_local', ())
-    if method_id == 'deep_full':
+    if method_id == 'full_mend':
         return (_clamp01(0.55 + 0.35 * min((holes + nm) / 5.0, 1.0)),
                 'full deep-repair ladder', 'rec_reason_deep_full', ())
-    if method_id == 'join_components':
+    if method_id == 'join':
         if components > 1:
             return _clamp01(min((components - 1) / 2.0, 1.0)), \
                 '%d connected components' % int(components), \
                 'rec_reason_components', (int(components),)
         return 0.0, 'single connected component', \
             'rec_reason_component_single', ()
-    if method_id in ('autorefine', 'indirect_autorefine'):
+    if method_id in ('autorefine', 'exact_refine'):
         if si <= 0:
             return 0.0, 'no self-intersections', 'rec_reason_no_si', ()
         return (_clamp01(0.4 + 0.6 * min(si / 200.0, 1.0)),
@@ -167,7 +237,7 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
                  + 0.3 * _clamp01(si / 200.0))
         return (_clamp01(score), 'large openings / heavy self-intersections',
                 'rec_reason_ftetwild', ())
-    if method_id == 'poisson_close':
+    if method_id == 'balloon':
         single = _clamp01(_a(analysis, 'single_side_score'))
         relief = _clamp01(_a(analysis, 'relief_score'))
         score = single * (1.0 - relief)
@@ -176,13 +246,13 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
                 'rec_reason_not_scan', ()
         return (_clamp01(score), 'single-sided open scan (%.2f)' % single,
                 'rec_reason_poisson', (single,))
-    if method_id == 'flat_back_close':
+    if method_id == 'backplate':
         relief = _clamp01(_a(analysis, 'relief_score'))
         if relief <= 0:
             return 0.0, 'no relief-like opening', 'rec_reason_not_relief', ()
         return (_clamp01(relief), 'relief / flat-back profile',
                 'rec_reason_relief', ())
-    if method_id == 'proxy_template':
+    if method_id == 'scaffold':
         damage = holes + nm + max(components - 1, 0)
         if damage <= 0:
             return 0.0, 'no holes/non-manifold to reconstruct', \
@@ -195,7 +265,7 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
         return (_clamp01(score),
                 'holes/non-manifold/debris with a mostly healthy surface',
                 'rec_reason_proxy', ())
-    if method_id in ('repeat_auto', 'repeat_manual'):
+    if method_id in ('transplant', 'transplant_plus'):
         rep = _clamp01(_a(analysis, 'repetition_score'))
         if rep <= 0:
             return 0.0, 'no repeated pattern detected', \
@@ -292,6 +362,7 @@ def methods_json() -> List[dict]:
             'num': method.num,
             'id': method.id,
             'name': method.name,
+            'display_name': method.display_name,
             'description': method.description,
             'family': method.family,
             'invents_geometry': method.invents_geometry,
@@ -306,7 +377,7 @@ def format_recommendations(recs: List[Recommendation]) -> str:
     lines = []
     for r in recs:
         lines.append('  %-4d %-21s score=%.2f  %s' % (
-            r.num, r.id, r.score, r.reason))
+            r.num, r.name, r.score, r.reason))
     return '\n'.join(lines) if lines else '  (none)'
 
 

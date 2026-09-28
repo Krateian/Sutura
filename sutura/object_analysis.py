@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Backward-compatibility shim for sutura.object_analysis.
 
-Re-exports all functionality from sutura_engine.analysis.
+Re-exports all functionality from sutura_engine.diagnosis.
 """
-from sutura_engine.analysis import (
+from sutura_engine.diagnosis import (
     ObjectAnalysis,
     analyze_mesh,
     analyze_file,

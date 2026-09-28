@@ -1551,12 +1551,18 @@ Pinned in `requirements.txt`, `requirements-311.txt` and (optional)
 
 Sutura is organized as a modular engine (`sutura_engine`) designed for reliability, strict layer boundaries, and extensibility:
 
-* **`sutura_engine.core`** — Pure geometry and validation: mesh array I/O (STL, OBJ, 3MF), topological measurements, reload-equivalent welding (`P-WELD`), honest watertight verdicts, and Hausdorff distance guards.
-* **`sutura_engine.analysis`** — Surface and defect diagnostics: component analysis, extensible geometric templates (mechanical, organic, reliefs, thin sheets, lattices), and mesh classifier integration.
-* **`sutura_engine.methods`** — Pluggable repair methods conforming to `RepairMethodProtocol`: built-in methods (`#1` Fast through `#12` Repeated Element) discovered automatically from isolated modules, plus closing, proxy, and repeated-element repair tiers.
+* **`sutura_engine.core`** — Generic geometry and validation: mesh array I/O (STL, OBJ, 3MF), topological measurements, and Hausdorff distance guards; re-exports the specialised passes.
+* **`sutura_engine.diagnosis`** — Surface and defect diagnostics: component analysis, extensible geometric templates (mechanical, organic, reliefs, thin sheets, lattices), and mesh classifier integration.
+* **`sutura_engine.chart`** — Content-addressed SHA-256 caching under `~/.cache/sutura/` with 500 MB LRU eviction, automatic invalidation across version updates, and CLI (`--no-cache`, `sutura clear-cache`) / GUI options.
+* **`sutura_engine.stitch`** — Reload-safe seam healing pass (`P-WELD`) that makes saved float32 meshes reload strict-watertight without changing their faces.
+* **`sutura_engine.xray`** — Reload-honest strict watertight verdict (`P-HONEST`) that never claims watertight for a mesh that is not strict-watertight after reload.
+* **`sutura_engine.hull`** — Outer-surface shell extraction for multi-component assemblies.
+* **`sutura_engine.cast`** — Thin wrapper around the Rust `sutura_geom` extension (exact predicates, `arrangement_lite`).
+* **`sutura_engine.methods`** — Pluggable repair methods conforming to `RepairMethodProtocol`: built-in methods (`#1` Quick Clean through `#12` Transplant+) discovered automatically from one named module per method, plus closing, proxy, and repeated-element repair tiers.
 * **`sutura_engine.triage`** — Intelligent escalation policy: ranks repair methods based on geometric analysis, enforces user intensity presets (*Quick*, *Balanced*, *Thorough*, *Extreme*), and respects strict runtime budgets.
 * **`sutura_engine.adapters`** — Strict isolation boundaries for external and third-party tools (PyMeshLab, Manifold3D, fTetWild, and external CLI engines). Adapters are imported lazily only when a specific method executes.
-* **`sutura_engine.cache`** — Content-addressed SHA-256 caching under `~/.cache/sutura/` with 500 MB LRU eviction, automatic invalidation across version updates, and CLI (`--no-cache`, `sutura clear-cache`) / GUI options.
+
+In an installed or AppImage layout `sutura_engine` is a top-level package; in a source checkout a small root bootstrap package (`sutura_engine/__init__.py`) makes `import sutura_engine` work from the repository root without a symlink.
 
 ## Usage history (anonymous, opt-out)
 

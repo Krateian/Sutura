@@ -4448,14 +4448,11 @@ def main():
             parser.error('argument --methods: empty list')
         nums = []
         for part in parts:
-            if not part.isdigit():
-                parser.error('argument --methods: %r is not a method number'
-                             % part)
-            num = int(part)
-            if method_registry.get_method(num) is None:
-                parser.error('argument --methods: unknown method %d '
-                             '(see --list-methods)' % num)
-            nums.append(num)
+            m = method_registry.get_method(part)
+            if m is None:
+                parser.error('argument --methods: unknown method %r '
+                             '(see --list-methods)' % part)
+            nums.append(m.num)
         methods_sel = nums
 
     # --repeat-source / --repeat-target: the 3D points method 12 transplants
@@ -4518,7 +4515,7 @@ def main():
 
     if getattr(args, 'no_cache', False):
         try:
-            from sutura_engine import cache
+            from sutura_engine import chart as cache
             cache.set_cache_enabled(False)
         except Exception:
             pass
@@ -4526,7 +4523,7 @@ def main():
     # 'clear-cache' as the first positional argument clears ~/.cache/sutura/
     if files and files[0] == 'clear-cache':
         try:
-            from sutura_engine import cache
+            from sutura_engine import chart as cache
             freed = cache.clear_cache()
             if human:
                 print('Cache cleared: %s freed' % cache._human_bytes(freed))

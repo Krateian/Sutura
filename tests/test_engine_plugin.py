@@ -42,6 +42,7 @@ def test_custom_plugin_registration():
         num = 999
         id = "custom_test"
         name = "Custom Test Plugin"
+        display_name = "Custom Test Plugin"
         family = "custom"
         description = "A custom repair plugin"
         invents_geometry = False

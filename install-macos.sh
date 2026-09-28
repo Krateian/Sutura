@@ -97,6 +97,9 @@ install -m 0644 "$REPO_DIR/LICENSE" "$APP_DIR/LICENSE"
 rm -rf "$APP_DIR/sutura_engine" "$APP_DIR/sutura/sutura_engine"
 cp -r "$REPO_DIR/sutura/sutura_engine" "$APP_DIR/sutura_engine"
 cp -r "$REPO_DIR/sutura/sutura_engine" "$APP_DIR/sutura/sutura_engine"
+# root bootstrap package: source checkouts need it for `import sutura_engine`
+[ -f "$APP_DIR/sutura_engine/__init__.py" ] || \
+    install -m 0644 "$REPO_DIR/sutura_engine/__init__.py" "$APP_DIR/sutura_engine/__init__.py"
 
 # developer/security: when installing from a git checkout, install the
 # pre-push secret scan hook (harmless no-op for end-user installs)

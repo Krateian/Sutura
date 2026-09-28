@@ -94,6 +94,9 @@ install -m 0644 "$REPO_ROOT/LICENSE" "$LIB/LICENSE"
 cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura_engine"
 mkdir -p "$LIB/sutura"
 cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura/sutura_engine"
+# root bootstrap package: keeps `import sutura_engine` working from $LIB too
+[ -f "$LIB/sutura_engine/__init__.py" ] || \
+    install -m 0644 "$REPO_ROOT/sutura_engine/__init__.py" "$LIB/sutura_engine/__init__.py"
 
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'

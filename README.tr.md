@@ -1558,12 +1558,18 @@ güvenilir şekilde algılayabilir.
 
 Sutura, güvenilirlik, katman izolasyonu ve genişletilebilirlik için tasarlanmış modüler bir motor paketi (`sutura_engine`) etrafında yapılandırılmıştır:
 
-* **`sutura_engine.core`** — Saf geometri ve doğrulama: mesh dizi G/Ç (STL, OBJ, 3MF), topolojik ölçümler, yeniden yüklemeye eşdeğer kaynak (`P-WELD`), dürüst su geçirmezlik kararları ve Hausdorff mesafe kontrolleri.
-* **`sutura_engine.analysis`** — Yüzey ve kusur analizleri: parça analizi, genişletilebilir geometrik şablonlar (mekanik, organik, rölyefler, ince yüzeyler, kafesler) ve mesh sınıflandırıcı entegrasyonu.
-* **`sutura_engine.methods`** — `RepairMethodProtocol` standardına uyan eklenebilir onarım yöntemleri: izole modüllerden otomatik olarak keşfedilen yerleşik yöntemler (`#1` Hızlı - `#12` Tekrarlayan Eleman), tarama kapatma, vekil şablon ve tekrarlayan geometri katmanları.
+* **`sutura_engine.core`** — Genel geometri ve doğrulama: mesh dizi G/Ç (STL, OBJ, 3MF), topolojik ölçümler ve Hausdorff mesafe kontrolleri; özelleşmiş geçişleri yeniden dışa aktarır.
+* **`sutura_engine.diagnosis`** — Yüzey ve kusur analizleri: parça analizi, genişletilebilir geometrik şablonlar (mekanik, organik, rölyefler, ince yüzeyler, kafesler) ve mesh sınıflandırıcı entegrasyonu.
+* **`sutura_engine.chart`** — `~/.cache/sutura/` altında 500 MB LRU boyut sınırına sahip SHA-256 içerik adresli önbellek; sürüm güncellemelerinde otomatik geçersiz kılma, CLI (`--no-cache`, `sutura clear-cache`) ve GUI seçenekleri.
+* **`sutura_engine.stitch`** — Kaydettiğiniz float32 mesh'lerin yüzlerini değiştirmeden yeniden yüklenince su geçirmez olmasını sağlayan güvenli dikiş onarımı (`P-WELD`).
+* **`sutura_engine.xray`** — Yeniden yüklemeye dürüst katı su geçirmezlik kararı (`P-HONEST`): yeniden yüklemede su geçirmez olmayan bir mesh için asla su geçirmez iddia etmez.
+* **`sutura_engine.hull`** — Çok bileşenli montajlar için dış yüzey kabuğu çıkarımı.
+* **`sutura_engine.cast`** — Rust `sutura_geom` uzantısı etrafında ince sarmalayıcı (kesin yüklemler, `arrangement_lite`).
+* **`sutura_engine.methods`** — `RepairMethodProtocol` standardına uyan eklenebilir onarım yöntemleri: yöntem başına bir adlandırılmış modülden otomatik olarak keşfedilen yerleşik yöntemler (`#1` Hızlı Temizlik - `#12` Nakil+), tarama kapatma, vekil şablon ve tekrarlayan geometri katmanları.
 * **`sutura_engine.triage`** — Akıllı kademelendirme politikası: geometrik analize göre onarım yöntemlerini puanlar, kullanıcı yoğunluk profillerini (*Hızlı*, *Dengeli*, *Kapsamlı*, *Ekstrem*) uygular ve çalışma süresi bütçelerini yönetir.
 * **`sutura_engine.adapters`** — Harici ve üçüncü parti kütüphaneler için katı izolasyon sınırları (PyMeshLab, Manifold3D, fTetWild ve harici CLI motorları). Yalnızca ilgili yöntem çalıştırıldığında tembel (lazy) olarak yüklenir.
-* **`sutura_engine.cache`** — `~/.cache/sutura/` altında 500 MB LRU boyut sınırına sahip SHA-256 içerik adresli önbellek; sürüm güncellemelerinde otomatik geçersiz kılma, CLI (`--no-cache`, `sutura clear-cache`) ve GUI seçenekleri.
+
+Kurulu veya AppImage düzeninde `sutura_engine` üst düzey bir pakettir; kaynak kopyasında ise kök dizindeki küçük bir başlatma paketi (`sutura_engine/__init__.py`) sembolik bağ olmadan `import sutura_engine`'in depo kökünden çalışmasını sağlar.
 
 ## Kullanım geçmişi (anonim, isteğe bağlı kapatılabilir)
 

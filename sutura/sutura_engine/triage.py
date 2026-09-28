@@ -40,12 +40,13 @@ def _methods_mod():
     return methods
 
 def _analysis_mod():
-    for name in ('object_analysis', 'sutura.object_analysis', 'sutura_engine.analysis'):
+    for name in ('sutura_engine.diagnosis', 'sutura_engine.analysis',
+                 'object_analysis', 'sutura.object_analysis'):
         m = sys.modules.get(name)
         if m is not None and hasattr(m, 'analyze_file'):
             return m
-    from sutura_engine import analysis
-    return analysis
+    from sutura_engine import diagnosis
+    return diagnosis
 
 # --- Execution policy constants ---------------------------------------------
 

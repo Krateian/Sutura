@@ -26,10 +26,10 @@ sys.path.insert(0, SUTURA)
 import numpy as np  # noqa: E402
 
 EXPECTED = {
-    1: 'fast', 2: 'deep_local', 3: 'deep_full', 4: 'join_components',
-    5: 'autorefine', 6: 'indirect_autorefine', 7: 'ftetwild',
-    8: 'poisson_close', 9: 'flat_back_close', 10: 'proxy_template',
-    11: 'repeat_auto', 12: 'repeat_manual',
+    1: 'quick_clean', 2: 'local_mend', 3: 'full_mend', 4: 'join',
+    5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild',
+    8: 'balloon', 9: 'backplate', 10: 'scaffold',
+    11: 'transplant', 12: 'transplant_plus',
 }
 FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
             'pattern'}
@@ -237,7 +237,13 @@ def test_get_method_none_is_safe(tmp):
     import methods
     assert methods.get_method(None) is None
     assert methods.get_method('nope') is None
-    assert methods.get_method(1).id == 'fast'
+    assert methods.get_method(1).id == 'quick_clean'
+    # legacy slugs and numeric ids stay accepted aliases
+    assert methods.get_method('fast').num == 1
+    assert methods.get_method('deep_full').num == 3
+    assert methods.get_method('graft').num == 12
+    assert methods.get_method(13).num == 12
+    assert methods.get_method('transplant').id == 'transplant'
 
 
 def test_external_engines_are_separate(tmp):
@@ -737,7 +743,9 @@ def test_cli_list_methods(tmp):
     assert r.returncode == 0, r.stderr
     for num in range(1, 13):
         assert (' %d ' % num) in r.stdout or ('%d ' % num) in r.stdout, num
-    assert 'poisson_close' in r.stdout, r.stdout
+    assert 'balloon' in r.stdout, r.stdout
+    assert 'Balloon' in r.stdout, r.stdout      # display name shown
+    assert 'Exact Refine' in r.stdout, r.stdout
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
     assert [m['num'] for m in data] == list(range(1, 13))
@@ -778,10 +786,15 @@ def test_cli_explicit_methods(tmp):
                     '--no-history', path], env=_env(tmp)))
     assert d.get('method_used', {}).get('source') == 'tagged', d
     assert d['method_used']['num'] == 1, d
-    # method 12 needs the picked points: tagging it without them is rejected
-    r = _run(['--methods', '12', '--no-history', path], env=_env(tmp))
-    assert r.returncode != 0, r.stdout
-    assert '--repeat-source' in r.stderr, r.stderr
+    # new canonical slugs are accepted on the CLI
+    ds = _json(_run(['--methods', 'quick_clean,join', '--no-fallback-ftetwild',
+                     '--no-history', path], env=_env(tmp)))
+    assert ds.get('method_used', {}).get('num') == 1, ds
+    # method 12 (legacy slug 'graft' / number '13') needs the picked points
+    for sel in ('12', 'graft', '13', 'transplant+'):
+        r = _run(['--methods', sel, '--no-history', path], env=_env(tmp))
+        assert r.returncode != 0, (sel, r.stdout)
+        assert '--repeat-source' in r.stderr, (sel, r.stderr)
 
 
 def test_cli_invalid_method_rejected(tmp):
@@ -790,7 +803,7 @@ def test_cli_invalid_method_rejected(tmp):
     _write_stl(path, v, t)
     r = _run(['--methods', '1,99', path], env=_env(tmp))
     assert r.returncode != 0, r.stdout
-    assert 'unknown method 99' in r.stderr, r.stderr
+    assert 'unknown method' in r.stderr and '99' in r.stderr, r.stderr
 
 
 def test_cli_engines_validation(tmp):

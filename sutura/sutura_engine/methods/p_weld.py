@@ -8,16 +8,16 @@ honour the watertight claim.
 """
 from sutura_engine.core import (
     weld_reload_equivalent,
-    p_weld_final_pass,
+    p_weld_final,
     reload_strict_holes_nm,
     enforce_reload_verdict,
-    is_strict_watertight,
+    _is_strict_watertight,
 )
 
 __all__ = [
     'weld_reload_equivalent',
-    'p_weld_final_pass',
+    'p_weld_final',
     'reload_strict_holes_nm',
     'enforce_reload_verdict',
-    'is_strict_watertight',
+    '_is_strict_watertight',
 ]

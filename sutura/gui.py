@@ -88,18 +88,18 @@ STRINGS = {
         'method_source_tagged': 'tagged',
         'repair_log_method_used': 'Method used: %s',
         'repair_log_method_tried': 'Methods tried: %s',
-        'method_name_fast': 'Fast cleanup',
-        'method_name_deep_local': 'Local deep repair',
-        'method_name_deep_full': 'Full deep repair',
-        'method_name_join_components': 'Join components',
+        'method_name_quick_clean': 'Quick Clean',
+        'method_name_local_mend': 'Local Mend',
+        'method_name_full_mend': 'Full Mend',
+        'method_name_join': 'Join',
         'method_name_autorefine': 'Autorefine (SI)',
-        'method_name_indirect_autorefine': 'Indirect autorefine (SI, exact)',
-        'method_name_ftetwild': 'fTetWild envelope',
-        'method_name_poisson_close': 'Poisson close',
-        'method_name_flat_back_close': 'Flat-back close',
-        'method_name_proxy_template': 'Proxy template match',
-        'method_name_repeat_auto': 'Repeat-aware auto',
-        'method_name_repeat_manual': 'Repeat-aware manual',
+        'method_name_exact_refine': 'Exact Refine (SI, exact)',
+        'method_name_ftetwild': 'fTetWild',
+        'method_name_balloon': 'Balloon (Poisson close)',
+        'method_name_backplate': 'Backplate (flat back)',
+        'method_name_scaffold': 'Scaffold (proxy template)',
+        'method_name_transplant': 'Transplant (repeat auto)',
+        'method_name_transplant_plus': 'Transplant+ (repeat manual)',
         'repeat_pick_title': 'Pick repeated elements',
         'repeat_pick_source': 'Click the HEALTHY element to copy from',
         'repeat_pick_target': 'Now click the DAMAGED element to replace',
@@ -541,18 +541,18 @@ STRINGS = {
         'method_source_tagged': 'etiketli',
         'repair_log_method_used': 'Kullanılan yöntem: %s',
         'repair_log_method_tried': 'Denenen yöntemler: %s',
-        'method_name_fast': 'Hızlı temizlik',
-        'method_name_deep_local': 'Yerel derin onarım',
-        'method_name_deep_full': 'Tam derin onarım',
-        'method_name_join_components': 'Bileşenleri birleştir',
-        'method_name_autorefine': 'Kendini kesme onarımı (SI)',
-        'method_name_indirect_autorefine': 'Dolaylı kesin onarım (SI)',
-        'method_name_ftetwild': 'fTetWild zarfı',
-        'method_name_poisson_close': 'Poisson kapatma',
-        'method_name_flat_back_close': 'Düz arka kapatma',
-        'method_name_proxy_template': 'Vekil şablon eşleme',
-        'method_name_repeat_auto': 'Yineleme farkında otomatik',
-        'method_name_repeat_manual': 'Yineleme farkında elle',
+        'method_name_quick_clean': 'Hızlı Temizlik',
+        'method_name_local_mend': 'Yerel Onarım',
+        'method_name_full_mend': 'Tam Onarım',
+        'method_name_join': 'Birleştir',
+        'method_name_autorefine': 'Kendini Onarım (SI)',
+        'method_name_exact_refine': 'Kesin Onarım (SI)',
+        'method_name_ftetwild': 'fTetWild',
+        'method_name_balloon': 'Balon (Poisson kapatma)',
+        'method_name_backplate': 'Arka Plaka',
+        'method_name_scaffold': 'İskelet (vekil şablon)',
+        'method_name_transplant': 'Nakil (yineleme, otomatik)',
+        'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
         'repeat_pick_title': 'Yinelenen ögeleri seç',
         'repeat_pick_source': 'Kopyalanacak SAĞLAM ögeye tıklayın',
         'repeat_pick_target': 'Şimdi değiştirilecek HASARLI ögeye tıklayın',
@@ -2850,14 +2850,14 @@ class OptionsDialog(QDialog):
     def _save_cache_setting(self, on):
         self._save_key('cache_enabled', on)
         try:
-            from sutura_engine import cache
+            from sutura_engine import chart as cache
             cache.set_cache_enabled(on)
         except Exception:
             pass
 
     def _update_cache_size_label(self):
         try:
-            from sutura_engine import cache
+            from sutura_engine import chart as cache
             sz = cache.get_cache_size()
             self.lbl_cache_size.setText(_t('opt_cache_size') % cache.format_bytes(sz))
         except Exception:
@@ -2865,7 +2865,7 @@ class OptionsDialog(QDialog):
 
     def _on_clear_cache(self):
         try:
-            from sutura_engine import cache
+            from sutura_engine import chart as cache
             freed = cache.clear_cache()
             self._update_cache_size_label()
             QMessageBox.information(self, _t('opt_clear_cache'),

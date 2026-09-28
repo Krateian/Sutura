@@ -86,7 +86,7 @@ def repair(path_or_arrays: Union[str, os.PathLike, Tuple[Any, Any]],
         Report dictionary subclass with structured outcomes.
     """
     import tempfile
-    from sutura_engine import cache
+    from sutura_engine import chart as cache
     from sutura_engine.triage import repair_with_methods, resolve_intensity
 
     cache_prev = cache.is_cache_enabled()

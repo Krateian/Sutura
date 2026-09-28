@@ -57,6 +57,7 @@ class RepairMethodProtocol(Protocol):
     num: int
     id: str
     name: str
+    display_name: str
     family: str
     description: str
     invents_geometry: bool
@@ -78,12 +79,17 @@ class RepairMethod:
     name: str
     description: str
     family: str
+    display_name: str = ""
     invents_geometry: bool = False
     needs_user_input: bool = False
     kwargs: dict = field(default_factory=dict, compare=False)
     available_fn: Optional[Callable] = field(default=None, compare=False, repr=False)
     guard_input_to_output: bool = field(default=False, compare=False, repr=False)
     self_guarded: bool = field(default=False, compare=False, repr=False)
+
+    def __post_init__(self):
+        if not self.display_name:
+            object.__setattr__(self, 'display_name', self.name)
 
     def available(self) -> Tuple[bool, Optional[str]]:
         """``(bool, reason|None)`` availability, never raising."""

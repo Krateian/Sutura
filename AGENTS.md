@@ -40,11 +40,13 @@ Options window, never in the way of the plain repair.
 
 - **Deep-repair ladder (`repair.deep_repair_ladder`).** The single entry point for the tiers after the stage-1 chain, called where the fTetWild block used to be (before `_split_pinched_vertices` and the final stage-1 measurement). Mode `deep_repair` in `DEEP_REPAIR_MODES` = `off`/`local`/`full`, resolved by `resolve_deep_repair` (CLI `--deep-repair` > `SUTURA_DEEP_REPAIR` > config `deep_repair` > `DEEP_REPAIR_DEFAULT='full'`) and, for the CLI, `resolve_deep_repair_flags` (`--no-fallback-ftetwild` -> `off`, `--experimental-fallback-ftetwild` -> `full` when no `--deep-repair` is given; `ftetwild` is only non-False in `full`). Library default `deep_repair=None` keeps the pre-ladder behaviour and adds no report key. `full` runs `_ftetwild_tier` (the old block, moved verbatim): output identical to 53cb9a7 (byte-compared on six real-world samples; `tests/test_deep_repair.py` compares `None` vs `full` with a faked fTetWild). `local` runs `_local_remesh_tier`, a PyMeshLab prototype: `_damaged_region` (faces with an edge used != 2 times, grown by one vertex ring), delete, `meshing_repair_non_manifold_vertices`, `meshing_close_holes(maxholesize=LOCAL_REMESH_MAX_HOLE, refinehole=True, refineholeedgelen=mean region edge length)`, then `_umbrella_fair` on the vertices appended after the deletion (PyMeshLab's selected-only Laplacian moved surrounding vertices, measured, hence the numpy umbrella operator). Guards: exact-coordinate face multiset outside the region preserved (`_face_keys`), holes and nm edges no worse and not both unchanged, pymeshlab SI count not higher. Scope gates (`LOCAL_MAX_NM_EDGES=0`, `LOCAL_MAX_LOOP_LEN=16`, `LOCAL_MAX_REGIONS=8`, `LOCAL_MAX_REMOVED_FACES=2000`, `LOCAL_MAX_SECONDS=10`, checked between steps; reject reasons `scope: ...`/`time`) come from the 40-sample run: the tier ran on 9 meshes (all nm-free, loops <= 14, regions <= 6, <= 822 deleted faces) and gained 3 (40886, 46012, 71691; strict 31 -> 34), while the 115 corpus gained 0 at +69 % time. `LOCAL_REMESH_REFINE=False`: `close_holes(refinehole=True)` cost ~9 s per 90k-face mesh (whole-mesh pass) and changed no outcome, so the fairing step currently has no interior vertex to move. The outside-face guard is `_faces_preserved` (vectorized, smallest-cyclic-rotation canonical form). The local tier is NOT part of `full`. `_deep_repair_offer` fills `deep_repair.available` (`holes_remaining`, `nm_remaining`, `tiers`, `estimate_s`) when holes/nm remain and a tier was not run (fTetWild only if installed). `estimate_deep_repair_time` uses PLACEHOLDER coefficients `DEEP_ESTIMATE_*`, to be fitted from the benchmark's `estimate_s`/`actual_s` columns. GUI integration (first run without deep repair, pop-up with the estimate, Options setting writing the config key) is done on the Mac side and is NOT in this change; until then the GUI keeps its current fTetWild checkboxes. The Liepa 2003 variant (minimum-weight DP triangulation, density refinement, bilaplacian fairing) is planned but not implemented.
 
-- **Repair method registry (`sutura/methods.py`, v0.6.0).** Twelve methods with
-  stable user-facing numbers (1 `fast`, 2 `deep_local`, 3 `deep_full`,
-  4 `join_components`, 5 `autorefine`, 6 `indirect_autorefine`, 7 `ftetwild`,
-  8 `poisson_close`, 9 `flat_back_close`, 10 `proxy_template`, 11 `repeat_auto`,
-  12 `repeat_manual`). `--list-methods`/`--analyze`/`--methods` are the CLI
+- **Repair method registry (`sutura_engine.methods`, v0.6.0).** Twelve methods with
+  stable user-facing numbers and slugs (1 `quick_clean`, 2 `local_mend`,
+  3 `full_mend`, 4 `join`, 5 `autorefine`, 6 `exact_refine`, 7 `ftetwild`,
+  8 `balloon`, 9 `backplate`, 10 `scaffold`, 11 `transplant`,
+  12 `transplant_plus`; the old slugs and the numeric ids stay accepted
+  aliases, see the naming table in the Engine Architecture section).
+  `--list-methods`/`--analyze`/`--methods` are the CLI
   surface; the GUI exposes the same via the file list's **Method** column and a
   right-click menu (*Analyze*, *Recommended methods*, *Use method*, *External
   engines*, *Clear tags*). `process_file` routes through
@@ -54,7 +56,8 @@ Options window, never in the way of the plain repair.
   runs non-escalating). Geometry-inventing methods are guarded — #7
   output→input Hausdorff, #8/#9/#10 input→output, #11/#12 self-guarded by
   `hausdorff_outside` — and `_evaluate` judges every candidate on the
-  reload-equivalent weld. `object_analysis.py` + `templates.py` drive
+  reload-equivalent weld. `sutura_engine.diagnosis` (with the
+  `object_analysis.py` + `templates.py` shims) drives
   `--analyze` and the ranking; third-party engines are listed separately and
   never mixed into it. New runtime deps: scipy (~99 MB) and trimesh (~4.6 MB).
 - **Scan-closing / proxy-template tiers (`sutura/closing.py`,
@@ -102,20 +105,45 @@ Options window, never in the way of the plain repair.
 
 ## Sutura Engine Architecture (`sutura_engine`)
 
-The core repair functionality is organized under `sutura/sutura_engine/` (aliased at repository root via `sutura_engine` symlink). It enforces strict layer separation, lazy third-party imports, content-addressed caching, and a pluggable method registry:
+The core repair functionality is organized under `sutura/sutura_engine/`. Installed and AppImage layouts copy it to a top-level `sutura_engine` package; in a source checkout the repo-root `sutura_engine/__init__.py` bootstrap provides `import sutura_engine` (and `import sutura_engine.<submodule>`) from the repository root, replacing the former root symlink (symlinks are not portable across AppImage, zip archives and Windows). The bootstrap only adds `sutura/` to `sys.path` and points `__path__` at `sutura/sutura_engine`; PyInstaller leaves that explicit `__path__` untouched (`--hidden-import sutura_engine` + `--collect-submodules` still resolve the real package because `--paths sutura` is in the spec). The engine enforces strict layer separation, lazy third-party imports, content-addressed caching, and a pluggable method registry:
 
-- `sutura_engine.core`: Low-level mesh I/O (STL, OBJ, 3MF arrays), geometric validation, reload-equivalent welding (`weld_reload_equivalent`, `reload_strict_holes_nm`, P-WELD reload seam repair), honest watertightness verdicts, and Hausdorff distance computations.
-- `sutura_engine.analysis`: Object feature analysis (`analyze_object`), geometric template matching (`match_templates`, `REGISTRY` of templates), classifier glue (`detect_mesh_type`), and outer-shell auto extraction heuristics.
-- `sutura_engine.methods`: Pluggable repair method registry conforming to `RepairMethodProtocol`. Built-in methods (`m01`–`m12`) live in `sutura_engine/methods/builtin/` and are auto-discovered on import. Special tiers (closing, proxy, repeat, P-WELD) are modularized here.
+- `sutura_engine.core`: Generic low-level mesh I/O (STL, OBJ, 3MF arrays), geometric validation, and Hausdorff distance computations. Re-exports the specialised passes below for backward compatibility.
+- `sutura_engine.diagnosis`: Object feature analysis (`analyze_mesh`/`analyze_file`, `ObjectAnalysis`), geometric template matching (`Template`, `SCORE_TEMPLATES`), and classifier glue (`classify_with_engine`).
+- `sutura_engine.chart`: Content-addressed cache located in `~/.cache/sutura/`. Keys are SHA-256 hashes of input mesh arrays + engine version + parameters. Enforces a 500 MB LRU size limit, auto-invalidates on version change, and supports `--no-cache` CLI flag and GUI Options toggle/button.
+- `sutura_engine.stitch`: Reload-safe seam healing pass (P-WELD: `p_weld_final`, `_separate_weld_collisions`), split out of `core`.
+- `sutura_engine.xray`: Reload-honest strict watertight verdict (P-HONEST: `weld_reload_equivalent`, `reload_strict_holes_nm`, `enforce_reload_verdict`), split out of `core`.
+- `sutura_engine.hull`: Outer-surface shell extraction (`extract_outer_shell`).
+- `sutura_engine.cast`: Thin wrapper around the Rust `sutura_geom` extension (exact `orient3d`/`insphere`, `arrangement_lite`).
+- `sutura_engine.methods`: Pluggable repair method registry conforming to `RepairMethodProtocol`. Built-in methods live in `sutura_engine/methods/builtin/` as one named module per method (see the naming table below) and are auto-discovered on import. Special tiers (closing, proxy, repeat, P-WELD) are modularized here.
 - `sutura_engine.triage`: Budget-aware auto-escalation policy (`repair_with_methods`, `_auto`, `_auto_multi`), intensity profiles (`quick`, `balanced`, `thorough`, `extreme`), and per-object 3MF escalation loops. Triage remains strictly stdlib-only on import.
 - `sutura_engine.adapters`: Strict boundaries around third-party libraries:
   - `pymeshlab_adapter`: Stage 1 VCG repair filter chains (lazy import, never imported at engine top-level).
   - `manifold_adapter`: Manifold3d in-process execution and subprocess bridge dispatch (`manifold_bridge.py`, `csg_bridge.py`).
   - `ftetwild_adapter`: fTetWild tetrahedralization fallback tier and status checks.
   - `external_adapter`: User-configured external CLI repair engines (`~/.config/sutura/engines/*.toml`).
-- `sutura_engine.cache`: Content-addressed cache located in `~/.cache/sutura/`. Keys are SHA-256 hashes of input mesh arrays + engine version + parameters. Enforces a 500 MB LRU size limit, auto-invalidates on version change, and supports `--no-cache` CLI flag and GUI Options toggle/button.
 - Public Python API: `sutura_engine.repair(path_or_arrays, methods=None, intensity=..., ...) -> Report`.
-- Backward Compatibility: Shims exist at the original module paths (`closing.py`, `proxy_repair.py`, `repeat_repair.py`, `object_analysis.py`, `templates.py`, `engines.py`, `methods.py`, `triage.py`) re-exporting symbols from `sutura_engine`.
+- Backward Compatibility: Shims exist at the previous engine paths (`sutura_engine/analysis.py` -> `diagnosis`, `sutura_engine/cache.py` -> `chart`) and the legacy top-level modules (`closing.py`, `proxy_repair.py`, `repeat_repair.py`, `object_analysis.py`, `templates.py`, `engines.py`, `methods.py`, `triage.py`) re-export from `sutura_engine`.
+
+### Method naming
+
+Each built-in method module is named after its user-facing slug; `num` (1-12), the old
+slug and the new slug are all accepted by `get_method` / `--methods` / saved GUI tags.
+`display_name` is what the GUI and CLI print.
+
+| # | module | slug (`id`) | display name | accepted aliases |
+|---|--------|-------------|--------------|------------------|
+| 1 | `quick_clean.py` | `quick_clean` | Quick Clean | `fast`, `quick`, `m01`, `1` |
+| 2 | `local_mend.py` | `local_mend` | Local Mend | `deep_local`, `local`, `m02`, `2` |
+| 3 | `full_mend.py` | `full_mend` | Full Mend | `deep_full`, `full`, `deep`, `m03`, `3` |
+| 4 | `join.py` | `join` | Join | `join_components`, `m04`, `4` |
+| 5 | `autorefine.py` | `autorefine` | Autorefine | `m05`, `5` |
+| 6 | `exact_refine.py` | `exact_refine` | Exact Refine | `indirect_autorefine`, `exact`, `m06`, `6` |
+| 7 | `ftetwild.py` | `ftetwild` | fTetWild | `m07`, `7` |
+| 8 | `balloon.py` | `balloon` | Balloon | `poisson_close`, `poisson`, `m08`, `8` |
+| 9 | `backplate.py` | `backplate` | Backplate | `flat_back_close`, `flat_back`, `relief`, `m09`, `9` |
+| 10 | `scaffold.py` | `scaffold` | Scaffold | `proxy_template`, `proxy`, `m10`, `10` |
+| 11 | `transplant.py` | `transplant` | Transplant | `repeat_auto`, `repeat`, `m11`, `11` |
+| 12 | `transplant.py` | `transplant_plus` | Transplant+ | `repeat_manual`, `graft`, `transplant+`, `m12`, `13` |
 
 ## How to add a repair method
 
@@ -164,7 +192,7 @@ class MyCustomMethod:
 ```
 
 ### 2. Auto-Discovery via `builtin/` or Manual Registration
-- **Built-in method:** Place your module as `sutura_engine/methods/builtin/m<NN>_<name>.py`. Export an instance named `METHOD` (or a subclass of `RepairMethod`). When `sutura_engine.methods` initializes, `discover_builtin_methods()` scans the `builtin/` package and registers any discovered methods automatically.
+- **Built-in method:** Place your module as `sutura_engine/methods/builtin/<slug>.py`. Export an instance named `METHOD` (or `METHODS` for two variants; or a subclass of `RepairMethod`). When `sutura_engine.methods` initializes, `discover_builtin_methods()` scans the `builtin/` package and registers any discovered methods automatically. Name the module after its user-facing slug and set a `display_name`.
 - **Dynamic / Plugin registration:** Register at runtime using:
   ```python
   from sutura_engine.methods import register_method
@@ -172,7 +200,7 @@ class MyCustomMethod:
   ```
 - **Custom Templates:** Custom geometric templates can also be registered pluggably via:
   ```python
-  from sutura_engine.analysis import register_template
+  from sutura_engine.diagnosis import register_template
   register_template("my_template", my_detection_function)
   ```
 The new method immediately participates in `--list-methods`, `--analyze` recommendations, GUI method column selection, and budget-governed triage ranking.
