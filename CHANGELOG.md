@@ -56,9 +56,9 @@ All notable changes to this project are documented here.
   Graft produces reload-watertight output with lower runtimes while keeping
   undamaged triangles byte-identical to the input.
 
-## [0.6.1] - 2026-09-28
+### Folded from the previously unreleased v0.6.1 batch
 
-### Added
+#### Added
 
 - **Per-object auto escalation for multi-object 3MF.** Auto escalation for
   multi-object 3MF archives now operates object-by-object instead of at the file
@@ -105,7 +105,7 @@ All notable changes to this project are documented here.
   / `--no-learning-triage`; reset with `sutura clear-learning` or the GUI
   Options → General → Reset learning button. No network.
 
-### Fixed
+#### Fixed
 
 - **The untagged automatic method fallback is now time-budgeted.** When the
   default pipeline is not strict-watertight and the auto path escalates to the
