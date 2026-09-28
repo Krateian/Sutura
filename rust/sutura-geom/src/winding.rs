@@ -280,6 +280,45 @@ impl MeshBvh {
         best.sqrt()
     }
 
+    /// Closest point on the triangle soup: `(point, distance, triangle index)`,
+    /// or `(p, inf, usize::MAX)` for an empty mesh.
+    pub fn closest_point(&self, p: [f64; 3]) -> ([f64; 3], f64, usize) {
+        if self.nodes.is_empty() {
+            return (p, f64::INFINITY, usize::MAX);
+        }
+        let mut best = (p, f64::INFINITY, usize::MAX);
+        self.closest_node(0, p, &mut best);
+        (best.0, best.1.sqrt(), best.2)
+    }
+
+    fn closest_node(&self, idx: usize, p: [f64; 3], best: &mut ([f64; 3], f64, usize)) {
+        let n = &self.nodes[idx];
+        if n.bbox.dist2(p) >= best.1 {
+            return;
+        }
+        if n.left < 0 {
+            for i in n.start..n.start + n.count {
+                let tri = self.order[i as usize] as usize;
+                let (q, d2) = point_tri_closest(p, &self.tris[tri]);
+                if d2 < best.1 {
+                    best.0 = q;
+                    best.1 = d2;
+                    best.2 = tri;
+                }
+            }
+            return;
+        }
+        let dl = self.nodes[n.left as usize].bbox.dist2(p);
+        let dr = self.nodes[n.right as usize].bbox.dist2(p);
+        if dl <= dr {
+            self.closest_node(n.left as usize, p, best);
+            self.closest_node(n.right as usize, p, best);
+        } else {
+            self.closest_node(n.right as usize, p, best);
+            self.closest_node(n.left as usize, p, best);
+        }
+    }
+
     fn dist_node(&self, idx: usize, p: [f64; 3], best: &mut f64) {
         let n = &self.nodes[idx];
         if n.bbox.dist2(p) >= *best {
@@ -452,53 +491,58 @@ fn build_rec(
 /// Squared distance from `p` to triangle `t` (Ericson, Real-Time Collision
 /// Detection, closest-point-on-triangle).
 fn point_tri_dist2(p: [f64; 3], t: &Tri) -> f64 {
+    point_tri_closest(p, t).1
+}
+
+/// Closest point on triangle `t` to `p`: `(point, squared distance)`.
+fn point_tri_closest(p: [f64; 3], t: &Tri) -> ([f64; 3], f64) {
     let ab = sub(t.b, t.a);
     let ac = sub(t.c, t.a);
     let ap = sub(p, t.a);
     let d1 = dot(ab, ap);
     let d2 = dot(ac, ap);
     if d1 <= 0.0 && d2 <= 0.0 {
-        return dot(ap, ap);
+        return (t.a, dot(ap, ap));
     }
     let bp = sub(p, t.b);
     let d3 = dot(ab, bp);
     let d4 = dot(ac, bp);
     if d3 >= 0.0 && d4 <= d3 {
-        return dot(bp, bp);
+        return (t.b, dot(bp, bp));
     }
     let vc = d1 * d4 - d3 * d2;
     if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
         let v = d1 / (d1 - d3);
         let q = add(t.a, scale(ab, v));
         let r = sub(p, q);
-        return dot(r, r);
+        return (q, dot(r, r));
     }
     let cp = sub(p, t.c);
     let d5 = dot(ab, cp);
     let d6 = dot(ac, cp);
     if d6 >= 0.0 && d5 <= d6 {
-        return dot(cp, cp);
+        return (t.c, dot(cp, cp));
     }
     let vb = d5 * d2 - d1 * d6;
     if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
         let w = d2 / (d2 - d6);
         let q = add(t.a, scale(ac, w));
         let r = sub(p, q);
-        return dot(r, r);
+        return (q, dot(r, r));
     }
     let va = d3 * d6 - d5 * d4;
     if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
         let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
         let q = add(t.b, scale(sub(t.c, t.b), w));
         let r = sub(p, q);
-        return dot(r, r);
+        return (q, dot(r, r));
     }
     let denom = 1.0 / (va + vb + vc);
     let v = vb * denom;
     let w = vc * denom;
     let q = add(t.a, add(scale(ab, v), scale(ac, w)));
     let r = sub(p, q);
-    dot(r, r)
+    (q, dot(r, r))
 }
 
 /// Number of grid voxels covered by `dims`, with saturating multiply so the

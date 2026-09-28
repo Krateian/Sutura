@@ -27,13 +27,19 @@ pub mod triangle_intersection;
 pub mod winding;
 
 use numpy::ndarray::Array3;
-use numpy::{PyArray2, PyArray3};
+use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::types::PyList;
+use rayon::prelude::*;
 
 /// Maximum grid size for the morphology API (`512^3` voxel budget).  Larger
 /// requested grids are automatically coarsened (the voxel size is scaled up)
 /// until they fit.
 pub const MAX_VOXELS: u64 = 512 * 512 * 512;
+
+/// Face count above which `self_intersecting_faces` refuses to run the exact
+/// classifier (the broad phase plus exact predicates are super-linear); the
+/// caller sees a `skipped` report instead.
+pub const SI_MAX_FACES: usize = 150_000;
 
 /// Parse a point argument into `[f64; 3]`, accepting a tuple, list, or numpy
 /// 1-D array of length 3.
@@ -401,7 +407,7 @@ fn sdf_grid<'py>(
 /// window mode); `voxel` overrides the automatic voxel size; `fill_cavities`
 /// keeps only the outermost shell (enclosed cavities become solid).
 #[pyfunction]
-#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false))]
+#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None))]
 fn morph_close<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -410,6 +416,7 @@ fn morph_close<'py>(
     voxel: Option<f64>,
     r#box: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
     fill_cavities: bool,
+    surface: Option<String>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -455,7 +462,15 @@ fn morph_close<'py>(
     } else {
         closed
     };
-    let dc = dual_contour::dual_contour(&field, dims, origin, voxel);
+    let use_tets = matches!(
+        surface.as_deref(),
+        Some("tets") | Some("tet") | Some("marching_tets")
+    );
+    let dc = if use_tets {
+        dual_contour::marching_tets_mesh(&field, dims, origin, voxel)
+    } else {
+        dual_contour::dual_contour(&field, dims, origin, voxel)
+    };
 
     let out_verts: Vec<Vec<f64>> = dc.verts.iter().map(|p| p.to_vec()).collect();
     let out_tris: Vec<Vec<i32>> = dc
@@ -477,7 +492,104 @@ fn morph_close<'py>(
     info.set_item("fallback", dc.fallback)?;
     info.set_item("manifold", dc.manifold)?;
     info.set_item("fill_cavities", fill_cavities)?;
+    info.set_item("surface", if use_tets { "tets" } else { "dual" })?;
     Ok((verts_np, tris_np, info))
+}
+
+/// Closest point on the triangle soup for every query point.
+///
+/// Returns `(xyz, distance, face_index)`; each query gives the closest point
+/// on the surface, its Euclidean distance and the index of the triangle
+/// (or `-1` for an empty mesh).  Queries are evaluated in parallel.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, points))]
+fn closest_points<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<i32>>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    if rv.is_empty() || rt.is_empty() {
+        return Err(PyValueError::new_err("empty mesh"));
+    }
+    let pp = points.as_array();
+    if pp.ncols() != 3 {
+        return Err(PyValueError::new_err("points must be Mx3"));
+    }
+    let m = pp.nrows();
+    let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
+    let results: Vec<([f64; 3], f64, i32)> = (0..m)
+        .into_par_iter()
+        .map(|i| {
+            let (q, d, f) = bvh.closest_point([pp[[i, 0]], pp[[i, 1]], pp[[i, 2]]]);
+            (q, d, if f == usize::MAX { -1 } else { f as i32 })
+        })
+        .collect();
+    let xyz: Vec<Vec<f64>> = results.iter().map(|r| r.0.to_vec()).collect();
+    let dist: Vec<f64> = results.iter().map(|r| r.1).collect();
+    let fid: Vec<i32> = results.iter().map(|r| r.2).collect();
+    Ok((
+        PyArray2::from_vec2(py, &xyz)?,
+        PyArray1::from_vec(py, dist),
+        PyArray1::from_vec(py, fid),
+    ))
+}
+
+/// Faces involved in a self-intersection.
+///
+/// Runs a spatial-hash broad phase and the exact triangle-triangle classifier;
+/// a face is flagged when it properly crosses a non-adjacent face (pairs
+/// sharing a vertex index are ignored, as are coplanar/boundary contacts).
+/// Returns `(mask, count)` where `count` is the number of flagged faces, or
+/// `-1` when the mesh exceeds `SI_MAX_FACES` (the classifier is skipped).
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+fn self_intersecting_faces<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray1<bool>>, i64)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let (mask, count, _skipped) = self_intersections_core(&rv, &rt);
+    Ok((PyArray1::from_vec(py, mask), count))
+}
+
+/// Core self-intersection scan (no Python): `(mask, count, skipped)`.
+fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
+    let f = tris.len();
+    if f == 0 {
+        return (Vec::new(), 0, false);
+    }
+    if f > SI_MAX_FACES {
+        return (vec![false; f], -1, true);
+    }
+    let triangles: Vec<triangle_intersection::Triangle> = tris
+        .iter()
+        .map(|t| triangle_intersection::Triangle::explicit(verts[t[0]], verts[t[1]], verts[t[2]]))
+        .collect();
+    let pairs = arrangement::broad_phase_candidates(verts, tris);
+    let mut mask = vec![false; f];
+    for (i, j) in pairs {
+        let (a, b) = (tris[i], tris[j]);
+        let adjacent = a.iter().any(|x| b.contains(x));
+        if adjacent {
+            continue;
+        }
+        match triangle_intersection::intersect_triangles(&triangles[i], &triangles[j]) {
+            triangle_intersection::TriangleIntersection::ProperSegment { .. } => {
+                mask[i] = true;
+                mask[j] = true;
+            }
+            _ => {}
+        }
+    }
+    let count = mask.iter().filter(|&&b| b).count() as i64;
+    (mask, count, false)
 }
 
 #[pymodule]
@@ -488,7 +600,10 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_set_cdt_experimental, m)?)?;
     m.add_function(wrap_pyfunction!(sdf_grid, m)?)?;
     m.add_function(wrap_pyfunction!(morph_close, m)?)?;
+    m.add_function(wrap_pyfunction!(closest_points, m)?)?;
+    m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
+    m.add("SI_MAX_FACES", SI_MAX_FACES)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
@@ -573,5 +688,63 @@ mod tests {
         // ceil(1/0.1) + 1 + 2*1 = 13 per axis.
         assert_eq!(dims, [13, 13, 13]);
         assert!(super::winding::voxel_count(dims) <= super::MAX_VOXELS);
+    }
+
+    #[test]
+    fn closest_point_on_cube() {
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ];
+        let tris = vec![[0, 1, 2], [0, 2, 3]];
+        let bvh = super::winding::MeshBvh::from_arrays(&verts, &tris);
+        let (q, d, fid) = bvh.closest_point([1.0, 1.0, 3.0]);
+        assert!((d - 3.0).abs() < 1e-9, "distance {d}");
+        assert!((q[0] - 1.0).abs() < 1e-9 && (q[1] - 1.0).abs() < 1e-9 && q[2].abs() < 1e-9);
+        assert!(fid < 2);
+    }
+
+    #[test]
+    fn self_intersections_core_flags_crossing_faces() {
+        // Triangle 0 lies in z=0; triangle 1 pierces its interior.
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.5, 0.5, -1.0],
+            [1.5, 0.5, 1.0],
+            [0.5, 1.5, 1.0],
+        ];
+        let tris = vec![[0, 1, 2], [3, 4, 5]];
+        // The exact classifier must see a proper crossing...
+        use super::triangle_intersection::{
+            intersect_triangles, Triangle as T, TriangleIntersection,
+        };
+        let t1 = T::explicit(verts[0], verts[1], verts[2]);
+        let t2 = T::explicit(verts[3], verts[4], verts[5]);
+        let r = intersect_triangles(&t1, &t2);
+        assert!(
+            matches!(r, TriangleIntersection::ProperSegment { .. }),
+            "classifier returned {r:?}"
+        );
+        let (mask, count, skipped) = super::self_intersections_core(&verts, &tris);
+        assert!(!skipped);
+        assert_eq!(count, 2, "mask {mask:?}");
+        assert!(mask[0] && mask[1]);
+        // Two separated triangles -> no intersection.
+        let verts2 = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [5.0, 5.0, 0.0],
+            [6.0, 5.0, 0.0],
+            [5.0, 6.0, 0.0],
+        ];
+        let tris2 = vec![[0, 1, 2], [3, 4, 5]];
+        let (mask2, count2, _) = super::self_intersections_core(&verts2, &tris2);
+        assert_eq!(count2, 0);
+        assert!(!mask2[0] && !mask2[1]);
     }
 }

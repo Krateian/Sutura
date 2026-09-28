@@ -82,6 +82,19 @@ pub fn dual_contour(f: &[f32], dims: [usize; 3], origin: [f64; 3], voxel: f64) -
             manifold: true,
         };
     }
+    marching_tets_mesh(f, dims, origin, voxel)
+}
+
+/// Marching-tetrahedra surface of a scalar field (the tetrahedral equivalent
+/// of marching cubes): watertight, two-manifold and free of the
+/// geometry-level self-intersections dual contouring can produce.  Provided as
+/// an explicit alternative to `dual_contour`.
+pub fn marching_tets_mesh(
+    f: &[f32],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+) -> DcMesh {
     let (v, t) = marching_tets(f, dims, origin, voxel);
     let manifold = mesh_is_manifold(&v, &t);
     DcMesh {
