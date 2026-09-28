@@ -137,6 +137,10 @@ DEFAULT_CONFIG = {
     'intensity': 'balanced',
     'check_on_startup': False,
     'cache_enabled': True,
+    # Learning triage: a small, bounded Bayesian ranking bonus from the local
+    # (template, method) success/time history. Resettable from the CLI
+    # (`sutura clear-learning`) and the GUI Options.
+    'learning_triage': True,
 }
 
 

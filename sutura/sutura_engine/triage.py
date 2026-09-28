@@ -605,7 +605,7 @@ def _baseline_num(kwargs):
     return 3
 
 
-def _record(method, evaluation, outcome):
+def _record(method, evaluation, outcome, template=None, elapsed_ms=None):
     return {
         'num': method.num,
         'id': method.id,
@@ -617,6 +617,9 @@ def _record(method, evaluation, outcome):
         'hausdorff_rel': evaluation['hausdorff_rel'],
         'geom_change_pct': evaluation['geom_change_pct'],
         'reason': evaluation['reason'],
+        # Learning-triage inputs (anonymous: template + method slug only).
+        'template': template,
+        'elapsed_ms': int(elapsed_ms) if elapsed_ms is not None else None,
     }
 
 
@@ -742,6 +745,7 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
                 break
             attempts += 1
 
+            _t0 = time.monotonic()
             try:
                 trial_rep = method.run(in_v, in_t, tmpdir, ctx)
                 trial_v = trial_rep.pop('_verts')
@@ -750,7 +754,9 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
                 tried.append({'num': method.num, 'id': method.id, 'name': method.name,
                               'outcome': 'rejected', 'watertight': False, 'holes': None,
                               'non_manifold': None, 'hausdorff_rel': None,
-                              'geom_change_pct': None, 'reason': str(e)})
+                              'geom_change_pct': None, 'reason': str(e),
+                              'template': rec.template,
+                              'elapsed_ms': int((time.monotonic() - _t0) * 1000)})
                 continue
 
             trial_stl = os.path.join(tmpdir, 'trial_obj_%d_%d.stl' % (idx, method.num))
@@ -761,7 +767,9 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
 
             evaluation = eval_fn(trial_rep, trial_stl, False, [(in_name, in_v, in_t)], method)
             tried.append(_record(method, evaluation, 'accepted'
-                                 if evaluation['watertight'] else 'rejected'))
+                                 if evaluation['watertight'] else 'rejected',
+                                 template=rec.template,
+                                 elapsed_ms=(time.monotonic() - _t0) * 1000))
 
             if evaluation['watertight']:
                 try:
@@ -876,7 +884,8 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     baseline_s = time.monotonic() - baseline_start
     evaluation = eval_fn(result, out, multi, None, base_method)
     tried = [_record(base_method, evaluation, 'accepted'
-                     if evaluation['watertight'] else 'rejected')]
+                     if evaluation['watertight'] else 'rejected',
+                     elapsed_ms=baseline_s * 1000)]
     if evaluation['watertight'] or (isinstance(result, dict) and 'error' in result):
         _attach(result, base_method, tried, None, None, source='auto_baseline',
                 reached=evaluation['watertight'])
@@ -946,12 +955,15 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
             budget_reached = True
             break
         attempts += 1
+        _t0 = time.monotonic()
         trial_out = os.path.join(tmpdir, 'method_%d%s' % (method.num, ext))
         trial = attempt_fn(src, trial_out, tmpdir, {**ctx, **method.kwargs},
                            multi)
         evaluation = eval_fn(trial, trial_out, multi, in_objs, method)
         tried.append(_record(method, evaluation, 'accepted'
-                             if evaluation['watertight'] else 'rejected'))
+                             if evaluation['watertight'] else 'rejected',
+                             template=rec.template,
+                             elapsed_ms=(time.monotonic() - _t0) * 1000))
         if evaluation['watertight']:
             shutil.copyfile(trial_out, out)
             note = ('back surface was estimated'
@@ -990,12 +1002,14 @@ def _explicit(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                           'name': method.name, 'outcome': 'unavailable',
                           'reason': reason})
             continue
+        _t0 = time.monotonic()
         trial_out = os.path.join(tmpdir, 'method_%d%s' % (method.num, ext))
         trial = attempt_fn(src, trial_out, tmpdir, {**ctx, **method.kwargs},
                            multi)
         evaluation = eval_fn(trial, trial_out, multi, in_objs, method)
         tried.append(_record(method, evaluation, 'accepted'
-                             if evaluation['watertight'] else 'rejected'))
+                             if evaluation['watertight'] else 'rejected',
+                             elapsed_ms=(time.monotonic() - _t0) * 1000))
         candidates.append((evaluation, method, trial, trial_out))
         if evaluation['watertight']:
             shutil.copyfile(trial_out, out)

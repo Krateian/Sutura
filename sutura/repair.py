@@ -4413,6 +4413,9 @@ def main():
     parser.add_argument('--json', action='store_true',
                         help='force machine-readable JSON output (the default '
                              'format; overrides --human)')
+    parser.add_argument('--no-learning-triage', action='store_true',
+                        help='disable the bounded local-history ranking bonus '
+                             '(learning triage) for this run')
     parser.add_argument('--no-history', action='store_true',
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
@@ -4621,6 +4624,9 @@ def main():
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
         sys.exit(1)
 
+    if getattr(args, 'no_learning_triage', False):
+        os.environ[history.LEARNING_ENV] = '0'
+
     if getattr(args, 'no_cache', False):
         try:
             from sutura_engine import chart as cache
@@ -4640,6 +4646,18 @@ def main():
         except Exception as e:
             print(json.dumps({'error': 'clear-cache failed: %s' % e}))
             sys.exit(1)
+        sys.exit(0)
+
+    # 'clear-learning' as the first positional argument resets the local
+    # learning-triage counts (the bounded ranking bonus) without touching the
+    # usage history.
+    if files and files[0] == 'clear-learning':
+        if len(files) > 1 or out is not None or dry_run or human:
+            print(json.dumps({'error': 'clear-learning takes no positional '
+                                       'arguments'}))
+            sys.exit(1)
+        removed = history.clear_learning()
+        print(json.dumps({'cleared': removed}))
         sys.exit(0)
 
     # 'export-history' as the first positional argument prints the anonymous

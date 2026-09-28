@@ -297,6 +297,21 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
 
 def rank_methods(analysis: Any, top_n: int = 6) -> List[Recommendation]:
     """Rank available methods for an analysis; returns ``[Recommendation]``."""
+    # Learning triage (bounded): a small Bayesian bonus from the local
+    # (template, method) success/time history. Loaded once per ranking; opt out
+    # with SUTURA_LEARNING_TRIAGE=0 or the config key; resettable from the CLI
+    # and the GUI Options.
+    history_mod = None
+    learning_stats = None
+    try:
+        import history as history_mod
+        if history_mod.learning_enabled():
+            learning_stats = history_mod.triage_stats()
+        else:
+            history_mod = None
+    except Exception:
+        history_mod = None
+
     out = []
     for method in all_methods():
         ok, _reason = method.available()
@@ -306,6 +321,7 @@ def rank_methods(analysis: Any, top_n: int = 6) -> List[Recommendation]:
         best_combined = None
         best_template = None
         best_score = base
+        best_bonus = 0.0
         reason = method_reason
         for template in SCORE_TEMPLATES:
             conf = template.confidence(analysis)
@@ -318,10 +334,15 @@ def rank_methods(analysis: Any, top_n: int = 6) -> List[Recommendation]:
                 best_combined = combined
                 best_template = template.id
                 best_score = max(base, combined)
+            if learning_stats is not None:
+                best_bonus = max(best_bonus, history_mod.learning_bonus(
+                    template.id, method.id, stats=learning_stats))
         if best_combined is not None:
             reason = '%s; template %s' % (method_reason, best_template)
         if best_score <= 0:
             continue
+        if best_bonus:
+            best_score = min(1.0, best_score + best_bonus)
         out.append(Recommendation(method.num, method.id, method.name,
                                   round(_clamp01(best_score), 3), reason,
                                   best_template, reason_key, reason_args))
