@@ -2757,8 +2757,13 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False):
                                  % (cand_holes, cand_nm))
         else:
             rec['reason'] = 'graft returned no geometry'
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
-        rec['reason'] = 'error: %s' % e
+    except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
+        # PyO3 surfaces a Rust panic as pyo3_runtime.PanicException, which
+        # subclasses BaseException (not Exception); a tier must degrade to its
+        # reason field rather than abort the whole repair.
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        rec['reason'] = 'error: %s: %s' % (type(e).__name__, e)
     stats['graft'] = rec
     return ms, after
 
