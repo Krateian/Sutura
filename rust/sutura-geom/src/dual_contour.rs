@@ -72,6 +72,11 @@ pub struct DcMesh {
 }
 
 /// Dual-contour a scalar field into a closed mesh.
+///
+/// If the dual mesh fails the manifold check the marching-tetrahedra fallback
+/// is tried, but only when it is actually manifold; otherwise the dual result
+/// is returned unchanged (a pathological field must not be replaced by the
+/// unwelded tetrahedra output).
 pub fn dual_contour(f: &[f32], dims: [usize; 3], origin: [f64; 3], voxel: f64) -> DcMesh {
     let dc = dual_contour_core(f, dims, origin, voxel);
     if mesh_is_manifold(&dc.0, &dc.1) {
@@ -82,7 +87,16 @@ pub fn dual_contour(f: &[f32], dims: [usize; 3], origin: [f64; 3], voxel: f64) -
             manifold: true,
         };
     }
-    marching_tets_mesh(f, dims, origin, voxel)
+    let tets = marching_tets_mesh(f, dims, origin, voxel);
+    if tets.manifold {
+        return tets;
+    }
+    DcMesh {
+        verts: dc.0,
+        tris: dc.1,
+        fallback: false,
+        manifold: false,
+    }
 }
 
 /// Marching-tetrahedra surface of a scalar field (the tetrahedral equivalent
