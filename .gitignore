@@ -13,6 +13,14 @@ screenshots/
 dist/
 target/
 history.jsonl
+triage_learning.json
+
+# fTetWild debug artifacts / generated test meshes that must never be committed
+__tracked_surface.stl
+__*.stl
+__*.obj
+*.ftetwild.stl
+*.ftetwild.obj
 
 # graphify knowledge graph: regenerated locally by the graphify git hooks
 graphify-out/
