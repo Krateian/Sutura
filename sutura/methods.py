@@ -755,10 +755,200 @@ def _attach(result, method, tried, analysis_objects, recs, note=None,
 
 
 def _multi_note(multi):
-    if multi:
-        return ('multi-object 3MF escalated at file level; per-object method '
-                'escalation is a TODO')
     return None
+
+
+def _is_obj_watertight(rep):
+    s1 = (rep or {}).get('stage1', {})
+    s2 = (rep or {}).get('stage2', {})
+    return bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0 and bool(s2.get('ok'))
+
+
+def _replace_3mf_meshes(in_3mf, out_3mf, mesh_list, tmpdir=None):
+    """Write out_3mf with mesh blocks in .model entries replaced in order."""
+    import re
+    import zipfile
+    mesh_iter = iter(mesh_list)
+    repair = _repair_mod()
+    with zipfile.ZipFile(in_3mf, 'r') as zin:
+        items = []
+        for name in zin.namelist():
+            data = zin.read(name)
+            if name.endswith('.model'):
+                xml = data.decode('utf-8', errors='replace')
+                def repl(_m):
+                    v, t = next(mesh_iter)
+                    return repair.build_mesh_block(v, t)
+                new_xml = re.sub(r'<mesh>.*?</mesh>', repl, xml, flags=re.S)
+                data = new_xml.encode('utf-8')
+            items.append((name, data))
+    tmp_target = os.path.join(tmpdir, 'updated_3mf.zip') if tmpdir else out_3mf + '.tmp'
+    with zipfile.ZipFile(tmp_target, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for name, data in items:
+            zout.writestr(name, data)
+    os.replace(tmp_target, out_3mf)
+
+
+def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
+    repair = _repair_mod()
+    in_objs = _safe_load(src) if os.path.exists(src) else []
+    analysis_objects = _analyze_objects(src, ctx)
+    object_reports = result.get('object_reports', [])
+    n_objs = len(object_reports)
+    out_objs = _safe_load(out) if os.path.exists(out) else []
+
+    final_meshes = []
+    any_escalated = False
+
+    for idx, rep in enumerate(object_reports):
+        if _is_obj_watertight(rep):
+            rep['method_used'] = {
+                'num': base_method.num,
+                'id': base_method.id,
+                'name': base_method.name,
+                'source': 'auto_baseline',
+            }
+            if idx < len(out_objs):
+                final_meshes.append((out_objs[idx][1], out_objs[idx][2]))
+            continue
+
+        in_v = in_objs[idx][1] if idx < len(in_objs) else None
+        in_t = in_objs[idx][2] if idx < len(in_objs) else None
+        in_name = in_objs[idx][0] if idx < len(in_objs) else None
+
+        if in_v is None or in_t is None or len(in_t) == 0:
+            rep['method_used'] = {
+                'num': base_method.num,
+                'id': base_method.id,
+                'name': base_method.name,
+                'source': 'auto_baseline',
+            }
+            if idx < len(out_objs):
+                final_meshes.append((out_objs[idx][1], out_objs[idx][2]))
+            continue
+
+        obj_analysis = analysis_objects[idx] if idx < len(analysis_objects) else None
+        if obj_analysis is None:
+            obj_analysis = object_analysis.analyze_mesh(in_v, in_t)
+
+        recs = rank_methods(obj_analysis)
+        attempts = 0
+        adopted = False
+
+        for rec in recs:
+            method = get_method(rec.num)
+            if method is None or method.num == base_method.num:
+                continue
+            ok, _reason = method.available()
+            if not ok:
+                continue
+            if method.invents_geometry and rec.score < AUTO_INVENT_MIN_SCORE:
+                continue
+            if attempts >= AUTO_MAX_ATTEMPTS:
+                break
+            attempts += 1
+
+            try:
+                trial_rep = method.run(in_v, in_t, tmpdir, ctx)
+                trial_v = trial_rep.pop('_verts')
+                trial_t = trial_rep.pop('_tris')
+            except Exception as e:
+                tried.append({'num': method.num, 'id': method.id, 'name': method.name,
+                              'outcome': 'rejected', 'watertight': False, 'holes': None,
+                              'non_manifold': None, 'hausdorff_rel': None,
+                              'geom_change_pct': None, 'reason': str(e)})
+                continue
+
+            trial_stl = os.path.join(tmpdir, 'trial_obj_%d_%d.stl' % (idx, method.num))
+            try:
+                repair.save_mesh(trial_stl, trial_v, trial_t)
+            except Exception:
+                pass
+
+            evaluation = _evaluate(trial_rep, trial_stl, False, [(in_name, in_v, in_t)], method)
+            tried.append(_record(method, evaluation, 'accepted'
+                                 if evaluation['watertight'] else 'rejected'))
+
+            if evaluation['watertight']:
+                try:
+                    trial_rep['defects'] = repair.detect_defects(trial_v, trial_t)
+                    trial_rep['_fp'] = history.mesh_fingerprint(trial_v, trial_t)
+                    _rc = repair.repair_confidence(trial_rep)
+                    trial_rep['repair_confidence'] = _rc['score']
+                    trial_rep['repair_confidence_label'] = _rc['label']
+                    trial_rep['repair_confidence_factors'] = _rc['factors']
+                    _rs = repair_score.compute_scores(trial_rep)
+                    trial_rep['repair_health'] = _rs['health']
+                    trial_rep['repair_health_factors'] = _rs['health_factors']
+                    trial_rep['repair_risk'] = _rs['risk']
+                    trial_rep['repair_risk_factors'] = _rs['risk_factors']
+                    trial_rep['repair_status'] = _rs['status']
+                    trial_rep['repair_status_code'] = _rs['status_code']
+                except Exception:
+                    pass
+
+                mu = {
+                    'num': method.num,
+                    'id': method.id,
+                    'name': method.name,
+                    'source': 'auto_escalated',
+                }
+                if method.invents_geometry:
+                    mu['note'] = 'back surface was estimated'
+                trial_rep['method_used'] = mu
+
+                object_reports[idx] = trial_rep
+                final_meshes.append((trial_v, trial_t))
+                adopted = True
+                any_escalated = True
+                break
+
+        if not adopted:
+            rep['method_used'] = {
+                'num': base_method.num,
+                'id': base_method.id,
+                'name': base_method.name,
+                'source': 'auto_baseline',
+            }
+            if idx < len(out_objs):
+                final_meshes.append((out_objs[idx][1], out_objs[idx][2]))
+
+    if any_escalated and len(final_meshes) == n_objs:
+        _replace_3mf_meshes(out, out, final_meshes, tmpdir)
+
+    result['object_reports'] = object_reports
+    if object_reports:
+        result['stage1'] = object_reports[0].get('stage1', {})
+        s2 = next((r['stage2'] for r in object_reports if 'stage2' in r), None)
+        if s2 is not None:
+            result['stage2'] = s2
+    result['objects_watertight'] = sum(
+        1 for r in object_reports
+        if r.get('stage1', {}).get('two_manifold')
+        and r.get('stage1', {}).get('holes_remaining', 0) == 0
+        and bool(r.get('stage2', {}).get('ok')))
+    result['objects_stage2_ok'] = sum(
+        1 for r in object_reports if bool(r.get('stage2', {}).get('ok')))
+    all_watertight = (result['objects_watertight'] == n_objs)
+
+    top_method = None
+    if any_escalated:
+        for r in object_reports:
+            mu = r.get('method_used', {})
+            if mu.get('source') == 'auto_escalated':
+                top_method = get_method(mu.get('num'))
+                break
+    if top_method is None:
+        top_method = base_method
+
+    combined = object_analysis.combine(analysis_objects) if analysis_objects \
+        else object_analysis.ObjectAnalysis()
+    all_recs = rank_methods(combined)
+
+    _attach(result, top_method, tried, analysis_objects, all_recs,
+            note=None, source='auto_escalated' if any_escalated else 'auto_baseline',
+            reached=all_watertight)
+    return result
 
 
 # --- execution policy -------------------------------------------------------
@@ -819,12 +1009,28 @@ def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
     if evaluation['watertight'] or (isinstance(result, dict) and 'error' in result):
         _attach(result, base_method, tried, None, None, source='auto_baseline',
                 reached=evaluation['watertight'])
+        if multi and isinstance(result, dict) and 'object_reports' in result:
+            for rep in result['object_reports']:
+                rep['method_used'] = {
+                    'num': base_method.num,
+                    'id': base_method.id,
+                    'name': base_method.name,
+                    'source': 'auto_baseline',
+                }
         return result
     # Escalation requires the default deep-repair configuration AND that the
     # user did not pin an external engine (tags mean "exactly these").
     if not allow_escalation or not _auto_escalation_allowed(ctx):
         _attach(result, base_method, tried, None, None, source='auto_baseline',
                 reached=False)
+        if multi and isinstance(result, dict) and 'object_reports' in result:
+            for rep in result['object_reports']:
+                rep['method_used'] = {
+                    'num': base_method.num,
+                    'id': base_method.id,
+                    'name': base_method.name,
+                    'source': 'auto_baseline',
+                }
         return result
     # A baseline that already ran past the hard ceiling leaves no room for a
     # bounded fallback: skip the ranked methods entirely and record why.
@@ -835,6 +1041,9 @@ def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
         result['method_used']['fallback_skipped'] = True
         result['method_used']['baseline_s'] = round(baseline_s, 2)
         return result
+
+    if multi and isinstance(result, dict) and 'object_reports' in result:
+        return _auto_multi(src, out, tmpdir, ctx, base_method, result, tried)
 
     in_objs = _safe_load(src) if os.path.exists(src) else []
     analysis_objects = _analyze_objects(src, ctx)

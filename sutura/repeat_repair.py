@@ -661,7 +661,10 @@ def extract_outer_shell(verts, tris, dilation=None):
     if dilation is None:
         dilation = 5e-4 * (diag if diag > 1e-6 else 100.0)
 
-    import manifold3d
+    try:
+        import manifold3d
+    except ImportError:
+        return verts, tris
 
     mf_list = []
     for comp in comps:

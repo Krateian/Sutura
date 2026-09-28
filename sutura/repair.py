@@ -658,6 +658,42 @@ def stl_write_binary(path, verts, tris):
             f.write(struct.pack('<H', 0))
 
 
+def should_extract_outer_shell(verts, tris, mesh_type=None, si_count=0):
+    """True ONLY when mesh fits mechanical or dense_scan_heavy_si templates,
+    components > 1, and the closed components overlap or touch.
+    """
+    is_mech = (mesh_type == 'mechanical')
+    is_heavy_si = (si_count >= 200)
+    if not (is_mech or is_heavy_si):
+        return False
+    try:
+        import trimesh
+        tm = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+        comps = tm.split(only_watertight=False)
+        if len(comps) <= 1:
+            return False
+        # Components must be closed (or predominantly closed)
+        closed_count = sum(1 for c in comps if c.is_watertight)
+        if closed_count < len(comps) * 0.7:
+            return False
+        # Pairwise bounding-box overlap check
+        diag = float(np.linalg.norm(np.ptp(verts, axis=0)))
+        eps = 1e-4 * (diag if diag > 1e-6 else 1.0)
+        bounds = [c.bounds for c in comps]
+        n = len(bounds)
+        for i in range(n):
+            min_i, max_i = bounds[i][0], bounds[i][1]
+            for j in range(i + 1, n):
+                min_j, max_j = bounds[j][0], bounds[j][1]
+                if (min(max_i[0], max_j[0]) >= max(min_i[0], min_j[0]) - eps and
+                    min(max_i[1], max_j[1]) >= max(min_i[1], min_j[1]) - eps and
+                    min(max_i[2], max_j[2]) >= max(min_i[2], min_j[2]) - eps):
+                    return True
+        return False
+    except Exception:
+        return False
+
+
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
                             join_components=False, autorefine=False,
@@ -768,6 +804,22 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # large loops without ever degrading a mesh (7 cases improved, 0 worse).
     _p['maxholesize'] = max(_p['maxholesize'],
                             2 * boundary_loop_stats(v, t)[1])
+
+    # Outer-shell extraction pre-step (dense_scan_heavy_si / mechanical templates):
+    # For inputs with multiple overlapping/nested closed components (e.g. Rubik-style
+    # assemblies), dissolves internal interfaces via slight dilation
+    # (dilation = 5e-4 * bbox_diagonal, ~0.05 mm for 100 mm object) and boolean union.
+    if mode == 'auto' and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
+        try:
+            import repeat_repair as _rr
+            _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
+            if len(_shell_t) > 0:
+                verts = np.asarray(_shell_v, dtype=np.float32)
+                tris = np.asarray(_shell_t, dtype=np.int32)
+                v, t = verts, tris
+                stats['outer_shell_extracted'] = True
+        except Exception:
+            pass
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
