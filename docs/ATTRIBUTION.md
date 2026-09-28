@@ -109,8 +109,8 @@ their terms):
 Sutura's codebase implements several published geometric algorithms clean-room
 without reusing third-party source code:
 
-- **Shrink-Wrapping & Surface Envelopes**: Kobbelt et al., *Interactive Multi-Resolution Modeling on Arbitrary Meshes* (SIGGRAPH 1999).
-- **Morphological Closing Envelopes**: Szekely et al., *Segmentation of 2D and 3D objects based on morphology* (1996).
+- **Shrink-Wrapping & Surface Envelopes**: Kobbelt, Vorsatz, Labsik & Seidel, *A Shrink Wrapping Approach to Remeshing Polygonal Surfaces* (Computer Graphics Forum 18(3), Eurographics 1999).
+- **Morphological Closing Envelopes**: Nooruddin & Turk, *Simplification and Repair of Polygonal Models Using Volumetric Techniques* (IEEE TVCG 9(2), 2003); Suriyababu, Vuik & Möller, *Towards a High Quality Shrink Wrap Mesh Generation Algorithm Using Mathematical Morphology* (Computer-Aided Design, 2023).
 - **Fast Winding Numbers**: Barill et al., *Fast Winding Numbers for Soups and Clouds* (ACM TOG / SIGGRAPH 2018).
 - **Exact Euclidean Distance Transform**: Felzenszwalb & Huttenlocher, *Distance Transforms of Sampled Functions* (Theory of Computing 2012).
 - **Dual Contouring**: Ju et al., *Dual Contouring of Hermite Data* (SIGGRAPH 2002).
