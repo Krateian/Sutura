@@ -119,11 +119,20 @@ def main():
     acts = um.actions()
     assert len(acts) == 15, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
-    # 8-13 are implemented and enabled (12 opens the repeat picker); 14/15
-    # (Mirror Complete / Wall Thicken) are the two appended methods.
-    for num in (8, 9, 10, 11, 12, 13):
+    # 8-12 are implemented and enabled (12 opens the repeat picker); 14
+    # (Mirror Complete) is enabled.  13 Graft needs the Rust sutura_geom
+    # extension, so it is enabled iff the registry says it is available and is
+    # otherwise disabled with the unavailable reason in its tooltip.
+    for num in (8, 9, 10, 11, 12):
         assert acts[num - 1].isEnabled(), num
-    assert acts[12].isEnabled() and acts[13].isEnabled(), acts[12:14]
+    g_ok, g_reason = methods.get_method(13).available()
+    assert acts[12].isEnabled() is g_ok, (acts[12].isEnabled(), g_ok, g_reason)
+    if not g_ok:
+        tip = acts[12].toolTip()
+        assert tip, tip
+        if 'sutura_geom' in (g_reason or ''):
+            assert 'sutura_geom' in tip, (tip, g_reason)
+    assert acts[13].isEnabled(), 'method 14 (Mirror Complete) must be enabled'
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live

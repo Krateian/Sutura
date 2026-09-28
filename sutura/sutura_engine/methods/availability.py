@@ -110,7 +110,13 @@ def graft_available() -> Tuple[bool, Optional[str]]:
         if (importlib.util.find_spec('sutura_engine.graft') is None and
                 importlib.util.find_spec('shell_wrap') is None):
             return False, 'sutura_engine.graft is not available'
-        spec = importlib.util.find_spec('sutura_geom')
+        try:
+            spec = importlib.util.find_spec('sutura_geom')
+        except Exception as e:
+            # `sys.modules['sutura_geom'] is None` (a blocked/poisoned import)
+            # makes find_spec raise; treat it as "not installed" so the reason
+            # still names the missing extension.
+            return False, 'rust extension sutura_geom is not installed (%s)' % e
         if spec is None:
             return False, 'rust extension sutura_geom is not installed'
         try:
