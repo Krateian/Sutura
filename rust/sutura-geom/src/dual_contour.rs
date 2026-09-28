@@ -306,7 +306,7 @@ fn dual_contour_core(
             for i in 0..cx {
                 let f0 = at(i, j, k) < 0.0;
                 let f1 = at(i + 1, j, k) < 0.0;
-                if f0 == f1 || j < 1 || k < 1 || j > cy || k > cz {
+                if f0 == f1 || j < 1 || k < 1 || j >= cy || k >= cz {
                     continue;
                 }
                 let ca = cell_of(i, j - 1, k - 1);
@@ -324,7 +324,7 @@ fn dual_contour_core(
             for i in 0..nx {
                 let f0 = at(i, j, k) < 0.0;
                 let f1 = at(i, j + 1, k) < 0.0;
-                if f0 == f1 || i < 1 || k < 1 || i > cx || k > cz {
+                if f0 == f1 || i < 1 || k < 1 || i >= cx || k >= cz {
                     continue;
                 }
                 let ca = cell_of(i - 1, j, k - 1);
@@ -344,7 +344,7 @@ fn dual_contour_core(
             for i in 0..nx {
                 let f0 = at(i, j, k) < 0.0;
                 let f1 = at(i, j, k + 1) < 0.0;
-                if f0 == f1 || i < 1 || j < 1 || i > cx || j > cy {
+                if f0 == f1 || i < 1 || j < 1 || i >= cx || j >= cy {
                     continue;
                 }
                 let ca = cell_of(i - 1, j - 1, k);
@@ -681,6 +681,28 @@ mod tests {
         assert!(m.manifold);
         assert!(mesh_is_manifold(&m.verts, &m.tris));
         assert!(m.verts.len() > 100);
+    }
+
+    #[test]
+    fn dc_handles_sign_change_on_the_last_grid_layer() {
+        // Regression: the connectivity guards used `> cy`/`> cz`, which let a
+        // sign change on the LAST sample layer (j == cy or k == cz) index a
+        // cell one past the end of `edge_vert` and panic.  Build a field with a
+        // sign change along x exactly on the last y and z layers.
+        let dims = [6usize, 6, 6];
+        let origin = [0.0f64; 3];
+        let voxel = 1.0f64;
+        let idx = |i: usize, j: usize, k: usize| i + 6 * (j + 6 * k);
+        let mut f = vec![-1.0f32; 6 * 6 * 6];
+        for k in 0..6 {
+            for i in 0..6 {
+                f[idx(i, 5, k)] = if i >= 3 { 1.0 } else { -1.0 };
+                f[idx(i, k, 5)] = if i >= 3 { 1.0 } else { -1.0 };
+            }
+        }
+        // must not panic
+        let m = dual_contour(&f, dims, origin, voxel);
+        assert!(m.verts.len() < 1_000_000);
     }
 
     #[test]
