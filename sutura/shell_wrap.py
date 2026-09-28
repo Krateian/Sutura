@@ -74,8 +74,8 @@ LOCAL_MAX_BBOX_FRACTION = 0.30   # damaged bbox below 30 % of the model bbox
 LOCAL_WINDOW_MARGIN = 3.0        # expand the damaged bbox by 3 r
 
 # --- guards / detail loss --------------------------------------------------
-HEALTHY_HAUSDORFF_MAX = 0.03     # two-sided-on-healthy, rel. to bbox diagonal
-ONE_SIDED_HAUSDORFF_MAX = 0.02   # input -> output, rel. to bbox diagonal
+HEALTHY_HAUSDORFF_MAX = 0.0025    # two-sided-on-healthy, rel. to bbox diagonal
+ONE_SIDED_HAUSDORFF_MAX = 0.005   # input -> output, rel. to bbox diagonal
 HAUSDORFF_SAMPLES = 4000
 DETAIL_TOL_MM = 0.1              # default tolerance: 0.1 mm
 DETAIL_TOL_FRACTION = 0.002      # ... or 0.2 % of the bbox diagonal
@@ -91,6 +91,7 @@ SHELL_WRAP_SI_MAX_FACES = 20_000
 SI_ROLLBACK = True
 HYBRID_MAX_HOLE = 200_000       # pymeshlab close_holes budget for the hybrid
 REFINE_MAX_FACES = 300_000      # do not adopt a refinement past this size
+REFINE_FACE_FACTOR = 4          # ... nor past this multiple of the input faces
 
 
 # --------------------------------------------------------------------------- #
@@ -224,16 +225,22 @@ def _behind_on_healthy(v0, t0, region_mask, wv, wt, diag, r, rng):
 # analysis
 # --------------------------------------------------------------------------- #
 def _auto_voxel(v, t, diag, grid_budget):
-    """Finest voxel the grid budget allows (finest first), bounded below by
-    bbox/MAX_GRID_DIV so a tiny model cannot request an unbounded grid."""
+    """Voxel scale for the envelope: the input's median edge length, coarsened
+    only as far as the grid budget requires.  This keeps the envelope
+    resolution — and therefore the output face count — in the same order as
+    the input; the envelope is refined (split) to this target again before
+    projecting.  A dense scan whose median-edge grid exceeds the budget is
+    coarsened and then handled by the verbatim hybrid."""
     if len(v) == 0:
         return 1.0
     ext = v.max(axis=0) - v.min(axis=0)
     maxext = max(float(ext.max()), 1e-12)
-    voxel = maxext / MAX_GRID_DIV
+    voxel = _median_edge_length(v, t)
+    if not (voxel > 0.0):
+        voxel = maxext / 96.0
+    voxel = max(voxel, maxext / MAX_GRID_DIV)
     if grid_budget is None:
-        return geom_from_edges(v, t, maxext)
-    # coarsen x1.15 until the padded grid fits the budget
+        return float(voxel)
     for _ in range(120):
         dims = np.ceil(np.maximum(ext, 0.0) / voxel) + 1 + 2 * BUDGET_PAD
         dims = np.maximum(dims, 3)
@@ -241,13 +248,6 @@ def _auto_voxel(v, t, diag, grid_budget):
             break
         voxel *= 1.15
     return float(voxel)
-
-
-def geom_from_edges(v, t, maxext):
-    med = _median_edge_length(v, t)
-    if not (med > 0.0):
-        med = maxext / 96.0
-    return float(med)
 
 
 def _gap_estimate(verts, tris):
@@ -870,7 +870,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                 # refine (split) only: a coarse envelope gains vertices, a
                 # finer one is left alone so the projection keeps its shape
                 ev2, et2 = _split_long_edges(ev, et, tgt)
-                if len(et2) and len(et2) <= REFINE_MAX_FACES:
+                refine_cap = min(REFINE_MAX_FACES,
+                                 max(REFINE_FACE_FACTOR * len(t0), 2000))
+                if len(et2) and len(et2) <= refine_cap:
                     ev, et = ev2, et2
                     report["remeshed"] = True
         ref_si = _si_count(ev, et) if si_check else None
