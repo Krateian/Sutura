@@ -24,6 +24,11 @@ rejected.
 | `robust` | `=1.2.0` | MIT OR Apache-2.0 |
 | `pyo3` | `=0.29.2` | MIT OR Apache-2.0 |
 | `numpy` (rust-numpy) | `=0.29.0` | BSD-2-Clause |
+| `rayon` | `1.12` | MIT OR Apache-2.0 |
+
+`rayon` is pure Rust (no C or system dependency; about 1.1 MB of source in the
+lockfile including `rayon-core`, `crossbeam-deque`/`epoch` and `either`) and is
+used only to parallelise the morphology grid queries.
 
 `maturin` (currently `==1.15.0`) is the build tool; it is **not** a Cargo
 dependency. Install it into the target venv:
@@ -61,6 +66,55 @@ sutura_geom.insphere((0,0,0), (1,0,0), (0,1,0), (0,0,1), (0.25,0.25,0.25))  # > 
 
 Smoke test: `tests/test_sutura_geom.py` (run with the venv python that has the
 extension installed).
+
+## Morphology core
+
+New modules added on top of the predicate foundation (independent of the
+exact-arrangement path):
+
+- `src/winding.rs` — triangle BVH with a fast generalized winding number
+  (Barill et al. 2018): exact per-triangle solid angle for near triangles and
+  a dipole far-field approximation for nodes whose subtended solid angle is
+  below `WINDING_FAR_TOL` (1e-2 sr). Robust to holes, self-intersections and
+  nested shells. The same BVH answers branch-and-bound closest-point
+  (unsigned distance) queries; the signed distance is
+  `sign(w - 0.5) * unsigned`. Grid queries are rayon-parallel over z-slices.
+- `src/morph.rs` — Felzenszwalb–Huttenlocher exact separable EDT (1-D lower
+  envelope of parabolas, then x/y/z passes). Closing of the solid by `r` is
+  implemented as dilate (`sdf - r`) followed by a **true EDT re-distance of
+  the dilated occupancy** and erode (`+ r`), so the erosion does not simply
+  cancel the dilation; a cavity fill (boundary flood-fill) backs the
+  `fill_cavities` option.
+- `src/dual_contour.rs` — dual contouring with per-cell Hermite QEFs
+  (Tikhonov-regularised symmetric 3x3 eigen-solve, solution clamped to the
+  cell). A cell's sign-change edges are grouped into connected surface
+  components (manifold dual contouring), so a cell with two sheets emits two
+  vertices and no non-manifold vertex is produced. If the result fails the
+  topological manifold check, marching tetrahedra (the tetrahedral equivalent
+  of marching cubes, same watertight guarantee) is used instead.
+
+Grids are capped at a `512^3` voxel budget (`MAX_VOXELS`) with automatic
+coarsening; all grid functions accept an explicit `box` AABB for local-window
+mode.
+
+```python
+# Signed/unsigned/winding grids (3-D f32 arrays in [i, j, k] order).
+w, u, s, info = sutura_geom.sdf_grid(verts, tris, voxel=0.1)
+
+# Morphological closing of the solid by r; box= restricts the window,
+# fill_cavities=True keeps only the outermost shell.
+ov, ot, info = sutura_geom.morph_close(verts, tris, r=0.2, voxel=None,
+                                       box=None, fill_cavities=False)
+# info: dims, voxel, origin, voxels, caps_coarsened, fallback, manifold,
+#       radius, fill_cavities
+```
+
+Regression tests: `tests/test_morph_geom.py` (sphere with a hole closes, two
+overlapping cubes fuse, nested shell semantics, torus genus, sub-box, cap) and
+the timing run `tests/morph_timing_1038441.py`. Example timing (Apple M2,
+`thingi10k_1038441`, 10,418 faces, r = 2 % of the bbox diagonal): 2.8 s at the
+auto grid (99x109x36, voxel 0.575) and 16.1 s at voxel 0.30 (184x203x63,
+2.35 M voxels); both outputs are manifold with no fallback.
 
 ## Phase C0 profile (thingi10k_1038441)
 
