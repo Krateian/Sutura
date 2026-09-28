@@ -107,15 +107,15 @@ The remaining 12 warning meshes are the same set as the previous run.
 | artec_car-body | 1 | 0 | 1 | yes | mech 0.898 | 1 stubborn hole |
 | artec_church-facade | 22 | 0 | 7 | yes | org 0.127 | heavy scan holes; sub-gate conf → defaults |
 | artec_fountain-basin | 5 | 0 | 1 | yes | mech 0.629 | sub-gate conf → defaults |
-| artec_metal-nut | 12 | 0 | 1 | yes | org 0.022 | **FAZ 2 regression**, see below |
+| artec_metal-nut | 12 | 0 | 1 | yes | org 0.022 | **FAZ 2 regression** (fixed in FAZ 4); closed watertight via Graft in v0.7.0 (0.0 healthy deviation) |
 | artec_michel-rodange-monument | 1 | 0 | 1 | yes | mech 0.725 | sub-gate conf → defaults; 1 stubborn hole |
 | artec_smart-car | 146 | 0 | 12 | yes | org 0.584 | heaviest scan-hole count; VCG limit |
-| thingi10k_100827 | 5 | 0 | **9** | **no** | mech 0.948 | hole count **grew** during the chain; output not even 2-manifold |
+| thingi10k_100827 | 5 | 0 | **9** | **no** | mech 0.948 | hole count **grew** during Stage 1; watertight via fTetWild in v0.7.0 (Graft fidelity fallback) |
 | thingi10k_1017012 | 0 | 6 | 1 | yes | mech 0.982 | all nm fixed, 1 hole opened |
-| thingi10k_1038439 | 10 | 0 | 3 | yes | mech 0.978 | heavy scan holes |
-| thingi10k_1038441 | 5 | 13 | **6** | yes | mech 0.194 | all nm fixed but hole count grew 5→6; sub-gate conf → defaults |
+| thingi10k_1038439 | 10 | 0 | 3 | yes | mech 0.978 | heavy scan holes in Stage 1; watertight via Graft in v0.7.0 (0.0 healthy deviation) |
+| thingi10k_1038441 | 5 | 13 | **6** | yes | mech 0.194 | all nm fixed but Stage 1 holes grew 5→6; watertight via Graft in v0.7.0 (0.0 healthy deviation) |
 | thingi10k_1038444 | 0 | 2 | 1 | yes | mech 0.982 | all nm fixed, 1 hole opened |
-| thingi10k_224108 | 1 | 4 | 1 | yes | org 0.904 | all nm fixed, 1 stubborn hole |
+| thingi10k_224108 | 1 | 4 | 1 | yes | org 0.904 | all nm fixed, 1 stubborn hole in Stage 1; watertight via Graft in v0.7.0 (0.0 healthy deviation) |
 
 Root-cause groups:
 
@@ -184,3 +184,27 @@ The fallback fires on exactly one mesh (metal-nut, head confidence restored
 0.022 → 0.987 organic); the three near-boundary DISAGREEMENT cases
 (`crankshaft`, `motorcycle-engine-cover-hd`, `plaster-cast-teeth`) keep their
 low confidence → no tuning → conservative defaults, the intended behaviour.
+
+## Addendum (v0.7.0) — 40-sample corpus re-run & deep-repair auto behaviour
+
+In v0.7.0, Method #13 Graft (`sutura_engine.graft`) runs as a morphology shell-wrap tier tried before fTetWild whenever Stage 1 leaves residual holes or non-manifold edges.
+
+Corpus summary (default auto): **40/40 watertight; final tier stage1 32, graft 7, ftetwild 1**.
+
+### Changed meshes (Graft tier invocation)
+
+| mesh | new | old | healthy deviation new → old | new s | old s | notes |
+|---|---|---|---|---|---|---|
+| `artec_metal-nut` | **watertight** / graft | warning / stage1 | 0.0 → n/a | 44.0 | 183.9 | Closed via Graft (formerly warning on Stage 1; fTetWild timed out). |
+| `thingi10k_1038439` | watertight / graft | watertight / ftetwild | 0.0 → 0.00547 | 1.7 | 21.3 | Exact verbatim hybrid (0.0 healthy deviation). |
+| `thingi10k_1038441` | watertight / graft | watertight / ftetwild | 0.0 → 0.0964 | 20.5 | 10.5 | Exact verbatim hybrid (old fTetWild had shape_changed). |
+| `thingi10k_224108` | watertight / graft | watertight / ftetwild | 0.0 → 0.0106 | 6.5 | 8.6 | Exact verbatim hybrid (old fTetWild had shape_changed). |
+| `thingi10k_40886` | watertight / graft | watertight / ftetwild | 0.0 → 0.00157 | 47.9 | 13.3 | Exact verbatim hybrid (0.0 healthy deviation). |
+| `thingi10k_46012` | watertight / graft | watertight / ftetwild | 0.0 → 0.00085 | 46.6 | 17.4 | Exact verbatim hybrid (0.0 healthy deviation). |
+| `thingi10k_71691` | watertight / graft | watertight / ftetwild | 0.0 → 0.00063 | 5.4 | 7.8 | Exact verbatim hybrid (0.0 healthy deviation). |
+| `thingi10k_100827` | watertight / **ftetwild** | watertight / ftetwild | 0.00049 → 0.00049 | 2.1 | 2.1 | Graft fidelity_ok=false (0.0648); superseded by fTetWild via fidelity fallback. |
+
+Key observations:
+- `artec_metal-nut` moves from `warning` to **watertight** via Graft.
+- Graft reports healthy deviation 0.0 on every adopted mesh (verbatim hybrid); the previous fTetWild fallback deviated up to 9.6% (`shape_changed` on 1038441 and 224108).
+- `100827` exercises the intended fidelity fallback: Graft closed the mesh but `fidelity_ok=false`, so fTetWild was evaluated and selected due to lower deviation.

@@ -149,7 +149,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -658,6 +658,125 @@ def stl_write_binary(path, verts, tris):
             f.write(struct.pack('<H', 0))
 
 
+def should_extract_outer_shell(verts, tris, mesh_type=None, si_count=0):
+    """True ONLY when mesh fits mechanical or dense_scan_heavy_si templates,
+    components > 1, and the closed components overlap or touch.
+
+    Pure-numpy replacement for the former ``trimesh.Trimesh(...).split()`` path:
+    the unconditional ``import trimesh`` (and its scipy stack) cost ~0.5 s on
+    every mechanical repair even when this pre-check returned False.  Faces are
+    grouped into connected components through edges shared by exactly two faces
+    (trimesh's ``face_adjacency`` rule); a component counts as closed only when
+    every edge of its own faces appears exactly twice.  A component that is open
+    (>=4 faces and a genuine boundary loop) makes the whole check decline, which
+    preserves the previous trimesh ``fill_holes`` outcome.
+    """
+    is_mech = (mesh_type == 'mechanical')
+    is_heavy_si = (si_count >= 200)
+    if not (is_mech or is_heavy_si):
+        return False
+    try:
+        verts = np.asarray(verts)
+        tris = np.asarray(tris, dtype=np.int64)
+        n_faces = len(tris)
+        if n_faces == 0 or len(verts) == 0:
+            return False
+        # Per-face edges, sorted so that the two faces sharing an edge agree on
+        # its vertex pair.  Each edge is tagged with the face it came from.
+        face_of_edge = np.concatenate(
+            [np.arange(n_faces), np.arange(n_faces), np.arange(n_faces)])
+        edges = np.concatenate(
+            [tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0)
+        edges = np.sort(edges, axis=1)
+        order = np.lexsort((edges[:, 1], edges[:, 0]))
+        edges = edges[order]
+        face_of_edge = face_of_edge[order]
+        starts = np.concatenate(
+            [[0], np.nonzero(np.any(edges[1:] != edges[:-1], axis=1))[0] + 1])
+        sizes = np.diff(np.append(starts, len(edges)))
+        # Connected components over faces, joined only by edges used by exactly
+        # two faces.  Vectorised union-find: hook each edge's endpoint roots to
+        # their minimum, shortcut, repeat until stable (converges in a handful
+        # of passes on real meshes).
+        pair_starts = starts[sizes == 2]
+        edge_a = face_of_edge[pair_starts].astype(np.int64)
+        edge_b = face_of_edge[pair_starts + 1].astype(np.int64)
+        parent = np.arange(n_faces, dtype=np.int64)
+
+        def _roots(x):
+            while True:
+                px = parent[x]
+                if np.array_equal(px, x):
+                    return x
+                x = px
+
+        while True:
+            root_a = _roots(edge_a)
+            root_b = _roots(edge_b)
+            low = np.minimum(root_a, root_b)
+            new_parent = parent.copy()
+            np.minimum.at(new_parent, root_a, low)
+            np.minimum.at(new_parent, root_b, low)
+            new_parent = new_parent[new_parent]
+            if np.array_equal(new_parent, parent):
+                break
+            parent = new_parent
+        roots = _roots(np.arange(n_faces, dtype=np.int64))
+        _, roots = np.unique(roots, return_inverse=True)
+        n_comp = int(roots.max()) + 1 if n_faces else 0
+        if n_comp <= 1:
+            return False
+        # Per-component edge multiset (a component's own faces only, matching
+        # trimesh's reindexed submesh): group edge occurrences by
+        # (component, vertex pair).
+        edge_comp = roots[face_of_edge]
+        order = np.lexsort((edges[:, 1], edges[:, 0], edge_comp))
+        grouped_comp = edge_comp[order]
+        grouped_lo = edges[order, 0]
+        grouped_hi = edges[order, 1]
+        changed = ((grouped_comp[1:] != grouped_comp[:-1]) |
+                   (grouped_lo[1:] != grouped_lo[:-1]) |
+                   (grouped_hi[1:] != grouped_hi[:-1]))
+        grp_start = np.concatenate([[0], np.nonzero(changed)[0] + 1])
+        grp_size = np.diff(np.append(grp_start, len(grouped_comp)))
+        grp_comp = grouped_comp[grp_start]
+        comp_faces = np.bincount(roots, minlength=n_comp)
+        boundary_edges = np.bincount(grp_comp[grp_size == 1], minlength=n_comp)
+        not_closed = np.zeros(n_comp, dtype=bool)
+        not_closed[grp_comp[grp_size != 2]] = True
+        # The former trimesh fill_holes path declined whenever a component with
+        # >=4 faces had a genuine boundary loop (>=3 boundary edges).
+        if np.any((comp_faces >= 4) & (boundary_edges >= 3)):
+            return False
+        closed_count = int((~not_closed).sum())
+        if closed_count < n_comp * 0.7:
+            return False
+        # Per-component bounding boxes from the referenced vertices.
+        vert_comp = np.repeat(roots, 3)
+        vert_idx = tris.reshape(-1)
+        vorder = np.argsort(vert_comp, kind='stable')
+        sorted_comp = vert_comp[vorder]
+        sorted_verts = verts[vert_idx][vorder]
+        comp_start = np.searchsorted(sorted_comp, np.arange(n_comp), side='left')
+        bounds = list(zip(np.minimum.reduceat(sorted_verts, comp_start, axis=0),
+                          np.maximum.reduceat(sorted_verts, comp_start, axis=0)))
+        # Pairwise bounding-box overlap check
+        diag = float(np.linalg.norm(np.ptp(verts, axis=0)))
+        eps = 1e-4 * (diag if diag > 1e-6 else 1.0)
+        n = len(bounds)
+        for i in range(n):
+            min_i, max_i = bounds[i][0], bounds[i][1]
+            for j in range(i + 1, n):
+                min_j, max_j = bounds[j][0], bounds[j][1]
+                if (min(max_i[0], max_j[0]) >= max(min_i[0], min_j[0]) - eps and
+                    min(max_i[1], max_j[1]) >= max(min_i[1], min_j[1]) - eps and
+                    min(max_i[2], max_j[2]) >= max(min_i[2], min_j[2]) - eps):
+                    return True
+        return False
+    except Exception:
+        return False
+
+
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             engine='experimental', declared_unit=None,
                             join_components=False, autorefine=False,
@@ -665,7 +784,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             extra_features=False, deep_repair=None,
                             triage_spec=None, engines=None, engine_chain=None,
                             closing=None, proxy_template=False, repeat=None,
-                            repeat_source=None, repeat_target=None):
+                            repeat_source=None, repeat_target=None,
+                            wall_thicken=False, wall_min_thickness=None,
+                            graft=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -768,6 +889,22 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # large loops without ever degrading a mesh (7 cases improved, 0 worse).
     _p['maxholesize'] = max(_p['maxholesize'],
                             2 * boundary_loop_stats(v, t)[1])
+
+    # Outer-shell extraction pre-step (dense_scan_heavy_si / mechanical templates):
+    # For inputs with multiple overlapping/nested closed components (e.g. Rubik-style
+    # assemblies), dissolves internal interfaces via slight dilation
+    # (dilation = 5e-4 * bbox_diagonal, ~0.05 mm for 100 mm object) and boolean union.
+    if mode == 'auto' and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
+        try:
+            import repeat_repair as _rr
+            _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
+            if len(_shell_t) > 0:
+                verts = np.asarray(_shell_v, dtype=np.float32)
+                tris = np.asarray(_shell_t, dtype=np.int32)
+                v, t = verts, tris
+                stats['outer_shell_extracted'] = True
+        except Exception:
+            pass
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -968,16 +1105,30 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                closing=closing, proxy_template=proxy_template)
 
+    # Registry method 13 (Graft / shell wrap): the morphology last-resort tier,
+    # run on the ORIGINAL input arrays before the fTetWild ladder. Adopts only a
+    # reload-watertight candidate; records the fidelity verdict + warnings under
+    # ``stats['graft']``.
+    ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
+                           graft=(graft is True))
+
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
                                    spec=triage_spec, engines=engines,
-                                   engine_chain=engine_chain)
+                                   engine_chain=engine_chain, graft=graft)
 
     # Registry methods 11/12 (P-REP): repeated-element transplant, after the
     # whole stage-1 chain (the transplant needs a watertight M).
     ms, after = repeat_tier(ml, ms, after, stats, mode=repeat,
                             source_point=repeat_source,
                             target_point=repeat_target)
+
+    # Registry method 15 (P-WALL): opt-in thin-wall thicken-to-min. Runs on the
+    # ORIGINAL input arrays (like the closing tier) and adopts only a
+    # strict-watertight, no-worse candidate; never automatic.
+    if wall_thicken:
+        ms, after = wall_thicken_tier(ml, ms, after, stats, v, t,
+                                      min_thickness=wall_min_thickness)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -1226,6 +1377,30 @@ def resolve_ftetwild(no_fallback=False, experimental=False):
         return False
     if experimental:
         return True
+    return 'auto'
+
+
+def resolve_graft(no_graft=False, force=False, environ=None):
+    """Resolve the ``graft`` argument (method #13, shell wrap).
+
+    ``--no-graft`` disables it; ``--experimental-graft`` forces it; the
+    environment variable ``SUTURA_GRAFT`` may set ``0/1`` (env value has lower
+    precedence than an explicit CLI flag); otherwise 'auto' (tried by the
+    deep-repair ladder before fTetWild). The library default in
+    ``repair_mesh_from_arrays`` stays ``False`` so direct library calls keep
+    their pre-Graft behaviour.
+    """
+    if no_graft:
+        return False
+    if force:
+        return True
+    env = environ if environ is not None else os.environ.get('SUTURA_GRAFT')
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in ('0', 'false', 'no', 'off'):
+            return False
+        if val in ('1', 'true', 'yes', 'on', 'auto'):
+            return True if val not in ('auto',) else 'auto'
     return 'auto'
 
 
@@ -2551,6 +2726,10 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                     in_v, in_t, tmpdir=tmpdir)
             elif closing == 'flat_back':
                 cand_v, cand_t, rep = _closing.flat_back_close(in_v, in_t)
+            elif closing == 'mirror':
+                import mirror_repair as _mirror
+                cand_v, cand_t, rep = _mirror.mirror_close(
+                    in_v, in_t, tmpdir=tmpdir)
             else:
                 rec.update(ran=False, reason='unknown closing mode %r' % closing)
                 stats['closing'] = rec
@@ -2598,6 +2777,165 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
         rec['reason'] = 'error: %s' % e
     stats['closing'] = rec
     return ms, after
+
+
+def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False):
+    """Morphology shell-wrap tier for registry method 13 (Graft).
+
+    Runs ``sutura_engine.graft.shell_wrap`` on the ORIGINAL input arrays (like
+    the closing and fTetWild tiers).  The candidate is adopted only when it is
+    strict-watertight after the save/reload-equivalent weld.  ``stats['graft']``
+    records the fidelity verdict (``fidelity_ok``, ``hausdorff_healthy``,
+    ``detail_max_mm``/``detail_area_moved``) and the EN/TR detail-loss
+    warnings the CLI/GUI surface; the auto policy reads ``fidelity_ok`` to
+    decide whether to also try fTetWild.  Never raises.
+    """
+    if not graft:
+        return ms, after
+    rec = {'tier': 'graft', 'ran': False, 'adopted': False,
+           'watertight': False, 'fidelity_ok': None,
+           'hausdorff_healthy': None, 'detail_max_mm': None,
+           'detail_area_moved': None, 'r_used': None, 'mode': None,
+           'faces': None, 'holes': None, 'non_manifold': None,
+           'warnings': [], 'reason': None}
+    try:
+        try:
+            from sutura_engine import graft as _graft
+        except Exception:  # noqa: BLE001
+            import shell_wrap as _graft
+        in_v = np.asarray(v, dtype=np.float64)
+        in_t = np.asarray(t, dtype=np.int64)
+        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml)
+        rec['ran'] = True
+        rec['fidelity_ok'] = grec.get('fidelity_ok')
+        rec['hausdorff_healthy'] = grec.get('hausdorff_healthy')
+        rec['detail_max_mm'] = grec.get('detail_max_mm')
+        rec['detail_area_moved'] = grec.get('detail_area_moved')
+        rec['r_used'] = grec.get('r_used')
+        rec['mode'] = grec.get('mode')
+        rec['seconds'] = grec.get('seconds')
+        rec['warnings'] = list(grec.get('warnings') or [])
+        if len(cand_t):
+            cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v = np.asarray(cand_v, dtype=np.float32)
+            cand_t = np.asarray(cand_t, dtype=np.int32)
+            det = detect_defects(cand_v, cand_t)
+            cand_holes = len(det['holes'])
+            cand_nm = len(det['non_manifold'])
+            rec['holes'] = cand_holes
+            rec['non_manifold'] = cand_nm
+            rec['faces'] = int(len(cand_t))
+            if len(cand_t) and cand_holes == 0 and cand_nm == 0:
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+                after = ms.apply_filter('get_topological_measures')
+                rec['adopted'] = True
+                rec['watertight'] = False  # stage 2 confirms at the top level
+                rec['candidate_watertight'] = True
+                rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
+            elif rec['reason'] is None:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+        else:
+            rec['reason'] = 'graft returned no geometry'
+    except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
+        # PyO3 surfaces a Rust panic as pyo3_runtime.PanicException, which
+        # subclasses BaseException (not Exception); a tier must degrade to its
+        # reason field rather than abort the whole repair.
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        rec['reason'] = 'error: %s: %s' % (type(e).__name__, e)
+    stats['graft'] = rec
+    return ms, after
+
+
+def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
+    """Thin-wall thicken-to-min tier for registry method 15 (P-WALL).
+
+    ``wall_thickness.thicken_to_min`` measures the per-vertex wall thickness
+    from an SDF grid and thickens walls below ``min_thickness`` (default: 1% of
+    the bbox diagonal) with a morphological closing of the solid. It runs on
+    the ORIGINAL input arrays; the candidate is cleaned with PyMeshLab, then
+    adopted only when it is strict-watertight and no worse than the stage-1
+    baseline on holes + non-manifold edges. Records ``stats['wall_thicken']``
+    (before/after minimum thickness, counts, notes); never raises.
+    """
+    rec = {'tier': 'wall_thicken', 'ran': True, 'adopted': False,
+           'watertight': False, 'min_before': None, 'min_after': None,
+           'min_thickness': None, 'delta': None, 'thin_before': None,
+           'faces': None, 'notes': [], 'reason': None}
+    try:
+        import wall_thickness as _wt
+        base_v = np.asarray(ms.current_mesh().vertex_matrix())
+        base_t = np.asarray(ms.current_mesh().face_matrix())
+        base_holes = boundary_loop_stats(base_v, base_t)[0]
+        base_nm = int(after.get('non_two_manifold_edges', 0))
+        in_v = np.asarray(v, dtype=np.float64)
+        in_t = np.asarray(t, dtype=np.int64)
+        cand_v, cand_t, rep = _wt.thicken_to_min(
+            in_v, in_t, min_thickness=min_thickness)
+        rec['min_thickness'] = rep.get('min_thickness')
+        rec['min_before'] = rep.get('min_before')
+        rec['thin_before'] = rep.get('thin_before')
+        rec['delta'] = rep.get('delta')
+        rec['notes'] = list(rep.get('notes') or [])
+        if 'error' in rep:
+            rec['reason'] = 'module error: %s' % rep['error']
+        if len(cand_t):
+            cand_v, cand_t = _clean_and_orient(ml, cand_v, cand_t)
+            cand_v = np.asarray(cand_v, dtype=np.float32)
+            cand_t = np.asarray(cand_t, dtype=np.int32)
+            det = detect_defects(cand_v, cand_t)
+            cand_holes = len(det['holes'])
+            cand_nm = len(det['non_manifold'])
+            rec['holes'] = cand_holes
+            rec['non_manifold'] = cand_nm
+            rec['faces'] = int(len(cand_t))
+            rec['min_after'] = rep.get('min_after')
+            rec['thin_after'] = rep.get('thin_after')
+            if (cand_holes == 0 and cand_nm == 0
+                    and cand_holes + cand_nm <= base_holes + base_nm):
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+                after = ms.apply_filter('get_topological_measures')
+                rec['adopted'] = True
+                rec['candidate_watertight'] = True
+                rec['reason'] = 'walls thickened (stage 2 pending)'
+            elif rec['reason'] is None:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+        elif rec['reason'] is None:
+            rec['reason'] = 'module returned no geometry'
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['ran'] = False
+        rec['reason'] = 'error: %s' % e
+    stats['wall_thicken'] = rec
+    return ms, after
+
+
+def _clean_and_orient(ml, verts, tris):
+    """PyMeshLab cleanup of a generated surface: dedup + coherent orientation."""
+    try:
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
+                            face_matrix=np.asarray(tris, np.int32)))
+        for filt in ('meshing_remove_duplicate_vertices',
+                     'meshing_remove_duplicate_faces',
+                     'meshing_remove_unreferenced_vertices',
+                     'meshing_repair_non_manifold_edges',
+                     'meshing_re_orient_faces_coherently'):
+            try:
+                ms.apply_filter(filt)
+            except Exception:
+                pass
+        cur = ms.current_mesh()
+        return (np.asarray(cur.vertex_matrix(), dtype=np.float64),
+                np.asarray(cur.face_matrix(), dtype=np.int32))
+    except Exception:
+        return verts, tris
 
 
 # One-sided (original -> result, outside the repaired boxes) Hausdorff guard
@@ -2712,7 +3050,8 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
 
 
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
-                       ftetwild=False, spec=None, engines=None, engine_chain=None):
+                       ftetwild=False, spec=None, engines=None, engine_chain=None,
+                       graft=False):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
     default (no deep-repair report; ``ftetwild`` alone decides, as before
@@ -2756,10 +3095,57 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 after = ms.apply_filter('get_topological_measures')
                 tiers_run.append('replace_ftetwild')
         elif (not engine_chain) or ('ftetwild' in engine_chain):
-            ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
-                                       ftetwild, spec=spec)
-            if (stats.get('experimental_ftetwild') or {}).get('ran'):
-                tiers_run.append('ftetwild')
+            # Graft (shell wrap) is tried BEFORE the fTetWild tier. When it is
+            # reload-watertight and its healthy fidelity passes, it is adopted
+            # and fTetWild is skipped. When it closes the mesh but fidelity
+            # fails, fTetWild is also tried and the watertight result with the
+            # lower healthy deviation wins.
+            graft_ms = graft_after = None
+            graft_dev = None
+            graft_ok = False
+            # Only run the last-resort Graft when stage 1 still leaves holes or
+            # non-manifold edges (the same trigger fTetWild's 'auto' uses).  A
+            # closed stage-1 result is already the final mesh: Graft must not
+            # run on it, or already-watertight repairs would change output and
+            # pay an unnecessary tier.
+            if graft in (True, 'auto') and (cur_holes > 0 or cur_nm > 0):
+                _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
+                                             graft=True)
+                _g = stats.get('graft') or {}
+                if _g.get('adopted'):
+                    if _g.get('fidelity_ok') is not False:
+                        ms, after = _g_ms, _g_after
+                        graft_ok = True
+                        tiers_run.append('graft')
+                    else:
+                        graft_ms, graft_after = _g_ms, _g_after
+                        graft_dev = _g.get('hausdorff_healthy')
+            if graft_ok:
+                stats['experimental_ftetwild'] = False
+            else:
+                ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
+                                           ftetwild, spec=spec)
+                if (stats.get('experimental_ftetwild') or {}).get('ran'):
+                    tiers_run.append('ftetwild')
+                if graft_ms is not None:
+                    ft_dev = (stats.get('experimental_ftetwild')
+                              or {}).get('hausdorff_rel')
+                    ft_adopted = bool((stats.get('experimental_ftetwild')
+                                       or {}).get('adopted'))
+                    if (not ft_adopted
+                            or (ft_dev is not None and graft_dev is not None
+                                and ft_dev < graft_dev)):
+                        stats['graft']['adopted'] = False
+                        stats['graft']['reason'] = (
+                            'superseded by fTetWild (lower healthy deviation)')
+                        tiers_run.append('graft')
+                    else:
+                        ms, after = graft_ms, graft_after
+                        stats['graft']['adopted'] = True
+                        stats['graft']['preferred_over_ftetwild'] = True
+                        if 'ftetwild' in tiers_run:
+                            tiers_run.remove('ftetwild')
+                        tiers_run.append('graft')
     else:
         stats['experimental_ftetwild'] = False
     if mode is not None:
@@ -2770,6 +3156,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             'tiers_run': tiers_run,
             'local': local_rep,
             'ftetwild': stats.get('experimental_ftetwild') or None,
+            'graft': stats.get('graft') or None,
             'available': None,
         }
     return ms, after
@@ -2788,6 +3175,8 @@ def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):
     final = 'stage1'
     if (dr.get('ftetwild') or {}).get('adopted'):
         final = 'ftetwild'
+    elif (stats.get('graft') or {}).get('adopted'):
+        final = 'graft'
     elif (dr.get('local') or {}).get('adopted'):
         final = 'local'
     dr['final_tier'] = final
@@ -3054,7 +3443,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 indirect_autorefine=False, extra_features=False, deep_repair=None,
                 triage_spec=None, engines=None, engine_chain=None,
                 closing=None, proxy_template=False, repeat=None,
-                repeat_source=None, repeat_target=None):
+                repeat_source=None, repeat_target=None,
+                wall_thicken=False, wall_min_thickness=None, graft=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -3081,7 +3471,9 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         extra_features=extra_features, deep_repair=deep_repair,
         triage_spec=triage_spec, engines=engines, engine_chain=engine_chain,
         closing=closing, proxy_template=proxy_template, repeat=repeat,
-        repeat_source=repeat_source, repeat_target=repeat_target)
+        repeat_source=repeat_source, repeat_target=repeat_target,
+        wall_thicken=wall_thicken, wall_min_thickness=wall_min_thickness,
+        graft=graft)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -3182,7 +3574,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                indirect_autorefine=False, extra_features=False, deep_repair=None,
                triage_spec=None, engines=None, engine_chain=None,
                closing=None, proxy_template=False, repeat=None,
-               repeat_source=None, repeat_target=None):
+               repeat_source=None, repeat_target=None,
+               wall_thicken=False, wall_min_thickness=None, graft=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -3229,7 +3622,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     engine_chain=engine_chain,
                     closing=closing, proxy_template=proxy_template,
                     repeat=repeat, repeat_source=repeat_source,
-                    repeat_target=repeat_target)
+                    repeat_target=repeat_target, wall_thicken=wall_thicken,
+                    wall_min_thickness=wall_min_thickness, graft=graft)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -3662,6 +4056,18 @@ def human_report(r, show_defects=False, show_diff=False):
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
                              adopted))
+    gr = r.get('graft')
+    if gr and gr.get('ran'):
+        if gr.get('adopted'):
+            state = ' adopted%s' % (
+                '' if gr.get('fidelity_ok') is not False
+                else ' (LOW FIDELITY: %s)' % (gr.get('warnings') or [{}])[0].get(
+                    'message_en', 'detail loss'))
+        else:
+            state = ' NOT adopted (kept stage-1 output)'
+        lines.append('  Graft (shell wrap)      : %s faces in %.2fs, r=%s, %s%s'
+                     % (gr.get('faces', 0), gr.get('seconds', 0),
+                        gr.get('r_used'), gr.get('mode'), state))
     eng_r = r.get('engines')
     if eng_r:
         lines.append('')
@@ -3909,7 +4315,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
-                 repeat_target=None):
+                 repeat_target=None, wall_min_thickness=None, graft=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -3972,7 +4378,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             extra_features=extra_features, deep_repair=deep_repair,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
-            repeat_target=repeat_target))
+            repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
+            graft=graft))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -4182,7 +4589,17 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(
         prog='sutura',
-        description='Repair one or more STL/OBJ/3MF meshes. Output files get a "_fixed" suffix.')
+        description='Sutura Triage Engine: two-stage robust mesh repair for STL, OBJ, and 3MF files.',
+        epilog=(
+            'subcommands (first argument):\n'
+            '  validate FILE          read-only mesh validation (no repair, no output file)\n'
+            '  clear-cache            clear content-addressed Chart cache (~/.cache/sutura/)\n'
+            '  clear-learning         reset learning-triage history (triage_learning.json)\n'
+            '  export-history         view or export anonymous technical usage history\n'
+            '  engines list|check     inspect configured third-party repair engines\n'
+            '  ftetwild status|install|uninstall  manage optional fTetWild fallback extra\n'
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='*', metavar='FILE',
                         help='input mesh file(s)')
     parser.add_argument('-o', '--output', metavar='OUTPUT',
@@ -4236,7 +4653,11 @@ def main():
                         help='tag the repair methods to try, in order, e.g. '
                              '--methods 2,3,5. Without it the repair is auto: '
                              "today's default pipeline first, with ranked "
-                             'fallbacks only when it fails.')
+                             'fallbacks only when it fails. BREAKING (0.7.0): '
+                             "in 0.6.0 '13'/'graft' meant the manual "
+                             "picked-points method; that is now #12 "
+                             "'transplant_plus', and '13'/'graft' is the new "
+                             'Graft (shell wrap).')
     parser.add_argument('--engines', default=None, metavar='LIST',
                         help='tag the configured external engines to run, e.g. '
                              '--engines meshfix,my-engine. When given, only '
@@ -4247,16 +4668,27 @@ def main():
     parser.add_argument('--repeat-source', default=None, metavar='X,Y,Z',
                         help='method 12 (repeat_manual): the 3D point on the '
                              'healthy repeated element to copy from.')
+    parser.add_argument('--wall-min-thickness', type=float, default=None,
+                        metavar='T',
+                        help='target minimum wall thickness for the opt-in '
+                             'Wall Thicken method (#15); default 1%% of the '
+                             'bounding-box diagonal. Ignored unless #15 is '
+                             'tagged via --methods.')
     parser.add_argument('--repeat-target', default=None, metavar='X,Y,Z',
                         help='method 12 (repeat_manual): the 3D point on the '
                              'damaged repeated element to replace.')
     parser.add_argument('--json', action='store_true',
                         help='force machine-readable JSON output (the default '
                              'format; overrides --human)')
+    parser.add_argument('--no-learning-triage', action='store_true',
+                        help='disable the bounded local-history ranking bonus '
+                             '(learning triage) for this run')
     parser.add_argument('--no-history', action='store_true',
                         help='do not write the anonymous usage history record '
                              '(mesh geometry + repair results only, never file '
                              'names or paths)')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='disable content-addressed Sutura Chart cache (~/.cache/sutura/)')
     parser.add_argument('--max-geometry-change', type=float, default=None,
                         metavar='PCT',
                         help='repair budget: warn/block when the actual geometry '
@@ -4323,6 +4755,19 @@ def main():
                              'lengthens repairs of complex parts). Default from '
                              '%s or the "ftetwild_optimize" key of '
                              '~/.config/sutura/config.json' % FTETWILD_OPTIMIZE_ENV)
+    parser.add_argument('--no-graft', action='store_true',
+                        help='disable the Graft (shell wrap) tier (#13). By '
+                             'default the deep-repair ladder tries Graft '
+                             'before fTetWild on the original input and adopts '
+                             'its reload-watertight result; when Graft reports '
+                             'fidelity_ok=false, fTetWild is also tried and '
+                             'the lower healthy-deviation result wins')
+    parser.add_argument('--experimental-graft', action='store_true',
+                        help='force the Graft (shell wrap) tier (#13) even when '
+                             'the deep-repair ladder would not run it (e.g. '
+                             'with --deep-repair off). Primarily for its own '
+                             'evaluation; the auto path (default) already '
+                             'prefers Graft over fTetWild')
     parser.add_argument('--deep-repair', choices=DEEP_REPAIR_MODES, default=None,
                         help='deep-repair ladder after the fast repair, when '
                              'holes or non-manifold edges remain: "full" '
@@ -4394,14 +4839,11 @@ def main():
             parser.error('argument --methods: empty list')
         nums = []
         for part in parts:
-            if not part.isdigit():
-                parser.error('argument --methods: %r is not a method number'
-                             % part)
-            num = int(part)
-            if method_registry.get_method(num) is None:
-                parser.error('argument --methods: unknown method %d '
-                             '(see --list-methods)' % num)
-            nums.append(num)
+            m = method_registry.get_method(part)
+            if m is None:
+                parser.error('argument --methods: unknown method %r '
+                             '(see --list-methods)' % part)
+            nums.append(m.num)
         methods_sel = nums
 
     # --repeat-source / --repeat-target: the 3D points method 12 transplants
@@ -4461,6 +4903,42 @@ def main():
     if len(files) > 1 and out is not None:
         print(json.dumps({'error': '-o cannot be used with multiple input files'}))
         sys.exit(1)
+
+    if getattr(args, 'no_learning_triage', False):
+        os.environ[history.LEARNING_ENV] = '0'
+
+    if getattr(args, 'no_cache', False):
+        try:
+            from sutura_engine import chart as cache
+            cache.set_cache_enabled(False)
+        except Exception:
+            pass
+
+    # 'clear-cache' as the first positional argument clears ~/.cache/sutura/
+    if files and files[0] == 'clear-cache':
+        try:
+            from sutura_engine import chart as cache
+            freed = cache.clear_cache()
+            if human:
+                print('Cache cleared: %s freed' % cache._human_bytes(freed))
+            else:
+                print(json.dumps({'cleared': True, 'freed_bytes': freed, 'freed_human': cache._human_bytes(freed)}))
+        except Exception as e:
+            print(json.dumps({'error': 'clear-cache failed: %s' % e}))
+            sys.exit(1)
+        sys.exit(0)
+
+    # 'clear-learning' as the first positional argument resets the local
+    # learning-triage counts (the bounded ranking bonus) without touching the
+    # usage history.
+    if files and files[0] == 'clear-learning':
+        if len(files) > 1 or out is not None or dry_run or human:
+            print(json.dumps({'error': 'clear-learning takes no positional '
+                                       'arguments'}))
+            sys.exit(1)
+        removed = history.clear_learning()
+        print(json.dumps({'cleared': removed}))
+        sys.exit(0)
 
     # 'export-history' as the first positional argument prints the anonymous
     # usage history (summary + full JSON array) instead of repairing.
@@ -4588,6 +5066,10 @@ def main():
     else:
         _dr_mode = triage_spec.deep_repair
         _ft_arg = 'auto' if triage_spec.ftetwild_enabled else False
+    # Graft (#13): CLI flag > env > 'auto' (tried by the deep-repair ladder
+    # before fTetWild). --experimental-graft forces it outside the ladder.
+    _graft_arg = resolve_graft(no_graft=args.no_graft,
+                               force=args.experimental_graft)
     # External engines are loaded ONCE for the whole batch; broken configs
     # only warn and never fail a repair.
     _engines, _engine_chain, _engine_warnings = load_engine_run()
@@ -4603,6 +5085,7 @@ def main():
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
                             ftetwild=_ft_arg, deep_repair=_dr_mode,
+                            graft=_graft_arg,
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak,
                             triage_spec=triage_spec, engines=_engines,
@@ -4611,7 +5094,8 @@ def main():
                             methods=methods_sel,
                             engine_filter=engines_sel,
                             repeat_source=repeat_source,
-                            repeat_target=repeat_target) for f in files]
+                            repeat_target=repeat_target,
+                            wall_min_thickness=args.wall_min_thickness) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

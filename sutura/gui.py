@@ -88,18 +88,68 @@ STRINGS = {
         'method_source_tagged': 'tagged',
         'repair_log_method_used': 'Method used: %s',
         'repair_log_method_tried': 'Methods tried: %s',
-        'method_name_fast': 'Fast cleanup',
-        'method_name_deep_local': 'Local deep repair',
-        'method_name_deep_full': 'Full deep repair',
-        'method_name_join_components': 'Join components',
+        'method_name_quick_clean': 'Quick Clean',
+        'method_name_local_mend': 'Local Mend',
+        'method_name_full_mend': 'Full Mend',
+        'method_name_join': 'Join',
         'method_name_autorefine': 'Autorefine (SI)',
-        'method_name_indirect_autorefine': 'Indirect autorefine (SI, exact)',
-        'method_name_ftetwild': 'fTetWild envelope',
-        'method_name_poisson_close': 'Poisson close',
-        'method_name_flat_back_close': 'Flat-back close',
-        'method_name_proxy_template': 'Proxy template match',
-        'method_name_repeat_auto': 'Repeat-aware auto',
-        'method_name_repeat_manual': 'Repeat-aware manual',
+        'method_name_exact_refine': 'Exact Refine (SI, exact)',
+        'method_name_ftetwild': 'fTetWild',
+        'method_name_balloon': 'Balloon (Poisson close)',
+        'method_name_backplate': 'Backplate (flat back)',
+        'method_name_scaffold': 'Scaffold (proxy template)',
+        'method_name_transplant': 'Transplant (repeat auto)',
+        'method_name_transplant_plus': 'Transplant+ (repeat manual)',
+        'method_name_graft': 'Graft (shell wrap)',
+        'method_name_mirror_complete': 'Mirror Complete',
+        'method_name_wall_thicken': 'Wall Thicken',
+        'method_tip_graft': 'GRAFT (#13) — morphology shell wrap: close '
+            'damaged regions with a generalized-winding signed-distance '
+            'envelope, keep healthy geometry verbatim, and report detail loss. '
+            'Reload-watertight. Requires the optional sutura_geom Rust extension '
+            '(not bundled in 0.7.0 installers; auto falls back to fTetWild).',
+        'method_unavail_sutura_geom': 'sutura_geom Rust extension not installed '
+            '(build rust/sutura-geom; not bundled in 0.7.0, planned for 0.7.1)',
+        'method_tip_mirror_complete': 'MIRROR COMPLETE (#14) — complete the '
+            'missing back of a single-sided scan by mirroring the visible '
+            'surface across its detected symmetry plane. Falls back to Poisson '
+            'when the symmetry is not confident. Estimated geometry.',
+        'method_tip_wall_thicken': 'WALL THICKEN (#15) — opt-in: measure '
+            'per-vertex wall thickness from an SDF grid and thicken walls below '
+            'the target by a morphological offset. Never runs automatically.',
+        'btn_about': 'About',
+        'about_tip': 'About Sutura Triage Engine',
+        'dlg_close': 'Close',
+        'about_title': 'About Sutura',
+        'about_heading': 'Sutura Triage Engine (sutura_engine)',
+        'about_desc': (
+            "Sutura is a two-stage mesh repair system engineered for 3D printing.\n"
+            "Sutura Triage Engine — X-Ray, Graft, Transplant\n\n"
+            "Core Architecture (sutura_engine):\n"
+            "• Triage: Intelligent auto-escalation policy enforcing intensity presets and time budgets.\n"
+            "• Diagnosis: Geometric feature extraction, surface analysis, and defect classification.\n"
+            "• Chart: High-performance content-addressed cache (~/.cache/sutura/) with 500 MB LRU.\n"
+            "• Stitch (P-WELD): Reload-safe float32 seam healing preserving vertex and face counts.\n"
+            "• X-Ray (P-HONEST): Strict post-save reload verification ensuring honest watertightness.\n"
+            "• Hull: Exterior shell extraction and degenerate multi-component resolution.\n"
+            "• Cast: High-performance exact geometry core in Rust (sutura_geom).\n\n"
+            "Methods #1–#15:\n"
+            "Quick Clean (#1), Local Mend (#2), Full Mend (#3), Join (#4), Autorefine (#5), "
+            "Exact Refine (#6), fTetWild (#7), Balloon (#8), Backplate (#9), Scaffold (#10), "
+            "Transplant (#11), Transplant+ (#12), Graft (#13), Mirror Complete (#14), Wall Thicken (#15)."
+        ),
+        'about_credits': (
+            "Third-Party Adapters & Algorithms:\n"
+            "• PyMeshLab / VCG Library (GPL-3.0) — Stage 1 topological repair and surface filtering.\n"
+            "• Manifold3D (Apache-2.0) — Stage 2 volumetric manifold solid rebuilding.\n"
+            "• pytetwild / fTetWild (MPL-2.0) — Robust tetrahedralization envelope fallback.\n"
+            "• pyrobust-predicates / Shewchuk (Public Domain) — Exact 3D geometric orientation.\n"
+            "• PySide6 / Qt (LGPL-3.0) — Native graphical user interface framework."
+        ),
+        'about_license': (
+            "Licensed under the PolyForm Noncommercial 1.0.0 License.\n"
+            "Free for personal, educational, and non-commercial 3D printing."
+        ),
         'repeat_pick_title': 'Pick repeated elements',
         'repeat_pick_source': 'Click the HEALTHY element to copy from',
         'repeat_pick_target': 'Now click the DAMAGED element to replace',
@@ -171,6 +221,7 @@ STRINGS = {
         'rec_reason_no_si': 'no self-intersections',
         'rec_reason_si': 'self-intersections present (%d)',
         'rec_reason_ftetwild': 'large openings / heavy self-intersections',
+        'rec_reason_graft': 'openings / holes closable by a shell wrap',
         'rec_reason_not_scan': 'not a single-sided open scan',
         'rec_reason_poisson': 'single-sided open scan (%.2f)',
         'rec_reason_not_relief': 'no relief-like opening',
@@ -179,9 +230,13 @@ STRINGS = {
         'rec_reason_proxy': 'holes/non-manifold/debris with a mostly healthy surface',
         'rec_reason_no_repeat': 'no repeated pattern detected',
         'rec_reason_repeat': 'repeated pattern (%.2f)',
+        'rec_reason_mirror': 'single-sided scan with a symmetry plane (%.2f)',
+        'rec_reason_wall_optin': 'opt-in thin-wall thicken',
         'rec_reason_not_implemented': 'not implemented yet',
         'rec_reason_template': 'template %s',
         'method_note_back_surface': 'back surface estimated',
+        'method_note_fallback_budget': 'fallback budget reached',
+        'method_note_fallback_skipped': 'fallback skipped: baseline too slow',
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
         'issue_malformed': 'Malformed input', 'issue_error': 'Error',
@@ -207,6 +262,8 @@ STRINGS = {
         'repair_log_pinched': 'Split %d pinched vertex(es) (closed mesh made two-manifold)',
         'repair_log_ftetwild': 'fTetWild fallback: %d faces, %ds (adopted)' ,
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
+        'repair_log_graft': 'Graft (shell wrap): %d faces, r=%s (%s)',
+        'repair_log_graft_warn': 'Graft detail loss: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
@@ -322,6 +379,7 @@ STRINGS = {
         'res_budget_declined': 'budget declined',
         'issue_budget_exceeded': 'Repair budget exceeded',
         'issue_shape_changed': 'Shape changed by the fTetWild fallback',
+        'issue_graft_detail_loss': 'Graft smoothed fine surface detail (see warnings)',
         'analyze': 'Analyze',
         'analyze_tip': ('Run read-only analysis (validate + dry-run) on the '
                         'selected files — never modifies the input.'),
@@ -363,6 +421,16 @@ STRINGS = {
                                     'result is not worse than the default chain, '
                                     'but it can make a repair much slower.',
         'opt_history': 'Keep an anonymous usage history (no file names or paths)',
+        'opt_learning': 'Learning triage: rank methods from the local repair history',
+        'opt_learning_note': 'A small, bounded bonus from the anonymised '
+            '(object type, method) success and time recorded locally. No network.',
+        'opt_clear_learning': 'Reset learning',
+        'opt_learning_cleared': 'Learning triage data was reset.',
+        'opt_learning_empty': 'No learning data to reset.',
+        'opt_cache': 'Enable Sutura Chart cache (~/.cache/sutura/)',
+        'opt_cache_size': 'Cache size: %s',
+        'opt_clear_cache': 'Clear Cache',
+        'opt_cache_cleared': 'Cache cleared successfully (%s freed).',
         'opt_version': 'Installed version: v%s',
         'opt_last_check': 'Last check: %s',
         'opt_never': 'never',
@@ -535,18 +603,69 @@ STRINGS = {
         'method_source_tagged': 'etiketli',
         'repair_log_method_used': 'Kullanılan yöntem: %s',
         'repair_log_method_tried': 'Denenen yöntemler: %s',
-        'method_name_fast': 'Hızlı temizlik',
-        'method_name_deep_local': 'Yerel derin onarım',
-        'method_name_deep_full': 'Tam derin onarım',
-        'method_name_join_components': 'Bileşenleri birleştir',
-        'method_name_autorefine': 'Kendini kesme onarımı (SI)',
-        'method_name_indirect_autorefine': 'Dolaylı kesin onarım (SI)',
-        'method_name_ftetwild': 'fTetWild zarfı',
-        'method_name_poisson_close': 'Poisson kapatma',
-        'method_name_flat_back_close': 'Düz arka kapatma',
-        'method_name_proxy_template': 'Vekil şablon eşleme',
-        'method_name_repeat_auto': 'Yineleme farkında otomatik',
-        'method_name_repeat_manual': 'Yineleme farkında elle',
+        'method_name_quick_clean': 'Hızlı Temizlik',
+        'method_name_local_mend': 'Yerel Onarım',
+        'method_name_full_mend': 'Tam Onarım',
+        'method_name_join': 'Birleştir',
+        'method_name_autorefine': 'Kendini Onarım (SI)',
+        'method_name_exact_refine': 'Kesin Onarım (SI)',
+        'method_name_ftetwild': 'fTetWild',
+        'method_name_balloon': 'Balon (Poisson kapatma)',
+        'method_name_backplate': 'Arka Plaka',
+        'method_name_scaffold': 'İskelet (vekil şablon)',
+        'method_name_transplant': 'Nakil (yineleme, otomatik)',
+        'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
+        'method_name_graft': 'Graft (kabuk sarma)',
+        'method_name_mirror_complete': 'Aynalı Tamamlama',
+        'method_name_wall_thicken': 'Duvar Kalınlaştır',
+        'method_tip_graft': 'GRAFT (#13) — morfoloji kabuk sarma: hasarlı '
+            'bölgeleri genelleştirilmiş sarımlı işaretli mesafe zarfıyla kapatır, '
+            'sağlıklı geometriyi birebir korur ve ayrıntı kaybını raporlar. '
+            'Yeniden yüklemede su geçirmez. İsteğe bağlı sutura_geom Rust eklentisi '
+            'gerektirir (0.7.0 yükleyicilerinde paketli değildir; oto fTetWild kullanır).',
+        'method_unavail_sutura_geom': 'sutura_geom Rust eklentisi kurulu değil '
+            '(rust/sutura-geom derleyin; 0.7.0 paketinde yoktur, 0.7.1 için planlandı)',
+        'method_tip_mirror_complete': 'AYNALI TAMAMLAMA (#14) — tek taraflı '
+            'taramada eksik arka yüzeyi, görünen yüzeyi algılanan simetri '
+            'düzleminde aynalayarak tamamlar. Simetri güveni düşükse Poisson '
+            'yöntemine döner. Tahmini geometri.',
+        'method_tip_wall_thicken': 'DUVAR KALINLAŞTIR (#15) — isteğe bağlı: '
+            'SDF ızgarasından her tepe için duvar kalınlığını ölçer ve hedefin '
+            'altındaki duvarları morfolojik öteleme ile kalınlaştırır. Asla '
+            'otomatik çalışmaz.',
+        'btn_about': 'Hakkında',
+        'about_tip': 'Sutura Triyaj Motoru Hakkında',
+        'dlg_close': 'Kapat',
+        'about_title': 'Sutura Hakkında',
+        'about_heading': 'Sutura Triyaj Motoru (sutura_engine)',
+        'about_desc': (
+            "Sutura, 3D baskı için tasarlanmış iki aşamalı gelişmiş bir mesh onarım sistemidir.\n"
+            "Sutura Triage Engine — X-Ray, Graft, Transplant\n\n"
+            "Çekirdek Mimari (sutura_engine):\n"
+            "• Triage (Triyaj): Yoğunluk profillerini ve süre bütçelerini yöneten akıllı kademelendirme.\n"
+            "• Diagnosis (Tanı): Geometrik özellik analizi, yüzey tanısı ve kusur sınıflandırma.\n"
+            "• Chart (Çizelge): ~/.cache/sutura/ altında 500 MB LRU içerik adresli hızlı önbellek.\n"
+            "• Stitch (P-WELD): Yüz sayısını koruyarak kayıtta dikişleri onaran güvenli kaynak.\n"
+            "• X-Ray (P-HONEST): Kayıt sonrası yeniden yüklemeyle doğrulanan dürüst su geçirmezlik.\n"
+            "• Hull (Kabuk): Çok bileşenli montajlarda dış yüzey kabuğu çıkarımı.\n"
+            "• Cast (Döküm): Rust tabanlı yüksek başarımlı kesin geometri çekirdeği (sutura_geom).\n\n"
+            "Onarım Yöntemleri #1–#15:\n"
+            "Hızlı Temizlik (#1), Yerel Onarım (#2), Tam Onarım (#3), Birleştir (#4), Kendini Onarım (#5), "
+            "Kesin Onarım (#6), fTetWild (#7), Balon (#8), Arka Plaka (#9), İskelet (#10), "
+            "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15)."
+        ),
+        'about_credits': (
+            "Üçüncü Taraf Uyarlayıcılar ve Algoritmalar:\n"
+            "• PyMeshLab / VCG Kütüphanesi (GPL-3.0) — Aşama 1 topolojik onarım ve filtreleme.\n"
+            "• Manifold3D (Apache-2.0) — Aşama 2 hacimsel manifold katı yeniden inşası.\n"
+            "• pytetwild / fTetWild (MPL-2.0) — Sağlam tetrahedralizasyon son-çare zarfı.\n"
+            "• pyrobust-predicates / Shewchuk (Kamu Malı) — Kesin 3D geometrik yönelim.\n"
+            "• PySide6 / Qt (LGPL-3.0) — Yerel grafik kullanıcı arayüzü çatısı."
+        ),
+        'about_license': (
+            "PolyForm Noncommercial 1.0.0 Lisansı ile lisanslanmıştır.\n"
+            "Kişisel, eğitim ve ticari olmayan 3D baskı kullanımları için ücretsizdir."
+        ),
         'repeat_pick_title': 'Yinelenen ögeleri seç',
         'repeat_pick_source': 'Kopyalanacak SAĞLAM ögeye tıklayın',
         'repeat_pick_target': 'Şimdi değiştirilecek HASARLI ögeye tıklayın',
@@ -618,6 +737,7 @@ STRINGS = {
         'rec_reason_no_si': 'kendisiyle-kesişim yok',
         'rec_reason_si': 'kendisiyle-kesişim var (%d)',
         'rec_reason_ftetwild': 'büyük açıklıklar / yoğun kendisiyle-kesişim',
+        'rec_reason_graft': 'kabuk sarma ile kapatılabilir açıklıklar / delikler',
         'rec_reason_not_scan': 'tek yönlü açık tarama değil',
         'rec_reason_poisson': 'tek yönlü açık tarama (%.2f)',
         'rec_reason_not_relief': 'kabartma benzeri açıklık yok',
@@ -626,9 +746,13 @@ STRINGS = {
         'rec_reason_proxy': 'çoğunlukla sağlıklı yüzeyli delik/non-manifold/döküntü',
         'rec_reason_no_repeat': 'yineleme deseni bulunamadı',
         'rec_reason_repeat': 'yineleme deseni (%.2f)',
+        'rec_reason_mirror': 'simetri düzlemli tek-taraflı tarama (%.2f)',
+        'rec_reason_wall_optin': 'isteğe bağlı ince-duvar kalınlaştırma',
         'rec_reason_not_implemented': 'henüz uygulanmadı',
         'rec_reason_template': 'şablon %s',
         'method_note_back_surface': 'arka yüzey tahmin edildi',
+        'method_note_fallback_budget': 'yedek yöntem bütçesine ulaşıldı',
+        'method_note_fallback_skipped': 'yedek yöntem atlandı: temel onarım çok yavaş',
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
         'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
@@ -654,6 +778,8 @@ STRINGS = {
         'repair_log_pinched': '%d sıkışmış vertex ayrıldı (kapalı mesh two-manifold yapıldı)',
         'repair_log_ftetwild': 'fTetWild fallback: %d yüz, %ds (uygulandı)',
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
+        'repair_log_graft': 'Graft (kabuk sarma): %d yüz, r=%s (%s)',
+        'repair_log_graft_warn': 'Graft detay kaybı: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
@@ -768,6 +894,7 @@ STRINGS = {
         'res_budget_declined': 'bütçe reddedildi',
         'issue_budget_exceeded': 'Onarım bütçesi aşıldı',
         'issue_shape_changed': 'Şekil fTetWild yedek katmanıyla değişti',
+        'issue_graft_detail_loss': 'Graft ince yüzey detayını yumuşattı (uyarılara bakın)',
         'analyze': 'Analiz Et',
         'analyze_tip': ('Seçili dosyalar için salt-okunur analiz çalıştır '
                         '(validate + dry-run) — girdiyi asla değiştirmez.'),
@@ -809,6 +936,17 @@ STRINGS = {
                                     'zincirden kötü değilse uygulanır, ama onarımı '
                                     'belirgin şekilde yavaşlatabilir.',
         'opt_history': 'Anonim kullanım geçmişi tut (dosya adı veya yol yok)',
+        'opt_learning': 'Öğrenen triyaj: yöntemleri yerel onarım geçmişine göre sırala',
+        'opt_learning_note': 'Yerel olarak kaydedilen anonimleştirilmiş (nesne '
+            'tipi, yöntem) başarı ve süre verisinden küçük, sınırlı bir bonus. '
+            'Ağ erişimi yok.',
+        'opt_clear_learning': 'Öğrenmeyi sıfırla',
+        'opt_learning_cleared': 'Öğrenen triyaj verisi sıfırlandı.',
+        'opt_learning_empty': 'Sıfırlanacak öğrenme verisi yok.',
+        'opt_cache': 'Sutura Chart önbelleğini etkinleştir (~/.cache/sutura/)',
+        'opt_cache_size': 'Önbellek boyutu: %s',
+        'opt_clear_cache': 'Önbelleği Temizle',
+        'opt_cache_cleared': 'Önbellek başarıyla temizlendi (%s boşaltıldı).',
         'opt_version': 'Kurulu sürüm: v%s',
         'opt_last_check': 'Son kontrol: %s',
         'opt_never': 'hiç',
@@ -977,7 +1115,16 @@ def _method_name(num):
     return _t(key) if key in STRINGS['en'] else m.name
 
 
-_METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface'}
+def _method_tip(method):
+    """Localized method tooltip (falls back to the registry description)."""
+    key = 'method_tip_' + method.id
+    return _t(key) if key in STRINGS['en'] else method.description
+
+
+_METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface',
+                     'fallback budget reached': 'method_note_fallback_budget',
+                     'fallback skipped: baseline too slow':
+                         'method_note_fallback_skipped'}
 
 
 def _method_note(note):
@@ -1266,7 +1413,7 @@ def format_report(data):
             if src_label:
                 used += ' (%s)' % src_label
             if note:
-                used += ' \u2014 %s' % note
+                used += ' \u2014 %s' % _method_note(note)
             lines.append(used)
         for t in tried:
             num = t.get('num')
@@ -1350,6 +1497,8 @@ class RepairWorker(QThread):
         self._proc = None
         cfg = updater.load_config()
         self._no_history = not bool(cfg.get('history_enabled', True))
+        self._no_cache = not bool(cfg.get('cache_enabled', True))
+        self._no_learning = not bool(cfg.get('learning_triage', True))
 
     def cancel(self):
         self._cancelled = True
@@ -1389,6 +1538,10 @@ class RepairWorker(QThread):
                 args.append('--force')
             if self._no_history:
                 args.append('--no-history')
+            if self._no_cache:
+                args.append('--no-cache')
+            if self._no_learning:
+                args.append('--no-learning-triage')
             if self._edge_tiebreak:
                 args.append('--experimental-edge-tiebreak')
             if self._join_components:
@@ -2578,6 +2731,46 @@ class EnginesProgressDialog(QDialog):
             event.ignore()
 
 
+class AboutDialog(QDialog):
+    """About dialog describing Sutura Triage Engine, components, methods, and credits."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(_t('about_title'))
+        self.setModal(True)
+        self.resize(540, 480)
+        layout = QVBoxLayout(self)
+
+        title = QLabel(f"<h2>{_t('app_title')} v{VERSION}</h2>")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        heading = QLabel(f"<b>{_t('about_heading')}</b>")
+        heading.setAlignment(Qt.AlignCenter)
+        layout.addWidget(heading)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        desc_html = _t('about_desc').replace('\n', '<br>')
+        credits_html = _t('about_credits').replace('\n', '<br>')
+        license_html = _t('about_license').replace('\n', '<br>')
+        browser.setHtml(
+            f"<p>{desc_html}</p>"
+            f"<hr>"
+            f"<p>{credits_html}</p>"
+            f"<hr>"
+            f"<p><small>{license_html}</small></p>"
+        )
+        layout.addWidget(browser)
+
+        btn_box = QHBoxLayout()
+        btn_box.addStretch(1)
+        btn_close = QPushButton(_t('dlg_close'))
+        btn_close.clicked.connect(self.accept)
+        btn_box.addWidget(btn_close)
+        layout.addLayout(btn_box)
+
+
 class OptionsDialog(QDialog):
     """Non-modal, tabbed Options window.
 
@@ -2617,6 +2810,43 @@ class OptionsDialog(QDialog):
         self.chk_history.toggled.connect(
             lambda on: self._save_key('history_enabled', bool(on)))
         g.addWidget(self.chk_history)
+
+        self.chk_cache = QCheckBox(_t('opt_cache'))
+        self.chk_cache.setChecked(bool(cfg.get('cache_enabled', True)))
+        self.chk_cache.toggled.connect(
+            lambda on: self._save_cache_setting(bool(on)))
+        g.addWidget(self.chk_cache)
+
+        cache_row = QHBoxLayout()
+        cache_row.setContentsMargins(22, 0, 0, 0)
+        self.lbl_cache_size = QLabel()
+        self.btn_clear_cache = QPushButton(_t('opt_clear_cache'))
+        self.btn_clear_cache.clicked.connect(self._on_clear_cache)
+        cache_row.addWidget(self.lbl_cache_size)
+        cache_row.addStretch(1)
+        cache_row.addWidget(self.btn_clear_cache)
+        g.addLayout(cache_row)
+        self._update_cache_size_label()
+
+        # Learning triage: a small, bounded ranking bonus derived from the
+        # local usage history. Resettable here without touching the history.
+        self.chk_learning = QCheckBox(_t('opt_learning'))
+        self.chk_learning.setChecked(bool(cfg.get('learning_triage', True)))
+        self.chk_learning.toggled.connect(
+            lambda on: self._save_key('learning_triage', bool(on)))
+        g.addWidget(self.chk_learning)
+        learn_note = QLabel(_t('opt_learning_note'))
+        learn_note.setWordWrap(True)
+        learn_note.setContentsMargins(22, 0, 0, 0)
+        g.addWidget(learn_note)
+        learn_row = QHBoxLayout()
+        learn_row.setContentsMargins(22, 0, 0, 0)
+        self.btn_clear_learning = QPushButton(_t('opt_clear_learning'))
+        self.btn_clear_learning.clicked.connect(self._on_clear_learning)
+        learn_row.addStretch(1)
+        learn_row.addWidget(self.btn_clear_learning)
+        g.addLayout(learn_row)
+
         g.addStretch(1)
         self.tabs.addTab(general, _t('opt_tab_general'))
 
@@ -2810,6 +3040,43 @@ class OptionsDialog(QDialog):
         cfg = updater.load_config()
         cfg[key] = value
         updater.save_config(cfg)
+
+    def _save_cache_setting(self, on):
+        self._save_key('cache_enabled', on)
+        try:
+            from sutura_engine import chart as cache
+            cache.set_cache_enabled(on)
+        except Exception:
+            pass
+
+    def _update_cache_size_label(self):
+        try:
+            from sutura_engine import chart as cache
+            sz = cache.get_cache_size()
+            self.lbl_cache_size.setText(_t('opt_cache_size') % cache.format_bytes(sz))
+        except Exception:
+            self.lbl_cache_size.setText('')
+
+    def _on_clear_cache(self):
+        try:
+            from sutura_engine import chart as cache
+            freed = cache.clear_cache()
+            self._update_cache_size_label()
+            QMessageBox.information(self, _t('opt_clear_cache'),
+                                    _t('opt_cache_cleared') % cache.format_bytes(freed))
+        except Exception as e:
+            QMessageBox.warning(self, _t('opt_clear_cache'), str(e))
+
+    def _on_clear_learning(self):
+        try:
+            import history
+            removed = history.clear_learning()
+        except Exception as e:
+            QMessageBox.warning(self, _t('opt_clear_learning'), str(e))
+            return
+        QMessageBox.information(
+            self, _t('opt_clear_learning'),
+            _t('opt_learning_cleared') if removed else _t('opt_learning_empty'))
 
     # --- profile name helpers (QMessageBox/QInputDialog wrappers so the
     # offscreen tests can stub them without a modal event loop)
@@ -3259,6 +3526,11 @@ class MainWindow(QMainWindow):
         self.version_label = QLabel('v' + VERSION)
         self.version_label.setObjectName('versionLabel')
         row.addWidget(self.version_label)
+        self.btn_about = QPushButton(_t('btn_about'))
+        self.btn_about.setObjectName('aboutBtn')
+        self.btn_about.setToolTip(_t('about_tip'))
+        self.btn_about.clicked.connect(self._show_about)
+        row.addWidget(self.btn_about)
         layout.addLayout(row)
 
         # batch summary strip (populated when a batch finishes)
@@ -3416,6 +3688,10 @@ class MainWindow(QMainWindow):
 
     def _show_options(self, tab=0):
         self._options_dialog.open_tab(tab)
+
+    def _show_about(self):
+        dlg = AboutDialog(self)
+        dlg.exec()
 
     def closeEvent(self, event):
         """Wait for background threads so none is still running when the
@@ -4210,6 +4486,16 @@ class MainWindow(QMainWindow):
             key = 'repair_log_ftetwild' if ft_r.get('adopted') \
                 else 'repair_log_ftetwild_not'
             lines.append(_t(key, ft_r.get('output_faces', 0), ft_r.get('time', 0)))
+        gr_r = data.get('graft')
+        if gr_r and gr_r.get('ran'):
+            lines.append(_t('repair_log_graft', gr_r.get('faces', 0),
+                            gr_r.get('r_used'), gr_r.get('mode')))
+            _warns = gr_r.get('warnings') or []
+            if _warns:
+                _is_tr = QLocale.system().name().startswith('tr')
+                _msg = _warns[0].get('message_tr' if _is_tr else 'message_en') \
+                    or _warns[0].get('message_en', '')
+                lines.append(_t('repair_log_graft_warn', _msg))
         ia_r = data.get('experimental_indirect_autorefine')
         if ia_r and not ia_r.get('skipped') and 'error' not in ia_r:
             key = 'repair_log_indirect' if ia_r.get('adopted') \
@@ -4372,9 +4658,12 @@ class MainWindow(QMainWindow):
             act.setCheckable(True)
             act.setEnabled(ok)
             if not ok:
-                act.setToolTip(_t('menu_unavailable', reason or ''))
+                reason_str = reason or ''
+                if 'sutura_geom' in reason_str and 'method_unavail_sutura_geom' in STRINGS['en']:
+                    reason_str = _t('method_unavail_sutura_geom')
+                act.setToolTip(_t('menu_unavailable', reason_str))
             else:
-                act.setToolTip(method.description)
+                act.setToolTip(_method_tip(method))
             act.setData(method.num)
             if method.num == 12:
                 # method 12 needs the user to pick the source/target elements:

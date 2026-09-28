@@ -138,6 +138,15 @@ jobs:
       - name: "Test: repeated-element repair"
         run: ./venv/bin/python tests/test_repeat_repair.py
 
+      - name: "Test: mirror completion"
+        run: ./venv/bin/python tests/test_mirror_repair.py
+
+      - name: "Test: thin-wall analysis / thicken"
+        run: ./venv/bin/python tests/test_wall_thickness.py
+
+      - name: "Test: learning triage"
+        run: ./venv/bin/python tests/test_learning_triage.py
+
       - name: "Test: repair budget"
         if: matrix.python-version == '3.11'   # asserts a stage-2 watertight result
         run: ./venv/bin/python tests/test_budget.py
@@ -191,6 +200,15 @@ jobs:
 
       - name: "Test: engine integration"
         run: ./venv/bin/python tests/test_engine_integration.py
+
+      - name: "Test: sutura_engine cache"
+        run: ./venv/bin/python tests/test_engine_cache.py
+
+      - name: "Test: sutura_engine import isolation (no pymeshlab)"
+        run: ./venv/bin/python tests/test_engine_no_pymeshlab.py
+
+      - name: "Test: sutura_engine plugin / protocol"
+        run: ./venv/bin/python tests/test_engine_plugin.py
 
       - name: "Test: engines GUI"
         run: ./venv/bin/python tests/test_engines_gui.py
@@ -249,3 +267,11 @@ jobs:
 
       - name: "Test: sutura_geom arrangement"
         run: ./.venv/bin/python tests/test_sutura_geom_arrangement.py
+
+      # Graft (#13) needs the Rust extension plus trimesh/scipy; the real
+      # repair venv has pymeshlab (the verbatim-hybrid test skips without it).
+      - name: Install Graft test deps
+        run: ./.venv/bin/pip install --quiet trimesh scipy manifold3d
+
+      - name: "Test: Graft / shell wrap (method #13)"
+        run: ./.venv/bin/python tests/test_shell_wrap.py

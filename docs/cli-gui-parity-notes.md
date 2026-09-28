@@ -37,10 +37,12 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--no-fallback-ftetwild` (GUI checkbox *fTetWild fallback*, checked by default) ·
 `--experimental-fallback-ftetwild` (GUI checkbox *+ self-intersections (slow)* next to it) ·
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
-`--experimental-indirect-autorefine` (GUI checkbox — Phase B; all six
+`--no-graft` / `--experimental-graft` (GUI right-click method menu #13 Graft + auto fallback ladder) ·
+`--no-cache` / `clear-cache` (GUI Options → General *Enable Sutura Chart cache* checkbox + *Clear Cache* button) ·
+`--experimental-indirect-autorefine` (GUI checkbox — Phase B; all seven
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
 `--methods 11/12` and `--repeat-source`/`--repeat-target` (GUI *Use method*
-lists #11 *Repeat-aware auto* and #12 *Repeat-aware manual*; picking #12 opens
+lists #11 *Transplant* and #12 *Transplant+*; picking #12 opens
 a CPU-rasterised picker dialog where the user clicks the healthy source and the
 damaged target element; the two 3D points are stored with the file's tags and
 passed as the CLI flags) ·
@@ -88,11 +90,27 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `None` runs every enabled engine as before), so the parity rule holds.
 - **Closing / proxy-template methods (#8–#10):** the standalone
   `closing.py` / `proxy_repair.py` tiers are reachable from the CLI
-  (`--methods 8/9/10`) and from the GUI *Use method* list (all twelve methods);
+  (`--methods 8/9/10`) and from the GUI *Use method* list (all fifteen methods);
   no separate flag exists, so parity holds without a dedicated control.
+- **Method #14 Mirror Complete / #15 Wall Thicken (v0.6.1):** both are in the
+  shared method registry, so the GUI *Use method* menu lists and tags them with
+  no extra control (their EN/TR tooltips are localized). The only CLI-only
+  surface is the numeric `--wall-min-thickness T` (the GUI runs #15 with the
+  automatic default, 1 % of the bbox diagonal) — documented here as an accepted
+  gap; a numeric entry can be added to the Options window later.
+- **Learning triage (v0.6.1):** CLI `--no-learning-triage` / `clear-learning`
+  map onto the GUI Options → General *Learning triage* checkbox and *Reset
+  learning* button, so the parity rule holds.
 - **P-FINAL (reload-honest verdict + P-WELD + csg_bridge):** P-HONEST and
   P-WELD are automatic pipeline behaviour, not user-facing options, so they
   apply identically to CLI and GUI repairs and need no parity control. The
   repeated-element CSG bridge (`csg_bridge.py`) is an implementation detail
   behind method #11/#12; it is added to every packaging list in the same
   change.
+- **Method #13 Graft / shell wrap (v0.7.0):** CLI `--no-graft` / `--experimental-graft`
+  and env `SUTURA_GRAFT` control the morphology shell-wrap tier; the GUI right-click
+  menu lists Graft (#13) under *Use method* and *Recommended methods* with full EN/TR
+  localization, and surfaces detail-loss warnings directly in the repair log.
+- **Sutura Chart cache (v0.7.0):** CLI `--no-cache` and `sutura clear-cache` correspond
+  to GUI Options → General *Enable Sutura Chart cache* checkbox and *Clear Cache* button,
+  preserving parity across CLI and GUI workflows.

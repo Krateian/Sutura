@@ -19,6 +19,7 @@ time despite declaring it optional); when either is missing the bridge reports
 an explicit skip, never a crash.
 """
 import json
+import os
 import sys
 import time
 
@@ -101,8 +102,19 @@ def run_bridge(src, dst, params=None):
         report['input_faces'] = int(len(tris))
         kw = tetrahedralize_params(params)
         report['params'] = kw
-        tmesh_v, tmesh_c = pytetwild.tetrahedralize(
-            verts, tris, quiet=True, **kw)
+        # pytetwild writes a debug mesh (__tracked_surface.stl, ~1 MB) into the
+        # CURRENT WORKING DIRECTORY; run it from the output's directory so no
+        # artifact is left where the caller happened to be (repo root, a
+        # file-manager right-click folder, ...).
+        _prev_cwd = os.getcwd()
+        _workdir = os.path.dirname(os.path.abspath(dst))
+        try:
+            if _workdir:
+                os.chdir(_workdir)
+            tmesh_v, tmesh_c = pytetwild.tetrahedralize(
+                verts, tris, quiet=True, **kw)
+        finally:
+            os.chdir(_prev_cwd)
         report['time'] = round(time.perf_counter() - t0, 2)
         report['tet_vertices'] = int(len(tmesh_v))
         report['tet_cells'] = int(len(tmesh_c))

@@ -111,17 +111,28 @@ def main():
         'method_auto_rec', 3, gui._method_name(3), 82), w._item_by_path[a].text(1)
     print('ok  recommendation shown in the Method column')
 
-    # Use method menu: 12 entries, placeholders / needs-input disabled
+    # Use method menu: 15 entries, placeholders / needs-input disabled
     w._on_tag_toggle([b], 'method', 3)
     m = gui.QMenu(w.tree)
     um = gui._KeepOpenMenu(gui._t('menu_use_method'), m)
     w._build_use_method_menu(um, [b], b)
     acts = um.actions()
-    assert len(acts) == 12, len(acts)
+    assert len(acts) == 15, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
-    # 8-12 are implemented and enabled (12 opens the repeat picker)
+    # 8-12 are implemented and enabled (12 opens the repeat picker); 14
+    # (Mirror Complete) is enabled.  13 Graft needs the Rust sutura_geom
+    # extension, so it is enabled iff the registry says it is available and is
+    # otherwise disabled with the unavailable reason in its tooltip.
     for num in (8, 9, 10, 11, 12):
         assert acts[num - 1].isEnabled(), num
+    g_ok, g_reason = methods.get_method(13).available()
+    assert acts[12].isEnabled() is g_ok, (acts[12].isEnabled(), g_ok, g_reason)
+    if not g_ok:
+        tip = acts[12].toolTip()
+        assert tip, tip
+        if 'sutura_geom' in (g_reason or ''):
+            assert 'sutura_geom' in tip, (tip, g_reason)
+    assert acts[13].isEnabled(), 'method 14 (Mirror Complete) must be enabled'
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live
@@ -141,6 +152,61 @@ def main():
     assert '\u2713' not in a2.text(), a2.text()
     assert '\u2713 1' in a5.text(), a5.text()      # renumbered 2 -> 1
     print('ok  Use method badge refresh on untag')
+
+    # Item 4: KeepOpenMenu keeps multiple checks and preserves order on simulated triggers
+    kd = '/tmp/sutura_keep_open.stl'
+    w._add_path(kd)
+    w._clear_tags([kd])
+    km = gui.QMenu(w.tree)
+    kum = gui._KeepOpenMenu(gui._t('menu_use_method'), km)
+    w._build_use_method_menu(kum, [kd], kd)
+
+    ka1 = kum.actions()[0]  # method 1
+    ka4 = kum.actions()[3]  # method 4
+    ka5 = kum.actions()[4]  # method 5
+
+    from PySide6.QtCore import QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    def click_action(act):
+        kum.setActiveAction(act)
+        ev = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(10.0, 10.0),
+                         QPointF(10.0, 10.0),
+                         gui.Qt.MouseButton.LeftButton,
+                         gui.Qt.MouseButton.LeftButton,
+                         gui.Qt.KeyboardModifier.NoModifier)
+        kum.mouseReleaseEvent(ev)
+        return ev
+
+    # Trigger #1 via mouseReleaseEvent on the keep-open menu
+    e1 = click_action(ka1)
+    assert e1.isAccepted()
+    assert ka1.isChecked() and '\u2713 1' in ka1.text(), ka1.text()
+
+    # Trigger #4
+    e4 = click_action(ka4)
+    assert e4.isAccepted()
+    assert ka4.isChecked() and '\u2713 2' in ka4.text(), ka4.text()
+
+    # Trigger #5
+    e5 = click_action(ka5)
+    assert e5.isAccepted()
+    assert ka5.isChecked() and '\u2713 3' in ka5.text(), ka5.text()
+
+    # All three remain checked simultaneously in try-order
+    assert ka1.isChecked() and ka4.isChecked() and ka5.isChecked()
+    assert w._method_tags_by_path[kd] == [('method', 1), ('method', 4), ('method', 5)]
+    assert w._item_by_path[kd].text(1) == '#1 \u2192 #4 \u2192 #5'
+
+    # Untag middle (#4): verify remaining keep checked and #5 renumbers to 2
+    e4_off = click_action(ka4)
+    assert e4_off.isAccepted()
+    assert not ka4.isChecked() and '\u2713' not in ka4.text()
+    assert ka1.isChecked() and '\u2713 1' in ka1.text()
+    assert ka5.isChecked() and '\u2713 2' in ka5.text()
+    assert w._method_tags_by_path[kd] == [('method', 1), ('method', 5)]
+    assert w._item_by_path[kd].text(1) == '#1 \u2192 #5'
+    print('ok  KeepOpenMenu multiple checks and order preservation via simulated triggers')
 
     # 7.1: every classification summary key is localizable (EN + TR)
     assert 'res_extreme_removed_object' in gui.STRINGS['en'], 'EN string missing'

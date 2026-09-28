@@ -17,6 +17,23 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+# Learning triage now lives in the engine package (F1 layout); re-export it so
+# the established top-level API (history.record_learning, history.learning_bonus,
+# history.LEARNING_* ...) keeps working for repair.py/triage.py/gui.py/tests.
+from sutura_engine.learning import (  # noqa: F401 - legacy re-export
+    LEARNING_PATH,
+    LEARNING_SCHEMA_VERSION,
+    LEARNING_MAX_BONUS,
+    LEARNING_PRIOR,
+    LEARNING_ENV,
+    learning_enabled,
+    record_learning,
+    triage_stats,
+    learning_bonus,
+    clear_learning,
+    learning_summary_text,
+)
+
 HISTORY_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
 HISTORY_PATH = os.path.join(HISTORY_DIR, 'history.jsonl')
 SCHEMA_VERSION = 1
@@ -68,6 +85,8 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
     """
     s1 = result.get('stage1') or {}
     defects = result.get('defects') or {}
+    mu = result.get('method_used') or {}
+    tried = result.get('methods_tried') or []
     return {
         'schema_version': SCHEMA_VERSION,
         'seq': 0,  # assigned by append_record
@@ -90,6 +109,15 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
         'detected_confidence': result.get('detected_confidence'),
         'repair_mode': result.get('repair_mode'),
         'tuning_applied': result.get('tuning_applied'),
+        'method_used_num': mu.get('num'),
+        'method_used_id': mu.get('id'),
+        'method_used_source': mu.get('source'),
+        'methods_tried': [
+            {'num': t.get('num'), 'id': t.get('id'),
+             'outcome': t.get('outcome'), 'template': t.get('template'),
+             'elapsed_ms': t.get('elapsed_ms')}
+            for t in tried if isinstance(t, dict)
+        ],
         'filters_applied': s1.get('applied_filters'),
         'filters_skipped': len(s1.get('skipped') or {}),
         'stage2_status': _stage2_status(result),
@@ -155,6 +183,10 @@ def write(result, version, elapsed_ms, fingerprints):
     """
     if not fingerprints:
         return
+    try:
+        record_learning(result)
+    except Exception:
+        pass
     try:
         if 'object_reports' in result:
             fmt = _mesh_format(result)

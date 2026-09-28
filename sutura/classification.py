@@ -22,6 +22,7 @@ ISSUE_LABELS = {
     'error': 'Error',
     'budget_exceeded': 'Repair budget exceeded',
     'shape_changed': 'Shape changed by the fTetWild fallback',
+    'graft_detail_loss': 'Graft smoothed fine surface detail (see warnings)',
 }
 
 # Stable summary keys returned by classify(); the GUI maps these to localized
@@ -47,6 +48,9 @@ def _classify_objects(reports, issues):
     n = len(reports)
     if any(r.get('shape_changed') for r in reports):
         issues.append('shape_changed')
+    if any(isinstance(r.get('graft'), dict) and r['graft'].get('adopted')
+           and r['graft'].get('warnings') for r in reports):
+        issues.append('graft_detail_loss')
     closed = [_obj_closed(r) for r in reports]
     all_closed = n > 0 and all(closed)
 
@@ -126,6 +130,15 @@ def classify(data):
     # 'watertight').
     if data.get('shape_changed'):
         issues.append('shape_changed')
+
+    # Graft (#13) detail-loss: the shell wrap is a geometry-inventing tier; a
+    # detail_loss/fidelity warning does not change the category (a closed,
+    # stage-2-confirmed result stays 'watertight') but is surfaced so the CLI
+    # and GUI can show the EN/TR warning message.
+    _graft = data.get('graft')
+    if (isinstance(_graft, dict) and _graft.get('adopted')
+            and _graft.get('warnings')):
+        issues.append('graft_detail_loss')
 
     # Stage 2 outcome: present-and-ok, explicitly skipped, or errored.
     s2 = data.get('stage2')

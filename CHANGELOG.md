@@ -2,6 +2,135 @@
 
 All notable changes to this project are documented here.
 
+## [0.7.0] - 2026-09-28
+
+### Breaking / renamed
+
+- **`--methods 13` / `--methods graft` now select Method #13 Graft (shell wrap).**
+  In v0.6.0, `13` and `graft` were aliases for manual repeated-element transplant;
+  that method is now #12 `transplant_plus` (accessible via `--methods 12` /
+  `--methods transplant_plus` / `--methods transplant+`). Existing scripts using `13`
+  must be updated to `12` if manual transplant is intended.
+- **Modular Package Structure (`sutura_engine`).** Core geometric passes, triage,
+  and diagnostics now reside under `sutura_engine`. Backward-compatibility shims
+  are maintained in `sutura/` so existing imports continue to function without disruption.
+
+### Added
+
+- **Sutura Triage Engine Package Architecture (`sutura_engine`).** Modular separation
+  of concerns across seven dedicated subsystems:
+  - `sutura_engine.triage`: Auto-escalation ladder, intensity presets (*Quick*, *Balanced*,
+    *Thorough*, *Extreme*), and wall-clock fallback budgeting.
+  - `sutura_engine.diagnosis`: Object defect metrics, component inspection, and extensible
+    template matching (`SCORE_TEMPLATES`).
+  - `sutura_engine.chart`: High-performance SHA-256 content-addressed cache under
+    `~/.cache/sutura/` with 500 MB LRU eviction, invalidation on version bump, and
+    `--no-cache` / `sutura clear-cache` controls.
+  - `sutura_engine.stitch`: P-WELD reload-safe seam healing eliminating float32 vertex
+    collapse without altering face topologies.
+  - `sutura_engine.xray`: P-HONEST strict verification confirming meshes reload
+    strictly watertight from disk before claiming success.
+  - `sutura_engine.hull`: Exterior shell extraction and degenerate multi-component resolution.
+  - `sutura_engine.cast`: Integration with the Rust `sutura_geom` core for exact predicates
+    and accelerated morphology.
+- **Extensible Plugin API (`sutura_engine.methods`).** Implemented `RepairMethodProtocol`
+  and `register_method` allowing custom or experimental repair passes to be registered
+  dynamically with custom ranking scoring, execution context (`RepairContext`), and
+  isolated reporting (`MethodResult`).
+- **Method #13 Graft (`sutura_engine.graft`, legacy `sutura/shell_wrap.py`).**
+  Morphology shell-wrap repair tier using generalized-winding signed distance (Cast core)
+  and true EDT dilation/erosion to close large openings while keeping healthy triangles
+  verbatim. Placed on the auto-triage ladder ahead of fTetWild, with an automatic
+  fidelity fallback to fTetWild if healthy detail deviation is detected (`fidelity_ok`).
+- **Method #14 Mirror Complete (`sutura_engine.mirror`).** Symmetry-plane reflection
+  and outer-shell fusion for single-sided symmetric scans.
+- **Method #15 Wall Thicken (`sutura_engine.wall`).** Opt-in thin-wall thickening
+  based on signed-distance field sampling and morphological dilation.
+- **Learning Triage (`sutura_engine.learning`).** Anonymous, bounded Bayesian ranking
+  bonus (Beta(2, 2) posterior) derived from local `(template, method)` history in
+  `~/.local/share/sutura/triage_learning.json` (`sutura clear-learning`).
+- **Auto-escalation Fallback Time Budget.** Enforced wall-clock budget
+  (`min(max(30 s, 2 × baseline), 120 s)`) bounding secondary method attempts on
+  failing baselines without interrupting active operations.
+- **fTetWild Benchmark Comparison with Graft.** On scan meshes requiring solidifying,
+  Graft produces reload-watertight output with lower runtimes while keeping
+  undamaged triangles byte-identical to the input.
+
+### Known limitations
+
+- **Graft (#13) extension packaging:** Graft (#13) requires the optional Rust
+  extension `sutura_geom` (build from `rust/sutura-geom` with `maturin develop --release`).
+  The 0.7.0 installers do not bundle it yet; without it Graft is listed as
+  unavailable and auto repair uses fTetWild as before. Bundling is planned for
+  0.7.1.
+
+### Folded from the previously unreleased v0.6.1 batch
+
+#### Added
+
+- **Per-object auto escalation for multi-object 3MF.** Auto escalation for
+  multi-object 3MF archives now operates object-by-object instead of at the file
+  level. Objects that are already reload-watertight after the baseline repair
+  pipeline are left untouched; failing objects independently escalate through
+  ranked recommendations (such as #8/#9 closing or #10 proxy rebuild). Each
+  object in `object_reports` now carries its own `method_used` dictionary
+  indicating the method number, name, and source (`auto_baseline` vs
+  `auto_escalated`).
+
+- **Outer-shell extraction pre-step for overlapping closed components.** In
+  `auto` mode, when a model fits the `mechanical` or `dense_scan_heavy_si`
+  templates and contains multiple closed components that touch or overlap (e.g.
+  Rubik-style assemblies or multi-part CAD imports), Sutura extracts the outer
+  shell prior to Stage 1. Components are dissolved via a slight dilation
+  (`5e-4 * bbox_diagonal`, ~0.05 mm for a 100 mm object) and boolean union
+  with `manifold3d`, removing internal interfaces and degenerate
+  self-intersections before the main repair passes.
+
+- **Method #14 Mirror Complete (`sutura/mirror_repair.py`).** A symmetry-aware
+  alternative to Poisson closing for a single-sided scan: `detect_mirror_plane`
+  fits the dominant boundary loop's plane (planarity x dominance
+  confidence), `mirror_close` reflects the visible surface across it (winding
+  flipped so the shared boundary edges cancel), welds the seam and dissolves
+  overlapping halves into one outer shell with `extract_outer_shell`; low
+  confidence or an invalid stitch falls back to screened-Poisson reconstruction
+  (#8). The `closing` report records `mode` (`mirror`/`poisson_fallback`) and
+  `mirror_score`.
+
+- **Method #15 Wall Thicken (`sutura/wall_thickness.py`).** Opt-in thin-wall
+  analysis and repair: an SDF grid (area-weighted surface samples + nearest
+  normal sign) yields a heatmap-ready per-vertex thickness with `min`/`median`/
+  `mean`, and `thicken_to_min` offsets thin walls by a morphological dilation
+  re-extracted with a dependency-free marching-tetrahedra pass. Excluded from
+  the ranking (`needs_user_input`), selected with `--methods 15`; CLI
+  `--wall-min-thickness T` sets the target (default 1 % of the bbox diagonal).
+
+- **Learning triage (`history.py` + `methods.rank_methods`).** Each repair now
+  records the per-`(template, method)` outcome and elapsed time into
+  `~/.local/share/sutura/triage_learning.json` (anonymous: template and method
+  slugs only). `rank_methods` adds a bounded Beta(2,2) Bayesian bonus
+  (`[0, 0.05]`, damped by speed, zero without data) for the templates the
+  analysis actually fired. Toggle with `learning_triage` / `SUTURA_LEARNING_TRIAGE`
+  / `--no-learning-triage`; reset with `sutura clear-learning` or the GUI
+  Options → General → Reset learning button. No network.
+
+#### Fixed
+
+- **The untagged automatic method fallback is now time-budgeted.** When the
+  default pipeline is not strict-watertight and the auto path escalates to the
+  ranked methods, the extras run under a wall-clock budget of
+  `min(max(AUTO_FALLBACK_MIN_S = 30 s, AUTO_FALLBACK_BUDGET_FACTOR = 2.0 ×
+  baseline seconds), AUTO_FALLBACK_MAX_S = 120 s)`. Once the budget is exhausted
+  no further method is started — a method already running is not interrupted —
+  the best candidate is kept, and the result carries
+  `method_used.budget_reached`, `method_used.fallback_budget_s` and the
+  "fallback budget reached" note (localized EN/TR in the GUI). A baseline that
+  already took longer than the 120 s ceiling skips the ranked fallback entirely
+  (`method_used.fallback_skipped`, `baseline_s`, "fallback skipped: baseline too
+  slow"). Explicitly tagged methods (`--methods`) are never budgeted. The
+  real-world corpus regression runs the untagged default path again, and the
+  budget-stop/skip behaviour is covered by `tests/test_methods.py`.
+
+
 ## [0.6.0] - 2026-09-28
 
 ### Added

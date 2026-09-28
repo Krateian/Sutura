@@ -38,7 +38,8 @@ SCHEMA_KEYS = {
     'repair_confidence_label', 'volume_change_percent',
     'extreme_passes_applied', 'self_intersections_found',
     'self_intersections_removed', 'autorefine_applied', 'ftetwild_applied',
-    'indirect_autorefine_applied',
+    'indirect_autorefine_applied', 'method_used_num', 'method_used_id',
+    'method_used_source', 'methods_tried',
 }
 
 

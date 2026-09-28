@@ -82,7 +82,7 @@ echo "==> pip install: stage 2 (manifold3d)"
 
 echo "==> copying application modules"
 for f in repair.py gui.py classification.py defects.py mesh_classifier.py \
-         mesh_classifier_v2.py autorefine.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py csg_bridge.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \
+         mesh_classifier_v2.py autorefine.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py csg_bridge.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \
          before_after_render.py viewer_common.py viewer_data_render.py \
          confidence.py history.py repair_score.py open.sh __init__.py; do
     install -m 0755 "$REPO_ROOT/sutura/$f" "$LIB/"
@@ -91,6 +91,12 @@ install -m 0644 "$REPO_ROOT/sutura/repair_score_config.json" "$LIB/repair_score_
 install -m 0644 "$REPO_ROOT/requirements.txt" \
     "$REPO_ROOT/requirements-gui.txt" "$REPO_ROOT/requirements-311.txt" "$LIB/"
 install -m 0644 "$REPO_ROOT/LICENSE" "$LIB/LICENSE"
+cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura_engine"
+mkdir -p "$LIB/sutura"
+cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura/sutura_engine"
+# root bootstrap package: keeps `import sutura_engine` working from $LIB too
+[ -f "$LIB/sutura_engine/__init__.py" ] || \
+    install -m 0644 "$REPO_ROOT/sutura_engine/__init__.py" "$LIB/sutura_engine/__init__.py"
 
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'

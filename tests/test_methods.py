@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
@@ -25,11 +26,13 @@ sys.path.insert(0, SUTURA)
 import numpy as np  # noqa: E402
 
 EXPECTED = {
-    1: 'fast', 2: 'deep_local', 3: 'deep_full', 4: 'join_components',
-    5: 'autorefine', 6: 'indirect_autorefine', 7: 'ftetwild',
-    8: 'poisson_close', 9: 'flat_back_close', 10: 'proxy_template',
-    11: 'repeat_auto', 12: 'repeat_manual',
+    1: 'quick_clean', 2: 'local_mend', 3: 'full_mend', 4: 'join',
+    5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild',
+    8: 'balloon', 9: 'backplate', 10: 'scaffold',
+    11: 'transplant', 12: 'transplant_plus', 13: 'graft',
+    14: 'mirror_complete', 15: 'wall_thicken',
 }
+ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
             'pattern'}
 
@@ -96,7 +99,7 @@ def test_modules_import_without_heavy_deps(tmp):
 
 def test_registry_fixed_numbers(tmp):
     import methods
-    assert [m.num for m in methods.all_methods()] == list(range(1, 13))
+    assert [m.num for m in methods.all_methods()] == ALL_NUMS
     for m in methods.all_methods():
         assert m.id == EXPECTED[m.num], (m.num, m.id)
         assert m.family in FAMILIES, (m.num, m.family)
@@ -158,6 +161,11 @@ def test_kwargs_mapping(tmp):
         assert methods.get_method(num).kwargs['ftetwild'] is False
     assert methods.get_method(11).kwargs['repeat'] == 'auto'
     assert methods.get_method(12).kwargs['repeat'] == 'manual'
+    assert methods.get_method(14).kwargs['closing'] == 'mirror'
+    assert methods.get_method(14).invents_geometry is True
+    assert methods.get_method(15).kwargs['wall_thicken'] is True
+    assert methods.get_method(15).invents_geometry is True
+    assert methods.get_method(15).needs_user_input is True
 
 
 # --- templates / ranking ----------------------------------------------------
@@ -236,7 +244,16 @@ def test_get_method_none_is_safe(tmp):
     import methods
     assert methods.get_method(None) is None
     assert methods.get_method('nope') is None
-    assert methods.get_method(1).id == 'fast'
+    assert methods.get_method(1).id == 'quick_clean'
+    # legacy slugs and numeric ids stay accepted aliases
+    assert methods.get_method('fast').num == 1
+    assert methods.get_method('deep_full').num == 3
+    # legacy numeric ids: 12 = Transplant+ (manual), 13 = Graft (shell wrap)
+    assert methods.get_method('transplant_plus').num == 12
+    assert methods.get_method('graft').num == 13
+    assert methods.get_method(13).num == 13
+    assert methods.get_method('shell_wrap').num == 13
+    assert methods.get_method('transplant').id == 'transplant'
 
 
 def test_external_engines_are_separate(tmp):
@@ -448,6 +465,168 @@ def test_auto_skips_generative_below_min_score(tmp):
         methods._attempt, methods._evaluate, methods.rank_methods = real
 
 
+def test_auto_fallback_budget_stops_further_methods(tmp):
+    """The untagged auto ranked fallback is wall-clock bounded: once
+    min(max(AUTO_FALLBACK_MIN_S, AUTO_FALLBACK_BUDGET_FACTOR * baseline_s),
+    AUTO_FALLBACK_MAX_S) is exceeded it starts no further method, keeps the best
+    candidate (the baseline, the only one auto can adopt) and reports the budget
+    note plus the tried methods. Explicit tags are never budgeted (see the
+    explicit test)."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods,
+            methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
+            methods.AUTO_FALLBACK_MAX_S)
+    calls = []
+
+    def fake_attempt(src, out, tmpdir, kwargs, multi):
+        calls.append(kwargs)
+        with open(out, 'w') as f:
+            f.write('ok')
+        if len(calls) > 1:
+            time.sleep(0.2)   # the first fallback method overruns the budget
+        return {'stage1': {}, 'simulated': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        return {'watertight': False, 'holes': 1, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None,
+                'reason': 'holes=1 remain'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
+                                       0.9, 'x', 'mechanical'),
+                methods.Recommendation(4, 'join_components', 'Join components',
+                                       0.8, 'x', 'mechanical')]
+
+    methods._attempt, methods._evaluate, methods.rank_methods = \
+        fake_attempt, fake_evaluate, fake_rank
+    methods.AUTO_FALLBACK_MIN_S = 0.05
+    methods.AUTO_FALLBACK_BUDGET_FACTOR = 0.0
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            out = os.path.join(td, 'out.stl')
+            res = methods.repair_with_methods(
+                src, out, td, None, mode='auto', deep_repair='full',
+                ftetwild='auto')
+            # baseline + exactly the first ranked method (the second is past
+            # the budget and must never start)
+            assert len(calls) == 2, calls
+            assert res['method_used']['source'] == 'auto_baseline', res
+            assert res['method_used'].get('budget_reached') is True, res
+            assert res['method_used'].get('note') == 'fallback budget reached', \
+                res
+            assert res['method_reached_watertight'] is False, res
+            nums = [t.get('num') for t in res['methods_tried']]
+            assert 4 not in nums, nums
+    finally:
+        (methods._attempt, methods._evaluate, methods.rank_methods,
+         methods.AUTO_FALLBACK_MIN_S,
+         methods.AUTO_FALLBACK_BUDGET_FACTOR,
+         methods.AUTO_FALLBACK_MAX_S) = real
+
+
+def test_auto_fallback_budget_capped_by_max(tmp):
+    """AUTO_FALLBACK_MAX_S caps the budget even when the baseline was slow: the
+    resolved budget is min(..., MAX), so a huge MIN does not grant an unbounded
+    fallback window."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods,
+            methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
+            methods.AUTO_FALLBACK_MAX_S)
+    calls = []
+
+    def fake_attempt(src, out, tmpdir, kwargs, multi):
+        calls.append(kwargs)
+        with open(out, 'w') as f:
+            f.write('ok')
+        if len(calls) > 1:
+            time.sleep(0.2)   # the first fallback overruns the (capped) budget
+        return {'stage1': {}, 'simulated': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        return {'watertight': False, 'holes': 1, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None,
+                'reason': 'holes=1 remain'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
+                                       0.9, 'x', 'mechanical'),
+                methods.Recommendation(4, 'join_components', 'Join components',
+                                       0.8, 'x', 'mechanical')]
+
+    methods._attempt, methods._evaluate, methods.rank_methods = \
+        fake_attempt, fake_evaluate, fake_rank
+    methods.AUTO_FALLBACK_MIN_S = 1000.0   # would grant a huge window ...
+    methods.AUTO_FALLBACK_BUDGET_FACTOR = 1000.0
+    methods.AUTO_FALLBACK_MAX_S = 0.05     # ... but MAX caps it
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            out = os.path.join(td, 'out.stl')
+            res = methods.repair_with_methods(
+                src, out, td, None, mode='auto', deep_repair='full',
+                ftetwild='auto')
+            assert len(calls) == 2, calls
+            assert res['method_used'].get('budget_reached') is True, res
+            assert res['method_used'].get('fallback_budget_s') == 0.05, res
+    finally:
+        (methods._attempt, methods._evaluate, methods.rank_methods,
+         methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
+         methods.AUTO_FALLBACK_MAX_S) = real
+
+
+def test_auto_fallback_skipped_when_baseline_too_slow(tmp):
+    """A baseline that already ran past AUTO_FALLBACK_MAX_S on its own skips the
+    ranked fallback entirely (no ranked method is started) and reports why."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods,
+            methods.AUTO_FALLBACK_MAX_S)
+    calls = []
+
+    def fake_attempt(src, out, tmpdir, kwargs, multi):
+        calls.append(kwargs)
+        with open(out, 'w') as f:
+            f.write('ok')
+        time.sleep(0.1)   # the baseline alone overruns the hard ceiling
+        return {'stage1': {}, 'simulated': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        return {'watertight': False, 'holes': 1, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None,
+                'reason': 'holes=1 remain'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
+                                       0.9, 'x', 'mechanical')]
+
+    methods._attempt, methods._evaluate, methods.rank_methods = \
+        fake_attempt, fake_evaluate, fake_rank
+    methods.AUTO_FALLBACK_MAX_S = 0.05
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            out = os.path.join(td, 'out.stl')
+            res = methods.repair_with_methods(
+                src, out, td, None, mode='auto', deep_repair='full',
+                ftetwild='auto')
+            assert len(calls) == 1, calls   # baseline only, no ranked method
+            assert res['method_used']['source'] == 'auto_baseline', res
+            assert res['method_used'].get('fallback_skipped') is True, res
+            assert res['method_used'].get('note') == \
+                'fallback skipped: baseline too slow', res
+            nums = [t.get('num') for t in res['methods_tried']]
+            assert 2 not in nums, nums
+    finally:
+        (methods._attempt, methods._evaluate, methods.rank_methods,
+         methods.AUTO_FALLBACK_MAX_S) = real
+
+
 def test_engine_only_tag_disables_auto_escalation(tmp):
     """A file tagged only with an external engine (auto_escalation=False) runs
     the baseline but never escalates to extra methods (4.2)."""
@@ -572,14 +751,26 @@ def test_explicit_methods_keeps_best_when_none_watertight(tmp):
 def test_cli_list_methods(tmp):
     r = _run(['--list-methods'], env=_env(tmp))
     assert r.returncode == 0, r.stderr
-    for num in range(1, 13):
+    for num in ALL_NUMS:
         assert (' %d ' % num) in r.stdout or ('%d ' % num) in r.stdout, num
-    assert 'poisson_close' in r.stdout, r.stdout
+    assert 'balloon' in r.stdout, r.stdout
+    assert 'Balloon' in r.stdout, r.stdout      # display name shown
+    assert 'Exact Refine' in r.stdout, r.stdout
+    assert 'Graft' in r.stdout, r.stdout        # method #13 display name
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
-    assert [m['num'] for m in data] == list(range(1, 13))
-    # 8-12 are implemented (available in an env with their deps).
+    assert [m['num'] for m in data] == ALL_NUMS
+    # 8-12 are implemented (available in an env with their deps).  #13 Graft
+    # additionally needs the Rust `sutura_geom` extension, which the plain
+    # PyMeshLab test job does not build: assert it matches graft_available()
+    # (True when the extension is present, otherwise False with a reason that
+    # names the missing dependency) instead of hard-coding True.
     assert all(data[n - 1]['available'] is True for n in (8, 9, 10, 11, 12)), data
+    import methods
+    g_ok, g_reason = methods.get_method(13).available()
+    assert data[12]['available'] is g_ok, (data[12], g_ok, g_reason)
+    if not g_ok:
+        assert 'sutura_geom' in (g_reason or ''), (g_reason, data[12])
 
 
 def test_cli_analyze_json(tmp):
@@ -615,10 +806,20 @@ def test_cli_explicit_methods(tmp):
                     '--no-history', path], env=_env(tmp)))
     assert d.get('method_used', {}).get('source') == 'tagged', d
     assert d['method_used']['num'] == 1, d
-    # method 12 needs the picked points: tagging it without them is rejected
-    r = _run(['--methods', '12', '--no-history', path], env=_env(tmp))
-    assert r.returncode != 0, r.stdout
-    assert '--repeat-source' in r.stderr, r.stderr
+    # new canonical slugs are accepted on the CLI
+    ds = _json(_run(['--methods', 'quick_clean,join', '--no-fallback-ftetwild',
+                     '--no-history', path], env=_env(tmp)))
+    assert ds.get('method_used', {}).get('num') == 1, ds
+    # method 12 (Transplant+, manual) needs the picked points
+    for sel in ('12', 'transplant+'):
+        r = _run(['--methods', sel, '--no-history', path], env=_env(tmp))
+        assert r.returncode != 0, (sel, r.stdout)
+        assert '--repeat-source' in r.stderr, (sel, r.stderr)
+    # method 13 (Graft / shell wrap) and its aliases are accepted without them
+    for sel in ('13', 'graft', 'shell_wrap'):
+        r = _run(['--methods', sel, '--no-history', '--no-fallback-ftetwild',
+                  path], env=_env(tmp))
+        assert '--repeat-source' not in r.stderr, (sel, r.stderr)
 
 
 def test_cli_invalid_method_rejected(tmp):
@@ -627,7 +828,7 @@ def test_cli_invalid_method_rejected(tmp):
     _write_stl(path, v, t)
     r = _run(['--methods', '1,99', path], env=_env(tmp))
     assert r.returncode != 0, r.stdout
-    assert 'unknown method 99' in r.stderr, r.stderr
+    assert 'unknown method' in r.stderr and '99' in r.stderr, r.stderr
 
 
 def test_cli_engines_validation(tmp):

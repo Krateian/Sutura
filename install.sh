@@ -158,6 +158,9 @@ install -m 0755 "$SRC/sutura/closing.py"          "$APP_DIR/closing.py"
 install -m 0755 "$SRC/sutura/proxy_repair.py"     "$APP_DIR/proxy_repair.py"
 install -m 0755 "$SRC/sutura/repeat_repair.py"    "$APP_DIR/repeat_repair.py"
 install -m 0755 "$SRC/sutura/repeat_picker_render.py" "$APP_DIR/repeat_picker_render.py"
+install -m 0755 "$SRC/sutura/mirror_repair.py"     "$APP_DIR/mirror_repair.py"
+install -m 0755 "$SRC/sutura/wall_thickness.py"    "$APP_DIR/wall_thickness.py"
+install -m 0755 "$SRC/sutura/shell_wrap.py"        "$APP_DIR/shell_wrap.py"
 install -m 0755 "$SRC/sutura/csg_bridge.py"       "$APP_DIR/csg_bridge.py"
 install -m 0755 "$SRC/sutura/history.py"         "$APP_DIR/history.py"
 install -m 0755 "$SRC/sutura/repair_score.py"     "$APP_DIR/repair_score.py"
@@ -171,6 +174,15 @@ install -m 0755 "$SRC/sutura/viewer_common.py"       "$APP_DIR/viewer_common.py"
 install -m 0755 "$SRC/sutura/viewer_data_render.py"  "$APP_DIR/viewer_data_render.py"
 install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
 install -m 0644 "$SRC/LICENSE"                   "$APP_DIR/LICENSE"
+
+echo "==> copying sutura_engine package"
+rm -rf "$APP_DIR/sutura_engine" "$APP_DIR/sutura/sutura_engine"
+cp -r "$SRC/sutura/sutura_engine" "$APP_DIR/sutura_engine"
+mkdir -p "$APP_DIR/sutura"
+cp -r "$SRC/sutura/sutura_engine" "$APP_DIR/sutura/sutura_engine"
+# root bootstrap package: source checkouts need it for `import sutura_engine`
+[ -f "$APP_DIR/sutura_engine/__init__.py" ] || \
+    install -m 0644 "$SRC/sutura_engine/__init__.py" "$APP_DIR/sutura_engine/__init__.py"
 
 # developer/security: when installing from a git checkout, install the
 # pre-push secret scan hook (harmless no-op for end-user installs)
