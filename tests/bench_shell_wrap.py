@@ -43,23 +43,21 @@ def _reload_ok(v, t):
 
 
 def _hausdorff_healthy(v0, t0, out_v, out_t):
-    """One-sided max on the healthy region (excluding the damaged band)."""
+    """One-sided max on the healthy region (original -> output), relative to
+    the bbox diagonal.  This is the tier's own fidelity direction: the reverse
+    direction also sees the caps that legitimately fill the openings."""
     import numpy as np
     from repair import _damaged_region, _referenced_only
-    from shell_wrap import (_behind_on_healthy, _diag, _median_edge_length,
-                            _one_sided_hausdorff)
+    from shell_wrap import _diag, _one_sided_hausdorff
     diag = _diag(v0)
     mask, _ = _damaged_region(t0)
     hf = ~mask if mask is not None else np.ones(len(t0), dtype=bool)
     if not hf.any():
         hf = np.ones(len(t0), dtype=bool)
     hv, ht = _referenced_only(v0, t0[hf])
-    r = max(2.0 * _median_edge_length(v0, t0), 0.005 * diag)
     rng = np.random.default_rng(7)
     ahead, _ = _one_sided_hausdorff(hv, ht, out_v, out_t, diag, rng=rng)
-    behind = _behind_on_healthy(v0, t0, mask, out_v, out_t, diag, r, rng)
-    vals = [x for x in (ahead, behind) if x is not None]
-    return (max(vals), diag) if vals else (None, diag)
+    return ahead, diag
 
 
 # --------------------------------------------------------------------------- #

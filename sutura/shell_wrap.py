@@ -783,6 +783,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "fidelity_ok": None,
         "hausdorff_one_sided": None,
         "hausdorff_healthy": None,
+        "hausdorff_healthy_behind": None,
         "holes": None,
         "non_manifold": None,
         "faces_before": int(len(t0)),
@@ -894,29 +895,21 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         wv, wt, pw = _p_weld(wrapped_v, wrapped_t, ml)
         h, nm = reload_strict_holes_nm(wv, wt)
 
-        # guards
+        # guards / detail loss
         h1 = None
         hh = None
+        hh_behind = None
         if guard:
+            # informational: all-input -> result (a geometry-inventing close
+            # intentionally does not reproduce the damaged input)
             h1, _m1 = _one_sided_hausdorff(v0, t0, wv, wt, diag, rng=rng)
-            healthy_faces = (~region_mask if region_mask is not None
-                             else np.ones(len(t0), dtype=bool))
-            if healthy_faces.any():
-                hv, ht = _referenced_only(v0, t0[healthy_faces])
-                ahead, _ = _one_sided_hausdorff(hv, ht, wv, wt, diag, rng=rng)
-                behind = _behind_on_healthy(
-                    v0, t0, region_mask, wv, wt, diag, float(rval), rng)
-                vals = [x for x in (ahead, behind) if x is not None]
-                hh = max(vals) if vals else None
-        fidelity_ok = True
-        if guard:
-            if h1 is not None and h1 > ONE_SIDED_HAUSDORFF_MAX:
-                fidelity_ok = False
-            if hh is not None and hh > HEALTHY_HAUSDORFF_MAX:
-                fidelity_ok = False
-
-        # detail loss on the accepted mesh
+            hh_behind = _behind_on_healthy(
+                v0, t0, region_mask, wv, wt, diag, float(rval), rng)
+        # exact healthy original -> result deviation (per original vertex)
         detail = _detail_loss(v0, t0, wv, wt, region_mask, diag, detail_tol)
+        if guard and diag > 0.0:
+            hh = detail["max"] / diag
+        fidelity_ok = (not guard) or (hh is None) or (hh <= HEALTHY_HAUSDORFF_MAX)
 
         # Hybrid fallback: keep the original healthy triangles verbatim and
         # close only the damaged region (needs the pymeshlab repair path).  The
@@ -932,10 +925,17 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                     wv, wt = hy
                     h, nm = hy_h, hy_nm
                     mode = "hybrid"
-                    h1, hh = 0.0, 0.0
-                    fidelity_ok = True
+                    if guard:
+                        h1, _ = _one_sided_hausdorff(
+                            v0, t0, wv, wt, diag, rng=rng)
+                        hh_behind = _behind_on_healthy(
+                            v0, t0, region_mask, wv, wt, diag, float(rval), rng)
                     detail = _detail_loss(
                         v0, t0, wv, wt, region_mask, diag, detail_tol)
+                    if guard and diag > 0.0:
+                        hh = detail["max"] / diag
+                    fidelity_ok = ((not guard) or (hh is None)
+                                   or (hh <= HEALTHY_HAUSDORFF_MAX))
                     pw = {"applied": False, "method": "hybrid-verbatim"}
 
         watertight = (h == 0 and nm == 0)
@@ -943,7 +943,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             "v": wv, "t": wt, "holes": int(h), "non_manifold": int(nm),
             "r": float(rval), "mode": mode, "attempt": attempt,
             "watertight": watertight, "fidelity_ok": bool(fidelity_ok),
-            "h1": h1, "hh": hh, "projected_fraction": float(healthy.mean()),
+            "h1": h1, "hh": hh, "hh_behind": hh_behind,
+            "projected_fraction": float(healthy.mean()),
             "dims": list(info.get("dims", [])),
             "voxel": float(info.get("voxel", voxel)),
             "remeshed": bool(report["remeshed"]),
@@ -977,6 +978,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "si_rolled_back": bool(best["si_rolled_back"]),
         "hausdorff_one_sided": (round(best["h1"], 5) if best["h1"] is not None else None),
         "hausdorff_healthy": (round(best["hh"], 5) if best["hh"] is not None else None),
+        "hausdorff_healthy_behind": (round(best["hh_behind"], 5)
+                                     if best.get("hh_behind") is not None else None),
         "fidelity_ok": bool(best["fidelity_ok"]),
         "holes": best["holes"],
         "non_manifold": best["non_manifold"],
