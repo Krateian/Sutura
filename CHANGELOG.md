@@ -2,31 +2,59 @@
 
 All notable changes to this project are documented here.
 
-## [0.7.0] - Unreleased
+## [0.7.0] - 2026-09-28
 
 ### Breaking / renamed
 
-- **`--methods 13` / `--methods graft` now mean method #13 Graft (shell
-  wrap).** In v0.6.0 the number `13` and the slug `graft` were aliases for the
-  manual picked-points method; that method is now #12 `transplant_plus` (tried
-  with either `--methods 12` / `--methods transplant_plus` / `--methods
-  transplant+`). A script or saved tag using `13`/`graft` therefore changes
-  meaning: it now selects the new shell-wrap Graft, not the manual transplant.
-  The numeric ids `1`–`12` and `14`/`15` are unchanged.
+- **`--methods 13` / `--methods graft` now select Method #13 Graft (shell wrap).**
+  In v0.6.0, `13` and `graft` were aliases for manual repeated-element transplant;
+  that method is now #12 `transplant_plus` (accessible via `--methods 12` /
+  `--methods transplant_plus` / `--methods transplant+`). Existing scripts using `13`
+  must be updated to `12` if manual transplant is intended.
+- **Modular Package Structure (`sutura_engine`).** Core geometric passes, triage,
+  and diagnostics now reside under `sutura_engine`. Backward-compatibility shims
+  are maintained in `sutura/` so existing imports continue to function without disruption.
 
 ### Added
 
+- **Sutura Triage Engine Package Architecture (`sutura_engine`).** Modular separation
+  of concerns across seven dedicated subsystems:
+  - `sutura_engine.triage`: Auto-escalation ladder, intensity presets (*Quick*, *Balanced*,
+    *Thorough*, *Extreme*), and wall-clock fallback budgeting.
+  - `sutura_engine.diagnosis`: Object defect metrics, component inspection, and extensible
+    template matching (`SCORE_TEMPLATES`).
+  - `sutura_engine.chart`: High-performance SHA-256 content-addressed cache under
+    `~/.cache/sutura/` with 500 MB LRU eviction, invalidation on version bump, and
+    `--no-cache` / `sutura clear-cache` controls.
+  - `sutura_engine.stitch`: P-WELD reload-safe seam healing eliminating float32 vertex
+    collapse without altering face topologies.
+  - `sutura_engine.xray`: P-HONEST strict verification confirming meshes reload
+    strictly watertight from disk before claiming success.
+  - `sutura_engine.hull`: Exterior shell extraction and degenerate multi-component resolution.
+  - `sutura_engine.cast`: Integration with the Rust `sutura_geom` core for exact predicates
+    and accelerated morphology.
+- **Extensible Plugin API (`sutura_engine.methods`).** Implemented `RepairMethodProtocol`
+  and `register_method` allowing custom or experimental repair passes to be registered
+  dynamically with custom ranking scoring, execution context (`RepairContext`), and
+  isolated reporting (`MethodResult`).
 - **Method #13 Graft (`sutura_engine.graft`, legacy `sutura/shell_wrap.py`).**
-  A morphology shell-wrap last-resort tier: the generalized-winding signed
-  distance (Cast core, `sutura_geom.morph_close`) drives a dilate -> true-EDT
-  re-distance -> erode envelope whose radius starts at ~1.5 voxels and grows
-  only while the result is not reload-watertight; the envelope is refined to
-  the median healthy edge and projected onto the original, and a verbatim
-  hybrid keeps the healthy triangles byte-identical and closes only the
-  damaged region. Reports `fidelity_ok` and EN/TR detail-loss warnings. Auto
-  tries Graft before fTetWild and, when Graft's `fidelity_ok` is false, also
-  tries fTetWild and keeps the watertight result with the lower healthy
-  deviation.
+  Morphology shell-wrap repair tier using generalized-winding signed distance (Cast core)
+  and true EDT dilation/erosion to close large openings while keeping healthy triangles
+  verbatim. Placed on the auto-triage ladder ahead of fTetWild, with an automatic
+  fidelity fallback to fTetWild if healthy detail deviation is detected (`fidelity_ok`).
+- **Method #14 Mirror Complete (`sutura_engine.mirror`).** Symmetry-plane reflection
+  and outer-shell fusion for single-sided symmetric scans.
+- **Method #15 Wall Thicken (`sutura_engine.wall`).** Opt-in thin-wall thickening
+  based on signed-distance field sampling and morphological dilation.
+- **Learning Triage (`sutura_engine.learning`).** Anonymous, bounded Bayesian ranking
+  bonus (Beta(2, 2) posterior) derived from local `(template, method)` history in
+  `~/.local/share/sutura/triage_learning.json` (`sutura clear-learning`).
+- **Auto-escalation Fallback Time Budget.** Enforced wall-clock budget
+  (`min(max(30 s, 2 × baseline), 120 s)`) bounding secondary method attempts on
+  failing baselines without interrupting active operations.
+- **fTetWild Benchmark Comparison with Graft.** On scan meshes requiring solidifying,
+  Graft produces reload-watertight output with lower runtimes while keeping
+  undamaged triangles byte-identical to the input.
 
 ## [0.6.1] - 2026-09-28
 
