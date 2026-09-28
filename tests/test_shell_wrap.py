@@ -17,7 +17,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "sutura"))
 
 from shell_wrap import (  # noqa: E402
-    DISPLAY_NAME, _stitch_local, shell_wrap)
+    DISPLAY_NAME, _hybrid_close, _stitch_local, shell_wrap)
+from repair import _damaged_region, reload_strict_holes_nm  # noqa: E402
 
 BUDGET = 80_000  # small grid budget keeps the tests fast
 
@@ -201,6 +202,29 @@ def test_smallest_radius_first_ladder():
     # the ladder is non-decreasing and starts smallest
     assert all(b >= a for a, b in zip(rep["r_ladder"], rep["r_ladder"][1:]))
     assert rep["r_used"] >= rep["r_ladder"][0] - 1e-12
+
+
+def test_hybrid_keeps_healthy_verbatim():
+    """The pymeshlab-backed verbatim hybrid closes a hole while keeping every
+    healthy original triangle unchanged (zero healthy deviation)."""
+    try:
+        import pymeshlab
+    except ImportError:
+        return
+    v, f = sphere_with_hole()
+    mask, _ = _damaged_region(f)
+    hy = _hybrid_close(v, f, mask, pymeshlab)
+    assert hy is not None, "hybrid could not close the sphere hole"
+    h, nm = reload_strict_holes_nm(*hy)
+    assert h == 0 and nm == 0
+
+    # A coarse envelope loses detail, so shell_wrap must fall back to the
+    # verbatim hybrid and report zero healthy deviation.
+    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, ml=pymeshlab)
+    assert rep["ok"] and rep["mode"] == "hybrid"
+    assert rep["detail_max_mm"] == 0.0
+    assert rep["hausdorff_healthy"] == 0.0
+    assert rep["holes"] == 0 and rep["non_manifold"] == 0
 
 
 if __name__ == "__main__":

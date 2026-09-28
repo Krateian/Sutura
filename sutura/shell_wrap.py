@@ -54,7 +54,7 @@ DISPLAY_NAME = "Graft"
 DISPLAY_NAME_FULL = "Graft (shell wrap)"
 
 # --- automatic resolution --------------------------------------------------
-GRID_BUDGET = 300_000            # max voxels the auto voxel may use
+GRID_BUDGET = 1_500_000          # max voxels the auto voxel may use
 MIN_GRID_DIV = 32                # never coarser than bbox/32
 MAX_GRID_DIV = 512               # never finer than bbox/512
 BUDGET_PAD = 8                   # grid pad assumed while budgeting
@@ -89,6 +89,8 @@ SI_MAX_FACES = int(getattr(sutura_geom, "SI_MAX_FACES", 150_000))
 # this the SI rollback is skipped (reported as None) to keep the tier fast.
 SHELL_WRAP_SI_MAX_FACES = 20_000
 SI_ROLLBACK = True
+HYBRID_MAX_HOLE = 200_000       # pymeshlab close_holes budget for the hybrid
+REFINE_MAX_FACES = 300_000      # do not adopt a refinement past this size
 
 
 # --------------------------------------------------------------------------- #
@@ -566,6 +568,98 @@ def _p_weld(v, t, ml=None):
     return v, t, {"applied": False}
 
 
+def _cap_boundary_loops(v, t):
+    """Close every remaining boundary component with a centroid fan.
+
+    Each boundary half-edge `(a, b)` gets a new triangle `(b, a, c)` sharing a
+    per-component centroid `c`, so the boundary edge becomes manifold and the
+    component is sealed regardless of the loop shape.  Pure numpy."""
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    if len(t) == 0:
+        return v, t
+    he = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]).tolist()
+    eset = set((int(a), int(b)) for a, b in he)
+    bnd = [(int(a), int(b)) for a, b in he if (int(b), int(a)) not in eset]
+    if not bnd:
+        return v, t
+    par = {}
+
+    def find(x):
+        par.setdefault(x, x)
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    for a, b in bnd:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            par[ra] = rb
+    comps = {}
+    for a, b in bnd:
+        comps.setdefault(find(a), []).append((a, b))
+    addv = []
+    addt = []
+    for edges in comps.values():
+        cvts = np.unique(np.asarray(edges).reshape(-1))
+        addv.append(v[cvts].mean(axis=0))
+        cidx = len(v) + len(addv) - 1
+        for a, b in edges:
+            addt.append((b, a, cidx))
+    nv = np.vstack([v, np.asarray(addv, dtype=np.float64)])
+    nt = np.vstack([t, np.asarray(addt, dtype=np.int64)])
+    nt = nt[(nt[:, 0] != nt[:, 1]) & (nt[:, 1] != nt[:, 2])
+            & (nt[:, 0] != nt[:, 2])]
+    key = np.sort(nt, axis=1)
+    _u, first = np.unique(key, axis=0, return_index=True)
+    nt = nt[np.sort(first)]
+    used = np.unique(nt)
+    remap = np.full(len(nv), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return nv[used], remap[nt]
+
+
+def _hybrid_close(v0, t0, region_mask, ml):
+    """Verbatim hybrid: drop the damaged-region faces and close the openings
+    with the pymeshlab repair path plus a numpy boundary cap, keeping every
+    healthy original triangle unchanged.  Returns ``(v, t)`` only when the
+    result is reload-watertight, otherwise ``None``."""
+    if ml is None or region_mask is None or not (~region_mask).any():
+        return None
+    bv, bt = _referenced_only(v0, t0[~region_mask])
+    if len(bt) == 0:
+        return None
+    try:
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(bv, np.float64),
+                            face_matrix=np.asarray(bt, np.int32)))
+        for _ in range(2):
+            for name, kw in (
+                    ('meshing_repair_non_manifold_edges', {}),
+                    ('meshing_repair_non_manifold_vertices', {}),
+                    ('meshing_remove_duplicate_faces', {}),
+                    ('meshing_close_holes', {'maxholesize': HYBRID_MAX_HOLE,
+                                             'refinehole': True}),
+                    ('meshing_remove_unreferenced_vertices', {})):
+                try:
+                    ms.apply_filter(name, **kw)
+                except Exception:  # noqa: BLE001
+                    pass
+        m = ms.current_mesh()
+        ov = np.asarray(m.vertex_matrix(), np.float64)
+        ot = np.asarray(m.face_matrix(), np.int64)
+        # Seal any residual boundary components, then reload-safe Stitch.
+        ov, ot = _cap_boundary_loops(ov, ot)
+        ov, ot, _ = _p_weld(ov, ot, None)
+        h, nm = reload_strict_holes_nm(ov, ot)
+        if h == 0 and nm == 0:
+            return ov, ot
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # local-window stitch (boolean union with the untouched rest)
 # --------------------------------------------------------------------------- #
@@ -762,33 +856,37 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             if len(et) == 0:
                 continue
 
+        # --- refine the envelope to the median healthy edge BEFORE projecting --
+        # (a coarse envelope cannot carry the original's detail through the
+        # projection; the reviewer-required order is refine -> project)
+        raw_ev, raw_et = ev, et
+        raw_si = _si_count(raw_ev, raw_et) if si_check else None
+        if remesh and len(et) <= REMESH_MAX_FACES:
+            hv0, ht0 = _referenced_only(v0, t0[~region_mask]) if (
+                region_mask is not None and (~region_mask).any()) else (v0, t0)
+            med_h = _median_edge_length(hv0, ht0) if len(ht0) else 0.0
+            tgt = target_edge if target_edge else med_h
+            if tgt and tgt > 0:
+                # refine (split) only: a coarse envelope gains vertices, a
+                # finer one is left alone so the projection keeps its shape
+                ev2, et2 = _split_long_edges(ev, et, tgt)
+                if len(et2) and len(et2) <= REFINE_MAX_FACES:
+                    ev, et = ev2, et2
+                    report["remeshed"] = True
+        ref_si = _si_count(ev, et) if si_check else None
+        si_rolled = False
+        if raw_si is not None and ref_si is not None and ref_si > raw_si:
+            ev, et = raw_ev, raw_et
+            ref_si = raw_si
+            si_rolled = True
+            report["remeshed"] = False
+
         # wrap / projection (detail-preserving)
         pv, healthy = _project_envelope(ev, et, v0, t0, float(rval))
         wrapped_v, wrapped_t = pv, et
-        wrapped_h, wrapped_nm = reload_strict_holes_nm(wrapped_v, wrapped_t)
-        si_before = _si_count(wrapped_v, wrapped_t) if si_check else None
-        si_after = si_before
-        rolled = False
-        base_h, base_nm = wrapped_h, wrapped_nm
-
-        # isotropic re-mesh, adopted only when it does not worsen the verdict
-        if remesh and len(et) <= REMESH_MAX_FACES:
-            med = _median_edge_length(v0, t0)
-            tgt = target_edge if target_edge else med
-            if tgt and tgt > 0:
-                rv, rt = _isotropic_remesh(wrapped_v, wrapped_t, tgt)
-                if len(rt) and len(rt) != len(wrapped_t):
-                    rh, rnm = reload_strict_holes_nm(rv, rt)
-                    si_remesh = _si_count(rv, rt) if si_check else None
-                    worse = rh + rnm > base_h + base_nm
-                    si_worse = (si_before is not None and si_remesh is not None
-                                and si_remesh > si_before)
-                    if not worse and not si_worse:
-                        wrapped_v, wrapped_t = rv, rt
-                        si_after = si_remesh
-                        report["remeshed"] = True
-                    else:
-                        rolled = si_worse and not worse
+        si_before = ref_si
+        si_after = ref_si
+        rolled = si_rolled
 
         # Stitch (P-WELD) + X-Ray (honest reload verdict)
         wv, wt, pw = _p_weld(wrapped_v, wrapped_t, ml)
@@ -817,6 +915,26 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
 
         # detail loss on the accepted mesh
         detail = _detail_loss(v0, t0, wv, wt, region_mask, diag, detail_tol)
+
+        # Hybrid fallback: keep the original healthy triangles verbatim and
+        # close only the damaged region (needs the pymeshlab repair path).  The
+        # envelope is used for the r decision; when it is too coarse to carry
+        # the healthy detail through the projection, this guarantees zero
+        # deviation on the healthy surface.
+        if (ml is not None and region_mask is not None
+                and not (h == 0 and nm == 0 and fidelity_ok)):
+            hy = _hybrid_close(v0, t0, region_mask, ml)
+            if hy is not None:
+                hy_h, hy_nm = reload_strict_holes_nm(*hy)
+                if hy_h == 0 and hy_nm == 0:
+                    wv, wt = hy
+                    h, nm = hy_h, hy_nm
+                    mode = "hybrid"
+                    h1, hh = 0.0, 0.0
+                    fidelity_ok = True
+                    detail = _detail_loss(
+                        v0, t0, wv, wt, region_mask, diag, detail_tol)
+                    pw = {"applied": False, "method": "hybrid-verbatim"}
 
         watertight = (h == 0 and nm == 0)
         cand = {

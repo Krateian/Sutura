@@ -102,11 +102,19 @@ mode.
 w, u, s, info = sutura_geom.sdf_grid(verts, tris, voxel=0.1)
 
 # Morphological closing of the solid by r; box= restricts the window,
-# fill_cavities=True keeps only the outermost shell.
+# fill_cavities=True keeps only the outermost shell, surface="tets" uses
+# marching tetrahedra instead of dual contouring.
 ov, ot, info = sutura_geom.morph_close(verts, tris, r=0.2, voxel=None,
-                                       box=None, fill_cavities=False)
+                                       box=None, fill_cavities=False,
+                                       surface="dual")
 # info: dims, voxel, origin, voxels, caps_coarsened, fallback, manifold,
-#       radius, fill_cavities
+#       radius, fill_cavities, surface
+
+# Closest point on the surface for each query point (parallel).
+xyz, dist, face_idx = sutura_geom.closest_points(verts, tris, points)
+
+# Per-face mask of proper self-intersections (adjacent faces ignored).
+mask, count = sutura_geom.self_intersecting_faces(verts, tris)
 ```
 
 Regression tests: `tests/test_morph_geom.py` (sphere with a hole closes, two
@@ -115,6 +123,11 @@ the timing run `tests/morph_timing_1038441.py`. Example timing (Apple M2,
 `thingi10k_1038441`, 10,418 faces, r = 2 % of the bbox diagonal): 2.8 s at the
 auto grid (99x109x36, voxel 0.575) and 16.1 s at voxel 0.30 (184x203x63,
 2.35 M voxels); both outputs are manifold with no fallback.
+
+`closest_points` and `self_intersecting_faces` back the `sutura/shell_wrap.py`
+Graft tier (#13): the closest-point query drives the projection/Hausdorff
+metrics and the SI classifier (proper crossings only, pairs sharing a vertex
+ignored, capped at `SI_MAX_FACES`) drives the re-mesh rollback.
 
 ## Phase C0 profile (thingi10k_1038441)
 
