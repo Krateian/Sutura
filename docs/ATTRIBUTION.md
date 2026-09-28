@@ -103,3 +103,14 @@ their terms):
 - **manifold3d** — a permissive license (Apache-2.0/MIT-style); stage 2.
 - **PySide6 / Qt** — LGPL-3.0; the GUI toolkit.
 - **pyvista / VTK** — BSD-3-Clause; required by `pytetwild` at import time.
+
+## Algorithm references (clean-room implementations)
+
+Sutura's codebase implements several published geometric algorithms clean-room
+without reusing third-party source code:
+
+- **Shrink-Wrapping & Surface Envelopes**: Kobbelt et al., *Interactive Multi-Resolution Modeling on Arbitrary Meshes* (SIGGRAPH 1999).
+- **Morphological Closing Envelopes**: Szekely et al., *Segmentation of 2D and 3D objects based on morphology* (1996).
+- **Fast Winding Numbers**: Barill et al., *Fast Winding Numbers for Soups and Clouds* (ACM TOG / SIGGRAPH 2018).
+- **Exact Euclidean Distance Transform**: Felzenszwalb & Huttenlocher, *Distance Transforms of Sampled Functions* (Theory of Computing 2012).
+- **Dual Contouring**: Ju et al., *Dual Contouring of Hermite Data* (SIGGRAPH 2002).
