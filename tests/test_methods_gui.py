@@ -117,11 +117,13 @@ def main():
     um = gui._KeepOpenMenu(gui._t('menu_use_method'), m)
     w._build_use_method_menu(um, [b], b)
     acts = um.actions()
-    assert len(acts) == 12, len(acts)
+    assert len(acts) == 14, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
-    # 8-12 are implemented and enabled (12 opens the repeat picker)
+    # 8-12 are implemented and enabled (12 opens the repeat picker); 14/15
+    # (Mirror Complete / Wall Thicken) are the two appended methods.
     for num in (8, 9, 10, 11, 12):
         assert acts[num - 1].isEnabled(), num
+    assert acts[12].isEnabled() and acts[13].isEnabled(), acts[12:14]
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live

@@ -701,7 +701,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             extra_features=False, deep_repair=None,
                             triage_spec=None, engines=None, engine_chain=None,
                             closing=None, proxy_template=False, repeat=None,
-                            repeat_source=None, repeat_target=None):
+                            repeat_source=None, repeat_target=None,
+                            wall_thicken=False, wall_min_thickness=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -1030,6 +1031,13 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ms, after = repeat_tier(ml, ms, after, stats, mode=repeat,
                             source_point=repeat_source,
                             target_point=repeat_target)
+
+    # Registry method 15 (P-WALL): opt-in thin-wall thicken-to-min. Runs on the
+    # ORIGINAL input arrays (like the closing tier) and adopts only a
+    # strict-watertight, no-worse candidate; never automatic.
+    if wall_thicken:
+        ms, after = wall_thicken_tier(ml, ms, after, stats, v, t,
+                                      min_thickness=wall_min_thickness)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -2603,6 +2611,10 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                     in_v, in_t, tmpdir=tmpdir)
             elif closing == 'flat_back':
                 cand_v, cand_t, rep = _closing.flat_back_close(in_v, in_t)
+            elif closing == 'mirror':
+                import mirror_repair as _mirror
+                cand_v, cand_t, rep = _mirror.mirror_close(
+                    in_v, in_t, tmpdir=tmpdir)
             else:
                 rec.update(ran=False, reason='unknown closing mode %r' % closing)
                 stats['closing'] = rec
@@ -2650,6 +2662,92 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
         rec['reason'] = 'error: %s' % e
     stats['closing'] = rec
     return ms, after
+
+
+def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
+    """Thin-wall thicken-to-min tier for registry method 15 (P-WALL).
+
+    ``wall_thickness.thicken_to_min`` measures the per-vertex wall thickness
+    from an SDF grid and thickens walls below ``min_thickness`` (default: 1% of
+    the bbox diagonal) with a morphological closing of the solid. It runs on
+    the ORIGINAL input arrays; the candidate is cleaned with PyMeshLab, then
+    adopted only when it is strict-watertight and no worse than the stage-1
+    baseline on holes + non-manifold edges. Records ``stats['wall_thicken']``
+    (before/after minimum thickness, counts, notes); never raises.
+    """
+    rec = {'tier': 'wall_thicken', 'ran': True, 'adopted': False,
+           'watertight': False, 'min_before': None, 'min_after': None,
+           'min_thickness': None, 'thin_before': None, 'thin_after': None,
+           'faces': None, 'notes': [], 'reason': None}
+    try:
+        import wall_thickness as _wt
+        base_v = np.asarray(ms.current_mesh().vertex_matrix())
+        base_t = np.asarray(ms.current_mesh().face_matrix())
+        base_holes = boundary_loop_stats(base_v, base_t)[0]
+        base_nm = int(after.get('non_two_manifold_edges', 0))
+        in_v = np.asarray(v, dtype=np.float64)
+        in_t = np.asarray(t, dtype=np.int64)
+        cand_v, cand_t, rep = _wt.thicken_to_min(
+            in_v, in_t, min_thickness=min_thickness)
+        rec['min_thickness'] = rep.get('min_thickness')
+        rec['min_before'] = rep.get('min_before')
+        rec['thin_before'] = rep.get('thin_before')
+        rec['notes'] = list(rep.get('notes') or [])
+        if 'error' in rep:
+            rec['reason'] = 'module error: %s' % rep['error']
+        if len(cand_t):
+            cand_v, cand_t = _clean_and_orient(ml, cand_v, cand_t)
+            cand_v = np.asarray(cand_v, dtype=np.float32)
+            cand_t = np.asarray(cand_t, dtype=np.int32)
+            det = detect_defects(cand_v, cand_t)
+            cand_holes = len(det['holes'])
+            cand_nm = len(det['non_manifold'])
+            rec['holes'] = cand_holes
+            rec['non_manifold'] = cand_nm
+            rec['faces'] = int(len(cand_t))
+            rec['min_after'] = rep.get('min_after')
+            rec['thin_after'] = rep.get('thin_after')
+            if (cand_holes == 0 and cand_nm == 0
+                    and cand_holes + cand_nm <= base_holes + base_nm):
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+                after = ms.apply_filter('get_topological_measures')
+                rec['adopted'] = True
+                rec['candidate_watertight'] = True
+                rec['reason'] = 'walls thickened (stage 2 pending)'
+            elif rec['reason'] is None:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+        elif rec['reason'] is None:
+            rec['reason'] = 'module returned no geometry'
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['ran'] = False
+        rec['reason'] = 'error: %s' % e
+    stats['wall_thicken'] = rec
+    return ms, after
+
+
+def _clean_and_orient(ml, verts, tris):
+    """PyMeshLab cleanup of a generated surface: dedup + coherent orientation."""
+    try:
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
+                            face_matrix=np.asarray(tris, np.int32)))
+        for filt in ('meshing_remove_duplicate_vertices',
+                     'meshing_remove_duplicate_faces',
+                     'meshing_remove_unreferenced_vertices',
+                     'meshing_repair_non_manifold_edges',
+                     'meshing_re_orient_faces_coherently'):
+            try:
+                ms.apply_filter(filt)
+            except Exception:
+                pass
+        cur = ms.current_mesh()
+        return (np.asarray(cur.vertex_matrix(), dtype=np.float64),
+                np.asarray(cur.face_matrix(), dtype=np.int32))
+    except Exception:
+        return verts, tris
 
 
 # One-sided (original -> result, outside the repaired boxes) Hausdorff guard
@@ -3106,7 +3204,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 indirect_autorefine=False, extra_features=False, deep_repair=None,
                 triage_spec=None, engines=None, engine_chain=None,
                 closing=None, proxy_template=False, repeat=None,
-                repeat_source=None, repeat_target=None):
+                repeat_source=None, repeat_target=None,
+                wall_thicken=False, wall_min_thickness=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -3133,7 +3232,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         extra_features=extra_features, deep_repair=deep_repair,
         triage_spec=triage_spec, engines=engines, engine_chain=engine_chain,
         closing=closing, proxy_template=proxy_template, repeat=repeat,
-        repeat_source=repeat_source, repeat_target=repeat_target)
+        repeat_source=repeat_source, repeat_target=repeat_target,
+        wall_thicken=wall_thicken, wall_min_thickness=wall_min_thickness)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -3234,7 +3334,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                indirect_autorefine=False, extra_features=False, deep_repair=None,
                triage_spec=None, engines=None, engine_chain=None,
                closing=None, proxy_template=False, repeat=None,
-               repeat_source=None, repeat_target=None):
+               repeat_source=None, repeat_target=None,
+               wall_thicken=False, wall_min_thickness=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -3281,7 +3382,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     engine_chain=engine_chain,
                     closing=closing, proxy_template=proxy_template,
                     repeat=repeat, repeat_source=repeat_source,
-                    repeat_target=repeat_target)
+                    repeat_target=repeat_target, wall_thicken=wall_thicken,
+                    wall_min_thickness=wall_min_thickness)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -3961,7 +4063,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
-                 repeat_target=None):
+                 repeat_target=None, wall_min_thickness=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -4024,7 +4126,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             extra_features=extra_features, deep_repair=deep_repair,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
-            repeat_target=repeat_target))
+            repeat_target=repeat_target, wall_min_thickness=wall_min_thickness))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -4299,6 +4401,12 @@ def main():
     parser.add_argument('--repeat-source', default=None, metavar='X,Y,Z',
                         help='method 12 (repeat_manual): the 3D point on the '
                              'healthy repeated element to copy from.')
+    parser.add_argument('--wall-min-thickness', type=float, default=None,
+                        metavar='T',
+                        help='target minimum wall thickness for the opt-in '
+                             'Wall Thicken method (#15); default 1%% of the '
+                             'bounding-box diagonal. Ignored unless #15 is '
+                             'tagged via --methods.')
     parser.add_argument('--repeat-target', default=None, metavar='X,Y,Z',
                         help='method 12 (repeat_manual): the 3D point on the '
                              'damaged repeated element to replace.')
@@ -4683,7 +4791,8 @@ def main():
                             methods=methods_sel,
                             engine_filter=engines_sel,
                             repeat_source=repeat_source,
-                            repeat_target=repeat_target) for f in files]
+                            repeat_target=repeat_target,
+                            wall_min_thickness=args.wall_min_thickness) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')

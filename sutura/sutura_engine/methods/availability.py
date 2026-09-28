@@ -57,6 +57,37 @@ def proxy_available() -> Tuple[bool, Optional[str]]:
         return False, 'proxy repair unavailable: %s' % e
 
 
+def mirror_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 14 needs mirror_repair plus its numpy/scipy deps."""
+    try:
+        if (importlib.util.find_spec('sutura_engine.methods.closing') is None and
+                importlib.util.find_spec('closing') is None):
+            return False, 'closing.py is not available'
+        if (importlib.util.find_spec('mirror_repair') is None and
+                importlib.util.find_spec('sutura.mirror_repair') is None):
+            return False, 'mirror_repair is not available'
+        for mod in ('numpy', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:
+        return False, 'mirror completion unavailable: %s' % e
+
+
+def wall_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 15 needs wall_thickness plus numpy/scipy."""
+    try:
+        if (importlib.util.find_spec('wall_thickness') is None and
+                importlib.util.find_spec('sutura.wall_thickness') is None):
+            return False, 'wall_thickness is not available'
+        for mod in ('numpy', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:
+        return False, 'wall thickness unavailable: %s' % e
+
+
 def repeat_available() -> Tuple[bool, Optional[str]]:
     """Registry methods 11/12 need repeat_repair + its deps."""
     try:

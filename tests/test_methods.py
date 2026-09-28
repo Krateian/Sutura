@@ -30,7 +30,9 @@ EXPECTED = {
     5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild',
     8: 'balloon', 9: 'backplate', 10: 'scaffold',
     11: 'transplant', 12: 'transplant_plus',
+    14: 'mirror_complete', 15: 'wall_thicken',
 }
+ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15]
 FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
             'pattern'}
 
@@ -97,7 +99,7 @@ def test_modules_import_without_heavy_deps(tmp):
 
 def test_registry_fixed_numbers(tmp):
     import methods
-    assert [m.num for m in methods.all_methods()] == list(range(1, 13))
+    assert [m.num for m in methods.all_methods()] == ALL_NUMS
     for m in methods.all_methods():
         assert m.id == EXPECTED[m.num], (m.num, m.id)
         assert m.family in FAMILIES, (m.num, m.family)
@@ -159,6 +161,11 @@ def test_kwargs_mapping(tmp):
         assert methods.get_method(num).kwargs['ftetwild'] is False
     assert methods.get_method(11).kwargs['repeat'] == 'auto'
     assert methods.get_method(12).kwargs['repeat'] == 'manual'
+    assert methods.get_method(14).kwargs['closing'] == 'mirror'
+    assert methods.get_method(14).invents_geometry is True
+    assert methods.get_method(15).kwargs['wall_thicken'] is True
+    assert methods.get_method(15).invents_geometry is True
+    assert methods.get_method(15).needs_user_input is True
 
 
 # --- templates / ranking ----------------------------------------------------
@@ -741,14 +748,14 @@ def test_explicit_methods_keeps_best_when_none_watertight(tmp):
 def test_cli_list_methods(tmp):
     r = _run(['--list-methods'], env=_env(tmp))
     assert r.returncode == 0, r.stderr
-    for num in range(1, 13):
+    for num in ALL_NUMS:
         assert (' %d ' % num) in r.stdout or ('%d ' % num) in r.stdout, num
     assert 'balloon' in r.stdout, r.stdout
     assert 'Balloon' in r.stdout, r.stdout      # display name shown
     assert 'Exact Refine' in r.stdout, r.stdout
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
-    assert [m['num'] for m in data] == list(range(1, 13))
+    assert [m['num'] for m in data] == ALL_NUMS
     # 8-12 are implemented (available in an env with their deps).
     assert all(data[n - 1]['available'] is True for n in (8, 9, 10, 11, 12)), data
 

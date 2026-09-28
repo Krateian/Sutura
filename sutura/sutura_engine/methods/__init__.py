@@ -78,6 +78,10 @@ _METHOD_ALIASES: Dict[str, int] = {
     # 12: Transplant+ (Manual) (graft and 13 are valid aliases)
     '12': 12, 'm12': 12, '13': 12, 'm13': 12, 'transplant_plus': 12, 'transplant+': 12,
     'graft': 12, 'repeat_manual': 12,
+    # 14: Mirror Complete
+    '14': 14, 'm14': 14, 'mirror_complete': 14, 'mirror': 14,
+    # 15: Wall Thicken
+    '15': 15, 'm15': 15, 'wall_thicken': 15, 'wall': 15, 'thicken': 15,
 }
 
 
@@ -181,6 +185,7 @@ _CANONICAL_BY_NUM = {
     1: 'quick_clean', 2: 'local_mend', 3: 'full_mend', 4: 'join',
     5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild', 8: 'balloon',
     9: 'backplate', 10: 'scaffold', 11: 'transplant', 12: 'transplant_plus',
+    14: 'mirror_complete', 15: 'wall_thicken',
 }
 
 
@@ -272,6 +277,19 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
                 'rec_reason_no_repeat', ()
         return (_clamp01(rep), 'repeated pattern (%.2f)' % rep,
                 'rec_reason_repeat', (rep,))
+    if method_id == 'mirror_complete':
+        single = _clamp01(_a(analysis, 'single_side_score'))
+        relief = _clamp01(_a(analysis, 'relief_score'))
+        score = single * (1.0 - relief)
+        if score <= 0:
+            return 0.0, 'not a single-sided open scan', \
+                'rec_reason_not_scan', ()
+        return (_clamp01(score), 'single-sided scan with a symmetry plane '
+                '(%.2f)' % single, 'rec_reason_mirror', (single,))
+    if method_id == 'wall_thicken':
+        # Opt-in only (needs_user_input excludes it from the ranking); the
+        # thicken decision is a shape change the user must make explicitly.
+        return 0.0, 'opt-in thin-wall thicken', 'rec_reason_wall_optin', ()
     return 0.0, 'not implemented yet', 'rec_reason_not_implemented', ()
 
 
