@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here.
 
+## [0.6.1] - 2026-09-28
+
+### Fixed
+
+- **The untagged automatic method fallback is now time-budgeted.** When the
+  default pipeline is not strict-watertight and the auto path escalates to the
+  ranked methods, the extras run under a wall-clock budget of
+  `min(max(AUTO_FALLBACK_MIN_S = 30 s, AUTO_FALLBACK_BUDGET_FACTOR = 2.0 ×
+  baseline seconds), AUTO_FALLBACK_MAX_S = 120 s)`. Once the budget is exhausted
+  no further method is started — a method already running is not interrupted —
+  the best candidate is kept, and the result carries
+  `method_used.budget_reached`, `method_used.fallback_budget_s` and the
+  "fallback budget reached" note (localized EN/TR in the GUI). A baseline that
+  already took longer than the 120 s ceiling skips the ranked fallback entirely
+  (`method_used.fallback_skipped`, `baseline_s`, "fallback skipped: baseline too
+  slow"). Explicitly tagged methods (`--methods`) are never budgeted. The
+  real-world corpus regression runs the untagged default path again, and the
+  budget-stop/skip behaviour is covered by `tests/test_methods.py`.
+
 ## [0.6.0] - 2026-09-28
 
 ### Added

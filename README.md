@@ -285,9 +285,15 @@ order. Without a flag the repair is **auto**: today's default pipeline runs
 first and, when its result is already strict-watertight, the output is
 byte-identical to before. Only when that baseline fails are ranked methods
 tried (at most three extras; a geometry-inventing method such as fTetWild only
-when its recommendation score is high enough), and an explicit
+when its recommendation score is high enough), under a wall-clock budget of
+`min(max(30 s, 2 × baseline), 120 s)`: once the budget is exhausted no further
+method is started (a running attempt is not interrupted), the best candidate is
+kept and the result is marked with a "fallback budget reached" note. A baseline
+that already took longer than 120 s skips the ranked fallback entirely
+("fallback skipped: baseline too slow"). An explicit
 `--deep-repair`/`--no-fallback-ftetwild` keeps today's exact behaviour instead
-of escalating. The report adds `method_used`, `methods_tried`,
+of escalating, and explicitly tagged methods (`--methods`) are never budgeted.
+The report adds `method_used`, `methods_tried`,
 `method_reached_watertight` and, when escalation ran, `analysis` and
 `recommendations`.
 

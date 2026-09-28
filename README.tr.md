@@ -292,9 +292,15 @@ denenecek yöntemleri sırayla etiketler. Bayrak verilmezse onarım **otomatik**
 önce bugünkü varsayılan boru hattı çalışır ve sonucu zaten katı-su geçirmezse
 çıktı öncekiyle bayt-birebirdir. Yalnızca bu temel başarısız olursa sıralanmış
 yöntemler denenir (en fazla üç ek deneme; fTetWild gibi geometri uyduran bir
-yöntem yalnızca öneri puanı yeterince yüksekse), ve açık bir
+yöntem yalnızca öneri puanı yeterince yüksekse), `min(max(30 sn, 2 × temel),
+120 sn)` duvar-saati bütçesi altında: bütçe tükenince başka yöntem başlatılmaz
+(çalışan bir deneme kesilmez), en iyi aday korunur ve sonuç "yedek yöntem
+bütçesine ulaşıldı" notuyla işaretlenir. Temel onarım tek başına 120 sn'yi
+aştıysa sıralanmış yedek yöntemler tamamen atlanır ("yedek yöntem atlandı:
+temel onarım çok yavaş"). Açık bir
 `--deep-repair`/`--no-fallback-ftetwild` bugünkü davranışı korur, ek denemeye
-geçmez. Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
+geçmez; açıkça etiketlenen yöntemler (`--methods`) hiçbir zaman bütçelenmez.
+Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
 ek deneme çalıştıysa `analysis` ile `recommendations` alanlarını ekler.
 
 #### GUI'de dosya-başına yöntem etiketleme (sağ tık menüsü)

@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Real-world corpus regression (tests/real-world-samples/*.stl).
 
-Runs validate + dry-run + repair (default baseline method 3, bounded) on every
-real-world sample mesh and asserts the pipeline never crashes (every phase must
-exit 0 with a clean JSON report; partial repairs are fine, hard errors/crashes
-are not). Also prints a compact result table so the expected outcomes stay
-visible. The untagged ranked fallback is intentionally not run here (see the
-comment in main); it is covered by tests/test_methods.py.
+Runs validate + dry-run + auto repair on every real-world sample mesh and
+asserts the pipeline never crashes (every phase must exit 0 with a clean JSON
+report; partial repairs are fine, hard errors/crashes are not). Also prints a
+compact result table so the expected outcomes stay visible.
+
+The untagged auto repair includes the ranked fallback, which is bounded by the
+wall-clock budget in ``methods._auto``
+(``min(max(AUTO_FALLBACK_MIN_S, AUTO_FALLBACK_BUDGET_FACTOR * baseline_s),
+AUTO_FALLBACK_MAX_S)``; a baseline slower than the ceiling skips the fallback
+entirely), so the suite stays within the CI budget while still exercising the
+real default path.
 
 The corpus is deliberately bounded (97 MB, 40 meshes): Artec scan decimations (CC BY 4.0,
 decimated with preservetopology so defect counts stay close to the originals)
@@ -45,15 +50,12 @@ def main():
             out = os.path.join(tmp, name + '_fixed.stl')
             row = [name]
             ok = True
-            # Repair with the default baseline method explicitly (3 = full deep
-            # repair). The untagged default also runs the ranked fallback on a
-            # non-watertight result, which re-runs whole extra pipelines and is
-            # deliberately not exercised here: this suite guards crash-safety on
-            # the real corpus within a bounded CI budget, while the ranked-auto
-            # policy is covered by tests/test_methods.py.
+            # The default untagged path (auto): the ranked fallback that runs
+            # on a non-watertight result is bounded by a wall-clock budget
+            # (methods._auto), so the real default path is exercised here.
             for label, args in (('val', ['validate']),
                                 ('dry', ['--dry-run', '--mode', 'auto']),
-                                ('rep', ['--mode', 'auto', '--methods', '3'])):
+                                ('rep', ['--mode', 'auto'])):
                 r = run(args, path, out if label == 'rep' else None)
                 # partial repairs are expected; only hard errors/crashes fail
                 if r.returncode != 0:

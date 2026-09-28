@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
@@ -446,6 +447,168 @@ def test_auto_skips_generative_below_min_score(tmp):
             assert res['method_reached_watertight'] is False, res
     finally:
         methods._attempt, methods._evaluate, methods.rank_methods = real
+
+
+def test_auto_fallback_budget_stops_further_methods(tmp):
+    """The untagged auto ranked fallback is wall-clock bounded: once
+    min(max(AUTO_FALLBACK_MIN_S, AUTO_FALLBACK_BUDGET_FACTOR * baseline_s),
+    AUTO_FALLBACK_MAX_S) is exceeded it starts no further method, keeps the best
+    candidate (the baseline, the only one auto can adopt) and reports the budget
+    note plus the tried methods. Explicit tags are never budgeted (see the
+    explicit test)."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods,
+            methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
+            methods.AUTO_FALLBACK_MAX_S)
+    calls = []
+
+    def fake_attempt(src, out, tmpdir, kwargs, multi):
+        calls.append(kwargs)
+        with open(out, 'w') as f:
+            f.write('ok')
+        if len(calls) > 1:
+            time.sleep(0.2)   # the first fallback method overruns the budget
+        return {'stage1': {}, 'simulated': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        return {'watertight': False, 'holes': 1, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None,
+                'reason': 'holes=1 remain'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
+                                       0.9, 'x', 'mechanical'),
+                methods.Recommendation(4, 'join_components', 'Join components',
+                                       0.8, 'x', 'mechanical')]
+
+    methods._attempt, methods._evaluate, methods.rank_methods = \
+        fake_attempt, fake_evaluate, fake_rank
+    methods.AUTO_FALLBACK_MIN_S = 0.05
+    methods.AUTO_FALLBACK_BUDGET_FACTOR = 0.0
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            out = os.path.join(td, 'out.stl')
+            res = methods.repair_with_methods(
+                src, out, td, None, mode='auto', deep_repair='full',
+                ftetwild='auto')
+            # baseline + exactly the first ranked method (the second is past
+            # the budget and must never start)
+            assert len(calls) == 2, calls
+            assert res['method_used']['source'] == 'auto_baseline', res
+            assert res['method_used'].get('budget_reached') is True, res
+            assert res['method_used'].get('note') == 'fallback budget reached', \
+                res
+            assert res['method_reached_watertight'] is False, res
+            nums = [t.get('num') for t in res['methods_tried']]
+            assert 4 not in nums, nums
+    finally:
+        (methods._attempt, methods._evaluate, methods.rank_methods,
+         methods.AUTO_FALLBACK_MIN_S,
+         methods.AUTO_FALLBACK_BUDGET_FACTOR,
+         methods.AUTO_FALLBACK_MAX_S) = real
+
+
+def test_auto_fallback_budget_capped_by_max(tmp):
+    """AUTO_FALLBACK_MAX_S caps the budget even when the baseline was slow: the
+    resolved budget is min(..., MAX), so a huge MIN does not grant an unbounded
+    fallback window."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods,
+            methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
+            methods.AUTO_FALLBACK_MAX_S)
+    calls = []
+
+    def fake_attempt(src, out, tmpdir, kwargs, multi):
+        calls.append(kwargs)
+        with open(out, 'w') as f:
+            f.write('ok')
+        if len(calls) > 1:
+            time.sleep(0.2)   # the first fallback overruns the (capped) budget
+        return {'stage1': {}, 'simulated': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        return {'watertight': False, 'holes': 1, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None,
+                'reason': 'holes=1 remain'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
+                                       0.9, 'x', 'mechanical'),
+                methods.Recommendation(4, 'join_components', 'Join components',
+                                       0.8, 'x', 'mechanical')]
+
+    methods._attempt, methods._evaluate, methods.rank_methods = \
+        fake_attempt, fake_evaluate, fake_rank
+    methods.AUTO_FALLBACK_MIN_S = 1000.0   # would grant a huge window ...
+    methods.AUTO_FALLBACK_BUDGET_FACTOR = 1000.0
+    methods.AUTO_FALLBACK_MAX_S = 0.05     # ... but MAX caps it
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            out = os.path.join(td, 'out.stl')
+            res = methods.repair_with_methods(
+                src, out, td, None, mode='auto', deep_repair='full',
+                ftetwild='auto')
+            assert len(calls) == 2, calls
+            assert res['method_used'].get('budget_reached') is True, res
+            assert res['method_used'].get('fallback_budget_s') == 0.05, res
+    finally:
+        (methods._attempt, methods._evaluate, methods.rank_methods,
+         methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
+         methods.AUTO_FALLBACK_MAX_S) = real
+
+
+def test_auto_fallback_skipped_when_baseline_too_slow(tmp):
+    """A baseline that already ran past AUTO_FALLBACK_MAX_S on its own skips the
+    ranked fallback entirely (no ranked method is started) and reports why."""
+    import methods
+    real = (methods._attempt, methods._evaluate, methods.rank_methods,
+            methods.AUTO_FALLBACK_MAX_S)
+    calls = []
+
+    def fake_attempt(src, out, tmpdir, kwargs, multi):
+        calls.append(kwargs)
+        with open(out, 'w') as f:
+            f.write('ok')
+        time.sleep(0.1)   # the baseline alone overruns the hard ceiling
+        return {'stage1': {}, 'simulated': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        return {'watertight': False, 'holes': 1, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None,
+                'reason': 'holes=1 remain'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
+                                       0.9, 'x', 'mechanical')]
+
+    methods._attempt, methods._evaluate, methods.rank_methods = \
+        fake_attempt, fake_evaluate, fake_rank
+    methods.AUTO_FALLBACK_MAX_S = 0.05
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, 'in.stl')
+            with open(src, 'w') as f:
+                f.write('x')
+            out = os.path.join(td, 'out.stl')
+            res = methods.repair_with_methods(
+                src, out, td, None, mode='auto', deep_repair='full',
+                ftetwild='auto')
+            assert len(calls) == 1, calls   # baseline only, no ranked method
+            assert res['method_used']['source'] == 'auto_baseline', res
+            assert res['method_used'].get('fallback_skipped') is True, res
+            assert res['method_used'].get('note') == \
+                'fallback skipped: baseline too slow', res
+            nums = [t.get('num') for t in res['methods_tried']]
+            assert 2 not in nums, nums
+    finally:
+        (methods._attempt, methods._evaluate, methods.rank_methods,
+         methods.AUTO_FALLBACK_MAX_S) = real
 
 
 def test_engine_only_tag_disables_auto_escalation(tmp):

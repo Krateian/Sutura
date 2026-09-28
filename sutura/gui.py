@@ -182,6 +182,8 @@ STRINGS = {
         'rec_reason_not_implemented': 'not implemented yet',
         'rec_reason_template': 'template %s',
         'method_note_back_surface': 'back surface estimated',
+        'method_note_fallback_budget': 'fallback budget reached',
+        'method_note_fallback_skipped': 'fallback skipped: baseline too slow',
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
         'issue_malformed': 'Malformed input', 'issue_error': 'Error',
@@ -629,6 +631,8 @@ STRINGS = {
         'rec_reason_not_implemented': 'henüz uygulanmadı',
         'rec_reason_template': 'şablon %s',
         'method_note_back_surface': 'arka yüzey tahmin edildi',
+        'method_note_fallback_budget': 'yedek yöntem bütçesine ulaşıldı',
+        'method_note_fallback_skipped': 'yedek yöntem atlandı: temel onarım çok yavaş',
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
         'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
@@ -977,7 +981,10 @@ def _method_name(num):
     return _t(key) if key in STRINGS['en'] else m.name
 
 
-_METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface'}
+_METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface',
+                     'fallback budget reached': 'method_note_fallback_budget',
+                     'fallback skipped: baseline too slow':
+                         'method_note_fallback_skipped'}
 
 
 def _method_note(note):
@@ -1266,7 +1273,7 @@ def format_report(data):
             if src_label:
                 used += ' (%s)' % src_label
             if note:
-                used += ' \u2014 %s' % note
+                used += ' \u2014 %s' % _method_note(note)
             lines.append(used)
         for t in tried:
             num = t.get('num')

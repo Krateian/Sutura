@@ -25,6 +25,7 @@ run of ``repair.py`` as ``__main__`` does not get re-executed as a module.
 """
 import os
 import sys
+import time
 import shutil
 import importlib.util
 from collections import namedtuple
@@ -39,6 +40,25 @@ import classification
 
 # Auto mode tries at most this many extra methods after the baseline.
 AUTO_MAX_ATTEMPTS = 3
+# Wall-clock budget for the untagged auto ranked fallback: after the baseline
+# attempt, extra methods may run for at most
+# min(max(AUTO_FALLBACK_MIN_S,
+#         AUTO_FALLBACK_BUDGET_FACTOR * baseline_seconds),
+#     AUTO_FALLBACK_MAX_S).
+# When the budget is exceeded the fallback stops starting further methods
+# (a method already running is not interrupted), keeps the best candidate and
+# records the "fallback budget reached" note. The budget is relative to the
+# baseline so a slow input does not get a fast cutoff and a trivial input still
+# gets the minimum, while AUTO_FALLBACK_MAX_S keeps a slow baseline from
+# granting an unbounded fallback window. Explicit user tags (``--methods``) are
+# NEVER budgeted.
+AUTO_FALLBACK_BUDGET_FACTOR = 2.0
+AUTO_FALLBACK_MIN_S = 30.0
+# Hard ceiling on the fallback budget: even when the baseline itself was slow,
+# the extra methods never get more than this many seconds. A baseline that
+# already exceeded the ceiling on its own skips the ranked fallback entirely
+# (the work is done, only the report note remains).
+AUTO_FALLBACK_MAX_S = 120.0
 # A geometry-inventing method (fTetWild, Poisson, ...) is tried automatically
 # ONLY when its recommendation score clears this bar: inventing a back surface
 # is a bigger geometry change than cleaning an existing one.
@@ -751,8 +771,14 @@ def repair_with_methods(src, out, tmpdir, methods=None, auto_escalation=True,
     when it is strict-watertight and passes the shape guard the output is
     byte-identical to today. Only when it fails are ranked methods tried (at
     most ``AUTO_MAX_ATTEMPTS`` extras, geometry-inventing ones only above
-    ``AUTO_INVENT_MIN_SCORE``). ``methods=[2,3,5]`` tries exactly those, in
-    order, and keeps the best candidate when none reaches watertight.
+    ``AUTO_INVENT_MIN_SCORE``), under the wall-clock budget
+    ``min(max(AUTO_FALLBACK_MIN_S, AUTO_FALLBACK_BUDGET_FACTOR * baseline_s),
+    AUTO_FALLBACK_MAX_S)``: once exceeded, no further method is started and the
+    tried methods are reported with the "fallback budget reached" note. A
+    baseline that already took longer than ``AUTO_FALLBACK_MAX_S`` skips the
+    fallback entirely with the "fallback skipped: baseline too slow" note.
+    ``methods=[2,3,5]`` tries exactly those, in order, is never budgeted, and
+    keeps the best candidate when none reaches watertight.
 
     ``auto_escalation=False`` keeps the auto baseline but never escalates to
     extra methods (used when the user tagged only an external engine: the tags
@@ -782,7 +808,9 @@ def _auto_escalation_allowed(ctx):
 
 def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
     base_method = get_method(_baseline_num(ctx))
+    baseline_start = time.monotonic()
     result = _attempt(src, out, tmpdir, ctx, multi)
+    baseline_s = time.monotonic() - baseline_start
     evaluation = _evaluate(result, out, multi, None, base_method)
     tried = [_record(base_method, evaluation, 'accepted'
                      if evaluation['watertight'] else 'rejected')]
@@ -798,6 +826,15 @@ def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
         _attach(result, base_method, tried, None, None, source='auto_baseline',
                 reached=False)
         return result
+    # A baseline that already ran past the hard ceiling leaves no room for a
+    # bounded fallback: skip the ranked methods entirely and record why.
+    if baseline_s > AUTO_FALLBACK_MAX_S:
+        _attach(result, base_method, tried, None, None,
+                note='fallback skipped: baseline too slow',
+                source='auto_baseline', reached=False)
+        result['method_used']['fallback_skipped'] = True
+        result['method_used']['baseline_s'] = round(baseline_s, 2)
+        return result
 
     in_objs = _safe_load(src) if os.path.exists(src) else []
     analysis_objects = _analyze_objects(src, ctx)
@@ -805,6 +842,11 @@ def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
         else object_analysis.ObjectAnalysis()
     recs = rank_methods(combined)
     attempts = 0
+    fallback_start = time.monotonic()
+    fallback_budget = min(max(AUTO_FALLBACK_MIN_S,
+                              AUTO_FALLBACK_BUDGET_FACTOR * baseline_s),
+                          AUTO_FALLBACK_MAX_S)
+    budget_reached = False
     for rec in recs:
         method = get_method(rec.num)
         if method is None or method.num == base_method.num:
@@ -815,6 +857,9 @@ def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
         if method.invents_geometry and rec.score < AUTO_INVENT_MIN_SCORE:
             continue
         if attempts >= AUTO_MAX_ATTEMPTS:
+            break
+        if time.monotonic() - fallback_start >= fallback_budget:
+            budget_reached = True
             break
         attempts += 1
         trial_out = os.path.join(tmpdir, 'method_%d%s' % (method.num, ext))
@@ -830,9 +875,16 @@ def _auto(src, out, tmpdir, ctx, multi, ext, allow_escalation=True):
             _attach(trial, method, tried, analysis_objects, recs,
                     note=note, source='auto_escalated', reached=True)
             return trial
-    # Nothing beat the baseline: keep the baseline output/report.
+    # Nothing beat the baseline: keep the best candidate (the baseline output
+    # and report are the only ones auto can adopt, since adopting requires a
+    # strict-watertight result). When the wall-clock fallback budget was
+    # reached, the tried methods are still reported with the budget note.
+    note = ('fallback budget reached' if budget_reached else _multi_note(multi))
     _attach(result, base_method, tried, analysis_objects, recs,
-            note=_multi_note(multi), source='auto_baseline', reached=False)
+            note=note, source='auto_baseline', reached=False)
+    if budget_reached:
+        result['method_used']['budget_reached'] = True
+        result['method_used']['fallback_budget_s'] = round(fallback_budget, 2)
     return result
 
 
