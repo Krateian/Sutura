@@ -42,7 +42,11 @@ def run(args, path, out=None):
 
 
 def main():
-    files = sorted(f for f in os.listdir(SAMPLES) if f.lower().endswith('.stl'))
+    # Only the canonical fixtures: a stray `*_fixed.stl` output left in the
+    # directory (from a manual run) must not be treated as a corpus sample.
+    files = sorted(f for f in os.listdir(SAMPLES)
+                   if f.lower().endswith('.stl')
+                   and '_fixed' not in f.lower())
     failed = []
     with tempfile.TemporaryDirectory(prefix='sutura-corpus-') as tmp:
         for name in files:
