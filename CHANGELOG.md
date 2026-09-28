@@ -24,6 +24,33 @@ All notable changes to this project are documented here.
   with `manifold3d`, removing internal interfaces and degenerate
   self-intersections before the main repair passes.
 
+- **Method #14 Mirror Complete (`sutura/mirror_repair.py`).** A symmetry-aware
+  alternative to Poisson closing for a single-sided scan: `detect_mirror_plane`
+  fits the dominant boundary loop's plane (planarity x dominance
+  confidence), `mirror_close` reflects the visible surface across it (winding
+  flipped so the shared boundary edges cancel), welds the seam and dissolves
+  overlapping halves into one outer shell with `extract_outer_shell`; low
+  confidence or an invalid stitch falls back to screened-Poisson reconstruction
+  (#8). The `closing` report records `mode` (`mirror`/`poisson_fallback`) and
+  `mirror_score`.
+
+- **Method #15 Wall Thicken (`sutura/wall_thickness.py`).** Opt-in thin-wall
+  analysis and repair: an SDF grid (area-weighted surface samples + nearest
+  normal sign) yields a heatmap-ready per-vertex thickness with `min`/`median`/
+  `mean`, and `thicken_to_min` offsets thin walls by a morphological dilation
+  re-extracted with a dependency-free marching-tetrahedra pass. Excluded from
+  the ranking (`needs_user_input`), selected with `--methods 15`; CLI
+  `--wall-min-thickness T` sets the target (default 1 % of the bbox diagonal).
+
+- **Learning triage (`history.py` + `methods.rank_methods`).** Each repair now
+  records the per-`(template, method)` outcome and elapsed time into
+  `~/.local/share/sutura/triage_learning.json` (anonymous: template and method
+  slugs only). `rank_methods` adds a bounded Beta(2,2) Bayesian bonus
+  (`[0, 0.05]`, damped by speed, zero without data) for the templates the
+  analysis actually fired. Toggle with `learning_triage` / `SUTURA_LEARNING_TRIAGE`
+  / `--no-learning-triage`; reset with `sutura clear-learning` or the GUI
+  Options → General → Reset learning button. No network.
+
 ### Fixed
 
 - **The untagged automatic method fallback is now time-budgeted.** When the

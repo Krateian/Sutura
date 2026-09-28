@@ -40,12 +40,15 @@ Options window, never in the way of the plain repair.
 
 - **Deep-repair ladder (`repair.deep_repair_ladder`).** The single entry point for the tiers after the stage-1 chain, called where the fTetWild block used to be (before `_split_pinched_vertices` and the final stage-1 measurement). Mode `deep_repair` in `DEEP_REPAIR_MODES` = `off`/`local`/`full`, resolved by `resolve_deep_repair` (CLI `--deep-repair` > `SUTURA_DEEP_REPAIR` > config `deep_repair` > `DEEP_REPAIR_DEFAULT='full'`) and, for the CLI, `resolve_deep_repair_flags` (`--no-fallback-ftetwild` -> `off`, `--experimental-fallback-ftetwild` -> `full` when no `--deep-repair` is given; `ftetwild` is only non-False in `full`). Library default `deep_repair=None` keeps the pre-ladder behaviour and adds no report key. `full` runs `_ftetwild_tier` (the old block, moved verbatim): output identical to 53cb9a7 (byte-compared on six real-world samples; `tests/test_deep_repair.py` compares `None` vs `full` with a faked fTetWild). `local` runs `_local_remesh_tier`, a PyMeshLab prototype: `_damaged_region` (faces with an edge used != 2 times, grown by one vertex ring), delete, `meshing_repair_non_manifold_vertices`, `meshing_close_holes(maxholesize=LOCAL_REMESH_MAX_HOLE, refinehole=True, refineholeedgelen=mean region edge length)`, then `_umbrella_fair` on the vertices appended after the deletion (PyMeshLab's selected-only Laplacian moved surrounding vertices, measured, hence the numpy umbrella operator). Guards: exact-coordinate face multiset outside the region preserved (`_face_keys`), holes and nm edges no worse and not both unchanged, pymeshlab SI count not higher. Scope gates (`LOCAL_MAX_NM_EDGES=0`, `LOCAL_MAX_LOOP_LEN=16`, `LOCAL_MAX_REGIONS=8`, `LOCAL_MAX_REMOVED_FACES=2000`, `LOCAL_MAX_SECONDS=10`, checked between steps; reject reasons `scope: ...`/`time`) come from the 40-sample run: the tier ran on 9 meshes (all nm-free, loops <= 14, regions <= 6, <= 822 deleted faces) and gained 3 (40886, 46012, 71691; strict 31 -> 34), while the 115 corpus gained 0 at +69 % time. `LOCAL_REMESH_REFINE=False`: `close_holes(refinehole=True)` cost ~9 s per 90k-face mesh (whole-mesh pass) and changed no outcome, so the fairing step currently has no interior vertex to move. The outside-face guard is `_faces_preserved` (vectorized, smallest-cyclic-rotation canonical form). The local tier is NOT part of `full`. `_deep_repair_offer` fills `deep_repair.available` (`holes_remaining`, `nm_remaining`, `tiers`, `estimate_s`) when holes/nm remain and a tier was not run (fTetWild only if installed). `estimate_deep_repair_time` uses PLACEHOLDER coefficients `DEEP_ESTIMATE_*`, to be fitted from the benchmark's `estimate_s`/`actual_s` columns. GUI integration (first run without deep repair, pop-up with the estimate, Options setting writing the config key) is done on the Mac side and is NOT in this change; until then the GUI keeps its current fTetWild checkboxes. The Liepa 2003 variant (minimum-weight DP triangulation, density refinement, bilaplacian fairing) is planned but not implemented.
 
-- **Repair method registry (`sutura_engine.methods`, v0.6.0).** Twelve methods with
+- **Repair method registry (`sutura_engine.methods`, v0.6.0; v0.6.1 added
+  #14/#15).** Fourteen methods with
   stable user-facing numbers and slugs (1 `quick_clean`, 2 `local_mend`,
   3 `full_mend`, 4 `join`, 5 `autorefine`, 6 `exact_refine`, 7 `ftetwild`,
   8 `balloon`, 9 `backplate`, 10 `scaffold`, 11 `transplant`,
-  12 `transplant_plus`; the old slugs and the numeric ids stay accepted
-  aliases, see the naming table in the Engine Architecture section).
+  12 `transplant_plus`, 14 `mirror_complete`, 15 `wall_thicken`; the old slugs
+  and the numeric ids stay accepted
+  aliases, see the naming table in the Engine Architecture section; 13 remains
+  an alias of `transplant_plus`).
   `--list-methods`/`--analyze`/`--methods` are the CLI
   surface; the GUI exposes the same via the file list's **Method** column and a
   right-click menu (*Analyze*, *Recommended methods*, *Use method*, *External
@@ -54,12 +57,43 @@ Options window, never in the way of the plain repair.
   first, ranked fallbacks only when the baseline is not strict-watertight;
   `_auto_escalation_allowed` keeps `--deep-repair off|local` / no-fTetWild
   runs non-escalating). Geometry-inventing methods are guarded — #7
-  output→input Hausdorff, #8/#9/#10 input→output, #11/#12 self-guarded by
-  `hausdorff_outside` — and `_evaluate` judges every candidate on the
+  output→input Hausdorff, #8/#9/#10/#14 input→output, #11/#12 self-guarded by
+  `hausdorff_outside`, #15 input→output and excluded from the ranking
+  (`needs_user_input`) so a thicken is always an explicit choice — and
+  `_evaluate` judges every candidate on the
   reload-equivalent weld. `sutura_engine.diagnosis` (with the
   `object_analysis.py` + `templates.py` shims) drives
   `--analyze` and the ranking; third-party engines are listed separately and
   never mixed into it. New runtime deps: scipy (~99 MB) and trimesh (~4.6 MB).
+- **Mirror completion (`sutura/mirror_repair.py`, #14) and thin-wall analysis /
+  thicken (`sutura/wall_thickness.py`, #15, v0.6.1).** #14 detects the dominant
+  boundary loop's symmetry plane (`detect_mirror_plane`: planarity x dominance
+  score) and `mirror_close` reflects the visible surface across it (winding
+  flipped so the shared boundary edges cancel), welds the seam, and fuses
+  overlapping halves with `hull.extract_outer_shell`; low confidence or an
+  invalid stitch falls back to `closing.poisson_close`. It is wired into
+  `repair.closing_ladder` as `closing='mirror'` and guarded input→output.
+  `wall_thickness` builds a signed-distance grid (area-weighted surface samples
+  + nearest-normal sign), estimates per-vertex thickness by an inward ray march
+  to the first crossing (opposite-normal fallback) and `thicken_to_min` offsets
+  thin walls by a morphological dilation (`delta=(target-min)/2`, capped at 25 %
+  of the bbox diagonal) re-extracted with a dependency-free marching-tetrahedra
+  pass; `repair.wall_thicken_tier` runs it on the original input, cleans with
+  PyMeshLab and adopts only a strict-watertight, no-worse candidate. CLI
+  `--wall-min-thickness T` (default 1 % of the bbox diagonal). Both modules must
+  stay in the module lists of `install.sh`, `install-macos.sh`,
+  `scripts/build_appimage.sh`, `updater.APP_MODULES` and `build-macos.yml`.
+- **Learning triage (`history.py` + `methods.rank_methods`, v0.6.1).**
+  `history.record_learning` aggregates the anonymous per-repair
+  `methods_tried` entries (id, template, outcome, elapsed_ms added by
+  `triage._record`) into `~/.local/share/sutura/triage_learning.json`
+  (privacy rule unchanged: template ids + method slugs only, never a file/name).
+  `history.learning_bonus` is a Beta(2,2) posterior success mean scaled to
+  `[0, LEARNING_MAX_BONUS=0.05]`, damped by a speed factor, zero without data;
+  `rank_methods` adds the max bonus over the templates the analysis actually
+  fired (never invents a score for an un-favoured method). Toggle: config
+  `learning_triage` / `SUTURA_LEARNING_TRIAGE` / CLI `--no-learning-triage`;
+  reset: CLI `clear-learning` and GUI Options → General → Reset learning.
 - **Scan-closing / proxy-template tiers (`sutura/closing.py`,
   `sutura/proxy_repair.py`, v0.6.0).** Methods #8/#9/#10 run on the ORIGINAL
   input (stage 1 already flat-caps a single loop, so they would otherwise only
@@ -144,6 +178,8 @@ slug and the new slug are all accepted by `get_method` / `--methods` / saved GUI
 | 10 | `scaffold.py` | `scaffold` | Scaffold | `proxy_template`, `proxy`, `m10`, `10` |
 | 11 | `transplant.py` | `transplant` | Transplant | `repeat_auto`, `repeat`, `m11`, `11` |
 | 12 | `transplant.py` | `transplant_plus` | Transplant+ | `repeat_manual`, `graft`, `transplant+`, `m12`, `13` |
+| 14 | `mirror_complete.py` | `mirror_complete` | Mirror Complete | `mirror`, `m14`, `14` |
+| 15 | `wall_thicken.py` | `wall_thicken` | Wall Thicken | `wall`, `thicken`, `m15`, `15` |
 
 ## How to add a repair method
 

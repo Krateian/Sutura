@@ -99,6 +99,9 @@ jobs:
           cp sutura/ftetwild_bridge.py dist/sutura-cli/
           cp sutura/indirect_bridge.py dist/sutura-cli/
           cp sutura/csg_bridge.py dist/sutura-cli/
+          # mirror completion (#14) / wall thicken (#15) modules
+          cp sutura/mirror_repair.py dist/sutura-cli/
+          cp sutura/wall_thickness.py dist/sutura-cli/
 
       - name: Build GUI .app (windowed onedir)
         run: |

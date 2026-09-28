@@ -90,6 +90,15 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `closing.py` / `proxy_repair.py` tiers are reachable from the CLI
   (`--methods 8/9/10`) and from the GUI *Use method* list (all twelve methods);
   no separate flag exists, so parity holds without a dedicated control.
+- **Method #14 Mirror Complete / #15 Wall Thicken (v0.6.1):** both are in the
+  shared method registry, so the GUI *Use method* menu lists and tags them with
+  no extra control (their EN/TR tooltips are localized). The only CLI-only
+  surface is the numeric `--wall-min-thickness T` (the GUI runs #15 with the
+  automatic default, 1 % of the bbox diagonal) — documented here as an accepted
+  gap; a numeric entry can be added to the Options window later.
+- **Learning triage (v0.6.1):** CLI `--no-learning-triage` / `clear-learning`
+  map onto the GUI Options → General *Learning triage* checkbox and *Reset
+  learning* button, so the parity rule holds.
 - **P-FINAL (reload-honest verdict + P-WELD + csg_bridge):** P-HONEST and
   P-WELD are automatic pipeline behaviour, not user-facing options, so they
   apply identically to CLI and GUI repairs and need no parity control. The

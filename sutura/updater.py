@@ -74,6 +74,8 @@ APP_MODULES = (
     'proxy_repair.py',
     'repeat_repair.py',
     'repeat_picker_render.py',
+    'mirror_repair.py',
+    'wall_thickness.py',
     'csg_bridge.py',
     'history.py',
     'repair_score.py',

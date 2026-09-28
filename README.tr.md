@@ -244,7 +244,10 @@ Poisson kapatma ve #9 düz-arka kapatma tek-taraflı taramalar ve kabartmalar
 için (`sutura/closing.py`), #10 ağır hasarlı ama başka yönden sağlıklı
 mesh'ler için vekil-şablon yeniden inşası (`sutura/proxy_repair.py`); #11
 *tekrar-farkında otomatik* ve #12 *tekrar-farkında elle* ise yinelenen öge
-nakli katmanlarıdır (`sutura/repeat_repair.py`).
+nakli katmanlarıdır (`sutura/repeat_repair.py`); #14 *aynalı tamamlama* simetrik
+tek-taraflı bir taramanın eksik arkasını görünen yüzeyi aynalayarak doldurur
+(`sutura/mirror_repair.py`); #15 *duvar kalınlaştır* ise isteğe bağlı ince-duvar
+kalınlaştırıcıdır (`sutura/wall_thickness.py`) ve asla otomatik çalışmaz.
 8–10 numaralı yöntemler girdi üzerinde çalışır (fTetWild katmanı gibi) ve
 sonuçlarını yalnızca katı-su geçirmez olduğunda ve özgün yüzey hâlâ
 kapsandığında (tek-taraflı girdi→çıktı Hausdorff koruması) benimser, böylece
@@ -259,9 +262,11 @@ kaldığında, temelden daha kötü olmadığında ve dokunulmamış geometri
 kaymadığında (`hausdorff_outside`) benimsenir; `repeat` rapor anahtarı desen
 tipini ve onarılan konum sayısını taşır.
 
-#### Onarım yöntemleri (#1–#12)
+#### Onarım yöntemleri (#1–#15)
 
-On iki yöntem, `--list-methods` çıktısındaki kararlı numara sırasıyla:
+On dört yöntem, `--list-methods` çıktısındaki kararlı numara sırasıyla (adlandırma
+tablosundaki kanonik kimlikler; burada gösterilen eski slug'lar geçerli takma ad
+olarak kabul edilmeye devam eder):
 
 | # | id | Aile | Ne yapar | Geometri uydurur mu? |
 |---|---|---|---|---|
@@ -277,12 +282,16 @@ On iki yöntem, `--list-methods` çıktısındaki kararlı numara sırasıyla:
 | 10 | `proxy_template` | şablon | Kaba su geçirmez vekil + sağlıklı özgün bölgelerin yeniden izdüşümü. | evet (vekil) |
 | 11 | `repeat_auto` | desen | Bir yineleme deseni bulup hasarlı/eksik her ögeye sağlam bir kopyayı nakleder. | evet (nakil) |
 | 12 | `repeat_manual` | desen | Kullanıcının `--repeat-source`/`--repeat-target` ile işaretlediği ögeyi nakleder; asla otomatik çalışmaz. | evet (nakil) |
+| 14 | `mirror_complete` | kapama | Tek-taraflı bir taramanın simetri düzlemini bulup görünen yüzeyi aynalayarak arkasını tamamlar (simetri güveni düşükse #8 Poisson'a döner). | evet (aynalı arka) |
+| 15 | `wall_thicken` | zarf | İsteğe bağlı: SDF ızgarasından tepe-başına duvar kalınlığını ölçer ve `--wall-min-thickness` altındaki duvarları morfolojik öteleme ile kalınlaştırır. | evet (öteleme) |
 
 Geometri uyduran yöntemler asla korumasız çalışmaz: #7 tek-taraflı çıktı→girdi
-Hausdorff korumasıyla, #8/#9/#10 girdi→çıktı korumasıyla (özgün yüzey kapsanmış
-kalmalı), #11/#12 ise kendi `hausdorff_outside` korumasıyla sınırlıdır. Hiçbiri,
-etiketsiz yolda otomatik temel başarısız olup yöntemin öneri puanı eşiği
-aşmadıkça çalışmaz.
+Hausdorff korumasıyla, #8/#9/#10/#14 girdi→çıktı korumasıyla (özgün yüzey
+kapsanmış kalmalı), #11/#12 ise kendi `hausdorff_outside` korumasıyla
+sınırlıdır; #15 de girdi→çıktı korumalıdır ve #12 gibi açıkça seçilmelidir.
+Hiçbiri, etiketsiz yolda otomatik temel başarısız olup yöntemin öneri puanı
+eşiği aşmadıkça çalışmaz; #15 sıralamadan tamamen çıkarılmıştır çünkü
+kalınlaştırma kullanıcının vermesi gereken bir şekil kararıdır.
 
 #### Nesne analizi ve öneriler
 
@@ -312,6 +321,18 @@ bağımsız olarak önerilen yedek yöntemlerle onarılır (nesne başına `meth
 raporlanır). Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
 ek deneme çalıştıysa `analysis` ile `recommendations` alanlarını ekler.
 
+**Öğrenen triyaj (yerel, sınırlı).** Anonim kullanım geçmişi etkinse her onarım
+aynı zamanda `(nesne tipi, yöntem)` başına sonucu (kabul/red) ve geçen süreyi
+`~/.local/share/sutura/triage_learning.json` dosyasına kaydeder (yalnızca şablon
+kimlikleri ve yöntem slug'ları — geçmişle aynı gizlilik kuralı). `rank_methods`
+ardından küçük bir Bayes bonusu ekler: Beta(2, 2) posterior başarı ortalaması
+`[0, 0.05]` aralığına ölçeklenir, hız çarpanıyla azaltılır ve veri yoksa tam
+olarak sıfırdır. Bonus, geometrik analizin zaten öne çıkarmadığı bir yöntemi asla
+yükseltmez. `learning_triage` yapılandırma anahtarı / `SUTURA_LEARNING_TRIAGE` /
+`--no-learning-triage` ile açılıp kapanır ve kullanım geçmişine dokunmadan
+CLI'den (`sutura clear-learning`) veya GUI **Seçenekler → Genel → Öğrenmeyi
+sıfırla** düğmesinden sıfırlanır. Ağ erişimi kullanılmaz.
+
 #### GUI'de dosya-başına yöntem etiketleme (sağ tık menüsü)
 
 Aynı kayıt defteri GUI'de de açığa çıkar. Dosya listesinde bir **Yöntem**
@@ -319,8 +340,8 @@ sütunu *Otomatik*, analizden sonra *Otomatik (öneri #3 … %82)* ya da
 kullanıcının seçtiği etiket zincirini gösterir. Bir veya birkaç dosyaya sağ
 tıklamak bir menü açar: *Analiz et* nesne-başına analizi (`--analyze`) arka
 planda çalıştırır, *Önerilen yöntemler* sıralanmış en iyi yöntemleri bir puan
-çubuğu ve gerekçesi ipucunda olacak şekilde listeler, *Yöntem kullan* on iki
-yöntemin (#1–#12) tümünü sırayı koruyan işaretlenebilir bir açılır menü olarak
+çubuğu ve gerekçesi ipucunda olacak şekilde listeler, *Yöntem kullan* on dört
+yöntemin (#1–#15) tümünü sırayı koruyan işaretlenebilir bir açılır menü olarak
 listeler (işaretlenme sırası deneme sırasıdır, örn. `#2 → #3 → #5`); #12'yi
 seçmek, nesneyi CPU ile tarayan (OpenGL yok) küçük bir seçici açar; kullanıcı
 önce sağlam kaynak ögeye, sonra hasarlı hedef ögeye tıklar ve *Harici
@@ -385,6 +406,34 @@ temizlenmiş diziler üzerinde değil (stage 1 döngüyü zaten düz-kapatmış 
 ve sonuç yalnızca katı-su geçirmez olduğunda ve özgün yüzey tek-taraflı bir
 girdi→çıktı Hausdorff korumasıyla hâlâ kapsandığında benimsenir. Modülün
 notları (örn. "back surface was estimated") `closing` rapor anahtarına düşer.
+
+#### Aynalı tamamlama
+
+#14 (`mirror_complete`, `sutura/mirror_repair.py`) simetri-farkındalı, bir
+tek-taraflı taramada Poisson kapatmaya alternatiftir. `detect_mirror_plane` en
+baskın sınır döngüsünün düzlemini uydurur ve bu döngünün ne kadar düzlemsel ve
+baskın olduğunu puanlar; güven eşiği aşarsa `mirror_close` görünen yüzeyi bu
+düzlemde yansıtır (sarım ters çevrilir, böylece paylaşılan sınır kenarları
+birbirini götürür ve dikiş kapanır), dikişi kaynaklar ve çakışan yarım küreleri
+`extract_outer_shell` ile tek bir dış kabuğa indirir. Simetri güveni düşükse ya
+da aynalı dikiş geçerli bir katı değilse #8 taramalı Poisson yeniden inşasına
+geri döner; `closing` raporundaki `mode` alanı hangi yolun çalıştığını belirtir
+(`mirror` / `poisson_fallback`) ve `mirror_score` güveni kaydeder.
+
+#### İnce duvar analizi ve kalınlaştırma
+
+`sutura/wall_thickness.py` (#15 `wall_thicken` yönteminin arkasında) bir mesh'in
+yerel duvar kalınlığını işaretli-mesafe-alanı ızgarasından tahmin eder: alan
+ağırlıklı yüzey örnekleri ve en yakın-normal işareti, ardından her yüz merkezinden
+içe doğru ilk sıfır geçişine ışın yürüyüşü (en yakın ters-bakan örnek yedeğiyle).
+`estimate_wall_thickness` **ısı-haritasına hazır** tepe-başına bir dizi ile
+`min`/`median`/`mean` ve hedefin altındaki tepe sayısını döndürür.
+`thicken_to_min` ince duvarları katının morfolojik genişlemesiyle öteler
+(`delta = (hedef - min) / 2`, bbox köşegeninin %25'i ile sınırlı) ve yüzeyi
+bağımlılıksız bir marching-tetrahedra adımıyla yeniden çıkarır. #15 tasarım
+gereği isteğe bağlıdır (`needs_user_input`, sıralamadan çıkarılır ve asla
+otomatik kademelendirilmez) ve açıkça seçilir — `--methods 15`, isteğe bağlı
+`--wall-min-thickness T` (varsayılan bbox köşegeninin %1'i).
 
 #### Vekil şablon onarımı
 
@@ -507,7 +556,7 @@ söyler.
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%70 — deneysel | **Seçili modeli** `orca.host` üzerinden (numpy'siz erişimciler) bellekte okuyan, Sutura CLI'sını çağırıp sonucu sahneye geri yükleyen tek başına çalışan betik eklentisi. Gerçek bir OrcaSlicer **2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux, macOS doğrulanmış bir bonus. Onarım sırasında yerel ilerleme iletişim kutusu; `request_permissions` CLI yolunun fs_read iznini önceden beyan eder (subprocess istemleri kalır — bir OrcaSlicer denetim API kısıtı). Hâlâ erken aşamada; nightly / 2.4.2'den yeni sürümler gerektirir. |
 | Dolaylı predikatlar / exact arrangement-lite (Faz B + C1–C4) | ~%50 — deneysel | Self-intersection geometrisini `--experimental-autorefine`'ın float64 snap-rounding'i yerine exact dolaylı predikatlarla bölen bir Rust prototipi (`--experimental-indirect-autorefine`, `rust/sutura-geom`). Faz B zinciri kurdu (predikat çekirdeği, exact üçgen–üçgen sınıflandırıcı, implicit noktalarla 2D CDT, `arrangement_lite` PyO3 bağlaması, `repair.py` bağlantısı). Faz C1 (0.4.0) her kesişim noktasını, oluşturulmuş noktaları zincirlemek yerine orijinal girdi düzlemlerinden/doğrularından kurar ve exact `BigRational` predikatlarının önüne kesin bir aralık-aritmetiği filtresi ekler (sonuçlar yapı gereği değişmez, fark testleriyle doğrulandı). thingi10k_1038441 üzerinde ölçüldü (M2): 1001 yüzlük alt küme 53 sn → 6 sn, 5000 yüzlük alt küme zaman aşımı → 31 sn, tam mesh 30+ dk'da bitmiyordu → ~463 sn; çıktı yüz sayıları birebir aynı. Faz C2, üçgen başına kısıtlı üçgenlemedeki doğrusal taramaları kaldırır (yürüyerek nokta konumlama, segment koridoru yürüyüşü, yerel güncellemeler, tamsayı tabanlı exact geri dönüş); çıktı bayt düzeyinde aynıdır: aynı x86_64 VM'de tam mesh 830 sn'den 52,5 sn'ye indi (5000 yüzlük alt küme 56 sn → 13 sn); M2'de tam mesh artık 29,8 sn (C1: ~463 sn). Faz C3 (sınıflandırma kısayolları, tamsayı tabanlı exact aritmetik, çıktı yine birebir aynı) VM süresini 28,1 sn'ye, Faz C4 (indirgenmiş exact anahtarların doğrudan hash'lenmesi, tamsayı tabanlı implicit nokta kurulumu, çıktı birebir aynı) ise 17,6 sn'ye indirir (M2: C3 sonrası 16,8 sn, C4 sonrası 10,6 sn). Bilinen sınırlamalar: varsayılan olarak kapalı ve geliştirici derlemesi gerektirir (`maturin develop`, AppImage/.dmg'ye dahil değil); 115 mesh'lik corpus'ta henüz ölçülmedi. Harici bir alternatif olan Geogram `MeshSurfaceIntersection` ölçüldü ve reddedildi (çıktısı manifold3d yeniden kurmasınca kabul edilmiyor, topluluk sürümü yoğun taramalarda çöküyor) — bkz. `docs/geogram-spike-2026-09-24.md`. |
-| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi taklidi, geçmiş, gerçek-dünya corpus, manifold3d su geçirmezlik kontrolü). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır (stage-2'ye bağlı bütçe, stage2-3mf ve gerçek-dünya corpus süitleri yalnızca 3.11 kolunda); ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 54 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, aynalı tamamlama, ince-duvar analizi/kalınlaştırma, öğrenen triyaj, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi taklidi, geçmiş, gerçek-dünya corpus, manifold3d su geçirmezlik kontrolü). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır (stage-2'ye bağlı bütçe, stage2-3mf ve gerçek-dünya corpus süitleri yalnızca 3.11 kolunda); ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 54 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
 
@@ -1650,6 +1699,14 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.6.1 — 2026-09-28** — İki isteğe bağlı geometri yöntemi: **Aynalı
+  Tamamlama** (#14, tek-taraflı simetrik bir taramanın eksik arkasını algılanan
+  simetri düzleminde görünen yüzeyi aynalayarak tamamlar; Poisson yedeğiyle) ve
+  **Duvar Kalınlaştır** (#15, SDF ızgarasından tepe-başına duvar kalınlığı ve
+  morfolojik hedefe-kalınlaştırma, `--wall-min-thickness T`); ayrıca **öğrenen
+  triyaj** (küçük, sınırlı yerel `(nesne tipi, yöntem)` sıralama bonusu;
+  `--no-learning-triage` / `learning_triage` ile açılıp kapanır,
+  `sutura clear-learning` veya GUI Seçenekler ile sıfırlanır).
 - **v0.6.0 — 2026-09-28** — Onarım yöntem kayıt defteri: on iki kararlı yöntem
   (`--list-methods`), nesne-başına analiz ve öneriler (`--analyze`), açık
   etiketleme (`--methods 2,3,5`) ve GUI sağ tık **dosya-başına yöntem

@@ -2677,7 +2677,7 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
     """
     rec = {'tier': 'wall_thicken', 'ran': True, 'adopted': False,
            'watertight': False, 'min_before': None, 'min_after': None,
-           'min_thickness': None, 'thin_before': None, 'thin_after': None,
+           'min_thickness': None, 'delta': None, 'thin_before': None,
            'faces': None, 'notes': [], 'reason': None}
     try:
         import wall_thickness as _wt
@@ -2692,6 +2692,7 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
         rec['min_thickness'] = rep.get('min_thickness')
         rec['min_before'] = rep.get('min_before')
         rec['thin_before'] = rep.get('thin_before')
+        rec['delta'] = rep.get('delta')
         rec['notes'] = list(rep.get('notes') or [])
         if 'error' in rep:
             rec['reason'] = 'module error: %s' % rep['error']

@@ -100,6 +100,15 @@ STRINGS = {
         'method_name_scaffold': 'Scaffold (proxy template)',
         'method_name_transplant': 'Transplant (repeat auto)',
         'method_name_transplant_plus': 'Transplant+ (repeat manual)',
+        'method_name_mirror_complete': 'Mirror Complete',
+        'method_name_wall_thicken': 'Wall Thicken',
+        'method_tip_mirror_complete': 'MIRROR COMPLETE (#14) — complete the '
+            'missing back of a single-sided scan by mirroring the visible '
+            'surface across its detected symmetry plane. Falls back to Poisson '
+            'when the symmetry is not confident. Estimated geometry.',
+        'method_tip_wall_thicken': 'WALL THICKEN (#15) — opt-in: measure '
+            'per-vertex wall thickness from an SDF grid and thicken walls below '
+            'the target by a morphological offset. Never runs automatically.',
         'repeat_pick_title': 'Pick repeated elements',
         'repeat_pick_source': 'Click the HEALTHY element to copy from',
         'repeat_pick_target': 'Now click the DAMAGED element to replace',
@@ -365,6 +374,12 @@ STRINGS = {
                                     'result is not worse than the default chain, '
                                     'but it can make a repair much slower.',
         'opt_history': 'Keep an anonymous usage history (no file names or paths)',
+        'opt_learning': 'Learning triage: rank methods from the local repair history',
+        'opt_learning_note': 'A small, bounded bonus from the anonymised '
+            '(object type, method) success and time recorded locally. No network.',
+        'opt_clear_learning': 'Reset learning',
+        'opt_learning_cleared': 'Learning triage data was reset.',
+        'opt_learning_empty': 'No learning data to reset.',
         'opt_cache': 'Enable geometry and analysis cache (~/.cache/sutura/)',
         'opt_cache_size': 'Cache size: %s',
         'opt_clear_cache': 'Clear Cache',
@@ -553,6 +568,16 @@ STRINGS = {
         'method_name_scaffold': 'İskelet (vekil şablon)',
         'method_name_transplant': 'Nakil (yineleme, otomatik)',
         'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
+        'method_name_mirror_complete': 'Aynalı Tamamlama',
+        'method_name_wall_thicken': 'Duvar Kalınlaştır',
+        'method_tip_mirror_complete': 'AYNALI TAMAMLAMA (#14) — tek taraflı '
+            'taramada eksik arka yüzeyi, görünen yüzeyi algılanan simetri '
+            'düzleminde aynalayarak tamamlar. Simetri güveni düşükse Poisson '
+            'yöntemine döner. Tahmini geometri.',
+        'method_tip_wall_thicken': 'DUVAR KALINLAŞTIR (#15) — isteğe bağlı: '
+            'SDF ızgarasından her tepe için duvar kalınlığını ölçer ve hedefin '
+            'altındaki duvarları morfolojik öteleme ile kalınlaştırır. Asla '
+            'otomatik çalışmaz.',
         'repeat_pick_title': 'Yinelenen ögeleri seç',
         'repeat_pick_source': 'Kopyalanacak SAĞLAM ögeye tıklayın',
         'repeat_pick_target': 'Şimdi değiştirilecek HASARLI ögeye tıklayın',
@@ -817,6 +842,13 @@ STRINGS = {
                                     'zincirden kötü değilse uygulanır, ama onarımı '
                                     'belirgin şekilde yavaşlatabilir.',
         'opt_history': 'Anonim kullanım geçmişi tut (dosya adı veya yol yok)',
+        'opt_learning': 'Öğrenen triyaj: yöntemleri yerel onarım geçmişine göre sırala',
+        'opt_learning_note': 'Yerel olarak kaydedilen anonimleştirilmiş (nesne '
+            'tipi, yöntem) başarı ve süre verisinden küçük, sınırlı bir bonus. '
+            'Ağ erişimi yok.',
+        'opt_clear_learning': 'Öğrenmeyi sıfırla',
+        'opt_learning_cleared': 'Öğrenen triyaj verisi sıfırlandı.',
+        'opt_learning_empty': 'Sıfırlanacak öğrenme verisi yok.',
         'opt_cache': 'Geometri ve analiz önbelleğini etkinleştir (~/.cache/sutura/)',
         'opt_cache_size': 'Önbellek boyutu: %s',
         'opt_clear_cache': 'Önbelleği Temizle',
@@ -987,6 +1019,12 @@ def _method_name(num):
         return '#%s' % num
     key = 'method_name_' + m.id
     return _t(key) if key in STRINGS['en'] else m.name
+
+
+def _method_tip(method):
+    """Localized method tooltip (falls back to the registry description)."""
+    key = 'method_tip_' + method.id
+    return _t(key) if key in STRINGS['en'] else method.description
 
 
 _METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface',
@@ -1366,6 +1404,7 @@ class RepairWorker(QThread):
         cfg = updater.load_config()
         self._no_history = not bool(cfg.get('history_enabled', True))
         self._no_cache = not bool(cfg.get('cache_enabled', True))
+        self._no_learning = not bool(cfg.get('learning_triage', True))
 
     def cancel(self):
         self._cancelled = True
@@ -1407,6 +1446,8 @@ class RepairWorker(QThread):
                 args.append('--no-history')
             if self._no_cache:
                 args.append('--no-cache')
+            if self._no_learning:
+                args.append('--no-learning-triage')
             if self._edge_tiebreak:
                 args.append('--experimental-edge-tiebreak')
             if self._join_components:
@@ -2653,6 +2694,25 @@ class OptionsDialog(QDialog):
         g.addLayout(cache_row)
         self._update_cache_size_label()
 
+        # Learning triage: a small, bounded ranking bonus derived from the
+        # local usage history. Resettable here without touching the history.
+        self.chk_learning = QCheckBox(_t('opt_learning'))
+        self.chk_learning.setChecked(bool(cfg.get('learning_triage', True)))
+        self.chk_learning.toggled.connect(
+            lambda on: self._save_key('learning_triage', bool(on)))
+        g.addWidget(self.chk_learning)
+        learn_note = QLabel(_t('opt_learning_note'))
+        learn_note.setWordWrap(True)
+        learn_note.setContentsMargins(22, 0, 0, 0)
+        g.addWidget(learn_note)
+        learn_row = QHBoxLayout()
+        learn_row.setContentsMargins(22, 0, 0, 0)
+        self.btn_clear_learning = QPushButton(_t('opt_clear_learning'))
+        self.btn_clear_learning.clicked.connect(self._on_clear_learning)
+        learn_row.addStretch(1)
+        learn_row.addWidget(self.btn_clear_learning)
+        g.addLayout(learn_row)
+
         g.addStretch(1)
         self.tabs.addTab(general, _t('opt_tab_general'))
 
@@ -2872,6 +2932,17 @@ class OptionsDialog(QDialog):
                                     _t('opt_cache_cleared') % cache.format_bytes(freed))
         except Exception as e:
             QMessageBox.warning(self, _t('opt_clear_cache'), str(e))
+
+    def _on_clear_learning(self):
+        try:
+            import history
+            removed = history.clear_learning()
+        except Exception as e:
+            QMessageBox.warning(self, _t('opt_clear_learning'), str(e))
+            return
+        QMessageBox.information(
+            self, _t('opt_clear_learning'),
+            _t('opt_learning_cleared') if removed else _t('opt_learning_empty'))
 
     # --- profile name helpers (QMessageBox/QInputDialog wrappers so the
     # offscreen tests can stub them without a modal event loop)
@@ -4436,7 +4507,7 @@ class MainWindow(QMainWindow):
             if not ok:
                 act.setToolTip(_t('menu_unavailable', reason or ''))
             else:
-                act.setToolTip(method.description)
+                act.setToolTip(_method_tip(method))
             act.setData(method.num)
             if method.num == 12:
                 # method 12 needs the user to pick the source/target elements:
