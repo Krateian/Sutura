@@ -111,17 +111,17 @@ def main():
         'method_auto_rec', 3, gui._method_name(3), 82), w._item_by_path[a].text(1)
     print('ok  recommendation shown in the Method column')
 
-    # Use method menu: 12 entries, placeholders / needs-input disabled
+    # Use method menu: 15 entries, placeholders / needs-input disabled
     w._on_tag_toggle([b], 'method', 3)
     m = gui.QMenu(w.tree)
     um = gui._KeepOpenMenu(gui._t('menu_use_method'), m)
     w._build_use_method_menu(um, [b], b)
     acts = um.actions()
-    assert len(acts) == 14, len(acts)
+    assert len(acts) == 15, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
-    # 8-12 are implemented and enabled (12 opens the repeat picker); 14/15
+    # 8-13 are implemented and enabled (12 opens the repeat picker); 14/15
     # (Mirror Complete / Wall Thicken) are the two appended methods.
-    for num in (8, 9, 10, 11, 12):
+    for num in (8, 9, 10, 11, 12, 13):
         assert acts[num - 1].isEnabled(), num
     assert acts[12].isEnabled() and acts[13].isEnabled(), acts[12:14]
     print('ok  Use method list, availability and order badge')

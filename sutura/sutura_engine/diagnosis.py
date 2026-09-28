@@ -275,11 +275,11 @@ def _dense_scan_heavy_si_conf(a: Any) -> float:
 
 _BUILTIN_TEMPLATES: List[Template] = [
     Template('mechanical', 'Mechanical part', (1, 3, 4, 5, 2), _mechanical_conf),
-    Template('organic', 'Organic surface', (1, 2, 3, 7, 5), _organic_conf),
-    Template('single_side_scan', 'Single-sided scan', (8, 7, 3, 2), _single_side_scan_conf),
+    Template('organic', 'Organic surface', (1, 2, 3, 13, 7, 5), _organic_conf),
+    Template('single_side_scan', 'Single-sided scan', (8, 13, 7, 3, 2), _single_side_scan_conf),
     Template('relief', 'Relief / shell', (9, 10, 3, 8), _relief_conf),
     Template('repeated_pattern', 'Repeated pattern', (11, 12, 1), _repeated_pattern_conf),
-    Template('dense_scan_heavy_si', 'Dense scan / heavy self-intersections', (5, 6, 7, 3), _dense_scan_heavy_si_conf),
+    Template('dense_scan_heavy_si', 'Dense scan / heavy self-intersections', (5, 6, 13, 7, 3), _dense_scan_heavy_si_conf),
 ]
 
 # Registered template registry (pluggable)

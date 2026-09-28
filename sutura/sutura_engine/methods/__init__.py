@@ -18,6 +18,7 @@ from sutura_engine.methods.availability import (
     always_available,
     closing_available,
     ftetwild_available,
+    graft_available,
     indirect_available,
     proxy_available,
     repeat_available,
@@ -40,6 +41,7 @@ _ftetwild_available = ftetwild_available
 _closing_available = closing_available
 _proxy_available = proxy_available
 _repeat_available = repeat_available
+_graft_available = graft_available
 
 
 def _not_implemented(phase: str) -> Callable[[], Tuple[bool, str]]:
@@ -75,9 +77,11 @@ _METHOD_ALIASES: Dict[str, int] = {
     '10': 10, 'm10': 10, 'scaffold': 10, 'proxy_template': 10, 'proxy': 10,
     # 11: Transplant (Auto)
     '11': 11, 'm11': 11, 'transplant': 11, 'repeat_auto': 11, 'repeat': 11,
-    # 12: Transplant+ (Manual) (graft and 13 are valid aliases)
-    '12': 12, 'm12': 12, '13': 12, 'm13': 12, 'transplant_plus': 12, 'transplant+': 12,
-    'graft': 12, 'repeat_manual': 12,
+    # 12: Transplant+ (Manual)
+    '12': 12, 'm12': 12, 'transplant_plus': 12, 'transplant+': 12,
+    'repeat_manual': 12,
+    # 13: Graft (shell wrap)
+    '13': 13, 'm13': 13, 'graft': 13, 'shell_wrap': 13, 'wrap': 13,
     # 14: Mirror Complete
     '14': 14, 'm14': 14, 'mirror_complete': 14, 'mirror': 14,
     # 15: Wall Thicken
@@ -185,7 +189,7 @@ _CANONICAL_BY_NUM = {
     1: 'quick_clean', 2: 'local_mend', 3: 'full_mend', 4: 'join',
     5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild', 8: 'balloon',
     9: 'backplate', 10: 'scaffold', 11: 'transplant', 12: 'transplant_plus',
-    14: 'mirror_complete', 15: 'wall_thicken',
+    13: 'graft', 14: 'mirror_complete', 15: 'wall_thicken',
 }
 
 
@@ -242,6 +246,15 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
                  + 0.3 * _clamp01(si / 200.0))
         return (_clamp01(score), 'large openings / heavy self-intersections',
                 'rec_reason_ftetwild', ())
+    if method_id == 'graft':
+        # Morphology shell wrap: the primary last-resort tier (tried before
+        # fTetWild). Slightly favours moderate openings and non-manifold load,
+        # where the verbatim hybrid preserves the healthy surface exactly.
+        score = (0.45 * _clamp01(open_ratio / 0.05)
+                 + 0.30 * _clamp01((holes + nm) / 3.0)
+                 + 0.25 * _clamp01(si / 200.0))
+        return (_clamp01(score), 'openings / holes closable by a shell wrap',
+                'rec_reason_graft', ())
     if method_id == 'balloon':
         single = _clamp01(_a(analysis, 'single_side_score'))
         relief = _clamp01(_a(analysis, 'relief_score'))

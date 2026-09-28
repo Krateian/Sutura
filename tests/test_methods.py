@@ -29,10 +29,10 @@ EXPECTED = {
     1: 'quick_clean', 2: 'local_mend', 3: 'full_mend', 4: 'join',
     5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild',
     8: 'balloon', 9: 'backplate', 10: 'scaffold',
-    11: 'transplant', 12: 'transplant_plus',
+    11: 'transplant', 12: 'transplant_plus', 13: 'graft',
     14: 'mirror_complete', 15: 'wall_thicken',
 }
-ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15]
+ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
             'pattern'}
 
@@ -248,8 +248,11 @@ def test_get_method_none_is_safe(tmp):
     # legacy slugs and numeric ids stay accepted aliases
     assert methods.get_method('fast').num == 1
     assert methods.get_method('deep_full').num == 3
-    assert methods.get_method('graft').num == 12
-    assert methods.get_method(13).num == 12
+    # legacy numeric ids: 12 = Transplant+ (manual), 13 = Graft (shell wrap)
+    assert methods.get_method('transplant_plus').num == 12
+    assert methods.get_method('graft').num == 13
+    assert methods.get_method(13).num == 13
+    assert methods.get_method('shell_wrap').num == 13
     assert methods.get_method('transplant').id == 'transplant'
 
 
@@ -753,11 +756,12 @@ def test_cli_list_methods(tmp):
     assert 'balloon' in r.stdout, r.stdout
     assert 'Balloon' in r.stdout, r.stdout      # display name shown
     assert 'Exact Refine' in r.stdout, r.stdout
+    assert 'Graft' in r.stdout, r.stdout        # method #13 display name
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
     assert [m['num'] for m in data] == ALL_NUMS
-    # 8-12 are implemented (available in an env with their deps).
-    assert all(data[n - 1]['available'] is True for n in (8, 9, 10, 11, 12)), data
+    # 8-13 are implemented (available in an env with their deps).
+    assert all(data[n - 1]['available'] is True for n in (8, 9, 10, 11, 12, 13)), data
 
 
 def test_cli_analyze_json(tmp):
@@ -797,11 +801,16 @@ def test_cli_explicit_methods(tmp):
     ds = _json(_run(['--methods', 'quick_clean,join', '--no-fallback-ftetwild',
                      '--no-history', path], env=_env(tmp)))
     assert ds.get('method_used', {}).get('num') == 1, ds
-    # method 12 (legacy slug 'graft' / number '13') needs the picked points
-    for sel in ('12', 'graft', '13', 'transplant+'):
+    # method 12 (Transplant+, manual) needs the picked points
+    for sel in ('12', 'transplant+'):
         r = _run(['--methods', sel, '--no-history', path], env=_env(tmp))
         assert r.returncode != 0, (sel, r.stdout)
         assert '--repeat-source' in r.stderr, (sel, r.stderr)
+    # method 13 (Graft / shell wrap) and its aliases are accepted without them
+    for sel in ('13', 'graft', 'shell_wrap'):
+        r = _run(['--methods', sel, '--no-history', '--no-fallback-ftetwild',
+                  path], env=_env(tmp))
+        assert '--repeat-source' not in r.stderr, (sel, r.stderr)
 
 
 def test_cli_invalid_method_rejected(tmp):

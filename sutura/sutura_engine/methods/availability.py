@@ -102,3 +102,26 @@ def repeat_available() -> Tuple[bool, Optional[str]]:
         return True, None
     except Exception as e:
         return False, 'repeat repair unavailable: %s' % e
+
+
+def graft_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 13 needs the Rust morphology core (Cast)."""
+    try:
+        if (importlib.util.find_spec('sutura_engine.graft') is None and
+                importlib.util.find_spec('shell_wrap') is None):
+            return False, 'sutura_engine.graft is not available'
+        spec = importlib.util.find_spec('sutura_geom')
+        if spec is None:
+            return False, 'rust extension sutura_geom is not installed'
+        try:
+            import sutura_geom
+            if not hasattr(sutura_geom, 'morph_close'):
+                return False, 'sutura_geom has no morph_close (rebuild needed)'
+        except Exception as e:
+            return False, 'sutura_geom import failed: %s' % e
+        for mod in ('numpy', 'trimesh', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:
+        return False, 'graft (shell wrap) unavailable: %s' % e
