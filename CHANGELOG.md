@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Per-object auto escalation for multi-object 3MF.** Auto escalation for
+  multi-object 3MF archives now operates object-by-object instead of at the file
+  level. Objects that are already reload-watertight after the baseline repair
+  pipeline are left untouched; failing objects independently escalate through
+  ranked recommendations (such as #8/#9 closing or #10 proxy rebuild). Each
+  object in `object_reports` now carries its own `method_used` dictionary
+  indicating the method number, name, and source (`auto_baseline` vs
+  `auto_escalated`).
+
+- **Outer-shell extraction pre-step for overlapping closed components.** In
+  `auto` mode, when a model fits the `mechanical` or `dense_scan_heavy_si`
+  templates and contains multiple closed components that touch or overlap (e.g.
+  Rubik-style assemblies or multi-part CAD imports), Sutura extracts the outer
+  shell prior to Stage 1. Components are dissolved via a slight dilation
+  (`5e-4 * bbox_diagonal`, ~0.05 mm for a 100 mm object) and boolean union
+  with `manifold3d`, removing internal interfaces and degenerate
+  self-intersections before the main repair passes.
+
 ## [0.6.0] - 2026-09-28
 
 ### Added

@@ -80,7 +80,13 @@ whenever its optional extra is installed:
 * *Before stage 1:* `--experimental-autorefine` (splits intersecting
   triangles along their intersection segments, never deletes a face) and
   `--experimental-indirect-autorefine` (the same idea with exact predicates in
-  the Rust `sutura-geom` core, developer-built).
+  the Rust `sutura-geom` core, developer-built). In `auto` mode, when a model fits
+  the `mechanical` or `dense_scan_heavy_si` templates and contains multiple
+  closed components that touch or overlap (e.g. multi-part assemblies like
+  Rubik-style models), an **outer-shell extraction** pre-step dissolves internal
+  interfaces via a slight dilation (`5e-4 * bbox_diagonal`, ~0.05 mm for a
+  100 mm object) and boolean union, eliminating internal faces and degenerate
+  self-intersections before repair passes.
 * *After stage 1, as a last resort:* the fTetWild fallback (tetrahedralizes
   the original input with fTetWild and extracts a watertight boundary;
   optional ~1.1 GB extra, see Install). When the extra is installed it runs by
@@ -287,7 +293,10 @@ byte-identical to before. Only when that baseline fails are ranked methods
 tried (at most three extras; a geometry-inventing method such as fTetWild only
 when its recommendation score is high enough), and an explicit
 `--deep-repair`/`--no-fallback-ftetwild` keeps today's exact behaviour instead
-of escalating. The report adds `method_used`, `methods_tried`,
+of escalating. For multi-object 3MF files, auto escalation operates per object:
+objects that reload watertight after the baseline repair remain untouched, while
+failing objects escalate through ranked fallback methods independently (reporting
+per-object `method_used`). The report adds `method_used`, `methods_tried`,
 `method_reached_watertight` and, when escalation ran, `analysis` and
 `recommendations`.
 
@@ -462,7 +471,7 @@ Sutura and where you should still double-check the output.
 | Area | Maturity | What is solid / where to be careful |
 |---|---|---|
 | STL repair (two-stage) | ~96% | The VCG + manifold3d pipeline is CI-hardened against malformed/adversarial/torture inputs and validated on a 75-model real-world corpus (0 hard failures; the stage-1 chain was reordered and `maxholesize` made mesh-sensitive so large scan holes close) plus a 115-mesh real-world scan corpus (re-measured with a strict `defects.detect()` closed-loop check on the actual output geometry: 0 crashes, 103/115 = ~90% strictly watertight, every pipeline claim confirmed 1:1 — see `docs/repair-benchmark-strict-watertight-2026-09.md`). The top-level verdict is **reload-honest** (P-HONEST): a mesh is called watertight only when the saved file re-loads strict-watertight, and the **P-WELD** final pass heals the STL float32 seam collapse that used to make 7 of the 40 samples reload non-manifold — with unchanged face counts — while already-watertight meshes are untouched. Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and the last few stubborn holes / heavy non-manifold structures on scan meshes are a genuine VCG limit. |
-| 3MF multi-object | ~92% | Every object is repaired independently in memory and written back, so no object is lost. An object that stage 1 closes now gets a **per-object stage 2** (manifold3d watertight rebuild) through the same shared helper as single-mesh files: per-object `stage2` reports, `objects_watertight` / `objects_stage2_ok` aggregates, and the file-level verdict considers ALL objects (not just object 0). Byte-identical objects reuse one repair but each still gets its own report. A layered/duplicated-vertex (Bambu-style) 3MF is fixed at Stage 1 (a second duplicate-faces pass after vertex dedup) and repairs to 12 faces / 0 holes per object, confirmed watertight by per-object stage 2. Regression-tested (`tests/test_stage2_3mf.py`). Known limits: per-object stage 2 only applies to objects that stage 1 actually closes (open objects are stage-1 output), the object-0 `stage1`/`stage2` top-level fields are kept for backward compatibility, and the `<vertex>` parser assumes the x,y,z attribute order. |
+| 3MF multi-object | ~92% | Every object is repaired independently in memory and written back, so no object is lost. An object that stage 1 closes now gets a **per-object stage 2** (manifold3d watertight rebuild) through the same shared helper as single-mesh files: per-object `stage2` reports, `objects_watertight` / `objects_stage2_ok` aggregates, and the file-level verdict considers ALL objects (not just object 0). Byte-identical objects reuse one repair but each still gets its own report. Auto escalation is **per-object**: baseline-watertight objects remain untouched while failing objects escalate through ranked repair methods independently (reporting per-object `method_used`). A layered/duplicated-vertex (Bambu-style) 3MF is fixed at Stage 1 (a second duplicate-faces pass after vertex dedup) and repairs to 12 faces / 0 holes per object, confirmed watertight by per-object stage 2. Regression-tested (`tests/test_stage2_3mf.py`, `tests/test_multiobject_escalation.py`). Known limits: per-object stage 2 only applies to objects that stage 1 actually closes (open objects are stage-1 output), the object-0 `stage1`/`stage2` top-level fields are kept for backward compatibility, and the `<vertex>` parser assumes the x,y,z attribute order. |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
 | GUI | ~89% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison (static + interactive 3D viewer with surface deviation), **a color-coded defect view** (red = non-manifold, orange = flipped winding, yellow = degenerate face — FAZ11), a **"what changed" repair log panel** (holes closed, non-manifold edges fixed, faces removed, components, stage 2 — FAZ11), a **tabbed *Options* window** (General / Repair / Experimental / Updates / Changelog / Engines; Ctrl+, / Cmd+,) holding the batch-wide switches (fTetWild fallback tier — FAZ17 — plus the opt-in experimental ones: edge-tiebreak classifier head; join-small-components — FAZ14; autorefine self-intersection resolution — FAZ16; exact indirect autorefine — Phase B/C1), repair-mode picker + repair-profile dropdown, a **Triage intensity** combo (presets + user profiles) with per-preset tooltips, **New/Duplicate/Rename/Delete profile buttons and an inline Profile settings editor**, and a *Reset to recommended* button on the *Repair* tab, an **Engines** tab (fTetWild install/remove manager with sizes and a cancellable progress dialog, plus the configured external-engine list and a link to the engine docs), status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and on macOS Finder right-click repair is provided by the separate Quick Action rather than the GUI itself. |
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--intensity <preset|profile>`, `--list-intensities`, `--analyze`, `--list-methods`, `--methods 2,3,5`, `--engines NAME`, `--repeat-source X,Y,Z` / `--repeat-target X,Y,Z`, `--dry-run`, `--deep-repair {off,local,full}`, `--ftetwild-optimize`, `--version`), the read-only `validate`, `export-history`, `engines list|check` and `ftetwild status` (plus `install|uninstall`) subcommands, JSON reports, batch summary, exit codes. Plus experimental/prototype flags: `--experimental-join-components` (moves small components onto the nearest larger one instead of deleting them; changes geometry, evaluation only), `--experimental-autorefine` (resolves self-intersections by subdividing the intersecting triangles along their intersection segments — Lazard & Valque 2025 — instead of deleting faces; NEVER deletes input faces; adopted only when its final output is not worse than the default chain; on moderate-SI meshes it reduces SI, on dense-SI scans the float64 construction is limited — see `docs/alpha-wrap-feasibility-2026-09.md`; re-measured 25 Sep 2026 on the 45 real-world samples it changed no final outcome — 31/45 strictly watertight either way — while the total run time went from ~33 s to ~1003 s, so it stays opt-in), `--no-fallback-ftetwild` / `--experimental-fallback-ftetwild` (the fTetWild last-resort solidifier — tetrahedralizes the ORIGINAL input with fTetWild via pytetwild, MPL-2.0, and extracts a watertight, SI-free boundary; adopted only when no worse on holes+non-manifold — is ON by default when its optional ~1.1 GB extra is installed, `SUTURA_WITH_FTETWILD=1`, and then runs only when stage 1 leaves holes or non-manifold edges: strict watertight 31/40 → 39/40 on the real-world samples; the first flag disables it, the second also runs it on closed results that still self-intersect), `--experimental-indirect-autorefine` (Phase B prototype: exact arrangement-lite self-intersection split via the rust/sutura-geom extension — indirect predicates, broad phase + exact triangle classifier + per-triangle 2D CDT + exact-rational welding; adopted only when no worse on holes+non-manifold, same guard as `--experimental-autorefine`; evaluation-only and developer-built; the dense thingi10k_1038441 scan now completes in about ten seconds — on an M2 ~463 s (C1) → 29.8 s (C2) → 10.6 s (C4); on a 2-vCPU x86_64 VM 830 s → 52.5 s (C2) → 17.6 s (C4) — but the tier is still developer-built and not on the default path) and `--experimental-edge-tiebreak` (opt-in 11-feature classifier head — base features + the five strong FAZ10 scan signals; the gain is marginal, 1 mesh on the 71-mesh labeled set, but the signal is statistically real; NOT the default). The `--human` report is English-only (localization is a GUI concern). |
@@ -889,16 +898,19 @@ Multi-object 3MF files are handled natively: every object mesh is repaired
 independently and written back into the archive, so no object is lost. An
 object that stage 1 closes (two-manifold, no holes remaining) is then passed
 through the same stage 2 helper as single-mesh files, so it gets a manifold3d
-watertight rebuild and a per-object `stage2` report. The report lists the
-result per object (holes remaining, two-manifold, stage-2 verdict) and carries
-the aggregates `objects_watertight` / `objects_stage2_ok`; the file's category
-is derived from **all** objects, so a single still-open object prevents the
-whole file being reported watertight. Defects are also computed per object
-(`object_reports[i].defects`); there is no top-level aggregate `defects` field
-for a 3MF. Objects with byte-identical geometry reuse one repair, but each
-still gets its own per-object report (the stage-2 outcome is a pure function
-of the geometry, so the cached object's report is valid for the duplicates
-too).
+watertight rebuild and a per-object `stage2` report. When auto escalation runs,
+it operates per object: objects that reload strict-watertight after the baseline
+repair are left untouched, while failing objects escalate through ranked
+recommendations independently; each object in `object_reports` receives its own
+`method_used` report. The report lists the result per object (holes remaining,
+two-manifold, stage-2 verdict) and carries the aggregates `objects_watertight` /
+`objects_stage2_ok`; the file's category is derived from **all** objects, so a
+single still-open object prevents the whole file being reported watertight. Defects
+are also computed per object (`object_reports[i].defects`); there is no
+top-level aggregate `defects` field for a 3MF. Objects with byte-identical
+geometry reuse one repair, but each still gets its own per-object report (the
+stage-2 outcome is a pure function of the geometry, so the cached object's
+report is valid for the duplicates too).
 
 GUI:
 
