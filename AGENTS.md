@@ -65,8 +65,10 @@ Options window, never in the way of the plain repair.
   `object_analysis.py` + `templates.py` shims) drives
   `--analyze` and the ranking; third-party engines are listed separately and
   never mixed into it. New runtime deps: scipy (~99 MB) and trimesh (~4.6 MB).
-- **Mirror completion (`sutura/mirror_repair.py`, #14) and thin-wall analysis /
-  thicken (`sutura/wall_thickness.py`, #15, v0.6.1).** #14 detects the dominant
+- **Mirror completion (`sutura_engine/mirror.py`, #14) and thin-wall analysis /
+  thicken (`sutura_engine/wall.py`, #15, v0.6.1).** The legacy top-level paths
+  `sutura/mirror_repair.py` and `sutura/wall_thickness.py` are thin
+  `sutura_engine.mirror` / `sutura_engine.wall` re-export shims. #14 detects the dominant
   boundary loop's symmetry plane (`detect_mirror_plane`: planarity x dominance
   score) and `mirror_close` reflects the visible surface across it (winding
   flipped so the shared boundary edges cancel), welds the seam, and fuses
@@ -80,11 +82,15 @@ Options window, never in the way of the plain repair.
   of the bbox diagonal) re-extracted with a dependency-free marching-tetrahedra
   pass; `repair.wall_thicken_tier` runs it on the original input, cleans with
   PyMeshLab and adopts only a strict-watertight, no-worse candidate. CLI
-  `--wall-min-thickness T` (default 1 % of the bbox diagonal). Both modules must
-  stay in the module lists of `install.sh`, `install-macos.sh`,
-  `scripts/build_appimage.sh`, `updater.APP_MODULES` and `build-macos.yml`.
-- **Learning triage (`history.py` + `methods.rank_methods`, v0.6.1).**
-  `history.record_learning` aggregates the anonymous per-repair
+  `--wall-min-thickness T` (default 1 % of the bbox diagonal). The engine
+  modules ship inside the copied `sutura_engine` package; the top-level shims
+  `mirror_repair.py` / `wall_thickness.py` must stay in the module lists of
+  `install.sh`, `install-macos.sh`, `scripts/build_appimage.sh`,
+  `updater.APP_MODULES` and `build-macos.yml`.
+- **Learning triage (`sutura_engine/learning.py` + `methods.rank_methods`,
+  v0.6.1).**
+  `sutura_engine.learning.record_learning` (re-exported as
+  `history.record_learning`) aggregates the anonymous per-repair
   `methods_tried` entries (id, template, outcome, elapsed_ms added by
   `triage._record`) into `~/.local/share/sutura/triage_learning.json`
   (privacy rule unchanged: template ids + method slugs only, never a file/name).
@@ -148,6 +154,9 @@ The core repair functionality is organized under `sutura/sutura_engine/`. Instal
 - `sutura_engine.xray`: Reload-honest strict watertight verdict (P-HONEST: `weld_reload_equivalent`, `reload_strict_holes_nm`, `enforce_reload_verdict`), split out of `core`.
 - `sutura_engine.hull`: Outer-surface shell extraction (`extract_outer_shell`).
 - `sutura_engine.cast`: Thin wrapper around the Rust `sutura_geom` extension (exact `orient3d`/`insphere`, `arrangement_lite`).
+- `sutura_engine.mirror`: Mirror-plane completion for single-sided scans (method #14): `detect_mirror_plane` / `mirror_close` (reflect, weld, `extract_outer_shell`, Poisson fallback). `sutura/mirror_repair.py` re-exports it.
+- `sutura_engine.wall`: Thin-wall analysis and thicken-to-min (method #15): `build_sdf_grid`, `estimate_wall_thickness`, `thicken_to_min` (morphological dilation + marching-tetrahedra extraction). `sutura/wall_thickness.py` re-exports it.
+- `sutura_engine.learning`: Learning-triage aggregation and the bounded ranking bonus (`record_learning`, `triage_stats`, `learning_bonus`, `clear_learning`, `learning_enabled`). `sutura/history.py` re-exports it (the usage-history store itself stays top-level).
 - `sutura_engine.methods`: Pluggable repair method registry conforming to `RepairMethodProtocol`. Built-in methods live in `sutura_engine/methods/builtin/` as one named module per method (see the naming table below) and are auto-discovered on import. Special tiers (closing, proxy, repeat, P-WELD) are modularized here.
 - `sutura_engine.triage`: Budget-aware auto-escalation policy (`repair_with_methods`, `_auto`, `_auto_multi`), intensity profiles (`quick`, `balanced`, `thorough`, `extreme`), and per-object 3MF escalation loops. Triage remains strictly stdlib-only on import.
 - `sutura_engine.adapters`: Strict boundaries around third-party libraries:
@@ -156,7 +165,7 @@ The core repair functionality is organized under `sutura/sutura_engine/`. Instal
   - `ftetwild_adapter`: fTetWild tetrahedralization fallback tier and status checks.
   - `external_adapter`: User-configured external CLI repair engines (`~/.config/sutura/engines/*.toml`).
 - Public Python API: `sutura_engine.repair(path_or_arrays, methods=None, intensity=..., ...) -> Report`.
-- Backward Compatibility: Shims exist at the previous engine paths (`sutura_engine/analysis.py` -> `diagnosis`, `sutura_engine/cache.py` -> `chart`) and the legacy top-level modules (`closing.py`, `proxy_repair.py`, `repeat_repair.py`, `object_analysis.py`, `templates.py`, `engines.py`, `methods.py`, `triage.py`) re-export from `sutura_engine`.
+- Backward Compatibility: Shims exist at the previous engine paths   (`sutura_engine/analysis.py` -> `diagnosis`, `sutura_engine/cache.py` -> `chart`) and the legacy top-level modules (`closing.py`, `proxy_repair.py`, `repeat_repair.py`, `mirror_repair.py` -> `sutura_engine.mirror`, `wall_thickness.py` -> `sutura_engine.wall`, `object_analysis.py`, `templates.py`, `engines.py`, `methods.py`, `triage.py`) re-export from `sutura_engine`. `history.py` is a real top-level module but re-exports the learning-triage API from `sutura_engine.learning`.
 
 ### Method naming
 

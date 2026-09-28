@@ -63,9 +63,10 @@ def mirror_available() -> Tuple[bool, Optional[str]]:
         if (importlib.util.find_spec('sutura_engine.methods.closing') is None and
                 importlib.util.find_spec('closing') is None):
             return False, 'closing.py is not available'
-        if (importlib.util.find_spec('mirror_repair') is None and
+        if (importlib.util.find_spec('sutura_engine.mirror') is None and
+                importlib.util.find_spec('mirror_repair') is None and
                 importlib.util.find_spec('sutura.mirror_repair') is None):
-            return False, 'mirror_repair is not available'
+            return False, 'sutura_engine.mirror is not available'
         for mod in ('numpy', 'scipy'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
@@ -77,9 +78,10 @@ def mirror_available() -> Tuple[bool, Optional[str]]:
 def wall_available() -> Tuple[bool, Optional[str]]:
     """Registry method 15 needs wall_thickness plus numpy/scipy."""
     try:
-        if (importlib.util.find_spec('wall_thickness') is None and
+        if (importlib.util.find_spec('sutura_engine.wall') is None and
+                importlib.util.find_spec('wall_thickness') is None and
                 importlib.util.find_spec('sutura.wall_thickness') is None):
-            return False, 'wall_thickness is not available'
+            return False, 'sutura_engine.wall is not available'
         for mod in ('numpy', 'scipy'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
