@@ -448,6 +448,12 @@ koruması) benimsenir.
 ağır hasarlı modellerde fTetWild öncesinde otomatik olarak devreye giren yüksek
 sadakatli bir morfoloji kabuk sarma katmanıdır.
 
+> **Not:** Graft (#13), isteğe bağlı `sutura_geom` Rust eklentisini gerektirir
+> (`rust/sutura-geom` dizininden `maturin develop --release` ile derlenir).
+> 0.7.0 yükleyicileri bu eklentiyi henüz paketlememektedir; eklenti olmadan
+> Graft kullanılamıyor olarak listelenir ve otomatik onarım önceden olduğu gibi
+> fTetWild'ı kullanır. Paketleme 0.7.1 sürümü için planlanmaktadır.
+
 1. **Genelleştirilmiş Sarımlı İşaretli Mesafe**: Rust `sutura_geom` çekirdeğiyle,
    sağlıklı üçgenlerin medyan kenar uzunluğuna uyarlanmış bir voksel ızgarası
    üzerinde işaretli mesafe alanı (SDF) oluşturulur.
@@ -1641,7 +1647,7 @@ Kurulu veya AppImage düzeninde `sutura_engine` üst düzey bir pakettir; kaynak
 ### Sutura'ya özgü yaklaşımlar
 
 * **X-Ray yeniden yükleme dürüstlüğü (`P-HONEST`).** Bellek içi topolojik sayımlara güvenmek yerine, Sutura su geçirmezlik kararını yalnızca diske yazılan float32 mesh'in yeniden okunduğunda kesin olarak kapalı olması durumunda verir (`defects.detect()` 0 delik ve 0 manifold-olmayan kenar bildirir). Yeniden yükleme sırasında float duyarlılığı nedeniyle kenar ayrılmaları oluşursa, Stitch geçişi (`P-WELD`) yüz topolojisini bozmadan teğet kenarları kaynaklar; bu kapalı döngü denetimi v0.5.1 derleminde 7 sahte-su geçirmez sonucu yakalamıştır.
-* **Graft harmanlama hibriti (Yöntem #13).** Kesin Öklid mesafe dönüşümleri (Felzenszwalb & Huttenlocher 2012) ve ikili konturlama (Ju ve ark. 2002) ile hesaplanan matematiksel morfoloji kabuklarını (Nooruddin & Turk 2003; Suriyababu ve ark. 2023), hasarsız orijinal üçgenlerin birebir korunmasıyla birleştirir. Yeniden inşa edilen yama yalnızca hasarlı bölgeleri kaplar; sapma oluştuğunda fTetWild karşılaştırmasına başvuran tek taraflı sağlıklı-sadakat denetimi (`fidelity_ok`) ile sınırlanarak kabul edilen corpus modellerinde 0.0 sağlıklı sapma sağlar (bkz. `docs/repair-benchmark-strict-watertight-2026-09.md`).
+* **Graft harmanlama hibriti (Yöntem #13).** Kesin Öklid mesafe dönüşümleri (Felzenszwalb & Huttenlocher 2012) ve ikili konturlama (Ju ve ark. 2002) ile hesaplanan matematiksel morfoloji kabuklarını (Nooruddin & Turk 2003; Suriyababu ve ark. 2023), hasarsız orijinal üçgenlerin birebir korunmasıyla birleştirir. Yeniden inşa edilen yama yalnızca hasarlı bölgeleri kaplar; sapma oluştuğunda fTetWild karşılaştırmasına başvuran tek taraflı sağlıklı-sadakat denetimi (`fidelity_ok`) ile sınırlanarak kabul edilen corpus modellerinde 0.0 sağlıklı sapma sağlar (bkz. `docs/repair-benchmark-strict-watertight-2026-09.md`). *Not: Graft (#13), isteğe bağlı `sutura_geom` Rust eklentisini gerektirir (`rust/sutura-geom` dizininden `maturin develop --release` ile derlenir). 0.7.0 yükleyicileri bu eklentiyi henüz paketlememektedir; eklenti olmadan Graft kullanılamıyor olarak listelenir ve otomatik onarım önceden olduğu gibi fTetWild'ı kullanır. Paketleme 0.7.1 sürümü için planlanmaktadır.*
 * **Transplant tekrar onarımı (Yöntem #11–#12).** Ön bölütleme gerektirmeksizin dönel, öteleme kafesi, helisel ve yansıma simetrilerindeki tekrarlayan geometrik ögeleri tespit eder. Tekrarlanan bir elemanın üzerinde bölgesel hasar saptandığında, sağlam bir eş kopyası hedefe hizalanıp aktarılarak boşluk kapatılır; işlem hedef bölgenin dışındaki Hausdorff kısıtıyla (`hausdorff_outside`) korunur.
 * **Triage kademelendirme politikası (`sutura_engine.triage`).** Nesne başına geometrik özellik tanısını (bileşen yapısı, açık sınır oranları, simetri puanları) sıralı yöntem önerileri ve süre bütçeli geri dönüş mekanizmasıyla (`min(max(30 s, 2 × taban), 120 s)`) birleştirir. Kullanım geçmişi etkin olduğunda, sınırlı bir Bayes güncellemesi (Beta(2, 2) soncul ortalaması) yöntem seçim olasılıklarını ağ bağlantısı kullanmaksızın yerel olarak optimize eder.
 * **Chart içerik adresli önbellek (`sutura_engine.chart`).** Ara ve nihai onarım verilerini SHA-256 geometri özetiyle `~/.cache/sutura/` altında 500 MB LRU tasfiye ilkesiyle önbelleğe alır. Tekrarlanan işlem adımlarını ve çok nesneli 3MF dosyalarının işlenmesini hızlandırır; sürüm değişimlerinde veya parametre güncellemelerinde girdileri otomatik olarak geçersiz kılar.

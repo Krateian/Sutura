@@ -106,7 +106,10 @@ STRINGS = {
         'method_tip_graft': 'GRAFT (#13) — morphology shell wrap: close '
             'damaged regions with a generalized-winding signed-distance '
             'envelope, keep healthy geometry verbatim, and report detail loss. '
-            'Reload-watertight.',
+            'Reload-watertight. Requires the optional sutura_geom Rust extension '
+            '(not bundled in 0.7.0 installers; auto falls back to fTetWild).',
+        'method_unavail_sutura_geom': 'sutura_geom Rust extension not installed '
+            '(build rust/sutura-geom; not bundled in 0.7.0, planned for 0.7.1)',
         'method_tip_mirror_complete': 'MIRROR COMPLETE (#14) — complete the '
             'missing back of a single-sided scan by mirroring the visible '
             'surface across its detected symmetry plane. Falls back to Poisson '
@@ -618,7 +621,10 @@ STRINGS = {
         'method_tip_graft': 'GRAFT (#13) — morfoloji kabuk sarma: hasarlı '
             'bölgeleri genelleştirilmiş sarımlı işaretli mesafe zarfıyla kapatır, '
             'sağlıklı geometriyi birebir korur ve ayrıntı kaybını raporlar. '
-            'Yeniden yüklemede su geçirmez.',
+            'Yeniden yüklemede su geçirmez. İsteğe bağlı sutura_geom Rust eklentisi '
+            'gerektirir (0.7.0 yükleyicilerinde paketli değildir; oto fTetWild kullanır).',
+        'method_unavail_sutura_geom': 'sutura_geom Rust eklentisi kurulu değil '
+            '(rust/sutura-geom derleyin; 0.7.0 paketinde yoktur, 0.7.1 için planlandı)',
         'method_tip_mirror_complete': 'AYNALI TAMAMLAMA (#14) — tek taraflı '
             'taramada eksik arka yüzeyi, görünen yüzeyi algılanan simetri '
             'düzleminde aynalayarak tamamlar. Simetri güveni düşükse Poisson '
@@ -4652,7 +4658,10 @@ class MainWindow(QMainWindow):
             act.setCheckable(True)
             act.setEnabled(ok)
             if not ok:
-                act.setToolTip(_t('menu_unavailable', reason or ''))
+                reason_str = reason or ''
+                if 'sutura_geom' in reason_str and 'method_unavail_sutura_geom' in STRINGS['en']:
+                    reason_str = _t('method_unavail_sutura_geom')
+                act.setToolTip(_t('menu_unavailable', reason_str))
             else:
                 act.setToolTip(_method_tip(method))
             act.setData(method.num)

@@ -56,6 +56,14 @@ All notable changes to this project are documented here.
   Graft produces reload-watertight output with lower runtimes while keeping
   undamaged triangles byte-identical to the input.
 
+### Known limitations
+
+- **Graft (#13) extension packaging:** Graft (#13) requires the optional Rust
+  extension `sutura_geom` (build from `rust/sutura-geom` with `maturin develop --release`).
+  The 0.7.0 installers do not bundle it yet; without it Graft is listed as
+  unavailable and auto repair uses fTetWild as before. Bundling is planned for
+  0.7.1.
+
 ### Folded from the previously unreleased v0.6.1 batch
 
 #### Added

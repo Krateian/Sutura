@@ -447,6 +447,11 @@ Method #13 Graft (`sutura_engine.graft`, legacy `sutura/shell_wrap.py`) is a hig
 morphology shell-wrap tier tried automatically before fTetWild whenever a mesh
 contains severe damage or complex topological defects.
 
+> **Note:** Graft (#13) requires the optional Rust extension `sutura_geom` (build from
+> `rust/sutura-geom` with `maturin develop --release`). The 0.7.0 installers do not
+> bundle it yet; without it Graft is listed as unavailable and auto repair uses fTetWild
+> as before. Bundling is planned for 0.7.1.
+
 1. **Generalized-Winding Signed Distance**: Using the Rust `sutura_geom` core, a
    signed-distance field is constructed on an adaptive voxel grid tuned to the
    median edge length of healthy triangles.
@@ -1639,7 +1644,7 @@ In an installed or AppImage layout `sutura_engine` is a top-level package; in a 
 ### What is specific to Sutura
 
 * **X-Ray reload-honest verdict (`P-HONEST`).** Rather than relying on in-memory topological counts, Sutura confirms watertightness only when the serialized float32 mesh reloads strictly closed (`defects.detect()` reports 0 holes and 0 non-manifold edges). When float quantization introduces boundary gaps on reload, the Stitch pass (`P-WELD`) fuses coincident seams without altering face topology; this closed-loop check caught 7 false-watertight results across the v0.5.1 corpus.
-* **Graft verbatim hybrid (Method #13).** Combines mathematical morphology envelopes (Nooruddin & Turk 2003; Suriyababu et al. 2023) computed via exact Euclidean distance transforms (Felzenszwalb & Huttenlocher 2012) and dual contouring (Ju et al. 2002) with verbatim preservation of undamaged original triangles. The reconstructed patch covers only defective regions, constrained by a one-sided healthy-fidelity guard (`fidelity_ok`) that falls back to fTetWild comparison when deviation occurs, achieving 0.0 healthy deviation on all adopted corpus meshes (see `docs/repair-benchmark-strict-watertight-2026-09.md`).
+* **Graft verbatim hybrid (Method #13).** Combines mathematical morphology envelopes (Nooruddin & Turk 2003; Suriyababu et al. 2023) computed via exact Euclidean distance transforms (Felzenszwalb & Huttenlocher 2012) and dual contouring (Ju et al. 2002) with verbatim preservation of undamaged original triangles. The reconstructed patch covers only defective regions, constrained by a one-sided healthy-fidelity guard (`fidelity_ok`) that falls back to fTetWild comparison when deviation occurs, achieving 0.0 healthy deviation on all adopted corpus meshes (see `docs/repair-benchmark-strict-watertight-2026-09.md`). *Note: Graft (#13) requires the optional Rust extension `sutura_geom` (build from `rust/sutura-geom` with `maturin develop --release`). The 0.7.0 installers do not bundle it yet; without it Graft is listed as unavailable and auto repair uses fTetWild as before. Bundling is planned for 0.7.1.*
 * **Transplant repetition healing (Methods #11–#12).** Detects recurring geometric features across rotational, translation lattice, helical, and reflective symmetries without requiring pre-segmentation. When localized damage is identified on one instance of a repeated element, a congruent healthy copy is aligned and transplanted to seal the defect, guarded by Hausdorff constraints outside the target region (`hausdorff_outside`).
 * **Triage escalation policy (`sutura_engine.triage`).** Couples per-object geometric feature diagnosis (component structure, open-boundary ratios, symmetry scores) with ranked method recommendations and a wall-clock fallback budget (`min(max(30 s, 2 × baseline), 120 s)`). When usage history is enabled, a bounded Bayesian update (Beta(2, 2) posterior mean) locally adjusts method selection probabilities without network communication.
 * **Chart content-addressed cache (`sutura_engine.chart`).** Caches intermediate and final repair artifacts by SHA-256 geometry hash under `~/.cache/sutura/` with a 500 MB LRU eviction policy. The cache transparently accelerates repetitive pipeline runs and multi-object 3MF processing, automatically invalidating entries across version bumps or parameter modifications.
