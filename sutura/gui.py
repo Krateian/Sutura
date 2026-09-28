@@ -180,6 +180,7 @@ STRINGS = {
         'rec_reason_no_si': 'no self-intersections',
         'rec_reason_si': 'self-intersections present (%d)',
         'rec_reason_ftetwild': 'large openings / heavy self-intersections',
+        'rec_reason_graft': 'openings / holes closable by a shell wrap',
         'rec_reason_not_scan': 'not a single-sided open scan',
         'rec_reason_poisson': 'single-sided open scan (%.2f)',
         'rec_reason_not_relief': 'no relief-like opening',
@@ -220,6 +221,8 @@ STRINGS = {
         'repair_log_pinched': 'Split %d pinched vertex(es) (closed mesh made two-manifold)',
         'repair_log_ftetwild': 'fTetWild fallback: %d faces, %ds (adopted)' ,
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
+        'repair_log_graft': 'Graft (shell wrap): %d faces, r=%s (%s)',
+        'repair_log_graft_warn': 'Graft detail loss: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
@@ -335,6 +338,7 @@ STRINGS = {
         'res_budget_declined': 'budget declined',
         'issue_budget_exceeded': 'Repair budget exceeded',
         'issue_shape_changed': 'Shape changed by the fTetWild fallback',
+        'issue_graft_detail_loss': 'Graft smoothed fine surface detail (see warnings)',
         'analyze': 'Analyze',
         'analyze_tip': ('Run read-only analysis (validate + dry-run) on the '
                         'selected files — never modifies the input.'),
@@ -651,6 +655,7 @@ STRINGS = {
         'rec_reason_no_si': 'kendisiyle-kesişim yok',
         'rec_reason_si': 'kendisiyle-kesişim var (%d)',
         'rec_reason_ftetwild': 'büyük açıklıklar / yoğun kendisiyle-kesişim',
+        'rec_reason_graft': 'kabuk sarma ile kapatılabilir açıklıklar / delikler',
         'rec_reason_not_scan': 'tek yönlü açık tarama değil',
         'rec_reason_poisson': 'tek yönlü açık tarama (%.2f)',
         'rec_reason_not_relief': 'kabartma benzeri açıklık yok',
@@ -691,6 +696,8 @@ STRINGS = {
         'repair_log_pinched': '%d sıkışmış vertex ayrıldı (kapalı mesh two-manifold yapıldı)',
         'repair_log_ftetwild': 'fTetWild fallback: %d yüz, %ds (uygulandı)',
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
+        'repair_log_graft': 'Graft (kabuk sarma): %d yüz, r=%s (%s)',
+        'repair_log_graft_warn': 'Graft detay kaybı: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
@@ -805,6 +812,7 @@ STRINGS = {
         'res_budget_declined': 'bütçe reddedildi',
         'issue_budget_exceeded': 'Onarım bütçesi aşıldı',
         'issue_shape_changed': 'Şekil fTetWild yedek katmanıyla değişti',
+        'issue_graft_detail_loss': 'Graft ince yüzey detayını yumuşattı (uyarılara bakın)',
         'analyze': 'Analiz Et',
         'analyze_tip': ('Seçili dosyalar için salt-okunur analiz çalıştır '
                         '(validate + dry-run) — girdiyi asla değiştirmez.'),
@@ -4347,6 +4355,16 @@ class MainWindow(QMainWindow):
             key = 'repair_log_ftetwild' if ft_r.get('adopted') \
                 else 'repair_log_ftetwild_not'
             lines.append(_t(key, ft_r.get('output_faces', 0), ft_r.get('time', 0)))
+        gr_r = data.get('graft')
+        if gr_r and gr_r.get('ran'):
+            lines.append(_t('repair_log_graft', gr_r.get('faces', 0),
+                            gr_r.get('r_used'), gr_r.get('mode')))
+            _warns = gr_r.get('warnings') or []
+            if _warns:
+                _is_tr = QLocale.system().name().startswith('tr')
+                _msg = _warns[0].get('message_tr' if _is_tr else 'message_en') \
+                    or _warns[0].get('message_en', '')
+                lines.append(_t('repair_log_graft_warn', _msg))
         ia_r = data.get('experimental_indirect_autorefine')
         if ia_r and not ia_r.get('skipped') and 'error' not in ia_r:
             key = 'repair_log_indirect' if ia_r.get('adopted') \

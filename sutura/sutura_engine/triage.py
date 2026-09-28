@@ -872,6 +872,17 @@ def _auto_escalation_allowed(ctx: dict) -> bool:
             and ctx.get('ftetwild') is not False)
 
 
+def _graft_fidelity(result):
+    """``(fidelity_ok, healthy_deviation)`` from a Graft trial report, or
+    ``(None, None)`` for a non-Graft / older report."""
+    if not isinstance(result, dict):
+        return None, None
+    g = result.get('graft')
+    if not isinstance(g, dict):
+        return None, None
+    return g.get('fidelity_ok'), g.get('hausdorff_healthy')
+
+
 def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
           allow_escalation: bool = True) -> dict:
     attempt_fn = _resolve_fn('_attempt', _attempt)
@@ -934,12 +945,19 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     combined = _analysis_mod().combine(analysis_objects) if analysis_objects \
         else _analysis_mod().ObjectAnalysis()
     recs = rank_fn(combined)
+    # Graft (#13) is the primary last-resort tier and must be attempted before
+    # fTetWild (#7); the templates already prefer it, this guarantees the order
+    # even without a template match.
+    _nums = [r.num for r in recs]
+    if 13 in _nums and 7 in _nums and _nums.index(13) > _nums.index(7):
+        recs.insert(_nums.index(7), recs.pop(_nums.index(13)))
     attempts = 0
     fallback_start = time.monotonic()
     fallback_budget = min(max(auto_fallback_min_s,
                               auto_fallback_budget_factor * baseline_s),
                           auto_fallback_max_s)
     budget_reached = False
+    deferred_graft = None  # (healthy_dev, method, trial, trial_out, rec)
     for rec in recs:
         method = _methods_mod().get_method(rec.num)
         if method is None or method.num == base_method.num:
@@ -965,12 +983,50 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                              template=rec.template,
                              elapsed_ms=(time.monotonic() - _t0) * 1000))
         if evaluation['watertight']:
+            fav, hdev = _graft_fidelity(trial)
+            if method.num == 13 and fav is False:
+                # Watertight but the healthy surface moved beyond tolerance:
+                # keep it as a candidate and let fTetWild be tried; the lower
+                # healthy deviation wins.
+                if (deferred_graft is None
+                        or (hdev is not None
+                            and (deferred_graft[0] is None
+                                 or hdev < deferred_graft[0]))):
+                    deferred_graft = (hdev, method, trial, trial_out, rec)
+                continue
             shutil.copyfile(trial_out, out)
             note = ('back surface was estimated'
                     if method.invents_geometry else _multi_note(multi))
             _attach(trial, method, tried, analysis_objects, recs,
                     note=note, source='auto_escalated', reached=True)
             return trial
+
+    if deferred_graft is not None:
+        hdev, method, trial, trial_out, rec = deferred_graft
+        ft = _methods_mod().get_method(7)
+        ft_tried = any(t.get('num') == 7 for t in tried)
+        if ft is not None and not ft_tried and ft.available()[0]:
+            _t0 = time.monotonic()
+            ft_out = os.path.join(tmpdir, 'method_7%s' % ext)
+            ft_trial = attempt_fn(src, ft_out, tmpdir, {**ctx, **ft.kwargs},
+                                  multi)
+            ft_eval = eval_fn(ft_trial, ft_out, multi, in_objs, ft)
+            tried.append(_record(ft, ft_eval, 'accepted'
+                                 if ft_eval['watertight'] else 'rejected',
+                                 elapsed_ms=(time.monotonic() - _t0) * 1000))
+            if ft_eval['watertight']:
+                fdev = ft_eval.get('hausdorff_rel')
+                if fdev is not None and (hdev is None or fdev < hdev):
+                    shutil.copyfile(ft_out, out)
+                    _attach(ft_trial, ft, tried, analysis_objects, recs,
+                            note='lower healthy deviation than Graft',
+                            source='auto_escalated', reached=True)
+                    return ft_trial
+        shutil.copyfile(trial_out, out)
+        _attach(trial, method, tried, analysis_objects, recs,
+                note='back surface was estimated',
+                source='auto_escalated', reached=True)
+        return trial
 
     note = ('fallback budget reached' if budget_reached else _multi_note(multi))
     _attach(result, base_method, tried, analysis_objects, recs,

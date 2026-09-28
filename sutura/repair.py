@@ -702,7 +702,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             triage_spec=None, engines=None, engine_chain=None,
                             closing=None, proxy_template=False, repeat=None,
                             repeat_source=None, repeat_target=None,
-                            wall_thicken=False, wall_min_thickness=None):
+                            wall_thicken=False, wall_min_thickness=None,
+                            graft=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -1021,10 +1022,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                closing=closing, proxy_template=proxy_template)
 
+    # Registry method 13 (Graft / shell wrap): the morphology last-resort tier,
+    # run on the ORIGINAL input arrays before the fTetWild ladder. Adopts only a
+    # reload-watertight candidate; records the fidelity verdict + warnings under
+    # ``stats['graft']``.
+    ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
+                           graft=(graft is True))
+
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
                                    spec=triage_spec, engines=engines,
-                                   engine_chain=engine_chain)
+                                   engine_chain=engine_chain, graft=graft)
 
     # Registry methods 11/12 (P-REP): repeated-element transplant, after the
     # whole stage-1 chain (the transplant needs a watertight M).
@@ -1286,6 +1294,30 @@ def resolve_ftetwild(no_fallback=False, experimental=False):
         return False
     if experimental:
         return True
+    return 'auto'
+
+
+def resolve_graft(no_graft=False, force=False, environ=None):
+    """Resolve the ``graft`` argument (method #13, shell wrap).
+
+    ``--no-graft`` disables it; ``--experimental-graft`` forces it; the
+    environment variable ``SUTURA_GRAFT`` may set ``0/1`` (env value has lower
+    precedence than an explicit CLI flag); otherwise 'auto' (tried by the
+    deep-repair ladder before fTetWild). The library default in
+    ``repair_mesh_from_arrays`` stays ``False`` so direct library calls keep
+    their pre-Graft behaviour.
+    """
+    if no_graft:
+        return False
+    if force:
+        return True
+    env = environ if environ is not None else os.environ.get('SUTURA_GRAFT')
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in ('0', 'false', 'no', 'off'):
+            return False
+        if val in ('1', 'true', 'yes', 'on', 'auto'):
+            return True if val not in ('auto',) else 'auto'
     return 'auto'
 
 
@@ -2664,6 +2696,73 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
     return ms, after
 
 
+def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False):
+    """Morphology shell-wrap tier for registry method 13 (Graft).
+
+    Runs ``sutura_engine.graft.shell_wrap`` on the ORIGINAL input arrays (like
+    the closing and fTetWild tiers).  The candidate is adopted only when it is
+    strict-watertight after the save/reload-equivalent weld.  ``stats['graft']``
+    records the fidelity verdict (``fidelity_ok``, ``hausdorff_healthy``,
+    ``detail_max_mm``/``detail_area_moved``) and the EN/TR detail-loss
+    warnings the CLI/GUI surface; the auto policy reads ``fidelity_ok`` to
+    decide whether to also try fTetWild.  Never raises.
+    """
+    if not graft:
+        return ms, after
+    rec = {'tier': 'graft', 'ran': False, 'adopted': False,
+           'watertight': False, 'fidelity_ok': None,
+           'hausdorff_healthy': None, 'detail_max_mm': None,
+           'detail_area_moved': None, 'r_used': None, 'mode': None,
+           'faces': None, 'holes': None, 'non_manifold': None,
+           'warnings': [], 'reason': None}
+    try:
+        try:
+            from sutura_engine import graft as _graft
+        except Exception:  # noqa: BLE001
+            import shell_wrap as _graft
+        in_v = np.asarray(v, dtype=np.float64)
+        in_t = np.asarray(t, dtype=np.int64)
+        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml)
+        rec['ran'] = True
+        rec['fidelity_ok'] = grec.get('fidelity_ok')
+        rec['hausdorff_healthy'] = grec.get('hausdorff_healthy')
+        rec['detail_max_mm'] = grec.get('detail_max_mm')
+        rec['detail_area_moved'] = grec.get('detail_area_moved')
+        rec['r_used'] = grec.get('r_used')
+        rec['mode'] = grec.get('mode')
+        rec['seconds'] = grec.get('seconds')
+        rec['warnings'] = list(grec.get('warnings') or [])
+        if len(cand_t):
+            cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v = np.asarray(cand_v, dtype=np.float32)
+            cand_t = np.asarray(cand_t, dtype=np.int32)
+            det = detect_defects(cand_v, cand_t)
+            cand_holes = len(det['holes'])
+            cand_nm = len(det['non_manifold'])
+            rec['holes'] = cand_holes
+            rec['non_manifold'] = cand_nm
+            rec['faces'] = int(len(cand_t))
+            if len(cand_t) and cand_holes == 0 and cand_nm == 0:
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+                after = ms.apply_filter('get_topological_measures')
+                rec['adopted'] = True
+                rec['watertight'] = False  # stage 2 confirms at the top level
+                rec['candidate_watertight'] = True
+                rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
+            elif rec['reason'] is None:
+                rec['reason'] = ('candidate not strict-watertight '
+                                 '(holes=%d non-manifold=%d)'
+                                 % (cand_holes, cand_nm))
+        else:
+            rec['reason'] = 'graft returned no geometry'
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['reason'] = 'error: %s' % e
+    stats['graft'] = rec
+    return ms, after
+
+
 def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
     """Thin-wall thicken-to-min tier for registry method 15 (P-WALL).
 
@@ -2863,7 +2962,8 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
 
 
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
-                       ftetwild=False, spec=None, engines=None, engine_chain=None):
+                       ftetwild=False, spec=None, engines=None, engine_chain=None,
+                       graft=False):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
     default (no deep-repair report; ``ftetwild`` alone decides, as before
@@ -2907,10 +3007,52 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 after = ms.apply_filter('get_topological_measures')
                 tiers_run.append('replace_ftetwild')
         elif (not engine_chain) or ('ftetwild' in engine_chain):
-            ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
-                                       ftetwild, spec=spec)
-            if (stats.get('experimental_ftetwild') or {}).get('ran'):
-                tiers_run.append('ftetwild')
+            # Graft (shell wrap) is tried BEFORE the fTetWild tier. When it is
+            # reload-watertight and its healthy fidelity passes, it is adopted
+            # and fTetWild is skipped. When it closes the mesh but fidelity
+            # fails, fTetWild is also tried and the watertight result with the
+            # lower healthy deviation wins.
+            graft_ms = graft_after = None
+            graft_dev = None
+            graft_ok = False
+            if graft in (True, 'auto'):
+                _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
+                                             graft=True)
+                _g = stats.get('graft') or {}
+                if _g.get('adopted'):
+                    if _g.get('fidelity_ok') is not False:
+                        ms, after = _g_ms, _g_after
+                        graft_ok = True
+                        tiers_run.append('graft')
+                    else:
+                        graft_ms, graft_after = _g_ms, _g_after
+                        graft_dev = _g.get('hausdorff_healthy')
+            if graft_ok:
+                stats['experimental_ftetwild'] = False
+            else:
+                ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
+                                           ftetwild, spec=spec)
+                if (stats.get('experimental_ftetwild') or {}).get('ran'):
+                    tiers_run.append('ftetwild')
+                if graft_ms is not None:
+                    ft_dev = (stats.get('experimental_ftetwild')
+                              or {}).get('hausdorff_rel')
+                    ft_adopted = bool((stats.get('experimental_ftetwild')
+                                       or {}).get('adopted'))
+                    if (not ft_adopted
+                            or (ft_dev is not None and graft_dev is not None
+                                and ft_dev < graft_dev)):
+                        stats['graft']['adopted'] = False
+                        stats['graft']['reason'] = (
+                            'superseded by fTetWild (lower healthy deviation)')
+                        tiers_run.append('graft')
+                    else:
+                        ms, after = graft_ms, graft_after
+                        stats['graft']['adopted'] = True
+                        stats['graft']['preferred_over_ftetwild'] = True
+                        if 'ftetwild' in tiers_run:
+                            tiers_run.remove('ftetwild')
+                        tiers_run.append('graft')
     else:
         stats['experimental_ftetwild'] = False
     if mode is not None:
@@ -2921,6 +3063,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             'tiers_run': tiers_run,
             'local': local_rep,
             'ftetwild': stats.get('experimental_ftetwild') or None,
+            'graft': stats.get('graft') or None,
             'available': None,
         }
     return ms, after
@@ -2939,6 +3082,8 @@ def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):
     final = 'stage1'
     if (dr.get('ftetwild') or {}).get('adopted'):
         final = 'ftetwild'
+    elif (stats.get('graft') or {}).get('adopted'):
+        final = 'graft'
     elif (dr.get('local') or {}).get('adopted'):
         final = 'local'
     dr['final_tier'] = final
@@ -3206,7 +3351,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 triage_spec=None, engines=None, engine_chain=None,
                 closing=None, proxy_template=False, repeat=None,
                 repeat_source=None, repeat_target=None,
-                wall_thicken=False, wall_min_thickness=None):
+                wall_thicken=False, wall_min_thickness=None, graft=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -3234,7 +3379,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         triage_spec=triage_spec, engines=engines, engine_chain=engine_chain,
         closing=closing, proxy_template=proxy_template, repeat=repeat,
         repeat_source=repeat_source, repeat_target=repeat_target,
-        wall_thicken=wall_thicken, wall_min_thickness=wall_min_thickness)
+        wall_thicken=wall_thicken, wall_min_thickness=wall_min_thickness,
+        graft=graft)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -3336,7 +3482,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                triage_spec=None, engines=None, engine_chain=None,
                closing=None, proxy_template=False, repeat=None,
                repeat_source=None, repeat_target=None,
-               wall_thicken=False, wall_min_thickness=None):
+               wall_thicken=False, wall_min_thickness=None, graft=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -3384,7 +3530,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     closing=closing, proxy_template=proxy_template,
                     repeat=repeat, repeat_source=repeat_source,
                     repeat_target=repeat_target, wall_thicken=wall_thicken,
-                    wall_min_thickness=wall_min_thickness)
+                    wall_min_thickness=wall_min_thickness, graft=graft)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -3817,6 +3963,18 @@ def human_report(r, show_defects=False, show_diff=False):
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
                              adopted))
+    gr = r.get('graft')
+    if gr and gr.get('ran'):
+        if gr.get('adopted'):
+            state = ' adopted%s' % (
+                '' if gr.get('fidelity_ok') is not False
+                else ' (LOW FIDELITY: %s)' % (gr.get('warnings') or [{}])[0].get(
+                    'message_en', 'detail loss'))
+        else:
+            state = ' NOT adopted (kept stage-1 output)'
+        lines.append('  Graft (shell wrap)      : %s faces in %.2fs, r=%s, %s%s'
+                     % (gr.get('faces', 0), gr.get('seconds', 0),
+                        gr.get('r_used'), gr.get('mode'), state))
     eng_r = r.get('engines')
     if eng_r:
         lines.append('')
@@ -4064,7 +4222,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
-                 repeat_target=None, wall_min_thickness=None):
+                 repeat_target=None, wall_min_thickness=None, graft=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -4127,7 +4285,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             extra_features=extra_features, deep_repair=deep_repair,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
-            repeat_target=repeat_target, wall_min_thickness=wall_min_thickness))
+            repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
+            graft=graft))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -4391,7 +4550,11 @@ def main():
                         help='tag the repair methods to try, in order, e.g. '
                              '--methods 2,3,5. Without it the repair is auto: '
                              "today's default pipeline first, with ranked "
-                             'fallbacks only when it fails.')
+                             'fallbacks only when it fails. BREAKING (0.7.0): '
+                             "in 0.6.0 '13'/'graft' meant the manual "
+                             "picked-points method; that is now #12 "
+                             "'transplant_plus', and '13'/'graft' is the new "
+                             'Graft (shell wrap).')
     parser.add_argument('--engines', default=None, metavar='LIST',
                         help='tag the configured external engines to run, e.g. '
                              '--engines meshfix,my-engine. When given, only '
@@ -4489,6 +4652,19 @@ def main():
                              'lengthens repairs of complex parts). Default from '
                              '%s or the "ftetwild_optimize" key of '
                              '~/.config/sutura/config.json' % FTETWILD_OPTIMIZE_ENV)
+    parser.add_argument('--no-graft', action='store_true',
+                        help='disable the Graft (shell wrap) tier (#13). By '
+                             'default the deep-repair ladder tries Graft '
+                             'before fTetWild on the original input and adopts '
+                             'its reload-watertight result; when Graft reports '
+                             'fidelity_ok=false, fTetWild is also tried and '
+                             'the lower healthy-deviation result wins')
+    parser.add_argument('--experimental-graft', action='store_true',
+                        help='force the Graft (shell wrap) tier (#13) even when '
+                             'the deep-repair ladder would not run it (e.g. '
+                             'with --deep-repair off). Primarily for its own '
+                             'evaluation; the auto path (default) already '
+                             'prefers Graft over fTetWild')
     parser.add_argument('--deep-repair', choices=DEEP_REPAIR_MODES, default=None,
                         help='deep-repair ladder after the fast repair, when '
                              'holes or non-manifold edges remain: "full" '
@@ -4787,6 +4963,10 @@ def main():
     else:
         _dr_mode = triage_spec.deep_repair
         _ft_arg = 'auto' if triage_spec.ftetwild_enabled else False
+    # Graft (#13): CLI flag > env > 'auto' (tried by the deep-repair ladder
+    # before fTetWild). --experimental-graft forces it outside the ladder.
+    _graft_arg = resolve_graft(no_graft=args.no_graft,
+                               force=args.experimental_graft)
     # External engines are loaded ONCE for the whole batch; broken configs
     # only warn and never fail a repair.
     _engines, _engine_chain, _engine_warnings = load_engine_run()
@@ -4802,6 +4982,7 @@ def main():
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
                             ftetwild=_ft_arg, deep_repair=_dr_mode,
+                            graft=_graft_arg,
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak,
                             triage_spec=triage_spec, engines=_engines,
