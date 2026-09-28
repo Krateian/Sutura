@@ -142,6 +142,61 @@ def main():
     assert '\u2713 1' in a5.text(), a5.text()      # renumbered 2 -> 1
     print('ok  Use method badge refresh on untag')
 
+    # Item 4: KeepOpenMenu keeps multiple checks and preserves order on simulated triggers
+    kd = '/tmp/sutura_keep_open.stl'
+    w._add_path(kd)
+    w._clear_tags([kd])
+    km = gui.QMenu(w.tree)
+    kum = gui._KeepOpenMenu(gui._t('menu_use_method'), km)
+    w._build_use_method_menu(kum, [kd], kd)
+
+    ka1 = kum.actions()[0]  # method 1
+    ka4 = kum.actions()[3]  # method 4
+    ka5 = kum.actions()[4]  # method 5
+
+    from PySide6.QtCore import QPointF, QEvent
+    from PySide6.QtGui import QMouseEvent
+
+    def click_action(act):
+        kum.setActiveAction(act)
+        ev = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(10.0, 10.0),
+                         QPointF(10.0, 10.0),
+                         gui.Qt.MouseButton.LeftButton,
+                         gui.Qt.MouseButton.LeftButton,
+                         gui.Qt.KeyboardModifier.NoModifier)
+        kum.mouseReleaseEvent(ev)
+        return ev
+
+    # Trigger #1 via mouseReleaseEvent on the keep-open menu
+    e1 = click_action(ka1)
+    assert e1.isAccepted()
+    assert ka1.isChecked() and '\u2713 1' in ka1.text(), ka1.text()
+
+    # Trigger #4
+    e4 = click_action(ka4)
+    assert e4.isAccepted()
+    assert ka4.isChecked() and '\u2713 2' in ka4.text(), ka4.text()
+
+    # Trigger #5
+    e5 = click_action(ka5)
+    assert e5.isAccepted()
+    assert ka5.isChecked() and '\u2713 3' in ka5.text(), ka5.text()
+
+    # All three remain checked simultaneously in try-order
+    assert ka1.isChecked() and ka4.isChecked() and ka5.isChecked()
+    assert w._method_tags_by_path[kd] == [('method', 1), ('method', 4), ('method', 5)]
+    assert w._item_by_path[kd].text(1) == '#1 \u2192 #4 \u2192 #5'
+
+    # Untag middle (#4): verify remaining keep checked and #5 renumbers to 2
+    e4_off = click_action(ka4)
+    assert e4_off.isAccepted()
+    assert not ka4.isChecked() and '\u2713' not in ka4.text()
+    assert ka1.isChecked() and '\u2713 1' in ka1.text()
+    assert ka5.isChecked() and '\u2713 2' in ka5.text()
+    assert w._method_tags_by_path[kd] == [('method', 1), ('method', 5)]
+    assert w._item_by_path[kd].text(1) == '#1 \u2192 #5'
+    print('ok  KeepOpenMenu multiple checks and order preservation via simulated triggers')
+
     # 7.1: every classification summary key is localizable (EN + TR)
     assert 'res_extreme_removed_object' in gui.STRINGS['en'], 'EN string missing'
     assert 'res_extreme_removed_object' in gui.STRINGS['tr'], 'TR string missing'
