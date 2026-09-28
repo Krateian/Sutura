@@ -3103,7 +3103,12 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             graft_ms = graft_after = None
             graft_dev = None
             graft_ok = False
-            if graft in (True, 'auto'):
+            # Only run the last-resort Graft when stage 1 still leaves holes or
+            # non-manifold edges (the same trigger fTetWild's 'auto' uses).  A
+            # closed stage-1 result is already the final mesh: Graft must not
+            # run on it, or already-watertight repairs would change output and
+            # pay an unnecessary tier.
+            if graft in (True, 'auto') and (cur_holes > 0 or cur_nm > 0):
                 _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
                                              graft=True)
                 _g = stats.get('graft') or {}
