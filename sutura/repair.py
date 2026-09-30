@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sutura - two-stage STL/3MF mesh repair engine.
+"""Sutura Triage Engine: two-stage PyMeshLab + manifold3d core with 15 ranked repair methods.
 
 Stage 1 (PyMeshLab/VCG): clean up, orient, close holes, drop debris.
 Stage 2 (manifold3d): rebuild the closed mesh as a watertight solid and

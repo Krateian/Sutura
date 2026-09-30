@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sutura - Qt (PySide6) GUI frontend.
 
-Pick or drop mesh files, run the two-stage repair on each via the installed
+Pick or drop mesh files, run the Sutura Triage Engine repair on each via the installed
 CLI, and read back what was fixed. Results are always written to new
 "_fixed" files. Repair runs in a background thread and can be stopped.
 """
@@ -106,10 +106,10 @@ STRINGS = {
         'method_tip_graft': 'GRAFT (#13) — morphology shell wrap: close '
             'damaged regions with a generalized-winding signed-distance '
             'envelope, keep healthy geometry verbatim, and report detail loss. '
-            'Reload-watertight. Requires the optional sutura_geom Rust extension '
-            '(not bundled in 0.7.0 installers; auto falls back to fTetWild).',
+            'Reload-watertight. Requires the sutura_geom Rust extension '
+            '(auto falls back to fTetWild if not installed).',
         'method_unavail_sutura_geom': 'sutura_geom Rust extension not installed '
-            '(build rust/sutura-geom; not bundled in 0.7.0, planned for 0.7.1)',
+            '(re-run the installer or set up a Rust toolchain)',
         'method_tip_mirror_complete': 'MIRROR COMPLETE (#14) — complete the '
             'missing back of a single-sided scan by mirroring the visible '
             'surface across its detected symmetry plane. Falls back to Poisson '
@@ -123,7 +123,7 @@ STRINGS = {
         'about_title': 'About Sutura',
         'about_heading': 'Sutura Triage Engine (sutura_engine)',
         'about_desc': (
-            "Sutura is a two-stage mesh repair system engineered for 3D printing.\n"
+            "Sutura Triage Engine is an advanced mesh repair system engineered for 3D printing.\n"
             "Sutura Triage Engine — X-Ray, Graft, Transplant\n\n"
             "Core Architecture (sutura_engine):\n"
             "• Triage: Intelligent auto-escalation policy enforcing intensity presets and time budgets.\n"
@@ -621,10 +621,10 @@ STRINGS = {
         'method_tip_graft': 'GRAFT (#13) — morfoloji kabuk sarma: hasarlı '
             'bölgeleri genelleştirilmiş sarımlı işaretli mesafe zarfıyla kapatır, '
             'sağlıklı geometriyi birebir korur ve ayrıntı kaybını raporlar. '
-            'Yeniden yüklemede su geçirmez. İsteğe bağlı sutura_geom Rust eklentisi '
-            'gerektirir (0.7.0 yükleyicilerinde paketli değildir; oto fTetWild kullanır).',
+            'Yeniden yüklemede su geçirmez. sutura_geom Rust eklentisi '
+            'gerektirir (kurulu değilse otomatik olarak fTetWild kullanılır).',
         'method_unavail_sutura_geom': 'sutura_geom Rust eklentisi kurulu değil '
-            '(rust/sutura-geom derleyin; 0.7.0 paketinde yoktur, 0.7.1 için planlandı)',
+            '(kurulumcuyu yeniden çalıştırın veya Rust araç zinciri kurun)',
         'method_tip_mirror_complete': 'AYNALI TAMAMLAMA (#14) — tek taraflı '
             'taramada eksik arka yüzeyi, görünen yüzeyi algılanan simetri '
             'düzleminde aynalayarak tamamlar. Simetri güveni düşükse Poisson '
@@ -639,7 +639,7 @@ STRINGS = {
         'about_title': 'Sutura Hakkında',
         'about_heading': 'Sutura Triyaj Motoru (sutura_engine)',
         'about_desc': (
-            "Sutura, 3D baskı için tasarlanmış iki aşamalı gelişmiş bir mesh onarım sistemidir.\n"
+            "Sutura Triyaj Motoru, 3D baskı için tasarlanmış gelişmiş bir mesh onarım sistemidir.\n"
             "Sutura Triage Engine — X-Ray, Graft, Transplant\n\n"
             "Çekirdek Mimari (sutura_engine):\n"
             "• Triage (Triyaj): Yoğunluk profillerini ve süre bütçelerini yöneten akıllı kademelendirme.\n"
