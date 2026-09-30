@@ -415,6 +415,35 @@ def _install_linux(src_dir, req_files):
             for req in changed:
                 subprocess.run([venv_py, '-m', 'pip', 'install', '--quiet',
                                 '-r', os.path.join(APP_DIR, req)], check=True)
+    _install_linux_geom(src_dir)
+
+
+def _install_linux_geom(src_dir):
+    """Reinstall the sutura_geom extension into both Linux venvs.
+
+    The extension is a per-release prebuilt wheel (~0.7 MB), so every update
+    refreshes it rather than skipping when one copy already exists. The main
+    venv needs it for Graft (#13) and the availability checks; venv311 needs
+    it because indirect_bridge.py may run there. Non-fatal by design: a
+    missing helper (old tarball) or a failed install only logs a warning and
+    never aborts the update - Sutura works without Graft.
+    """
+    helper = os.path.join(src_dir, 'scripts', 'install_sutura_geom.sh')
+    if not os.path.exists(helper):
+        return
+    for venv in ('venv', 'venv311'):
+        venv_py = os.path.join(APP_DIR, venv, 'bin', 'python')
+        if not os.path.exists(venv_py):
+            continue
+        try:
+            r = subprocess.run(['bash', helper, venv_py, src_dir], check=False)
+            if r.returncode != 0:
+                print('warning: sutura_geom install into %s failed '
+                      '(exit %d); Graft may be unavailable'
+                      % (venv, r.returncode), file=sys.stderr)
+        except Exception as e:
+            print('warning: sutura_geom install into %s failed: %s'
+                  % (venv, e), file=sys.stderr)
 
 
 def _install_macos(src_dir, req_files):
@@ -440,6 +469,33 @@ def _install_macos(src_dir, req_files):
         subprocess.run(['conda', 'run', '-n', env_name, 'pip', 'install',
                         'manifold3d', 'trimesh', 'scipy', 'pyrobust-predicates',
                         'PySide6-Essentials'], check=True)
+    _install_macos_geom(src_dir)
+
+
+def _install_macos_geom(src_dir):
+    """Reinstall the sutura_geom extension into the conda env.
+
+    The Darwin prebuilt wheel is universal2. `conda run` activates the env so
+    the helper's bare `python` resolves to it (no pip into conda-forge
+    packages; the extension is pip-only, like manifold3d). Non-fatal: a
+    missing helper or a failed install only logs a warning.
+    """
+    helper = os.path.join(src_dir, 'scripts', 'install_sutura_geom.sh')
+    if not os.path.exists(helper):
+        return
+    if not shutil.which('conda'):
+        return
+    env_name = os.environ.get('SUTURA_ENV', 'sutura-env')
+    try:
+        r = subprocess.run(['conda', 'run', '-n', env_name, 'bash', helper,
+                            'python', src_dir], check=False)
+        if r.returncode != 0:
+            print('warning: sutura_geom install into conda env %s failed '
+                  '(exit %d); Graft may be unavailable'
+                  % (env_name, r.returncode), file=sys.stderr)
+    except Exception as e:
+        print('warning: sutura_geom install into conda env %s failed: %s'
+              % (env_name, e), file=sys.stderr)
 
 
 def install_source(src_dir):
