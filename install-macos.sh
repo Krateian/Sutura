@@ -66,12 +66,29 @@ if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
     conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"
 fi
 
+# 5b) optional: sutura_geom Rust extension (Graft #13, ~0.7 MB) -------------
+# pip-only into the conda env (like manifold3d); it never installs a
+# conda-forge package, so this does not violate the conda-forge policy. The
+# Darwin prebuilt wheel is universal2. ENV_PY is resolved here so the helper
+# runs before the verify step; the extension stays optional.
+ENV_PY="$(conda run -n "$ENV_NAME" which python)"
+echo "==> optional: sutura_geom Rust extension (Graft #13, ~0.7 MB)"
+if [ -f "$REPO_DIR/scripts/install_sutura_geom.sh" ]; then
+    bash "$REPO_DIR/scripts/install_sutura_geom.sh" "$ENV_PY" "$REPO_DIR" || true
+else
+    echo "    sutura_geom: helper missing in source, skipped"
+fi
+
 # 6) verify ----------------------------------------------------------------
 if ! conda run -n "$ENV_NAME" python -c \
     "import pymeshlab, manifold3d, trimesh; from PySide6 import QtWidgets; print('OK')"; then
     die "import check failed - dependencies not usable in $ENV_NAME"
 fi
-ENV_PY="$(conda run -n "$ENV_NAME" which python)"
+if conda run -n "$ENV_NAME" python -c 'import sutura_geom' >/dev/null 2>&1; then
+    echo "    sutura_geom: import OK (Graft #13 + Exact Refine available)"
+else
+    echo "    sutura_geom: not available (Graft #13 falls back to fTetWild)"
+fi
 # Qt plugin path must be pinned to PySide6's OWN Qt6 plugins. The conda env
 # also carries a Qt5 stack (qt-main) whose plugins live under $ENV/plugins;
 # when a GUI app is launched from Finder/Spotlight (minimal environment, no
