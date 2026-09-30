@@ -110,6 +110,31 @@ cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura/sutura_engine"
 [ -f "$LIB/sutura_engine/__init__.py" ] || \
     install -m 0644 "$REPO_ROOT/sutura_engine/__init__.py" "$LIB/sutura_engine/__init__.py"
 
+echo "==> smoke check: Graft (#13) available in the bundled runtime"
+# The .so being present is not enough; the bundled repair.py must actually
+# report the Graft method as available (which exercises graft_available() ->
+# sutura_geom.morph_close + numpy/trimesh/scipy in this runtime).
+if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
+        | awk '$1==13 && $4=="yes" {ok=1} END {exit !ok}'; then
+    echo "error: Graft (#13) is not reported available in the AppImage runtime:" >&2
+    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null >&2 || true
+    exit 1
+fi
+echo "    Graft (#13) available in the bundled stage-1 runtime"
+# The stage-2 runtime must also load the extension (abl3 wheel, no pymeshlab
+# there); graft_available only needs sutura_geom + numpy/trimesh/scipy, all
+# present in requirements-311.txt. PYTHONPATH=$LIB seeds sys.path (a -c
+# invocation has no script dir to add it).
+if ! PYTHONPATH="$LIB" "$LIB/venv311/bin/python" -c \
+        "from sutura_engine.methods.availability import graft_available; assert graft_available()[0], graft_available()[1]" \
+        2>/dev/null; then
+    echo "error: Graft availability check failed in the venv311 runtime:" >&2
+    PYTHONPATH="$LIB" "$LIB/venv311/bin/python" -c \
+        "from sutura_engine.methods.availability import graft_available; print(graft_available())" >&2 || true
+    exit 1
+fi
+echo "    Graft (#13) available in the bundled stage-2 runtime"
+
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'
 #!/usr/bin/env bash

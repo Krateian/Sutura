@@ -16,6 +16,14 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  pull_request:
+    # PRs build + verify the .app/.dmg pipeline but never publish (see the
+    # publish-step guard below) and upload no large artifact.
+    paths:
+      - '.github/workflows/build-macos.yml'
+      - 'scripts/install_sutura_geom.sh'
+      - 'rust/sutura-geom/**'
+      - 'requirements*.txt'
   workflow_dispatch:
     inputs:
       tag:
@@ -171,6 +179,15 @@ jobs:
           find dist/sutura-cli -name 'sutura_geom*.so' | grep -q .
           echo "sutura_geom bundled in sutura-cli and Sutura.app"
 
+      - name: Check Graft (#13) is available in the CLI bundle
+        # The .so being present is not enough: run the bundled repair.py and
+        # assert the Graft method reports available (which exercises
+        # graft_available() -> sutura_geom.morph_close in the frozen app).
+        run: |
+          set -e
+          dist/sutura-cli/sutura-cli --list-methods | awk '$1==13 && $4=="yes" {ok=1} END {exit !ok}'
+          echo "Graft (#13) available in dist/sutura-cli"
+
       - name: Create .dmg (UDZO, versioned name)
         run: |
           set -e
@@ -192,6 +209,12 @@ jobs:
           fi
 
       - name: Publish .dmg to GitHub Release
+        # Only on a tag push, or a workflow_dispatch that names a tag (backfill).
+        # A workflow_dispatch without a tag previously published under
+        # GITHUB_REF_NAME (e.g. "main") and created stray draft releases; on PRs
+        # github.event.inputs.tag is null, and null != '' is false, so this step
+        # is skipped there too.
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag != ''
         # v3 (v2 is EOL). Deliberately NO name/body: softprops retains the
         # original release info when the tag already has a release, so a
         # manually written release body (with the unsigned-build note) is
