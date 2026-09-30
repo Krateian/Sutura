@@ -14,7 +14,7 @@ pyrobust-predicates==0.1.0
 # installed size: scipy ~99 MB (cp314 manylinux/arm64 wheel ~36-40 MB),
 # trimesh ~4.6 MB. rtree is NOT required (trimesh.proximity.closest_point
 # uses a scipy cKDTree, not rtree).
-scipy>=1.16,<1.17
+scipy>=1.16.3,<1.17
 trimesh==5.1.0
 # Optional/heavy cross-validation dependency (FAZ10): manifold3d powers the
 # independent watertight check in scripts/benchmark_repair_corpus.py (and stage
