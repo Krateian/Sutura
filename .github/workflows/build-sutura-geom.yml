@@ -1,0 +1,195 @@
+name: Build sutura_geom wheels
+
+# Builds the prebuilt sutura_geom abi3 wheels (rust/sutura-geom, pyo3
+# abi3-py311) for the three platforms the install helper
+# (scripts/install_sutura_geom.sh) downloads, plus the SHA256SUMS file it
+# verifies against:
+#   * linux x86_64  -> manylinux wheel (manylinux: auto)
+#   * linux aarch64 -> manylinux wheel, cross-compiled (manylinux: auto)
+#   * macOS         -> universal2 wheel (--target universal2-apple-darwin)
+#
+# On tag pushes (v*.*.*) and on a workflow_dispatch with a `tag` input the
+# wheels + sums are uploaded to the matching GitHub Release. On PRs and plain
+# pushes to main (paths: the crate, the install helper, this file) the build +
+# test jobs run but NOTHING is uploaded. The release job deliberately passes
+# no name/body to softprops so a manually written release body is never
+# clobbered (same pattern as build-appimage.yml / build-macos.yml).
+#
+# The abi3 tag (cp311-abi3) makes the wheels forward-compatible, which is why
+# the test job also imports the wheel on Python 3.14.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+    branches: [main]
+    paths:
+      - 'rust/sutura-geom/**'
+      - 'scripts/install_sutura_geom.sh'
+      - '.github/workflows/build-sutura-geom.yml'
+  pull_request:
+    paths:
+      - 'rust/sutura-geom/**'
+      - 'scripts/install_sutura_geom.sh'
+      - '.github/workflows/build-sutura-geom.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish under (e.g. v0.7.1). The wheels are built from the current default branch and backfilled onto the existing release.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read   # the release job raises this to write
+
+jobs:
+  build:
+    name: Build wheel (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: auto
+          - name: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64
+            manylinux: auto
+          - name: macos-universal2
+            os: macos-latest
+            target: universal2-apple-darwin
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Build wheel (maturin, release)
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: 1.15.0
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          working-directory: rust/sutura-geom
+          args: --release --out dist
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.name }}
+          path: rust/sutura-geom/dist/*.whl
+          if-no-files-found: error
+
+  test:
+    name: Test wheel (${{ matrix.name }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            wheel-artifact: wheel-linux-x86_64
+          - name: macos-universal2
+            os: macos-latest
+            wheel-artifact: wheel-macos-universal2
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download wheel
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.wheel-artifact }}
+          path: wheel/
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install wheel + numpy into a 3.11 venv
+        run: |
+          python3.11 -m venv .venv
+          ./.venv/bin/pip install --quiet --upgrade pip
+          ./.venv/bin/pip install --quiet numpy
+          ./.venv/bin/pip install --quiet wheel/*.whl
+
+      - name: Smoke tests
+        run: |
+          ./.venv/bin/python -c "import sutura_geom; print('sutura_geom', sutura_geom.__version__)"
+          ./.venv/bin/python tests/test_sutura_geom.py
+          ./.venv/bin/python tests/test_sutura_geom_arrangement.py
+
+      - name: Exercise the install helper (SUTURA_GEOM_WHEEL path)
+        run: |
+          SUTURA_GEOM_WHEEL="$(ls wheel/*.whl | head -1)" scripts/install_sutura_geom.sh ./.venv/bin/python
+          ./.venv/bin/python -c "import sutura_geom; print('helper install OK')"
+
+      # The abi3 wheel must also load on a newer interpreter than the abi3
+      # baseline (cp311-abi3 -> Python 3.14). Only meaningful on Linux.
+      - name: Set up Python 3.14 (abi3 forward-compat check)
+        if: runner.os == 'Linux'
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+
+      - name: abi3 import check on Python 3.14
+        if: runner.os == 'Linux'
+        run: |
+          python3.14 -m venv .venv314
+          ./.venv314/bin/pip install --quiet --upgrade pip
+          ./.venv314/bin/pip install --quiet numpy
+          ./.venv314/bin/pip install --quiet wheel/*.whl
+          ./.venv314/bin/python -c "import sutura_geom; print('abi3 import on Python 3.14 OK')"
+
+  release:
+    name: Publish wheels to GitHub Release
+    # Only on a tag push, or on a workflow_dispatch that names a tag; PRs and
+    # plain pushes to main only build + test (nothing uploaded).
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: wheels
+          pattern: wheel-*
+          merge-multiple: true
+
+      - name: Write sutura_geom-SHA256SUMS
+        run: |
+          cd wheels
+          sha256sum *.whl > sutura_geom-SHA256SUMS
+          cat sutura_geom-SHA256SUMS
+
+      - name: Upload wheels + checksums to GitHub Release
+        # v3 (v2 is EOL). Deliberately NO name/body: softprops retains the
+        # original release info when the tag already has a release, so a
+        # manually written release body is never clobbered - this step only
+        # uploads the wheel assets and the checksum file the install helper
+        # (scripts/install_sutura_geom.sh) verifies against.
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.tag.outputs.ref }}
+          files: |
+            wheels/*.whl
+            wheels/sutura_geom-SHA256SUMS
+          overwrite_files: true
