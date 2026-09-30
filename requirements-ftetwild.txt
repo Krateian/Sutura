@@ -12,4 +12,4 @@
 # pyvista is required at pytetwild import time despite being declared "optional"
 # by its pyproject.toml, so both are pinned here.
 pytetwild==0.4.2
-pyvista>=0.44
+pyvista>=0.49.0
