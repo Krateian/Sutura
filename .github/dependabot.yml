@@ -8,6 +8,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # scipy 1.18+ requires Python >=3.12, but venv311 (requirements-311.txt,
+      # stage 2 / manifold3d) and the Arch standalone runtime are Python 3.11.
+      # Keep scipy on 1.16.x until venv311 moves off 3.11.
+      - dependency-name: "scipy"
+        versions: [">=1.17"]
 
   # GitHub Actions: tracks actions/*@vN used in .github/workflows (ci.yml).
   - package-ecosystem: "github-actions"
