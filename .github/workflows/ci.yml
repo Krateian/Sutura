@@ -262,6 +262,14 @@ jobs:
           ./.venv/bin/pip install --quiet maturin==1.15.0 numpy
           cd rust/sutura-geom && VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv PATH=$GITHUB_WORKSPACE/.venv/bin:$PATH maturin develop --release
 
+      # Prove the source fallback of scripts/install_sutura_geom.sh: skip the
+      # wheel download (SUTURA_GEOM_FROM_SOURCE=1) and build the extension from
+      # rust/sutura-geom with pip + maturin; fatal on failure.
+      - name: Exercise install helper (source fallback)
+        run: |
+          SUTURA_GEOM_FROM_SOURCE=1 SUTURA_GEOM_REQUIRED=1 scripts/install_sutura_geom.sh ./.venv/bin/python
+          ./.venv/bin/python -c "import sutura_geom; print('helper source install OK')"
+
       - name: "Test: sutura_geom smoke"
         run: ./.venv/bin/python tests/test_sutura_geom.py
 
