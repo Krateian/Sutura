@@ -2,6 +2,41 @@
 
 All notable changes to this project are documented here.
 
+## [0.7.1] - 2026-10-01
+
+### Added
+
+- **Automatic `sutura_geom` Rust extension installation.** `scripts/install_sutura_geom.sh`
+  downloads prebuilt abi3 wheels (~0.7 MB; Linux x86_64/aarch64 manylinux, macOS universal2)
+  from the matching GitHub release and verifies them against `sutura_geom-SHA256SUMS`.
+  Falls back to building from `rust/sutura-geom` when a Rust toolchain is present, or continues
+  without it if neither works.
+- **Environment flags for Rust extension packaging:** `SUTURA_NO_GEOM=1` opts out of installing
+  the extension, and `SUTURA_GEOM_FROM_SOURCE=1` forces building from source.
+- **Prebuilt wheels workflow (`build-sutura-geom.yml`).** Builds cross-platform abi3 wheels
+  on every tag and attaches them alongside checksums to GitHub releases.
+
+### Changed
+
+- **Installers and bundles now ship the `sutura_geom` extension.** `install.sh` (both venvs),
+  `install-macos.sh` (conda env), the self-updater, AppImage, and macOS .app/.dmg bundles now
+  ship or install the extension out of the box, making Method #13 Graft available without manual compilation.
+- **Release workflows publish only on tags.** The AppImage, macOS DMG, and wheel workflows publish
+  only on tags (a tag-less manual run previously published under a release named "main").
+- **Product terminology updated to Sutura Triage Engine.** Aligned documentation, CLI docstrings,
+  and GUI metadata to lead with Sutura Triage Engine while retaining the two-stage PyMeshLab + manifold3d core.
+
+### Fixed
+
+- **macOS .app/.dmg (0.7.0) failed to start:** PyInstaller bundled the repository-root `sutura_engine`
+  source-checkout bootstrap instead of the real `sutura/sutura_engine` package, so the frozen CLI
+  and GUI exited with ModuleNotFoundError (`sutura_engine.triage` / `sutura_engine.learning`). The
+  build now excludes the bootstrap and CI runs the frozen CLI (`--list-methods` with Graft available,
+  plus a real repair of a broken cube). Source/conda installs and the AppImage were not affected.
+- **Reverted scipy dependency pin to 1.16.x.** scipy 1.18 requires Python ≥ 3.12, breaking
+  the Python 3.11 virtualenv (`venv311`) required for manifold3d (#34, #35). Dependabot configuration
+  updated to ignore scipy ≥ 1.17.
+
 ## [0.7.0] - 2026-09-28
 
 ### Breaking / renamed

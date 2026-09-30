@@ -16,6 +16,14 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  pull_request:
+    # PRs build + verify the .app/.dmg pipeline but never publish (see the
+    # publish-step guard below) and upload no large artifact.
+    paths:
+      - '.github/workflows/build-macos.yml'
+      - 'scripts/install_sutura_geom.sh'
+      - 'rust/sutura-geom/**'
+      - 'requirements*.txt'
   workflow_dispatch:
     inputs:
       tag:
@@ -53,6 +61,34 @@ jobs:
           python -c \
             "import pymeshlab, manifold3d, trimesh, scipy, PySide6; print('deps OK')"
 
+      # The Rust extension (rust/sutura-geom, abi3-py311) is needed by Graft
+      # (#13), Exact Refine (#6) and the indirect tier. Install it into the
+      # conda base env so PyInstaller can collect it (repair.py imports it
+      # lazily inside functions, so it would otherwise be missed).
+      - name: Build and install sutura_geom (Rust extension)
+        run: |
+          pip install --quiet maturin==1.15.0
+          pip install --quiet ./rust/sutura-geom
+          python -c "import sutura_geom; print('sutura_geom OK')"
+
+      # The repo-root sutura_engine/ package is a SOURCE-CHECKOUT bootstrap
+      # (sutura_engine/__init__.py redirects __path__ to <root>/sutura/
+      # sutura_engine, a path that does not exist in a frozen app). PyInstaller
+      # resolves `import sutura_engine` from the build cwd and would bundle this
+      # shim as the frozen top-level sutura_engine, which breaks
+      # `import sutura_engine.triage` etc. at runtime (the frozen CLI crashed
+      # with ModuleNotFoundError: No module named 'sutura_engine.triage').
+      # Move it aside so BOTH PyInstaller builds resolve top-level
+      # sutura_engine to the real package sutura/sutura_engine (via
+      # --paths sutura). The install.sh / AppImage / source-checkout layouts
+      # that depend on the bootstrap are unaffected (this is a CI checkout only).
+      - name: Keep the repo-root sutura_engine bootstrap out of the build
+        run: |
+          set -e
+          test -d sutura_engine
+          mv sutura_engine sutura_engine.bootstrap
+          echo "repo-root sutura_engine bootstrap moved aside"
+
       # --- shared PyInstaller flags (proven recipe) -----------------------
       # - hidden imports for sutura's flat modules (repair.py imports them
       #   as top-level `from classification import ...`)
@@ -60,6 +96,14 @@ jobs:
       - name: Build onedir tool executables
         run: |
           set -e
+          # PYTHONPATH=sutura: the spec evaluates `collect_submodules(
+          # 'sutura_engine')` at spec-exec time, BEFORE Analysis applies
+          # pathex, so the top-level package must already be importable from
+          # the environment - otherwise the builtin method modules (graft,
+          # backplate, ...) never reach the frozen PYZ and --list-methods shows
+          # an empty table. With the root bootstrap moved aside, sutura/sutura_
+          # engine is the only top-level sutura_engine on this path.
+          export PYTHONPATH="$GITHUB_WORKSPACE/sutura"
           PYS=("--noconfirm" "--log-level" "WARN"
             "--paths" "sutura"
             "--hidden-import" "pymeshlab" "--hidden-import" "manifold3d"
@@ -78,6 +122,7 @@ jobs:
             "--hidden-import" "repeat_repair"
             "--hidden-import" "mirror_repair" "--hidden-import" "wall_thickness"
             "--hidden-import" "shell_wrap"
+            "--hidden-import" "sutura_geom" "--collect-all" "sutura_geom"
             "--hidden-import" "csg_bridge"
             "--hidden-import" "sutura_engine"
             "--collect-submodules" "sutura_engine"
@@ -105,6 +150,9 @@ jobs:
       - name: Build GUI .app (windowed onedir)
         run: |
           set -e
+          # Same spec-time resolution requirement as the tool executables (see
+          # the comment in the "Build onedir tool executables" step).
+          export PYTHONPATH="$GITHUB_WORKSPACE/sutura"
           python -m PyInstaller \
             --noconfirm --log-level WARN \
             --paths . --paths sutura \
@@ -124,6 +172,7 @@ jobs:
             --hidden-import repeat_repair \
             --hidden-import mirror_repair --hidden-import wall_thickness \
             --hidden-import shell_wrap \
+            --hidden-import sutura_geom --collect-all sutura_geom \
             --hidden-import csg_bridge \
             --hidden-import sutura_engine \
             --collect-submodules sutura_engine \
@@ -150,6 +199,44 @@ jobs:
           cp assets/icon/Sutura.icns "dist/Sutura.app/Contents/Resources/"
           ls -la "$MACOS"
 
+      - name: Check the bundle contains the sutura_geom extension
+        # repair.py imports sutura_geom lazily; --hidden-import + --collect-all
+        # must actually have pulled the .so into BOTH the CLI tool and the .app.
+        run: |
+          set -e
+          find dist/Sutura.app -name 'sutura_geom*.so' | grep -q .
+          find dist/sutura-cli -name 'sutura_geom*.so' | grep -q .
+          echo "sutura_geom bundled in sutura-cli and Sutura.app"
+
+      - name: Check Graft (#13) is available in the CLI bundle
+        # The .so being present is not enough: run the bundled repair.py and
+        # assert the Graft method reports available (which exercises
+        # graft_available() -> sutura_geom.morph_close in the frozen app).
+        run: |
+          set -e
+          dist/sutura-cli/sutura-cli --list-methods | awk '$1==13 && $4=="yes" {ok=1} END {exit !ok}'
+          echo "Graft (#13) available in dist/sutura-cli"
+
+      - name: Smoke repair a broken cube via the frozen CLI
+        # The frozen CLI must actually repair, not just list methods: run it on
+        # a deliberately broken STL and assert the report is watertight. This
+        # also exercises the real pymeshlab + manifold3d + sutura_geom path in
+        # the frozen app (stage 1, stage 2, and the sutura_engine method
+        # registry that repair_with_methods drives). repair.py emits a single
+        # JSON object on stdout (repair.py main, single-file branch), so stdout
+        # alone goes to repair.json; the stderr stream (Qt/objc noise, warnings)
+        # is captured separately and only shown on failure.
+        run: |
+          set -e
+          python3 tests/make_broken_stl.py /tmp/broken.stl
+          dist/sutura-cli/sutura-cli /tmp/broken.stl -o /tmp/broken_fixed.stl \
+            > /tmp/repair.json 2> /tmp/repair.err || \
+            { echo "=== repair stdout ==="; cat /tmp/repair.json; \
+              echo "=== repair stderr ==="; cat /tmp/repair.err; exit 1; }
+          python3 -c "import json; d=json.load(open('/tmp/repair.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
+          test -s /tmp/broken_fixed.stl
+          echo "frozen CLI repaired broken.stl (stage1 two_manifold, no holes)"
+
       - name: Create .dmg (UDZO, versioned name)
         run: |
           set -e
@@ -171,6 +258,12 @@ jobs:
           fi
 
       - name: Publish .dmg to GitHub Release
+        # Only on a tag push, or a workflow_dispatch that names a tag (backfill).
+        # A workflow_dispatch without a tag previously published under
+        # GITHUB_REF_NAME (e.g. "main") and created stray draft releases; on PRs
+        # github.event.inputs.tag is null, and null != '' is false, so this step
+        # is skipped there too.
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag != ''
         # v3 (v2 is EOL). Deliberately NO name/body: softprops retains the
         # original release info when the tag already has a release, so a
         # manually written release body (with the unsigned-build note) is

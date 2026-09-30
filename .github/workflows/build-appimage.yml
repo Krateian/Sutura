@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  pull_request:
+    # PRs build + verify the bundle but never publish (see the publish-step
+    # guard below) and upload no large artifact.
+    paths:
+      - '.github/workflows/build-appimage.yml'
+      - 'scripts/build_appimage.sh'
+      - 'scripts/install_sutura_geom.sh'
+      - 'rust/sutura-geom/**'
+      - 'requirements*.txt'
   workflow_dispatch:
     inputs:
       tag:
@@ -30,10 +39,34 @@ jobs:
             echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Build manylinux wheel for the Rust extension
+        # The AppImage bundles its own python-build-standalone runtimes, so the
+        # extension must be built against the oldest supported glibc, not the
+        # runner's glibc. SUTURA_GEOM_WHEEL then makes build_appimage.sh install
+        # this wheel instead of building on the runner.
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: 1.15.0
+          target: x86_64
+          manylinux: auto
+          working-directory: rust/sutura-geom
+          args: --release --out dist-geom
+
       - name: Build AppImage
-        run: ./scripts/build_appimage.sh
+        run: |
+          set -e
+          WHEEL="$(ls rust/sutura-geom/dist-geom/*.whl | head -1)"
+          test -n "$WHEEL"
+          echo "Using extension wheel: $WHEEL"
+          SUTURA_GEOM_WHEEL="$WHEEL" ./scripts/build_appimage.sh
 
       - name: Publish to GitHub Release
+        # Only on a tag push, or a workflow_dispatch that names a tag (backfill).
+        # A workflow_dispatch without a tag previously published under
+        # GITHUB_REF_NAME (e.g. "main") and created stray draft releases; on PRs
+        # github.event.inputs.tag is null, which is != '' is false, so this step
+        # is skipped there too.
+        if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag != ''
         # v3 (v2 is EOL: Node 20 runtime deprecated). We deliberately do NOT
         # pass name/body: softprops retains the original release info when the
         # tag already has a release, so a manually written release body (with

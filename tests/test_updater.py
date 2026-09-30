@@ -130,6 +130,102 @@ def test_module_lists_match_install_sh():
         % (sorted(installed - listed), sorted(listed - installed)))
 
 
+class _RunResult:
+    def __init__(self, returncode=0):
+        self.returncode = returncode
+
+
+def _geom_install_fixture(tmp):
+    """Temp source tree with the geom helper + temp APP_DIR with both Linux
+    venvs. Returns (src_dir, app_dir)."""
+    src = os.path.join(tmp, 'src')
+    os.makedirs(os.path.join(src, 'sutura'))
+    os.makedirs(os.path.join(src, 'scripts'))
+    with open(os.path.join(src, 'scripts', 'install_sutura_geom.sh'), 'w') as f:
+        f.write('#!/usr/bin/env bash\nexit 0\n')
+    app = os.path.join(tmp, 'app')
+    for venv in ('venv', 'venv311'):
+        os.makedirs(os.path.join(app, venv, 'bin'))
+        with open(os.path.join(app, venv, 'bin', 'python'), 'w') as f:
+            f.write('')
+    return src, app
+
+
+def _run_install_linux(src, app, runner):
+    """Call _install_linux with copy/pip work neutralised and subprocess.run
+    replaced, so only the geom-helper calls reach the runner."""
+    import updater
+    orig = (updater.APP_DIR, updater.APP_MODULES, updater.COPY_EXTRA_MODULES,
+            updater.LINUX_EXTRA_FILES, updater._copy_sutura_engine,
+            updater.requirements_changed, updater.subprocess.run)
+    updater.APP_DIR = app
+    updater.APP_MODULES = ()
+    updater.COPY_EXTRA_MODULES = ()
+    updater.LINUX_EXTRA_FILES = ()
+    updater._copy_sutura_engine = lambda _src: None
+    updater.requirements_changed = lambda _src, _reqs: []
+    updater.subprocess.run = runner
+    try:
+        updater._install_linux(src, ('requirements.txt',))
+    finally:
+        (updater.APP_DIR, updater.APP_MODULES, updater.COPY_EXTRA_MODULES,
+         updater.LINUX_EXTRA_FILES, updater._copy_sutura_engine,
+         updater.requirements_changed, updater.subprocess.run) = orig
+
+
+def test_install_linux_runs_geom_helper_for_both_venvs():
+    """A self-update installs the sutura_geom extension into BOTH Linux venvs
+    via the downloaded helper (main venv for Graft, venv311 for the indirect
+    bridge)."""
+    import tempfile
+    import shutil
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    try:
+        src, app = _geom_install_fixture(tmp)
+        calls = []
+        _run_install_linux(
+            src, app,
+            lambda cmd, *a, **k: (calls.append(cmd), _RunResult(0))[1])
+        helper = os.path.join(src, 'scripts', 'install_sutura_geom.sh')
+        geom = [c for c in calls if c[:2] == ['bash', helper]]
+        pys = {c[2] for c in geom}
+        assert os.path.join(app, 'venv', 'bin', 'python') in pys, calls
+        assert os.path.join(app, 'venv311', 'bin', 'python') in pys, calls
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_install_linux_geom_helper_nonzero_is_non_fatal():
+    """The geom install never aborts the update: a non-zero helper exit is
+    swallowed (Graft simply stays unavailable)."""
+    import tempfile
+    import shutil
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    try:
+        src, app = _geom_install_fixture(tmp)
+        _run_install_linux(src, app, lambda cmd, *a, **k: _RunResult(1))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_install_linux_missing_geom_helper_skips():
+    """An old tarball without scripts/install_sutura_geom.sh makes the update
+    skip the geom step entirely (no subprocess call, no failure)."""
+    import tempfile
+    import shutil
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    try:
+        src, app = _geom_install_fixture(tmp)
+        os.remove(os.path.join(src, 'scripts', 'install_sutura_geom.sh'))
+        calls = []
+        _run_install_linux(
+            src, app,
+            lambda cmd, *a, **k: (calls.append(cmd), _RunResult(0))[1])
+        assert calls == [], calls
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):

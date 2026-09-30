@@ -134,6 +134,18 @@ if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
     "$APP_DIR/venv311/bin/pip" install --quiet -r "$SRC/requirements-ftetwild.txt"
 fi
 
+# The sutura_geom extension (Graft #13, Exact Refine #6, indirect tier) is
+# imported from the main venv (graft/cast/availability) AND from
+# indirect_bridge.py, which may run under venv311, so both venvs get it.
+# The helper is non-fatal on its own; `|| true` keeps set -e happy.
+echo "==> optional: sutura_geom Rust extension (Graft #13, ~0.7 MB)"
+if [ -f "$SRC/scripts/install_sutura_geom.sh" ]; then
+    bash "$SRC/scripts/install_sutura_geom.sh" "$APP_DIR/venv/bin/python" "$SRC" || true
+    bash "$SRC/scripts/install_sutura_geom.sh" "$APP_DIR/venv311/bin/python" "$SRC" || true
+else
+    echo "    sutura_geom: helper missing in source, skipped"
+fi
+
 echo "==> copying application files"
 # __init__.py is deliberately not copied: the installed layout is flat (no
 # package import), so repair.py/gui.py resolve their flat imports from APP_DIR
