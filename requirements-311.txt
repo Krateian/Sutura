@@ -1,4 +1,4 @@
-manifold3d==3.5.3
+manifold3d==3.5.4
 trimesh==5.1.0
 numpy==2.4.6
 # Scan-closing / proxy-template tiers (P-INT) run in the MAIN venv, but scipy
