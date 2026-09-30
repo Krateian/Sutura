@@ -222,12 +222,17 @@ jobs:
         # a deliberately broken STL and assert the report is watertight. This
         # also exercises the real pymeshlab + manifold3d + sutura_geom path in
         # the frozen app (stage 1, stage 2, and the sutura_engine method
-        # registry that repair_with_methods drives).
+        # registry that repair_with_methods drives). repair.py emits a single
+        # JSON object on stdout (repair.py main, single-file branch), so stdout
+        # alone goes to repair.json; the stderr stream (Qt/objc noise, warnings)
+        # is captured separately and only shown on failure.
         run: |
           set -e
           python3 tests/make_broken_stl.py /tmp/broken.stl
-          dist/sutura-cli/sutura-cli /tmp/broken.stl -o /tmp/broken_fixed.stl > /tmp/repair.json 2>&1 || \
-            { cat /tmp/repair.json; exit 1; }
+          dist/sutura-cli/sutura-cli /tmp/broken.stl -o /tmp/broken_fixed.stl \
+            > /tmp/repair.json 2> /tmp/repair.err || \
+            { echo "=== repair stdout ==="; cat /tmp/repair.json; \
+              echo "=== repair stderr ==="; cat /tmp/repair.err; exit 1; }
           python3 -c "import json; d=json.load(open('/tmp/repair.json')); assert d['stage1']['two_manifold'] and d['stage1']['holes_remaining']==0, d"
           test -s /tmp/broken_fixed.stl
           echo "frozen CLI repaired broken.stl (stage1 two_manifold, no holes)"
