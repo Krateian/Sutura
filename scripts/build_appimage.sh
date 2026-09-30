@@ -80,6 +80,18 @@ echo "==> pip install: stage 2 (manifold3d)"
 "$LIB/venv311/bin/python" -m pip install --quiet --upgrade pip
 "$LIB/venv311/bin/python" -m pip install --quiet -r "$REPO_ROOT/requirements-311.txt"
 
+echo "==> installing sutura_geom (Rust extension) into both runtimes"
+# Graft (#13), Exact Refine (#6) and the indirect tier need the extension in
+# the stage-1 (3.14) runtime AND the stage-2 (3.11) runtime. The abi3 wheel
+# (cp311-abi3) loads on both. SUTURA_GEOM_REQUIRED=1 makes a failure fatal:
+# the bundle must not ship without the extension. In CI the AppImage workflow
+# passes a prebuilt manylinux wheel via SUTURA_GEOM_WHEEL; locally the helper
+# falls back to downloading the release wheel, then to a cargo build.
+SUTURA_GEOM_REQUIRED=1 "$SCRIPT_DIR/install_sutura_geom.sh" "$LIB/venv/bin/python" "$REPO_ROOT"
+SUTURA_GEOM_REQUIRED=1 "$SCRIPT_DIR/install_sutura_geom.sh" "$LIB/venv311/bin/python" "$REPO_ROOT"
+"$LIB/venv/bin/python" -c "import sutura_geom; print('sutura_geom OK (venv 3.14)')"
+"$LIB/venv311/bin/python" -c "import sutura_geom; print('sutura_geom OK (venv311 3.11)')"
+
 echo "==> copying application modules"
 for f in repair.py gui.py classification.py defects.py mesh_classifier.py \
          mesh_classifier_v2.py autorefine.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py csg_bridge.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \

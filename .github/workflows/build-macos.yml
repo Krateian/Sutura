@@ -53,6 +53,16 @@ jobs:
           python -c \
             "import pymeshlab, manifold3d, trimesh, scipy, PySide6; print('deps OK')"
 
+      # The Rust extension (rust/sutura-geom, abi3-py311) is needed by Graft
+      # (#13), Exact Refine (#6) and the indirect tier. Install it into the
+      # conda base env so PyInstaller can collect it (repair.py imports it
+      # lazily inside functions, so it would otherwise be missed).
+      - name: Build and install sutura_geom (Rust extension)
+        run: |
+          pip install --quiet maturin==1.15.0
+          pip install --quiet ./rust/sutura-geom
+          python -c "import sutura_geom; print('sutura_geom OK')"
+
       # --- shared PyInstaller flags (proven recipe) -----------------------
       # - hidden imports for sutura's flat modules (repair.py imports them
       #   as top-level `from classification import ...`)
@@ -78,6 +88,7 @@ jobs:
             "--hidden-import" "repeat_repair"
             "--hidden-import" "mirror_repair" "--hidden-import" "wall_thickness"
             "--hidden-import" "shell_wrap"
+            "--hidden-import" "sutura_geom" "--collect-all" "sutura_geom"
             "--hidden-import" "csg_bridge"
             "--hidden-import" "sutura_engine"
             "--collect-submodules" "sutura_engine"
@@ -124,6 +135,7 @@ jobs:
             --hidden-import repeat_repair \
             --hidden-import mirror_repair --hidden-import wall_thickness \
             --hidden-import shell_wrap \
+            --hidden-import sutura_geom --collect-all sutura_geom \
             --hidden-import csg_bridge \
             --hidden-import sutura_engine \
             --collect-submodules sutura_engine \
@@ -149,6 +161,15 @@ jobs:
             dist/Sutura.app/Contents/Info.plist
           cp assets/icon/Sutura.icns "dist/Sutura.app/Contents/Resources/"
           ls -la "$MACOS"
+
+      - name: Check the bundle contains the sutura_geom extension
+        # repair.py imports sutura_geom lazily; --hidden-import + --collect-all
+        # must actually have pulled the .so into BOTH the CLI tool and the .app.
+        run: |
+          set -e
+          find dist/Sutura.app -name 'sutura_geom*.so' | grep -q .
+          find dist/sutura-cli -name 'sutura_geom*.so' | grep -q .
+          echo "sutura_geom bundled in sutura-cli and Sutura.app"
 
       - name: Create .dmg (UDZO, versioned name)
         run: |

@@ -30,8 +30,26 @@ jobs:
             echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Build manylinux wheel for the Rust extension
+        # The AppImage bundles its own python-build-standalone runtimes, so the
+        # extension must be built against the oldest supported glibc, not the
+        # runner's glibc. SUTURA_GEOM_WHEEL then makes build_appimage.sh install
+        # this wheel instead of building on the runner.
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: 1.15.0
+          target: x86_64
+          manylinux: auto
+          working-directory: rust/sutura-geom
+          args: --release --out dist-geom
+
       - name: Build AppImage
-        run: ./scripts/build_appimage.sh
+        run: |
+          set -e
+          WHEEL="$(ls rust/sutura-geom/dist-geom/*.whl | head -1)"
+          test -n "$WHEEL"
+          echo "Using extension wheel: $WHEEL"
+          SUTURA_GEOM_WHEEL="$WHEEL" ./scripts/build_appimage.sh
 
       - name: Publish to GitHub Release
         # v3 (v2 is EOL: Node 20 runtime deprecated). We deliberately do NOT
