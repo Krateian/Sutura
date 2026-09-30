@@ -1732,6 +1732,8 @@ Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.7.1 — 2026-10-01** — Graft now works in installed builds: Rust extension
+  shipped via prebuilt wheels + bundled in AppImage/.dmg; macOS .dmg startup fix.
 - **v0.7.0 — 2026-09-28** — Sutura Triage Engine: modular architecture
   (`sutura_engine` with Triage, Diagnosis, Chart, Stitch, X-Ray, Hull, and Cast);
   extensible Plugin API (`RepairMethodProtocol`); content-addressed Chart cache

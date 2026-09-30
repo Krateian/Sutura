@@ -1750,6 +1750,9 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.7.1 — 2026-10-01** — Graft artık kurulu derlemelerde çalışıyor: Rust
+  eklentisi önceden derlenmiş wheel'ler üzerinden sunuluyor ve AppImage/.dmg
+  paketlerine dahil edildi; macOS .dmg başlangıç düzeltmesi.
 - **v0.7.0 — 2026-09-28** — Sutura Triyaj Motoru: modüler mimari
   (`sutura_engine` altında Triyaj, Tanı/Diagnosis, Chart önbelleği, Dikiş/Stitch,
   X-Ray, Kabuk/Hull ve Döküm/Cast); genişletilebilir Eklenti API'si

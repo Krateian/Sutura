@@ -329,12 +329,16 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         return analysis
 
     # Cache lookup
-    version = '0.7.0'
+    version = '0.7.1'
     try:
         from repair import VERSION
         version = VERSION
     except Exception:
-        pass
+        try:
+            from sutura_engine import VERSION
+            version = VERSION
+        except Exception:
+            pass
 
     m_hash = None
     if use_cache and cache.is_cache_enabled():
