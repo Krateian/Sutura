@@ -16,8 +16,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- **Rotational symmetry detection is 2-3.7x faster** (batched nearest-neighbour queries).
-  Results are identical on the real-world and patterned sample sets.
+- **Rotational symmetry detection is 2-3.7x faster** (batched, threaded nearest-neighbour
+  queries). Results are identical on the real-world and patterned sample sets (corpus detector
+  time 59.5 s -> 16.0 s).
+
+### Fixed
+
+- **GUI test suites on macOS conda.** The GUI-constructing suites now set `QT_PLUGIN_PATH` to
+  the interpreter's PySide6 Qt6 plugins when it is unset (macOS conda with a system Qt5
+  present), so the offscreen suites load the intended plugins. Test-side only (new
+  `tests/_qt_test_env.py`, #38).
 
 ### Known limitations
 
@@ -1060,6 +1068,11 @@ From Sutura 0.4.0 on, the Orca Cloud listing is published automatically on
 every GitHub Release whose plugin file changed, and its version follows the
 Sutura release tag; the plugin header was aligned to `0.4.0` accordingly. The
 0.4.0 listing carries the 0.2.3 changes below.
+
+The v2 plugin (dock panel, non-manifold notification, world-transform export
+with mirrored winding, multi-part union, load-back as a new object) ships with
+Sutura 0.7.2 and is recorded in the `[0.7.2]` section above; this section keeps
+the older plugin-only history.
 
 ### [0.2.3] - 2026-09-21
 
