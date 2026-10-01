@@ -1,11 +1,13 @@
 # Sutura × OrcaSlicer plugin
 
-Repair the **currently selected model** straight from OrcaSlicer: the mesh is
-read through the `orca.host` API (numpy-free `vertex(i)`/`triangle(i)`
-accessors — the embedded Python ships only `pip`, no numpy), repaired with the
-[separately-installed Sutura CLI](https://github.com/Krateian/Sutura), and the
-repaired result is loaded back into the slicer. The plugin does not bundle
-numpy/pymeshlab/manifold3d into OrcaSlicer's embedded Python.
+Repair OrcaSlicer models straight from a dockable panel beside the 3D view:
+the objects on the plate are read through the `orca.host` API, exported to STL
+in world coordinates, repaired with the [separately-installed Sutura
+CLI](https://github.com/Krateian/Sutura), and the repaired copy is loaded back
+into the slicer as a new object. The plugin does not bundle
+pymeshlab/manifold3d into OrcaSlicer's embedded Python; it declares `numpy`
+as a plugin dependency (installed by OrcaSlicer's bundled uv) and falls back
+to the numpy-free mesh accessors when numpy is unavailable.
 
 ## ⚠️ Version requirement — nightly / newer than 2.4.2 REQUIRED
 
@@ -14,66 +16,94 @@ newer than 2.4.2**. The stable **2.4.2 release has no "Plugins" menu** — this
 plugin will not work there. Use a nightly (or a release newer than 2.4.2)
 build.
 
-## ⚠️ EXPERIMENTAL — real-instance verified, early stage
+## ⚠️ EXPERIMENTAL — early stage
 
-The plugin has been tested end-to-end in a real OrcaSlicer **2.5.0-dev**
-install (macOS): it loads, activates, reads the selected model through
-`orca.host`, repairs it with the Sutura CLI, and loads the repaired result
-back into the scene. The `orca.host` API usage is also stub-tested against a
-mock host (`tests/test_orca_plugin.py`), including loading with numpy blocked.
-It remains an early-stage feature: treat it as a verified starting point, not
-a guaranteed-working product, and report issues (see "Feedback" below).
+The plugin API usage is stub-tested against a mock host
+(`tests/test_orca_plugin.py`), including loading with numpy blocked, the
+transform/winding export, the multi-part union, the message protocol, the
+lifecycle debounce and the notification de-duplication. It remains an
+early-stage feature: treat it as a verified starting point, not a
+guaranteed-working product, and report issues (see "Feedback" below).
 
 ## Platform: Linux primary, macOS bonus verification
 
-**Primary target is Linux** (Sutura's main platform; the design follows the
-Linux `install.sh` layout). The same single file is also verified on macOS as
-a bonus real-device layer:
-
 - On **both** Linux and macOS the Sutura CLI is installed at the **same path,
   `~/.local/bin/sutura`** (`install.sh` on Linux, `install-macos.sh` on macOS;
-  only the Python interpreter behind the wrapper differs). The old claim that
-  "macOS uses a different directory" was incorrect.
+  only the Python interpreter behind the wrapper differs).
 - Windows is not supported.
 - macOS-specific behaviour: the repaired file is loaded back with the native
   `open -b com.orcaslicer.OrcaSlicer <path>` (bundle-ID matching, skipped when
   more than one OrcaSlicer process is running); Linux uses
   `OrcaSlicer --single-instance <path>`.
 
-## Unique output files — no overwrites
+## The dock panel
 
-Every run writes a **unique** repaired file
-`<stem>_fixed_<timestamp>_<short-uuid>.stl` under OrcaSlicer's `data_dir()`
-audit-allowed root. Consecutive runs **never overwrite** a previous result; a
-temporary input staging file (`<uuid>.stl`) is written per run and removed
-afterwards.
+Running the plugin (Plugins dialog → Run) opens a dockable panel on the right
+of the 3D view; with the **Open panel at startup** setting (default on) it
+opens automatically when the plugin loads. The panel lists every object on
+the plate and offers:
 
-## How it works
+- a **Quick / Balanced / Thorough / Extreme** preset control (the Sutura
+  `--intensity` presets; Balanced is the default);
+- per-object **Analyze** (read-only: holes, non-manifold regions,
+  self-intersections and the top ranked repair methods with confidence bars)
+  and **Repair** actions, plus a "Repair selected (n)" footer button and a
+  "Select broken" shortcut;
+- live job phases (queued → exporting → repairing → loading → done / failed /
+  cancelled) with elapsed time and a Cancel button;
+- a **Show file** link for a finished job that reveals the repaired file in
+  the platform file browser;
+- collapsible settings for the preset, notifications and panel-at-startup.
 
-- `sutura_repair_linux_x86_64.py` is a single-file OrcaSlicer plugin (PEP 723
-  metadata + `@orca.plugin` registration), placed as one entry file in a
-  plugin folder.
-- On "Run", `execute()` (on the UI thread) reads the selected model in memory
-  (`orca.host.model() -> objects() -> volumes() -> mesh()`, using the
-  **numpy-free** `vertex(i)` / `triangle(i)` accessors — the embedded Python
-  has no numpy), opens a native progress dialog
-  (`orca.host.ui.create_progress_dialog`, pulsed while the repair runs) and
-  shows the result message when it finishes. On builds without the
-  progress-dialog API it falls back to a background thread and reports
-  "started" immediately.
-- Repair always runs via the **subprocess CLI**
-  (`~/.local/bin/sutura <stage> -o <unique_out>`): the embedded interpreter
-  ships only `pip` (no numpy/pymeshlab/manifold3d), so in-process repair is
-  not possible.
-- `register_capabilities()` declares the Sutura CLI path up front with
-  `orca.request_permissions(fs_read=[...])`. HONEST SCOPE: this only
-  pre-declares filesystem **reads** — the audit API has no declarative form
-  for subprocess spawns, and their persisted grant matches the exact command
-  line (which contains unique temp paths), so a subprocess permission prompt
-  can still appear.
-- The repaired file is loaded back via `--single-instance` (Linux) /
-  `open -b com.orcaslicer.OrcaSlicer` (macOS), and the result path is reported
-  through `orca.host.ui.message(...)`.
+The panel HTML is embedded in the plugin file (copied from
+`panel/panel.html`) so the published single-file plugin stays
+self-contained; `panel/preview.html` is a browser-only development preview.
+
+## Proactive check and notifications
+
+On `ObjectAdded`, `ObjectChanged` and `ProjectOpened` the plugin schedules a
+debounced (1 s) rescan — the lifecycle hook itself only enqueues, never does
+work inline. For any object whose `mesh_errors_count() > 0` (errors OrcaSlicer
+repaired on import) or whose model-part volumes are non-manifold, it pushes
+**one** warning notification per object per session:
+"_<name>: <n> mesh error(s) repaired by Orca — check with Sutura_" with a
+"Repair with Sutura" action that repairs the object with the current preset.
+Notifications can be disabled with the **Notify about broken meshes** setting.
+
+## Export semantics
+
+- Every `is_model_part()` volume of an object is exported; parameter
+  modifiers, negative volumes and support blockers are **skipped** (and
+  counted in the panel's "mod" indicator).
+- Each volume is transformed by `instance(0).matrix() @ volume.matrix()`, i.e.
+  the object is written in **world coordinates**; the triangle winding is
+  flipped when the combined transform is left-handed (mirrored parts keep
+  outward-facing normals).
+- A multi-part object becomes **one** STL containing all its model parts (the
+  union surface Sutura is asked to repair).
+- Each run writes a **unique** file
+  (`<stem>_fixed_<timestamp>_<short-uuid>.stl`) under OrcaSlicer's
+  `data_dir()` audit-allowed root; consecutive runs **never overwrite** a
+  previous result. The temporary input STL is written under
+  `data_dir()/sutura_repair/<uuid>/`.
+
+## Repair
+
+Repair always runs via the **subprocess CLI** (`~/.local/bin/sutura <stage>
+--intensity <preset> -o <unique_out>`): the embedded interpreter ships only
+`pip` (plus the declared `numpy`), so in-process repair is not possible. The
+CLI is run with a 600 s timeout and can be cancelled from the panel; Analyze
+runs `sutura <stage> --analyze` (read-only, no output file). The JSON report
+on stdout is parsed and mapped onto the panel protocol.
+
+## Permissions
+
+`register_capabilities()` declares the Sutura CLI path up front with
+`orca.request_permissions(fs_read=[...])`. HONEST SCOPE: this only
+pre-declares filesystem **reads** -- the audit API has no declarative form for
+subprocess spawns, and their persisted grant matches the exact command line
+(which contains unique temp paths), so a subprocess permission prompt can
+still appear once per command target.
 
 ## Install (nightly / OrcaSlicer > 2.4.2)
 
@@ -87,14 +117,31 @@ afterwards.
    ```
 
    (macOS: `~/Library/Application Support/OrcaSlicer/orca_plugins/`.)
-3. Enable it in the OrcaSlicer Plugins dialog, then run it.
+3. Enable it in the OrcaSlicer Plugins dialog, then run it to open the panel.
 
 ## Configuration
 
-- `SUTURA_CLI` env var — override the CLI path (default
-  `~/.local/bin/sutura`, the same path on Linux and macOS).
+- Panel settings (preset, notify about broken meshes, open panel at startup)
+  are stored in the plugin's capability config.
+- `sutura_cli` config key — explicit CLI path; empty (default) auto-detects
+  `~/.local/bin/sutura`, then `sutura` on `PATH`.
+- `SUTURA_CLI` env var — highest-precedence CLI override.
 - `ORCA_BIN` env var — override the OrcaSlicer binary used for
   `--single-instance` (default `orca-slicer`).
+
+## Known limitations
+
+- The repaired surface is added as a **new object**; the original object is
+  left untouched and there is **no undo**. Remove the new object manually if
+  the result is not wanted.
+- Because the export is in world coordinates, OrcaSlicer may re-centre the
+  imported object on reload (or drop it on some builds). The exact placement
+  after reload has not been verified on a real nightly (owner live test
+  pending).
+- The export is a per-object triangle soup of its model parts; Sutura repairs
+  the union surface. Overlapping or intentionally separate parts are treated
+  as one solid.
+- Nightly-only API (see the version requirement above).
 
 ## Feedback
 
