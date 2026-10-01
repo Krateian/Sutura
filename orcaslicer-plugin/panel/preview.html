@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sutura — OrcaSlicer Dock Panel Dev Preview</title>
+<style>
+:root {
+  --orca-bg: #fff; --orca-fg: #1f2429; --orca-muted: #6b7580;
+  --orca-border: #d9dee3; --orca-accent: #009688; --orca-accent-fg: #fff;
+  --orca-font: system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --orca-bg: #2b2d30; --orca-fg: #e4e6e8; --orca-muted: #9aa0a6;
+    --orca-border: #3d4043; --orca-accent: #009688; --orca-accent-fg: #fff;
+  }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--orca-bg); color: var(--orca-fg); font-family: var(--orca-font);
+  font-size: 12px; line-height: 1.4; height: 100vh; width: 100%; display: flex; flex-direction: column;
+  overflow-x: hidden; user-select: none;
+}
+button, input { font-family: inherit; font-size: inherit; }
+:focus-visible { outline: 2px solid var(--orca-accent); outline-offset: 1px; }
+
+/* Header */
+.header {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; border-bottom: 1px solid var(--orca-border); width: 100%; min-width: 0;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--orca-muted); flex: none; }
+.status-dot.online { background: #10b981; box-shadow: 0 0 0 2px rgba(16,185,129,0.25); }
+.status-dot.offline { background: #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,0.25); }
+.btn-icon {
+  width: 26px; height: 26px; border-radius: 4px; border: none; background: transparent;
+  color: var(--orca-muted); cursor: pointer; display: flex; align-items: center; justify-content: center; flex: none;
+}
+.btn-icon:hover { color: var(--orca-fg); background: var(--orca-border); }
+
+/* Preset Segmented Bar */
+.preset-bar { flex: none; display: flex; padding: 6px 12px; width: 100%; min-width: 0; }
+.segmented {
+  display: flex; width: 100%; min-width: 0; border: 1px solid var(--orca-border);
+  border-radius: 6px; padding: 2px; gap: 2px;
+}
+.seg-btn {
+  flex: 1; min-width: 0; padding: 4px 1px; font-size: 11px; font-weight: 500; border: none;
+  border-radius: 4px; background: transparent; color: var(--orca-muted); cursor: pointer;
+  text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.seg-btn:hover { color: var(--orca-fg); }
+.seg-btn.active { background: var(--orca-accent); color: var(--orca-accent-fg); font-weight: 600; }
+
+/* Content Area */
+.content-area { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; width: 100%; }
+
+/* CLI Missing */
+.cli-missing { padding: 24px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.cli-missing-badge { font-size: 24px; }
+.cli-missing-title { font-size: 13px; font-weight: 600; }
+.cli-missing-desc { font-size: 11px; color: var(--orca-muted); max-width: 260px; }
+.code-box { display: flex; align-items: center; border: 1px solid var(--orca-border); border-radius: 6px; padding: 4px 8px; width: 100%; max-width: 280px; gap: 6px; }
+.code-text { flex: 1; font-family: monospace; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.btn-copy { font-size: 10px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--orca-border); background: transparent; color: var(--orca-fg); cursor: pointer; }
+.btn-copy:hover { background: var(--orca-border); }
+
+/* Object Rows */
+.empty-state { padding: 32px 16px; text-align: center; color: var(--orca-muted); }
+.object-list { display: flex; flex-direction: column; width: 100%; }
+.object-row {
+  border-bottom: 1px solid var(--orca-border); padding: 8px 12px;
+  display: flex; flex-direction: column; gap: 4px; width: 100%; min-width: 0;
+}
+.object-row:hover { background: rgba(128,128,128,0.04); }
+.row-header { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+.row-checkbox { accent-color: var(--orca-accent); cursor: pointer; width: 14px; height: 14px; flex: none; }
+.row-name { font-weight: 500; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.row-sub { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; width: 100%; margin-top: 1px; }
+.row-meta { font-size: 11px; color: var(--orca-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.row-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+
+/* Buttons & Badges */
+.btn-accent, .btn-accent-sm {
+  border-radius: 4px; border: 1px solid var(--orca-accent); background: var(--orca-accent);
+  color: var(--orca-accent-fg); cursor: pointer; font-weight: 600; font-size: 11px;
+}
+.btn-accent { padding: 6px 12px; }
+.btn-accent-sm { padding: 2px 8px; font-weight: 500; white-space: nowrap; }
+.btn-accent:hover:not(:disabled), .btn-accent-sm:hover:not(:disabled) { opacity: 0.9; }
+.btn-accent:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-quiet {
+  padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--orca-border);
+  background: transparent; color: var(--orca-fg); cursor: pointer; white-space: nowrap;
+}
+.btn-quiet:hover { background: var(--orca-border); }
+
+.badge { display: inline-flex; align-items: center; font-size: 10px; font-weight: 500; padding: 1px 5px; border-radius: 4px; white-space: nowrap; flex: none; }
+.badge-ok, .chip-success { color: #10b981; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.3); }
+.badge-warn { color: #f59e0b; background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.35); }
+.badge-bad, .chip-failed { color: #ef4444; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); }
+
+/* Running & Result */
+.running-box { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; background: rgba(128,128,128,0.05); padding: 6px 8px; border-radius: 4px; }
+.progress-bar-track { height: 3px; width: 100%; background: var(--orca-border); border-radius: 2px; overflow: hidden; position: relative; }
+.progress-bar-bar { position: absolute; top: 0; bottom: 0; width: 35%; background: var(--orca-accent); border-radius: 2px; animation: progress-indet 1.3s infinite ease-in-out; }
+@keyframes progress-indet { 0% { left: -35%; width: 35%; } 50% { left: 35%; width: 45%; } 100% { left: 100%; width: 25%; } }
+.running-row { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
+.running-status { color: var(--orca-fg); display: flex; align-items: center; gap: 6px; }
+.running-time { color: var(--orca-muted); font-variant-numeric: tabular-nums; }
+.result-row { margin-top: 3px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.chip { display: inline-flex; align-items: center; font-size: 11px; font-weight: 500; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+.chip-cancelled { color: var(--orca-muted); background: var(--orca-border); }
+.link-show-file { background: transparent; border: none; color: var(--orca-accent); cursor: pointer; font-size: 11px; text-decoration: underline; padding: 2px 4px; }
+
+/* Analysis Drawer */
+.analysis-drawer { margin-top: 6px; padding: 8px; border-radius: 6px; border: 1px solid var(--orca-border); display: flex; flex-direction: column; gap: 6px; }
+.analysis-top { display: flex; align-items: center; justify-content: space-between; }
+.analysis-heading { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--orca-muted); }
+.btn-close-analysis { background: transparent; border: none; color: var(--orca-muted); cursor: pointer; font-size: 11px; }
+.defect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.defect-cell { background: rgba(128,128,128,0.05); border: 1px solid var(--orca-border); border-radius: 4px; padding: 4px 6px; text-align: center; }
+.defect-val { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.defect-val.warn { color: #f59e0b; }
+.defect-val.bad { color: #ef4444; }
+.defect-val.zero { color: var(--orca-muted); }
+.defect-lbl { font-size: 9px; color: var(--orca-muted); text-transform: uppercase; }
+.rec-list { display: flex; flex-direction: column; gap: 4px; }
+.rec-row { display: flex; flex-direction: column; gap: 2px; }
+.rec-meta { display: flex; justify-content: space-between; font-size: 11px; }
+.rec-name { color: var(--orca-fg); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-conf { color: var(--orca-muted); font-variant-numeric: tabular-nums; font-weight: 600; margin-left: 6px; }
+.rec-bar-track { height: 4px; background: var(--orca-border); border-radius: 2px; overflow: hidden; }
+.rec-bar-fill { height: 100%; background: var(--orca-accent); border-radius: 2px; }
+
+/* Sticky Footer */
+.footer { flex: none; border-top: 1px solid var(--orca-border); background: var(--orca-bg); padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.footer-actions { display: flex; gap: 8px; width: 100%; min-width: 0; }
+.btn-block { flex: 1; text-align: center; min-width: 0; white-space: nowrap; }
+.settings-details { font-size: 11px; }
+.settings-summary { cursor: pointer; color: var(--orca-muted); user-select: none; }
+.settings-summary:hover { color: var(--orca-fg); }
+.settings-content { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+.setting-label { display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--orca-fg); }
+.setting-label input { accent-color: var(--orca-accent); cursor: pointer; }
+.disclaimer { font-size: 10px; color: var(--orca-muted); text-align: center; }
+.hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+
+body.theme-light {
+  --orca-bg: #ffffff;
+  --orca-fg: #1f2429;
+  --orca-muted: #6b7580;
+  --orca-border: #d9dee3;
+  --orca-accent: #009688;
+  --orca-accent-fg: #ffffff;
+}
+body.theme-dark {
+  --orca-bg: #2b2d30;
+  --orca-fg: #e4e6e8;
+  --orca-muted: #9aa0a6;
+  --orca-border: #3d4043;
+  --orca-accent: #009688;
+  --orca-accent-fg: #ffffff;
+}
+
+
+  /* Dev Harness Styles */
+  #dev-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 9999;
+    background: #18191b;
+    color: #e2e4e6;
+    border-bottom: 1px solid #33363a;
+    padding: 6px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    font-size: 11px;
+    font-family: system-ui, sans-serif;
+  }
+  body.capture-mode #dev-toolbar {
+    display: none !important;
+  }
+  .harness-title {
+    font-weight: 700;
+    color: #00bfa5;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .harness-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .harness-btn {
+    background: #272a2e;
+    color: #e2e4e6;
+    border: 1px solid #3d4043;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .harness-btn:hover { background: #34383e; }
+  .harness-btn.active { background: #009688; color: #fff; border-color: #009688; }
+  .harness-select {
+    background: #272a2e;
+    color: #e2e4e6;
+    border: 1px solid #3d4043;
+    padding: 2px 4px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .preview-wrapper {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    min-height: calc(100vh - 40px);
+  }
+  body.capture-mode .preview-wrapper {
+    min-height: 100vh;
+  }
+  .preview-frame {
+    width: 320px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 0 20px rgba(0,0,0,0.15);
+    background: var(--orca-bg);
+  }
+  body.capture-mode {
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  body.capture-mode .preview-wrapper {
+    justify-content: flex-start !important;
+    align-items: flex-start !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 320px !important;
+  }
+  body.capture-mode .preview-frame {
+    width: 320px !important;
+    height: 100vh !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+  }
+
+</style>
+</head>
+<body class="theme-light">
+
+  <!-- Dev Harness Toolbar -->
+  <header id="dev-toolbar">
+    <div class="harness-title">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+      </svg>
+      Sutura Host Harness
+    </div>
+
+    <div class="harness-group">
+      <span>Theme:</span>
+      <button type="button" class="harness-btn active" id="btn-theme-light">Light</button>
+      <button type="button" class="harness-btn" id="btn-theme-dark">Dark</button>
+    </div>
+
+    <div class="harness-group">
+      <span>Width:</span>
+      <select id="select-width" class="harness-select">
+        <option value="260">260 px</option>
+        <option value="320" selected>320 px (default)</option>
+        <option value="420">420 px</option>
+        <option value="560">560 px</option>
+      </select>
+    </div>
+
+    <div class="harness-group">
+      <span>Simulate:</span>
+      <button type="button" class="harness-btn" id="h-btn-job">Job on #4</button>
+      <button type="button" class="harness-btn" id="h-btn-analysis">Analysis on #4</button>
+      <button type="button" class="harness-btn" id="h-btn-cli">Toggle CLI</button>
+      <button type="button" class="harness-btn" id="h-btn-empty">Toggle Empty</button>
+      <button type="button" class="harness-btn" id="h-btn-reset">Reset</button>
+    </div>
+  </header>
+
+  <!-- Panel Frame Container -->
+  <div class="preview-wrapper">
+    <div class="preview-frame" id="preview-frame">
+<!-- Header -->
+  <header class="header">
+    <div class="brand">
+      <span>Sutura</span>
+      <span id="cli-dot" class="status-dot" title="Checking CLI..." aria-label="CLI status"></span>
+    </div>
+    <button type="button" id="btn-refresh" class="btn-icon" title="Refresh scene objects" aria-label="Refresh">
+      <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
+        <path d="M13.65 2.35A8 8 0 1 0 16 8h-2a6 6 0 1 1-1.76-4.24l-2.24 2.24H16V0l-2.35 2.35z"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- Preset Selector -->
+  <div class="preset-bar" id="preset-bar">
+    <div class="segmented" role="radiogroup" aria-label="Repair Preset">
+      <button type="button" class="seg-btn" data-preset="quick" title="Fast repair, skips heavy solid rebuild">Quick</button>
+      <button type="button" class="seg-btn active" data-preset="balanced" title="Default two-stage repair with manifold3d rebuild">Balanced</button>
+      <button type="button" class="seg-btn" data-preset="thorough" title="Aggressive repair with lower thresholds for stubborn defects">Thorough</button>
+      <button type="button" class="seg-btn" data-preset="extreme" title="Maximum hole filling and aggressive component merging">Extreme</button>
+    </div>
+  </div>
+
+  <!-- Main Scrollable Area -->
+  <div class="content-area">
+    <div id="cli-missing-view" class="cli-missing hidden" role="alert">
+      <div class="cli-missing-badge">⚠️</div>
+      <div class="cli-missing-title">Sutura is not installed</div>
+      <p class="cli-missing-desc">Install Sutura via bash to enable mesh repair, solid rebuilds, and defect diagnostics.</p>
+      <div class="code-box">
+        <span class="code-text" id="install-cmd">curl -fsSL https://raw.githubusercontent.com/Krateian/Sutura/main/install.sh | bash</span>
+        <button type="button" id="btn-copy-install" class="btn-copy" title="Copy install command">Copy</button>
+      </div>
+      <button type="button" id="btn-check-cli" class="btn-accent" style="margin-top: 6px;">Check again</button>
+    </div>
+
+    <div id="object-list" class="object-list" role="region" aria-label="Objects on plate"></div>
+    <div id="empty-state" class="empty-state hidden">No objects on the plate.</div>
+  </div>
+
+  <!-- Sticky Footer -->
+  <footer class="footer" id="panel-footer">
+    <div class="footer-actions">
+      <button type="button" id="btn-repair-selected" class="btn-accent btn-block" disabled>Repair selected (0)</button>
+      <button type="button" id="btn-select-broken" class="btn-quiet">Select broken</button>
+    </div>
+    <details class="settings-details" id="settings-details">
+      <summary class="settings-summary">Settings</summary>
+      <div class="settings-content">
+        <label class="setting-label">
+          <input type="checkbox" id="chk-notify-broken" checked>
+          <span>Notify about broken meshes</span>
+        </label>
+        <label class="setting-label">
+          <input type="checkbox" id="chk-open-startup" checked>
+          <span>Open panel at startup</span>
+        </label>
+      </div>
+    </details>
+    <div class="disclaimer">Repaired copies are added as new objects; originals stay unchanged.</div>
+  </footer>
+
+  <div id="aria-status" class="sr-only" aria-live="polite"></div>
+    </div>
+  </div>
+
+<script>
+
+/* Mock window.orca Bridge & Dev Harness Logic */
+(function() {
+  'use strict';
+
+  const mockObjects = [
+    { id: "1", name: "Calibration_Cube.stl", parts: 1, modifiers: 0, triangles: 12400, orca_fixed_errors: 0, manifold: true, status: "ok" },
+    { id: "2", name: "Voronoi_Vase_Multi.3mf", parts: 4, modifiers: 0, triangles: 85200, orca_fixed_errors: 0, manifold: true, status: "ok" },
+    { id: "3", name: "Enclosure_Bracket.stl", parts: 1, modifiers: 0, triangles: 34150, orca_fixed_errors: 3, manifold: true, status: "warn" },
+    { id: "4", name: "Scanned_Figure_Damaged.stl", parts: 1, modifiers: 0, triangles: 142800, orca_fixed_errors: 12, manifold: false, status: "bad" },
+    { id: "5", name: "Phone_Stand_Base.stl", parts: 1, modifiers: 1, triangles: 21600, orca_fixed_errors: 0, manifold: true, status: "ok" }
+  ];
+
+  let cliFound = true;
+  let objectsList = [...mockObjects];
+  let currentSettings = { preset: "balanced", notify_broken: true, open_panel_at_startup: true };
+  const listeners = [];
+  const activeTimers = new Map();
+
+  function sendToPage(msg) {
+    listeners.forEach(fn => { try { fn(msg); } catch (e) { console.error(e); } });
+  }
+
+  function broadcastState() {
+    sendToPage({
+      command: "state",
+      cli: { found: cliFound, path: "/Users/krateian/.local/bin/sutura", version: "Sutura 0.7.2" },
+      settings: currentSettings,
+      objects: objectsList
+    });
+  }
+
+  function cancelJob(id) {
+    if (activeTimers.has(id)) {
+      clearInterval(activeTimers.get(id));
+      activeTimers.delete(id);
+      sendToPage({ command: "job", id, phase: "cancelled", elapsed_s: 0, message: "Cancelled by user" });
+    }
+  }
+
+  function runSimulation(id, preset) {
+    cancelJob(id);
+    let elapsed = 0;
+    const phases = ["queued", "exporting", "repairing", "loading", "done"];
+    let idx = 0;
+
+    sendToPage({ command: "job", id, phase: phases[idx], elapsed_s: 0, message: "Queued..." });
+
+    const timer = setInterval(() => {
+      elapsed += 0.2;
+      if (idx === 0 && elapsed >= 0.4) {
+        idx = 1;
+        sendToPage({ command: "job", id, phase: phases[idx], elapsed_s: elapsed, message: "Exporting parts..." });
+      } else if (idx === 1 && elapsed >= 1.0) {
+        idx = 2;
+        sendToPage({ command: "job", id, phase: phases[idx], elapsed_s: elapsed, message: "Sutura solid rebuild running..." });
+      } else if (idx === 2 && elapsed >= 2.4) {
+        idx = 3;
+        sendToPage({ command: "job", id, phase: phases[idx], elapsed_s: elapsed, message: "Loading mesh back to plate..." });
+      } else if (idx === 3 && elapsed >= 3.0) {
+        clearInterval(timer);
+        activeTimers.delete(id);
+        sendToPage({
+          command: "job",
+          id,
+          phase: "done",
+          elapsed_s: elapsed,
+          message: "Repair complete",
+          result: {
+            watertight: true,
+            method: "manifold_rebuild",
+            holes_before: id === "4" ? 14 : 3,
+            holes_after: 0,
+            output_path: "/tmp/sutura_repair/repaired_" + id + ".stl"
+          }
+        });
+        return;
+      } else if (idx === 2) {
+        sendToPage({ command: "job", id, phase: phases[idx], elapsed_s: elapsed, message: "Repairing..." });
+      }
+    }, 200);
+
+    activeTimers.set(id, timer);
+  }
+
+  function runAnalysis(id) {
+    setTimeout(() => {
+      sendToPage({
+        command: "analysis",
+        id,
+        defects: {
+          holes: id === "4" ? 14 : 3,
+          non_manifold: id === "4" ? 22 : 0,
+          self_intersections: id === "4" ? 6 : 1
+        },
+        recommended: [
+          { method: "manifold_rebuild", name: "Manifold Solid Rebuild", confidence: 0.94 },
+          { method: "vcg_hole_fill", name: "VCG Hole Filling", confidence: 0.78 },
+          { method: "ftetwild_fallback", name: "fTetWild Iso-surface", confidence: 0.42 }
+        ]
+      });
+    }, 250);
+  }
+
+  window.orca = {
+    postMessage: function(msg) {
+      if (!msg) return;
+      if (msg.command === "hello") {
+      } else if (msg.command === "refresh") {
+        broadcastState();
+      } else if (msg.command === "settings") {
+        if (msg.values) Object.assign(currentSettings, msg.values);
+      } else if (msg.command === "repair") {
+        (msg.ids || []).forEach(id => runSimulation(id, msg.preset || currentSettings.preset));
+      } else if (msg.command === "analyze") {
+        runAnalysis(msg.id);
+      } else if (msg.command === "cancel") {
+        cancelJob(msg.id);
+      } else if (msg.command === "open_output") {
+        alert("OrcaSlicer action: open output file for object #" + msg.id);
+      }
+    },
+    onMessage: function(cb) {
+      if (typeof cb === "function") listeners.push(cb);
+    },
+    close: function() {
+      alert("OrcaSlicer action: panel.close()");
+    }
+  };
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const themeParam = urlParams.get('theme') || 'light';
+  const stateParam = urlParams.get('state');
+  const captureParam = urlParams.get('capture') || urlParams.get('headless');
+
+  if (captureParam === '1' || captureParam === 'true') {
+    document.body.classList.add('capture-mode');
+  }
+
+  function setTheme(t) {
+    if (t === 'dark') {
+      document.body.classList.remove('theme-light');
+      document.body.classList.add('theme-dark');
+      document.getElementById('btn-theme-dark')?.classList.add('active');
+      document.getElementById('btn-theme-light')?.classList.remove('active');
+    } else {
+      document.body.classList.remove('theme-dark');
+      document.body.classList.add('theme-light');
+      document.getElementById('btn-theme-light')?.classList.add('active');
+      document.getElementById('btn-theme-dark')?.classList.remove('active');
+    }
+  }
+  setTheme(themeParam);
+
+  document.getElementById('btn-theme-light')?.addEventListener('click', () => setTheme('light'));
+  document.getElementById('btn-theme-dark')?.addEventListener('click', () => setTheme('dark'));
+  document.getElementById('select-width')?.addEventListener('change', (e) => {
+    const f = document.getElementById('preview-frame');
+    if (f) f.style.width = e.target.value + 'px';
+  });
+
+  document.getElementById('h-btn-job')?.addEventListener('click', () => runSimulation("4", currentSettings.preset));
+  document.getElementById('h-btn-analysis')?.addEventListener('click', () => runAnalysis("4"));
+  document.getElementById('h-btn-cli')?.addEventListener('click', () => {
+    cliFound = !cliFound;
+    broadcastState();
+  });
+  document.getElementById('h-btn-empty')?.addEventListener('click', () => {
+    objectsList = objectsList.length ? [] : [...mockObjects];
+    broadcastState();
+  });
+  document.getElementById('h-btn-reset')?.addEventListener('click', () => {
+    cliFound = true;
+    objectsList = [...mockObjects];
+    broadcastState();
+  });
+
+  window.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+      if (stateParam === 'running') {
+        sendToPage({ command: "job", id: "4", phase: "repairing", elapsed_s: 3.4, message: "Sutura solid rebuild running..." });
+      } else if (stateParam === 'analyzed') {
+        runAnalysis("4");
+      } else if (stateParam === 'missing') {
+        cliFound = false;
+        broadcastState();
+      } else if (stateParam === 'empty') {
+        objectsList = [];
+        broadcastState();
+      }
+    }, 100);
+  });
+})();
+
+</script>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = id => document.getElementById(id);
+  const on = (id, evt, fn) => $(id)?.addEventListener(evt, fn);
+
+  const state = {
+    cli: { found: false, path: '', version: '' },
+    settings: { preset: 'balanced', notify_broken: true, open_panel_at_startup: true },
+    objects: [],
+    selectedIds: new Set(),
+    jobs: new Map(),
+    analyses: new Map(),
+    expandedAnalyses: new Set()
+  };
+
+  const send = msg => { if (window.orca?.postMessage) window.orca.postMessage(msg); };
+  const announce = txt => { const el = $('aria-status'); if (el) el.textContent = txt; };
+  const esc = s => !s ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  const formatTris = n => typeof n !== 'number' ? '0 tris' : n >= 1e6 ? (n/1e6).toFixed(1)+'M tris' : n >= 1e3 ? (n/1e3).toFixed(1)+'k tris' : n+' tris';
+  const renderMetaLine = o => `${o.parts > 1 ? o.parts + ' parts' : '1 part'} · ${formatTris(o.triangles)}${o.modifiers > 0 ? ' · ' + o.modifiers + ' mod' : ''}`;
+  const renderStatusBadge = o => o.status === 'warn' ? `<span class="badge badge-warn">${o.orca_fixed_errors || 1} fixed by Orca</span>` : (o.status === 'bad' || o.manifold === false) ? '<span class="badge badge-bad">Not manifold</span>' : '<span class="badge badge-ok">OK</span>';
+
+  function updateCliDot() {
+    const dot = $('cli-dot');
+    if (!dot) return;
+    const ok = !!(state.cli?.found);
+    dot.className = 'status-dot ' + (ok ? 'online' : 'offline');
+    dot.title = ok ? (state.cli.version || state.cli.path || 'Sutura CLI ready') : 'Sutura CLI not found';
+    $('cli-missing-view')?.classList.toggle('hidden', ok);
+    $('preset-bar')?.classList.toggle('hidden', !ok);
+    $('panel-footer')?.classList.toggle('hidden', !ok);
+    if (ok) renderObjectList();
+    else { if ($('object-list')) $('object-list').innerHTML = ''; $('empty-state')?.classList.add('hidden'); }
+  }
+
+  function updatePresetButtons() {
+    document.querySelectorAll('.seg-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.getAttribute('data-preset') === state.settings.preset);
+    });
+  }
+
+  function updateSettingsUI() {
+    const s = state.settings;
+    if ($('chk-notify-broken') && s.notify_broken !== undefined) $('chk-notify-broken').checked = !!s.notify_broken;
+    if ($('chk-open-startup') && s.open_panel_at_startup !== undefined) $('chk-open-startup').checked = !!s.open_panel_at_startup;
+    updatePresetButtons();
+  }
+
+  function updateFooter() {
+    const btn = $('btn-repair-selected');
+    if (!btn) return;
+    const n = state.selectedIds.size;
+    btn.textContent = `Repair selected (${n})`;
+    btn.disabled = n === 0;
+  }
+
+  function renderObjectRowHtml(obj) {
+    const id = String(obj.id);
+    const isSel = state.selectedIds.has(id);
+    const job = state.jobs.get(id);
+    const isRunning = job && ['queued', 'exporting', 'repairing', 'loading'].includes(job.phase);
+    const hasResult = job && ['done', 'failed', 'cancelled'].includes(job.phase);
+    const analysis = state.analyses.get(id);
+    const isExp = state.expandedAnalyses.has(id) && !!analysis;
+
+    let h = `<div class="object-row" id="row-${esc(id)}" data-id="${esc(id)}">
+      <div class="row-header">
+        <input type="checkbox" class="row-checkbox" data-id="${esc(id)}"${isSel ? ' checked' : ''} aria-label="Select ${esc(obj.name)}">
+        <span class="row-name" title="${esc(obj.name)}">${esc(obj.name)}</span>
+        ${renderStatusBadge(obj)}
+      </div>
+      <div class="row-sub">
+        <span class="row-meta">${renderMetaLine(obj)}</span>
+        <div class="row-actions">
+          ${!isRunning ? `
+            <button type="button" class="btn-quiet btn-analyze" data-id="${esc(id)}">Analyze</button>
+            <button type="button" class="btn-accent-sm btn-repair" data-id="${esc(id)}">Repair</button>
+          ` : ''}
+        </div>
+      </div>`;
+
+    if (isRunning) {
+      const phase = job.phase ? (job.phase[0].toUpperCase() + job.phase.slice(1)) : 'Working';
+      const time = job.elapsed_s != null ? `${typeof job.elapsed_s === 'number' ? job.elapsed_s.toFixed(1) : job.elapsed_s}s` : '';
+      h += `<div class="running-box" role="status">
+        <div class="progress-bar-track"><div class="progress-bar-bar"></div></div>
+        <div class="running-row">
+          <div class="running-status"><span>${esc(phase)}...</span><span class="running-time">${esc(time)}</span></div>
+          <button type="button" class="btn-quiet btn-cancel" data-id="${esc(id)}">Cancel</button>
+        </div>
+      </div>`;
+    }
+
+    if (hasResult) {
+      h += `<div class="result-row">`;
+      if (job.phase === 'done') {
+        const method = job.result?.method || 'repaired';
+        h += `<span class="chip chip-success">Watertight ✓ · ${esc(method)}</span>
+              <button type="button" class="link-show-file" data-id="${esc(id)}">Show file</button>`;
+      } else if (job.phase === 'failed') {
+        h += `<span class="chip chip-failed" title="${esc(job.message)}">Failed — ${esc(job.message || 'Error')}</span>`;
+      } else if (job.phase === 'cancelled') {
+        h += `<span class="chip chip-cancelled">Cancelled</span>`;
+      }
+      h += `</div>`;
+    }
+
+    if (isExp) {
+      const d = analysis.defects || {};
+      const holes = d.holes || 0, nm = d.non_manifold || 0, si = d.self_intersections || 0;
+      const recs = Array.isArray(analysis.recommended) ? analysis.recommended.slice(0, 3) : [];
+
+      h += `<div class="analysis-drawer">
+        <div class="analysis-top">
+          <span class="analysis-heading">Mesh Diagnostics</span>
+          <button type="button" class="btn-close-analysis" data-id="${esc(id)}" title="Close diagnostics">✕</button>
+        </div>
+        <div class="defect-grid">
+          ${[['Holes',holes,holes>0?'warn':'zero'],['Non-manifold',nm,nm>0?'bad':'zero'],['Self-intersect',si,si>0?'warn':'zero']].map(([l,v,c])=>`<div class="defect-cell"><div class="defect-val ${c}">${v}</div><div class="defect-lbl">${l}</div></div>`).join('')}
+        </div>`;
+
+      if (recs.length) {
+        h += `<div class="rec-list">`;
+        recs.forEach(rec => {
+          const pct = Math.round((rec.confidence || 0) * 100);
+          const name = rec.name || rec.method || 'Recommended';
+          h += `<div class="rec-row">
+            <div class="rec-meta"><span class="rec-name" title="${esc(name)}">${esc(name)}</span><span class="rec-conf">${pct}%</span></div>
+            <div class="rec-bar-track"><div class="rec-bar-fill" style="width:${Math.min(100, Math.max(0, pct))}%"></div></div>
+          </div>`;
+        });
+        h += `</div>`;
+      }
+      h += `</div>`;
+    }
+
+    h += `</div>`;
+    return h;
+  }
+
+  function renderObjectList() {
+    const c = $('object-list'), e = $('empty-state');
+    if (!c || !e) return;
+    if (!state.cli?.found) { c.innerHTML = ''; e.classList.add('hidden'); return; }
+    if (!state.objects?.length) { c.innerHTML = ''; e.classList.remove('hidden'); return; }
+    e.classList.add('hidden');
+    c.innerHTML = state.objects.map(renderObjectRowHtml).join('');
+  }
+
+  function updateSingleRow(id) {
+    const row = $('row-' + id);
+    const obj = state.objects.find(o => String(o.id) === String(id));
+    if (!row || !obj) { renderObjectList(); return; }
+    const t = document.createElement('div');
+    t.innerHTML = renderObjectRowHtml(obj);
+    if (t.firstElementChild) row.parentNode.replaceChild(t.firstElementChild, row);
+  }
+
+  $('object-list')?.addEventListener('click', e => {
+    const t = e.target;
+    if (t.classList.contains('row-checkbox')) {
+      const id = t.getAttribute('data-id');
+      if (t.checked) state.selectedIds.add(id); else state.selectedIds.delete(id);
+      updateFooter();
+      return;
+    }
+    const bA = t.closest('.btn-analyze');
+    if (bA) {
+      const id = bA.getAttribute('data-id');
+      announce('Analyzing object ' + id);
+      send({ command: 'analyze', id });
+      return;
+    }
+    const bR = t.closest('.btn-repair');
+    if (bR) {
+      const id = bR.getAttribute('data-id');
+      announce('Repairing object ' + id);
+      send({ command: 'repair', ids: [id], preset: state.settings.preset });
+      return;
+    }
+    const bC = t.closest('.btn-cancel');
+    if (bC) {
+      const id = bC.getAttribute('data-id');
+      announce('Cancelling repair for object ' + id);
+      send({ command: 'cancel', id });
+      return;
+    }
+    const bS = t.closest('.link-show-file');
+    if (bS) {
+      send({ command: 'open_output', id: bS.getAttribute('data-id') });
+      return;
+    }
+    const bCl = t.closest('.btn-close-analysis');
+    if (bCl) {
+      const id = bCl.getAttribute('data-id');
+      state.expandedAnalyses.delete(id);
+      updateSingleRow(id);
+      return;
+    }
+  });
+
+  $('preset-bar')?.addEventListener('click', e => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn) return;
+    const p = btn.getAttribute('data-preset');
+    if (!p || p === state.settings.preset) return;
+    state.settings.preset = p;
+    updatePresetButtons();
+    persistSettings();
+  });
+
+  on('btn-refresh', 'click', () => { announce('Refreshing objects'); send({ command: 'refresh' }); });
+  on('btn-check-cli', 'click', () => { announce('Checking Sutura CLI'); send({ command: 'refresh' }); });
+
+  on('btn-copy-install', 'click', () => {
+    const txt = $('install-cmd')?.textContent || '';
+    if (!txt) return;
+    const btn = $('btn-copy-install');
+    const done = () => { if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); } };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(txt).then(done).catch(done);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (err) {}
+      document.body.removeChild(ta);
+    }
+  });
+
+  on('btn-repair-selected', 'click', () => {
+    const ids = Array.from(state.selectedIds);
+    if (!ids.length) return;
+    announce(`Repairing ${ids.length} selected objects`);
+    send({ command: 'repair', ids, preset: state.settings.preset });
+  });
+
+  on('btn-select-broken', 'click', () => {
+    state.selectedIds.clear();
+    state.objects.forEach(obj => {
+      if (obj.status !== 'ok' || obj.manifold === false || (obj.orca_fixed_errors && obj.orca_fixed_errors > 0)) {
+        state.selectedIds.add(String(obj.id));
+      }
+    });
+    renderObjectList();
+    updateFooter();
+    announce(`Selected ${state.selectedIds.size} broken objects`);
+  });
+
+  function persistSettings() {
+    send({
+      command: 'settings',
+      values: {
+        preset: state.settings.preset,
+        notify_broken: state.settings.notify_broken,
+        open_panel_at_startup: state.settings.open_panel_at_startup
+      }
+    });
+  }
+
+  on('chk-notify-broken', 'change', e => { state.settings.notify_broken = e.target.checked; persistSettings(); });
+  on('chk-open-startup', 'change', e => { state.settings.open_panel_at_startup = e.target.checked; persistSettings(); });
+
+  function onMessage(msg) {
+    if (!msg) return;
+    switch (msg.command) {
+      case 'state':
+        if (msg.cli) state.cli = msg.cli;
+        if (msg.settings) { Object.assign(state.settings, msg.settings); updateSettingsUI(); }
+        if (Array.isArray(msg.objects)) {
+          state.objects = msg.objects;
+          const v = new Set(msg.objects.map(o => String(o.id)));
+          state.selectedIds.forEach(id => { if (!v.has(id)) state.selectedIds.delete(id); });
+          updateFooter();
+        }
+        updateCliDot();
+        break;
+      case 'job':
+        if (msg.id != null) {
+          const id = String(msg.id);
+          state.jobs.set(id, msg);
+          updateSingleRow(id);
+          if (msg.phase === 'done') announce(`Object ${id} repair complete: ${msg.result?.method || 'watertight'}`);
+          else if (msg.phase === 'failed') announce(`Object ${id} repair failed: ${msg.message || 'error'}`);
+        }
+        break;
+      case 'analysis':
+        if (msg.id != null) {
+          const id = String(msg.id);
+          state.analyses.set(id, msg);
+          state.expandedAnalyses.add(id);
+          updateSingleRow(id);
+          announce(`Analysis ready for object ${id}`);
+        }
+        break;
+    }
+  }
+
+  if (window.orca?.onMessage) window.orca.onMessage(onMessage);
+
+  send({ command: 'hello' });
+  send({ command: 'refresh' });
+
+  window.__sutura_panel = {
+    getState: () => state,
+    onMessage
+  };
+})();
+</script>
+</body>
+</html>
