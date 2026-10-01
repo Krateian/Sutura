@@ -41,13 +41,12 @@ guaranteed-working product, and report issues (see "Feedback" below).
 
 Running the plugin (Plugins dialog → Run) opens a dockable panel on the right
 of the 3D view; with the **Open panel at startup** setting (default on) it
-opens automatically when the plugin loads. OrcaSlicer starts on the Home tab
-and hides plugin panes off the Prepare/Preview tabs, so the panel is created at
-load but is shown once on the first `ObjectAdded` / `ProjectOpened` /
-`NewProject` / `PlateSelected` event; the plater/dock manager is not always
-ready when the plugin loads, so a failed startup creation is retried once on
-the next `ProjectOpened` / `NewProject` / `ObjectAdded` event. Both outcomes are
-logged to stderr. The panel lists every object on the plate and offers:
+opens automatically too. OrcaSlicer starts on the Home tab and restores the
+Plater/AUI layout after the plugin loads, so a pane created at load stays
+hidden even after `show()`; the panel is therefore created lazily on the first
+`ObjectAdded` / `ProjectOpened` / `NewProject` event, on the UI thread, once the
+layout exists. The outcome is logged to stderr (`dock panel created on …`). The
+panel lists every object on the plate and offers:
 
 - a **Quick / Balanced / Thorough / Extreme** preset control (the Sutura
   `--intensity` presets; Balanced is the default);

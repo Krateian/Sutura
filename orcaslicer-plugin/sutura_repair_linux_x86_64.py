@@ -84,16 +84,12 @@ _ANALYZE_TIMEOUT = 300
 _SCAN_DEBOUNCE = 1.0
 _SCAN_EVENTS = frozenset(('ObjectAdded', 'ObjectChanged', 'ProjectOpened'))
 
-# The dock panel is created from on_load(), which can run before the plater/dock
-# manager exists; on failure it is retried once on the first of these lifecycle
-# events. NewProject is included even though it does not trigger a rescan.
-_PANEL_RETRY_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
-
-# OrcaSlicer starts on the Home tab and hides plugin panes off the
-# Prepare/Preview tabs, so a panel created in on_load() stays hidden until one
-# of these events fires; the plugin then calls panel.show() once.
-_PANEL_SHOW_EVENTS = frozenset(('ObjectAdded', 'ProjectOpened', 'NewProject',
-                                'PlateSelected'))
+# The dock panel is NOT created from on_load(): OrcaSlicer starts on the Home
+# tab and restores the Plater/AUI layout after the plugin loads, so a pane
+# created then stays hidden even after show(). Creation is deferred to the first
+# of these scene events, on the UI thread, once the layout exists. NewProject is
+# included even though it does not trigger a rescan.
+_PANEL_CREATE_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
 
 # Source mesh extensions stripped from an object name before building the
 # repaired-output filename (avoids ``broken_cube.stl_sutura_...stl``).
@@ -1361,7 +1357,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             try:
                 panel.show()
                 self._post_state_async()
-                st['panel_retry_pending'] = False
+                st['panel_create_pending'] = False
                 return True
             except Exception:  # noqa: BLE001
                 pass
@@ -1376,7 +1372,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             self._log('dock panel creation returned no panel')
             return False
         st['panel'] = panel
-        st['panel_retry_pending'] = False
+        st['panel_create_pending'] = False
         return True
 
     def _on_panel_close(self):
@@ -1477,20 +1473,11 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             pass
         if not self._settings().get('open_panel_at_startup', True):
             return
-        try:
-            opened = self._open_panel()
-        except Exception:  # noqa: BLE001
-            opened = False
-        if opened:
-            # The panel is created but OrcaSlicer hides plugin panes while it
-            # starts on the Home tab; it is shown once on the first scene event.
-            self._st()['panel_show_pending'] = True
-            self._log('dock panel opened at load')
-        else:
-            # on_load() can run before the plater/dock manager exists; retry
-            # once on the next ProjectOpened/NewProject/ObjectAdded event.
-            self._st()['panel_retry_pending'] = True
-            self._log('dock panel not ready at load; retry armed on the next scene event')
+        # Do NOT create the panel here: OrcaSlicer is still on the Home tab and
+        # restores the Plater/AUI layout after load, so a pane created now stays
+        # hidden even after show(). Arm a lazy creation on the first scene event.
+        self._st()['panel_create_pending'] = True
+        self._log('dock panel creation deferred to the first scene event')
 
     def on_unload(self):
         st = self._st()
@@ -1514,58 +1501,35 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
     def on_lifecycle_event(self, event, ctx=None):
         # Runs synchronously on the UI thread: only enqueue, never do work here.
         name = getattr(event, 'name', None) or str(event)
-        self._maybe_retry_panel(name)
-        self._maybe_show_panel(name)
+        self._maybe_create_panel(name)
         if name in _SCAN_EVENTS:
             self._schedule_scan()
 
-    def _maybe_retry_panel(self, name):
-        """One-shot lazy retry of the startup dock panel (see on_load)."""
+    def _maybe_create_panel(self, name):
+        """Create the dock panel lazily on the first scene event (see on_load).
+
+        A panel created before the Plater/AUI layout is restored stays hidden,
+        so a pre-existing handle (created at load in an older build, or by a
+        direct execute()) is closed and replaced by one created now, inside the
+        UI thread with the layout in place."""
         st = self._st()
-        if not st.get('panel_retry_pending'):
+        if not st.get('panel_create_pending'):
             return
-        if name not in _PANEL_RETRY_EVENTS:
+        if name not in _PANEL_CREATE_EVENTS:
             return
-        st['panel_retry_pending'] = False  # once only, success or not
+        st['panel_create_pending'] = False  # once only, success or not
         panel = st.get('panel')
         if panel is not None:
             try:
-                if panel.is_open():
-                    return
+                panel.close()
+                self._log('closed the panel created before startup restore')
             except Exception:  # noqa: BLE001
                 pass
+            st['panel'] = None
         if self._open_panel():
-            st['panel_show_pending'] = True
-            self._log('dock panel opened on %s' % name)
+            self._log('dock panel created on %s' % name)
         else:
             self._log('dock panel still unavailable on %s; giving up' % name)
-
-    def _maybe_show_panel(self, name):
-        """Bring the dock panel forward once after startup.
-
-        OrcaSlicer starts on the Home tab and hides plugin panes off the
-        Prepare/Preview tabs, so a panel created in on_load() stays hidden until
-        a scene or plate event fires. The panel is shown once, only while the
-        'Open panel at startup' setting is on and the user has not closed it."""
-        st = self._st()
-        if not st.get('panel_show_pending'):
-            return
-        if name not in _PANEL_SHOW_EVENTS:
-            return
-        if not self._settings().get('open_panel_at_startup', True):
-            st['panel_show_pending'] = False
-            return
-        st['panel_show_pending'] = False  # once only, success or not
-        panel = st.get('panel')
-        if panel is None:
-            # the user closed the panel: do not reopen it
-            return
-        try:
-            panel.show()
-            self._post_state_async()
-            self._log('dock panel shown on %s' % name)
-        except Exception as exc:  # noqa: BLE001
-            self._log('dock panel show failed on %s: %s' % (name, exc))
 
     def _schedule_scan(self):
         st = self._st()

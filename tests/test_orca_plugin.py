@@ -10,8 +10,8 @@ exercised:
   * _data_dir/_staging   data-dir derivation from the install path, audit-safe
                          path components, staging cleanup/retention
   * on_lifecycle_event   enqueues a debounced scan only (never works inline),
-                         retries a failed startup panel creation once and shows
-                         the startup panel once on the first scene event
+                         creates the deferred startup panel once on the first
+                         scene event (never at load)
   * _build_state         object summaries (parts/modifiers/errors/manifold)
   * on_message           state / repair / cancel / analyze / settings / open_output
   * _notify_broken_objects  one notification per broken object per session
@@ -439,24 +439,25 @@ def test_execute_opens_panel():
     assert 'Sutura' in ui.dock_panels[0].html
 
 
-def test_dock_panel_retried_once_on_lifecycle():
-    """on_load() may run before the dock manager exists: creation failure arms
-    a one-shot retry that fires on the next scene lifecycle event, then stops."""
+def test_dock_panel_created_lazily_on_first_scene_event():
+    """on_load() must NOT create the panel (a pane created before the Plater/AUI
+    layout is restored stays hidden); creation is deferred to the first scene
+    lifecycle event, on the UI thread, exactly once."""
     mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
-    ui.fail_panel_calls = 1  # the startup attempt raises
     plugin = mod.SuturaRepair()
     plugin.on_load()
     assert ui.dock_panels == [], ui.dock_panels
-    assert plugin._st().get('panel_retry_pending') is True
-    # a non-retry event does not consume the retry
+    assert plugin._st().get('panel_create_pending') is True
+    # a non-create event does not consume the pending creation
     plugin.on_lifecycle_event(types.SimpleNamespace(name='PresetSelected'))
     assert ui.dock_panels == [], ui.dock_panels
-    assert plugin._st().get('panel_retry_pending') is True
-    # the first ProjectOpened/NewProject/ObjectAdded retries and succeeds
+    assert plugin._st().get('panel_create_pending') is True
+    # the first ProjectOpened/NewProject/ObjectAdded creates the panel
     plugin.on_lifecycle_event(types.SimpleNamespace(name='ProjectOpened'))
     assert len(ui.dock_panels) == 1, ui.dock_panels
-    assert plugin._st().get('panel_retry_pending') is False
-    assert plugin._st().get('panel_show_pending') is False
+    assert ui.dock_panels[0].title == 'Sutura'
+    assert plugin._st().get('panel_create_pending') is False
+    assert plugin._st().get('panel') is ui.dock_panels[0]
     # once only: a later lifecycle event creates no further panel
     plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
     assert len(ui.dock_panels) == 1, ui.dock_panels
@@ -465,59 +466,56 @@ def test_dock_panel_retried_once_on_lifecycle():
         timer.cancel()
 
 
-def test_dock_panel_shown_once_on_first_scene_event():
-    """OrcaSlicer starts on the Home tab and hides plugin panes, so a panel
-    created at load must be shown once the first scene/plate event fires."""
+def test_dock_panel_from_load_is_replaced_on_first_scene_event():
+    """A handle created before startup restore (an older build's load-time
+    panel, or a direct execute()) is closed and a fresh one created in its
+    place, because the pre-restore pane cannot be shown."""
     mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
     plugin = mod.SuturaRepair()
     plugin.on_load()
-    handle = ui.dock_panels[-1]
-    assert plugin._st().get('panel_show_pending') is True
-    handle.hide()  # the host hid the pane while on the Home tab
-    # a non-show event does not consume the pending show
-    plugin.on_lifecycle_event(types.SimpleNamespace(name='PresetSelected'))
-    assert handle.is_open() is False, handle.is_open()
-    assert plugin._st().get('panel_show_pending') is True
-    # the first scene event shows it and clears the flag
+    st = plugin._st()
+    # simulate a panel created at load by an older build
+    old = ui.create_dock_panel(html='x', title='Sutura',
+                               on_message=plugin.on_message,
+                               on_close=plugin._on_panel_close)
+    st['panel'] = old
+    st['panel_create_pending'] = True
     plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
-    assert handle.is_open() is True, handle.is_open()
-    assert plugin._st().get('panel_show_pending') is False
-    # shown once only: hiding it again and firing another event does not reshow
-    handle.hide()
-    plugin.on_lifecycle_event(types.SimpleNamespace(name='PlateSelected'))
-    assert handle.is_open() is False, handle.is_open()
+    assert old.closed is True, old.closed
+    assert st.get('panel') is not old
+    assert len(ui.dock_panels) == 2, ui.dock_panels
+    assert st.get('panel') is ui.dock_panels[-1]
+    timer = st.get('scan_timer')
+    if timer is not None:
+        timer.cancel()
+
+
+def test_execute_disarms_lazy_panel_creation():
+    """Running the plugin from the Plugins dialog opens the panel and cancels
+    the deferred auto-creation, so no later scene event closes/recreates it."""
+    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    plugin = mod.SuturaRepair()
+    plugin.on_load()
+    assert plugin._st().get('panel_create_pending') is True
+    res = plugin.execute()
+    assert res.ok is True, res
+    assert len(ui.dock_panels) == 1, ui.dock_panels
+    assert plugin._st().get('panel_create_pending') is False
+    handle = ui.dock_panels[0]
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
+    assert handle.closed is False, handle.closed
     assert len(ui.dock_panels) == 1, ui.dock_panels
     timer = plugin._st().get('scan_timer')
     if timer is not None:
         timer.cancel()
 
 
-def test_dock_panel_not_reopened_after_user_close():
-    """If the user closes the panel before the first scene event, the pending
-    show is consumed without reopening it (no second panel is created)."""
+def test_dock_panel_disabled_never_creates():
     mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
-    plugin = mod.SuturaRepair()
-    plugin.on_load()
-    handle = ui.dock_panels[-1]
-    handle.close()
-    plugin._on_panel_close()  # the host close callback clears the handle
-    plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
-    assert len(ui.dock_panels) == 1, ui.dock_panels
-    assert plugin._st().get('panel') is None
-    assert plugin._st().get('panel_show_pending') is False
-    timer = plugin._st().get('scan_timer')
-    if timer is not None:
-        timer.cancel()
-
-
-def test_dock_panel_disabled_never_retries():
-    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
-    ui.fail_panel_calls = 1
     plugin = mod.SuturaRepair()
     plugin.save_config(json.dumps({'open_panel_at_startup': False}))
     plugin.on_load()
-    assert plugin._st().get('panel_retry_pending') in (None, False)
-    assert plugin._st().get('panel_show_pending') in (None, False)
+    assert plugin._st().get('panel_create_pending') in (None, False)
     plugin.on_lifecycle_event(types.SimpleNamespace(name='ProjectOpened'))
     assert ui.dock_panels == [], ui.dock_panels
     timer = plugin._st().get('scan_timer')
