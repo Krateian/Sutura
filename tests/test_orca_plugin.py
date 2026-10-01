@@ -556,6 +556,22 @@ def test_cancel_message():
     assert _wait(lambda: any(p.get('phase') == 'cancelled' for p in _posts(handle, 'job'))), handle.posts
 
 
+def test_run_cli_drains_large_output():
+    """A report larger than the OS pipe buffer must not deadlock into a fake
+    timeout: _run_cli drains stdout and stderr on reader threads while it
+    waits, so a big (but valid) report still parses and returns 'ok'."""
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    code = (
+        "import sys\n"
+        "sys.stdout.write('x' * 200000)\n"
+        "sys.stdout.write('\\n{\"ok\": true}\\n')\n"
+        "sys.stderr.write('e' * 200000)\n"
+    )
+    status, report, msg = mod._run_cli([sys.executable, '-c', code], None, 30)
+    assert status == 'ok', (status, msg)
+    assert report == {'ok': True}, report
+
+
 def test_analyze_message():
     v, t = _cube()
     obj = _Object([_Volume(_Mesh(v, t))], name='part', oid=1)

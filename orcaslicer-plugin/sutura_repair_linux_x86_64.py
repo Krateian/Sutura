@@ -902,6 +902,34 @@ def _run_cli(cmd, cancel_event, timeout, on_proc=None):
             on_proc(proc)
         except Exception:  # noqa: BLE001
             pass
+
+    # Drain both pipes on reader threads. Polling the process while only one
+    # pipe is read can deadlock: the child blocks writing a report larger than
+    # the pipe buffer, never exits, and a valid large report looks like a
+    # timeout (and cancel never gets a chance). communicate() cannot be
+    # cancelled, so the pipes are drained here and the wait loop below stays
+    # responsive to cancel_event/timeout.
+    out_chunks, err_chunks = [], []
+
+    def _drain(stream, sink):
+        try:
+            for line in iter(stream.readline, ''):
+                sink.append(line)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            try:
+                stream.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    readers = [
+        threading.Thread(target=_drain, args=(proc.stdout, out_chunks), daemon=True),
+        threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True),
+    ]
+    for reader in readers:
+        reader.start()
+
     start = time.time()
     try:
         while True:
@@ -914,10 +942,13 @@ def _run_cli(cmd, cancel_event, timeout, on_proc=None):
                 _terminate(proc)
                 return 'failed', None, 'timed out after %ds' % timeout
             time.sleep(0.2)
-        out, err = proc.communicate()
     except Exception as exc:  # noqa: BLE001
         _terminate(proc)
         return 'failed', None, str(exc)
+    for reader in readers:
+        reader.join(timeout=5)
+    out = ''.join(out_chunks)
+    err = ''.join(err_chunks)
     report = _parse_last_json(out)
     if proc.returncode == 0:
         return 'ok', report or {}, ''
@@ -927,14 +958,21 @@ def _run_cli(cmd, cancel_event, timeout, on_proc=None):
 
 
 def _terminate(proc):
+    # The pipes are drained by _run_cli's reader threads, so never call
+    # communicate() here (it would race those readers and can block). Just
+    # kill and reap.
     try:
-        proc.kill()
+        if proc.poll() is None:
+            proc.kill()
     except Exception:  # noqa: BLE001
         pass
     try:
-        proc.communicate(timeout=5)
+        proc.wait(timeout=5)
     except Exception:  # noqa: BLE001
-        pass
+        try:
+            proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _run_repair(cli, src, out, preset, cancel_event, timeout=_REPAIR_TIMEOUT, on_proc=None):
