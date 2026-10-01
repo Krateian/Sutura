@@ -210,6 +210,10 @@ button, input { font-family: inherit; font-size: inherit; }
           <input type="checkbox" id="chk-open-startup" checked>
           <span>Open panel at startup</span>
         </label>
+        <label class="setting-label">
+          <input type="checkbox" id="chk-place-beside" checked>
+          <span>Place repaired copy beside original</span>
+        </label>
       </div>
     </details>
     <div class="disclaimer">Repaired copies are added as new objects; originals stay unchanged.</div>
@@ -226,7 +230,7 @@ button, input { font-family: inherit; font-size: inherit; }
 
   const state = {
     cli: { found: false, path: '', version: '' },
-    settings: { preset: 'balanced', notify_broken: true, open_panel_at_startup: true },
+    settings: { preset: 'balanced', notify_broken: true, open_panel_at_startup: true, place_beside_original: true },
     objects: [],
     selectedIds: new Set(),
     jobs: new Map(),
@@ -265,6 +269,7 @@ button, input { font-family: inherit; font-size: inherit; }
     const s = state.settings;
     if ($('chk-notify-broken') && s.notify_broken !== undefined) $('chk-notify-broken').checked = !!s.notify_broken;
     if ($('chk-open-startup') && s.open_panel_at_startup !== undefined) $('chk-open-startup').checked = !!s.open_panel_at_startup;
+    if ($('chk-place-beside') && s.place_beside_original !== undefined) $('chk-place-beside').checked = !!s.place_beside_original;
     updatePresetButtons();
   }
 
@@ -479,13 +484,15 @@ button, input { font-family: inherit; font-size: inherit; }
       values: {
         preset: state.settings.preset,
         notify_broken: state.settings.notify_broken,
-        open_panel_at_startup: state.settings.open_panel_at_startup
+        open_panel_at_startup: state.settings.open_panel_at_startup,
+        place_beside_original: state.settings.place_beside_original
       }
     });
   }
 
   on('chk-notify-broken', 'change', e => { state.settings.notify_broken = e.target.checked; persistSettings(); });
   on('chk-open-startup', 'change', e => { state.settings.open_panel_at_startup = e.target.checked; persistSettings(); });
+  on('chk-place-beside', 'change', e => { state.settings.place_beside_original = e.target.checked; persistSettings(); });
 
   function onMessage(msg) {
     if (!msg) return;

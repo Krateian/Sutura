@@ -148,8 +148,14 @@ class _UI:
         self.dock_panels = []
         self.notifications = []
         self.messages = []
+        # Simulate a plater/dock manager that is not ready yet: the next N
+        # create_dock_panel calls raise (as on_load() running too early would).
+        self.fail_panel_calls = 0
 
     def create_dock_panel(self, **kwargs):
+        if self.fail_panel_calls > 0:
+            self.fail_panel_calls -= 1
+            raise RuntimeError('plater not ready (simulated)')
         handle = _DockPanel(kwargs.get('html', ''), kwargs.get('title', ''),
                             kwargs.get('on_message'), kwargs.get('on_close'))
         self.dock_panels.append(handle)
@@ -402,7 +408,22 @@ def test_config_defaults():
     assert cfg['preset'] == 'balanced'
     assert cfg['open_panel_at_startup'] is True
     assert cfg['notify_broken'] is True
+    assert cfg['place_beside_original'] is True
     assert cfg['sutura_cli'] == ''
+
+
+def test_output_name_strips_source_extension():
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    name = mod._unique_output_name('broken_cube.stl')
+    assert name.startswith('broken_cube_sutura_'), name
+    assert '.stl_sutura_' not in name, name
+    assert name.endswith('.stl') and name.count('.stl') == 1, name
+    for src in ('part.obj', 'thing.3MF', 'plain'):
+        out = mod._unique_output_name(src)
+        assert out.startswith(('part_sutura_', 'thing_sutura_', 'plain_sutura_')), out
+    # the persistent path derived from the object name strips it too
+    path = mod._unique_output_path('broken_cube.stl')
+    assert os.path.basename(path).startswith('broken_cube_sutura_'), path
 
 
 def test_execute_opens_panel():
@@ -414,6 +435,45 @@ def test_execute_opens_panel():
     assert len(ui.dock_panels) == 1, ui.dock_panels
     assert ui.dock_panels[0].title == 'Sutura'
     assert 'Sutura' in ui.dock_panels[0].html
+
+
+def test_dock_panel_retried_once_on_lifecycle():
+    """on_load() may run before the dock manager exists: creation failure arms
+    a one-shot retry that fires on the next scene lifecycle event, then stops."""
+    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    ui.fail_panel_calls = 1  # the startup attempt raises
+    plugin = mod.SuturaRepair()
+    plugin.on_load()
+    assert ui.dock_panels == [], ui.dock_panels
+    assert plugin._st().get('panel_retry_pending') is True
+    # a non-retry event does not consume the retry
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='PresetSelected'))
+    assert ui.dock_panels == [], ui.dock_panels
+    assert plugin._st().get('panel_retry_pending') is True
+    # the first ProjectOpened/NewProject/ObjectAdded retries and succeeds
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='ProjectOpened'))
+    assert len(ui.dock_panels) == 1, ui.dock_panels
+    assert plugin._st().get('panel_retry_pending') is False
+    # once only: a later lifecycle event creates no further panel
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
+    assert len(ui.dock_panels) == 1, ui.dock_panels
+    timer = plugin._st().get('scan_timer')
+    if timer is not None:
+        timer.cancel()
+
+
+def test_dock_panel_disabled_never_retries():
+    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    ui.fail_panel_calls = 1
+    plugin = mod.SuturaRepair()
+    plugin.save_config(json.dumps({'open_panel_at_startup': False}))
+    plugin.on_load()
+    assert plugin._st().get('panel_retry_pending') in (None, False)
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='ProjectOpened'))
+    assert ui.dock_panels == [], ui.dock_panels
+    timer = plugin._st().get('scan_timer')
+    if timer is not None:
+        timer.cancel()
 
 
 def test_export_world_transform():
@@ -613,12 +673,15 @@ def test_analyze_message():
 def test_settings_persist():
     mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
     plugin = mod.SuturaRepair()
-    plugin._handle_settings({'preset': 'thorough', 'notify_broken': False})
+    plugin._handle_settings({'preset': 'thorough', 'notify_broken': False,
+                             'place_beside_original': False})
     cfg = plugin._settings()
     assert cfg['preset'] == 'thorough', cfg
     assert cfg['notify_broken'] is False, cfg
+    assert cfg['place_beside_original'] is False, cfg
     stored = json.loads(plugin.get_config())
-    assert stored['preset'] == 'thorough' and stored['notify_broken'] is False, stored
+    assert (stored['preset'] == 'thorough' and stored['notify_broken'] is False
+            and stored['place_beside_original'] is False), stored
     # an invalid preset falls back to balanced
     plugin._handle_settings({'preset': 'nonsense'})
     assert plugin._settings()['preset'] == 'balanced'
@@ -786,6 +849,57 @@ def _stub_repair_job(mod, obj):
         return ('ok', report, '')
     mod._run_repair = fake_repair
     return report
+
+
+def _stub_stl_repair_job(mod, obj, verts, tris):
+    """Wire a fake repair that writes a real binary STL output."""
+    report = {'category': 'watertight',
+              'stage1': {'holes_remaining': 0, 'two_manifold': True},
+              'stage2': {'ok': True}, 'defects': {'holes': []}}
+    mod.SuturaRepair._iter_objects = lambda self: [obj]
+    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
+
+    def fake_repair(cli, src, out, preset, cancel_event, timeout=None, on_proc=None):
+        mod._write_binary_stl(out, verts, tris)
+        return ('ok', report, '')
+    mod._run_repair = fake_repair
+    return report
+
+
+def test_place_beside_original_translates_output():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    v, t = _cube()  # unit cube; world bbox X size = 1
+    obj = _Object([_Volume(_Mesh(v, t))], name='part', oid=1)
+    _stub_stl_repair_job(mod, obj, v, t)
+    mod._load_back = lambda path: True
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
+    out_path = _posts(handle, 'job')[-1]['result']['output_path']
+    lo, hi = _bbox(_stl_triangles(out_path))
+    assert lo[0] == 11.0 and hi[0] == 12.0, (lo, hi)  # 1 + 10 mm gap in +X
+    assert lo[1] == 0.0 and hi[2] == 1.0, (lo, hi)  # other axes unchanged
+
+
+def test_place_beside_original_disabled_keeps_position():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    v, t = _cube()
+    obj = _Object([_Volume(_Mesh(v, t))], name='part', oid=1)
+    _stub_stl_repair_job(mod, obj, v, t)
+    mod._load_back = lambda path: True
+    plugin = mod.SuturaRepair()
+    plugin.save_config(json.dumps({'place_beside_original': False}))
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
+    out_path = _posts(handle, 'job')[-1]['result']['output_path']
+    lo, hi = _bbox(_stl_triangles(out_path))
+    assert lo[0] == 0.0 and hi[0] == 1.0, (lo, hi)
 
 
 def test_output_persists_after_successful_job():
