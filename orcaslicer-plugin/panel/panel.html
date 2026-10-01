@@ -120,6 +120,7 @@ button, input { font-family: inherit; font-size: inherit; }
 .analysis-top { display: flex; align-items: center; justify-content: space-between; }
 .analysis-heading { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--orca-muted); }
 .btn-close-analysis { background: transparent; border: none; color: var(--orca-muted); cursor: pointer; font-size: 11px; }
+.analysis-error { color: #ef4444; font-size: 11px; line-height: 1.35; }
 .defect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .defect-cell { background: rgba(128,128,128,0.05); border: 1px solid var(--orca-border); border-radius: 4px; padding: 4px 6px; text-align: center; }
 .defect-val { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -327,30 +328,34 @@ button, input { font-family: inherit; font-size: inherit; }
     }
 
     if (isExp) {
-      const d = analysis.defects || {};
-      const holes = d.holes || 0, nm = d.non_manifold || 0, si = d.self_intersections || 0;
-      const recs = Array.isArray(analysis.recommended) ? analysis.recommended.slice(0, 3) : [];
-
       h += `<div class="analysis-drawer">
         <div class="analysis-top">
           <span class="analysis-heading">Mesh Diagnostics</span>
           <button type="button" class="btn-close-analysis" data-id="${esc(id)}" title="Close diagnostics">✕</button>
-        </div>
-        <div class="defect-grid">
+        </div>`;
+      if (analysis.error) {
+        h += `<div class="analysis-error">${esc(analysis.error)}</div>`;
+      } else {
+        const d = analysis.defects || {};
+        const holes = d.holes || 0, nm = d.non_manifold || 0, si = d.self_intersections || 0;
+        const recs = Array.isArray(analysis.recommended) ? analysis.recommended.slice(0, 3) : [];
+
+        h += `<div class="defect-grid">
           ${[['Holes',holes,holes>0?'warn':'zero'],['Non-manifold',nm,nm>0?'bad':'zero'],['Self-intersect',si,si>0?'warn':'zero']].map(([l,v,c])=>`<div class="defect-cell"><div class="defect-val ${c}">${v}</div><div class="defect-lbl">${l}</div></div>`).join('')}
         </div>`;
 
-      if (recs.length) {
-        h += `<div class="rec-list">`;
-        recs.forEach(rec => {
-          const pct = Math.round((rec.confidence || 0) * 100);
-          const name = rec.name || rec.method || 'Recommended';
-          h += `<div class="rec-row">
-            <div class="rec-meta"><span class="rec-name" title="${esc(name)}">${esc(name)}</span><span class="rec-conf">${pct}%</span></div>
-            <div class="rec-bar-track"><div class="rec-bar-fill" style="width:${Math.min(100, Math.max(0, pct))}%"></div></div>
-          </div>`;
-        });
-        h += `</div>`;
+        if (recs.length) {
+          h += `<div class="rec-list">`;
+          recs.forEach(rec => {
+            const pct = Math.round((rec.confidence || 0) * 100);
+            const name = rec.name || rec.method || 'Recommended';
+            h += `<div class="rec-row">
+              <div class="rec-meta"><span class="rec-name" title="${esc(name)}">${esc(name)}</span><span class="rec-conf">${pct}%</span></div>
+              <div class="rec-bar-track"><div class="rec-bar-fill" style="width:${Math.min(100, Math.max(0, pct))}%"></div></div>
+            </div>`;
+          });
+          h += `</div>`;
+        }
       }
       h += `</div>`;
     }
@@ -511,7 +516,9 @@ button, input { font-family: inherit; font-size: inherit; }
           state.analyses.set(id, msg);
           state.expandedAnalyses.add(id);
           updateSingleRow(id);
-          announce(`Analysis ready for object ${id}`);
+          announce(msg.error
+            ? `Analysis failed for object ${id}: ${msg.error}`
+            : `Analysis ready for object ${id}`);
         }
         break;
     }

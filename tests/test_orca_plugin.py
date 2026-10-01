@@ -7,6 +7,8 @@ fake `orca` module and its pure helpers plus the panel message protocol are
 exercised:
   * _export_object_stl   world transform, left-handed winding, multi-part
                          union, modifier skipping, numpy-free fallback
+  * _data_dir/_staging   data-dir derivation from the install path, audit-safe
+                         path components, staging cleanup/retention
   * _build_state         object summaries (parts/modifiers/errors/manifold)
   * on_message           state / repair / cancel / analyze / settings / open_output
   * on_lifecycle_event   enqueues a debounced scan only (never works inline)
@@ -213,6 +215,8 @@ class _Volume:
         return np.array(self._matrix, dtype=np.float64)
 
     def is_model_part(self):
+        if self.kind == 'raises':
+            raise RuntimeError('is_model_part unavailable')
         return self.kind == 'part'
 
     def is_modifier(self):
@@ -311,6 +315,10 @@ def _load_plugin(model, data_dir):
     spec = importlib.util.spec_from_file_location(name, PLUGIN)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # Simulate the installed layout so the plugin derives the data dir from its
+    # own location: <data_dir>/orca_plugins/<flavor>/<file>.py
+    mod.__file__ = os.path.join(data_dir, 'orca_plugins', 'SuturaRepair',
+                                os.path.basename(PLUGIN))
     return mod, host, ui
 
 
@@ -509,7 +517,7 @@ def test_repair_message_protocol():
     mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
     mod._run_repair = lambda cli, src, out, preset, cancel_event, timeout=None, on_proc=None: \
         ('ok', report, '')
-    mod._load_back = lambda path: None
+    mod._load_back = lambda path: True
     plugin = mod.SuturaRepair()
     plugin._open_panel()
     handle = ui.dock_panels[-1]
@@ -709,16 +717,209 @@ def test_plugin_imports_and_transforms_without_numpy():
     assert 'NONUMPY-OK' in r.stdout, r.stdout[-300:]
 
 
+def test_data_dir_derivation():
+    d = tempfile.mkdtemp()
+    mod, _host, _ui = _load_plugin(_Model([]), d)
+    assert mod._data_dir() == d, mod._data_dir()
+    assert mod._work_root() == os.path.join(d, 'orca_plugins', '.sutura_work')
+    # cloud flavour (_subscribed/<user>/) resolves to the same parent
+    mod.__file__ = os.path.join(d, 'orca_plugins', '_subscribed', 'alice', 'plugin.py')
+    assert mod._data_dir() == d, mod._data_dir()
+    # a plugin outside an orca_plugins tree has no derivable data dir
+    mod.__file__ = os.path.join(d, 'elsewhere', 'plugin.py')
+    assert mod._data_dir() is None
+    assert mod._work_root() is None
+    assert mod._staging_dir() is None
+
+
+def test_audit_safe_component():
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    for bad in ('config', 'my_conf', 'SeCrEt', 'certificate', 'CONF'):
+        assert mod._audit_safe_component(bad) == 'mesh', bad
+    assert mod._audit_safe_component('gear') == 'gear'
+
+
+def test_is_model_part_raises_is_skipped():
+    v, t = _cube()
+    good = _Volume(_Mesh(v, t), kind='part')
+    broken = _Volume(_Mesh(v, t), kind='raises')
+    obj = _Object([good, broken])
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    parts, skipped = mod._model_part_volumes(obj)
+    assert parts == [good] and skipped == 1, (parts, skipped)
+
+
+def _work_children(data_dir):
+    root = os.path.join(data_dir, 'orca_plugins', '.sutura_work')
+    if not os.path.isdir(root):
+        return []
+    return os.listdir(root)
+
+
+def test_staging_cleaned_after_successful_repair():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='config_part', oid=1)
+    mod.SuturaRepair._iter_objects = lambda self: [obj]
+    report = {'category': 'watertight',
+              'stage1': {'holes_remaining': 0, 'two_manifold': True},
+              'stage2': {'ok': True}, 'defects': {'holes': []}}
+    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
+
+    def fake_repair(cli, src, out, preset, cancel_event, timeout=None, on_proc=None):
+        with open(out, 'wb') as f:
+            f.write(b'repaired')
+        return ('ok', report, '')
+
+    mod._run_repair = fake_repair
+    mod._load_back = lambda path: True
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
+    done = _posts(handle, 'job')[-1]
+    # the output name derived from 'config_part' must be audit-safe
+    assert os.path.basename(done['result']['output_path']).startswith('mesh_fixed_'), done
+    assert _work_children(d) == [], _work_children(d)
+
+
+def test_staging_kept_when_load_back_fails():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='part', oid=1)
+    mod.SuturaRepair._iter_objects = lambda self: [obj]
+    report = {'category': 'watertight',
+              'stage1': {'holes_remaining': 0, 'two_manifold': True},
+              'stage2': {'ok': True}, 'defects': {'holes': []}}
+    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
+
+    def fake_repair(cli, src, out, preset, cancel_event, timeout=None, on_proc=None):
+        with open(out, 'wb') as f:
+            f.write(b'repaired')
+        return ('ok', report, '')
+
+    mod._run_repair = fake_repair
+    mod._load_back = lambda path: False
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
+    children = _work_children(d)
+    assert len(children) == 1, children
+    kept = os.listdir(os.path.join(d, 'orca_plugins', '.sutura_work', children[0]))
+    assert len(kept) == 1 and kept[0].endswith('.stl'), kept
+    done = _posts(handle, 'job')[-1]
+    assert 'load-back failed' in done['message'], done
+    assert done['result']['output_path'].endswith('.stl'), done
+
+
+def test_staging_cleaned_on_repair_failure():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='part', oid=1)
+    mod.SuturaRepair._iter_objects = lambda self: [obj]
+    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
+    mod._run_repair = lambda *a, **k: ('failed', None, 'boom')
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    assert _wait(lambda: any(p.get('phase') == 'failed' for p in _posts(handle, 'job'))), handle.posts
+    assert _work_children(d) == [], _work_children(d)
+
+
+def test_analyze_unsupported_cli_posts_error():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='part', oid=1)
+    mod.SuturaRepair._iter_objects = lambda self: [obj]
+    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.5.1')
+    mod._run_analyze = lambda *a, **k: (
+        'failed', None,
+        'usage: sutura [-h] ...\nsutura: error: unrecognized arguments: --analyze')
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_analyze({'id': '1'})
+    assert _wait(lambda: _posts(handle, 'analysis')), handle.posts
+    msg = _posts(handle, 'analysis')[-1]
+    assert msg['id'] == '1' and 'does not support --analyze' in msg['error'], msg
+    assert _work_children(d) == [], _work_children(d)
+
+
+def test_analyze_success_cleans_staging():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='part', oid=1)
+    mod.SuturaRepair._iter_objects = lambda self: [obj]
+    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
+    mod._run_analyze = lambda *a, **k: (
+        'ok', {'analysis': {'boundary_loops': 1, 'non_manifold_edges': 0,
+                            'self_intersections': 0}, 'recommendations': []}, '')
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_analyze({'id': '1'})
+    assert _wait(lambda: _posts(handle, 'analysis')), handle.posts
+    assert _posts(handle, 'analysis')[-1]['defects']['holes'] == 1
+    assert _work_children(d) == [], _work_children(d)
+
+
+def test_stale_staging_purged():
+    d = tempfile.mkdtemp()
+    mod, _host, _ui = _load_plugin(_Model([]), d)
+    root = mod._work_root()
+    fresh = os.path.join(root, 'fresh')
+    old = os.path.join(root, 'old')
+    os.makedirs(fresh)
+    os.makedirs(old)
+    past = time.time() - 8 * 24 * 3600
+    os.utime(old, (past, past))
+    mod._purge_stale_staging()
+    assert os.listdir(root) == ['fresh'], os.listdir(root)
+
+
 def test_register_capabilities_declares_cli_fs_read():
     mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    cli = os.path.join(tempfile.mkdtemp(), 'sutura')
+    with open(cli, 'w'):
+        pass
+    old = os.environ.get('SUTURA_CLI')
+    os.environ['SUTURA_CLI'] = cli
     calls = []
     sys.modules['orca'].request_permissions = lambda **kw: calls.append(kw)
     registered = []
     sys.modules['orca'].register_capability = lambda cap: registered.append(cap)
-    mod.SuturaRepairPlugin().register_capabilities()
+    try:
+        mod.SuturaRepairPlugin().register_capabilities()
+    finally:
+        if old is None:
+            os.environ.pop('SUTURA_CLI', None)
+        else:
+            os.environ['SUTURA_CLI'] = old
     assert calls, 'request_permissions was not called'
-    assert calls[0]['fs_read'], calls[0]
+    assert cli in calls[0]['fs_read'], calls[0]
     assert registered == [mod.SuturaRepair], registered
+
+
+def test_register_capabilities_skips_missing_cli():
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    mod._DEFAULT_CLI = '/nonexistent/definitely-not/sutura'
+    old_which = mod.shutil.which
+    old = os.environ.pop('SUTURA_CLI', None)
+    calls = []
+    sys.modules['orca'].request_permissions = lambda **kw: calls.append(kw)
+    sys.modules['orca'].register_capability = lambda cap: None
+    mod.shutil.which = lambda name: None
+    try:
+        mod.SuturaRepairPlugin().register_capabilities()
+    finally:
+        mod.shutil.which = old_which
+        if old is not None:
+            os.environ['SUTURA_CLI'] = old
+    assert calls == [], calls
 
 
 if __name__ == '__main__':

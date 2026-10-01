@@ -38,10 +38,13 @@ with each volume's local-to-object matrix and the first instance's
 object-to-world matrix applied, in that order. Parameter modifiers, negative
 volumes and support blockers are skipped (and reported). Multi-part objects
 become ONE STL containing all model parts, i.e. the union surface Sutura is
-asked to repair. Each run writes a unique repaired file
-(``<stem>_fixed_<timestamp>_<short-uuid>.stl``) under OrcaSlicer's
-``data_dir()`` audit-allowed root; the original object is never modified and
-the result is added as a NEW object, so there is no undo.
+asked to repair. The staging root is derived from the plugin's own install
+location (walk up from this file to the ``orca_plugins`` component and take
+its parent, i.e. OrcaSlicer's data dir) -- the host exposes no
+``data_dir()`` API. Each run stages under
+``<data_dir>/orca_plugins/.sutura_work/<uuid>/`` and writes a unique repaired
+file (``<stem>_fixed_<timestamp>_<short-uuid>.stl``); the original object is
+never modified and the result is added as a NEW object, so there is no undo.
 """
 
 import json
@@ -77,7 +80,7 @@ _SCAN_DEBOUNCE = 1.0
 _SCAN_EVENTS = frozenset(('ObjectAdded', 'ObjectChanged', 'ProjectOpened'))
 
 # The dock page, embedded verbatim from orcaslicer-plugin/panel/panel.html
-# (sha256 25a674785b5f068f9cdc914b74982d8bf8c7dddf396d31a0476c68d7d648eda7).
+# (sha256 0d65b5189695f9524090ccca8ccdaf3c503e6e89fca204643857e226ab37749d).
 # It is embedded so the published single-file plugin is self-contained; whenever
 # panel/panel.html changes, copy its full contents back into this raw string and
 # update the digest.
@@ -203,6 +206,7 @@ button, input { font-family: inherit; font-size: inherit; }
 .analysis-top { display: flex; align-items: center; justify-content: space-between; }
 .analysis-heading { font-size: 11px; font-weight: 600; text-transform: uppercase; color: var(--orca-muted); }
 .btn-close-analysis { background: transparent; border: none; color: var(--orca-muted); cursor: pointer; font-size: 11px; }
+.analysis-error { color: #ef4444; font-size: 11px; line-height: 1.35; }
 .defect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .defect-cell { background: rgba(128,128,128,0.05); border: 1px solid var(--orca-border); border-radius: 4px; padding: 4px 6px; text-align: center; }
 .defect-val { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -410,30 +414,34 @@ button, input { font-family: inherit; font-size: inherit; }
     }
 
     if (isExp) {
-      const d = analysis.defects || {};
-      const holes = d.holes || 0, nm = d.non_manifold || 0, si = d.self_intersections || 0;
-      const recs = Array.isArray(analysis.recommended) ? analysis.recommended.slice(0, 3) : [];
-
       h += `<div class="analysis-drawer">
         <div class="analysis-top">
           <span class="analysis-heading">Mesh Diagnostics</span>
           <button type="button" class="btn-close-analysis" data-id="${esc(id)}" title="Close diagnostics">✕</button>
-        </div>
-        <div class="defect-grid">
+        </div>`;
+      if (analysis.error) {
+        h += `<div class="analysis-error">${esc(analysis.error)}</div>`;
+      } else {
+        const d = analysis.defects || {};
+        const holes = d.holes || 0, nm = d.non_manifold || 0, si = d.self_intersections || 0;
+        const recs = Array.isArray(analysis.recommended) ? analysis.recommended.slice(0, 3) : [];
+
+        h += `<div class="defect-grid">
           ${[['Holes',holes,holes>0?'warn':'zero'],['Non-manifold',nm,nm>0?'bad':'zero'],['Self-intersect',si,si>0?'warn':'zero']].map(([l,v,c])=>`<div class="defect-cell"><div class="defect-val ${c}">${v}</div><div class="defect-lbl">${l}</div></div>`).join('')}
         </div>`;
 
-      if (recs.length) {
-        h += `<div class="rec-list">`;
-        recs.forEach(rec => {
-          const pct = Math.round((rec.confidence || 0) * 100);
-          const name = rec.name || rec.method || 'Recommended';
-          h += `<div class="rec-row">
-            <div class="rec-meta"><span class="rec-name" title="${esc(name)}">${esc(name)}</span><span class="rec-conf">${pct}%</span></div>
-            <div class="rec-bar-track"><div class="rec-bar-fill" style="width:${Math.min(100, Math.max(0, pct))}%"></div></div>
-          </div>`;
-        });
-        h += `</div>`;
+        if (recs.length) {
+          h += `<div class="rec-list">`;
+          recs.forEach(rec => {
+            const pct = Math.round((rec.confidence || 0) * 100);
+            const name = rec.name || rec.method || 'Recommended';
+            h += `<div class="rec-row">
+              <div class="rec-meta"><span class="rec-name" title="${esc(name)}">${esc(name)}</span><span class="rec-conf">${pct}%</span></div>
+              <div class="rec-bar-track"><div class="rec-bar-fill" style="width:${Math.min(100, Math.max(0, pct))}%"></div></div>
+            </div>`;
+          });
+          h += `</div>`;
+        }
       }
       h += `</div>`;
     }
@@ -594,7 +602,9 @@ button, input { font-family: inherit; font-size: inherit; }
           state.analyses.set(id, msg);
           state.expandedAnalyses.add(id);
           updateSingleRow(id);
-          announce(`Analysis ready for object ${id}`);
+          announce(msg.error
+            ? `Analysis failed for object ${id}: ${msg.error}`
+            : `Analysis ready for object ${id}`);
         }
         break;
     }
@@ -666,12 +676,106 @@ def _unique_output_name(stem, ext='stl'):
     return '%s_fixed_%s_%s.%s' % (stem, ts, uuid.uuid4().hex[:8], ext)
 
 
-def _temp_dir():
-    """The audit-hook allowed root: orca.host.data_dir(), else a fallback."""
+# The audit hook denies a path with a component containing any of these
+# substrings, so no staging/output component may include them.
+_FORBIDDEN_PATH_PARTS = ('conf', 'config', 'secret', 'cert')
+
+# Staging directories older than this are removed on plugin load.
+_STALE_STAGING_SECONDS = 7 * 24 * 3600
+
+
+def _audit_safe_component(name):
+    """A path component free of the audit hook's denied substrings."""
+    lowered = name.lower()
+    if any(part in lowered for part in _FORBIDDEN_PATH_PARTS):
+        return 'mesh'
+    return name
+
+
+def _data_dir():
+    """OrcaSlicer's data dir, derived from this plugin's install location.
+
+    Cloud plugins live under ``<data_dir>/orca_plugins/_subscribed/<user>/``
+    and local plugins under ``<data_dir>/orca_plugins/``; walk up from this
+    file to the ``orca_plugins`` component and take its parent. Returns None
+    when the plugin is not installed under such a tree (the host exposes no
+    ``data_dir()`` API, so there is nothing else to fall back to)."""
     try:
-        return orca.host.data_dir()
+        path = os.path.abspath(__file__)
+    except NameError:
+        return None
+    parts = path.split(os.sep)
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] == 'orca_plugins':
+            parent = os.sep.join(parts[:i])
+            return parent or None
+    return None
+
+
+def _work_root():
+    """The audit-allowed staging root: ``<data_dir>/orca_plugins/.sutura_work``."""
+    data_dir = _data_dir()
+    if not data_dir:
+        return None
+    return os.path.join(data_dir, 'orca_plugins', '.sutura_work')
+
+
+def _staging_dir():
+    """A fresh per-job staging dir under the allowed root, or None."""
+    root = _work_root()
+    if root is None:
+        return None
+    path = os.path.join(root, uuid.uuid4().hex)
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return None
+    return path
+
+
+def _remove_path(path):
+    try:
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            os.remove(path)
     except Exception:  # noqa: BLE001
-        return os.path.expanduser('~/.local/share/sutura')
+        pass
+
+
+def _cleanup_staging(path, keep=None):
+    """Delete a job's staging dir; when ``keep`` is set keep only that file."""
+    if not path:
+        return
+    if keep and os.path.exists(keep):
+        try:
+            for entry in os.listdir(path):
+                full = os.path.join(path, entry)
+                if os.path.abspath(full) != os.path.abspath(keep):
+                    _remove_path(full)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    _remove_path(path)
+
+
+def _purge_stale_staging(max_age=_STALE_STAGING_SECONDS):
+    """Remove staging dirs older than ``max_age`` seconds (on plugin load)."""
+    root = _work_root()
+    if not root or not os.path.isdir(root):
+        return
+    now = time.time()
+    try:
+        entries = os.listdir(root)
+    except Exception:  # noqa: BLE001
+        return
+    for entry in entries:
+        full = os.path.join(root, entry)
+        try:
+            if now - os.path.getmtime(full) > max_age:
+                _remove_path(full)
+        except Exception:  # noqa: BLE001
+            continue
 
 
 def _safe_call(obj, method, default=None):
@@ -795,7 +899,7 @@ def _model_part_volumes(obj):
         volumes = list(obj.volumes())
     except Exception:  # noqa: BLE001
         return [], 0
-    parts = [v for v in volumes if _safe_bool(v, 'is_model_part', True)]
+    parts = [v for v in volumes if _safe_bool(v, 'is_model_part', False)]
     return parts, max(len(volumes) - len(parts), 0)
 
 
@@ -1033,6 +1137,26 @@ def _analysis_message(report):
     }, 'recommended': recommended}
 
 
+def _analyze_failure_text(msg, report=None):
+    """A clear message when ``--analyze`` failed or is unsupported.
+
+    An older Sutura CLI rejects the unknown flag with a usage message on
+    stderr and a non-zero exit; surface that as an explicit "update Sutura"
+    error instead of leaving the panel waiting."""
+    text = (msg or '').strip()
+    lowered = text.lower()
+    unsupported = ('--analyze' in text
+                   and any(marker in lowered for marker in (
+                       'unrecognized arguments', 'invalid choice', 'no such option',
+                       'unknown option', 'usage:')))
+    if unsupported:
+        return ('This Sutura CLI version does not support --analyze; '
+                'update Sutura and retry.')
+    if not text and isinstance(report, dict):
+        text = str(report.get('error') or '')
+    return text or 'Analysis failed'
+
+
 def _running_orca_processes():
     """Number of distinct OrcaSlicer processes running (pgrep -f). Returns
     None when the check itself fails (treated as 'cannot verify')."""
@@ -1051,7 +1175,9 @@ def _load_back(out_path):
     Linux: OrcaSlicer --single-instance <path> (path-based binary, no name
     ambiguity). macOS: `open -b com.orcaslicer.OrcaSlicer <path>` -- BUNDLE-ID
     matching prefers the running process; skipped when MORE THAN ONE
-    OrcaSlicer process is running (ambiguous). Never crashes the worker.
+    OrcaSlicer process is running (ambiguous). Returns True when a launch was
+    attempted, False when it was skipped or failed (the caller then keeps the
+    output file). Never crashes the worker.
 
     TODO(owner live test): the export is in WORLD coordinates, so OrcaSlicer
     may re-centre the imported object or, on some builds, drop it; the exact
@@ -1061,12 +1187,13 @@ def _load_back(out_path):
         if sys.platform == 'darwin':
             n = _running_orca_processes()
             if n is not None and n > 1:
-                return
+                return False
             subprocess.Popen(['open', '-b', 'com.orcaslicer.OrcaSlicer', out_path])
         else:
             subprocess.Popen([_ORCA_BIN, '--single-instance', out_path])
+        return True
     except Exception:  # noqa: BLE001
-        pass
+        return False
 
 
 def _reveal(path):
@@ -1198,7 +1325,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             volumes = list(obj.volumes())
         except Exception:  # noqa: BLE001
             volumes = []
-        parts = [v for v in volumes if _safe_bool(v, 'is_model_part', True)]
+        parts = [v for v in volumes if _safe_bool(v, 'is_model_part', False)]
         modifiers = max(len(volumes) - len(parts), 0)
         manifold = all(_safe_bool(v, 'is_manifold', True) for v in parts) if parts else True
         errors = int(_safe_call(obj, 'mesh_errors_count', 0) or 0)
@@ -1243,6 +1370,10 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
 
     # --- lifecycle / proactive scan --------------------------------------
     def on_load(self):
+        try:
+            _purge_stale_staging()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             if self._settings().get('open_panel_at_startup', True):
                 self._open_panel()
@@ -1386,6 +1517,8 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         st = self._st()
         job = st['jobs'].get(oid) or {}
         start = time.time()
+        dest = None
+        keep_output = None
         try:
             cli, found, _ver = _resolve_cli(self._settings())
             if not found:
@@ -1397,12 +1530,18 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                 self._emit_job(oid, 'failed', time.time() - start,
                                'object is no longer in the scene')
                 return
-            dest = os.path.join(_temp_dir(), 'sutura_repair', uuid.uuid4().hex)
-            os.makedirs(dest, exist_ok=True)
+            dest = _staging_dir()
+            if dest is None:
+                self._emit_job(oid, 'failed', time.time() - start,
+                               'Cannot locate the OrcaSlicer data directory '
+                               '(no orca_plugins component in the plugin path); '
+                               'repair is disabled')
+                return
             in_path = os.path.join(dest, 'input.stl')
             self._emit_job(oid, 'exporting', time.time() - start, 'Exporting mesh...')
             _export_object_stl(obj, in_path)
-            out_path = os.path.join(dest, _unique_output_name(_safe_name(obj)))
+            out_path = os.path.join(
+                dest, _unique_output_name(_audit_safe_component(_safe_name(obj))))
             job['output_path'] = out_path
             self._emit_job(oid, 'repairing', time.time() - start, 'Repairing with Sutura...')
             status, report, msg = _run_repair(
@@ -1415,13 +1554,20 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                 self._emit_job(oid, 'failed', time.time() - start, msg or 'repair failed')
                 return
             self._emit_job(oid, 'loading', time.time() - start, 'Loading result...')
-            _load_back(out_path)
-            self._emit_job(oid, 'done', time.time() - start, 'Repaired',
-                           _job_result(report, out_path))
+            if _load_back(out_path):
+                self._emit_job(oid, 'done', time.time() - start, 'Repaired',
+                               _job_result(report, out_path))
+            else:
+                keep_output = out_path
+                self._emit_job(oid, 'done', time.time() - start,
+                               'Repaired; automatic load-back failed, file kept at %s'
+                               % out_path, _job_result(report, out_path))
         except Exception as exc:  # noqa: BLE001 - never crash the worker
             self._emit_job(oid, 'failed', time.time() - start, str(exc))
         finally:
             job['running'] = False
+            if dest is not None:
+                _cleanup_staging(dest, keep=keep_output)
 
     def _handle_cancel(self, message):
         oid = str(message.get('id'))
@@ -1440,25 +1586,39 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         threading.Thread(target=self._analyze_worker, args=(oid,), daemon=True).start()
 
     def _analyze_worker(self, oid):
+        dest = None
         try:
             cli, found, _ver = _resolve_cli(self._settings())
             if not found:
+                self._post({'command': 'analysis', 'id': oid,
+                            'error': 'Sutura CLI not found (install with install.sh)'})
                 return
             obj = self._find_object(oid)
             if obj is None:
+                self._post({'command': 'analysis', 'id': oid,
+                            'error': 'object is no longer in the scene'})
                 return
-            dest = os.path.join(_temp_dir(), 'sutura_repair', uuid.uuid4().hex)
-            os.makedirs(dest, exist_ok=True)
+            dest = _staging_dir()
+            if dest is None:
+                self._post({'command': 'analysis', 'id': oid,
+                            'error': 'Cannot locate the OrcaSlicer data directory '
+                                     '(no orca_plugins component in the plugin path)'})
+                return
             in_path = os.path.join(dest, 'input.stl')
             _export_object_stl(obj, in_path)
-            status, report, _msg = _run_analyze(cli, in_path)
+            status, report, msg = _run_analyze(cli, in_path)
             if status != 'ok':
+                self._post({'command': 'analysis', 'id': oid,
+                            'error': _analyze_failure_text(msg, report)})
                 return
             payload = _analysis_message(report)
             payload.update({'command': 'analysis', 'id': oid})
             self._post(payload)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self._post({'command': 'analysis', 'id': oid, 'error': str(exc)})
+        finally:
+            if dest is not None:
+                _cleanup_staging(dest)
 
     def _handle_settings(self, values):
         self._persist_settings(values)
@@ -1471,8 +1631,10 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             _reveal(path)
         elif path:
             try:
-                orca.host.ui.message('Repaired file:\n%s' % path,
-                                     title='Sutura Repair', buttons='ok', icon='info')
+                orca.host.ui.message(
+                    'The repaired file is no longer on disk -- it was loaded '
+                    'into OrcaSlicer and the staging copy was cleaned up.',
+                    title='Sutura Repair', buttons='ok', icon='info')
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1480,12 +1642,16 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
 @orca.plugin
 class SuturaRepairPlugin(orca.base):
     def register_capabilities(self):
-        # Declare the filesystem READ path up front: the external Sutura CLI
-        # binary the plugin spawns. HONEST SCOPE: orca.request_permissions only
-        # accepts declarative fs_read paths; the subprocess (ProcessCreate)
-        # spawn is audited reactively and its persisted grant is keyed to the
-        # exact command line (which contains unique temp paths), so this does
-        # NOT remove the per-run subprocess permission prompt.
-        cli = os.environ.get('SUTURA_CLI') or _DEFAULT_CLI
-        orca.request_permissions(fs_read=[cli])
+        # Declare ONLY the filesystem READ paths that actually exist: a
+        # request for a non-existent path is rejected. The subprocess
+        # (ProcessCreate) spawn is audited reactively and its persisted grant
+        # is keyed to the exact command line (which contains unique staging
+        # paths), so this does NOT remove the per-run subprocess prompt.
+        candidates = [os.environ.get('SUTURA_CLI'), _DEFAULT_CLI, shutil.which('sutura')]
+        fs_read = [p for p in dict.fromkeys(candidates) if p and os.path.exists(p)]
+        if fs_read:
+            try:
+                orca.request_permissions(fs_read=fs_read)
+            except Exception:  # noqa: BLE001
+                pass
         orca.register_capability(SuturaRepair)

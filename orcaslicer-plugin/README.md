@@ -34,7 +34,8 @@ guaranteed-working product, and report issues (see "Feedback" below).
 - macOS-specific behaviour: the repaired file is loaded back with the native
   `open -b com.orcaslicer.OrcaSlicer <path>` (bundle-ID matching, skipped when
   more than one OrcaSlicer process is running); Linux uses
-  `OrcaSlicer --single-instance <path>`.
+  `orca-slicer --single-instance <path>` (the binary name can be overridden
+  with the `ORCA_BIN` environment variable).
 
 ## The dock panel
 
@@ -81,11 +82,21 @@ Notifications can be disabled with the **Notify about broken meshes** setting.
   outward-facing normals).
 - A multi-part object becomes **one** STL containing all its model parts (the
   union surface Sutura is asked to repair).
+- **Staging root.** The host exposes no `data_dir()` API, so the data dir is
+  derived from the plugin's own install location: walk up from the plugin file
+  to the `orca_plugins` component and take its parent (cloud plugins live
+  under `<data_dir>/orca_plugins/_subscribed/<user>/`, local ones under
+  `<data_dir>/orca_plugins/`). Jobs stage under
+  `<data_dir>/orca_plugins/.sutura_work/<uuid>/`; if that tree cannot be
+  located, repair/analyze report a clear error instead of writing outside the
+  audit-allowed root. No path component the plugin creates contains `conf`,
+  `config`, `secret` or `cert`, which the audit hook denies.
 - Each run writes a **unique** file
-  (`<stem>_fixed_<timestamp>_<short-uuid>.stl`) under OrcaSlicer's
-  `data_dir()` audit-allowed root; consecutive runs **never overwrite** a
-  previous result. The temporary input STL is written under
-  `data_dir()/sutura_repair/<uuid>/`.
+  (`<stem>_fixed_<timestamp>_<short-uuid>.stl`); consecutive runs **never
+  overwrite** a previous result. A job's staging dir is deleted once the
+  result is loaded back or the job fails; if the automatic load-back fails the
+  repaired file is kept and its path is posted to the panel. Staging dirs
+  older than seven days are removed when the plugin loads.
 
 ## Repair
 
@@ -99,11 +110,13 @@ on stdout is parsed and mapped onto the panel protocol.
 ## Permissions
 
 `register_capabilities()` declares the Sutura CLI path up front with
-`orca.request_permissions(fs_read=[...])`. HONEST SCOPE: this only
-pre-declares filesystem **reads** -- the audit API has no declarative form for
-subprocess spawns, and their persisted grant matches the exact command line
-(which contains unique temp paths), so a subprocess permission prompt can
-still appear once per command target.
+`orca.request_permissions(fs_read=[...])`, but **only for paths that actually
+exist** (the resolved `SUTURA_CLI`, `~/.local/bin/sutura`, or a `sutura`
+found on `PATH`); requesting a non-existent path is rejected, so it is
+skipped. HONEST SCOPE: this only pre-declares filesystem **reads** -- the
+audit API has no declarative form for subprocess spawns, and their persisted
+grant matches the exact command line (which contains unique staging paths),
+so a subprocess permission prompt can still appear once per command target.
 
 ## Install (nightly / OrcaSlicer > 2.4.2)
 
