@@ -9,9 +9,11 @@ exercised:
                          union, modifier skipping, numpy-free fallback
   * _data_dir/_staging   data-dir derivation from the install path, audit-safe
                          path components, staging cleanup/retention
+  * on_lifecycle_event   enqueues a debounced scan only (never works inline),
+                         retries a failed startup panel creation once and shows
+                         the startup panel once on the first scene event
   * _build_state         object summaries (parts/modifiers/errors/manifold)
   * on_message           state / repair / cancel / analyze / settings / open_output
-  * on_lifecycle_event   enqueues a debounced scan only (never works inline)
   * _notify_broken_objects  one notification per broken object per session
   * without numpy        the plugin still imports and transforms lists
 
@@ -408,7 +410,7 @@ def test_config_defaults():
     assert cfg['preset'] == 'balanced'
     assert cfg['open_panel_at_startup'] is True
     assert cfg['notify_broken'] is True
-    assert cfg['place_beside_original'] is True
+    assert 'place_beside_original' not in cfg
     assert cfg['sutura_cli'] == ''
 
 
@@ -454,9 +456,55 @@ def test_dock_panel_retried_once_on_lifecycle():
     plugin.on_lifecycle_event(types.SimpleNamespace(name='ProjectOpened'))
     assert len(ui.dock_panels) == 1, ui.dock_panels
     assert plugin._st().get('panel_retry_pending') is False
+    assert plugin._st().get('panel_show_pending') is False
     # once only: a later lifecycle event creates no further panel
     plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
     assert len(ui.dock_panels) == 1, ui.dock_panels
+    timer = plugin._st().get('scan_timer')
+    if timer is not None:
+        timer.cancel()
+
+
+def test_dock_panel_shown_once_on_first_scene_event():
+    """OrcaSlicer starts on the Home tab and hides plugin panes, so a panel
+    created at load must be shown once the first scene/plate event fires."""
+    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    plugin = mod.SuturaRepair()
+    plugin.on_load()
+    handle = ui.dock_panels[-1]
+    assert plugin._st().get('panel_show_pending') is True
+    handle.hide()  # the host hid the pane while on the Home tab
+    # a non-show event does not consume the pending show
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='PresetSelected'))
+    assert handle.is_open() is False, handle.is_open()
+    assert plugin._st().get('panel_show_pending') is True
+    # the first scene event shows it and clears the flag
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
+    assert handle.is_open() is True, handle.is_open()
+    assert plugin._st().get('panel_show_pending') is False
+    # shown once only: hiding it again and firing another event does not reshow
+    handle.hide()
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='PlateSelected'))
+    assert handle.is_open() is False, handle.is_open()
+    assert len(ui.dock_panels) == 1, ui.dock_panels
+    timer = plugin._st().get('scan_timer')
+    if timer is not None:
+        timer.cancel()
+
+
+def test_dock_panel_not_reopened_after_user_close():
+    """If the user closes the panel before the first scene event, the pending
+    show is consumed without reopening it (no second panel is created)."""
+    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    plugin = mod.SuturaRepair()
+    plugin.on_load()
+    handle = ui.dock_panels[-1]
+    handle.close()
+    plugin._on_panel_close()  # the host close callback clears the handle
+    plugin.on_lifecycle_event(types.SimpleNamespace(name='ObjectAdded'))
+    assert len(ui.dock_panels) == 1, ui.dock_panels
+    assert plugin._st().get('panel') is None
+    assert plugin._st().get('panel_show_pending') is False
     timer = plugin._st().get('scan_timer')
     if timer is not None:
         timer.cancel()
@@ -469,6 +517,7 @@ def test_dock_panel_disabled_never_retries():
     plugin.save_config(json.dumps({'open_panel_at_startup': False}))
     plugin.on_load()
     assert plugin._st().get('panel_retry_pending') in (None, False)
+    assert plugin._st().get('panel_show_pending') in (None, False)
     plugin.on_lifecycle_event(types.SimpleNamespace(name='ProjectOpened'))
     assert ui.dock_panels == [], ui.dock_panels
     timer = plugin._st().get('scan_timer')
@@ -673,15 +722,16 @@ def test_analyze_message():
 def test_settings_persist():
     mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
     plugin = mod.SuturaRepair()
-    plugin._handle_settings({'preset': 'thorough', 'notify_broken': False,
-                             'place_beside_original': False})
+    plugin._handle_settings({'preset': 'thorough', 'notify_broken': False})
     cfg = plugin._settings()
     assert cfg['preset'] == 'thorough', cfg
     assert cfg['notify_broken'] is False, cfg
-    assert cfg['place_beside_original'] is False, cfg
+    assert 'place_beside_original' not in cfg, cfg
     stored = json.loads(plugin.get_config())
-    assert (stored['preset'] == 'thorough' and stored['notify_broken'] is False
-            and stored['place_beside_original'] is False), stored
+    assert stored['preset'] == 'thorough' and stored['notify_broken'] is False, stored
+    # an unknown/legacy settings key is ignored
+    plugin._handle_settings({'place_beside_original': False})
+    assert 'place_beside_original' not in plugin._settings(), plugin._settings()
     # an invalid preset falls back to balanced
     plugin._handle_settings({'preset': 'nonsense'})
     assert plugin._settings()['preset'] == 'balanced'
@@ -866,10 +916,12 @@ def _stub_stl_repair_job(mod, obj, verts, tris):
     return report
 
 
-def test_place_beside_original_translates_output():
+def test_repair_output_keeps_exported_coordinates():
+    """The repaired output is written verbatim in the exported world
+    coordinates (no placement translation is applied)."""
     d = tempfile.mkdtemp()
     mod, _host, ui = _load_plugin(_Model([]), d)
-    v, t = _cube()  # unit cube; world bbox X size = 1
+    v, t = _cube()  # unit cube at the origin
     obj = _Object([_Volume(_Mesh(v, t))], name='part', oid=1)
     _stub_stl_repair_job(mod, obj, v, t)
     mod._load_back = lambda path: True
@@ -880,26 +932,8 @@ def test_place_beside_original_translates_output():
     assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
     out_path = _posts(handle, 'job')[-1]['result']['output_path']
     lo, hi = _bbox(_stl_triangles(out_path))
-    assert lo[0] == 11.0 and hi[0] == 12.0, (lo, hi)  # 1 + 10 mm gap in +X
-    assert lo[1] == 0.0 and hi[2] == 1.0, (lo, hi)  # other axes unchanged
-
-
-def test_place_beside_original_disabled_keeps_position():
-    d = tempfile.mkdtemp()
-    mod, _host, ui = _load_plugin(_Model([]), d)
-    v, t = _cube()
-    obj = _Object([_Volume(_Mesh(v, t))], name='part', oid=1)
-    _stub_stl_repair_job(mod, obj, v, t)
-    mod._load_back = lambda path: True
-    plugin = mod.SuturaRepair()
-    plugin.save_config(json.dumps({'place_beside_original': False}))
-    plugin._open_panel()
-    handle = ui.dock_panels[-1]
-    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
-    assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
-    out_path = _posts(handle, 'job')[-1]['result']['output_path']
-    lo, hi = _bbox(_stl_triangles(out_path))
-    assert lo[0] == 0.0 and hi[0] == 1.0, (lo, hi)
+    assert lo == (0.0, 0.0, 0.0), (lo, hi)
+    assert hi == (1.0, 1.0, 1.0), (lo, hi)
 
 
 def test_output_persists_after_successful_job():

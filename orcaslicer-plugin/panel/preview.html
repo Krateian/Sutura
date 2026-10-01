@@ -114,6 +114,7 @@ button, input { font-family: inherit; font-size: inherit; }
 .chip { display: inline-flex; align-items: center; font-size: 11px; font-weight: 500; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
 .chip-cancelled { color: var(--orca-muted); background: var(--orca-border); }
 .link-show-file { background: transparent; border: none; color: var(--orca-accent); cursor: pointer; font-size: 11px; text-decoration: underline; padding: 2px 4px; }
+.result-hint { margin-top: 4px; color: var(--orca-muted); font-size: 11px; line-height: 1.4; }
 
 /* Analysis Drawer */
 .analysis-drawer { margin-top: 6px; padding: 8px; border-radius: 6px; border: 1px solid var(--orca-border); display: flex; flex-direction: column; gap: 6px; }
@@ -351,10 +352,6 @@ body.theme-dark {
           <input type="checkbox" id="chk-open-startup" checked>
           <span>Open panel at startup</span>
         </label>
-        <label class="setting-label">
-          <input type="checkbox" id="chk-place-beside" checked>
-          <span>Place repaired copy beside original</span>
-        </label>
       </div>
     </details>
     <div class="disclaimer">Repaired copies are added as new objects; originals stay unchanged.</div>
@@ -380,7 +377,7 @@ body.theme-dark {
 
   let cliFound = true;
   let objectsList = [...mockObjects];
-  let currentSettings = { preset: "balanced", notify_broken: true, open_panel_at_startup: true, place_beside_original: true };
+  let currentSettings = { preset: "balanced", notify_broken: true, open_panel_at_startup: true };
   const listeners = [];
   const activeTimers = new Map();
 
@@ -570,7 +567,7 @@ body.theme-dark {
 
   const state = {
     cli: { found: false, path: '', version: '' },
-    settings: { preset: 'balanced', notify_broken: true, open_panel_at_startup: true, place_beside_original: true },
+    settings: { preset: 'balanced', notify_broken: true, open_panel_at_startup: true },
     objects: [],
     selectedIds: new Set(),
     jobs: new Map(),
@@ -609,7 +606,6 @@ body.theme-dark {
     const s = state.settings;
     if ($('chk-notify-broken') && s.notify_broken !== undefined) $('chk-notify-broken').checked = !!s.notify_broken;
     if ($('chk-open-startup') && s.open_panel_at_startup !== undefined) $('chk-open-startup').checked = !!s.open_panel_at_startup;
-    if ($('chk-place-beside') && s.place_beside_original !== undefined) $('chk-place-beside').checked = !!s.place_beside_original;
     updatePresetButtons();
   }
 
@@ -670,6 +666,9 @@ body.theme-dark {
         h += `<span class="chip chip-cancelled">Cancelled</span>`;
       }
       h += `</div>`;
+      if (job.phase === 'done') {
+        h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+      }
     }
 
     if (isExp) {
@@ -820,15 +819,13 @@ body.theme-dark {
       values: {
         preset: state.settings.preset,
         notify_broken: state.settings.notify_broken,
-        open_panel_at_startup: state.settings.open_panel_at_startup,
-        place_beside_original: state.settings.place_beside_original
+        open_panel_at_startup: state.settings.open_panel_at_startup
       }
     });
   }
 
   on('chk-notify-broken', 'change', e => { state.settings.notify_broken = e.target.checked; persistSettings(); });
   on('chk-open-startup', 'change', e => { state.settings.open_panel_at_startup = e.target.checked; persistSettings(); });
-  on('chk-place-beside', 'change', e => { state.settings.place_beside_original = e.target.checked; persistSettings(); });
 
   function onMessage(msg) {
     if (!msg) return;

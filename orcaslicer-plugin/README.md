@@ -41,11 +41,13 @@ guaranteed-working product, and report issues (see "Feedback" below).
 
 Running the plugin (Plugins dialog → Run) opens a dockable panel on the right
 of the 3D view; with the **Open panel at startup** setting (default on) it
-opens automatically when the plugin loads. The plater/dock manager is not
-always ready when the plugin loads, so a failed startup attempt is retried
-once on the next `ProjectOpened` / `NewProject` / `ObjectAdded` event and the
-outcome is logged to stderr. The panel lists every object on the plate and
-offers:
+opens automatically when the plugin loads. OrcaSlicer starts on the Home tab
+and hides plugin panes off the Prepare/Preview tabs, so the panel is created at
+load but is shown once on the first `ObjectAdded` / `ProjectOpened` /
+`NewProject` / `PlateSelected` event; the plater/dock manager is not always
+ready when the plugin loads, so a failed startup creation is retried once on
+the next `ProjectOpened` / `NewProject` / `ObjectAdded` event. Both outcomes are
+logged to stderr. The panel lists every object on the plate and offers:
 
 - a **Quick / Balanced / Thorough / Extreme** preset control (the Sutura
   `--intensity` presets; Balanced is the default);
@@ -57,8 +59,7 @@ offers:
   cancelled) with elapsed time and a Cancel button;
 - a **Show file** link for a finished job that reveals the repaired file in
   the platform file browser;
-- collapsible settings for the preset, notifications, panel-at-startup and
-  placing the repaired copy beside the original.
+- collapsible settings for the preset, notifications and panel-at-startup.
 
 The panel HTML is embedded in the plugin file (copied from
 `panel/panel.html`) so the published single-file plugin stays
@@ -100,16 +101,15 @@ Notifications can be disabled with the **Notify about broken meshes** setting.
   `<object-name>_sutura_<YYYYmmdd-HHMMSS>.stl`, with any source mesh extension
   (`.stl`/`.obj`/`.3mf`) stripped from the object name so a name such as
   `broken_cube.stl` yields `broken_cube_sutura_...stl`, not a double extension
-  (a numeric suffix is added only if that name already exists). With the
-  **Place repaired copy beside original** setting (default on) the output is
-  translated in +X by the original's world bounding-box X size plus a 10 mm
-  gap before it is written, so it loads beside the original instead of on top
-  of it (which OrcaSlicer otherwise flags as a collision). It is kept after the
-  job so OrcaSlicer can still read it while the asynchronous load-back
-  completes; the **Show file** link reveals it (`open -R` on macOS, the folder
-  via `xdg-open` on Linux). Only the per-job input staging (`<uuid>/input.stl`)
-  is deleted; output files and staging dirs older than seven days are pruned
-  when the plugin loads.
+  (a numeric suffix is added only if that name already exists). The repaired
+  copy keeps the exported world coordinates, so OrcaSlicer places it on top of
+  the original; the panel's done row says so: **Added as a new object — press
+  A (Arrange) to separate it from the original; Ctrl/Cmd+Z removes it.** It is
+  kept after the job so OrcaSlicer can still read it while the asynchronous
+  load-back completes; the **Show file** link reveals it (`open -R` on macOS,
+  the folder via `xdg-open` on Linux). Only the per-job input staging
+  (`<uuid>/input.stl`) is deleted; output files and staging dirs older than
+  seven days are pruned when the plugin loads.
 
 ## Repair
 
@@ -147,9 +147,8 @@ so a subprocess permission prompt can still appear once per command target.
 
 ## Configuration
 
-- Panel settings (preset, notify about broken meshes, open panel at startup,
-  place repaired copy beside original) are stored in the plugin's capability
-  config.
+- Panel settings (preset, notify about broken meshes, open panel at startup)
+  are stored in the plugin's capability config.
 - `sutura_cli` config key — explicit CLI path; empty (default) auto-detects
   `~/.local/bin/sutura`, then `sutura` on `PATH`.
 - `SUTURA_CLI` env var — highest-precedence CLI override.
@@ -159,12 +158,13 @@ so a subprocess permission prompt can still appear once per command target.
 ## Known limitations
 
 - The repaired surface is added as a **new object**; the original object is
-  left untouched and there is **no undo**. Remove the new object manually if
-  the result is not wanted.
+  left untouched. Press A (Arrange) to separate it from the original, or
+  Ctrl/Cmd+Z to remove it (OrcaSlicer records a "Load File" undo snapshot).
 - Because the export is in world coordinates, OrcaSlicer may re-centre the
-  imported object on reload (or drop it on some builds). The exact placement
-  after reload has not been verified on a real nightly (owner live test
-  pending).
+  imported object on reload (or drop it on some builds), which places it on
+  top of the original. The exact placement after reload has not been verified
+  on a real nightly (owner live test pending); the A (Arrange) shortcut is the
+  intended way to separate the copy.
 - The export is a per-object triangle soup of its model parts; Sutura repairs
   the union surface. Overlapping or intentionally separate parts are treated
   as one solid.

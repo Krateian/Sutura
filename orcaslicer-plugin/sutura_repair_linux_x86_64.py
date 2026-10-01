@@ -46,11 +46,10 @@ its parent, i.e. OrcaSlicer's data dir) -- the host exposes no
 to the persistent ``<data_dir>/orca_plugins/.sutura_work/out/`` as
 ``<object-name>_sutura_<timestamp>.stl`` with any source mesh extension stripped
 from the object name (kept so OrcaSlicer can still read it after an asynchronous
-load-back; pruned after seven days). With the ``place_beside_original`` setting
-(default on) the repaired copy is translated along +X by the original's world
-bounding-box X size plus a 10 mm gap *before* it is written, so it loads beside
-the original instead of on top of it. The original object is never modified and
-the result is added as a NEW object, so there is no undo.
+load-back; pruned after seven days). The repaired copy keeps the exported world
+coordinates and is added as a NEW object, so it lands on top of the original;
+press A (Arrange) to separate it, and Ctrl/Cmd+Z removes it (OrcaSlicer records
+a "Load File" undo snapshot). The original object is never modified.
 """
 
 import json
@@ -90,16 +89,18 @@ _SCAN_EVENTS = frozenset(('ObjectAdded', 'ObjectChanged', 'ProjectOpened'))
 # events. NewProject is included even though it does not trigger a rescan.
 _PANEL_RETRY_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
 
-# The repaired copy is shifted in +X by the original bbox X size plus this gap
-# (mm) so it lands beside the original rather than on top of it.
-_PLACE_GAP_MM = 10.0
+# OrcaSlicer starts on the Home tab and hides plugin panes off the
+# Prepare/Preview tabs, so a panel created in on_load() stays hidden until one
+# of these events fires; the plugin then calls panel.show() once.
+_PANEL_SHOW_EVENTS = frozenset(('ObjectAdded', 'ProjectOpened', 'NewProject',
+                                'PlateSelected'))
 
 # Source mesh extensions stripped from an object name before building the
 # repaired-output filename (avoids ``broken_cube.stl_sutura_...stl``).
 _MESH_EXTENSIONS = ('.stl', '.obj', '.3mf')
 
 # The dock page, embedded verbatim from orcaslicer-plugin/panel/panel.html
-# (sha256 964af5be50424b3adce691c32254c2d959d7760e22b630ea252c3a5df2f61e73).
+# (sha256 6e4a6189a8c061a701daa84bfeb1035b3ba2f6d5b6ce5b9e96193bb6af88862a).
 # It is embedded so the published single-file plugin is self-contained; whenever
 # panel/panel.html changes, copy its full contents back into this raw string and
 # update the digest.
@@ -219,6 +220,7 @@ button, input { font-family: inherit; font-size: inherit; }
 .chip { display: inline-flex; align-items: center; font-size: 11px; font-weight: 500; padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
 .chip-cancelled { color: var(--orca-muted); background: var(--orca-border); }
 .link-show-file { background: transparent; border: none; color: var(--orca-accent); cursor: pointer; font-size: 11px; text-decoration: underline; padding: 2px 4px; }
+.result-hint { margin-top: 4px; color: var(--orca-muted); font-size: 11px; line-height: 1.4; }
 
 /* Analysis Drawer */
 .analysis-drawer { margin-top: 6px; padding: 8px; border-radius: 6px; border: 1px solid var(--orca-border); display: flex; flex-direction: column; gap: 6px; }
@@ -315,10 +317,6 @@ button, input { font-family: inherit; font-size: inherit; }
           <input type="checkbox" id="chk-open-startup" checked>
           <span>Open panel at startup</span>
         </label>
-        <label class="setting-label">
-          <input type="checkbox" id="chk-place-beside" checked>
-          <span>Place repaired copy beside original</span>
-        </label>
       </div>
     </details>
     <div class="disclaimer">Repaired copies are added as new objects; originals stay unchanged.</div>
@@ -335,7 +333,7 @@ button, input { font-family: inherit; font-size: inherit; }
 
   const state = {
     cli: { found: false, path: '', version: '' },
-    settings: { preset: 'balanced', notify_broken: true, open_panel_at_startup: true, place_beside_original: true },
+    settings: { preset: 'balanced', notify_broken: true, open_panel_at_startup: true },
     objects: [],
     selectedIds: new Set(),
     jobs: new Map(),
@@ -374,7 +372,6 @@ button, input { font-family: inherit; font-size: inherit; }
     const s = state.settings;
     if ($('chk-notify-broken') && s.notify_broken !== undefined) $('chk-notify-broken').checked = !!s.notify_broken;
     if ($('chk-open-startup') && s.open_panel_at_startup !== undefined) $('chk-open-startup').checked = !!s.open_panel_at_startup;
-    if ($('chk-place-beside') && s.place_beside_original !== undefined) $('chk-place-beside').checked = !!s.place_beside_original;
     updatePresetButtons();
   }
 
@@ -435,6 +432,9 @@ button, input { font-family: inherit; font-size: inherit; }
         h += `<span class="chip chip-cancelled">Cancelled</span>`;
       }
       h += `</div>`;
+      if (job.phase === 'done') {
+        h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+      }
     }
 
     if (isExp) {
@@ -589,15 +589,13 @@ button, input { font-family: inherit; font-size: inherit; }
       values: {
         preset: state.settings.preset,
         notify_broken: state.settings.notify_broken,
-        open_panel_at_startup: state.settings.open_panel_at_startup,
-        place_beside_original: state.settings.place_beside_original
+        open_panel_at_startup: state.settings.open_panel_at_startup
       }
     });
   }
 
   on('chk-notify-broken', 'change', e => { state.settings.notify_broken = e.target.checked; persistSettings(); });
   on('chk-open-startup', 'change', e => { state.settings.open_panel_at_startup = e.target.checked; persistSettings(); });
-  on('chk-place-beside', 'change', e => { state.settings.place_beside_original = e.target.checked; persistSettings(); });
 
   function onMessage(msg) {
     if (!msg) return;
@@ -714,54 +712,6 @@ def _unique_output_name(stem, ext='stl'):
     stem = _strip_mesh_extension(stem) or 'mesh'
     ts = time.strftime('%Y%m%d-%H%M%S')
     return '%s_sutura_%s.%s' % (stem, ts, ext)
-
-
-def _read_binary_stl(path):
-    """Read a binary STL into (verts, tris) with one vertex triple per face.
-
-    Pure stdlib; each triangle gets its own three vertices (no welding), which
-    is all the +X placement shift needs. Raises ValueError on a truncated or
-    non-binary file."""
-    with open(path, 'rb') as f:
-        f.read(80)
-        raw = f.read(4)
-        if len(raw) < 4:
-            raise ValueError('STL header truncated')
-        count = struct.unpack('<I', raw)[0]
-        verts, tris = [], []
-        for _ in range(count):
-            f.read(12)
-            base = len(verts)
-            for _ in range(3):
-                chunk = f.read(12)
-                if len(chunk) < 12:
-                    raise ValueError('STL body truncated')
-                verts.append(list(struct.unpack('<3f', chunk)))
-            f.read(2)
-            tris.append([base, base + 1, base + 2])
-    return verts, tris
-
-
-def _shift_stl_x(path, dx):
-    """Translate a binary STL in place along +X by ``dx`` (mm). Best-effort.
-
-    Returns True on success. A non-binary/truncated output is left untouched
-    and reported False, so placement can never break a finished repair."""
-    if not dx or not os.path.exists(path):
-        return False
-    try:
-        verts, tris = _read_binary_stl(path)
-    except Exception:  # noqa: BLE001
-        return False
-    if not verts:
-        return False
-    for v in verts:
-        v[0] += dx
-    try:
-        _write_binary_stl(path, verts, tris)
-    except Exception:  # noqa: BLE001
-        return False
-    return True
 
 
 # The audit hook denies a path with a component containing any of these
@@ -1055,21 +1005,8 @@ def _export_object_stl(obj, path):
     if not tris_all:
         raise ValueError('object has no exportable model-part mesh')
     _write_binary_stl(path, verts_all, tris_all)
-    bbox_size = [0.0, 0.0, 0.0]
-    if verts_all:
-        first = _to_float3(verts_all[0])
-        lo, hi = list(first), list(first)
-        for x in verts_all:
-            p = _to_float3(x)
-            for k in range(3):
-                if p[k] < lo[k]:
-                    lo[k] = p[k]
-                if p[k] > hi[k]:
-                    hi[k] = p[k]
-        bbox_size = [hi[k] - lo[k] for k in range(3)]
     return {'parts': len(parts), 'skipped': skipped,
-            'vertices': len(verts_all), 'triangles': len(tris_all),
-            'size': bbox_size}
+            'vertices': len(verts_all), 'triangles': len(tris_all)}
 
 
 # --------------------------------------------------------------------------- CLI
@@ -1380,8 +1317,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
     # --- config -----------------------------------------------------------
     def get_default_config(self):
         return {'preset': 'balanced', 'open_panel_at_startup': True,
-                'notify_broken': True, 'place_beside_original': True,
-                'sutura_cli': ''}
+                'notify_broken': True, 'sutura_cli': ''}
 
     def _settings(self):
         cfg = dict(self.get_default_config())
@@ -1399,7 +1335,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
     def _persist_settings(self, values):
         cfg = self._settings()
         for key in ('preset', 'open_panel_at_startup', 'notify_broken',
-                    'place_beside_original', 'sutura_cli'):
+                    'sutura_cli'):
             if key in values:
                 cfg[key] = values[key]
         if cfg.get('preset') not in _INTENSITIES:
@@ -1423,11 +1359,10 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         panel = st.get('panel')
         if panel is not None:
             try:
-                if panel.is_open():
-                    panel.show()
-                    self._post_state_async()
-                    st['panel_retry_pending'] = False
-                    return True
+                panel.show()
+                self._post_state_async()
+                st['panel_retry_pending'] = False
+                return True
             except Exception:  # noqa: BLE001
                 pass
         try:
@@ -1530,8 +1465,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             'cli': {'found': bool(found), 'path': cli_path or '', 'version': version or ''},
             'settings': {'preset': cfg.get('preset', 'balanced'),
                          'notify_broken': bool(cfg.get('notify_broken', True)),
-                         'open_panel_at_startup': bool(cfg.get('open_panel_at_startup', True)),
-                         'place_beside_original': bool(cfg.get('place_beside_original', True))},
+                         'open_panel_at_startup': bool(cfg.get('open_panel_at_startup', True))},
             'objects': objects,
         }
 
@@ -1548,6 +1482,9 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         except Exception:  # noqa: BLE001
             opened = False
         if opened:
+            # The panel is created but OrcaSlicer hides plugin panes while it
+            # starts on the Home tab; it is shown once on the first scene event.
+            self._st()['panel_show_pending'] = True
             self._log('dock panel opened at load')
         else:
             # on_load() can run before the plater/dock manager exists; retry
@@ -1578,6 +1515,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         # Runs synchronously on the UI thread: only enqueue, never do work here.
         name = getattr(event, 'name', None) or str(event)
         self._maybe_retry_panel(name)
+        self._maybe_show_panel(name)
         if name in _SCAN_EVENTS:
             self._schedule_scan()
 
@@ -1597,9 +1535,37 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             except Exception:  # noqa: BLE001
                 pass
         if self._open_panel():
+            st['panel_show_pending'] = True
             self._log('dock panel opened on %s' % name)
         else:
             self._log('dock panel still unavailable on %s; giving up' % name)
+
+    def _maybe_show_panel(self, name):
+        """Bring the dock panel forward once after startup.
+
+        OrcaSlicer starts on the Home tab and hides plugin panes off the
+        Prepare/Preview tabs, so a panel created in on_load() stays hidden until
+        a scene or plate event fires. The panel is shown once, only while the
+        'Open panel at startup' setting is on and the user has not closed it."""
+        st = self._st()
+        if not st.get('panel_show_pending'):
+            return
+        if name not in _PANEL_SHOW_EVENTS:
+            return
+        if not self._settings().get('open_panel_at_startup', True):
+            st['panel_show_pending'] = False
+            return
+        st['panel_show_pending'] = False  # once only, success or not
+        panel = st.get('panel')
+        if panel is None:
+            # the user closed the panel: do not reopen it
+            return
+        try:
+            panel.show()
+            self._post_state_async()
+            self._log('dock panel shown on %s' % name)
+        except Exception as exc:  # noqa: BLE001
+            self._log('dock panel show failed on %s: %s' % (name, exc))
 
     def _schedule_scan(self):
         st = self._st()
@@ -1734,7 +1700,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                 return
             in_path = os.path.join(dest, 'input.stl')
             self._emit_job(oid, 'exporting', time.time() - start, 'Exporting mesh...')
-            export_info = _export_object_stl(obj, in_path)
+            _export_object_stl(obj, in_path)
             out_path = _unique_output_path(_safe_name(obj))
             if out_path is None:
                 self._emit_job(oid, 'failed', time.time() - start,
@@ -1752,13 +1718,6 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             if status != 'ok':
                 self._emit_job(oid, 'failed', time.time() - start, msg or 'repair failed')
                 return
-            if self._settings().get('place_beside_original', True):
-                size = (export_info or {}).get('size') or [0.0, 0.0, 0.0]
-                dx = float(size[0]) + _PLACE_GAP_MM
-                if _shift_stl_x(out_path, dx):
-                    self._log('placed the repaired copy %.2f mm beside the original' % dx)
-                else:
-                    self._log('could not place the repaired copy; kept the output as written')
             self._emit_job(oid, 'loading', time.time() - start, 'Loading result...')
             if _load_back(out_path):
                 self._emit_job(oid, 'done', time.time() - start, 'Repaired',
