@@ -1750,6 +1750,8 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.7.2 — 2026-10-02** — OrcaSlicer eklentisi v2 (yan panel, onarım bildirimleri,
+  doğru dönüşümler, geri yükleme); simetri tespiti 2-3,7 kat hızlı.
 - **v0.7.1 — 2026-10-01** — Graft artık kurulu derlemelerde çalışıyor: Rust
   eklentisi önceden derlenmiş wheel'ler üzerinden sunuluyor ve AppImage/.dmg
   paketlerine dahil edildi; macOS .dmg başlangıç düzeltmesi.

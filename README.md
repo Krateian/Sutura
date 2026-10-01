@@ -1732,6 +1732,8 @@ Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.7.2 — 2026-10-02** — OrcaSlicer plugin v2 (dock panel, repair notifications,
+  correct transforms, load-back); 2-3.7x faster symmetry detection.
 - **v0.7.1 — 2026-10-01** — Graft now works in installed builds: Rust extension
   shipped via prebuilt wheels + bundled in AppImage/.dmg; macOS .dmg startup fix.
 - **v0.7.0 — 2026-09-28** — Sutura Triage Engine: modular architecture
