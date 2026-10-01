@@ -379,13 +379,21 @@ def _posts(handle, command):
 
 # --------------------------------------------------------------------------- tests
 
-def test_unique_output_name_different_for_consecutive_calls():
-    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
-    a = mod._unique_output_name('model')
-    b = mod._unique_output_name('model')
-    assert a != b, (a, b)
-    assert a.startswith('model_fixed_') and a.endswith('.stl'), a
-    assert a.split('_fixed_')[1][:8].isdigit(), a
+def test_unique_output_name_and_path():
+    d = tempfile.mkdtemp()
+    mod, _host, _ui = _load_plugin(_Model([]), d)
+    name = mod._unique_output_name('model')
+    assert name.startswith('model_sutura_') and name.endswith('.stl'), name
+    assert name.split('_sutura_')[1][:8].isdigit(), name
+    # the persistent output path stays unique even within the same second
+    first = mod._unique_output_path('model')
+    assert os.path.dirname(first) == mod._out_dir()
+    with open(first, 'wb') as f:
+        f.write(b'x')
+    second = mod._unique_output_path('model')
+    assert second != first, (first, second)
+    # an audit-unsafe stem is scrubbed
+    assert 'mesh_sutura_' in os.path.basename(mod._unique_output_path('config_part'))
 
 
 def test_config_defaults():
@@ -750,28 +758,71 @@ def test_is_model_part_raises_is_skipped():
 
 
 def _work_children(data_dir):
+    """Per-job staging dirs only ('out/' is the persistent output folder)."""
     root = os.path.join(data_dir, 'orca_plugins', '.sutura_work')
     if not os.path.isdir(root):
         return []
-    return os.listdir(root)
+    return [e for e in os.listdir(root) if e != 'out']
 
 
-def test_staging_cleaned_after_successful_repair():
-    d = tempfile.mkdtemp()
-    mod, _host, ui = _load_plugin(_Model([]), d)
-    obj = _Object([_Volume(_Mesh(*_cube()))], name='config_part', oid=1)
-    mod.SuturaRepair._iter_objects = lambda self: [obj]
+def _out_files(data_dir):
+    out = os.path.join(data_dir, 'orca_plugins', '.sutura_work', 'out')
+    if not os.path.isdir(out):
+        return []
+    return os.listdir(out)
+
+
+def _stub_repair_job(mod, obj):
+    """Wire a successful fake repair job on ``mod`` (no real CLI)."""
     report = {'category': 'watertight',
               'stage1': {'holes_remaining': 0, 'two_manifold': True},
               'stage2': {'ok': True}, 'defects': {'holes': []}}
+    mod.SuturaRepair._iter_objects = lambda self: [obj]
     mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
 
     def fake_repair(cli, src, out, preset, cancel_event, timeout=None, on_proc=None):
         with open(out, 'wb') as f:
             f.write(b'repaired')
         return ('ok', report, '')
-
     mod._run_repair = fake_repair
+    return report
+
+
+def test_output_persists_after_successful_job():
+    """Regression: the repaired output stays on disk after a successful job and
+    load-back is called with that persistent path (a Popen returning early must
+    not let the cleanup delete the file before OrcaSlicer reads it)."""
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='part', oid=1)
+    _stub_repair_job(mod, obj)
+    calls = []
+
+    def fake_load(path):
+        calls.append(path)
+        return True
+    mod._load_back = fake_load
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
+    done = _posts(handle, 'job')[-1]
+    out_path = done['result']['output_path']
+    assert os.path.exists(out_path), out_path
+    assert os.path.basename(out_path).startswith('part_sutura_'), out_path
+    assert os.path.dirname(out_path) == mod._out_dir()
+    assert calls == [out_path], calls
+    # only the per-job input staging was deleted
+    assert _work_children(d) == [], _work_children(d)
+    assert os.path.basename(out_path) in _out_files(d), _out_files(d)
+
+
+def test_staging_cleaned_after_successful_repair():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='config_part', oid=1)
+    _stub_repair_job(mod, obj)
     mod._load_back = lambda path: True
     plugin = mod.SuturaRepair()
     plugin._open_panel()
@@ -780,7 +831,7 @@ def test_staging_cleaned_after_successful_repair():
     assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
     done = _posts(handle, 'job')[-1]
     # the output name derived from 'config_part' must be audit-safe
-    assert os.path.basename(done['result']['output_path']).startswith('mesh_fixed_'), done
+    assert os.path.basename(done['result']['output_path']).startswith('mesh_sutura_'), done
     assert _work_children(d) == [], _work_children(d)
 
 
@@ -788,31 +839,37 @@ def test_staging_kept_when_load_back_fails():
     d = tempfile.mkdtemp()
     mod, _host, ui = _load_plugin(_Model([]), d)
     obj = _Object([_Volume(_Mesh(*_cube()))], name='part', oid=1)
-    mod.SuturaRepair._iter_objects = lambda self: [obj]
-    report = {'category': 'watertight',
-              'stage1': {'holes_remaining': 0, 'two_manifold': True},
-              'stage2': {'ok': True}, 'defects': {'holes': []}}
-    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
-
-    def fake_repair(cli, src, out, preset, cancel_event, timeout=None, on_proc=None):
-        with open(out, 'wb') as f:
-            f.write(b'repaired')
-        return ('ok', report, '')
-
-    mod._run_repair = fake_repair
+    _stub_repair_job(mod, obj)
     mod._load_back = lambda path: False
     plugin = mod.SuturaRepair()
     plugin._open_panel()
     handle = ui.dock_panels[-1]
     plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
     assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
-    children = _work_children(d)
-    assert len(children) == 1, children
-    kept = os.listdir(os.path.join(d, 'orca_plugins', '.sutura_work', children[0]))
-    assert len(kept) == 1 and kept[0].endswith('.stl'), kept
     done = _posts(handle, 'job')[-1]
+    out_path = done['result']['output_path']
+    assert os.path.exists(out_path), out_path
     assert 'load-back failed' in done['message'], done
-    assert done['result']['output_path'].endswith('.stl'), done
+    assert _work_children(d) == [], _work_children(d)
+    assert os.path.basename(out_path) in _out_files(d), _out_files(d)
+
+
+def test_open_output_reveals_persistent_file():
+    d = tempfile.mkdtemp()
+    mod, _host, ui = _load_plugin(_Model([]), d)
+    obj = _Object([_Volume(_Mesh(*_cube()))], name='part', oid=1)
+    _stub_repair_job(mod, obj)
+    mod._load_back = lambda path: True
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+    plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    assert _wait(lambda: any(p.get('phase') == 'done' for p in _posts(handle, 'job'))), handle.posts
+    out_path = _posts(handle, 'job')[-1]['result']['output_path']
+    revealed = []
+    mod._reveal = lambda p: revealed.append(p)
+    plugin._handle_open_output('1')
+    assert revealed == [out_path], revealed
 
 
 def test_staging_cleaned_on_repair_failure():
@@ -828,6 +885,7 @@ def test_staging_cleaned_on_repair_failure():
     plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
     assert _wait(lambda: any(p.get('phase') == 'failed' for p in _posts(handle, 'job'))), handle.posts
     assert _work_children(d) == [], _work_children(d)
+    assert _out_files(d) == [], _out_files(d)
 
 
 def test_analyze_unsupported_cli_posts_error():
@@ -867,18 +925,25 @@ def test_analyze_success_cleans_staging():
     assert _work_children(d) == [], _work_children(d)
 
 
-def test_stale_staging_purged():
+def test_stale_staging_and_outputs_purged():
     d = tempfile.mkdtemp()
     mod, _host, _ui = _load_plugin(_Model([]), d)
     root = mod._work_root()
-    fresh = os.path.join(root, 'fresh')
-    old = os.path.join(root, 'old')
-    os.makedirs(fresh)
-    os.makedirs(old)
+    os.makedirs(os.path.join(root, 'fresh'))
+    os.makedirs(os.path.join(root, 'old'))
+    out = mod._out_dir()
+    os.makedirs(out)
+    fresh_out = os.path.join(out, 'fresh_sutura_1.stl')
+    old_out = os.path.join(out, 'old_sutura_1.stl')
+    for path in (fresh_out, old_out):
+        with open(path, 'wb') as f:
+            f.write(b'x')
     past = time.time() - 8 * 24 * 3600
-    os.utime(old, (past, past))
+    os.utime(os.path.join(root, 'old'), (past, past))
+    os.utime(old_out, (past, past))
     mod._purge_stale_staging()
-    assert os.listdir(root) == ['fresh'], os.listdir(root)
+    assert _work_children(d) == ['fresh'], _work_children(d)
+    assert _out_files(d) == ['fresh_sutura_1.stl'], _out_files(d)
 
 
 def test_register_capabilities_declares_cli_fs_read():

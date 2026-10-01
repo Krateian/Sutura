@@ -91,12 +91,14 @@ Notifications can be disabled with the **Notify about broken meshes** setting.
   located, repair/analyze report a clear error instead of writing outside the
   audit-allowed root. No path component the plugin creates contains `conf`,
   `config`, `secret` or `cert`, which the audit hook denies.
-- Each run writes a **unique** file
-  (`<stem>_fixed_<timestamp>_<short-uuid>.stl`); consecutive runs **never
-  overwrite** a previous result. A job's staging dir is deleted once the
-  result is loaded back or the job fails; if the automatic load-back fails the
-  repaired file is kept and its path is posted to the panel. Staging dirs
-  older than seven days are removed when the plugin loads.
+- The repaired file is written to the **persistent** output folder
+  `<data_dir>/orca_plugins/.sutura_work/out/` as
+  `<object-name>_sutura_<YYYYmmdd-HHMMSS>.stl` (a numeric suffix is added only
+  if that name already exists). It is kept after the job so OrcaSlicer can
+  still read it while the asynchronous load-back completes; the **Show file**
+  link reveals it (`open -R` on macOS, the folder via `xdg-open` on Linux).
+  Only the per-job input staging (`<uuid>/input.stl`) is deleted; output files
+  and staging dirs older than seven days are pruned when the plugin loads.
 
 ## Repair
 

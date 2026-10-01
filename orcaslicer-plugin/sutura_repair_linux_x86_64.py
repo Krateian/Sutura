@@ -41,10 +41,12 @@ become ONE STL containing all model parts, i.e. the union surface Sutura is
 asked to repair. The staging root is derived from the plugin's own install
 location (walk up from this file to the ``orca_plugins`` component and take
 its parent, i.e. OrcaSlicer's data dir) -- the host exposes no
-``data_dir()`` API. Each run stages under
-``<data_dir>/orca_plugins/.sutura_work/<uuid>/`` and writes a unique repaired
-file (``<stem>_fixed_<timestamp>_<short-uuid>.stl``); the original object is
-never modified and the result is added as a NEW object, so there is no undo.
+``data_dir()`` API. Each run stages its input under
+``<data_dir>/orca_plugins/.sutura_work/<uuid>/`` and writes the repaired file
+to the persistent ``<data_dir>/orca_plugins/.sutura_work/out/`` as
+``<object-name>_sutura_<timestamp>.stl`` (kept so OrcaSlicer can still read it
+after an asynchronous load-back; pruned after seven days). The original object
+is never modified and the result is added as a NEW object, so there is no undo.
 """
 
 import json
@@ -670,10 +672,9 @@ def _write_binary_stl(path, verts, tris):
 
 
 def _unique_output_name(stem, ext='stl'):
-    """A UNIQUE repaired-output filename (never a fixed name, so consecutive
-    runs never overwrite each other): <stem>_fixed_<timestamp>_<uuid>.<ext>."""
+    """A readable repaired-output filename: <stem>_sutura_<timestamp>.<ext>."""
     ts = time.strftime('%Y%m%d-%H%M%S')
-    return '%s_fixed_%s_%s.%s' % (stem, ts, uuid.uuid4().hex[:8], ext)
+    return '%s_sutura_%s.%s' % (stem, ts, ext)
 
 
 # The audit hook denies a path with a component containing any of these
@@ -733,6 +734,42 @@ def _staging_dir():
     return path
 
 
+def _out_dir():
+    """Persistent repaired-output dir: ``<work_root>/out``.
+
+    Unlike the per-job input staging, this survives the job so OrcaSlicer can
+    still read the repaired file after an asynchronous load-back."""
+    root = _work_root()
+    if root is None:
+        return None
+    return os.path.join(root, 'out')
+
+
+def _unique_output_path(stem):
+    """A persistent, readable, unique output path in ``_out_dir()``, or None.
+
+    ``<object-name>_sutura_<YYYYmmdd-HHMMSS>.stl``; a counter is appended only
+    when that name already exists (e.g. two repairs of the same object within
+    one second)."""
+    out_dir = _out_dir()
+    if out_dir is None:
+        return None
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError:
+        return None
+    base = _unique_output_name(_audit_safe_component(stem or 'mesh'))
+    path = os.path.join(out_dir, base)
+    if not os.path.exists(path):
+        return path
+    root, ext = os.path.splitext(base)
+    for n in range(2, 1000):
+        candidate = os.path.join(out_dir, '%s_%d%s' % (root, n, ext))
+        if not os.path.exists(candidate):
+            return candidate
+    return os.path.join(out_dir, '%s_%s%s' % (root, uuid.uuid4().hex[:6], ext))
+
+
 def _remove_path(path):
     try:
         if os.path.isdir(path) and not os.path.islink(path):
@@ -743,39 +780,30 @@ def _remove_path(path):
         pass
 
 
-def _cleanup_staging(path, keep=None):
-    """Delete a job's staging dir; when ``keep`` is set keep only that file."""
-    if not path:
-        return
-    if keep and os.path.exists(keep):
-        try:
-            for entry in os.listdir(path):
-                full = os.path.join(path, entry)
-                if os.path.abspath(full) != os.path.abspath(keep):
-                    _remove_path(full)
-        except Exception:  # noqa: BLE001
-            pass
-        return
+def _cleanup_staging(path):
+    """Delete a job's per-job input staging dir (the repaired output lives in
+    the persistent ``_out_dir()`` and is left alone)."""
     _remove_path(path)
 
 
 def _purge_stale_staging(max_age=_STALE_STAGING_SECONDS):
-    """Remove staging dirs older than ``max_age`` seconds (on plugin load)."""
-    root = _work_root()
-    if not root or not os.path.isdir(root):
-        return
+    """Remove per-job staging dirs and persistent outputs older than
+    ``max_age`` seconds (run on plugin load)."""
     now = time.time()
-    try:
-        entries = os.listdir(root)
-    except Exception:  # noqa: BLE001
-        return
-    for entry in entries:
-        full = os.path.join(root, entry)
+    for folder in (_work_root(), _out_dir()):
+        if not folder or not os.path.isdir(folder):
+            continue
         try:
-            if now - os.path.getmtime(full) > max_age:
-                _remove_path(full)
+            entries = os.listdir(folder)
         except Exception:  # noqa: BLE001
             continue
+        for entry in entries:
+            full = os.path.join(folder, entry)
+            try:
+                if now - os.path.getmtime(full) > max_age:
+                    _remove_path(full)
+            except Exception:  # noqa: BLE001
+                continue
 
 
 def _safe_call(obj, method, default=None):
@@ -1175,9 +1203,10 @@ def _load_back(out_path):
     Linux: OrcaSlicer --single-instance <path> (path-based binary, no name
     ambiguity). macOS: `open -b com.orcaslicer.OrcaSlicer <path>` -- BUNDLE-ID
     matching prefers the running process; skipped when MORE THAN ONE
-    OrcaSlicer process is running (ambiguous). Returns True when a launch was
-    attempted, False when it was skipped or failed (the caller then keeps the
-    output file). Never crashes the worker.
+    OrcaSlicer process is running (ambiguous). Returns True when the launch
+    succeeded (rc 0), False when it was skipped or failed; the repaired file
+    lives in the persistent ``_out_dir()`` either way, so the caller can post
+    a message pointing at it. Never crashes the worker.
 
     TODO(owner live test): the export is in WORLD coordinates, so OrcaSlicer
     may re-centre the imported object or, on some builds, drop it; the exact
@@ -1187,13 +1216,35 @@ def _load_back(out_path):
         if sys.platform == 'darwin':
             n = _running_orca_processes()
             if n is not None and n > 1:
+                sys.stderr.write('[sutura] load-back skipped: %d OrcaSlicer '
+                                 'processes running (ambiguous)\n' % n)
                 return False
-            subprocess.Popen(['open', '-b', 'com.orcaslicer.OrcaSlicer', out_path])
+            cmd = ['open', '-b', 'com.orcaslicer.OrcaSlicer', out_path]
         else:
-            subprocess.Popen([_ORCA_BIN, '--single-instance', out_path])
-        return True
-    except Exception:  # noqa: BLE001
+            cmd = [_ORCA_BIN, '--single-instance', out_path]
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write('[sutura] load-back error: %s\n' % exc)
         return False
+    # Run (not Popen) so the exact command and its return code are logged; the
+    # file now lives in the persistent out/ dir, so a slow reader is safe.
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    except FileNotFoundError:
+        sys.stderr.write('[sutura] load-back failed: binary not found for %s\n'
+                         % ' '.join(cmd))
+        return False
+    except subprocess.TimeoutExpired:
+        sys.stderr.write('[sutura] load-back timed out: %s\n' % ' '.join(cmd))
+        return False
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write('[sutura] load-back error: %s\n' % exc)
+        return False
+    detail = ''
+    if proc.stderr:
+        detail = ' stderr=%s' % proc.stderr.strip()[:500]
+    sys.stderr.write('[sutura] load-back: %s -> rc=%d%s\n'
+                     % (' '.join(cmd), proc.returncode, detail))
+    return proc.returncode == 0
 
 
 def _reveal(path):
@@ -1518,7 +1569,6 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         job = st['jobs'].get(oid) or {}
         start = time.time()
         dest = None
-        keep_output = None
         try:
             cli, found, _ver = _resolve_cli(self._settings())
             if not found:
@@ -1540,8 +1590,12 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             in_path = os.path.join(dest, 'input.stl')
             self._emit_job(oid, 'exporting', time.time() - start, 'Exporting mesh...')
             _export_object_stl(obj, in_path)
-            out_path = os.path.join(
-                dest, _unique_output_name(_audit_safe_component(_safe_name(obj))))
+            out_path = _unique_output_path(_safe_name(obj))
+            if out_path is None:
+                self._emit_job(oid, 'failed', time.time() - start,
+                               'Cannot create the repaired-output directory '
+                               'under the OrcaSlicer data dir')
+                return
             job['output_path'] = out_path
             self._emit_job(oid, 'repairing', time.time() - start, 'Repairing with Sutura...')
             status, report, msg = _run_repair(
@@ -1558,7 +1612,6 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                 self._emit_job(oid, 'done', time.time() - start, 'Repaired',
                                _job_result(report, out_path))
             else:
-                keep_output = out_path
                 self._emit_job(oid, 'done', time.time() - start,
                                'Repaired; automatic load-back failed, file kept at %s'
                                % out_path, _job_result(report, out_path))
@@ -1567,7 +1620,7 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         finally:
             job['running'] = False
             if dest is not None:
-                _cleanup_staging(dest, keep=keep_output)
+                _cleanup_staging(dest)
 
     def _handle_cancel(self, message):
         oid = str(message.get('id'))
@@ -1632,8 +1685,8 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         elif path:
             try:
                 orca.host.ui.message(
-                    'The repaired file is no longer on disk -- it was loaded '
-                    'into OrcaSlicer and the staging copy was cleaned up.',
+                    'The repaired file is no longer on disk -- it was pruned '
+                    'after seven days or removed manually.',
                     title='Sutura Repair', buttons='ok', icon='info')
             except Exception:  # noqa: BLE001
                 pass
