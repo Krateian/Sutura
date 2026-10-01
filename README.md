@@ -574,9 +574,9 @@ Sutura and where you should still double-check the output.
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow) and macOS installs get a native `~/Applications/Sutura.app` so the GUI launches from Spotlight (Cmd+Space → "Sutura"), plus a Finder **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) for right-click repair. Gaps: the AppImage/GUI cannot self-update in place (read-only squashfs), the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning), and macOS has no standalone uninstall script (see "Removing a macOS install" below). |
 | Auto-update | ~75% | Opt-in, backs up and rolls back on a failed self-check. The version check understands prerelease tags, so beta testers are offered the stable release once it is out. Auto-update stops at the v0.2.0 license boundary: a v0.1.x install is never silently upgraded across it (the new terms are shown first and the release must be installed manually from the releases page). Caveats: it is Linux/pip-install only (AppImage downloads a new release instead), and it talks to GitHub so it is not offline. |
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
-| OrcaSlicer plugin | ~70% — experimental | Self-contained script plugin that repairs the **currently selected model** in-memory via `orca.host` (numpy-free accessors), shelling out to the Sutura CLI and loading the result back. Verified end-to-end in a real OrcaSlicer **2.5.0-dev** (macOS); primary target is Linux, macOS is a verified bonus. Native progress dialog during repair; `request_permissions` pre-declares the CLI path's fs_read (subprocess prompts remain, an OrcaSlicer audit-API limitation). Still early-stage; requires nightly / releases newer than 2.4.2. |
+| OrcaSlicer plugin | ~70% — experimental | Self-contained script plugin for the new OrcaSlicer script-plugin API (nightly / releases newer than 2.4.2; stable 2.4.x has no plugin system). A **"Sutura" dock panel** beside the 3D view lists **every object on the plate** with a Quick/Balanced/Thorough/Extreme preset picker (Balanced default), per-object **Analyze** (read-only: holes / non-manifold / self-intersections and the top ranked repair methods) and **Repair**, "Repair selected (n)" and "Select broken", live job phases (queued → exporting → repairing → loading → done/failed/cancelled) with a Cancel button and a **Show file** link. Non-manifold objects (or objects whose mesh errors Orca repaired on import) raise **one warning notification per object per session** with a "Repair with Sutura" action. The export writes every model-part volume in **world coordinates** (mirrored parts keep outward-facing winding), skips parameter modifiers / negative volumes / support blockers, merges multi-part objects into one STL, and loads the repaired copy back as a **new object** (Undo works; outputs are kept for 7 days). `numpy` is a declared plugin dependency with a numpy-free fallback. Verified end-to-end in a real OrcaSlicer **2.5.0-dev** (macOS); primary target is Linux, macOS is a verified bonus. `request_permissions` pre-declares the CLI path's fs_read up front (subprocess prompts remain, an OrcaSlicer audit-API limitation). Experimental: stub-tested against a mock host, with no live end-to-end test in CI. |
 | Indirect predicates / exact arrangement-lite (Phase B + C1–C4) | ~50% — experimental | A Rust prototype (`--experimental-indirect-autorefine`, `rust/sutura-geom`) that splits self-intersecting geometry with exact indirect predicates instead of the float64 snap-rounding used by `--experimental-autorefine`. Phase B built the chain (predicate core, exact triangle–triangle classifier, 2D CDT with implicit points, `arrangement_lite` PyO3 binding, `repair.py` wiring). Phase C1 (0.4.0) builds every crossing from the original input planes/lines instead of chaining constructed points, and adds a rigorous interval filter in front of the exact `BigRational` predicates (results unchanged by construction, differential-tested). Measured on thingi10k_1038441 (M2): 1001-face subset 53 s → 6 s, 5000-face subset timeout → 31 s, full mesh did not finish in 30+ min → ~463 s, identical output face counts. Phase C2 removes the linear scans from the per-host constrained triangulation (walking point location, segment-corridor walk, local updates, integer exact fallback) with byte-identical output: on the same x86_64 VM the full mesh went from 830 s to 52.5 s (5000-face subset 56 s → 13 s); on the M2 the full mesh now takes 29.8 s (C1: ~463 s). Phase C3 (classification shortcuts, integer exact arithmetic, output again identical) brings the VM time to 28.1 s, and Phase C4 (direct hashing of reduced exact keys, integer implicit constructions, output identical) to 17.6 s (M2: 16.8 s after C3, 10.6 s after C4). Known limitations: disabled by default (intended for evaluation); bundled in installers and AppImage/.dmg releases, but not yet benchmarked on the full 115-mesh corpus. An external alternative, Geogram's `MeshSurfaceIntersection`, was measured and rejected (output not accepted by the manifold3d rebuild, community edition aborts on dense scans) — see `docs/geogram-spike-2026-09-24.md`. |
-| Test coverage | ~85% | Plain-script suites, each runnable as `python3 tests/<suite>.py` (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture, autorefine, join-components, fTetWild defaults, pinched vertices, deep-repair ladder, method registry (incl. the P-WELD reload-safe pass), repeated-element repair, mirror completion, thin-wall analysis/thicken, learning triage, scan closing, proxy-template repair, triage, triage profiles, external engines, fTetWild manager, engine integration, engines GUI, OrcaSlicer plugin stub, history, real-world corpus, manifold3d watertight check, shell-wrap graft (`tests/test_shell_wrap.py`), engine isolation without pymeshlab (`tests/test_engine_no_pymeshlab.py`)). CI on every push/PR runs all of them except the manual torture harness on Python 3.11 and 3.14 (the stage-2-dependent budget, stage2-3mf and real-world-corpus suites on the 3.11 leg only); the two suites that build the main window run headless since the first-run dialog is skipped on the offscreen Qt platform. The Rust core has 54 unit tests including filter-vs-exact differential tests, a randomized accelerated-vs-linear CDT query test and regression tests for the evaluated (off-by-default) Sloan and edge-point CDT variants, run in CI both plainly and with `--features cdt-check` (every accelerated triangulation query asserted against the linear reference scan), and `tests/test_sutura_geom*.py` smoke-test its Python binding. Not 100%: the GUI itself has no automated UI test beyond construction and checkbox wiring, and there is no reproducible end-to-end test against a live OrcaSlicer. |
+| Test coverage | ~85% | Plain-script suites, each runnable as `python3 tests/<suite>.py` (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture, autorefine, join-components, fTetWild defaults, pinched vertices, deep-repair ladder, method registry (incl. the P-WELD reload-safe pass), repeated-element repair, mirror completion, thin-wall analysis/thicken, learning triage, scan closing, proxy-template repair, triage, triage profiles, external engines, fTetWild manager, engine integration, engines GUI, OrcaSlicer plugin v2 stub (world-transform/winding export, multi-part union, numpy-free fallback, message protocol, lifecycle debounce, notification de-duplication), history, real-world corpus, manifold3d watertight check, shell-wrap graft (`tests/test_shell_wrap.py`), engine isolation without pymeshlab (`tests/test_engine_no_pymeshlab.py`)). CI on every push/PR runs all of them except the manual torture harness on Python 3.11 and 3.14 (the stage-2-dependent budget, stage2-3mf and real-world-corpus suites on the 3.11 leg only); the two suites that build the main window run headless since the first-run dialog is skipped on the offscreen Qt platform. The Rust core has 54 unit tests including filter-vs-exact differential tests, a randomized accelerated-vs-linear CDT query test and regression tests for the evaluated (off-by-default) Sloan and edge-point CDT variants, run in CI both plainly and with `--features cdt-check` (every accelerated triangulation query asserted against the linear reference scan), and `tests/test_sutura_geom*.py` smoke-test its Python binding. Not 100%: the GUI itself has no automated UI test beyond construction and checkbox wiring, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
 
@@ -1144,16 +1144,57 @@ installer does this automatically) or restart Dolphin.
 ### OrcaSlicer plugin (experimental)
 
 There is also an **experimental** [OrcaSlicer script plugin](orcaslicer-plugin/)
-under `orcaslicer-plugin/` that repairs the **currently selected model**
-straight from the slicer: it reads the mesh in memory through `orca.host`
-(numpy-free `vertex(i)`/`triangle(i)` accessors — the embedded Python ships no
-numpy), shells out to the installed Sutura CLI in the background under a
-native progress dialog, and loads the repaired result back into the scene.
-It has been verified end-to-end in a real OrcaSlicer **2.5.0-dev** (macOS);
-primary target is Linux, and the same file runs on macOS as a verified bonus.
-The Python plugin system it targets only exists in OrcaSlicer **nightly
-builds / releases newer than 2.4.2**. See the
-[plugin README](orcaslicer-plugin/README.md) for install steps and its
+under `orcaslicer-plugin/` for the **new OrcaSlicer script-plugin API**. It
+targets OrcaSlicer **nightly builds / releases newer than 2.4.2** — the stable
+2.4.x release has no "Plugins" menu, so the plugin will not work there.
+
+Running the plugin opens a dockable **"Sutura" panel** beside the 3D view (and
+automatically at startup unless disabled). The panel lists **every object on
+the plate** and offers a Quick / Balanced / Thorough / Extreme preset picker
+(Balanced default), per-object **Analyze** (read-only: holes, non-manifold
+regions, self-intersections and the top ranked repair methods) and **Repair**,
+a "Repair selected (n)" footer button and a "Select broken" shortcut, live job
+phases (queued → exporting → repairing → loading → done / failed / cancelled)
+with a Cancel button, and a **Show file** link for a finished job. Repair and
+Analyze always run through the installed Sutura CLI as a subprocess.
+
+Objects that OrcaSlicer repaired on import (mesh errors) or whose parts are
+non-manifold raise **one warning notification per object per session** with a
+"Repair with Sutura" action. The export writes each model-part volume of an
+object in **world coordinates** (mirrored parts keep outward-facing winding),
+skips parameter modifiers, negative volumes and support blockers, and merges a
+multi-part object into a single STL. The repaired copy is loaded back as a
+**new object**; because the export is in world coordinates OrcaSlicer may place
+it on top of the original — press **A** (Arrange) to separate it, or
+**Ctrl/Cmd+Z** to remove it. Output files are kept for seven days so OrcaSlicer
+can read them while the asynchronous load-back completes. `numpy` is a declared
+plugin dependency (installed by OrcaSlicer's bundled uv), with a numpy-free
+fallback path.
+
+Install (nightly / OrcaSlicer newer than 2.4.2):
+
+1. Install Sutura first (`./install.sh` on Linux, `install-macos.sh` on macOS)
+   so `~/.local/bin/sutura` exists.
+2. Copy the plugin into OrcaSlicer's plugin directory. Linux:
+
+   ```sh
+   mkdir -p ~/.config/OrcaSlicer/orca_plugins/SuturaRepair
+   cp sutura_repair_linux_x86_64.py ~/.config/OrcaSlicer/orca_plugins/SuturaRepair/
+   ```
+
+   macOS: use `~/Library/Application Support/OrcaSlicer/orca_plugins/` as the
+   parent. The file name is a naming artifact — the same single file runs on
+   both Linux and macOS.
+3. Enable the plugin in the OrcaSlicer **Plugins** dialog, then run it to open
+   the panel.
+
+Permissions: `register_capabilities()` pre-declares the existing Sutura CLI
+path with `request_permissions(fs_read=...)`, but the audit API has no
+declarative form for subprocess spawns, so a spawn permission prompt can still
+appear once per command target. It has been verified end-to-end in a real
+OrcaSlicer **2.5.0-dev** (macOS); primary target is Linux, and the same file
+runs on macOS as a verified bonus. See the
+[plugin README](orcaslicer-plugin/README.md) for full detail and its
 limitations.
 
 ## Mesh type-aware repair
@@ -1661,7 +1702,7 @@ In an installed or AppImage layout `sutura_engine` is a top-level package; in a 
 ### Roadmap: moving hot paths to the Rust core
 
 Future development aims to reduce Python runtime overhead by migrating performance-sensitive paths to `rust/sutura-geom`:
-- **Phase 0 (Python Hot-Path Reductions):** Removal of unconditional `trimesh` imports from the outer-shell check ships in v0.7.0; vectorization of candidate transforms in rotational symmetry detection is planned for a later release.
+- **Phase 0 (Python Hot-Path Reductions):** Removal of unconditional `trimesh` imports from the outer-shell check shipped in v0.7.0; vectorization of candidate transforms in rotational symmetry detection shipped in v0.7.2 (batched, threaded nearest-neighbour queries, identical results, ~2-3.7x faster on the sample/corpus detector).
 - **Phase 1 (Rust Topology Layer):** Implement deterministic array operations in native Rust (X-Ray reload welding, strict hole/non-manifold detection, and boundary loop defect walking), using native BVH structures for nearest-neighbor spatial queries.
 - **Phase 1c (Rust Hole Triangulation):** Liepa-style minimum-weight triangulation and loop closure in native Rust, providing a direct alternative to PyMeshLab hole closing on NumPy arrays.
 - **Phase 2 (PyMeshLab Independence):** Progressively port duplicate face/vertex removal, non-manifold repairs, and surface orientation passes to reduce external C++ runtime dependencies.

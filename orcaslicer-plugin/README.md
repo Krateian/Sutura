@@ -37,6 +37,10 @@ guaranteed-working product, and report issues (see "Feedback" below).
   `orca-slicer --single-instance <path>` (the binary name can be overridden
   with the `ORCA_BIN` environment variable).
 
+**File name.** The single file is `sutura_repair_linux_x86_64.py`. That name
+reflects the OrcaCloud/plugin naming convention, not a platform restriction —
+the same file runs on both Linux and macOS.
+
 ## The dock panel
 
 Running the plugin (Plugins dialog → Run) opens a dockable panel on the right
@@ -143,6 +147,10 @@ so a subprocess permission prompt can still appear once per command target.
 
    (macOS: `~/Library/Application Support/OrcaSlicer/orca_plugins/`.)
 3. Enable it in the OrcaSlicer Plugins dialog, then run it to open the panel.
+
+The plugin is also published to the **OrcaCloud plugin listing** (its version
+follows the Sutura release tag), so it can be installed from OrcaSlicer's
+Plugins dialog without the manual copy.
 
 ## Configuration
 

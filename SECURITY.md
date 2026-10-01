@@ -7,7 +7,7 @@ the current `main` branch and released as part of the next version.
 
 | Version | Supported |
 |---------|-----------|
-| latest (v0.1.x) | ✅ |
+| latest (v0.7.x) | ✅ |
 | older | ❌ |
 
 ## Reporting a Vulnerability

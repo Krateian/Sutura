@@ -578,9 +578,9 @@ söyler.
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar; her sürümde ayrıca imzasız bir macOS `.dmg` de yayınlanır (`Build macOS .app/.dmg` workflow'u) ve macOS kurulumları yerel bir `~/Applications/Sutura.app` alır — GUI Spotlight'tan açılır (Cmd+Space → "Sutura"), ayrıca Finder'da bir **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) sağ tıkla onarım için. Eksikler: AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur), .dmg notarize edilmemiştir (Gatekeeper "unidentified developer" uyarısı gösterir) ve macOS için ayrı bir kaldırma betiği yoktur (aşağıdaki "macOS kurulumunu kaldırma" bölümüne bakın). |
 | Otomatik güncelleme | ~%75 | Opt-in'dir; kendi kendini kontrol başarısız olursa yedeği alır ve geri döner. Sürüm kontrolü ön sürüm (prerelease) etiketlerini anlar, böylece beta kullanıcılara stabil sürüm çıktığında sunulur. Otomatik güncelleme v0.2.0 lisans sınırında durur: v0.1.x kurulumlar o sınırın ötesine asla sessizce yükseltilmez (yeni şartlar önce gösterilir, sürüm releases sayfasından elle kurulmalıdır). Uyarılar: yalnızca Linux/pip kurulumuna yöneliktir (AppImage yeni bir sürüm indirir) ve GitHub ile iletişim kurduğu için çevrimdışı değildir. |
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
-| OrcaSlicer eklentisi | ~%70 — deneysel | **Seçili modeli** `orca.host` üzerinden (numpy'siz erişimciler) bellekte okuyan, Sutura CLI'sını çağırıp sonucu sahneye geri yükleyen tek başına çalışan betik eklentisi. Gerçek bir OrcaSlicer **2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux, macOS doğrulanmış bir bonus. Onarım sırasında yerel ilerleme iletişim kutusu; `request_permissions` CLI yolunun fs_read iznini önceden beyan eder (subprocess istemleri kalır — bir OrcaSlicer denetim API kısıtı). Hâlâ erken aşamada; nightly / 2.4.2'den yeni sürümler gerektirir. |
+| OrcaSlicer eklentisi | ~%70 — deneysel | Yeni OrcaSlicer betik-eklentisi API'si için tek başına çalışan betik eklentisi (nightly / 2.4.2'den yeni sürümler; stabil 2.4.x'te eklenti sistemi yoktur). 3D görünümün yanındaki bir **"Sutura" yan paneli**, plate'teki **her nesneyi** bir Quick/Balanced/Thorough/Extreme preset seçici (varsayılan Balanced), nesne başına **Analyze** (salt-okunur: delikler / non-manifold / self-intersection'lar ve en üst sıradaki onarım yöntemleri) ve **Repair**, "Repair selected (n)" ve "Select broken", Cancel düğmeli canlı iş aşamaları (queued → exporting → repairing → loading → done/failed/cancelled) ve bir **Show file** bağlantısıyla listeler. Non-manifold nesneler (ya da Orca'nın içe aktarımda onardığı mesh hataları olan nesneler) **nesne başına oturumda bir kez** "Repair with Sutura" eylemli bir uyarı bildirimi üretir. Dışa aktarım her model-parça hacmini **dünya koordinatlarında** yazar (aynalanmış parçalar dışa bakan sarmalımı korur), parametre değiştiricilerini / negatif hacimleri / destek engelleyicilerini atlar, çok parçalı nesneleri tek bir STL'de birleştirir ve onarılan kopyayı **yeni bir nesne** olarak geri yükler (Undo çalışır; çıktılar 7 gün saklanır). `numpy` beyan edilmiş bir eklenti bağımlılığıdır; numpy'siz bir geri dönüş yolu vardır. Gerçek bir OrcaSlicer **2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux, macOS doğrulanmış bir bonus. `request_permissions` CLI yolunun fs_read iznini önceden beyan eder (subprocess istemleri kalır — bir OrcaSlicer denetim API kısıtı). Deneysel: bir taklit host'a karşı taklit-test edilir, CI'da canlı uçtan uca test yoktur. |
 | Dolaylı predikatlar / exact arrangement-lite (Faz B + C1–C4) | ~%50 — deneysel | Self-intersection geometrisini `--experimental-autorefine`'ın float64 snap-rounding'i yerine exact dolaylı predikatlarla bölen bir Rust prototipi (`--experimental-indirect-autorefine`, `rust/sutura-geom`). Faz B zinciri kurdu (predikat çekirdeği, exact üçgen–üçgen sınıflandırıcı, implicit noktalarla 2D CDT, `arrangement_lite` PyO3 bağlaması, `repair.py` bağlantısı). Faz C1 (0.4.0) her kesişim noktasını, oluşturulmuş noktaları zincirlemek yerine orijinal girdi düzlemlerinden/doğrularından kurar ve exact `BigRational` predikatlarının önüne kesin bir aralık-aritmetiği filtresi ekler (sonuçlar yapı gereği değişmez, fark testleriyle doğrulandı). thingi10k_1038441 üzerinde ölçüldü (M2): 1001 yüzlük alt küme 53 sn → 6 sn, 5000 yüzlük alt küme zaman aşımı → 31 sn, tam mesh 30+ dk'da bitmiyordu → ~463 sn; çıktı yüz sayıları birebir aynı. Faz C2, üçgen başına kısıtlı üçgenlemedeki doğrusal taramaları kaldırır (yürüyerek nokta konumlama, segment koridoru yürüyüşü, yerel güncellemeler, tamsayı tabanlı exact geri dönüş); çıktı bayt düzeyinde aynıdır: aynı x86_64 VM'de tam mesh 830 sn'den 52,5 sn'ye indi (5000 yüzlük alt küme 56 sn → 13 sn); M2'de tam mesh artık 29,8 sn (C1: ~463 sn). Faz C3 (sınıflandırma kısayolları, tamsayı tabanlı exact aritmetik, çıktı yine birebir aynı) VM süresini 28,1 sn'ye, Faz C4 (indirgenmiş exact anahtarların doğrudan hash'lenmesi, tamsayı tabanlı implicit nokta kurulumu, çıktı birebir aynı) ise 17,6 sn'ye indirir (M2: C3 sonrası 16,8 sn, C4 sonrası 10,6 sn). Bilinen sınırlamalar: varsayılan olarak kapalıdır (değerlendirme amaçlıdır); kurulumcularda ve AppImage/.dmg sürümlerinde paketlidir, ancak 115 mesh'lik corpus'ta henüz ölçülmemiştir. Harici bir alternatif olan Geogram `MeshSurfaceIntersection` ölçüldü ve reddedildi (çıktısı manifold3d yeniden kurmasınca kabul edilmiyor, topluluk sürümü yoğun taramalarda çöküyor) — bkz. `docs/geogram-spike-2026-09-24.md`. |
-| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, aynalı tamamlama, ince-duvar analizi/kalınlaştırma, öğrenen triyaj, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi taklidi, geçmiş, gerçek-dünya corpus, manifold3d su geçirmezlik kontrolü, kabuk-sarma graft (`tests/test_shell_wrap.py`), pymeshlab'sız motor yalıtımı (`tests/test_engine_no_pymeshlab.py`)). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır (stage-2'ye bağlı bütçe, stage2-3mf ve gerçek-dünya corpus süitleri yalnızca 3.11 kolunda); ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 54 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, aynalı tamamlama, ince-duvar analizi/kalınlaştırma, öğrenen triyaj, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi v2 taklidi (dünya-dönüşümü/sarmalım aktarımı, çok parçalı birleştirme, numpy'siz geri dönüş, mesaj protokolü, yaşam döngüsü debounce'u, bildirim tekilleştirmesi), geçmiş, gerçek-dünya corpus, manifold3d su geçirmezlik kontrolü, kabuk-sarma graft (`tests/test_shell_wrap.py`), pymeshlab'sız motor yalıtımı (`tests/test_engine_no_pymeshlab.py`)). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır (stage-2'ye bağlı bütçe, stage2-3mf ve gerçek-dünya corpus süitleri yalnızca 3.11 kolunda); ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 54 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
 
@@ -1148,17 +1148,62 @@ Servis menüsünü kurduktan veya kaldırdıktan sonra `kbuildsycoca6` çalışt
 
 ### OrcaSlicer eklentisi (deneysel)
 
-Ayrıca `orcaslicer-plugin/` altında, **seçili modeli** doğrudan dilimleyiciden
-onaran **deneysel** bir [OrcaSlicer betik eklentisi](orcaslicer-plugin/)
-vardır: meshi `orca.host` üzerinden bellekte okur (numpy'siz
-`vertex(i)`/`triangle(i)` erişimcileri — gömülü Python'da numpy yoktur),
-kurulu Sutura CLI'sını yerel bir ilerleme iletişim kutusu altında arka planda
-çağırır ve onarılan sonucu sahneye geri yükler. Gerçek bir OrcaSlicer
-**2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux'tur
-ve aynı dosya doğrulanmış bir bonus olarak macOS'ta da çalışır. Hedeflediği
-Python eklenti sistemi yalnızca OrcaSlicer **nightly sürümlerinde / 2.4.2'den
-yeni sürümlerinde** bulunur. Kurulum adımları ve sınırlamaları için
-[eklenti README'sine](orcaslicer-plugin/README.md) bakın.
+Ayrıca `orcaslicer-plugin/` altında, **yeni OrcaSlicer betik-eklentisi
+API'si** için **deneysel** bir [OrcaSlicer betik eklentisi](orcaslicer-plugin/)
+vardır. OrcaSlicer **nightly sürümlerini / 2.4.2'den yeni sürümleri** hedefler
+— stabil 2.4.x sürümünde "Plugins" menüsü yoktur, bu yüzden eklenti orada
+çalışmaz.
+
+Eklentiyi çalıştırmak, 3D görünümün yanında (ve devre dışı bırakılmadıkça
+başlangıçta otomatik olarak) yerleştirilebilir bir **"Sutura" paneli** açar.
+Panel, **plate'teki her nesneyi** listeler ve bir Quick / Balanced / Thorough /
+Extreme preset seçici (varsayılan Balanced), nesne başına **Analyze**
+(salt-okunur: delikler, non-manifold bölgeler, self-intersection'lar ve en üst
+sıradaki onarım yöntemleri) ve **Repair**, bir "Repair selected (n)" alt bilgi
+düğmesi ve bir "Select broken" kısayolu, Cancel düğmeli canlı iş aşamaları
+(queued → exporting → repairing → loading → done / failed / cancelled) ve
+tamamlanan bir iş için bir **Show file** bağlantısı sunar. Repair ve Analyze
+her zaman kurulu Sutura CLI'sı üzerinden ayrı bir süreç olarak çalışır.
+
+OrcaSlicer'ın içe aktarımda onardığı nesneler (mesh hataları) veya parçaları
+non-manifold olan nesneler, **nesne başına oturumda bir kez** "Repair with
+Sutura" eylemli bir uyarı bildirimi üretir. Dışa aktarım, bir nesnenin her
+model-parça hacmini **dünya koordinatlarında** yazar (aynalanmış parçalar dışa
+bakan sarmalımı korur), parametre değiştiricilerini, negatif hacimleri ve
+destek engelleyicilerini atlar ve çok parçalı bir nesneyi tek bir STL'de
+birleştirir. Onarılan kopya **yeni bir nesne** olarak geri yüklenir; dışa
+aktarım dünya koordinatlarında olduğundan OrcaSlicer onu orijinalin üzerine
+yerleştirebilir — ayırmak için **A** (Arrange), kaldırmak için **Ctrl/Cmd+Z**
+tuşlarına basın. Çıktı dosyaları, eşzamansız geri yükleme tamamlanırken
+OrcaSlicer okuyabilsin diye yedi gün saklanır. `numpy` beyan edilmiş bir eklenti
+bağımlılığıdır (OrcaSlicer'ın paketli uv'si kurar); numpy'siz bir geri dönüş
+yolu da vardır.
+
+Kurulum (nightly / OrcaSlicer 2.4.2'den yeni):
+
+1. Önce Sutura'yı kurun (Linux'ta `./install.sh`, macOS'ta `install-macos.sh`)
+   böylece `~/.local/bin/sutura` var olur.
+2. Eklentiyi OrcaSlicer'ın eklenti dizinine kopyalayın. Linux:
+
+   ```sh
+   mkdir -p ~/.config/OrcaSlicer/orca_plugins/SuturaRepair
+   cp sutura_repair_linux_x86_64.py ~/.config/OrcaSlicer/orca_plugins/SuturaRepair/
+   ```
+
+   macOS: üst dizin olarak `~/Library/Application Support/OrcaSlicer/orca_plugins/`
+   kullanın. Dosya adı bir adlandırma artığıdır — aynı tek dosya hem Linux'ta
+   hem macOS'ta çalışır.
+3. Eklentiyi OrcaSlicer **Plugins** diyaloğunda etkinleştirin, ardından paneli
+   açmak için çalıştırın.
+
+İzinler: `register_capabilities()` var olan Sutura CLI yolunu
+`request_permissions(fs_read=...)` ile önceden beyan eder, ancak denetim
+API'sinin subprocess başlatmaları için bildirimsel bir biçimi yoktur, bu yüzden
+komut hedefi başına bir kez spawn izin istemi yine görünebilir. Gerçek bir
+OrcaSlicer **2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef
+Linux'tur ve aynı dosya doğrulanmış bir bonus olarak macOS'ta da çalışır.
+Tam ayrıntı ve sınırlamalar için [eklenti README'sine](orcaslicer-plugin/README.md)
+bakın.
 
 ## Mesh türüne duyarlı onarım
 
@@ -1665,7 +1710,7 @@ Kurulu veya AppImage düzeninde `sutura_engine` üst düzey bir pakettir; kaynak
 ### Yol haritası: kritik yolları Rust çekirdeğine taşıma
 
 Gelecekteki geliştirme süreci, performans açısından kritik yolları `rust/sutura-geom` bileşenine taşıyarak Python çalışma zamanı yükünü azaltmayı hedeflemektedir:
-- **Aşama 0 (Python İçi İyileştirmeler):** Dış kabuk kontrolündeki gereksiz `trimesh` içe aktarımının kaldırılması v0.7.0 ile sunulmuştur; dönel simetri tespitindeki aday dönüşümlerin vektörize edilmesi ise sonraki bir sürüm için planlanmaktadır.
+- **Aşama 0 (Python İçi İyileştirmeler):** Dış kabuk kontrolündeki gereksiz `trimesh` içe aktarımının kaldırılması v0.7.0 ile sunulmuştur; dönel simetri tespitindeki aday dönüşümlerin vektörize edilmesi ise v0.7.2 ile sunulmuştur (toplu, iş parçacıklı en-yakın-komşu sorguları, birebir aynı sonuçlar, örnek/korpus detektöründe ~2-3,7 kat daha hızlı).
 - **Aşama 1 (Rust Topoloji Katmanı):** Belirleyici dizi işlemlerinin (X-Ray yeniden yükleme kaynaştırması, kesin delik/manifold-olmayan kenar tespiti ve sınır döngüsü taraması) yerel Rust'a aktarılması ve en yakın komşu sorguları için yerel BVH yapılarının kullanılması.
 - **Aşama 1c (Rust Delik Üçgenleme):** NumPy dizileri üzerinde PyMeshLab delik kapatma adımına doğrudan alternatif olarak Liepa tarzı minimum ağırlıklı üçgenleme ve döngü kapatmanın Rust ile uygulanması.
 - **Aşama 2 (PyMeshLab Bağımsızlığı):** Yinelenen yüzey/nokta temizliği, manifold-olmayan bölge onarımı ve yüzey yönlendirme adımlarının kademeli olarak Rust'a taşınarak harici C++ çalışma zamanı bağımlılığının azaltılması.
