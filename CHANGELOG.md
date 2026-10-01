@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here.
 
+## [0.7.2] - 2026-10-02
+
+### Added
+
+- **OrcaSlicer plugin v2** for the new OrcaSlicer script-plugin API (OrcaSlicer nightly; stable
+  2.4.x has no plugin system). A "Sutura" dock panel on Prepare/Preview with preset picker
+  (Quick / Balanced / Thorough / Extreme), per-object manifold status, Analyze / Repair,
+  Repair selected and Select broken. Non-manifold objects raise an Orca notification with a
+  "Repair with Sutura" link. Exports use the world transform (mirrored objects keep correct
+  winding), multi-part objects are merged and modifiers skipped. The repaired copy is loaded
+  back as a new object (Undo works); outputs are kept for 7 days so Orca can read them.
+
+### Changed
+
+- **Rotational symmetry detection is 2-3.7x faster** (batched nearest-neighbour queries).
+  Results are identical on the real-world and patterned sample sets.
+
+### Known limitations
+
+- OrcaSlicer re-centres imported meshes, so the repaired copy lands on top of the original;
+  use Arrange (A) or Undo.
+
 ## [0.7.1] - 2026-10-01
 
 ### Added
