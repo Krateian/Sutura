@@ -681,6 +681,17 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
         np.array([0.0, 0.0, 1.0]),
     ] + [eigvecs[:, i] for i in range(3)]
 
+    # The per-candidate surface-distance lookups dominate the runtime (a few
+    # hundred exact cKDTree queries of the sampled query points). Build every
+    # candidate rotation one at a time with the original scalar expression (so
+    # the resulting coordinates and distances are bit-identical to the scalar
+    # loop) but defer the lookups into TWO batched, threaded KD-tree queries:
+    # one for the first-order check of every candidate, one for the multi-step
+    # verification of the candidates that passed the first gate. The scalar
+    # reductions and the best-match selection then run unchanged in the
+    # original axis-major / order-minor iteration order.
+    q0 = query_pts - c
+    candidates = []
     for ax in candidate_axes:
         norm_ax = np.linalg.norm(ax)
         if norm_ax < 1e-6:
@@ -698,47 +709,75 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
         for n in candidate_orders:
             th = 2.0 * np.pi / n
             R = trimesh.transformations.rotation_matrix(th, ax, point=c)[:3, :3]
-            rot = (query_pts - c) @ R.T + c
-            dists, _ = tree.query(rot)
-            frac = float((dists < tol).mean())
-            mean_d = float(dists.mean())
+            rot = q0 @ R.T + c
             move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
-            rel_dev = mean_d / (move_d + 1e-6)
+            candidates.append((ax, u, v_vec, n, th, rot, move_d))
 
-            if frac >= 0.70 and (rel_dev < 0.30 or (n >= 40 and rel_dev < 0.65)):
-                steps_to_check = [2]
-                if n >= 4:
-                    steps_to_check.append(n // 2)
-                step_fracs = []
-                for s_k in steps_to_check:
-                    R_k = trimesh.transformations.rotation_matrix(s_k * th, ax, point=c)[:3, :3]
-                    rot_k = (query_pts - c) @ R_k.T + c
-                    d_k, _ = tree.query(rot_k)
-                    step_fracs.append(float((d_k < tol).mean()))
+    if candidates:
+        rot_stack = np.stack([cand[5] for cand in candidates])
+        all_dists = tree.query(rot_stack.reshape(-1, 3), workers=-1)[0].reshape(len(candidates), -1)
+    else:
+        all_dists = np.zeros((0, len(query_pts)))
 
-                if all(sf >= 0.55 for sf in step_fracs):
-                    avg_frac = (frac + sum(step_fracs)) / (1.0 + len(step_fracs))
-                    score = float(np.clip(avg_frac * (1.0 - min(mean_d / tol, 1.0) * 0.4), 0.0, 1.0))
-                    is_better = score > best_score
-                    if best_match is not None and not is_better:
-                        prev_n = best_match['order']
-                        if n > prev_n and n % prev_n == 0 and (n // prev_n) <= 4 and score >= best_score * 0.90:
-                            is_better = True
-                    if is_better:
-                        best_score = score
-                        best_match = {
-                            'pattern_type': 'rotational',
-                            'order': n,
-                            'center': c,
-                            'axis': ax,
-                            'u_axis': u,
-                            'v_axis': v_vec,
-                            'step_angle': th,
-                            'score': score,
-                            'match_fraction': frac,
-                            'mean_distance': mean_d,
-                            'method': 'segmentation_free',
-                        }
+    first = []
+    step_jobs = []
+    for i, (ax, u, v_vec, n, th, rot, move_d) in enumerate(candidates):
+        dists = all_dists[i]
+        frac = float((dists < tol).mean())
+        mean_d = float(dists.mean())
+        rel_dev = mean_d / (move_d + 1e-6)
+        first.append((frac, mean_d, rel_dev))
+
+        if frac >= 0.70 and (rel_dev < 0.30 or (n >= 40 and rel_dev < 0.65)):
+            steps_to_check = [2]
+            if n >= 4:
+                steps_to_check.append(n // 2)
+            step_rots = []
+            for s_k in steps_to_check:
+                R_k = trimesh.transformations.rotation_matrix(s_k * th, ax, point=c)[:3, :3]
+                step_rots.append(q0 @ R_k.T + c)
+            step_jobs.append((i, step_rots))
+
+    step_frac_by_i = {}
+    if step_jobs:
+        flat_steps = []
+        for _i, step_rots in step_jobs:
+            flat_steps.extend(step_rots)
+        step_dists = tree.query(np.stack(flat_steps).reshape(-1, 3), workers=-1)[0].reshape(len(flat_steps), -1)
+        k = 0
+        for _i, step_rots in step_jobs:
+            step_frac_by_i[_i] = [float((step_dists[k + j] < tol).mean()) for j in range(len(step_rots))]
+            k += len(step_rots)
+
+    for i, (ax, u, v_vec, n, th, rot, move_d) in enumerate(candidates):
+        step_fracs = step_frac_by_i.get(i)
+        if step_fracs is None:
+            continue
+        frac, mean_d, _rel_dev = first[i]
+
+        if all(sf >= 0.55 for sf in step_fracs):
+            avg_frac = (frac + sum(step_fracs)) / (1.0 + len(step_fracs))
+            score = float(np.clip(avg_frac * (1.0 - min(mean_d / tol, 1.0) * 0.4), 0.0, 1.0))
+            is_better = score > best_score
+            if best_match is not None and not is_better:
+                prev_n = best_match['order']
+                if n > prev_n and n % prev_n == 0 and (n // prev_n) <= 4 and score >= best_score * 0.90:
+                    is_better = True
+            if is_better:
+                best_score = score
+                best_match = {
+                    'pattern_type': 'rotational',
+                    'order': n,
+                    'center': c,
+                    'axis': ax,
+                    'u_axis': u,
+                    'v_axis': v_vec,
+                    'step_angle': th,
+                    'score': score,
+                    'match_fraction': frac,
+                    'mean_distance': mean_d,
+                    'method': 'segmentation_free',
+                }
 
     if best_match is not None and best_score >= 0.60:
         return best_score, best_match
