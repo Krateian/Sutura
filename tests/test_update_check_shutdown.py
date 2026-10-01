@@ -13,9 +13,10 @@ main() returned, aborting the process with
 HOME and a monkeypatched updater.check_for_update that sleeps 5 s, closes the
 window after 200 ms and asserts a clean exit.
 
-The subprocess pins QT_PLUGIN_PATH to PySide6's own Qt plugin directory,
-derived at runtime, the way the installed macOS launcher does: without it the
-offscreen platform plugin can resolve to an unrelated Qt stack.
+The subprocess pins QT_PLUGIN_PATH to PySide6's own Qt plugin directory (via
+the shared tests/_qt_test_env helper): without it a macOS conda install can
+resolve the offscreen platform plugin to the unrelated Qt5 stack from
+qt-main.
 
 Needs PySide6. Usage:
     QT_QPA_PLATFORM=offscreen ~/.local/share/sutura/venv/bin/python \
@@ -31,12 +32,12 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
-
-def _qt_plugins_path():
-    """PySide6's own Qt plugin directory, derived at runtime (no hardcoded
-    path). The installed macOS launcher exports QT_PLUGIN_PATH this way."""
-    from PySide6.QtCore import QLibraryInfo
-    return QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)
+# PySide6's own Qt6 plugins: a macOS conda install also carries qt-main/Qt5,
+# whose bin/qt.conf otherwise hijacks the platform-plugin lookup. Test-side
+# helper only (the sutura-gui launcher resolves it via conda run).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _qt_test_env import ensure_qt_plugins, qt_plugins_path  # noqa: E402
+ensure_qt_plugins()
 
 
 CHILD = r'''
@@ -91,7 +92,7 @@ def test_close_during_update_check_exits_cleanly():
         env['HOME'] = home
         env['QT_QPA_PLATFORM'] = 'offscreen'
         env.pop('APPIMAGE', None)   # AppImage skips the background check
-        env['QT_PLUGIN_PATH'] = _qt_plugins_path()
+        env['QT_PLUGIN_PATH'] = qt_plugins_path()
         r = subprocess.run(
             [sys.executable, '-c', CHILD.format(sutura=SUTURA)],
             capture_output=True, text=True, timeout=60, env=env)

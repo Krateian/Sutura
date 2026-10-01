@@ -19,6 +19,14 @@ for p in (SUTURA,):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# PySide6's own Qt6 plugins: a macOS conda install also carries qt-main/Qt5,
+# whose bin/qt.conf otherwise hijacks the platform-plugin lookup. Test-side
+# helper only (the sutura-gui launcher resolves it via conda run). Setting it
+# here also covers the GUI subprocess spawned below (it inherits os.environ).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _qt_test_env import ensure_qt_plugins  # noqa: E402
+ensure_qt_plugins()
+
 import numpy as np  # noqa: E402
 
 import repair  # noqa: E402

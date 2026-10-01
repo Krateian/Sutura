@@ -25,6 +25,13 @@ SUTURA = os.path.join(REPO, 'sutura')
 if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
+# PySide6's own Qt6 plugins: a macOS conda install also carries qt-main/Qt5,
+# whose bin/qt.conf otherwise hijacks the platform-plugin lookup. Test-side
+# helper only (the sutura-gui launcher resolves it via conda run).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _qt_test_env import ensure_qt_plugins  # noqa: E402
+ensure_qt_plugins()
+
 _TMP = tempfile.mkdtemp(prefix='sutura-gui-method-')
 os.environ['HOME'] = _TMP
 os.environ['XDG_CONFIG_HOME'] = os.path.join(_TMP, 'config')
