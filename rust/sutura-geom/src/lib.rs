@@ -743,6 +743,10 @@ fn dressing_coat<'py>(
     info.set_item("peeled_cells", m.info.peeled_cells)?;
     info.set_item("snapped_verts", m.info.snapped_verts)?;
     info.set_item("peel_welded", m.info.peel_welded)?;
+    info.set_item("peel_si_before", m.info.peel_si_before)?;
+    info.set_item("peel_si_after", m.info.peel_si_after)?;
+    info.set_item("peel_si_iters", m.info.peel_si_iters)?;
+    info.set_item("peel_si_reverted", m.info.peel_si_reverted)?;
     Ok((verts_np, tris_np, info))
 }
 

@@ -43,6 +43,14 @@ const PRESCREEN_MARGIN: f64 = 0.15;
 const PEEL_SNAP_VOXEL_FRAC: f64 = 0.75;
 const PEEL_HEALTHY_FRAC: f32 = 0.1;
 
+/// Snap guard: after snapping, revert the snapped vertices of every exact
+/// self-intersecting face (plus its 1-ring) to their pre-snap position and
+/// re-scan, at most this many revert rounds; a final revert of what remains
+/// follows.  Snapping a healthy vertex onto the input can fold a face across a
+/// still-thick neighbour, and this repairs those folds without discarding the
+/// whole snap.
+const PEEL_SI_MAX_ITERS: usize = 3;
+
 /// Bit index of the center cell in the 3x3x3 `(di+1) + 3*(dj+1) + 9*(dk+1)`
 /// neighbourhood encoding used by [`simple_point`].
 const CENTER_BIT: u32 = 13;
@@ -118,6 +126,14 @@ pub struct DressingInfo {
     /// Whether the post-snap weld was kept (it is rejected when merging the
     /// snapped vertices would break two-manifoldness).
     pub peel_welded: bool,
+    /// SI-guard bookkeeping: the exact self-intersecting face count before and
+    /// after the snap guard (`-1` when the exact scan was skipped), how many
+    /// guard rounds ran, and how many snapped vertices were reverted to their
+    /// pre-snap positions.
+    pub peel_si_before: i64,
+    pub peel_si_after: i64,
+    pub peel_si_iters: usize,
+    pub peel_si_reverted: usize,
 }
 
 /// Extracted coat mesh plus its report.
@@ -532,6 +548,10 @@ pub fn dressing_coat(
             peeled_cells: 0,
             snapped_verts: 0,
             peel_welded: false,
+            peel_si_before: 0,
+            peel_si_after: 0,
+            peel_si_iters: 0,
+            peel_si_reverted: 0,
         },
     };
     if verts.is_empty() || tris.is_empty() {
@@ -718,6 +738,10 @@ pub fn dressing_coat(
     let mut peeled_cells = 0usize;
     let mut snapped_verts = 0usize;
     let mut peel_welded = false;
+    let mut peel_si_before = 0i64;
+    let mut peel_si_after = 0i64;
+    let mut peel_si_iters = 0usize;
+    let mut peel_si_reverted = 0usize;
     if params.peel {
         let mut s_dense = vec![0f32; n];
         s_dense.par_iter_mut().enumerate().for_each(|(idx, sv)| {
@@ -737,6 +761,7 @@ pub fn dressing_coat(
     let dc = marching_tets_mesh(&field, dims, origin, voxel);
     let (mut out_verts, mut out_tris) = weld_and_clean(&dc.verts, &dc.tris, voxel);
     if params.peel {
+        let orig = out_verts.clone();
         snapped_verts = snap_peeled_vertices(
             &mut out_verts,
             &bvh,
@@ -747,16 +772,45 @@ pub fn dressing_coat(
             r_max32,
             dims,
         );
+        // Snapping can fold a face across a still-thick neighbour; revert the
+        // snapped vertices of each exact self-intersection (and its 1-ring) to
+        // the marching position and re-scan.  Only the snap is undone, so
+        // topology and the printed face count are unchanged.
+        if snapped_verts > 0 {
+            let (rev, before, after, iters, _skipped) =
+                si_guard_unsnap(&mut out_verts, &orig, &out_tris);
+            peel_si_reverted = rev;
+            peel_si_before = before;
+            peel_si_after = after;
+            peel_si_iters = iters;
+        }
         // Snapping healthy vertices onto the input can map several voxel-boundary
         // vertices onto the same point (cube corners/edges); welding those would
         // create non-manifold edges.  Keep the welded, merged mesh only when it
-        // stays two-manifold, otherwise keep the un-merged snap (topology is
-        // unchanged by vertex motion alone).
+        // stays two-manifold AND does not (re)introduce a self-intersection,
+        // otherwise keep the un-merged snap (topology is unchanged by vertex
+        // motion alone).
         let (wv, mut wt) = weld_and_clean(&out_verts, &out_tris, voxel);
         // `mesh_is_manifold` is orientation-sensitive, so establish a consistent
         // orientation on the candidate before judging it.
         orient_consistently(&mut wt);
-        if wt.len() <= out_tris.len() && mesh_is_manifold(&wv, &wt) {
+        let weld_ok = wt.len() <= out_tris.len() && mesh_is_manifold(&wv, &wt);
+        let weld_si_free = if weld_ok {
+            let wt_usize: Vec<[usize; 3]> = wt
+                .iter()
+                .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+                .collect();
+            let (_, c, s) = crate::self_intersections_core(&wv, &wt_usize);
+            if s {
+                false
+            } else {
+                peel_si_after = c;
+                c == 0
+            }
+        } else {
+            false
+        };
+        if weld_ok && weld_si_free {
             out_verts = wv;
             out_tris = wt;
             peel_welded = true;
@@ -806,6 +860,10 @@ pub fn dressing_coat(
         peeled_cells,
         snapped_verts,
         peel_welded,
+        peel_si_before,
+        peel_si_after,
+        peel_si_iters,
+        peel_si_reverted,
     };
     DressingMesh {
         verts: out_verts,
@@ -1042,6 +1100,96 @@ fn snap_peeled_vertices(
         }
     }
     moved
+}
+
+/// Revert every vertex of a self-intersecting face, and of any face sharing a
+/// vertex with it (one 1-ring pass), to its pre-snap position.  Returns the
+/// number of vertices actually moved back.
+fn revert_si_offenders(
+    verts: &mut [[f64; 3]],
+    orig: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    mask: &[bool],
+) -> usize {
+    let nv = verts.len();
+    let mut hot = vec![false; nv];
+    for (fi, &m) in mask.iter().enumerate() {
+        if m {
+            for &vi in tris[fi].iter() {
+                hot[vi] = true;
+            }
+        }
+    }
+    // Close under the 1-ring: a face touching a hot vertex makes its other
+    // vertices hot too, so the fold cannot just reappear on a neighbour.
+    let mut hot2 = hot.clone();
+    for t in tris {
+        if hot[t[0]] || hot[t[1]] || hot[t[2]] {
+            hot2[t[0]] = true;
+            hot2[t[1]] = true;
+            hot2[t[2]] = true;
+        }
+    }
+    let mut reverted = 0usize;
+    for i in 0..nv {
+        if hot2[i] && verts[i] != orig[i] {
+            verts[i] = orig[i];
+            reverted += 1;
+        }
+    }
+    reverted
+}
+
+/// Snap guard: re-scan the snapped mesh for exact self-intersections and undo
+/// the snap on the offending vertices, iterating at most
+/// [`PEEL_SI_MAX_ITERS`] times, then reverting whatever remains once more.
+///
+/// Returns `(reverted, count_before, count_after, iterations, skipped)`.
+/// `count_after` is `-1` when the final exact scan was skipped.
+fn si_guard_unsnap(
+    verts: &mut [[f64; 3]],
+    orig: &[[f64; 3]],
+    tris: &[[u32; 3]],
+) -> (usize, i64, i64, usize, bool) {
+    let tris_usize: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    let (mut mask, count0, skipped) = crate::self_intersections_core(verts, &tris_usize);
+    if skipped {
+        return (0, count0, count0, 0, true);
+    }
+    let count_before = count0;
+    let mut count = count0;
+    let mut reverted = 0usize;
+    let mut iters = 0usize;
+    for _ in 0..PEEL_SI_MAX_ITERS {
+        if count == 0 {
+            break;
+        }
+        let rev = revert_si_offenders(verts, orig, &tris_usize, &mask);
+        reverted += rev;
+        iters += 1;
+        if rev == 0 {
+            // Nothing snapped is involved: the crossing is not a snap artefact.
+            break;
+        }
+        let (m, c, s) = crate::self_intersections_core(verts, &tris_usize);
+        if s {
+            return (reverted, count_before, -1, iters, true);
+        }
+        mask = m;
+        count = c;
+    }
+    if count != 0 {
+        // Terminal fallback: revert all remaining offenders (and their 1-ring)
+        // once and take the resulting count as final.
+        reverted += revert_si_offenders(verts, orig, &tris_usize, &mask);
+        iters += 1;
+        let (_, c, s) = crate::self_intersections_core(verts, &tris_usize);
+        count = if s { -1 } else { c };
+    }
+    (reverted, count_before, count, iters, false)
 }
 
 #[cfg(test)]
@@ -1398,6 +1546,8 @@ mod tests {
         assert!(m.info.manifold, "peeled coat should stay two-manifold");
         // The peel reaches the clean faces, so some vertices snap onto the cube.
         assert!(m.info.snapped_verts > 0, "healthy faces should snap to input");
+        // The snap guard leaves the snapped mesh free of exact crossings.
+        assert_eq!(m.info.peel_si_after, 0, "guard must leave no self-intersections");
 
         // Uniform coat (no bubble) peels down to the input solid: no snapping
         // (amp = 0) is needed and the result stays manifold.
@@ -1405,5 +1555,42 @@ mod tests {
         uniform.r_max = Some(0.5);
         let u = dressing_coat(&v, &f, &[], &[], &uniform);
         assert!(u.info.peeled_cells > 0 && u.info.manifold);
+    }
+
+    #[test]
+    fn si_guard_reverts_a_snapped_fold() {
+        // Triangle A lies in z=0; triangle B starts well above it (no crossing)
+        // and a "snap" drops its lower edge through A's interior so the two
+        // triangles meet in a proper interior segment.  The guard must put B
+        // back.
+        let orig = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.3, 0.3, 2.0],
+            [0.5, 0.3, 2.0],
+            [0.4, 0.3, 4.0],
+        ];
+        let tris = vec![[0u32, 1, 2], [3, 4, 5]];
+        let mut verts = orig.clone();
+        // Undo the +2 z offset on B: it now cuts A in the segment
+        // (0.35,0.3,0)-(0.45,0.3,0), strictly inside A.
+        verts[3] = [0.3, 0.3, -1.0];
+        verts[4] = [0.5, 0.3, -1.0];
+        verts[5] = [0.4, 0.3, 1.0];
+        let (reverted, before, after, iters, skipped) =
+            si_guard_unsnap(&mut verts, &orig, &tris);
+        assert!(!skipped);
+        assert!(before > 0, "the snapped mesh should self-intersect");
+        assert_eq!(after, 0, "guard should remove every crossing");
+        assert!(reverted >= 3, "the moved triangle should be reverted");
+        assert!(iters >= 1);
+        assert_eq!(verts, orig, "every reverted vertex is back at its origin");
+
+        // Clean input: the guard is a no-op and reports zero.
+        let mut clean = orig.clone();
+        let (rev0, before0, after0, iters0, _) =
+            si_guard_unsnap(&mut clean, &orig, &tris);
+        assert_eq!((rev0, before0, after0, iters0), (0, 0, 0, 0));
     }
 }
