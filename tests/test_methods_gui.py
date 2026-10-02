@@ -405,6 +405,60 @@ def main():
         assert flag not in captured['args'], (flag, captured['args'])
     print('ok  RepairWorker Dressing defect-set / scale overrides')
 
+    # --dressing-force-adopt implies --experimental-dressing (the flag skips
+    # Dressing's shape gate but only means anything with Dressing enabled)
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing_force_adopt=True)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    fargs = captured['args']
+    assert '--dressing-force-adopt' in fargs, fargs
+    assert '--experimental-dressing' in fargs, fargs
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b])
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--dressing-force-adopt' not in captured['args'], captured['args']
+    assert '--experimental-dressing' not in captured['args'], captured['args']
+    print('ok  RepairWorker force-adopt implies experimental dressing')
+
+    # The force-adopt checkbox maps to MainWindow._dressing_force_adopt and is
+    # registered in the options defaults (options-window counter).
+    w.chk_dressing_force_adopt.setChecked(True)
+    assert w._dressing_force_adopt is True
+    w.chk_dressing_force_adopt.setChecked(False)
+    assert w._dressing_force_adopt is False
+    assert (w.chk_dressing_force_adopt, False) in w._options_defaults
+    print('ok  Dressing force-adopt checkbox + defaults')
+
+    # The post-batch "Try Dressing" button appears only when a finished result
+    # suggested Dressing, and clicking it force-reruns exactly those files.
+    assert w.btn_try_dressing.isHidden()
+    w._suggestion_by_path = {a: [{'method': 'dressing', 'force': True}],
+                             b: [{'method': 'other'}]}
+    w._refresh_dressing_suggestion()
+    assert not w.btn_try_dressing.isHidden()
+    assert w._dressing_suggestion_files() == [a], w._dressing_suggestion_files()
+    saved_worker = gui.RepairWorker
+    gui.RepairWorker = _FakeWorker
+    try:
+        w._on_try_dressing()
+    finally:
+        gui.RepairWorker = saved_worker
+    assert w.chk_dressing_force_adopt.isChecked(), 'force checkbox not set'
+    assert w._dressing_force_adopt is True
+    assert _FakeWorker.captured.get('dressing_force_adopt') is True, \
+        _FakeWorker.captured
+    assert _FakeWorker.captured.get('force') is True, _FakeWorker.captured
+    assert w.btn_try_dressing.isHidden()
+    print('ok  Try Dressing button + force re-run')
+
     # MainWindow maps the tag lists onto RepairWorker kwargs
     saved_worker = gui.RepairWorker
     gui.RepairWorker = _FakeWorker

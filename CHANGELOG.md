@@ -6,6 +6,25 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Dressing opt-in UX: non-watertight suggestions + `--dressing-force-adopt`.**
+  When a plain Auto repair still leaves the geometry open, non-manifold or
+  self-intersecting, the report now carries `suggestions` (a list of
+  `{'method': 'dressing', 'flag', 'force', 'reason', 'warning'}`), separate from
+  the defect `issues`, so the category and the batch issue counts are unchanged.
+  The CLI `--human` report prints a marked hint (`⚠ Not watertight…`): the plain
+  `--experimental-dressing` opt-in when Dressing never ran, or
+  `--dressing-force-adopt` when Dressing ran and the quality gate rejected its
+  coat (with the failed volume / normal numbers in parentheses). The new
+  `--dressing-force-adopt` flag (implies `--experimental-dressing`) bypasses the
+  shape-preservation gates (volume, component count, healthy-surface normal
+  angle, coat fidelity) while STILL requiring a strict-watertight,
+  self-intersection-free candidate; the record's `forced` field marks when the
+  shape gates were bypassed, and the GUI exposes the same flag as a batch-wide
+  Options → Experimental checkbox. The main window shows a non-blocking
+  "⚠ Try Dressing" button after a batch in which any result offered the
+  suggestion; clicking it re-runs exactly those files with the force flag and
+  sets the same checkbox, so the choice is explicit and visible.
+
 - **Self-intersection policy (`--si-mode {report,repair,off}`, `SUTURA_SI_MODE`,
   GUI Options → Repair combo).** `report` (the default) keeps measuring and
   reporting the residual self-intersection count but no longer lets it escalate

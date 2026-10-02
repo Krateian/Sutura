@@ -560,6 +560,112 @@ def test_dressing_gate_rejects_volume_parts_normal():
         dressing.dressing_coat = orig
 
 
+def test_dressing_force_adopt_bypasses_shape_gates():
+    """force_adopt adopts a shape-gate-rejected coat, but still refuses a
+    candidate with holes / non-manifold edges."""
+    if ml is None:
+        print('    (pymeshlab unavailable: force-adopt test skipped)')
+        return
+    import repair
+
+    v = np.asarray(TET_V, float)
+    t = np.asarray(TET_T, np.int64)
+
+    def fake_bad(_v, _t, **kw):
+        rec = {'engine': 'numpy', 'fidelity_ok': True, 'si_exact_unknown': False,
+               'si_after': 0, 'si_before': 0, 'voxel': 0.5, 'faces_coat': len(t),
+               'decimated': False, 'holes_after': 0, 'nm_after': 0, 'ran': True,
+               'warnings': [], 'seconds': 0.1, 'volume_after': 1e9,
+               'components_after': 99, 'normal_angle_p95': 80.0}
+        return np.asarray(v, float), t, rec
+
+    def fake_holes(_v, _t, **kw):
+        rec = {'engine': 'numpy', 'fidelity_ok': True, 'si_exact_unknown': False,
+               'si_after': 0, 'si_before': 0, 'voxel': 0.5, 'faces_coat': 12,
+               'decimated': False, 'holes_after': 0, 'nm_after': 0, 'ran': True,
+               'warnings': [], 'seconds': 0.1}
+        return (np.asarray(CUBE_V, float), np.asarray(CUBE_T[:-1], np.int64),
+                rec)
+
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
+    after = ms.apply_filter('get_topological_measures')
+
+    orig = dressing.dressing_coat
+    try:
+        dressing.dressing_coat = fake_bad
+        # Without force the shape gates reject it.
+        stats = {}
+        repair.dressing_tier(ml, ms, after, stats, v, t, '/tmp',
+                             dressing=True, force_adopt=False)
+        rec = stats['dressing']
+        assert rec['adopted'] is False and rec['shape_ok'] is False, rec
+        assert rec.get('forced') is False, rec
+        # With force the same candidate is adopted and marked forced.
+        stats = {}
+        repair.dressing_tier(ml, ml.MeshSet(), after, stats, v, t, '/tmp',
+                             dressing=True, force_adopt=True)
+        rec = stats['dressing']
+        assert rec['adopted'] is True, rec
+        assert rec['forced'] is True and rec['shape_ok'] is False, rec
+        assert 'forced' in (rec['reason'] or ''), rec
+        # force never bypasses the strict watertight requirement.
+        dressing.dressing_coat = fake_holes
+        stats = {}
+        repair.dressing_tier(ml, ml.MeshSet(), after, stats, v, t, '/tmp',
+                             dressing=True, force_adopt=True)
+        rec = stats['dressing']
+        assert rec['adopted'] is False, rec
+    finally:
+        dressing.dressing_coat = orig
+
+
+def test_dressing_suggestions_payload():
+    """The CLI suggestion payload points at the opt-in or the force flag."""
+    import repair
+
+    # Not watertight, Dressing never ran -> plain opt-in suggestion.
+    sug = repair._dressing_suggestions({'stage1': {'two_manifold': False}})
+    assert len(sug) == 1 and sug[0]['method'] == 'dressing', sug
+    assert sug[0]['force'] is False, sug
+    assert sug[0]['flag'] == repair.DRESSING_SUGGEST_FLAG, sug
+    assert sug[0]['warning'] == 'may_deform', sug
+    txt = repair._dressing_suggestion_text(sug[0])
+    assert '--experimental-dressing' in txt and 'deform' in txt, txt
+
+    # Watertight -> no suggestion.
+    wt = {'stage1': {'two_manifold': True, 'holes_remaining': 0,
+                     'non_manifold_edges_remaining': 0}}
+    assert repair._dressing_suggestions(wt) == []
+
+    # Hard error / budget decline -> no suggestion.
+    assert repair._dressing_suggestions({'error': 'malformed'}) == []
+    assert repair._dressing_suggestions({'status': 'budget_declined'}) == []
+
+    # Dressing ran but the gate rejected it -> force suggestion.
+    gate = {'stage1': {'two_manifold': False},
+            'dressing': {'ran': True, 'adopted': False, 'reason': 'gate',
+                         'volume_delta_rel': 0.2, 'normal_angle_p95': 42.0,
+                         'fidelity_ok': False}}
+    sug = repair._dressing_suggestions(gate)
+    assert len(sug) == 1 and sug[0]['force'] is True, sug
+    assert sug[0]['flag'] == repair.DRESSING_FORCE_ADOPT_FLAG, sug
+    txt = repair._dressing_suggestion_text(sug[0])
+    assert repair.DRESSING_FORCE_ADOPT_FLAG in txt, txt
+    assert 'volume 20.00%' in txt and '42.0' in txt, txt
+
+    # Dressing already adopted -> no suggestion.
+    adopted = {'stage1': {'two_manifold': False},
+               'dressing': {'ran': True, 'adopted': True}}
+    assert repair._dressing_suggestions(adopted) == []
+
+    # Multi-object: one open object drives the suggestion.
+    multi = {'object_reports': [
+        {'stage1': {'two_manifold': True, 'holes_remaining': 0}},
+        {'stage1': {'two_manifold': False}}]}
+    assert len(repair._dressing_suggestions(multi)) == 1
+
+
 if __name__ == '__main__':
     fns = [v for k, v in sorted(globals().items())
            if k.startswith('test_') and callable(v)]

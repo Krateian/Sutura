@@ -1026,7 +1026,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             graft=False, dressing=False,
                             dressing_drain=None, dressing_defects=None,
                             dressing_rmax_scale=None, dressing_sigma_scale=None,
-                            si_mode=None):
+                            si_mode=None, dressing_force_adopt=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -1385,7 +1385,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                    dressing_defects=dressing_defects,
                                    dressing_rmax_scale=dressing_rmax_scale,
                                    dressing_sigma_scale=dressing_sigma_scale,
-                                   si_mode=si_mode)
+                                   si_mode=si_mode,
+                                   dressing_force_adopt=dressing_force_adopt)
 
     # Registry methods 11/12 (P-REP): repeated-element transplant, after the
     # whole stage-1 chain (the transplant needs a watertight M).
@@ -3350,9 +3351,122 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
     return ms, after
 
 
+# CLI flags the Dressing suggestion points the user at: the plain opt-in, and
+# the shape-gate override that keeps a gate-rejected (but watertight) coat.
+DRESSING_SUGGEST_FLAG = '--experimental-dressing'
+DRESSING_FORCE_ADOPT_FLAG = '--dressing-force-adopt'
+
+
+def _obj_closed_result(r):
+    """True when one object's stage-1 output is a closed manifold (local copy
+    of ``classification._obj_closed`` so repair.py does not import a private
+    helper)."""
+    s1 = r.get('stage1', {}) if isinstance(r, dict) else {}
+    return bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0
+
+
+def _not_watertight_result(report):
+    """True when the Auto repair left the geometry open/non-manifold/SI.
+
+    A hard error or a declined budget save is NOT a "try Dressing" situation,
+    so those return False.  Multi-object 3MF is judged across every object."""
+    if not isinstance(report, dict):
+        return False
+    if report.get('error') or report.get('status') == 'budget_declined':
+        return False
+    reports = report.get('object_reports')
+    if reports:
+        return any(not _obj_closed_result(r) for r in reports)
+    s1 = report.get('stage1')
+    if not isinstance(s1, dict) or not s1:
+        return False
+    if not s1.get('two_manifold'):
+        return True
+    if s1.get('holes_remaining', 0):
+        return True
+    if s1.get('non_manifold_edges_remaining', 0):
+        return True
+    if s1.get('self_intersections_remaining'):
+        return True
+    return False
+
+
+def _dressing_record(report):
+    """The Dressing record of a single-mesh or first-run multi-object report."""
+    dress = report.get('dressing')
+    if isinstance(dress, dict):
+        return dress
+    for r in report.get('object_reports') or []:
+        if isinstance(r.get('dressing'), dict):
+            return r['dressing']
+    return None
+
+
+def _dressing_gate_detail(sug):
+    """Human parenthesis with the gate numbers a rejected coat failed."""
+    parts = []
+    v = sug.get('volume_delta_rel')
+    if v is not None:
+        parts.append('volume %.2f%%' % (100.0 * v))
+    n = sug.get('normal_angle_p95')
+    if n is not None:
+        parts.append('normal p95 %.1f deg' % n)
+    if not parts:
+        r = sug.get('reason')
+        if r:
+            parts.append(str(r))
+    return ' (%s)' % ', '.join(parts) if parts else ''
+
+
+def _dressing_suggestions(report):
+    """Return the Dressing opt-in suggestion(s) for a still-broken result.
+
+    Empty list when the repair errored / was budget-declined, the result is
+    watertight, or Dressing was already adopted.  When Dressing ran but the
+    quality gate rejected it, the suggestion points at
+    ``--dressing-force-adopt``; otherwise it points at the plain
+    ``--experimental-dressing`` opt-in.  Never raises."""
+    try:
+        if not _not_watertight_result(report):
+            return []
+        dress = _dressing_record(report)
+        if isinstance(dress, dict) and dress.get('adopted'):
+            return []
+        suggestion = {
+            'method': 'dressing',
+            'flag': DRESSING_SUGGEST_FLAG,
+            'force': False,
+            'reason': 'dressing_not_run',
+            'warning': 'may_deform',
+        }
+        if isinstance(dress, dict) and dress.get('ran'):
+            suggestion['flag'] = DRESSING_FORCE_ADOPT_FLAG
+            suggestion['force'] = True
+            suggestion['reason'] = dress.get('reason') or 'gate_rejected'
+            suggestion['volume_delta_rel'] = dress.get('volume_delta_rel')
+            suggestion['normal_angle_p95'] = dress.get('normal_angle_p95')
+            suggestion['fidelity_ok'] = dress.get('fidelity_ok')
+        return [suggestion]
+    except Exception:  # noqa: BLE001 - a suggestion never breaks a repair
+        return []
+
+
+def _dressing_suggestion_text(sug):
+    """English CLI lines for one Dressing suggestion (CLI/human report)."""
+    if sug.get('force'):
+        return ('  \u26a0 Not watertight. Dressing ran but its result was '
+                'rejected by the quality gate%s.\n'
+                '    Force it with %s if you accept the deformation '
+                '(the shape may deform).'
+                % (_dressing_gate_detail(sug), sug.get('flag')))
+    return ('  \u26a0 Not watertight. You can try Dressing: %s (watertight, '
+            'but the shape may deform / fine detail may be lost).'
+            % sug.get('flag'))
+
+
 def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
                   intensity=None, drain=None, defects=None,
-                  r_max_scale=None, sigma_scale=None):
+                  r_max_scale=None, sigma_scale=None, force_adopt=False):
     """Variable-viscosity coat tier for registry method 16 (Dressing).
 
     Runs ``sutura_engine.dressing.dressing_coat`` on the ORIGINAL input arrays
@@ -3362,7 +3476,12 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
     ``drain`` selects the healthy-region erode-back (``None`` = preset default,
     a mode name, or an explicit delta in mm).  ``defects`` selects the mask
     (``'all'`` default, ``'holes_nm'``); ``r_max_scale`` / ``sigma_scale``
-    multiply the resolved ``r_max`` / ``sigma``.  ``stats['dressing']`` records
+    multiply the resolved ``r_max`` / ``sigma``.  ``force_adopt``
+    (``--dressing-force-adopt``) skips the shape-preservation gates (volume,
+    component count, healthy-surface normal angle, coat fidelity) while STILL
+    requiring a strict-watertight, self-intersection-free candidate, so the
+    caller can keep a deformed coat it explicitly asked for.
+    ``stats['dressing']`` records
     the parameters, the deviations, the exact-SI verdict and the EN/TR warnings
     the CLI/GUI surface.  Never raises.
     """
@@ -3384,6 +3503,7 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
            'si_before': None, 'si_after': None, 'si_exact_unknown': False,
            'holes': None, 'non_manifold': None,
            'within_time_budget': None, 'seconds': None,
+           'forced': False,
            'warnings': [], 'reason': None}
     try:
         from sutura_engine import dressing as _dressing
@@ -3472,17 +3592,22 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
             rec['volume_ok'] = bool(vol_ok)
             rec['parts_ok'] = bool(parts_ok)
             rec['normal_ok'] = bool(normal_ok)
+            shape_ok = (drec.get('fidelity_ok') is not False
+                        and vol_ok and parts_ok and normal_ok)
+            rec['shape_ok'] = bool(shape_ok)
 
             if (cand_holes == 0 and cand_nm == 0 and si_ok
-                    and drec.get('fidelity_ok') is not False
-                    and vol_ok and parts_ok and normal_ok):
+                    and (shape_ok or force_adopt)):
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
                 after = ms.apply_filter('get_topological_measures')
                 rec['adopted'] = True
+                rec['forced'] = bool(force_adopt and not shape_ok)
                 rec['watertight'] = False  # stage 2 confirms at the top level
                 rec['candidate_watertight'] = True
-                rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
+                rec['reason'] = ('strict-watertight candidate (stage 2 pending'
+                                 + (', shape gates forced)' if rec['forced']
+                                    else ')'))
             else:
                 reasons = []
                 if cand_holes or cand_nm:
@@ -3490,19 +3615,20 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
                                    % (cand_holes, cand_nm))
                 if not si_ok:
                     reasons.append('exact self-intersections=%s' % si_after)
-                if drec.get('fidelity_ok') is False:
-                    reasons.append('fidelity %.3f%% > gate'
-                                   % (100.0 * (rec['hausdorff_rel_max'] or 0)))
-                if not vol_ok:
-                    reasons.append('volume delta %.2f%% > gate'
-                                   % (100.0 * (rec['volume_delta_rel'] or 0)))
-                if not parts_ok:
-                    reasons.append('components %s > %s + %d'
-                                   % (parts_after, parts_before,
-                                      DRESSING_MAX_PARTS_SLACK))
-                if not normal_ok:
-                    reasons.append('normal p95 %.1f deg > gate'
-                                   % (na95 or 0.0))
+                if not force_adopt:
+                    if drec.get('fidelity_ok') is False:
+                        reasons.append('fidelity %.3f%% > gate'
+                                       % (100.0 * (rec['hausdorff_rel_max'] or 0)))
+                    if not vol_ok:
+                        reasons.append('volume delta %.2f%% > gate'
+                                       % (100.0 * (rec['volume_delta_rel'] or 0)))
+                    if not parts_ok:
+                        reasons.append('components %s > %s + %d'
+                                       % (parts_after, parts_before,
+                                          DRESSING_MAX_PARTS_SLACK))
+                    if not normal_ok:
+                        reasons.append('normal p95 %.1f deg > gate'
+                                       % (na95 or 0.0))
                 rec['reason'] = ('candidate not adopted (%s)'
                                  % ', '.join(reasons) if reasons
                                  else 'candidate not adopted')
@@ -3757,7 +3883,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        ftetwild=False, spec=None, engines=None, engine_chain=None,
                        graft=False, dressing=False, dressing_drain=None,
                        dressing_defects=None, dressing_rmax_scale=None,
-                       dressing_sigma_scale=None, si_mode='report'):
+                       dressing_sigma_scale=None, si_mode='report',
+                       dressing_force_adopt=False):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
     default (no deep-repair report; ``ftetwild`` alone decides, as before
@@ -3859,7 +3986,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                                or getattr(spec, 'name', None)),
                     drain=dressing_drain, defects=dressing_defects,
                     r_max_scale=dressing_rmax_scale,
-                    sigma_scale=dressing_sigma_scale)
+                    sigma_scale=dressing_sigma_scale,
+                    force_adopt=dressing_force_adopt)
                 if (stats.get('dressing') or {}).get('adopted'):
                     ms, after = _d_ms, _d_after
                     dressing_ok = True
@@ -3908,7 +4036,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                            or getattr(spec, 'name', None)),
                 drain=dressing_drain, defects=dressing_defects,
                 r_max_scale=dressing_rmax_scale,
-                sigma_scale=dressing_sigma_scale)
+                sigma_scale=dressing_sigma_scale,
+                force_adopt=dressing_force_adopt)
             if (stats.get('dressing') or {}).get('adopted'):
                 ms, after = _d_ms, _d_after
                 tiers_run.append('dressing')
@@ -4218,7 +4347,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  wall_thicken=False, wall_min_thickness=None, graft=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
-                 si_mode=None):
+                 si_mode=None, dressing_force_adopt=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -4250,7 +4379,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         graft=graft, dressing=dressing, dressing_drain=dressing_drain,
         dressing_defects=dressing_defects,
         dressing_rmax_scale=dressing_rmax_scale,
-        dressing_sigma_scale=dressing_sigma_scale, si_mode=si_mode)
+        dressing_sigma_scale=dressing_sigma_scale, si_mode=si_mode,
+        dressing_force_adopt=dressing_force_adopt)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -4366,7 +4496,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                wall_thicken=False, wall_min_thickness=None, graft=False,
                dressing=False, dressing_drain=None, dressing_defects=None,
                dressing_rmax_scale=None, dressing_sigma_scale=None,
-               si_mode=None):
+               si_mode=None, dressing_force_adopt=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -4419,7 +4549,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     dressing_defects=dressing_defects,
                     dressing_rmax_scale=dressing_rmax_scale,
                     dressing_sigma_scale=dressing_sigma_scale,
-                    si_mode=si_mode)
+                    si_mode=si_mode,
+                    dressing_force_adopt=dressing_force_adopt)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -5053,6 +5184,10 @@ def human_report(r, show_defects=False, show_diff=False):
         ds = human_defects(r)
         if ds:
             lines.append(ds)
+    for _sug in r.get('suggestions', []):
+        if _sug.get('method') == 'dressing':
+            lines.append('')
+            lines.append(_dressing_suggestion_text(_sug))
     return '\n'.join(lines)
 
 
@@ -5164,7 +5299,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  repeat_target=None, wall_min_thickness=None, graft=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
-                 si_mode=None):
+                 si_mode=None, dressing_force_adopt=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -5232,7 +5367,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             dressing_defects=dressing_defects,
             dressing_rmax_scale=dressing_rmax_scale,
             dressing_sigma_scale=dressing_sigma_scale,
-            si_mode=si_mode))
+            si_mode=si_mode,
+            dressing_force_adopt=dressing_force_adopt))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -5291,6 +5427,12 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     category, issues, _summary = classify(result)
     result['category'] = category
     result['issues'] = issues
+    # The Dressing opt-in hint is kept SEPARATE from the issue codes: it is a
+    # suggestion (a next action), not a defect in this result, so the category
+    # and the batch issue_counts stay unchanged. Only set when non-empty.
+    _suggestions = _dressing_suggestions(result)
+    if _suggestions:
+        result['suggestions'] = _suggestions
 
     _fps = history.pop_fingerprints(result)
     if not no_history:
@@ -5655,6 +5797,14 @@ def main():
                         help='Dressing (#16) multiplier on the resolved sigma '
                              '(defect-influence width); default 1.0. Env: '
                              'SUTURA_DRESSING_SIGMA_SCALE')
+    parser.add_argument('--dressing-force-adopt', action='store_true',
+                        help='Dressing (#16) skip the shape-preservation '
+                             'gates (volume / component count / healthy-surface '
+                             'normal angle / coat fidelity) and adopt a '
+                             'gate-rejected coat that is still strictly '
+                             'watertight and self-intersection-free. The shape '
+                             'may deform; offered by the non-watertight '
+                             'suggestion. Implies --experimental-dressing')
     parser.add_argument('--deep-repair', choices=DEEP_REPAIR_MODES, default=None,
                         help='deep-repair ladder after the fast repair, when '
                              'holes or non-manifold edges remain: "full" '
@@ -5977,6 +6127,10 @@ def main():
     # --experimental-dressing forces.
     _dressing_arg = resolve_dressing(no_dressing=args.no_dressing,
                                      force=args.experimental_dressing)
+    # --dressing-force-adopt can only act on a coat, so it implies enabling
+    # Dressing even when --no-dressing / the default switch would disable it.
+    if args.dressing_force_adopt:
+        _dressing_arg = True
     _dressing_drain = resolve_dressing_drain(args.dressing_drain)
     _dressing_defects = resolve_dressing_defects(args.dressing_defects)
     _dressing_rmax_scale = resolve_dressing_rmax_scale(args.dressing_rmax_scale)
@@ -6003,6 +6157,7 @@ def main():
                             dressing_rmax_scale=_dressing_rmax_scale,
                             dressing_sigma_scale=_dressing_sigma_scale,
                             si_mode=si_mode,
+                            dressing_force_adopt=args.dressing_force_adopt,
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak,
                             triage_spec=triage_spec, engines=_engines,

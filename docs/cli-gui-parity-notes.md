@@ -78,6 +78,13 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   the GUI checkbox still maps to the forcing `--experimental-dressing`, and
   `--no-dressing` / `SUTURA_DRESSING=0` remain the disable path on both sides.
   The switch ships OFF until the fine-detail (voxel staircase) loss is fixed.
+- **Dressing opt-in UX:** `--dressing-force-adopt` (implies
+  `--experimental-dressing`) and the batch-wide GUI checkbox (Options →
+  Experimental) plus the post-batch "⚠ Try Dressing" button were added
+  together, so the parity rule holds. The report's `suggestions` list is a
+  separate output field (not an issue code); the GUI reads the same key to
+  decide whether to show the button, so both sides consume the identical
+  payload.
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
   CLI-only / GUI-only items above.

@@ -298,6 +298,22 @@ STRINGS = {
                         '2-manifold and self-intersection-free by '
                         'construction; tried after Graft and before fTetWild. '
                         'Off by default until measured on the corpus.',
+        'dressing_force_adopt_label': 'Dressing: force adopt (may deform)',
+        'dressing_force_adopt_tip': 'Skip Dressing\'s shape-preservation gates '
+                                    '(volume / component count / healthy-surface '
+                                    'normal angle / coat fidelity) and adopt a '
+                                    'gate-rejected coat that is still strictly '
+                                    'watertight and self-intersection-free. The '
+                                    'shape may deform; the same option the '
+                                    'non-watertight suggestion offers.',
+        'try_dressing_btn': '\u26a0 Try Dressing (makes it watertight, but the '
+                            'part may deform)',
+        'try_dressing_btn_n': '\u26a0 Try Dressing on %d file(s) '
+                              '(watertight, but the part may deform)',
+        'try_dressing_tip': 'Re-run the suggested file(s) with Dressing forced '
+                            'past its shape-preservation gates. The result is '
+                            'strictly watertight and self-intersection-free, '
+                            'but fine detail may be lost.',
         'dressing_drain_label': 'Drain:',
         'dressing_drain_tip': 'Healthy-region erode-back: reduce the coat\'s '
                               'outward growth toward the original surface '
@@ -873,6 +889,23 @@ STRINGS = {
                         'kendisiyle-kesişimsizdir; Graft sonrası ve fTetWild '
                         'öncesi denenir. Korpus üzerinde ölçülene kadar '
                         'varsayılan olarak kapalıdır.',
+        'dressing_force_adopt_label': 'Pansuman: zorla benimse (deforme olabilir)',
+        'dressing_force_adopt_tip': 'Pansuman\'ın şekil koruma kapılarını '
+                                    '(hacim / bileşen sayısı / sağlıklı yüzey '
+                                    'normal açısı / kaplama sadakati) atlar ve '
+                                    'yine de kesin su geçirmez ve '
+                                    'kendisiyle-kesişimsiz olan kapı-reddi '
+                                    'kaplamayı benimser. Parça deforme olabilir; '
+                                    'su geçirmez olmayan sonuçta önerilen '
+                                    'seçeneğin aynısı.',
+        'try_dressing_btn': '\u26a0 Dressing ile dene (su geçirmez yapar, ama '
+                            'parça deforme olabilir)',
+        'try_dressing_btn_n': '\u26a0 %d dosyada Dressing ile dene (su geçirmez, '
+                              'ama parça deforme olabilir)',
+        'try_dressing_tip': 'Önerilen dosyaları Dressing şekil-koruma kapılarını '
+                            'atlatarak yeniden çalıştırır. Sonuç kesin su '
+                            'geçirmez ve kendisiyle-kesişimsizdir, ancak ince '
+                            'detay kaybolabilir.',
         'dressing_drain_label': 'Boşaltma:',
         'dressing_drain_tip': 'Sağlıklı bölge geri aşındırma: kaplamanın dışa '
                               'doğru büyümesini özgün yüzeye doğru azaltırken '
@@ -1592,7 +1625,8 @@ class RepairWorker(QThread):
                  indirect_autorefine=False, ftetwild_optimize=False,
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
-                 dressing_sigma_scale=None, intensity='balanced',
+                 dressing_sigma_scale=None, dressing_force_adopt=False,
+                 intensity='balanced',
                  si_mode='report',
                  methods_by_path=None,
                  engines_by_path=None, repeat_points_by_path=None, parent=None):
@@ -1615,6 +1649,7 @@ class RepairWorker(QThread):
         self._dressing_defects = dressing_defects
         self._dressing_rmax_scale = dressing_rmax_scale
         self._dressing_sigma_scale = dressing_sigma_scale
+        self._dressing_force_adopt = dressing_force_adopt
         self._si_mode = si_mode
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
@@ -1685,7 +1720,7 @@ class RepairWorker(QThread):
                 args.append('--ftetwild-optimize')
             if self._si_mode and self._si_mode != 'report':
                 args += ['--si-mode', self._si_mode]
-            if self._dressing:
+            if self._dressing or self._dressing_force_adopt:
                 args.append('--experimental-dressing')
                 if self._dressing_drain in ('none', 'half', 'full', 'deep'):
                     args += ['--dressing-drain', self._dressing_drain]
@@ -1697,6 +1732,8 @@ class RepairWorker(QThread):
                 if self._dressing_sigma_scale is not None:
                     args += ['--dressing-sigma-scale',
                              repr(self._dressing_sigma_scale)]
+            if self._dressing_force_adopt:
+                args.append('--dressing-force-adopt')
             method_nums = self._methods_by_path.get(path)
             if method_nums:
                 args += ['--methods', ','.join(str(n) for n in method_nums)]
@@ -3088,7 +3125,7 @@ class OptionsDialog(QDialog):
         e.addWidget(warn)
         for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
                     main.chk_join_components, main.chk_edge_tiebreak,
-                    main.chk_dressing):
+                    main.chk_dressing, main.chk_dressing_force_adopt):
             e.addWidget(chk)
         _drain_row = QHBoxLayout()
         _drain_row.setContentsMargins(22, 0, 0, 0)
@@ -3528,10 +3565,12 @@ class MainWindow(QMainWindow):
         self._dressing_defects = None       # None = module default ('all')
         self._dressing_rmax_scale = None    # None = 1.0
         self._dressing_sigma_scale = None   # None = 1.0
+        self._dressing_force_adopt = False  # batch-wide: skip Dressing shape gates
         self._si_mode = 'report'      # self-intersection policy: repair/report/off
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
+        self._suggestion_by_path = {}  # path -> non-blocking next-action suggestions
         self._rerun = False           # True while re-running declined files with --force
 
         self._build_ui()
@@ -3653,6 +3692,13 @@ class MainWindow(QMainWindow):
         self.chk_dressing.setToolTip(_t('dressing_tip'))
         self.chk_dressing.toggled.connect(
             lambda on: setattr(self, '_dressing', on))
+        # Force-adopt: bypass Dressing's shape-preservation gates when the
+        # non-watertight suggestion offers it. Still requires a strictly
+        # watertight, self-intersection-free coat; the shape may deform.
+        self.chk_dressing_force_adopt = QCheckBox(_t('dressing_force_adopt_label'))
+        self.chk_dressing_force_adopt.setToolTip(_t('dressing_force_adopt_tip'))
+        self.chk_dressing_force_adopt.toggled.connect(
+            lambda on: setattr(self, '_dressing_force_adopt', on))
         # Drain (healthy-region erode-back) override for Dressing; the empty
         # entry means "use the intensity preset default".
         self.cmb_dressing_drain = QComboBox()
@@ -3711,6 +3757,7 @@ class MainWindow(QMainWindow):
             (self.chk_join_components, False),
             (self.chk_edge_tiebreak, False),
             (self.chk_dressing, False),
+            (self.chk_dressing_force_adopt, False),
         )
         self._options_dialog = OptionsDialog(self)
         self._sync_intensity_checkboxes()
@@ -3769,6 +3816,16 @@ class MainWindow(QMainWindow):
         self.summary.linkActivated.connect(self._on_summary_link)
         self.summary.setVisible(False)
         layout.addWidget(self.summary)
+
+        # Post-batch opt-in suggestion row: shown only when at least one file
+        # finished non-watertight and the CLI offered Dressing (a method that
+        # makes it watertight but may deform the shape). Non-blocking — it is
+        # a button, never a modal dialog.
+        self.btn_try_dressing = QPushButton(_t('try_dressing_btn'))
+        self.btn_try_dressing.setToolTip(_t('try_dressing_tip'))
+        self.btn_try_dressing.setVisible(False)
+        self.btn_try_dressing.clicked.connect(self._on_try_dressing)
+        layout.addWidget(self.btn_try_dressing)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -4243,10 +4300,12 @@ class MainWindow(QMainWindow):
         if not self.files or self.worker is not None:
             return
         self._declined_by_path = {}
+        self._suggestion_by_path = {}
         self._rerun = False
         for i in range(self.tree.topLevelItemCount()):
             self.tree.topLevelItem(i).setText(2, '')
         self._batch_results = []
+        self.btn_try_dressing.setVisible(False)
         self._defects_by_path = {}
         self._type_by_path = {}
         self._score_by_path = {}
@@ -4301,6 +4360,7 @@ class MainWindow(QMainWindow):
                                    dressing_defects=self._dressing_defects,
                                    dressing_rmax_scale=self._dressing_rmax_scale,
                                    dressing_sigma_scale=self._dressing_sigma_scale,
+                                   dressing_force_adopt=self._dressing_force_adopt,
                                    si_mode=self._si_mode,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
@@ -4619,6 +4679,9 @@ class MainWindow(QMainWindow):
             self._repair_log_by_path[path] = data
             if data.get('status') == 'budget_declined':
                 self._declined_by_path[path] = data
+            _sug = data.get('suggestions')
+            if _sug:
+                self._suggestion_by_path[path] = _sug
             if self._item_by_path.get(path) is self.tree.currentItem():
                 self._show_defects(path)
                 self._render_repair_log(path, data)
@@ -5395,6 +5458,36 @@ class MainWindow(QMainWindow):
                 self._render_summary()
             if self._declined_by_path:
                 self._ask_budget_rerun()
+            self._refresh_dressing_suggestion()
+
+    def _dressing_suggestion_files(self):
+        """Files whose report offered Dressing as a non-blocking next action."""
+        out = []
+        for p, sugs in self._suggestion_by_path.items():
+            if any(s.get('method') == 'dressing' for s in sugs):
+                out.append(p)
+        return sorted(out)
+
+    def _refresh_dressing_suggestion(self):
+        files = self._dressing_suggestion_files()
+        self.btn_try_dressing.setVisible(bool(files))
+        if files:
+            self.btn_try_dressing.setText(
+                _t('try_dressing_btn_n', len(files)))
+
+    def _on_try_dressing(self):
+        """Re-run the suggested files with --dressing-force-adopt (opt-in)."""
+        files = self._dressing_suggestion_files()
+        if not files:
+            self.btn_try_dressing.setVisible(False)
+            return
+        # The CLI flag implies --experimental-dressing; mirror that in the
+        # batch-wide option so the re-run (and its report) is self-consistent.
+        self.chk_dressing_force_adopt.setChecked(True)
+        self._suggestion_by_path = {}
+        self.btn_try_dressing.setVisible(False)
+        self._rerun = True  # keep the original batch summary after the re-run
+        self._run_batch(files, force=True)
 
     def _ask_budget_rerun(self):
         """Offer to re-run the budget-declined files with --force.
