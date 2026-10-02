@@ -638,6 +638,20 @@ def test_dressing_suggestions_payload():
                      'non_manifold_edges_remaining': 0}}
     assert repair._dressing_suggestions(wt) == []
 
+    # Clean topology with residual SI only -> no suggestion: SI is reported,
+    # not repaired, under the default si_mode='report', so it must never
+    # produce a "Not watertight" hint on an otherwise closed result.
+    si_only = {'stage1': {'two_manifold': True, 'holes_remaining': 0,
+                          'non_manifold_edges_remaining': 0,
+                          'self_intersections_remaining': 5}}
+    assert repair._dressing_suggestions(si_only) == []
+
+    # Open edges (holes remaining) -> suggestion present.
+    open_edges = {'stage1': {'two_manifold': True, 'holes_remaining': 3,
+                             'non_manifold_edges_remaining': 0}}
+    sug_open = repair._dressing_suggestions(open_edges)
+    assert len(sug_open) == 1 and sug_open[0]['method'] == 'dressing', sug_open
+
     # Hard error / budget decline -> no suggestion.
     assert repair._dressing_suggestions({'error': 'malformed'}) == []
     assert repair._dressing_suggestions({'status': 'budget_declined'}) == []

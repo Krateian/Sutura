@@ -3366,10 +3366,17 @@ def _obj_closed_result(r):
 
 
 def _not_watertight_result(report):
-    """True when the Auto repair left the geometry open/non-manifold/SI.
+    """True when the FINAL repaired geometry is open or non-manifold.
 
-    A hard error or a declined budget save is NOT a "try Dressing" situation,
-    so those return False.  Multi-object 3MF is judged across every object."""
+    The verdict is the post-ladder topology in ``stage1`` (``two_manifold`` /
+    ``holes_remaining`` / ``non_manifold_edges_remaining``), which
+    ``repair_mesh_from_arrays`` rewrites after every tier, so it describes the
+    mesh actually saved.  A residual self-intersection count is NOT a
+    "not watertight" signal: SI is reported, not repaired, under the default
+    ``si_mode='report'`` (a closed, SI-carrying result must not get a "Not
+    watertight" hint).  A hard error or a declined budget save is not a "try
+    Dressing" situation either.  Multi-object 3MF is judged across every
+    object."""
     if not isinstance(report, dict):
         return False
     if report.get('error') or report.get('status') == 'budget_declined':
@@ -3385,8 +3392,6 @@ def _not_watertight_result(report):
     if s1.get('holes_remaining', 0):
         return True
     if s1.get('non_manifold_edges_remaining', 0):
-        return True
-    if s1.get('self_intersections_remaining'):
         return True
     return False
 
