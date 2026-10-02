@@ -46,6 +46,12 @@ pub struct DressingParams {
     pub sigma: Option<f64>,
     pub band_voxels: f64,
     pub margin_voxels: f64,
+    /// Healthy-region "drain" (erode-back), in mm: the field adds
+    /// `drain * (1 - g)` where `g` is the defect influence (0 healthy, 1 at a
+    /// defect), recentring the healthy isosurface on `s = 0` while leaving the
+    /// defect coverage (whose `r` is much larger) untouched.  `0.0` keeps the
+    /// plain outward coat.
+    pub drain: f64,
 }
 
 impl Default for DressingParams {
@@ -57,6 +63,7 @@ impl Default for DressingParams {
             sigma: None,
             band_voxels: 2.0,
             margin_voxels: 3.0,
+            drain: 0.0,
         }
     }
 }
@@ -70,6 +77,7 @@ pub struct DressingInfo {
     pub r_base: f64,
     pub r_max: f64,
     pub sigma: f64,
+    pub drain: f64,
     pub band: f64,
     pub voxels: u64,
     pub band_cells: usize,
@@ -469,6 +477,7 @@ pub fn dressing_coat(
             r_base: 0.0,
             r_max: 0.0,
             sigma: 0.0,
+            drain: params.drain,
             band: 0.0,
             voxels: voxel_count(dims),
             band_cells: 0,
@@ -562,6 +571,26 @@ pub fn dressing_coat(
     }
     let ext = flood_exterior(dims, &band_mask, &u, &r_dense, voxel32);
 
+    // Healthy-region drain: `F = s - r + drain * (1 - g)`, where `g` is the
+    // defect influence already encoded in `r = r_base + (r_max - r_base) * g`.
+    // Healthy cells (`g ~ 0`, `r ~ r_base`) get the full drain so their
+    // isosurface re-centres on `s = 0`; defect cells (`g ~ 1`) keep their
+    // coverage.  `drain == 0.0` leaves the field byte-identical.
+    let drain32 = params.drain as f32;
+    let do_drain = drain32 != 0.0;
+    let inv_dr = if has_defect && (r_max32 - r_base32).abs() > 1.0e-12 {
+        1.0 / (r_max32 - r_base32)
+    } else {
+        0.0
+    };
+    let healthy_at = |idx: usize| -> f32 {
+        if inv_dr == 0.0 {
+            1.0
+        } else {
+            (1.0 - (r_dense[idx] - r_base32) * inv_dr).clamp(0.0, 1.0)
+        }
+    };
+
     // Scalar field F = s - r, with the winding sign evaluated only for band
     // cells whose sign is not already forced negative by u < r.
     let mut field = vec![0f32; n];
@@ -582,29 +611,39 @@ pub fn dressing_coat(
                 let row = j * nx;
                 for i in 0..nx {
                     let idx = base + row + i;
+                    let mut val;
                     if band_mask[idx] == 0 {
-                        frow[row + i] = if ext[idx] != 0 { band32 } else { -band32 };
-                        continue;
-                    }
-                    let uu = u[idx];
-                    let r = r_dense[idx];
-                    if uu <= r {
-                        frow[row + i] = -uu - r;
+                        val = if ext[idx] != 0 { band32 } else { -band32 };
                     } else {
-                        let x = origin[0] + voxel * i as f64;
-                        // Cheap loose-tolerance query first; the exact value is
-                        // only needed where the sign is genuinely ambiguous
-                        // (Generalized winding near 0.5).
-                        let wl = bvh.winding_at_tol([x, y, z], PRESCREEN_TOL);
-                        let w = if (wl - 0.5).abs() > PRESCREEN_MARGIN {
-                            wl
+                        let uu = u[idx];
+                        let r = r_dense[idx];
+                        // A cell is certainly inside the coat when its unsigned
+                        // distance is below the dried-out radius `r - drain`
+                        // (`drain == 0` keeps the historical `u <= r`).  In the
+                        // shell between `r - drain` and `r` the sign is needed:
+                        // an outside cell there is already drained.
+                        if uu <= (r - drain32).max(0.0) {
+                            val = -uu - r;
                         } else {
-                            exact_count.fetch_add(1, Ordering::Relaxed);
-                            bvh.winding_at([x, y, z])
-                        };
-                        frow[row + i] = if w > 0.5 { -uu - r } else { uu - r };
-                        sign_count.fetch_add(1, Ordering::Relaxed);
+                            let x = origin[0] + voxel * i as f64;
+                            // Cheap loose-tolerance query first; the exact value
+                            // is only needed where the sign is genuinely
+                            // ambiguous (Generalized winding near 0.5).
+                            let wl = bvh.winding_at_tol([x, y, z], PRESCREEN_TOL);
+                            let w = if (wl - 0.5).abs() > PRESCREEN_MARGIN {
+                                wl
+                            } else {
+                                exact_count.fetch_add(1, Ordering::Relaxed);
+                                bvh.winding_at([x, y, z])
+                            };
+                            val = if w > 0.5 { -uu - r } else { uu - r };
+                            sign_count.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
+                    if do_drain {
+                        val += drain32 * healthy_at(idx);
+                    }
+                    frow[row + i] = val;
                 }
             }
         });
@@ -639,6 +678,7 @@ pub fn dressing_coat(
         r_base,
         r_max,
         sigma,
+        drain: params.drain,
         band,
         voxels: voxel_count(dims),
         band_cells,
@@ -787,6 +827,67 @@ mod tests {
         report_stats("cube", &co, 0.1);
         let mean = co.iter().sum::<f64>() / co.len() as f64;
         assert!(mean.abs() < 0.05 * 0.1, "cube mean bias {mean}");
+    }
+
+    #[test]
+    fn drain_erodes_only_healthy_region() {
+        let (v, f) = cube(10.0);
+        // A voxel that does not place the isosurface exactly on grid nodes.
+        let base = DressingParams {
+            voxel: Some(0.3),
+            r_base: Some(0.5),
+            r_max: Some(2.0),
+            sigma: Some(2.0),
+            ..Default::default()
+        };
+        let mut drained = base;
+        drained.drain = 0.5;
+
+        // No defect: the healthy weight is 1 everywhere, so the whole coat
+        // shifts inward by the drain amount.
+        let clean0 = dressing_coat(&v, &f, &[], &base);
+        let clean1 = dressing_coat(&v, &f, &[], &drained);
+        let o0 = signed_offsets(&clean0, &v, &f);
+        let o1 = signed_offsets(&clean1, &v, &f);
+        let m0 = o0.iter().sum::<f64>() / o0.len() as f64;
+        let m1 = o1.iter().sum::<f64>() / o1.len() as f64;
+        assert!(m0 > 0.4, "undrained healthy coat should grow ({m0:.3})");
+        assert!(
+            m1.abs() < 0.06,
+            "drain = r_base must recentre on the input ({m0:.3} -> {m1:.3})"
+        );
+
+        // Defect on the +Z face: that face keeps its coverage, the far (-Z)
+        // healthy face drains.
+        let def = [[0.0, 0.0, 5.0]];
+        let d0 = dressing_coat(&v, &f, &def, &base);
+        let d1 = dressing_coat(&v, &f, &def, &drained);
+        let od0 = signed_offsets(&d0, &v, &f);
+        let od1 = signed_offsets(&d1, &v, &f);
+        let region_mean = |m: &DressingMesh, o: &[f64], near: bool| {
+            let mut s = 0.0;
+            let mut n = 0usize;
+            for (p, &off) in m.verts.iter().zip(o) {
+                let near_defect = ((p[0]).powi(2) + p[1].powi(2) + (p[2] - 5.0).powi(2)).sqrt() < 1.0;
+                if (near && near_defect) || (!near && p[2] < -4.0) {
+                    s += off;
+                    n += 1;
+                }
+            }
+            s / n.max(1) as f64
+        };
+        let far0 = region_mean(&d0, &od0, false);
+        let far1 = region_mean(&d1, &od1, false);
+        let near0 = region_mean(&d0, &od0, true);
+        let near1 = region_mean(&d1, &od1, true);
+        assert!(
+            far1.abs() < 0.1 && far0 - far1 > 0.3,
+            "far healthy face {far0:.3} -> {far1:.3} (expected drained to ~0)"
+        );
+        assert!(
+            (near0 - near1).abs() < 0.15,
+            "near defect face {near0:.3} -> {near1:.3} (expected ~unchanged)"
+        );
     }
 
     #[test]

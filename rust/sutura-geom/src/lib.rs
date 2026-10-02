@@ -645,8 +645,13 @@ fn morph_close<'py>(
 /// `r_base` to `r_max` near the defect points (`defect_pts`, Nx3; empty means a
 /// uniform `r_base`).  Returns `(verts, tris, info)` with a watertight,
 /// two-manifold marching-tetrahedra coat.
+///
+/// `drain` is the healthy-region erode-back, in mm: the field adds
+/// `drain * (1 - g)` (with `g` the defect influence) so the healthy isosurface
+/// re-centres on the original boundary while the defect coverage is kept.
+/// `0.0` (the default) leaves the plain outward coat.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0))]
+#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0))]
 fn dressing_coat<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -658,6 +663,7 @@ fn dressing_coat<'py>(
     sigma: Option<f64>,
     band_voxels: f64,
     margin_voxels: f64,
+    drain: f64,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -681,6 +687,7 @@ fn dressing_coat<'py>(
         sigma,
         band_voxels,
         margin_voxels,
+        drain,
     };
     let m = dressing::dressing_coat(&rv, &rt, &dp, &params);
 
@@ -701,6 +708,7 @@ fn dressing_coat<'py>(
     info.set_item("r_base", m.info.r_base)?;
     info.set_item("r_max", m.info.r_max)?;
     info.set_item("sigma", m.info.sigma)?;
+    info.set_item("drain", m.info.drain)?;
     info.set_item("band", m.info.band)?;
     info.set_item("band_cells", m.info.band_cells)?;
     info.set_item("sign_cells", m.info.sign_cells)?;
