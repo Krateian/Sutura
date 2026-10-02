@@ -327,6 +327,54 @@ def main():
         assert w._dressing_drain == mode, (idx, w._dressing_drain)
     print('ok  Dressing drain combo mapping')
 
+    # Defect-set combo maps Preset/all/holes_nm to None/'all'/'holes_nm'
+    w.cmb_dressing_defects.setCurrentIndex(0)
+    assert w._dressing_defects is None
+    w.cmb_dressing_defects.setCurrentIndex(1)
+    assert w._dressing_defects == 'all'
+    w.cmb_dressing_defects.setCurrentIndex(2)
+    assert w._dressing_defects == 'holes_nm'
+    print('ok  Dressing defect-set combo mapping')
+
+    # Scale combos map Preset/x0.25../x2 to None/0.25../2.0
+    for cmb, attr in ((w.cmb_dressing_rmax_scale, '_dressing_rmax_scale'),
+                      (w.cmb_dressing_sigma_scale, '_dressing_sigma_scale')):
+        cmb.setCurrentIndex(0)
+        assert getattr(w, attr) is None
+        for idx, factor in enumerate((0.25, 0.5, 0.75, 1.0, 1.5, 2.0), 1):
+            cmb.setCurrentIndex(idx)
+            assert getattr(w, attr) == factor, (attr, idx, getattr(w, attr))
+    print('ok  Dressing scale-factor combo mapping')
+
+    # RepairWorker adds the defect-set / scale flags when set
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_defects='holes_nm',
+                              dressing_rmax_scale=0.5,
+                              dressing_sigma_scale=2.0)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    xargs = captured['args']
+    assert xargs[xargs.index('--dressing-defects') + 1] == 'holes_nm', xargs
+    assert xargs[xargs.index('--dressing-rmax-scale') + 1] == '0.5', xargs
+    assert xargs[xargs.index('--dressing-sigma-scale') + 1] == '2.0', xargs
+    # preset defaults (None) add no defect-set / scale flags
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_defects=None,
+                              dressing_rmax_scale=None,
+                              dressing_sigma_scale=None)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    for flag in ('--dressing-defects', '--dressing-rmax-scale',
+                 '--dressing-sigma-scale'):
+        assert flag not in captured['args'], (flag, captured['args'])
+    print('ok  RepairWorker Dressing defect-set / scale overrides')
+
     # MainWindow maps the tag lists onto RepairWorker kwargs
     saved_worker = gui.RepairWorker
     gui.RepairWorker = _FakeWorker

@@ -309,6 +309,24 @@ STRINGS = {
         'dressing_drain_half': 'Half',
         'dressing_drain_full': 'Full',
         'dressing_drain_deep': 'Deep',
+        'dressing_defects_label': 'Defects:',
+        'dressing_defects_tip': 'Which input defects the viscosity mask covers: '
+                                '"All" (holes + non-manifold + '
+                                'self-intersections) or "Holes + non-manifold" '
+                                '(self-intersections ignored). "Preset" uses '
+                                'the module default (All).',
+        'dressing_defects_preset': 'Preset default',
+        'dressing_defects_all': 'Holes + NM + SI',
+        'dressing_defects_holes_nm': 'Holes + NM only',
+        'dressing_rmax_scale_label': 'Bridge radius:',
+        'dressing_rmax_scale_tip': 'Multiplier on the resolved r_max (the maximum '
+                                   'viscosity / bridging radius): a smaller factor '
+                                   'gives a narrower coat. "Preset" = 1.0.',
+        'dressing_sigma_scale_label': 'Influence width:',
+        'dressing_sigma_scale_tip': 'Multiplier on the resolved sigma (defect '
+                                    'influence width of the viscosity field). '
+                                    '"Preset" = 1.0.',
+        'dressing_scale_preset': 'Preset (1.0)',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Last-resort solidifier, on by default: when the '
                         'stage-1 chain still leaves holes or non-manifold '
@@ -856,6 +874,23 @@ STRINGS = {
         'dressing_drain_half': 'Yarım',
         'dressing_drain_full': 'Tam',
         'dressing_drain_deep': 'Derin',
+        'dressing_defects_label': 'Kusurlar:',
+        'dressing_defects_tip': 'Viskozite maskesinin kapsadığı girdi kusurları: '
+                                '"Tümü" (delik + non-manifold + '
+                                'kendisiyle-kesişim) veya "Delik + non-manifold" '
+                                '(kendisiyle-kesişim yok sayılır). "Ön ayar" '
+                                'modül varsayılanını (Tümü) kullanır.',
+        'dressing_defects_preset': 'Ön ayar varsayılanı',
+        'dressing_defects_all': 'Delik + NM + SI',
+        'dressing_defects_holes_nm': 'Yalnızca delik + NM',
+        'dressing_rmax_scale_label': 'Köprü yarıçapı:',
+        'dressing_rmax_scale_tip': 'Çözülen r_max (en büyük viskozite / köprü '
+                                   'yarıçapı) çarpanı: küçük bir faktör daha '
+                                   'dar bir kaplama verir. "Ön ayar" = 1.0.',
+        'dressing_sigma_scale_label': 'Etki genişliği:',
+        'dressing_sigma_scale_tip': 'Çözülen sigma (viskozite alanının kusur '
+                                    'etki genişliği) çarpanı. "Ön ayar" = 1.0.',
+        'dressing_scale_preset': 'Ön ayar (1.0)',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Son çare katılaştırıcı, varsayılan olarak açık: '
                         'stage-1 zinciri hâlâ delik veya non-manifold kenar '
@@ -1532,7 +1567,9 @@ class RepairWorker(QThread):
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
-                 dressing=False, dressing_drain=None, intensity='balanced',
+                 dressing=False, dressing_drain=None,
+                 dressing_defects=None, dressing_rmax_scale=None,
+                 dressing_sigma_scale=None, intensity='balanced',
                  methods_by_path=None,
                  engines_by_path=None, repeat_points_by_path=None, parent=None):
         super().__init__(parent)
@@ -1551,6 +1588,9 @@ class RepairWorker(QThread):
         self._indirect_autorefine = indirect_autorefine
         self._dressing = dressing
         self._dressing_drain = dressing_drain
+        self._dressing_defects = dressing_defects
+        self._dressing_rmax_scale = dressing_rmax_scale
+        self._dressing_sigma_scale = dressing_sigma_scale
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
         self._engines_by_path = dict(engines_by_path or {})
@@ -1622,6 +1662,14 @@ class RepairWorker(QThread):
                 args.append('--experimental-dressing')
                 if self._dressing_drain in ('none', 'half', 'full', 'deep'):
                     args += ['--dressing-drain', self._dressing_drain]
+                if self._dressing_defects in ('all', 'holes_nm'):
+                    args += ['--dressing-defects', self._dressing_defects]
+                if self._dressing_rmax_scale is not None:
+                    args += ['--dressing-rmax-scale',
+                             repr(self._dressing_rmax_scale)]
+                if self._dressing_sigma_scale is not None:
+                    args += ['--dressing-sigma-scale',
+                             repr(self._dressing_sigma_scale)]
             method_nums = self._methods_by_path.get(path)
             if method_nums:
                 args += ['--methods', ','.join(str(n) for n in method_nums)]
@@ -3014,6 +3062,24 @@ class OptionsDialog(QDialog):
         _drain_row.addWidget(main.cmb_dressing_drain)
         _drain_row.addStretch(1)
         e.addLayout(_drain_row)
+        _def_row = QHBoxLayout()
+        _def_row.setContentsMargins(22, 0, 0, 0)
+        _def_row.addWidget(QLabel(_t('dressing_defects_label')))
+        _def_row.addWidget(main.cmb_dressing_defects)
+        _def_row.addStretch(1)
+        e.addLayout(_def_row)
+        _rmax_row = QHBoxLayout()
+        _rmax_row.setContentsMargins(22, 0, 0, 0)
+        _rmax_row.addWidget(QLabel(_t('dressing_rmax_scale_label')))
+        _rmax_row.addWidget(main.cmb_dressing_rmax_scale)
+        _rmax_row.addStretch(1)
+        e.addLayout(_rmax_row)
+        _sig_row = QHBoxLayout()
+        _sig_row.setContentsMargins(22, 0, 0, 0)
+        _sig_row.addWidget(QLabel(_t('dressing_sigma_scale_label')))
+        _sig_row.addWidget(main.cmb_dressing_sigma_scale)
+        _sig_row.addStretch(1)
+        e.addLayout(_sig_row)
         e.addStretch(1)
         self.tabs.addTab(exp, _t('opt_tab_experimental'))
 
@@ -3425,6 +3491,9 @@ class MainWindow(QMainWindow):
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
         self._dressing_drain = None   # batch-wide Dressing drain override (None = preset)
+        self._dressing_defects = None       # None = module default ('all')
+        self._dressing_rmax_scale = None    # None = 1.0
+        self._dressing_sigma_scale = None   # None = 1.0
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -3559,6 +3628,29 @@ class MainWindow(QMainWindow):
             self.cmb_dressing_drain.addItem(_t(key))
         self.cmb_dressing_drain.currentIndexChanged.connect(
             self._on_dressing_drain_changed)
+        # Defect-set override for Dressing (which input defects the viscosity
+        # mask covers); the empty entry means the module default ('all').
+        self.cmb_dressing_defects = QComboBox()
+        self.cmb_dressing_defects.setToolTip(_t('dressing_defects_tip'))
+        for key, val in (('dressing_defects_preset', None),
+                         ('dressing_defects_all', 'all'),
+                         ('dressing_defects_holes_nm', 'holes_nm')):
+            self.cmb_dressing_defects.addItem(_t(key), val)
+        self.cmb_dressing_defects.currentIndexChanged.connect(
+            self._on_dressing_defects_changed)
+        # Scale factors on the resolved r_max / sigma; the empty entry = 1.0.
+        self.cmb_dressing_rmax_scale = QComboBox()
+        self.cmb_dressing_rmax_scale.setToolTip(_t('dressing_rmax_scale_tip'))
+        self.cmb_dressing_sigma_scale = QComboBox()
+        self.cmb_dressing_sigma_scale.setToolTip(_t('dressing_sigma_scale_tip'))
+        for cmb, handler in ((self.cmb_dressing_rmax_scale,
+                              self._on_dressing_rmax_scale_changed),
+                             (self.cmb_dressing_sigma_scale,
+                              self._on_dressing_sigma_scale_changed)):
+            cmb.addItem(_t('dressing_scale_preset'), None)
+            for factor in (0.25, 0.5, 0.75, 1.0, 1.5, 2.0):
+                cmb.addItem('x%s' % ('%g' % factor), factor)
+            cmb.currentIndexChanged.connect(handler)
         # The batch-wide options above live in a separate, non-modal Options
         # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
         # is re-parented there unchanged, so every chk_* attribute keeps its
@@ -3802,6 +3894,19 @@ class MainWindow(QMainWindow):
         """Map the Dressing drain combo to the CLI override ('' = preset)."""
         self._dressing_drain = (
             None if index <= 0 else ('none', 'half', 'full', 'deep')[index - 1])
+
+    def _on_dressing_defects_changed(self, index):
+        """Map the Dressing defect-set combo to the CLI override."""
+        self._dressing_defects = self.cmb_dressing_defects.itemData(index)
+
+    def _on_dressing_rmax_scale_changed(self, index):
+        """Map the Dressing r_max scale combo to the CLI override."""
+        self._dressing_rmax_scale = self.cmb_dressing_rmax_scale.itemData(index)
+
+    def _on_dressing_sigma_scale_changed(self, index):
+        """Map the Dressing sigma scale combo to the CLI override."""
+        self._dressing_sigma_scale = self.cmb_dressing_sigma_scale.itemData(
+            index)
 
     def _sync_ftetwild(self, *_):
         """Map the two fTetWild checkboxes to the CLI tri-state."""
@@ -4144,6 +4249,9 @@ class MainWindow(QMainWindow):
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
                                    dressing=self._dressing,
                                    dressing_drain=self._dressing_drain,
+                                   dressing_defects=self._dressing_defects,
+                                   dressing_rmax_scale=self._dressing_rmax_scale,
+                                   dressing_sigma_scale=self._dressing_sigma_scale,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
                                    engines_by_path=engines_by_path,

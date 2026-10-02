@@ -201,9 +201,12 @@ def test_drain_reduces_healthy_growth_field_level():
     """The field drain (F = s - r + delta_r) shrinks the coat toward the input
     surface on healthy regions and keeps the output watertight/SI-free.
 
-    A closed cube with one face removed: 'full' drain must produce a coat with
-    fewer faces than no drain (the isosurface hugs the surface more tightly)
-    and must stay 0 holes / 0 NM / 0 SI."""
+    A closed cube with one face removed: 'full' drain must pull the coat toward
+    the input surface on healthy regions -- its bounding-box diagonal must be
+    smaller than no drain's -- and must stay 0 holes / 0 NM / 0 SI.  The face
+    count is not a valid proxy: the Rust extractor yields the same face count
+    for both, since the drain moves the isosurface without changing its grid
+    topology, so the geometric extent is checked instead."""
     V = np.array(CUBE_V, float)
     T = np.array(CUBE_T[:-1], np.int64)
     _vo, _to, off = dressing.dressing_coat(V, T, intensity='quick', drain='none')
@@ -211,8 +214,12 @@ def test_drain_reduces_healthy_growth_field_level():
     assert off['drain']['drained'] is False, off['drain']
     assert full['drain']['drained'] is True, full['drain']
     assert full['drain']['delta_r'] == off['r_base'], full['drain']
-    assert full['faces_after'] < off['faces_after'], (
-        full['faces_after'], off['faces_after'])
+
+    def _span(v):
+        v = np.asarray(v, float)
+        return float(np.linalg.norm(v.max(0) - v.min(0)))
+
+    assert _span(_vf) < _span(_vo), (_span(_vf), _span(_vo))
     for rep in (off, full):
         assert rep['holes_after'] == 0 and rep['nm_after'] == 0, rep
         assert rep['si_after'] in (0, None), rep
@@ -252,6 +259,66 @@ def test_resolve_dressing_drain_precedence():
     assert repair.resolve_dressing_drain(environ='deep') == 'deep'
     assert repair.resolve_dressing_drain(environ='0.1') == 0.1
     assert repair.resolve_dressing_drain(environ='bogus') is None
+
+
+def test_resolve_dressing_defects_and_scales():
+    import repair
+    # defect set: CLI > env > None; invalid values ignored
+    assert repair.resolve_dressing_defects() is None
+    assert repair.resolve_dressing_defects(cli_value='holes_nm') == 'holes_nm'
+    assert repair.resolve_dressing_defects(cli_value='all') == 'all'
+    assert repair.resolve_dressing_defects(cli_value='bogus') is None
+    assert repair.resolve_dressing_defects(cli_value='all',
+                                           environ='holes_nm') == 'all'
+    assert repair.resolve_dressing_defects(environ='holes_nm') == 'holes_nm'
+    assert repair.resolve_dressing_defects(environ='bogus') is None
+    # scale factors: CLI > env > None; non-positive / unparseable ignored
+    assert repair.resolve_dressing_rmax_scale() is None
+    assert repair.resolve_dressing_rmax_scale(cli_value=0.25) == 0.25
+    assert repair.resolve_dressing_rmax_scale(cli_value=0.25,
+                                              environ='0.5') == 0.25
+    assert repair.resolve_dressing_rmax_scale(environ='0.5') == 0.5
+    assert repair.resolve_dressing_rmax_scale(cli_value=-1) is None
+    assert repair.resolve_dressing_rmax_scale(environ='nope') is None
+    assert repair.resolve_dressing_sigma_scale(cli_value=2.0) == 2.0
+    assert repair.resolve_dressing_sigma_scale(environ='0.5') == 0.5
+    assert repair.resolve_dressing_sigma_scale(cli_value=0) is None
+
+
+def test_scale_factors_shrink_resolved_radii():
+    """r_max_scale / sigma_scale multiply the resolved viscosity params while
+    the defaults (None) are byte-identical to the unscaled call."""
+    V = np.array(CUBE_V, float)
+    T = np.array(CUBE_T[:-1], np.int64)
+    _v0, _t0, base = dressing.dressing_coat(V, T, intensity='balanced',
+                                            drain='none')
+    _v1, _t1, shrunk = dressing.dressing_coat(
+        V, T, intensity='balanced', drain='none',
+        r_max_scale=0.25, sigma_scale=0.5)
+    assert base['r_max_scale'] is None and base['sigma_scale'] is None
+    assert shrunk['r_max_scale'] == 0.25
+    assert shrunk['sigma_scale'] == 0.5
+    assert shrunk['r_max'] < base['r_max']
+    assert shrunk['sigma'] < base['sigma']
+    # None keeps the unscaled values identical
+    _v2, _t2, again = dressing.dressing_coat(V, T, intensity='balanced',
+                                             drain='none', r_max_scale=None,
+                                             sigma_scale=None)
+    assert again['r_max'] == base['r_max'] and again['sigma'] == base['sigma']
+    assert again['defects'] == base['defects'] == 'all'
+
+
+def test_defect_set_reflected_in_report():
+    V = np.array(CUBE_V, float)
+    T = np.array(CUBE_T[:-1], np.int64)
+    for ds in ('all', 'holes_nm'):
+        _v, _t, rep = dressing.dressing_coat(V, T, intensity='quick',
+                                             drain='none', defects=ds)
+        assert rep['defects'] == ds, rep['defects']
+    # an invalid value falls back to the module default
+    _v, _t, rep = dressing.dressing_coat(V, T, intensity='quick',
+                                         drain='none', defects='bogus')
+    assert rep['defects'] == 'all', rep['defects']
 
 
 def test_dressing_tier_adoption_gate():

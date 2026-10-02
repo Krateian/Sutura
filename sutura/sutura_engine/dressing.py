@@ -22,7 +22,9 @@ Pure API::
 
     dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
                   r_base=None, r_max=None, sigma=None, ml=None, guard=True,
-                  time_budget=None) -> (verts_out, tris_out, report)
+                  time_budget=None, drain=None, defects=None,
+                  r_max_scale=None, sigma_scale=None)
+                  -> (verts_out, tris_out, report)
 
 No file is written.  Decimation uses PyMeshLab when a live ``ml`` module is
 passed; without it the raw (well-formed) coat is returned unchanged.
@@ -83,6 +85,15 @@ DRAIN_MODES = {
     'full': 1.0,
     'deep': 1.25,
 }
+
+# Which input defects feed the viscosity field's ``d_defect`` mask.  ``'all'``
+# (default) is holes + non-manifold + self-intersections, the historical
+# behaviour; ``'holes_nm'`` drops the self-intersection term, which on dense
+# scans otherwise saturates the mask and bridges over healthy surface.  Scale
+# factors multiply the resolved ``r_max`` / ``sigma`` (1.0 = the current
+# default) so a narrower, tighter coat can be requested without new presets.
+DEFECT_SETS = ('all', 'holes_nm')
+DEFECT_SET_DEFAULT = 'all'
 
 # output face budget: decimate the coat toward the input face count
 FACE_BUDGET_MIN = 50_000
@@ -333,14 +344,16 @@ def resolve_dressing_voxel(verts, tris, diag, intensity=None, grid_budget=None):
     return float(v_target)
 
 
-def resolve_viscosity(ell_median, voxel, intensity=None, gap=None):
+def resolve_viscosity(ell_median, voxel, intensity=None, gap=None,
+                      r_max_scale=None, sigma_scale=None):
     """``(r_base, r_max, sigma)`` for one mesh.
 
     Thin base radius over healthy detailed surface (the fidelity mechanism;
     framebaroque r_base ~= 0.17 mm -> 0.06 % of the diagonal), a preset-capped
     bridging radius near defects (also capped at 45 % of the largest gap, so a
     coat over a big opening cannot balloon past the model), and a transition
-    width tied to the feature size / voxel.
+    width tied to the feature size / voxel.  ``r_max_scale`` / ``sigma_scale``
+    multiply the resolved ``r_max`` / ``sigma`` (``None``/``1.0`` = default).
     """
     if intensity not in DRESSING_BY_INTENSITY:
         intensity = DRESSING_DEFAULT_INTENSITY
@@ -349,15 +362,32 @@ def resolve_viscosity(ell_median, voxel, intensity=None, gap=None):
     r_max = float(min(r_preset, 3.5 * ell_median)) if ell_median > 0 else r_preset
     if gap is not None and gap > 0:
         r_max = min(r_max, 0.45 * float(gap))
+    if r_max_scale is not None:
+        r_max = r_max * float(r_max_scale)
     r_max = max(r_max, r_base)
     sigma = float(max(2.0 * ell_median, 2.0 * voxel))
+    if sigma_scale is not None:
+        sigma = sigma * float(sigma_scale)
     return r_base, r_max, sigma
 
 
-def _defect_vertex_indices(v, t):
+def _normalize_scale(scale):
+    """A positive float scale factor, or ``None`` for the default (1.0)."""
+    if scale is None:
+        return None
+    try:
+        s = float(scale)
+    except (TypeError, ValueError):
+        return None
+    return s if s > 0.0 else None
+
+
+def _defect_vertex_indices(v, t, defects=None):
     """``(vertex indices, gap)`` touched by holes, non-manifold regions and
-    (when within the Rust cap) self-intersecting faces.  ``gap`` is the largest
-    hole diameter, used to cap the bridging radius."""
+    (unless ``defects='holes_nm'``, and when within the Rust cap)
+    self-intersecting faces.  ``gap`` is the largest hole diameter, used to cap
+    the bridging radius."""
+    mode = defects if defects in DEFECT_SETS else DEFECT_SET_DEFAULT
     idx = set()
     gap = 0.0
     det = detect_defects(v, t, with_indices=True)
@@ -366,7 +396,7 @@ def _defect_vertex_indices(v, t):
         gap = max(gap, float(h.get('diameter') or 0.0))
     for nm in det['non_manifold']:
         idx.update(int(i) for i in nm.get('verts_idx', ()))
-    if len(t) <= SI_MAX_FACES:
+    if mode == 'all' and len(t) <= SI_MAX_FACES:
         try:
             mask, _count = sutura_geom.self_intersecting_faces(v, t)
             mask = np.asarray(mask)
@@ -380,11 +410,18 @@ def _defect_vertex_indices(v, t):
 
 
 def _variable_radius(dims, origin, voxel, defect_idx, verts, r_base, r_max, sigma):
-    """Radius grid from the EDT of the defect mask (scipy, lazy import)."""
+    """Radius grid and defect influence ``g`` from the EDT of the defect mask.
+
+    Returns ``(r_grid, g)`` where ``r = r_base + (r_max - r_base) * g`` and
+    ``g = exp(-d_defect^2 / 2 sigma^2)`` is the defect influence (``~0`` on
+    healthy surface, ``~1`` at a defect).  ``g`` is reused by the drain so the
+    numpy path matches the Rust core's ``F = s - r + drain * (1 - g)``.
+    """
     from scipy import ndimage
     dx, dy, dz = int(dims[0]), int(dims[1]), int(dims[2])
     if len(defect_idx) == 0:
-        return np.full((dx, dy, dz), np.float32(r_base))
+        return (np.full((dx, dy, dz), np.float32(r_base)),
+                np.zeros((dx, dy, dz), np.float32))
     dvx = (verts[defect_idx] - origin) / voxel
     gi = np.clip(np.round(dvx[:, 0]).astype(np.int64), 0, dx - 1)
     gj = np.clip(np.round(dvx[:, 1]).astype(np.int64), 0, dy - 1)
@@ -392,8 +429,9 @@ def _variable_radius(dims, origin, voxel, defect_idx, verts, r_base, r_max, sigm
     mask = np.zeros((dx, dy, dz), dtype=bool)
     mask[gi, gj, gk] = True
     d_defect = ndimage.distance_transform_edt(~mask).astype(np.float32) * np.float32(voxel)
-    return (r_base + (r_max - r_base)
-            * np.exp(-0.5 * (d_defect / sigma) ** 2)).astype(np.float32)
+    g = np.exp(-0.5 * (d_defect / sigma) ** 2).astype(np.float32)
+    r_grid = (r_base + (r_max - r_base) * g).astype(np.float32)
+    return r_grid, g
 
 
 # ---------------------------------------------------------------------------
@@ -431,10 +469,10 @@ def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
     """Delegate to ``sutura_geom.dressing_coat`` when the installed extension
     provides it.  Returns ``(verts, tris, info)`` or ``None``.
 
-    The c2f2116 binding signature is
-    ``dressing_coat(verts, tris, defect_pts=None, voxel=None, r_base=None,
-    r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0)`` where
-    ``defect_pts`` is an Nx3 point array (not vertex indices).  It has no
+    The current binding signature is ``dressing_coat(verts, tris,
+    defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None,
+    band_voxels=2.0, margin_voxels=3.0, drain=0.0)`` where ``defect_pts`` is an
+    Nx3 point array (not vertex indices).  The older c2f2116 build has no
     ``drain`` parameter, so when a positive drain is requested and the build
     cannot take it, this returns ``None`` and the caller uses the numpy path
     (which applies the drain in the level set).  Any signature mismatch or
@@ -470,20 +508,21 @@ def _numpy_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
                 drain_delta=0.0):
     """Numpy prototype path: GWN signed field -> variable radius -> MT.
 
-    ``drain_delta`` is added to the level set (``F = s - r + drain_delta``): a
-    positive value erodes the coat back toward the original surface on healthy
-    regions (where ``r ~ r_base``), while defect regions stay covered because
-    their ``r`` is much larger (offset report §1)."""
+    ``drain_delta`` is the healthy-region erode-back in mm, applied to the
+    level set exactly like the Rust core: ``F = s - r + drain * (1 - g)`` where
+    ``g`` is the defect influence.  Healthy cells (``g ~ 0``) get the full
+    drain (their isosurface re-centres on the input boundary); defect cells
+    (``g ~ 1``) keep their coverage (offset report §1)."""
     w, u, s, info = sutura_geom.sdf_grid(v, t, voxel=voxel, box=box)
     voxel = float(info['voxel'])
     origin = np.asarray(info['origin'], dtype=np.float64)
     dims = tuple(int(x) for x in info['dims'])
-    r_grid = _variable_radius(dims, origin, voxel, defect_idx, v,
-                              r_base, r_max, sigma)
+    r_grid, g = _variable_radius(dims, origin, voxel, defect_idx, v,
+                                 r_base, r_max, sigma)
     F = np.asarray(s, dtype=np.float32) - r_grid
     if drain_delta:
-        F += np.float32(drain_delta)
-    del s, r_grid
+        F += np.float32(drain_delta) * (np.float32(1.0) - g)
+    del s, r_grid, g
     cv, ct = _marching_tets(F, origin, voxel, slab=8)
     del F
     meta = {
@@ -617,7 +656,8 @@ def _decimate_coat(ml, v, t, target_faces):
 # ---------------------------------------------------------------------------
 def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
                   r_base=None, r_max=None, sigma=None, ml=None, guard=True,
-                  time_budget=None, drain=None):
+                  time_budget=None, drain=None, defects=None,
+                  r_max_scale=None, sigma_scale=None):
     """Dressing (#16) repair: extract the variable-viscosity level set.
 
     Returns ``(verts, tris, report)``.  The report always carries
@@ -634,6 +674,12 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
     permanently rejected).  A small residual outward bias (~0.4 voxel) remains
     even at full drain — the extractor's discretization, to be addressed in the
     Rust core, not hidden here.
+
+    ``defects`` selects the mask that drives the viscosity field: ``'all'``
+    (default) = holes + non-manifold + self-intersections, ``'holes_nm'`` =
+    holes + non-manifold only.  ``r_max_scale`` / ``sigma_scale`` multiply the
+    resolved ``r_max`` / ``sigma`` (``None`` = 1.0, the current default), so a
+    narrower/tighter coat can be requested without new presets.
     """
     t_start = time.perf_counter()
     v0 = _as_f64(verts)
@@ -674,6 +720,9 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
         'hausdorff_input_to_coat': None,
         'fidelity_ok': None,
         'drain': None,
+        'defects': defects if defects in DEFECT_SETS else DEFECT_SET_DEFAULT,
+        'r_max_scale': None,
+        'sigma_scale': None,
         'within_time_budget': None,
         'time_budget_s': float(time_budget),
         'warnings': [],
@@ -692,8 +741,15 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
         voxel = resolve_dressing_voxel(v0, t0, diag, intensity, grid_budget)
     voxel = float(voxel)
     report['si_before'] = _exact_si(v0, t0)
-    defect_idx, gap = _defect_vertex_indices(v0, t0)
-    rb, rmx, sg = resolve_viscosity(ell, voxel, intensity, gap=gap)
+    defect_set = defects if defects in DEFECT_SETS else DEFECT_SET_DEFAULT
+    rms = _normalize_scale(r_max_scale)
+    sgs = _normalize_scale(sigma_scale)
+    report['defects'] = defect_set
+    report['r_max_scale'] = rms
+    report['sigma_scale'] = sgs
+    defect_idx, gap = _defect_vertex_indices(v0, t0, defects=defect_set)
+    rb, rmx, sg = resolve_viscosity(ell, voxel, intensity, gap=gap,
+                                    r_max_scale=rms, sigma_scale=sgs)
     if r_base is not None:
         rb = float(r_base)
     if r_max is not None:

@@ -15,10 +15,11 @@ All notable changes to this project are documented here.
   whole-shell topological folds where local patch excision and hybrid splicing fail.
   The backend is the validated numpy prototype (`sutura_engine/dressing.py`:
   `sdf_grid` -> variable radius -> marching tetrahedra -> decimation -> P-WELD); the
-  Rust `sutura_geom.dressing_coat` narrow-band core (`feat/dressing` c2f2116) is
-  feature-detected and used automatically when present (numpy fallback otherwise;
-  the c2f2116 binding takes `defect_pts` as Nx3 points and has no `drain` kwarg, so
-  a positive drain uses the numpy path until the Rust `delta_r` commit lands). The voxel size follows the
+  Rust `sutura_geom.dressing_coat` narrow-band core is feature-detected and used
+  automatically when present (numpy fallback otherwise); the binding takes
+  `defect_pts` as Nx3 points and gained the `drain` kwarg (feature-detected via
+  `_rust_signature_has_drain`, so an extension that predates it still falls back to
+  numpy for a positive drain). The voxel size follows the
   characteristic feature size (`median_edge / 1.5`, clipped to the preset diagonal
   band) instead of only the bounding box, which fixes the small-model oversampling
   (thingi10k_100827 was evaluated at 7.3 % deviation at `diag/200`). Decimation
@@ -44,6 +45,22 @@ All notable changes to this project are documented here.
   `report['dressing']['drain']` carries the mode, factor, amount and `drained`. A
   residual ~0.2 mm (~0.4 voxel) outward bias remains even at full drain — the
   extractor's discretization, to be addressed in the Rust core, not hidden here.
+
+- **Dressing defect-set and viscosity overrides.** `dressing_coat(defects=..., r_max_scale=..., sigma_scale=...)`
+  selects which input defects drive the viscosity mask and scales the resolved
+  viscosity extent. `defects='all'` (the default) keeps holes + non-manifold +
+  self-intersections; `defects='holes_nm'` drops the self-intersection term, so a
+  scan whose only damage is holes/non-manifold edges is not thickened by spurious
+  SI. `r_max_scale`/`sigma_scale` multiply the resolved `r_max`/`sigma` (unset =
+  1.0, byte-identical; zero, negative and unparseable values are ignored, so the
+  default is unchanged). CLI `--dressing-defects {all,holes_nm}`,
+  `--dressing-rmax-scale F`, `--dressing-sigma-scale F`; env
+  `SUTURA_DRESSING_DEFECTS` / `SUTURA_DRESSING_RMAX_SCALE` /
+  `SUTURA_DRESSING_SIGMA_SCALE`; GUI Options→Experimental combos *Defects*,
+  *r_max* and *sigma*. `report['dressing']['defects']` / `['r_max_scale']` /
+  `['sigma_scale']` carry the effective values. Note: the Rust drain path yields a
+  changed isosurface without changing the grid face count, so the healthy-growth
+  regression asserts a shrinking bbox span, not a face-count delta.
 
 - **Ray-stabbing inside/outside vote in the Rust core (experimental, off by default).** The
   `sutura_geom` morphology core now exposes `raystab_points` and `raystab_grid`, and an opt-in

@@ -1024,7 +1024,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             repeat_source=None, repeat_target=None,
                             wall_thicken=False, wall_min_thickness=None,
                             graft=False, dressing=False,
-                            dressing_drain=None):
+                            dressing_drain=None, dressing_defects=None,
+                            dressing_rmax_scale=None, dressing_sigma_scale=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -1374,7 +1375,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                    spec=triage_spec, engines=engines,
                                    engine_chain=engine_chain, graft=graft,
                                    dressing=dressing,
-                                   dressing_drain=dressing_drain)
+                                   dressing_drain=dressing_drain,
+                                   dressing_defects=dressing_defects,
+                                   dressing_rmax_scale=dressing_rmax_scale,
+                                   dressing_sigma_scale=dressing_sigma_scale)
 
     # Registry methods 11/12 (P-REP): repeated-element transplant, after the
     # whole stage-1 chain (the transplant needs a watertight M).
@@ -1706,6 +1710,63 @@ def resolve_dressing_drain(cli_value=None, environ=None):
         except ValueError:
             return None
     return None
+
+
+# Dressing defect-mask sets (must match sutura_engine.dressing.DEFECT_SETS).
+DRESSING_DEFECT_SETS = ('all', 'holes_nm')
+
+
+def resolve_dressing_defects(cli_value=None, environ=None):
+    """Resolve the Dressing defect-set override (method #16).
+
+    Returns ``'all'`` (holes + non-manifold + self-intersections, the default),
+    ``'holes_nm'`` (holes + non-manifold only) or ``None`` (the module default).
+    Precedence: CLI flag > ``SUTURA_DRESSING_DEFECTS`` > ``None``.  An invalid
+    value at either level is ignored.
+    """
+    if cli_value is not None:
+        return cli_value if cli_value in DRESSING_DEFECT_SETS else None
+    env = environ if environ is not None else os.environ.get('SUTURA_DRESSING_DEFECTS')
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in DRESSING_DEFECT_SETS:
+            return val
+    return None
+
+
+def resolve_dressing_scale(cli_value=None, env_var='', environ=None):
+    """Resolve a positive Dressing scale factor (method #16).
+
+    Returns a positive ``float`` or ``None`` (the module default, 1.0).
+    Precedence: CLI flag > ``env_var`` > ``None``.  A non-positive or
+    unparseable value at either level is ignored.
+    """
+    if cli_value is not None:
+        try:
+            s = float(cli_value)
+        except (TypeError, ValueError):
+            return None
+        return s if s > 0.0 else None
+    env = environ if environ is not None else os.environ.get(env_var)
+    if env is not None:
+        try:
+            s = float(str(env).strip())
+        except (TypeError, ValueError):
+            return None
+        return s if s > 0.0 else None
+    return None
+
+
+def resolve_dressing_rmax_scale(cli_value=None, environ=None):
+    """Resolve the Dressing ``r_max`` scale factor (method #16)."""
+    return resolve_dressing_scale(cli_value, 'SUTURA_DRESSING_RMAX_SCALE',
+                                  environ=environ)
+
+
+def resolve_dressing_sigma_scale(cli_value=None, environ=None):
+    """Resolve the Dressing ``sigma`` scale factor (method #16)."""
+    return resolve_dressing_scale(cli_value, 'SUTURA_DRESSING_SIGMA_SCALE',
+                                  environ=environ)
 
 
 # ---------------------------------------------------------------------------
@@ -3157,7 +3218,8 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
 
 
 def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
-                  intensity=None, drain=None):
+                  intensity=None, drain=None, defects=None,
+                  r_max_scale=None, sigma_scale=None):
     """Variable-viscosity coat tier for registry method 16 (Dressing).
 
     Runs ``sutura_engine.dressing.dressing_coat`` on the ORIGINAL input arrays
@@ -3165,9 +3227,11 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
     when it is strict-watertight after the save/reload-equivalent weld, free of
     exact self-intersections and inside the preset's coat->input fidelity gate.
     ``drain`` selects the healthy-region erode-back (``None`` = preset default,
-    a mode name, or an explicit delta in mm).  ``stats['dressing']`` records the
-    parameters, the deviations, the exact-SI verdict and the EN/TR warnings the
-    CLI/GUI surface.  Never raises.
+    a mode name, or an explicit delta in mm).  ``defects`` selects the mask
+    (``'all'`` default, ``'holes_nm'``); ``r_max_scale`` / ``sigma_scale``
+    multiply the resolved ``r_max`` / ``sigma``.  ``stats['dressing']`` records
+    the parameters, the deviations, the exact-SI verdict and the EN/TR warnings
+    the CLI/GUI surface.  Never raises.
     """
     if not dressing:
         return ms, after
@@ -3175,7 +3239,8 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
            'watertight': False, 'fidelity_ok': None, 'engine': None,
            'voxel': None, 'r_base': None, 'r_max': None, 'sigma': None,
            'faces': None, 'faces_coat': None, 'decimated': False,
-           'drain': None,
+           'drain': None, 'defects': None, 'r_max_scale': None,
+           'sigma_scale': None,
            'hausdorff_rel_max': None, 'hausdorff_input_to_coat': None,
            'si_before': None, 'si_after': None, 'si_exact_unknown': False,
            'holes': None, 'non_manifold': None,
@@ -3191,9 +3256,13 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
         in_v = np.asarray(v, dtype=np.float64)
         in_t = np.asarray(t, dtype=np.int64)
         cand_v, cand_t, drec = _dressing.dressing_coat(
-            in_v, in_t, ml=ml, intensity=intensity, drain=drain)
+            in_v, in_t, ml=ml, intensity=intensity, drain=drain,
+            defects=defects, r_max_scale=r_max_scale, sigma_scale=sigma_scale)
         rec['ran'] = True
         rec['drain'] = drec.get('drain')
+        rec['defects'] = drec.get('defects')
+        rec['r_max_scale'] = drec.get('r_max_scale')
+        rec['sigma_scale'] = drec.get('sigma_scale')
         rec['engine'] = drec.get('engine')
         rec['voxel'] = drec.get('voxel')
         rec['r_base'] = drec.get('r_base')
@@ -3455,7 +3524,9 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
 
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        ftetwild=False, spec=None, engines=None, engine_chain=None,
-                       graft=False, dressing=False, dressing_drain=None):
+                       graft=False, dressing=False, dressing_drain=None,
+                       dressing_defects=None, dressing_rmax_scale=None,
+                       dressing_sigma_scale=None):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
     default (no deep-repair report; ``ftetwild`` alone decides, as before
@@ -3539,7 +3610,9 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                         ml, ms, after, stats, v, t, tmpdir, dressing=True,
                         intensity=(getattr(spec, 'base', None)
                                    or getattr(spec, 'name', None)),
-                        drain=dressing_drain)
+                        drain=dressing_drain, defects=dressing_defects,
+                        r_max_scale=dressing_rmax_scale,
+                        sigma_scale=dressing_sigma_scale)
                     _d = stats.get('dressing') or {}
                     if _d.get('adopted'):
                         ms, after = _d_ms, _d_after
@@ -3581,7 +3654,9 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 ml, ms, after, stats, v, t, tmpdir, dressing=True,
                 intensity=(getattr(spec, 'base', None)
                            or getattr(spec, 'name', None)),
-                drain=dressing_drain)
+                drain=dressing_drain, defects=dressing_defects,
+                r_max_scale=dressing_rmax_scale,
+                sigma_scale=dressing_sigma_scale)
             if (stats.get('dressing') or {}).get('adopted'):
                 ms, after = _d_ms, _d_after
                 tiers_run.append('dressing')
@@ -3885,8 +3960,9 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 triage_spec=None, engines=None, engine_chain=None,
                 closing=None, proxy_template=False, repeat=None,
                 repeat_source=None, repeat_target=None,
-                wall_thicken=False, wall_min_thickness=None, graft=False,
-                dressing=False, dressing_drain=None):
+                 wall_thicken=False, wall_min_thickness=None, graft=False,
+                 dressing=False, dressing_drain=None, dressing_defects=None,
+                 dressing_rmax_scale=None, dressing_sigma_scale=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -3915,7 +3991,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         closing=closing, proxy_template=proxy_template, repeat=repeat,
         repeat_source=repeat_source, repeat_target=repeat_target,
         wall_thicken=wall_thicken, wall_min_thickness=wall_min_thickness,
-        graft=graft, dressing=dressing, dressing_drain=dressing_drain)
+        graft=graft, dressing=dressing, dressing_drain=dressing_drain,
+        dressing_defects=dressing_defects,
+        dressing_rmax_scale=dressing_rmax_scale,
+        dressing_sigma_scale=dressing_sigma_scale)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -4029,7 +4108,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                closing=None, proxy_template=False, repeat=None,
                repeat_source=None, repeat_target=None,
                wall_thicken=False, wall_min_thickness=None, graft=False,
-               dressing=False, dressing_drain=None):
+               dressing=False, dressing_drain=None, dressing_defects=None,
+               dressing_rmax_scale=None, dressing_sigma_scale=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -4078,7 +4158,10 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     repeat=repeat, repeat_source=repeat_source,
                     repeat_target=repeat_target, wall_thicken=wall_thicken,
                     wall_min_thickness=wall_min_thickness, graft=graft,
-                    dressing=dressing, dressing_drain=dressing_drain)
+                    dressing=dressing, dressing_drain=dressing_drain,
+                    dressing_defects=dressing_defects,
+                    dressing_rmax_scale=dressing_rmax_scale,
+                    dressing_sigma_scale=dressing_sigma_scale)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -4807,7 +4890,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
                  repeat_target=None, wall_min_thickness=None, graft=False,
-                 dressing=False, dressing_drain=None):
+                 dressing=False, dressing_drain=None, dressing_defects=None,
+                 dressing_rmax_scale=None, dressing_sigma_scale=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -4871,7 +4955,10 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
             repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
-            graft=graft, dressing=dressing, dressing_drain=dressing_drain))
+            graft=graft, dressing=dressing, dressing_drain=dressing_drain,
+            dressing_defects=dressing_defects,
+            dressing_rmax_scale=dressing_rmax_scale,
+            dressing_sigma_scale=dressing_sigma_scale))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -5277,6 +5364,23 @@ def main():
                              '(Quick off; Balanced/Thorough full; Extreme deep). '
                              'Applied in the level set (F = s - r + delta_r), '
                              'never by vertex projection')
+    parser.add_argument('--dressing-defects', choices=DRESSING_DEFECT_SETS,
+                        default=None,
+                        help='Dressing (#16) viscosity-mask defect set: "all" '
+                             '(default) = holes + non-manifold + '
+                             'self-intersections, "holes_nm" = holes + '
+                             'non-manifold only (self-intersections are '
+                             'ignored). Env: SUTURA_DRESSING_DEFECTS')
+    parser.add_argument('--dressing-rmax-scale', type=float, default=None,
+                        metavar='F',
+                        help='Dressing (#16) multiplier on the resolved r_max '
+                             '(bridging radius); default 1.0. A value < 1 gives '
+                             'a narrower coat. Env: SUTURA_DRESSING_RMAX_SCALE')
+    parser.add_argument('--dressing-sigma-scale', type=float, default=None,
+                        metavar='F',
+                        help='Dressing (#16) multiplier on the resolved sigma '
+                             '(defect-influence width); default 1.0. Env: '
+                             'SUTURA_DRESSING_SIGMA_SCALE')
     parser.add_argument('--deep-repair', choices=DEEP_REPAIR_MODES, default=None,
                         help='deep-repair ladder after the fast repair, when '
                              'holes or non-manifold edges remain: "full" '
@@ -5583,6 +5687,10 @@ def main():
     _dressing_arg = resolve_dressing(no_dressing=args.no_dressing,
                                      force=args.experimental_dressing)
     _dressing_drain = resolve_dressing_drain(args.dressing_drain)
+    _dressing_defects = resolve_dressing_defects(args.dressing_defects)
+    _dressing_rmax_scale = resolve_dressing_rmax_scale(args.dressing_rmax_scale)
+    _dressing_sigma_scale = resolve_dressing_sigma_scale(
+        args.dressing_sigma_scale)
     # External engines are loaded ONCE for the whole batch; broken configs
     # only warn and never fail a repair.
     _engines, _engine_chain, _engine_warnings = load_engine_run()
@@ -5600,6 +5708,9 @@ def main():
                             ftetwild=_ft_arg, deep_repair=_dr_mode,
                             graft=_graft_arg, dressing=_dressing_arg,
                             dressing_drain=_dressing_drain,
+                            dressing_defects=_dressing_defects,
+                            dressing_rmax_scale=_dressing_rmax_scale,
+                            dressing_sigma_scale=_dressing_sigma_scale,
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak,
                             triage_spec=triage_spec, engines=_engines,
