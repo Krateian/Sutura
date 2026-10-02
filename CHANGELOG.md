@@ -25,6 +25,19 @@ All notable changes to this project are documented here.
   `SUTURA_GRAFT_SIGN_FIELD=0`. The Rust core accepts `r == 0` as the sign-field path and exposes
   `SIGN_FIELD_SUPPORTED` / `info['sign_field']`.
 
+- **Guarded self-intersection excise + refined re-cap in Full Mend.** After the
+  Stage-1 chain, Full Mend now removes residual self-intersecting faces (the
+  faces plus a one-ring band) and re-closes the opened loops with PyMeshLab's
+  refined, self-intersection-preventing hole fill, committing a round only when
+  the self-intersection count strictly drops while holes and non-manifold edges
+  do not increase (otherwise the pre-round mesh is restored byte-for-byte). It
+  never drops a connected component, runs at most three rounds under the
+  intensity preset's time budget (Balanced 5 s / Thorough 20 s / Extreme 60 s)
+  and is a no-op on meshes without self-intersections (`SUTURA_SI_EXCISE=0`
+  disables it). Report key `si_excise`. Also adds the experimental
+  `SUTURA_REFINE_HOLE=1` refined Stage-1 hole fill (off by default, unproven on
+  the corpora).
+
 ### Changed
 
 - **Graft's grid budget scales with the Triage intensity preset and the available RAM.** The

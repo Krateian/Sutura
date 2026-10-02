@@ -102,6 +102,19 @@ açıktır:
   optimizasyonu kapalıdır (yalnızca dış yüzey kullanılır, çoğunlukla süre
   kaybıdır); `--ftetwild-optimize` (GUI: *Tetrahedra optimizasyonu*,
   önerilmez) açar.
+* *Full Mend içinde, Stage 1'den sonra:* **guard'lı self-intersection kesme +
+  yeniden kapatma** artakalan self-intersection yüzlerini (yüzler ve bir
+  halkalık kuşak) kaldırır, açılan döngüleri PyMeshLab'ın rafine delik
+  doldurmasıyla (`refinehole=True`, `selfintersection=True` — bu yeni kesişen
+  kapakları *önler*) kapatır ve bir turu yalnızca self-intersection sayısı
+  kesin azalırken delikler ve non-manifold kenarlar artmadığında kabul eder;
+  aksi hâlde tur-öncesi ağ bayt bayt geri yüklenir. Hiçbir bağlı bileşen
+  düşürülmez, yoğunluk ön ayarının zaman bütçesiyle (Balanced 5 sn, Thorough
+  20 sn, Extreme 60 sn) en fazla üç tur çalışır ve self-intersection içermeyen
+  ağlarda no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır. Stage 1 delik
+  doldurması ayrıca deneysel `SUTURA_REFINE_HOLE=1` ile rafine edilebilir
+  (`refinehole=True`); korpuslarda henüz kanıtlanmadığı için varsayılan
+  kapalıdır.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya

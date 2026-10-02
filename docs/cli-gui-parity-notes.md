@@ -124,3 +124,8 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
   environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
   flag and a GUI control together, per the parity rule.
+- **Guarded SI excise + refined Stage-1 hole fill (unreleased):** the Full-Mend
+  self-intersection excise is automatic pipeline behaviour (both CLI and GUI get it, so
+  parity holds) with an env opt-out only (`SUTURA_SI_EXCISE=0`), like the ray-stab vote.
+  The refined Stage-1 hole fill (`SUTURA_REFINE_HOLE=1`) is an unproven evaluation switch,
+  so it is env-only too; when it is proven it gets a CLI flag and a GUI control together.
