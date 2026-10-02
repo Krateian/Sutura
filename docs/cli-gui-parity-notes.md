@@ -14,6 +14,7 @@ omission must be documented here. This file records the current parity gaps
 | `-o/--output` | GUI always writes the default `_fixed` file in place; a custom output path is a scripting need. |
 | `--human`, `--defects`, `--diff` | Text-report presentation flags; the GUI renders the same data graphically (defect panel, repair log, before/after). |
 | `export-history` (`--last`/`--clear`/`--summary-only`) | Usage-history is an anonymous CLI/telemetry feature; no GUI viewer yet. |
+| Ray-stabbing vote (`raystab=` / `SUTURA_RAYSTAB`, library/Graft only) | Experimental inside/outside disambiguation; no CLI flag or GUI control yet by design. Deliberately deferred until it is measured on the real-world corpus, at which point it gets both a CLI flag and a GUI control. |
 
 ## GUI-only (allowed exceptions — visual features)
 

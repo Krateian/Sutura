@@ -79,6 +79,9 @@ exact-arrangement path):
   nested shells. The same BVH answers branch-and-bound closest-point
   (unsigned distance) queries; the signed distance is
   `sign(w - 0.5) * unsigned`. Grid queries are rayon-parallel over z-slices.
+  The BVH also supports exact ray casting (`intersect_ray`: oriented net
+  crossing sum + raw crossing count, shared-edge hits deduplicated within a
+  small tolerance and grazing hits flagged) for the ray-stabbing vote below.
 - `src/morph.rs` — Felzenszwalb–Huttenlocher exact separable EDT (1-D lower
   envelope of parabolas, then x/y/z passes). Closing of the solid by `r` is
   implemented as dilate (`sdf - r`) followed by a **true EDT re-distance of
@@ -128,6 +131,51 @@ auto grid (99x109x36, voxel 0.575) and 16.1 s at voxel 0.30 (184x203x63,
 Graft tier (#13): the closest-point query drives the projection/Hausdorff
 metrics and the SI classifier (proper crossings only, pairs sharing a vertex
 ignored, capped at `SI_MAX_FACES`) drives the re-mesh rollback.
+
+## Ray-stabbing disambiguation (experimental)
+
+`src/raycast.rs` adds a Nooruddin & Turk (2003) "spray" inside/outside vote on
+top of the winding BVH. For a query point a set of `K` near-uniform directions
+on a jittered Fibonacci sphere is cast (default 13); each ray votes from its
+**oriented net crossing sum** `Σ sign(dot(dir, n_face))` (`> 0` inside). The
+oriented sum matches the generalized winding number's union and cavity
+semantics, so it is correct for overlapping unioned shells where plain parity
+would read the overlap as outside. A ray along which the oriented sum is
+negative (`net < 0`), or zero with an odd crossing count, cannot come from a
+consistently outward-oriented closed surface; such a ray falls back to
+orientation-independent crossing parity (`parity=True` forces parity for all
+rays). A ray escaping the bounding box without a hit is an outside vote
+weighted `escape_weight` (default 2.0).
+
+The vote is intended to override the generalized-winding sign only inside the
+ambiguous band `0.3 < w < 0.7`, where the field is between "clearly outside"
+and "clearly inside"; unresolved votes (a majority of grazing/suspect rays) are
+left to the winding number.
+
+```python
+# Per-point vote: inside, inside_votes, outside_votes, escape_votes.
+inside, iv, ov, ev = sutura_geom.raystab_points(verts, tris, points,
+                                                n_dirs=13, seed=0,
+                                                parity=False)
+# Full-grid inside mask + vote score (analysis/tests; votes every cell).
+grid, score, info = sutura_geom.raystab_grid(verts, tris, voxel=0.1)
+
+# sdf_grid/morph_close take an opt-in raystab= keyword; OFF by default, so
+# the output is byte-identical to the winding-only path when off.
+w, u, s, info = sutura_geom.sdf_grid(verts, tris, 0.1, raystab=True)
+ov, ot, info = sutura_geom.morph_close(verts, tris, r=0.2, raystab=True)
+# info["raystab"]: enabled, dirs, seed, parity, cells_ambiguous,
+#                  cells_flipped, cells_unresolved, rays_cast, seconds
+```
+
+Graft (`sutura/sutura_engine/graft.py`, #13) exposes the same switch as
+`shell_wrap(..., raystab=True)` or the `SUTURA_RAYSTAB=1` environment variable
+and records `report["raystab"]`. The switch is off by default and deferred from
+the CLI/GUI until it has been measured on the real-world corpus (see
+`docs/cli-gui-parity-notes.md`).
+
+Smoke tests: the `raycast`/`winding` unit tests in the crate plus
+`tests/test_raystab.py`.
 
 ## Phase C0 profile (thingi10k_1038441)
 

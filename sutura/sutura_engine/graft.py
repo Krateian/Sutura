@@ -34,6 +34,7 @@ vertex distance to the original surface for the heatmap view.
 """
 from __future__ import annotations
 
+import os
 import time
 from collections import defaultdict
 
@@ -92,6 +93,26 @@ SI_ROLLBACK = True
 HYBRID_MAX_HOLE = 200_000       # pymeshlab close_holes budget for the hybrid
 REFINE_MAX_FACES = 300_000      # do not adopt a refinement past this size
 REFINE_FACE_FACTOR = 4          # ... nor past this multiple of the input faces
+
+# --- ray-stabbing disambiguation (opt-in, experimental) --------------------
+# The Cast morphology core builds the signed field from the generalized winding
+# number, which is correct for consistently oriented closed shells but can pick
+# the wrong side in the winding-ambiguous band (0.3-0.7) on overlapping or
+# inconsistently oriented soups.  ``raystab=True`` (or SUTURA_RAYSTAB=1) votes
+# inside/outside with a small set of rays to override the sign there.  It is
+# OFF by default and byte-identical to the winding-only path when off.
+_RAYSTAB_SUPPORTED = hasattr(sutura_geom, 'raystab_grid')
+_RAYSTAB_ENV_TRUE = {'1', 'true', 'yes', 'on'}
+
+
+def _resolve_raystab(raystab):
+    """Resolve the opt-in from the parameter, then SUTURA_RAYSTAB, then off.
+
+    Returns False (a no-op) when the installed extension predates the feature.
+    """
+    if raystab is None:
+        raystab = os.environ.get('SUTURA_RAYSTAB', '').strip().lower() in _RAYSTAB_ENV_TRUE
+    return bool(raystab) and _RAYSTAB_SUPPORTED
 
 
 # --------------------------------------------------------------------------- #
@@ -741,7 +762,9 @@ def _warnings_for(r_used, detail, diag):
 def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=MAX_TRIES,
                target_edge=None, ml=None, si_check=True, guard=True,
-               grid_budget=GRID_BUDGET, detail_tol=None):
+               grid_budget=GRID_BUDGET, detail_tol=None,
+               raystab=None, raystab_dirs=None, raystab_seed=0,
+               raystab_parity=False):
     """Graft (shell wrap) repair.
 
     ``r`` fixes the closing radius (otherwise the finest-first ladder is used);
@@ -749,6 +772,10 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     ``local=True`` forces the local-window path (``None`` decides from the
     damaged-region bbox); ``remesh`` toggles the isotropic re-mesh; ``ml`` is
     an optional live pymeshlab module for the full Stitch (P-WELD) pass.
+
+    ``raystab`` (or the ``SUTURA_RAYSTAB`` env var) enables ray-stabbing
+    disambiguation of the generalized-winding sign in the ambiguous band; it is
+    OFF by default, so the output is byte-identical to the winding-only path.
 
     Returns ``(verts, tris, report)``; the report always carries
     ``method=13``, ``display_name='Graft'`` and ``invents_geometry=True``.
@@ -795,6 +822,17 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         report["seconds"] = round(time.perf_counter() - t_start, 3)
         return v0, t0, report
 
+    use_raystab = _resolve_raystab(raystab)
+    report["raystab"] = None
+    raystab_kwargs = {}
+    if use_raystab:
+        raystab_kwargs = {
+            "raystab": True,
+            "raystab_dirs": raystab_dirs,
+            "raystab_seed": int(raystab_seed),
+            "raystab_parity": bool(raystab_parity),
+        }
+
     diag = _diag(v0)
     ext = v0.max(axis=0) - v0.min(axis=0)
     if voxel is None:
@@ -836,7 +874,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         try:
             ev, et, info = sutura_geom.morph_close(
                 v0, t0, float(rval), voxel,
-                local_box if use_local else box_arg, bool(fill_cavities))
+                local_box if use_local else box_arg, bool(fill_cavities),
+                **raystab_kwargs)
         except Exception:  # noqa: BLE001
             continue
         ev, et = _as_f64(ev), _as_i64(et)
@@ -850,7 +889,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                 mode = "whole"
                 try:
                     ev, et, info = sutura_geom.morph_close(
-                        v0, t0, float(rval), voxel, box_arg, bool(fill_cavities))
+                        v0, t0, float(rval), voxel, box_arg, bool(fill_cavities),
+                        **raystab_kwargs)
                     ev, et = _as_f64(ev), _as_i64(et)
                 except Exception:  # noqa: BLE001
                     continue
@@ -950,6 +990,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             "remeshed": bool(report["remeshed"]),
             "si_before": si_before, "si_after": si_after, "si_rolled_back": rolled,
             "pweld": pw, "detail": detail,
+            "raystab": info.get("raystab"),
         }
         if best is None or (cand["holes"] + cand["non_manifold"]) < (
                 best["holes"] + best["non_manifold"]):
@@ -984,6 +1025,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "holes": best["holes"],
         "non_manifold": best["non_manifold"],
         "p_weld": best["pweld"],
+        "raystab": best.get("raystab"),
         "faces_after": int(len(best["t"])),
         "detail_max_mm": round(detail["max"], 5),
         "detail_mean_mm": round(detail["mean"], 5),

@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Ray-stabbing inside/outside vote in the Rust core (experimental, off by default).** The
+  `sutura_geom` morphology core now exposes `raystab_points` and `raystab_grid`, and an opt-in
+  `raystab=` keyword on `sdf_grid`/`morph_close` that overrides the generalized-winding sign in
+  the ambiguous band (`0.3 < w < 0.7`) with a Nooruddin & Turk sphere-spray vote. The vote is the
+  oriented net crossing sum (correct for overlapping unioned shells; reduces to parity for a
+  single shell) with a per-ray parity fallback for orientation-inconsistent soups, and an
+  escaping ray counts as a strong outside vote. Graft exposes it as
+  `shell_wrap(..., raystab=True)` / `SUTURA_RAYSTAB=1` and reports `report["raystab"]`. It is
+  off by default and byte-identical to the winding-only path; the CLI/GUI switch is deferred
+  until a real-world-corpus measurement.
+
 ### Fixed
 
 - **OrcaCloud plugin publishing on every release.** The build workflows now run on a published
