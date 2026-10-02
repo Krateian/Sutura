@@ -6,6 +6,28 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Dressing (method #16, variable-viscosity volumetric skinning) — opt-in, off by
+  default.** A surgical sibling of Graft (#13): the input is dipped in a spatially
+  varying "liquid" and the level set `F(x) = s(x) - r(x)` is extracted, where `s` is
+  the generalized-winding signed distance and `r` a viscosity radius that is thin over
+  detailed healthy surface and thicker over damage. The isosurface of a scalar field is
+  2-manifold and self-intersection-free by construction, which is what targets
+  whole-shell topological folds where local patch excision and hybrid splicing fail.
+  The backend is the validated numpy prototype (`sutura_engine/dressing.py`:
+  `sdf_grid` -> variable radius -> marching tetrahedra -> decimation -> P-WELD); the
+  Rust `sutura_geom.dressing_coat` narrow-band core is feature-detected and used
+  automatically once it lands (numpy fallback otherwise). The voxel size follows the
+  characteristic feature size (`median_edge / 1.5`, clipped to the preset diagonal
+  band) instead of only the bounding box, which fixes the small-model oversampling
+  (thingi10k_100827 was evaluated at 7.3 % deviation at `diag/200`). Decimation
+  (`meshing_decimation_quadric_edge_collapse`, `optimalplacement=False`,
+  `planarquadric=True`, per the `/tmp/v073/dressing/decim` benchmark) rolls back
+  atomically to the un-decimated coat when it would introduce holes, non-manifold
+  edges or exact self-intersections. Enabled with `--experimental-dressing` /
+  `SUTURA_DRESSING=1` / the GUI Options checkbox; it is attempted after Graft and
+  before fTetWild, and adopted only when strict-watertight, exact-SI-free and inside
+  the preset's coat->input fidelity gate. Report key `dressing`.
+
 - **Ray-stabbing inside/outside vote in the Rust core (experimental, off by default).** The
   `sutura_geom` morphology core now exposes `raystab_points` and `raystab_grid`, and an opt-in
   `raystab=` keyword on `sdf_grid`/`morph_close` that overrides the generalized-winding sign in

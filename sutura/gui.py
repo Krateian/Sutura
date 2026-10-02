@@ -101,8 +101,14 @@ STRINGS = {
         'method_name_transplant': 'Transplant (repeat auto)',
         'method_name_transplant_plus': 'Transplant+ (repeat manual)',
         'method_name_graft': 'Graft (shell wrap)',
+        'method_name_dressing': 'Dressing (viscosity coat)',
         'method_name_mirror_complete': 'Mirror Complete',
         'method_name_wall_thicken': 'Wall Thicken',
+        'method_tip_dressing': 'DRESSING (#16) — variable-viscosity volumetric '
+            'skinning: extract a narrow-band generalized-winding isosurface '
+            'whose radius is thin over detailed healthy surface and thicker '
+            'over damage. 2-manifold and self-intersection-free by '
+            'construction; opt-in (never runs automatically).',
         'method_tip_graft': 'GRAFT (#13) — morphology shell wrap: close '
             'damaged regions with a generalized-winding signed-distance '
             'envelope, keep healthy geometry verbatim, and report detail loss. '
@@ -222,6 +228,7 @@ STRINGS = {
         'rec_reason_si': 'self-intersections present (%d)',
         'rec_reason_ftetwild': 'large openings / heavy self-intersections',
         'rec_reason_graft': 'openings / holes closable by a shell wrap',
+        'rec_reason_dressing': 'complex folds / heavy self-intersections skin-coatable',
         'rec_reason_not_scan': 'not a single-sided open scan',
         'rec_reason_poisson': 'single-sided open scan (%.2f)',
         'rec_reason_not_relief': 'no relief-like opening',
@@ -264,6 +271,8 @@ STRINGS = {
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
         'repair_log_graft': 'Graft (shell wrap): %d faces, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detail loss: %s',
+        'repair_log_dressing': 'Dressing (viscosity coat): %d faces, voxel=%s, r=%s',
+        'repair_log_dressing_warn': 'Dressing fidelity: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
@@ -280,8 +289,15 @@ STRINGS = {
                           'intersecting triangles along their intersection '
                           'segments instead of deleting faces (Lazard & Valque '
                           '2025). NEVER deletes input faces; adopted only when '
-                          'the result is not worse than the default chain '
-                          '(NOT the default).',
+                           'the result is not worse than the default chain '
+                           '(NOT the default).',
+        'dressing_label': 'Dressing (viscosity coat)',
+        'dressing_tip': 'Opt-in (#16): skin self-intersections and complex '
+                        'open defects with a variable-viscosity narrow-band '
+                        'level set of the generalized-winding field. '
+                        '2-manifold and self-intersection-free by '
+                        'construction; tried after Graft and before fTetWild. '
+                        'Off by default until measured on the corpus.',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Last-resort solidifier, on by default: when the '
                         'stage-1 chain still leaves holes or non-manifold '
@@ -380,6 +396,7 @@ STRINGS = {
         'issue_budget_exceeded': 'Repair budget exceeded',
         'issue_shape_changed': 'Shape changed by the fTetWild fallback',
         'issue_graft_detail_loss': 'Graft smoothed fine surface detail (see warnings)',
+        'issue_dressing_detail_loss': 'Dressing coat deviates from the input surface (see warnings)',
         'analyze': 'Analyze',
         'analyze_tip': ('Run read-only analysis (validate + dry-run) on the '
                         'selected files — never modifies the input.'),
@@ -616,8 +633,15 @@ STRINGS = {
         'method_name_transplant': 'Nakil (yineleme, otomatik)',
         'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
         'method_name_graft': 'Graft (kabuk sarma)',
+        'method_name_dressing': 'Pansuman (viskozite kaplama)',
         'method_name_mirror_complete': 'Aynalı Tamamlama',
         'method_name_wall_thicken': 'Duvar Kalınlaştır',
+        'method_tip_dressing': 'PANSUMAN (#16) — değişken viskoziteli hacimsel '
+            'kaplama: genelleştirilmiş sarımlı, dar bantlı bir seviye '
+            'kümesi çıkarır; yarıçap sağlıklı ince yüzeyde ince, hasar '
+            'bölgesinde daha kalındır. Yapısı gereği two-manifold ve '
+            'kendisiyle-kesişimsizdir; isteğe bağlıdır (asla otomatik '
+            'çalışmaz).',
         'method_tip_graft': 'GRAFT (#13) — morfoloji kabuk sarma: hasarlı '
             'bölgeleri genelleştirilmiş sarımlı işaretli mesafe zarfıyla kapatır, '
             'sağlıklı geometriyi birebir korur ve ayrıntı kaybını raporlar. '
@@ -738,6 +762,7 @@ STRINGS = {
         'rec_reason_si': 'kendisiyle-kesişim var (%d)',
         'rec_reason_ftetwild': 'büyük açıklıklar / yoğun kendisiyle-kesişim',
         'rec_reason_graft': 'kabuk sarma ile kapatılabilir açıklıklar / delikler',
+        'rec_reason_dressing': 'karmaşık katlanmalar / yoğun kendisiyle-kesişim kaplanabilir',
         'rec_reason_not_scan': 'tek yönlü açık tarama değil',
         'rec_reason_poisson': 'tek yönlü açık tarama (%.2f)',
         'rec_reason_not_relief': 'kabartma benzeri açıklık yok',
@@ -780,6 +805,8 @@ STRINGS = {
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
         'repair_log_graft': 'Graft (kabuk sarma): %d yüz, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detay kaybı: %s',
+        'repair_log_dressing': 'Pansuman (viskozite kaplama): %d yüz, voxel=%s, r=%s',
+        'repair_log_dressing_warn': 'Pansuman sadakati: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
@@ -798,6 +825,14 @@ STRINGS = {
                           'yüzeylerini ASLA silmez; yalnızca sonuç varsayılan '
                           'zincirden daha kötü değilse uygulanır (varsayılan '
                           'değil).',
+        'dressing_label': 'Pansuman (viskozite kaplama)',
+        'dressing_tip': 'İsteğe bağlı (#16): kendisiyle-kesişimleri ve '
+                        'karmaşık açık kusurları genelleştirilmiş sarımlı '
+                        'alanın değişken viskoziteli dar bantlı seviye '
+                        'kümesiyle kaplar. Yapısı gereği two-manifold ve '
+                        'kendisiyle-kesişimsizdir; Graft sonrası ve fTetWild '
+                        'öncesi denenir. Korpus üzerinde ölçülene kadar '
+                        'varsayılan olarak kapalıdır.',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Son çare katılaştırıcı, varsayılan olarak açık: '
                         'stage-1 zinciri hâlâ delik veya non-manifold kenar '
@@ -895,6 +930,7 @@ STRINGS = {
         'issue_budget_exceeded': 'Onarım bütçesi aşıldı',
         'issue_shape_changed': 'Şekil fTetWild yedek katmanıyla değişti',
         'issue_graft_detail_loss': 'Graft ince yüzey detayını yumuşattı (uyarılara bakın)',
+        'issue_dressing_detail_loss': 'Pansuman kaplaması girdi yüzeyinden sapıyor (uyarılara bakın)',
         'analyze': 'Analiz Et',
         'analyze_tip': ('Seçili dosyalar için salt-okunur analiz çalıştır '
                         '(validate + dry-run) — girdiyi asla değiştirmez.'),
@@ -1473,7 +1509,7 @@ class RepairWorker(QThread):
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
-                 intensity='balanced', methods_by_path=None,
+                 dressing=False, intensity='balanced', methods_by_path=None,
                  engines_by_path=None, repeat_points_by_path=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
@@ -1489,6 +1525,7 @@ class RepairWorker(QThread):
         self._autorefine = autorefine
         self._ftetwild = ftetwild
         self._indirect_autorefine = indirect_autorefine
+        self._dressing = dressing
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
         self._engines_by_path = dict(engines_by_path or {})
@@ -1556,6 +1593,8 @@ class RepairWorker(QThread):
                 args.append('--experimental-indirect-autorefine')
             if self._ftetwild_optimize:
                 args.append('--ftetwild-optimize')
+            if self._dressing:
+                args.append('--experimental-dressing')
             method_nums = self._methods_by_path.get(path)
             if method_nums:
                 args += ['--methods', ','.join(str(n) for n in method_nums)]
@@ -2939,7 +2978,8 @@ class OptionsDialog(QDialog):
         warn.setObjectName('optWarning')
         e.addWidget(warn)
         for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
-                    main.chk_join_components, main.chk_edge_tiebreak):
+                    main.chk_join_components, main.chk_edge_tiebreak,
+                    main.chk_dressing):
             e.addWidget(chk)
         e.addStretch(1)
         self.tabs.addTab(exp, _t('opt_tab_experimental'))
@@ -3350,6 +3390,7 @@ class MainWindow(QMainWindow):
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
         self._ftetwild = 'auto'       # fTetWild fallback tier: 'auto' (default) / False (off) / True (+SI)
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
+        self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -3468,6 +3509,12 @@ class MainWindow(QMainWindow):
         self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
         self.chk_indirect_autorefine.toggled.connect(
             lambda on: setattr(self, '_indirect_autorefine', on))
+        # opt-in Dressing viscosity coat (#16, batch-wide; off by default until
+        # measured on the corpus)
+        self.chk_dressing = QCheckBox(_t('dressing_label'))
+        self.chk_dressing.setToolTip(_t('dressing_tip'))
+        self.chk_dressing.toggled.connect(
+            lambda on: setattr(self, '_dressing', on))
         # The batch-wide options above live in a separate, non-modal Options
         # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
         # is re-parented there unchanged, so every chk_* attribute keeps its
@@ -3482,6 +3529,7 @@ class MainWindow(QMainWindow):
             (self.chk_indirect_autorefine, False),
             (self.chk_join_components, False),
             (self.chk_edge_tiebreak, False),
+            (self.chk_dressing, False),
         )
         self._options_dialog = OptionsDialog(self)
         self._sync_intensity_checkboxes()
@@ -4045,6 +4093,7 @@ class MainWindow(QMainWindow):
                                    ftetwild=self._ftetwild,
                                    indirect_autorefine=self._indirect_autorefine,
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
+                                   dressing=self._dressing,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
                                    engines_by_path=engines_by_path,
@@ -4496,6 +4545,17 @@ class MainWindow(QMainWindow):
                 _msg = _warns[0].get('message_tr' if _is_tr else 'message_en') \
                     or _warns[0].get('message_en', '')
                 lines.append(_t('repair_log_graft_warn', _msg))
+        dr_r = data.get('dressing')
+        if dr_r and dr_r.get('ran'):
+            lines.append(_t('repair_log_dressing',
+                            dr_r.get('faces') or dr_r.get('faces_coat', 0),
+                            dr_r.get('voxel'), dr_r.get('r_base')))
+            _dwarns = dr_r.get('warnings') or []
+            if _dwarns:
+                _is_tr = QLocale.system().name().startswith('tr')
+                _dmsg = _dwarns[0].get('message_tr' if _is_tr else 'message_en') \
+                    or _dwarns[0].get('message_en', '')
+                lines.append(_t('repair_log_dressing_warn', _dmsg))
         ia_r = data.get('experimental_indirect_autorefine')
         if ia_r and not ia_r.get('skipped') and 'error' not in ia_r:
             key = 'repair_log_indirect' if ia_r.get('adopted') \
