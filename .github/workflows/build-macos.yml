@@ -5,7 +5,9 @@ name: Build macOS .app/.dmg
 # onedir PyInstaller executables (onefile children hang under a Qt GUI
 # parent), manifold_bridge.py shipped beside sutura-cli so stage 2 works
 # self-contained, a windowed GUI .app with the tools in Contents/MacOS, and
-# an UDZO .dmg. Runs on tag pushes (v*.*.*) like the AppImage workflow.
+# an UDZO .dmg. Runs on published releases like the AppImage workflow; the
+# release is created by the maintainer's `gh` (a user token), never by this
+# workflow.
 #
 # The .dmg is UNSIGNED (no Apple Developer ID / notarization yet) - the
 # release body written manually for each tag carries that note; this
@@ -13,9 +15,8 @@ name: Build macOS .app/.dmg
 # written release body is never clobbered (same pattern as build-appimage.yml).
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  release:
+    types: [published]
   pull_request:
     # PRs build + verify the .app/.dmg pipeline but never publish (see the
     # publish-step guard below) and upload no large artifact.
@@ -258,11 +259,11 @@ jobs:
           fi
 
       - name: Publish .dmg to GitHub Release
-        # Only on a tag push, or a workflow_dispatch that names a tag (backfill).
-        # A workflow_dispatch without a tag previously published under
-        # GITHUB_REF_NAME (e.g. "main") and created stray draft releases; on PRs
-        # github.event.inputs.tag is null, and null != '' is false, so this step
-        # is skipped there too.
+        # Only on a `release: published` event, or a workflow_dispatch that
+        # names a tag (backfill). A workflow_dispatch without a tag previously
+        # published under GITHUB_REF_NAME (e.g. "main") and created stray draft
+        # releases; on PRs github.event.inputs.tag is null, and null != '' is
+        # false, so this step is skipped there too.
         if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag != ''
         # v3 (v2 is EOL). Deliberately NO name/body: softprops retains the
         # original release info when the tag already has a release, so a

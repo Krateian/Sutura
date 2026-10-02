@@ -8,20 +8,21 @@ name: Build sutura_geom wheels
 #   * linux aarch64 -> manylinux wheel, cross-compiled (manylinux: auto)
 #   * macOS         -> universal2 wheel (--target universal2-apple-darwin)
 #
-# On tag pushes (v*.*.*) and on a workflow_dispatch with a `tag` input the
-# wheels + sums are uploaded to the matching GitHub Release. On PRs and plain
-# pushes to main (paths: the crate, the install helper, this file) the build +
-# test jobs run but NOTHING is uploaded. The release job deliberately passes
-# no name/body to softprops so a manually written release body is never
-# clobbered (same pattern as build-appimage.yml / build-macos.yml).
+# On a published release and on a workflow_dispatch with a `tag` input the
+# wheels + sums are uploaded to the matching GitHub Release; the release is
+# created by the maintainer's `gh` (a user token), never by this workflow. On
+# PRs and plain pushes to main (paths: the crate, the install helper, this file)
+# the build + test jobs run but NOTHING is uploaded. The release job
+# deliberately passes no name/body to softprops so a manually written release
+# body is never clobbered (same pattern as build-appimage.yml / build-macos.yml).
 #
 # The abi3 tag (cp311-abi3) makes the wheels forward-compatible, which is why
 # the test job also imports the wheel on Python 3.14.
 
 on:
+  release:
+    types: [published]
   push:
-    tags:
-      - 'v*.*.*'
     branches: [main]
     paths:
       - 'rust/sutura-geom/**'
@@ -150,8 +151,8 @@ jobs:
 
   release:
     name: Publish wheels to GitHub Release
-    # Only on a tag push, or on a workflow_dispatch that names a tag; PRs and
-    # plain pushes to main only build + test (nothing uploaded).
+    # Only on a `release: published` event, or on a workflow_dispatch that names
+    # a tag; PRs and plain pushes to main only build + test (nothing uploaded).
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '')
     # Never publish wheels that did not pass the platform test jobs.
     needs: [build, test]

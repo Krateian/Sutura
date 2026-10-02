@@ -143,7 +143,7 @@ Options window, never in the way of the plain repair.
   real-world samples watertight again with unchanged face counts. Regression:
   `tests/test_methods.py::test_p_weld_final_separates_float32_collisions`.
 
-- **OrcaSlicer plugin v2 (`orcaslicer-plugin/sutura_repair_linux_x86_64.py`).** Single-file script plugin for the OrcaSlicer nightly / > 2.4.2 script-plugin API (stable 2.4.x has no plugin system); the filename is a naming artifact — the same file runs on Linux and macOS (native `open -b com.orcaslicer.OrcaSlicer` reopen on macOS, `orca-slicer --single-instance` on Linux). It reads the plate through `orca.host`, exports every `is_model_part()` volume in world coordinates (`instance(0).matrix() @ volume.matrix()`, winding flipped for a left-handed transform; parameter modifiers / negative volumes / support blockers skipped; multi-part merged into one STL), and repairs via the subprocess CLI (`~/.local/bin/sutura <stage> --intensity <preset> -o <unique_out>`); in-process repair is not possible because OrcaSlicer's embedded Python ships only pip + numpy. The dock-panel HTML is embedded verbatim from `panel/panel.html` (copy it back and update the sha256 digest comment whenever the panel changes). Jobs stage under `<data_dir>/orca_plugins/.sutura_work/` (the data dir is derived by walking up to the `orca_plugins` path component — there is no `data_dir()` API), outputs persist under `.../out/` for seven days, and the repaired copy is loaded back as a new object (world coordinates -> lands on top of the original; Arrange/Undo). `register_capabilities()` pre-declares `fs_read` only for existing CLI paths; subprocess spawns stay reactive. Stub-tested by `tests/test_orca_plugin.py` (37 tests) against a mock host; no live-Orca end-to-end test in CI. The OrcaCloud publish workflow (`publish-orcacloud.yml`) matches the exact filename, so do not rename it without updating that workflow and the install docs.
+- **OrcaSlicer plugin v2 (`orcaslicer-plugin/sutura_repair_linux_x86_64.py`).** Single-file script plugin for the OrcaSlicer nightly / > 2.4.2 script-plugin API (stable 2.4.x has no plugin system); the filename is a naming artifact — the same file runs on Linux and macOS (native `open -b com.orcaslicer.OrcaSlicer` reopen on macOS, `orca-slicer --single-instance` on Linux). It reads the plate through `orca.host`, exports every `is_model_part()` volume in world coordinates (`instance(0).matrix() @ volume.matrix()`, winding flipped for a left-handed transform; parameter modifiers / negative volumes / support blockers skipped; multi-part merged into one STL), and repairs via the subprocess CLI (`~/.local/bin/sutura <stage> --intensity <preset> -o <unique_out>`); in-process repair is not possible because OrcaSlicer's embedded Python ships only pip + numpy. The dock-panel HTML is embedded verbatim from `panel/panel.html` (copy it back and update the sha256 digest comment whenever the panel changes). Jobs stage under `<data_dir>/orca_plugins/.sutura_work/` (the data dir is derived by walking up to the `orca_plugins` path component — there is no `data_dir()` API), outputs persist under `.../out/` for seven days, and the repaired copy is loaded back as a new object (world coordinates -> lands on top of the original; Arrange/Undo). `register_capabilities()` pre-declares `fs_read` only for existing CLI paths; subprocess spawns stay reactive. Stub-tested by `tests/test_orca_plugin.py` (37 tests) against a mock host; no live-Orca end-to-end test in CI. The OrcaCloud publish workflow (`publish-orcacloud.yml`) matches the exact filename, so do not rename it without updating that workflow and the install docs. `publish-orcacloud.yml` runs on `release: published` from the maintainer's own `gh` (a `GITHUB_TOKEN`-created release never fires it); the OrcaCloud **listing description** is a manual field in the OrcaCloud web UI — the publish API sends only version + changelog, so it is not managed by this repo.
 
 ## Sutura Engine Architecture (`sutura_engine`)
 
@@ -513,10 +513,18 @@ following in order, without being asked separately for each step:
    changed; check the test-suite list in the 'Test coverage' row is current.
 7. Re-run scripts/generate_screenshots.py if the GUI's visible state changed
    since assets/ was last generated (check via git log --follow).
-8. Push (main + tag) via the HTTPS token method.
-9. Create the GitHub Release with a real written summary (not just a
-   CHANGELOG link).
-10. Verify the release notes actually landed as written: after
+8. Publish the release from the maintainer's machine with the maintainer's own
+   `gh` (a user token):
+   `gh release create vX.Y.Z --target main --title vX.Y.Z --notes-file <notes>`.
+   This creates the tag `vX.Y.Z` at `main` AND publishes the release as the
+   user, which is what fires the `release: published` workflows (the three
+   build workflows attach the AppImage/.dmg/prebuilt wheels and
+   `publish-orcacloud.yml` publishes the plugin). Never create or publish the
+   release from a workflow with the automatic `GITHUB_TOKEN` — GitHub does not
+   start workflow runs for `GITHUB_TOKEN`-authored events, so
+   `release: published` would never fire and the OrcaCloud publish would
+   silently never run.
+9. Verify the release notes actually landed as written: after
    `gh release create` / `gh release edit`, run
    `gh release view <tag> --json body` and read the ACTUAL body back.
    Confirm it contains the real highlights list for this version — not a
@@ -526,18 +534,18 @@ following in order, without being asked separately for each step:
    mangled by shell quoting. If the body is wrong, edit it again and
    re-verify — do not consider the release done until the displayed body
    matches what was intended.
-11. **Verify prebuilt wheels workflow (`build-sutura-geom.yml`):** ensure that
+10. **Verify prebuilt wheels workflow (`build-sutura-geom.yml`):** ensure that
    `build-sutura-geom.yml` is green and its prebuilt wheels (`sutura_geom` abi3
    wheels for Linux and macOS) plus `sutura_geom-SHA256SUMS` are attached to the
    release before announcing it (installers, updater, and bundles depend on these
    assets).
 
-12. **OrcaCloud plugin auto-publish (standing, automatic since 2026-09):**
+11. **OrcaCloud plugin auto-publish (standing, automatic since 2026-09):**
    every published GitHub Release triggers
    `.github/workflows/publish-orcacloud.yml` via OIDC trusted publishing.
    The plugin's OrcaCloud version is NOT tracked independently anymore -- it
-   follows this release's own tag (`GITHUB_REF_NAME`), and the changelog
-   field is this release's own body text. The workflow diffs
+   follows this release's own tag (`github.event.release.tag_name`), and the
+   changelog field is this release's own body text. The workflow diffs
    `orcaslicer-plugin/` between this tag and the previous one and SKIPS the
    OrcaCloud publish step entirely if the plugin file did not change -- so a
    release with no plugin changes does not spam a new, unrelated Cloud
@@ -551,8 +559,11 @@ following in order, without being asked separately for each step:
    with `curl --form-string` because `-F` splits the value at `;`. The
    OrcaCloud side only accepts OIDC tokens from the `release` event, so a
    failed publish is retried by turning the release into a draft and
-   publishing it again (same tag, re-fires `published`), not by
-   `workflow_dispatch`.
+   publishing it again (same tag, re-fires `published`), never by
+   `workflow_dispatch` (which is rejected with HTTP 401). The OrcaCloud
+   **listing description** is a free-text field in the OrcaCloud
+   Create/Edit-plugin web dialog, not a repository file and not part of the
+   publish API payload, so it is maintained manually in the OrcaCloud UI.
 
 This checklist is the release process — steps 5 and 6 are not optional
 extras to be reminded about separately; they are part of doing a release at

@@ -1,19 +1,18 @@
 name: Publish to OrcaCloud
 
-# Fires on EVERY GitHub Release, not just plugin-specific ones -- this repo's
-# standing release checklist already tags + publishes a Release for every
-# Sutura version, so no separate plugin-only release step is needed. The
-# plugin's OrcaCloud version now simply follows Sutura's own release tag.
+# Fires on EVERY published GitHub Release, not just plugin-specific ones --
+# this repo's standing release checklist publishes a Release for every Sutura
+# version, so no separate plugin-only release step is needed. The plugin's
+# OrcaCloud version now simply follows Sutura's own release tag.
+#
+# The publish API only accepts a GitHub OIDC token minted by an `release`
+# event, so the release MUST be created/published by the maintainer's own `gh`
+# (a user token). A release created by a workflow with the automatic
+# GITHUB_TOKEN does not fire this event at all; a workflow_dispatch re-run gets
+# HTTP 401. To retry a failed publish, flip the release draft -> published.
 on:
   release:
     types: [published]
-  # Manual re-publish of an EXISTING release tag (e.g. after an API error):
-  # checks out that tag and uses that release's body as the changelog.
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing release tag to (re)publish, e.g. v0.4.0"
-        required: true
 
 permissions:
   id-token: write
@@ -22,7 +21,7 @@ permissions:
 env:
   # Space-separated globs matching the plugin files to upload (.whl / .py).
   PLUGIN_FILES: "orcaslicer-plugin/sutura_repair_linux_x86_64.py"
-  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  TAG: ${{ github.event.release.tag_name }}
 
 jobs:
   publish:
@@ -30,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -53,18 +52,12 @@ jobs:
 
       - name: Publish release to OrcaCloud
         if: steps.check.outputs.changed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=orcacloud" | jq -r .value)"
           version="${TAG#v}"
-          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
-            changelog="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | head -c 4000)"
-          else
-            changelog="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body | head -c 4000)"
-          fi
+          changelog="$(jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | head -c 4000)"
           metadata="$(jq -cn --arg version "$version" --arg changelog "$changelog" \
             '{version: $version} + (if $changelog == "" then {} else {changelog: $changelog} end)')"
           # --form-string, NOT -F: curl -F parses ';' inside the value as a
