@@ -420,6 +420,10 @@ def extreme_extra_passes(ms, ml, params):
 SI_EXCISE_MAX_ROUNDS = 3
 SI_EXCISE_MAX_FACE_FRACTION = 0.30  # scope brake: never excise > 30 % at once
 SI_EXCISE_REFINE_EDGE_PCT = 2.0     # refineholeedgelen, % of bbox diagonal
+# Liepa refinement (refinehole=True) costs ~3 s per round on a 90k-face mesh
+# but, measured on the 40-mesh corpus, changed NO excise outcome vs the plain
+# cap; it is therefore used only where it is cheap (small meshes).
+SI_EXCISE_REFINE_MAX_FACES = 20000
 SI_EXCISE_DEFAULT_BUDGET = 5.0
 SI_EXCISE_BUDGET_BY_INTENSITY = {
     'quick': 0.0,
@@ -466,8 +470,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
 
     Selects the self-intersecting faces, dilates the selection by one ring,
     deletes it, then re-caps the opened loops with ``meshing_close_holes``
-    (``refinehole=True``, ``selfintersection=True`` -- which PREVENTS new
-    self-intersecting caps). A round is committed only when the
+    (``selfintersection=True`` -- which PREVENTS new self-intersecting caps;
+    ``refinehole=True`` only up to ``SI_EXCISE_REFINE_MAX_FACES``, since the
+    Liepa refinement costs ~3 s/round on a 90k mesh without changing the
+    corpus outcome). A round is committed only when the
     self-intersection count strictly decreases and holes / non-manifold edges
     do not increase; otherwise the pre-round mesh is restored byte-for-byte.
     The connected-component removal filter is never called (no component is
@@ -500,7 +506,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
             report['reason'] = 'budget'
             break
         topo_before = ms.apply_filter('get_topological_measures')
-        holes_before = int(topo_before.get('number_holes', 0) or 0)
+        # Use boundary EDGES, not ``number_holes``: the latter is unreliable on
+        # meshes with non-manifold vertices (reported -1 on thingi10k_145065,
+        # which let a round that opened 42 boundary loops be accepted).
+        holes_before = int(topo_before.get('boundary_edges', 0) or 0)
         nm_before = (int(topo_before.get('non_two_manifold_edges', 0) or 0)
                      + int(topo_before.get('non_two_manifold_vertices', 0) or 0))
         saved_v = ms.current_mesh().vertex_matrix().copy()
@@ -521,14 +530,17 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
             ms.apply_filter('meshing_remove_unreferenced_vertices')
             ms.apply_filter('meshing_repair_non_manifold_edges')
             ms.apply_filter('meshing_repair_non_manifold_vertices')
-            ms.apply_filter('meshing_close_holes',
-                            maxholesize=maxholesize, newfaceselected=False,
-                            selfintersection=True, refinehole=True,
-                            refineholeedgelen=ml.PercentageValue(
-                                SI_EXCISE_REFINE_EDGE_PCT))
+            close_kwargs = {'maxholesize': maxholesize,
+                            'newfaceselected': False,
+                            'selfintersection': True}
+            if total_faces <= SI_EXCISE_REFINE_MAX_FACES:
+                close_kwargs['refinehole'] = True
+                close_kwargs['refineholeedgelen'] = ml.PercentageValue(
+                    SI_EXCISE_REFINE_EDGE_PCT)
+            ms.apply_filter('meshing_close_holes', **close_kwargs)
             ms.apply_filter('meshing_remove_unreferenced_vertices')
             topo_after = ms.apply_filter('get_topological_measures')
-            holes_after = int(topo_after.get('number_holes', 0) or 0)
+            holes_after = int(topo_after.get('boundary_edges', 0) or 0)
             nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)
                         + int(topo_after.get('non_two_manifold_vertices', 0) or 0))
             si_after = _si_count(ms)

@@ -70,8 +70,12 @@ GRID_BUDGET_HARD_MAX = 25_000_000  # never exceed, regardless of RAM/intensity
 GRID_BUDGET_BYTES_PER_CELL = 56  # empirical peak bytes per grid cell
 GRID_BUDGET_RAM_RESERVE = 0.35   # fraction of available RAM the grid may use
 GRID_BUDGET_BY_INTENSITY = {
+    # Balanced keeps the historical 1.5M budget: on the 40-mesh corpus the
+    # 5M target changed no watertight outcome while roughly doubling Graft
+    # time (the sign-field/closing grid is ~3x larger). Thorough/Extreme
+    # still scale up for users who opt into more work.
     'quick': 1_500_000,
-    'balanced': 5_000_000,
+    'balanced': 1_500_000,
     'thorough': 10_000_000,
     'extreme': 25_000_000,
 }

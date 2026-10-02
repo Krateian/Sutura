@@ -267,12 +267,12 @@ def test_resolve_grid_budget_scales_with_intensity_and_ram():
     from sutura_engine.graft import resolve_grid_budget
     big = 1 << 40
     assert resolve_grid_budget("quick", big) == 1_500_000
-    assert resolve_grid_budget("balanced", big) == 5_000_000
+    assert resolve_grid_budget("balanced", big) == 1_500_000
     assert resolve_grid_budget("thorough", big) == 10_000_000
     assert resolve_grid_budget("extreme", big) == 25_000_000
     # Unknown/None falls back to the balanced target.
-    assert resolve_grid_budget(None, big) == 5_000_000
-    assert resolve_grid_budget("custom-profile", big) == 5_000_000
+    assert resolve_grid_budget(None, big) == 1_500_000
+    assert resolve_grid_budget("custom-profile", big) == 1_500_000
     # A tiny machine clamps down to the floor, never below, never above the cap.
     assert resolve_grid_budget("extreme", 1_000_000) == 1_500_000
     assert resolve_grid_budget("extreme", 10**12) == 25_000_000

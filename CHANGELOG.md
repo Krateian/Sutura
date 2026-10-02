@@ -28,9 +28,13 @@ All notable changes to this project are documented here.
 - **Guarded self-intersection excise + refined re-cap in Full Mend.** After the
   Stage-1 chain, Full Mend now removes residual self-intersecting faces (the
   faces plus a one-ring band) and re-closes the opened loops with PyMeshLab's
-  refined, self-intersection-preventing hole fill, committing a round only when
-  the self-intersection count strictly drops while holes and non-manifold edges
-  do not increase (otherwise the pre-round mesh is restored byte-for-byte). It
+  self-intersection-preventing hole fill (Liepa-refined on meshes up to 20k
+  faces; the refinement cost ~3 s/round on 90k meshes and changed no corpus
+  outcome), committing a round only when
+  the self-intersection count strictly drops while boundary edges (not the
+  unreliable `number_holes`, which reads -1 on some non-manifold meshes) and
+  non-manifold edges do not increase (otherwise the pre-round mesh is restored
+  byte-for-byte). It
   never drops a connected component, runs at most three rounds under the
   intensity preset's time budget (Balanced 5 s / Thorough 20 s / Extreme 60 s)
   and is a no-op on meshes without self-intersections (`SUTURA_SI_EXCISE=0`
@@ -42,9 +46,11 @@ All notable changes to this project are documented here.
 
 - **Graft's grid budget scales with the Triage intensity preset and the available RAM.** The
   fixed `GRID_BUDGET = 1_500_000` is replaced by `resolve_grid_budget(intensity, available_bytes)`
-  (Quick 1.5M, Balanced 5M, Thorough 10M, Extreme 25M; RAM-safe cap at 35 % of available memory
-  and a hard 25M ceiling; 1.5M floor). Explicit `grid_budget=` values are honoured verbatim. The
-  report carries the effective `grid_budget`, `intensity` and chosen `voxel`.
+  (Quick/Balanced 1.5M, Thorough 10M, Extreme 25M; RAM-safe cap at 35 % of available memory
+  and a hard 25M ceiling; 1.5M floor). Balanced keeps the historical 1.5M budget after the
+  40-mesh corpus regression check showed the 5M target doubled Graft time for no watertight
+  gain. Explicit `grid_budget=` values are honoured verbatim. The report carries the effective
+  `grid_budget`, `intensity` and chosen `voxel`.
 
 ### Fixed
 
