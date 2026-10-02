@@ -56,15 +56,33 @@ DISPLAY_NAME_FULL = "Dressing (viscosity coat)"
 # to the bbox diagonal) and ``time_budget`` the (soft) per-mesh budget.
 DRESSING_BY_INTENSITY = {
     'quick':    {'voxel_div': (120, 200), 'r_preset': 4.0,
-                 'max_hausdorff': 0.0150, 'time_budget': 30.0},
+                 'max_hausdorff': 0.0150, 'time_budget': 30.0,
+                 'drain_factor': 0.0},
     'balanced': {'voxel_div': (200, 350), 'r_preset': 2.5,
-                 'max_hausdorff': 0.0080, 'time_budget': 60.0},
+                 'max_hausdorff': 0.0080, 'time_budget': 60.0,
+                 'drain_factor': 1.0},
     'thorough': {'voxel_div': (300, 500), 'r_preset': 1.8,
-                 'max_hausdorff': 0.0040, 'time_budget': 180.0},
+                 'max_hausdorff': 0.0040, 'time_budget': 180.0,
+                 'drain_factor': 1.0},
     'extreme':  {'voxel_div': (450, 800), 'r_preset': 1.2,
-                 'max_hausdorff': 0.0025, 'time_budget': 300.0},
+                 'max_hausdorff': 0.0025, 'time_budget': 300.0,
+                 'drain_factor': 1.25},
 }
 DRESSING_DEFAULT_INTENSITY = 'balanced'
+
+# Drain ("erode-back") amounts as multiples of ``r_base`` (the offset report's
+# recommendation): the field is drained by ``F = s - r(x) + drain_factor*r_base``
+# so the healthy isosurface re-centres on the original boundary.  Full drain
+# (1.0) cuts healthy growth ~40 % with a ~4 um median inward dip (harmless);
+# deep (1.25) trades ~70 um inward for tighter mating faces; off (0.0) keeps
+# the plain outward coat.
+DRAIN_MODES = {
+    'none': 0.0,
+    'off': 0.0,
+    'half': 0.5,
+    'full': 1.0,
+    'deep': 1.25,
+}
 
 # output face budget: decimate the coat toward the input face count
 FACE_BUDGET_MIN = 50_000
@@ -381,7 +399,8 @@ def _variable_radius(dims, origin, voxel, defect_idx, verts, r_base, r_max, sigm
 # ---------------------------------------------------------------------------
 # extraction (Rust when available, numpy prototype otherwise)
 # ---------------------------------------------------------------------------
-def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box):
+def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
+                        drain_delta=0.0):
     """Delegate to ``sutura_geom.dressing_coat`` when the installed extension
     provides it.  Returns ``(verts, tris, info)`` or ``None``.
 
@@ -392,7 +411,7 @@ def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box):
         return None
     try:
         out = fn(v, t, voxel=voxel, r_base=r_base, r_max=r_max, sigma=sigma,
-                 defect_verts=defect_idx, box=box)
+                 defect_verts=defect_idx, box=box, drain=drain_delta)
     except TypeError:
         try:
             out = fn(v, t, voxel, r_base, r_max, sigma, defect_idx, box)
@@ -409,8 +428,14 @@ def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box):
         return None
 
 
-def _numpy_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box):
-    """Numpy prototype path: GWN signed field -> variable radius -> MT."""
+def _numpy_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
+                drain_delta=0.0):
+    """Numpy prototype path: GWN signed field -> variable radius -> MT.
+
+    ``drain_delta`` is added to the level set (``F = s - r + drain_delta``): a
+    positive value erodes the coat back toward the original surface on healthy
+    regions (where ``r ~ r_base``), while defect regions stay covered because
+    their ``r`` is much larger (offset report §1)."""
     w, u, s, info = sutura_geom.sdf_grid(v, t, voxel=voxel, box=box)
     voxel = float(info['voxel'])
     origin = np.asarray(info['origin'], dtype=np.float64)
@@ -418,6 +443,8 @@ def _numpy_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box):
     r_grid = _variable_radius(dims, origin, voxel, defect_idx, v,
                               r_base, r_max, sigma)
     F = np.asarray(s, dtype=np.float32) - r_grid
+    if drain_delta:
+        F += np.float32(drain_delta)
     del s, r_grid
     cv, ct = _marching_tets(F, origin, voxel, slab=8)
     del F
@@ -482,18 +509,34 @@ def _exact_si(v, t):
         return None
 
 
-def _drain_coat(v, t, v0, t0, amount, ml):
-    """Drain step: pull the coat back toward the original surface by ``amount``.
+def _drain_mode_name(factor):
+    """The :data:`DRAIN_MODES` name for a drain ``factor`` (or ``'custom'``)."""
+    for name in ('none', 'half', 'full', 'deep'):
+        if abs(DRAIN_MODES[name] - float(factor)) < 1e-9:
+            return name
+    return 'custom'
 
-    The coat is a +viscosity offset, so a base radius of ~0.3 mm grows the
-    printed part by roughly that much; a drain pass lets the operator print the
-    nominal size.  This is a **hook**: ``amount <= 0`` is a no-op, and until the
-    drain algorithm is implemented (a signed-field inward offset / erode-back,
-    being measured separately) a positive ``amount`` is also a no-op and is
-    reported as ``drained=False``.  Both the Rust core and this function keep
-    the same signature so the caller is stable.
+
+def _resolve_drain(drain, intensity):
+    """Resolve the drain to ``(delta_r, factor, mode)``.
+
+    ``drain`` may be ``None`` (the preset's ``drain_factor`` default), a mode
+    name in :data:`DRAIN_MODES`, or an explicit ``delta_r`` in mm.  ``factor``
+    is the multiple of ``r_base`` (``None`` for an explicit delta); ``mode`` is
+    the resolved name.
     """
-    return v, t, {'drained': False, 'amount': float(amount), 'reason': 'noop'}
+    if drain is None:
+        factor = float(DRESSING_BY_INTENSITY.get(
+            intensity, DRESSING_BY_INTENSITY[DRESSING_DEFAULT_INTENSITY]
+        )['drain_factor'])
+        return factor, factor, _drain_mode_name(factor)
+    if isinstance(drain, str):
+        key = drain.strip().lower()
+        if key not in DRAIN_MODES:
+            key = 'none'
+        factor = DRAIN_MODES[key]
+        return factor, factor, key
+    return float(drain), None, 'custom'
 
 
 def _decimate_coat(ml, v, t, target_faces):
@@ -536,7 +579,7 @@ def _decimate_coat(ml, v, t, target_faces):
 # ---------------------------------------------------------------------------
 def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
                   r_base=None, r_max=None, sigma=None, ml=None, guard=True,
-                  time_budget=None, drain=0.0):
+                  time_budget=None, drain=None):
     """Dressing (#16) repair: extract the variable-viscosity level set.
 
     Returns ``(verts, tris, report)``.  The report always carries
@@ -544,11 +587,15 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
     The output is 2-manifold and self-intersection-free by construction; the
     fidelity gate is the coat->input deviation relative to the bbox diagonal.
 
-    ``drain`` (default 0.0) is the optional inward-offset amount (mm) that
-    compensates the coat's outward growth (roughly ``r_base``) so the printed
-    part returns to nominal size.  It is currently a **no-op hook** (the drain
-    algorithm is being measured separately); ``report['drain']`` records the
-    attempt.
+    ``drain`` is the healthy-region erode-back.  ``None`` (the default) uses
+    the preset's ``drain_factor`` (Balanced/Thorough full = ``r_base``, Quick
+    off, Extreme deep = ``1.25*r_base``); it also accepts a mode name
+    (``none``/``half``/``full``/``deep``) or an explicit ``delta_r`` in mm.  The
+    drain is applied **in the level set** (``F = s - r + delta_r``), never as a
+    vertex projection (which re-introduced 7,850 self-intersections and is
+    permanently rejected).  A small residual outward bias (~0.4 voxel) remains
+    even at full drain — the extractor's discretization, to be addressed in the
+    Rust core, not hidden here.
     """
     t_start = time.perf_counter()
     v0 = _as_f64(verts)
@@ -616,18 +663,33 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
     if sigma is not None:
         sg = float(sigma)
 
+    # drain: healthy-region erode-back applied in the level set.  ``None`` uses
+    # the preset default; a mode name or an explicit delta_r override it.
+    drain_delta, drain_factor, drain_mode = _resolve_drain(drain, intensity)
+    if drain_factor is not None:
+        drain_delta = drain_factor * rb
+    report['drain'] = {
+        'mode': drain_mode,
+        'factor': drain_factor,
+        'delta_r': round(float(drain_delta), 6),
+        'amount': round(float(drain_delta), 6),
+        'drained': bool(drain_delta > 0.0),
+    }
+
     # grid AABB: input bbox plus the bridging margin so the coat is closed
     margin = rmx + 3.0 * voxel
     box = np.vstack([v0.min(axis=0) - margin, v0.max(axis=0) + margin])
 
     cv = ct = None
     meta = {}
-    rust = _rust_dressing_coat(v0, t0, voxel, rb, rmx, sg, defect_idx, box)
+    rust = _rust_dressing_coat(v0, t0, voxel, rb, rmx, sg, defect_idx, box,
+                               drain_delta)
     if rust is not None:
         cv, ct, meta = rust
         report['engine'] = 'rust'
     if cv is None or len(ct) == 0:
-        cv, ct, meta = _numpy_coat(v0, t0, voxel, rb, rmx, sg, defect_idx, box)
+        cv, ct, meta = _numpy_coat(v0, t0, voxel, rb, rmx, sg, defect_idx, box,
+                                   drain_delta)
         report['engine'] = 'numpy'
     if len(ct) == 0:
         report['error'] = 'level-set extraction produced no geometry'
@@ -648,13 +710,6 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
         'sigma': round(sg, 6),
         'faces_coat': int(len(ct)),
     })
-
-    # optional drain (inward offset) hook: compensates the coat's outward
-    # growth so the printed part keeps its nominal size.  No-op until the
-    # drain algorithm lands; reported either way.
-    if drain and float(drain) > 0.0:
-        cv, ct, drec = _drain_coat(cv, ct, v0, t0, float(drain), ml)
-        report['drain'] = drec
 
     # decimation toward the input face budget, with rollback
     target = _target_faces(len(t0))

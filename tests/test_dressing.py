@@ -157,20 +157,42 @@ def test_qem_decimation_preserves_topology():
     assert si == 0, si
 
 
-def test_drain_hook_is_a_reported_noop():
-    """The drain step (inward offset compensating the coat growth) is a stable
-    hook: a positive amount is accepted and reported as not yet drained."""
-    v, t, rep = dressing.dressing_coat(np.array(TET_V, float),
-                                       np.array(TET_T, np.int64),
-                                       intensity='quick', drain=0.3)
-    assert rep['drain'] is not None, rep
-    assert rep['drain']['drained'] is False, rep['drain']
-    assert rep['drain']['amount'] == 0.3, rep['drain']
-    # zero drain leaves the key unset (no-op)
-    _v2, _t2, rep2 = dressing.dressing_coat(np.array(TET_V, float),
-                                            np.array(TET_T, np.int64),
-                                            intensity='quick', drain=0.0)
-    assert rep2['drain'] is None, rep2
+def test_drain_preset_defaults():
+    """Quick drains off; Balanced/Thorough full; Extreme deep (offset report)."""
+    assert dressing._resolve_drain(None, 'quick')[1] == 0.0
+    assert dressing._resolve_drain(None, 'balanced')[1] == 1.0
+    assert dressing._resolve_drain(None, 'thorough')[1] == 1.0
+    assert dressing._resolve_drain(None, 'extreme')[1] == 1.25
+    # explicit mode strings and numeric deltas
+    assert dressing._resolve_drain('none', 'balanced')[1] == 0.0
+    assert dressing._resolve_drain('half', 'balanced')[1] == 0.5
+    assert dressing._resolve_drain('full', 'quick')[1] == 1.0
+    assert dressing._resolve_drain('deep', 'quick')[1] == 1.25
+    delta, factor, mode = dressing._resolve_drain(0.05, 'balanced')
+    assert delta == 0.05 and factor is None and mode == 'custom'
+    # unknown string falls back to off
+    assert dressing._resolve_drain('bogus', 'balanced')[1] == 0.0
+
+
+def test_drain_reduces_healthy_growth_field_level():
+    """The field drain (F = s - r + delta_r) shrinks the coat toward the input
+    surface on healthy regions and keeps the output watertight/SI-free.
+
+    A closed cube with one face removed: 'full' drain must produce a coat with
+    fewer faces than no drain (the isosurface hugs the surface more tightly)
+    and must stay 0 holes / 0 NM / 0 SI."""
+    V = np.array(CUBE_V, float)
+    T = np.array(CUBE_T[:-1], np.int64)
+    _vo, _to, off = dressing.dressing_coat(V, T, intensity='quick', drain='none')
+    _vf, _tf, full = dressing.dressing_coat(V, T, intensity='quick', drain='full')
+    assert off['drain']['drained'] is False, off['drain']
+    assert full['drain']['drained'] is True, full['drain']
+    assert full['drain']['delta_r'] == off['r_base'], full['drain']
+    assert full['faces_after'] < off['faces_after'], (
+        full['faces_after'], off['faces_after'])
+    for rep in (off, full):
+        assert rep['holes_after'] == 0 and rep['nm_after'] == 0, rep
+        assert rep['si_after'] in (0, None), rep
 
 
 def test_registry_method_16_and_opt_in():
@@ -194,6 +216,19 @@ def test_resolve_dressing_defaults_off():
     assert repair.resolve_dressing(environ='1') is True
     assert repair.resolve_dressing(environ='0') is False
     assert repair.resolve_dressing(environ='off') is False
+
+
+def test_resolve_dressing_drain_precedence():
+    import repair
+    assert repair.resolve_dressing_drain() is None
+    assert repair.resolve_dressing_drain(cli_value='deep') == 'deep'
+    assert repair.resolve_dressing_drain(cli_value=0.05) == 0.05
+    # CLI wins over env
+    assert repair.resolve_dressing_drain(cli_value='half',
+                                         environ='full') == 'half'
+    assert repair.resolve_dressing_drain(environ='deep') == 'deep'
+    assert repair.resolve_dressing_drain(environ='0.1') == 0.1
+    assert repair.resolve_dressing_drain(environ='bogus') is None
 
 
 def test_dressing_tier_adoption_gate():

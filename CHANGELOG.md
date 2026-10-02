@@ -28,6 +28,21 @@ All notable changes to this project are documented here.
   before fTetWild, and adopted only when strict-watertight, exact-SI-free and inside
   the preset's coat->input fidelity gate. Report key `dressing`.
 
+- **Dressing drain (healthy-region erode-back).** The coat sits ~`r_base` outside the
+  original surface (dimension growth); Dressing can now erode it back **in the level
+  set** (`F = s - r + delta_r`), never by vertex projection (which re-introduced 7,850
+  self-intersections and stays permanently rejected). Full drain (`delta_r = r_base`)
+  cuts healthy growth ~40 % (median +0.33 -> +0.20 mm raw) with a ~4 um median inward
+  dip and keeps defects covered, per the `/tmp/v073/dressing/offset` measurements; it
+  stays 0 holes / 0 non-manifold / 0 self-intersections. `dressing_coat(drain=...)`
+  accepts a mode (`none`/`half`/`full`/`deep`), an explicit `delta_r` in mm, or `None`
+  for the preset default (Quick off, Balanced/Thorough full, Extreme deep). CLI
+  `--dressing-drain MODE|mm` / `SUTURA_DRESSING_DRAIN` (`resolve_dressing_drain`) and
+  the GUI Options combo (*Preset default / Off / Half / Full / Deep*) override it;
+  `report['dressing']['drain']` carries the mode, factor, amount and `drained`. A
+  residual ~0.2 mm (~0.4 voxel) outward bias remains even at full drain — the
+  extractor's discretization, to be addressed in the Rust core, not hidden here.
+
 - **Ray-stabbing inside/outside vote in the Rust core (experimental, off by default).** The
   `sutura_geom` morphology core now exposes `raystab_points` and `raystab_grid`, and an opt-in
   `raystab=` keyword on `sdf_grid`/`morph_close` that overrides the generalized-winding sign in

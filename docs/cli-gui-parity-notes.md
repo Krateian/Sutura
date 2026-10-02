@@ -40,6 +40,7 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
 `--no-graft` / `--experimental-graft` (GUI right-click method menu #13 Graft + auto fallback ladder) ·
 `--no-dressing` / `--experimental-dressing` (GUI checkbox *Dressing (viscosity coat)* in Options → Experimental; off by default; #16 is also selectable via the right-click *Use method* menu) ·
+`--dressing-drain MODE|mm` (GUI *Drain* combo next to the Dressing checkbox: Preset default / Off / Half / Full / Deep) ·
 `--no-cache` / `clear-cache` (GUI Options → General *Enable Sutura Chart cache* checkbox + *Clear Cache* button) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all seven
 batch-wide checkboxes above sit in the GUI's *Options* window) ·

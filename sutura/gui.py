@@ -298,6 +298,17 @@ STRINGS = {
                         '2-manifold and self-intersection-free by '
                         'construction; tried after Graft and before fTetWild. '
                         'Off by default until measured on the corpus.',
+        'dressing_drain_label': 'Drain:',
+        'dressing_drain_tip': 'Healthy-region erode-back: reduce the coat\'s '
+                              'outward growth toward the original surface '
+                              'while keeping defects covered (applied in the '
+                              'level set). "Preset" uses the intensity default '
+                              '(Quick off, Balanced/Thorough full, Extreme deep).',
+        'dressing_drain_preset': 'Preset default',
+        'dressing_drain_off': 'Off',
+        'dressing_drain_half': 'Half',
+        'dressing_drain_full': 'Full',
+        'dressing_drain_deep': 'Deep',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Last-resort solidifier, on by default: when the '
                         'stage-1 chain still leaves holes or non-manifold '
@@ -833,6 +844,18 @@ STRINGS = {
                         'kendisiyle-kesişimsizdir; Graft sonrası ve fTetWild '
                         'öncesi denenir. Korpus üzerinde ölçülene kadar '
                         'varsayılan olarak kapalıdır.',
+        'dressing_drain_label': 'Boşaltma:',
+        'dressing_drain_tip': 'Sağlıklı bölge geri aşındırma: kaplamanın dışa '
+                              'doğru büyümesini özgün yüzeye doğru azaltırken '
+                              'kusurları kaplı tutar (seviye kümesinde '
+                              'uygulanır). "Ön ayar" yoğunluk varsayılanını '
+                              'kullanır (Hızlı kapalı, Dengeli/Titiz tam, Aşırı '
+                              'derin).',
+        'dressing_drain_preset': 'Ön ayar varsayılanı',
+        'dressing_drain_off': 'Kapalı',
+        'dressing_drain_half': 'Yarım',
+        'dressing_drain_full': 'Tam',
+        'dressing_drain_deep': 'Derin',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Son çare katılaştırıcı, varsayılan olarak açık: '
                         'stage-1 zinciri hâlâ delik veya non-manifold kenar '
@@ -1509,7 +1532,8 @@ class RepairWorker(QThread):
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
-                 dressing=False, intensity='balanced', methods_by_path=None,
+                 dressing=False, dressing_drain=None, intensity='balanced',
+                 methods_by_path=None,
                  engines_by_path=None, repeat_points_by_path=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
@@ -1526,6 +1550,7 @@ class RepairWorker(QThread):
         self._ftetwild = ftetwild
         self._indirect_autorefine = indirect_autorefine
         self._dressing = dressing
+        self._dressing_drain = dressing_drain
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
         self._engines_by_path = dict(engines_by_path or {})
@@ -1595,6 +1620,8 @@ class RepairWorker(QThread):
                 args.append('--ftetwild-optimize')
             if self._dressing:
                 args.append('--experimental-dressing')
+                if self._dressing_drain in ('none', 'half', 'full', 'deep'):
+                    args += ['--dressing-drain', self._dressing_drain]
             method_nums = self._methods_by_path.get(path)
             if method_nums:
                 args += ['--methods', ','.join(str(n) for n in method_nums)]
@@ -2981,6 +3008,12 @@ class OptionsDialog(QDialog):
                     main.chk_join_components, main.chk_edge_tiebreak,
                     main.chk_dressing):
             e.addWidget(chk)
+        _drain_row = QHBoxLayout()
+        _drain_row.setContentsMargins(22, 0, 0, 0)
+        _drain_row.addWidget(QLabel(_t('dressing_drain_label')))
+        _drain_row.addWidget(main.cmb_dressing_drain)
+        _drain_row.addStretch(1)
+        e.addLayout(_drain_row)
         e.addStretch(1)
         self.tabs.addTab(exp, _t('opt_tab_experimental'))
 
@@ -3391,6 +3424,7 @@ class MainWindow(QMainWindow):
         self._ftetwild = 'auto'       # fTetWild fallback tier: 'auto' (default) / False (off) / True (+SI)
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
+        self._dressing_drain = None   # batch-wide Dressing drain override (None = preset)
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -3515,6 +3549,16 @@ class MainWindow(QMainWindow):
         self.chk_dressing.setToolTip(_t('dressing_tip'))
         self.chk_dressing.toggled.connect(
             lambda on: setattr(self, '_dressing', on))
+        # Drain (healthy-region erode-back) override for Dressing; the empty
+        # entry means "use the intensity preset default".
+        self.cmb_dressing_drain = QComboBox()
+        self.cmb_dressing_drain.setToolTip(_t('dressing_drain_tip'))
+        for key in ('dressing_drain_preset', 'dressing_drain_off',
+                    'dressing_drain_half', 'dressing_drain_full',
+                    'dressing_drain_deep'):
+            self.cmb_dressing_drain.addItem(_t(key))
+        self.cmb_dressing_drain.currentIndexChanged.connect(
+            self._on_dressing_drain_changed)
         # The batch-wide options above live in a separate, non-modal Options
         # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
         # is re-parented there unchanged, so every chk_* attribute keeps its
@@ -3753,6 +3797,11 @@ class MainWindow(QMainWindow):
             self._repeat_picker_worker.wait(6000)
         self._stop_update_check()
         super().closeEvent(event)
+
+    def _on_dressing_drain_changed(self, index):
+        """Map the Dressing drain combo to the CLI override ('' = preset)."""
+        self._dressing_drain = (
+            None if index <= 0 else ('none', 'half', 'full', 'deep')[index - 1])
 
     def _sync_ftetwild(self, *_):
         """Map the two fTetWild checkboxes to the CLI tri-state."""
@@ -4094,6 +4143,7 @@ class MainWindow(QMainWindow):
                                    indirect_autorefine=self._indirect_autorefine,
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
                                    dressing=self._dressing,
+                                   dressing_drain=self._dressing_drain,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
                                    engines_by_path=engines_by_path,

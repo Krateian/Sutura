@@ -296,6 +296,37 @@ def main():
     assert args[args.index('--engines') + 1] == 'copycat', args
     print('ok  RepairWorker per-file --methods/--engines')
 
+    # Dressing (#16) batch-wide: checkbox -> --experimental-dressing, drain
+    # combo -> --dressing-drain <mode>
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_drain='deep')
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    dargs = captured['args']
+    assert '--experimental-dressing' in dargs, dargs
+    assert dargs[dargs.index('--dressing-drain') + 1] == 'deep', dargs
+    # preset default (None) adds no drain flag
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_drain=None)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--dressing-drain' not in captured['args'], captured['args']
+    print('ok  RepairWorker Dressing flag and drain override')
+
+    # The drain combo maps indices 0..4 to None/none/half/full/deep
+    w.cmb_dressing_drain.setCurrentIndex(0)
+    assert w._dressing_drain is None
+    for idx, mode in enumerate(('none', 'half', 'full', 'deep'), start=1):
+        w.cmb_dressing_drain.setCurrentIndex(idx)
+        assert w._dressing_drain == mode, (idx, w._dressing_drain)
+    print('ok  Dressing drain combo mapping')
+
     # MainWindow maps the tag lists onto RepairWorker kwargs
     saved_worker = gui.RepairWorker
     gui.RepairWorker = _FakeWorker
