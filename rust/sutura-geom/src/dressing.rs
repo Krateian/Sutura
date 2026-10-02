@@ -79,6 +79,11 @@ pub struct DressingParams {
     /// needed to close an opening and reaches the original surface everywhere
     /// else, so healthy ornament is not buried by the coat.
     pub peel: bool,
+    /// Plug extraction (implies `peel`): report the voxels the peel kept
+    /// outside the original solid, the input faces that bound those voxels, and
+    /// the peeled coat surface clipped to that region — the patches that a
+    /// zipper can splice into the original mesh verbatim.
+    pub plugs: bool,
 }
 
 impl Default for DressingParams {
@@ -92,6 +97,7 @@ impl Default for DressingParams {
             margin_voxels: 3.0,
             drain: 0.0,
             peel: false,
+            plugs: false,
         }
     }
 }
@@ -134,13 +140,32 @@ pub struct DressingInfo {
     pub peel_si_after: i64,
     pub peel_si_iters: usize,
     pub peel_si_reverted: usize,
+    /// Plug bookkeeping (all zero/false when `plugs` is off).
+    pub plugs: bool,
+    /// Number of plug voxels (peeled coat cells outside the original solid).
+    pub plug_voxels: usize,
+    /// 6-connected components among the plug voxels.
+    pub plug_components: usize,
+    /// Plug volume in model units (`plug_voxels * voxel^3`).
+    pub plug_volume: f64,
+    /// Input faces within one voxel of a plug voxel.
+    pub plug_region_faces: usize,
+    /// Coat faces clipped to the plug region (the splice patches).
+    pub plug_patch_faces: usize,
+    pub plug_seconds: f64,
 }
 
-/// Extracted coat mesh plus its report.
+/// Extracted coat mesh plus its report.  `plug_mask` is the dims-product dense
+/// plug occupancy, `plug_region` the input face indices bounding the plugs and
+/// `plug_patch_*` the compacted coat surface clipped to the plug region.
 pub struct DressingMesh {
     pub verts: Vec<[f64; 3]>,
     pub tris: Vec<[u32; 3]>,
     pub info: DressingInfo,
+    pub plug_mask: Vec<u8>,
+    pub plug_region: Vec<u32>,
+    pub plug_patch_verts: Vec<[f64; 3]>,
+    pub plug_patch_tris: Vec<[u32; 3]>,
 }
 
 #[inline]
@@ -552,7 +577,18 @@ pub fn dressing_coat(
             peel_si_after: 0,
             peel_si_iters: 0,
             peel_si_reverted: 0,
+            plugs: params.plugs,
+            plug_voxels: 0,
+            plug_components: 0,
+            plug_volume: 0.0,
+            plug_region_faces: 0,
+            plug_patch_faces: 0,
+            plug_seconds: 0.0,
         },
+        plug_mask: Vec::new(),
+        plug_region: Vec::new(),
+        plug_patch_verts: Vec::new(),
+        plug_patch_tris: Vec::new(),
     };
     if verts.is_empty() || tris.is_empty() {
         return empty([0, 0, 0], [0.0, 0.0, 0.0], 1.0);
@@ -742,7 +778,9 @@ pub fn dressing_coat(
     let mut peel_si_after = 0i64;
     let mut peel_si_iters = 0usize;
     let mut peel_si_reverted = 0usize;
-    if params.peel {
+    let peel_active = params.peel || params.plugs;
+    let mut plug_mask: Vec<u8> = Vec::new();
+    if peel_active {
         let mut s_dense = vec![0f32; n];
         s_dense.par_iter_mut().enumerate().for_each(|(idx, sv)| {
             let h = healthy_at(idx);
@@ -753,6 +791,16 @@ pub fn dressing_coat(
             *o = u8::from(field[idx] <= 0.0);
         });
         peeled_cells = peel_solid(&mut occ, &s_dense, dims);
+        if params.plugs {
+            // Plug = coat cell the peel did not remove AND outside the original
+            // solid (`s >= 0`).  `peel_solid` never removes `s < 0`, so this is
+            // exactly "coat set minus original solid".
+            plug_mask = occ
+                .iter()
+                .zip(s_dense.iter())
+                .map(|(&o, &s)| u8::from(o != 0 && s >= 0.0))
+                .collect();
+        }
         field = morph::signed_distance_from_occupancy(&occ, dims);
         field.par_iter_mut().for_each(|v| *v *= voxel32);
     }
@@ -760,7 +808,7 @@ pub fn dressing_coat(
     let t_extract = std::time::Instant::now();
     let dc = marching_tets_mesh(&field, dims, origin, voxel);
     let (mut out_verts, mut out_tris) = weld_and_clean(&dc.verts, &dc.tris, voxel);
-    if params.peel {
+    if peel_active {
         let orig = out_verts.clone();
         snapped_verts = snap_peeled_vertices(
             &mut out_verts,
@@ -835,6 +883,30 @@ pub fn dressing_coat(
         }
     }
 
+    // Plug extraction: the input faces bounding the plug voxels, and the peeled
+    // coat surface clipped to that region (the patches a zipper splices into the
+    // original mesh).  Computed only when requested.
+    let mut plug_voxels = 0usize;
+    let mut plug_components = 0usize;
+    let mut plug_region_faces = 0usize;
+    let mut plug_patch_faces = 0usize;
+    let mut plug_seconds = 0.0f64;
+    let mut plug_region: Vec<u32> = Vec::new();
+    let mut plug_patch_verts: Vec<[f64; 3]> = Vec::new();
+    let mut plug_patch_tris: Vec<[u32; 3]> = Vec::new();
+    if params.plugs {
+        let t_plug = std::time::Instant::now();
+        plug_voxels = plug_mask.iter().filter(|&&b| b != 0).count();
+        plug_components = plug_components_6(&plug_mask, dims);
+        plug_region = plug_region_faces_of(verts, tris, &plug_mask, dims, origin, voxel);
+        plug_region_faces = plug_region.len();
+        let (pv, pt) = plug_patch_of(&out_verts, &out_tris, &plug_mask, dims, origin, voxel);
+        plug_patch_faces = pt.len();
+        plug_patch_verts = pv;
+        plug_patch_tris = pt;
+        plug_seconds = t_plug.elapsed().as_secs_f64();
+    }
+
     let info = DressingInfo {
         dims,
         origin,
@@ -856,7 +928,7 @@ pub fn dressing_coat(
         band_seconds,
         field_seconds,
         extract_seconds: t_extract.elapsed().as_secs_f64(),
-        peel: params.peel,
+        peel: peel_active,
         peeled_cells,
         snapped_verts,
         peel_welded,
@@ -864,11 +936,22 @@ pub fn dressing_coat(
         peel_si_after,
         peel_si_iters,
         peel_si_reverted,
+        plugs: params.plugs,
+        plug_voxels,
+        plug_components,
+        plug_volume: plug_voxels as f64 * voxel * voxel * voxel,
+        plug_region_faces,
+        plug_patch_faces,
+        plug_seconds,
     };
     DressingMesh {
         verts: out_verts,
         tris: out_tris,
         info,
+        plug_mask,
+        plug_region,
+        plug_patch_verts,
+        plug_patch_tris,
     }
 }
 
@@ -1190,6 +1273,167 @@ fn si_guard_unsnap(
         count = if s { -1 } else { c };
     }
     (reverted, count_before, count, iters, false)
+}
+
+#[inline]
+fn mid3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5]
+}
+
+/// True when a plug voxel center lies within one voxel of `p`.
+fn near_plug(p: [f64; 3], plug: &[u8], dims: [usize; 3], origin: [f64; 3], voxel: f64) -> bool {
+    let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+    let ci = ((p[0] - origin[0]) / voxel).round() as isize;
+    let cj = ((p[1] - origin[1]) / voxel).round() as isize;
+    let ck = ((p[2] - origin[2]) / voxel).round() as isize;
+    let r2 = voxel * voxel;
+    for dk in -1isize..=1 {
+        let k = ck + dk;
+        if k < 0 || k as usize >= nz {
+            continue;
+        }
+        for dj in -1isize..=1 {
+            let j = cj + dj;
+            if j < 0 || j as usize >= ny {
+                continue;
+            }
+            for di in -1isize..=1 {
+                let i = ci + di;
+                if i < 0 || i as usize >= nx {
+                    continue;
+                }
+                let idx = i as usize + nx * (j as usize + ny * k as usize);
+                if plug[idx] == 0 {
+                    continue;
+                }
+                let dx = p[0] - (origin[0] + voxel * i as f64);
+                let dy = p[1] - (origin[1] + voxel * j as f64);
+                let dz = p[2] - (origin[2] + voxel * k as f64);
+                if dx * dx + dy * dy + dz * dz < r2 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Input faces within one voxel of a plug voxel.  Each face is sampled at its
+/// vertices, edge midpoints and centroid; a face is in the region when any
+/// sample is within one voxel of a plug voxel center.
+fn plug_region_faces_of(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    plug: &[u8],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+) -> Vec<u32> {
+    let mut out = Vec::new();
+    for (fi, t) in tris.iter().enumerate() {
+        let a = verts[t[0]];
+        let b = verts[t[1]];
+        let c = verts[t[2]];
+        let g = [
+            (a[0] + b[0] + c[0]) / 3.0,
+            (a[1] + b[1] + c[1]) / 3.0,
+            (a[2] + b[2] + c[2]) / 3.0,
+        ];
+        let samples = [a, b, c, mid3(a, b), mid3(b, c), mid3(c, a), g];
+        if samples
+            .iter()
+            .any(|&p| near_plug(p, plug, dims, origin, voxel))
+        {
+            out.push(fi as u32);
+        }
+    }
+    out
+}
+
+/// Coat faces whose centroid lies within one voxel of a plug voxel, compacted
+/// with a fresh vertex table.
+fn plug_patch_of(
+    cv: &[[f64; 3]],
+    ct: &[[u32; 3]],
+    plug: &[u8],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let mut map = vec![u32::MAX; cv.len()];
+    let mut nv: Vec<[f64; 3]> = Vec::new();
+    let mut nt: Vec<[u32; 3]> = Vec::new();
+    for t in ct {
+        let a = cv[t[0] as usize];
+        let b = cv[t[1] as usize];
+        let c = cv[t[2] as usize];
+        let g = [
+            (a[0] + b[0] + c[0]) / 3.0,
+            (a[1] + b[1] + c[1]) / 3.0,
+            (a[2] + b[2] + c[2]) / 3.0,
+        ];
+        if !near_plug(g, plug, dims, origin, voxel) {
+            continue;
+        }
+        let mut nt3 = [0u32; 3];
+        for (x, &vi) in t.iter().enumerate() {
+            let v = vi as usize;
+            if map[v] == u32::MAX {
+                map[v] = nv.len() as u32;
+                nv.push(cv[v]);
+            }
+            nt3[x] = map[v];
+        }
+        nt.push(nt3);
+    }
+    (nv, nt)
+}
+
+/// Number of 6-connected components among the plug voxels.
+fn plug_components_6(plug: &[u8], dims: [usize; 3]) -> usize {
+    let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+    let n = nx * ny * nz;
+    let mut seen = vec![false; n];
+    let mut comps = 0usize;
+    let mut stack: Vec<usize> = Vec::new();
+    for start in 0..n {
+        if plug[start] == 0 || seen[start] {
+            continue;
+        }
+        comps += 1;
+        seen[start] = true;
+        stack.push(start);
+        while let Some(idx) = stack.pop() {
+            let i = idx % nx;
+            let j = (idx / nx) % ny;
+            let k = idx / (nx * ny);
+            let push = |nb: usize, seen: &mut Vec<bool>, stack: &mut Vec<usize>| {
+                if plug[nb] != 0 && !seen[nb] {
+                    seen[nb] = true;
+                    stack.push(nb);
+                }
+            };
+            if i > 0 {
+                push(idx - 1, &mut seen, &mut stack);
+            }
+            if i + 1 < nx {
+                push(idx + 1, &mut seen, &mut stack);
+            }
+            if j > 0 {
+                push(idx - nx, &mut seen, &mut stack);
+            }
+            if j + 1 < ny {
+                push(idx + nx, &mut seen, &mut stack);
+            }
+            if k > 0 {
+                push(idx - nx * ny, &mut seen, &mut stack);
+            }
+            if k + 1 < nz {
+                push(idx + nx * ny, &mut seen, &mut stack);
+            }
+        }
+    }
+    comps
 }
 
 #[cfg(test)]
@@ -1592,5 +1836,64 @@ mod tests {
         let (rev0, before0, after0, iters0, _) =
             si_guard_unsnap(&mut clean, &orig, &tris);
         assert_eq!((rev0, before0, after0, iters0), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn plug_report_is_consistent() {
+        let (v, f) = cube(10.0);
+        let params = DressingParams {
+            voxel: Some(0.4),
+            r_base: Some(0.5),
+            r_max: Some(2.0),
+            sigma: Some(1.5),
+            peel: true,
+            plugs: true,
+            ..Default::default()
+        };
+        let m = dressing_coat(&v, &f, &[[0.0, 0.0, 5.0]], &[], &params);
+        assert!(m.info.plugs);
+        let n = m.info.dims[0] * m.info.dims[1] * m.info.dims[2];
+        assert_eq!(m.plug_mask.len(), n);
+        assert_eq!(
+            m.info.plug_voxels,
+            m.plug_mask.iter().filter(|&&b| b != 0).count()
+        );
+        assert_eq!(m.info.plug_region_faces, m.plug_region.len());
+        assert_eq!(m.info.plug_patch_faces, m.plug_patch_tris.len());
+        let nv = m.plug_patch_verts.len() as u32;
+        for t in &m.plug_patch_tris {
+            assert!(t[0] < nv && t[1] < nv && t[2] < nv);
+        }
+        for &fi in &m.plug_region {
+            assert!((fi as usize) < f.len());
+        }
+
+        // Disabling plugs leaves the arrays empty while peel still runs.
+        let mut off = params;
+        off.plugs = false;
+        let m2 = dressing_coat(&v, &f, &[[0.0, 0.0, 5.0]], &[], &off);
+        assert!(!m2.info.plugs);
+        assert!(m2.plug_mask.is_empty() && m2.plug_region.is_empty());
+        assert!(m2.info.peel && m2.info.peeled_cells > 0);
+    }
+
+    #[test]
+    fn plug_near_and_components() {
+        // 2x1x4 grid (i-fastest): two separate k=0 and k=3 slabs.
+        let dims = [2usize, 1, 4];
+        let mut plug = vec![0u8; 8];
+        plug[0] = 1;
+        plug[1] = 1; // (0,0,0),(1,0,0)
+        plug[6] = 1;
+        plug[7] = 1; // (0,0,3),(1,0,3)
+        assert_eq!(plug_components_6(&plug, dims), 2);
+
+        let dims3 = [3usize, 3, 3];
+        let origin = [0.0, 0.0, 0.0];
+        let mut g = vec![0u8; 27];
+        g[1 + 3 * (1 + 3 * 1)] = 1; // cell (1,1,1)
+        assert!(near_plug([1.2, 1.0, 1.0], &g, dims3, origin, 1.0));
+        assert!(!near_plug([2.5, 1.0, 1.0], &g, dims3, origin, 1.0));
+        assert!(!near_plug([-5.0, -5.0, -5.0], &g, dims3, origin, 1.0));
     }
 }

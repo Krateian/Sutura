@@ -657,7 +657,7 @@ fn morph_close<'py>(
 /// self-intersection vertex) nudge the isosurface off the healthy `s = 0`
 /// without a full coat bubble; values are clamped to `[r_base, r_max]`.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, defect_pts=None, defect_r=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0, peel=false))]
+#[pyo3(signature = (verts, tris, defect_pts=None, defect_r=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0, peel=false, plugs=false))]
 fn dressing_coat<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -672,6 +672,7 @@ fn dressing_coat<'py>(
     margin_voxels: f64,
     drain: f64,
     peel: bool,
+    plugs: bool,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -706,6 +707,7 @@ fn dressing_coat<'py>(
         margin_voxels,
         drain,
         peel,
+        plugs,
     };
     let m = dressing::dressing_coat(&rv, &rt, &dp, &dr, &params);
 
@@ -747,6 +749,26 @@ fn dressing_coat<'py>(
     info.set_item("peel_si_after", m.info.peel_si_after)?;
     info.set_item("peel_si_iters", m.info.peel_si_iters)?;
     info.set_item("peel_si_reverted", m.info.peel_si_reverted)?;
+    info.set_item("plugs", m.info.plugs)?;
+    info.set_item("plug_voxels", m.info.plug_voxels)?;
+    info.set_item("plug_components", m.info.plug_components)?;
+    info.set_item("plug_volume", m.info.plug_volume)?;
+    info.set_item("plug_region_faces", m.info.plug_region_faces)?;
+    info.set_item("plug_patch_faces", m.info.plug_patch_faces)?;
+    info.set_item("plug_seconds", m.info.plug_seconds)?;
+    if m.info.plugs {
+        let region: Vec<u32> = m.plug_region.clone();
+        let pv: Vec<Vec<f64>> = m.plug_patch_verts.iter().map(|p| p.to_vec()).collect();
+        let pt: Vec<Vec<i32>> = m
+            .plug_patch_tris
+            .iter()
+            .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+            .collect();
+        info.set_item("plug_mask", PyArray1::from_vec(py, m.plug_mask.clone()))?;
+        info.set_item("plug_region_idx", PyArray1::from_vec(py, region))?;
+        info.set_item("plug_patch_verts", PyArray2::from_vec2(py, &pv)?)?;
+        info.set_item("plug_patch_tris", PyArray2::from_vec2(py, &pt)?)?;
+    }
     Ok((verts_np, tris_np, info))
 }
 
