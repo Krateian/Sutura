@@ -16,6 +16,7 @@ use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 
 pub mod arrangement;
 pub mod cdt2d;
+pub mod dressing;
 pub mod dual_contour;
 pub mod interval;
 pub mod morph;
@@ -40,7 +41,7 @@ pub const MAX_VOXELS: u64 = 512 * 512 * 512;
 /// Face count above which `self_intersecting_faces` refuses to run the exact
 /// classifier (the broad phase plus exact predicates are super-linear); the
 /// caller sees a `skipped` report instead.
-pub const SI_MAX_FACES: usize = 150_000;
+pub const SI_MAX_FACES: usize = 2_000_000;
 
 /// Parse a point argument into `[f64; 3]`, accepting a tuple, list, or numpy
 /// 1-D array of length 3.
@@ -635,6 +636,86 @@ fn morph_close<'py>(
     Ok((verts_np, tris_np, info))
 }
 
+/// Variable-thickness coat ("Dressing", method #16).
+///
+/// Extracts the `F = s(x) - r(x) = 0` isosurface of a narrow-band signed field:
+/// the generalized-winding sign and the unsigned distance are evaluated only
+/// for cells within `band = r_max + 2*voxel` of the surface, and the sign
+/// outside the band comes from a boundary flood fill.  `r(x)` grows from
+/// `r_base` to `r_max` near the defect points (`defect_pts`, Nx3; empty means a
+/// uniform `r_base`).  Returns `(verts, tris, info)` with a watertight,
+/// two-manifold marching-tetrahedra coat.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0))]
+fn dressing_coat<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    defect_pts: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
+    voxel: Option<f64>,
+    r_base: Option<f64>,
+    r_max: Option<f64>,
+    sigma: Option<f64>,
+    band_voxels: f64,
+    margin_voxels: f64,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let mut dp: Vec<[f64; 3]> = Vec::new();
+    if let Some(arr) = &defect_pts {
+        let view = arr.as_array();
+        if view.ncols() != 3 {
+            return Err(PyValueError::new_err("defect_pts must be Nx3"));
+        }
+        for i in 0..view.nrows() {
+            dp.push([view[[i, 0]], view[[i, 1]], view[[i, 2]]]);
+        }
+    }
+    let params = dressing::DressingParams {
+        voxel,
+        r_base,
+        r_max,
+        sigma,
+        band_voxels,
+        margin_voxels,
+    };
+    let m = dressing::dressing_coat(&rv, &rt, &dp, &params);
+
+    let out_verts: Vec<Vec<f64>> = m.verts.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = m
+        .tris
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let verts_np = PyArray2::from_vec2(py, &out_verts)?;
+    let tris_np = PyArray2::from_vec2(py, &out_tris)?;
+
+    let info = PyDict::new(py);
+    info.set_item("dims", dims_to_list(py, m.info.dims)?)?;
+    info.set_item("voxel", m.info.voxel)?;
+    info.set_item("origin", PyList::new(py, m.info.origin)?)?;
+    info.set_item("voxels", m.info.voxels)?;
+    info.set_item("r_base", m.info.r_base)?;
+    info.set_item("r_max", m.info.r_max)?;
+    info.set_item("sigma", m.info.sigma)?;
+    info.set_item("band", m.info.band)?;
+    info.set_item("band_cells", m.info.band_cells)?;
+    info.set_item("sign_cells", m.info.sign_cells)?;
+    info.set_item("gwn_cells", m.info.gwn_cells)?;
+    info.set_item("gwn_exact_cells", m.info.gwn_exact_cells)?;
+    info.set_item("coarsened", m.info.coarsened)?;
+    info.set_item("fallback", m.info.fallback)?;
+    info.set_item("manifold", m.info.manifold)?;
+    info.set_item("seconds", m.info.seconds)?;
+    info.set_item("band_seconds", m.info.band_seconds)?;
+    info.set_item("field_seconds", m.info.field_seconds)?;
+    info.set_item("extract_seconds", m.info.extract_seconds)?;
+    Ok((verts_np, tris_np, info))
+}
+
 /// Closest point on the triangle soup for every query point.
 ///
 /// Returns `(xyz, distance, face_index)`; each query gives the closest point
@@ -905,6 +986,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_set_cdt_experimental, m)?)?;
     m.add_function(wrap_pyfunction!(sdf_grid, m)?)?;
     m.add_function(wrap_pyfunction!(morph_close, m)?)?;
+    m.add_function(wrap_pyfunction!(dressing_coat, m)?)?;
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
