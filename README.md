@@ -516,11 +516,35 @@ folds where local patch excision and hybrid splicing fail.
    covered. `--dressing-drain MODE|mm` / `SUTURA_DRESSING_DRAIN` / the GUI
    *Drain* combo override the preset default (Quick off, Balanced/Thorough
    full, Extreme deep).
-5. **Opt-in**: enabled with `--experimental-dressing` / `SUTURA_DRESSING=1` /
-   the GUI Options checkbox, and adopted only when strict-watertight, exact-SI-free
-   and inside the preset's coat→input fidelity gate. It is off by default until
-   measured on the real-world corpus.
-6. **Defect-set and viscosity overrides**: `--dressing-defects {all,holes_nm}`
+5. **Auto-ladder fallback behind a single default switch, shipped OFF.** With
+   the switch on (`DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT=1`) the
+   Auto ladder treats Dressing as the last-resort tier after Graft and before
+   fTetWild, and tries it only when the result the ladder currently holds still
+   has holes, non-manifold edges or a positive exact self-intersection count
+   (an SI-only residual counts as damage). `--experimental-dressing` /
+   `SUTURA_DRESSING=1` / the GUI checkbox **force** it to run regardless of
+   damage; `--no-dressing` / `SUTURA_DRESSING=0` disable it. Adoption requires
+   strict-watertight, exact-SI-free, the preset's coat→input fidelity gate, and
+   the shape-preservation gates below. **The switch is OFF by default**: on a
+   fine-detail relief (framebaroque) the voxel staircase visibly flattens
+   fluting even though the mean deviation stays ~0.08 mm, so Dressing must not
+   replace the verbatim Graft/fTetWild result on such parts until that quality
+   issue is fixed.
+6. **Shape-preservation gates.** Besides fidelity, a candidate is adopted only
+   when, relative to the result the ladder held before Dressing: the signed
+   volume changes by at most `DRESSING_MAX_VOLUME_DELTA` (10 %), the
+   connected-component count grows by at most `DRESSING_MAX_PARTS_SLACK` (1),
+   and the P95 coat-vs-input **vertex-normal** angle over healthy surface stays
+   below `DRESSING_MAX_NORMAL_ANGLE_P95` (30°, a placeholder — measured coat P95
+   is 12–36° on the accepted meshes and 82–88° on the detail lost frames).
+   The normal metric (nearest input vertex via a KD-tree, healthy = not a defect
+   vertex) catches the staircase that the position-only Hausdorff gate does not;
+   the volume/parts gates catch a coat that absorbs a cavity or shatters into
+   debris. The geometric CAD/machined-vs-organic score (`cad_likeness`) is
+   recorded on every Auto run for the future calibrated CAD guard; the ladder
+   already runs Graft first for all inputs, so a CAD-like part gets the verbatim
+   Graft hybrid before Dressing and Dressing only runs when damage remains.
+7. **Defect-set and viscosity overrides**: `--dressing-defects {all,holes_nm}`
    (`SUTURA_DRESSING_DEFECTS` / the GUI *Defects* combo) selects which input
    defects drive the viscosity mask — `all` (the default) is holes,
    non-manifold edges and self-intersections, `holes_nm` drops the
@@ -530,7 +554,7 @@ folds where local patch excision and hybrid splicing fail.
    `SUTURA_DRESSING_SIGMA_SCALE` / the GUI *r_max* and *sigma* combos) multiply
     the resolved `r_max` / `sigma`; the default (unset = 1.0) is byte-identical,
     and non-positive or unparseable values are ignored.
-7. **Component cleanup**: before decimation the extracted triangle soup is split
+8. **Component cleanup**: before decimation the extracted triangle soup is split
    into vertex-connected components and the extraction debris — sub-voxel shells
    below a face-count, voxel-volume and relative-volume floor — is dropped. A
    surviving inverted shell is kept only when it is nested inside a kept material

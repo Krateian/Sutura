@@ -519,11 +519,35 @@ tüm-kabuk topolojik katlanmaları için doğru araç yapar.
    kaplı kalır. `--dressing-drain MODE|mm` / `SUTURA_DRESSING_DRAIN` / GUI
    *Boşaltma* açılır listesi ön ayar varsayılanını geçersiz kılar (Hızlı
    kapalı, Dengeli/Titiz tam, Aşırı derin).
-5. **İsteğe bağlı**: `--experimental-dressing` / `SUTURA_DRESSING=1` / GUI
-   Seçenekler onay kutusuyla etkinleştirilir ve yalnızca katı-su geçirmez,
-   tam-SI'sız ve ön ayarın kaplama→girdi sadakat kapısı içindeyse benimsenir.
-   Gerçek-dünya korpusunda ölçülene kadar varsayılan olarak kapalıdır.
-6. **Kusur kümesi ve viskozite geçersiz kılmaları**:
+5. **Tek bir varsayılan anahtarın arkasında Auto-merdiven yedeği, KAPALI
+   gönderilir.** Anahtar açıkken (`DRESSING_DEFAULT_ENABLED` /
+   `SUTURA_DRESSING_DEFAULT=1`) Auto merdiveni Dressing'i Graft'tan sonra ve
+   fTetWild'dan önce son-çare katman olarak ele alır ve yalnızca merdivenin o an
+   tuttuğu sonuçta hâlâ delik, non-manifold kenar veya pozitif tam
+   kendisiyle-kesişim sayısı varsa dener (yalnızca-SI artığı da hasar sayılır).
+   `--experimental-dressing` / `SUTURA_DRESSING=1` / GUI onay kutusu hasardan
+   bağımsız olarak **zorlar**; `--no-dressing` / `SUTURA_DRESSING=0` kapatır.
+   Benimseme katı-su geçirmez, tam-SI'sız, ön ayarın kaplama→girdi sadakat kapısı
+   ve aşağıdaki şekil-koruma kapılarını gerektirir. **Anahtar varsayılan olarak
+   KAPALIDIR**: ince-detaylı bir kabartmada (framebaroque) voxel merdiveni,
+   ortalama sapma ~0,08 mm kalmasına rağmen olukları görünür biçimde düzleştirir,
+   bu yüzden bu kalite sorunu düzeltilene kadar Dressing böyle parçalarda
+   kelimesi kelimesine Graft/fTetWild sonucunun yerini almamalıdır.
+6. **Şekil-koruma kapıları.** Sadakatin yanı sıra bir aday, yalnızca Dressing'den
+   önce merdivenin tuttuğu sonuca göre: işaretli hacim en fazla
+   `DRESSING_MAX_VOLUME_DELTA` (%10) değişiyorsa, bağlı-bileşen sayısı en fazla
+   `DRESSING_MAX_PARTS_SLACK` (1) artıyorsa ve sağlıklı yüzey üzerinde P95
+   kaplama-vs-girdi **tepe-normal** açısı `DRESSING_MAX_NORMAL_ANGLE_P95` (30°,
+   bir yer tutucu — ölçülen kaplama P95'i kabul edilen mesh'lerde 12–36°, detay
+   kayıplı karelerde 82–88°) altında kalıyorsa benimsenir. Normal metriği (KD-tree
+   ile en yakın girdi tepe noktası, sağlıklı = kusur tepe noktası değil) yalnızca
+   konuma bakan Hausdorff kapısının yakalayamadığı merdiveni yakalar; hacim/parça
+   kapıları bir oyuğu yutan veya artıklara dağılan kaplamayı yakalar. Geometrik
+   CAD/işlenmiş-vs-organik puanı (`cad_likeness`) her Auto çalışmasında kaydedilir
+   (gelecekteki kalibre CAD koruması için); merdiven zaten tüm girdilerde önce
+   Graft'ı çalıştırır, böylece CAD benzeri bir parça Dressing'den önce kelimesi
+   kelimesine Graft hibritini alır ve Dressing yalnızca hasar kaldığında çalışır.
+7. **Kusur kümesi ve viskozite geçersiz kılmaları**:
    `--dressing-defects {all,holes_nm}` (`SUTURA_DRESSING_DEFECTS` / GUI *Kusurlar*
    açılır listesi) viskozite maskesini süren girdi kusurlarını seçer — `all`
    (varsayılan) delikler, non-manifold kenarlar ve kendisiyle-kesişimler;
@@ -534,7 +558,7 @@ tüm-kabuk topolojik katlanmaları için doğru araç yapar.
    *sigma* açılır listeleri) çözülen `r_max` / `sigma` değerlerini çarpar; varsayılan
    (ayarsız = 1,0) bayt düzeyinde aynıdır ve sıfır/negatif ya da ayrıştırılamayan
    değerler yok sayılır.
-7. **Bileşen temizliği**: küçültmeden önce çıkarılan üçgen çorbası köşe bağlantılı
+8. **Bileşen temizliği**: küçültmeden önce çıkarılan üçgen çorbası köşe bağlantılı
    bileşenlere ayrılır ve çıkarım artıkları — yüz sayısı, voxel hacmi ve göreli
    hacim tabanlarının altındaki alt-voxel kabuklar — atılır. Ayakta kalan bir ters
    kabuk yalnızca korunan bir madde kabuğunun içinde yuvalanmışsa *ve* girdinin

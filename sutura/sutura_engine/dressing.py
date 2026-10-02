@@ -603,6 +603,94 @@ def _exact_si(v, t):
         return None
 
 
+def si_face_count(v, t):
+    """Exact proper self-intersection face count (``None`` when unmeasurable).
+
+    Thin wrapper over :func:`_exact_si` so the repair ladder can use the same
+    exact classifier as the adoption gate.
+    """
+    return _exact_si(_as_f64(v), _as_i64(t))
+
+
+def signed_volume(verts, tris):
+    """Signed volume of a triangle soup (float; orientation-sensitive)."""
+    t = _as_i64(tris)
+    if len(t) == 0:
+        return 0.0
+    v = _as_f64(verts)
+    a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+    return float(np.einsum('ij,ij->i', a, np.cross(b, c)).sum() / 6.0)
+
+
+def count_components(tris):
+    """Vertex-connected face components (``None`` when scipy is unavailable)."""
+    labels = _component_labels(_as_i64(tris))
+    if labels is None:
+        return None
+    return int(len(np.unique(labels)))
+
+
+def _vertex_normals(v, t):
+    """Area-weighted per-vertex normals (falling back to +Z for isolated)."""
+    a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+    fn = np.cross(b - a, c - a)
+    vn = np.zeros_like(v)
+    for k in range(3):
+        np.add.at(vn, t[:, k], fn)
+    ln = np.linalg.norm(vn, axis=1)
+    bad = ln == 0
+    ln[bad] = 1.0
+    vn = vn / ln[:, None]
+    vn[bad] = (0.0, 0.0, 1.0)
+    return vn
+
+
+def normal_angle_deviation(wv, wt, v0, t0, defect_idx=None):
+    """Angle between each coat vertex normal and the nearest input vertex normal.
+
+    Input vertex normals (area-weighted, like the coat's) are the smooth
+    surface normal; comparing to a single input FACE normal would report ~55°
+    at every sharp corner even for an identical mesh.  Returns ``{'p50',
+    'p95', 'p99', 'max', 'n'}`` in degrees over the HEALTHY coat vertices
+    (whose nearest input vertex is not a defect vertex), or ``None`` when scipy
+    is unavailable.  This is the surface-direction counterpart of the Hausdorff
+    fidelity gate: a voxel staircase / fluting loss keeps the position within
+    tolerance but tilts the normals, which this metric exposes.
+    """
+    v0 = _as_f64(v0)
+    t0 = _as_i64(t0)
+    wv = _as_f64(wv)
+    wt = _as_i64(wt)
+    if len(t0) == 0 or len(wt) == 0 or len(wv) == 0:
+        return None
+    try:
+        from scipy.spatial import cKDTree
+        ivn = _vertex_normals(v0, t0)
+        cvn = _vertex_normals(wv, wt)
+        _dist, idx = cKDTree(v0).query(wv, k=1)
+        idx = np.asarray(idx, np.int64)
+        cosang = np.abs(np.einsum('ij,ij->i', cvn, ivn[idx]))
+        ang = np.degrees(np.arccos(np.clip(cosang, 0.0, 1.0)))
+        if defect_idx is not None and len(defect_idx):
+            dset = np.zeros(len(v0), bool)
+            dset[np.asarray(defect_idx, np.int64)] = True
+            healthy = ~dset[idx]
+        else:
+            healthy = np.ones(len(wv), bool)
+        vals = ang[healthy]
+        if len(vals) == 0:
+            return None
+        return {
+            'p50': float(np.percentile(vals, 50)),
+            'p95': float(np.percentile(vals, 95)),
+            'p99': float(np.percentile(vals, 99)),
+            'max': float(vals.max()),
+            'n': int(len(vals)),
+        }
+    except Exception:  # noqa: BLE001 - the metric is informational
+        return None
+
+
 def _drain_mode_name(factor):
     """The :data:`DRAIN_MODES` name for a drain ``factor`` (or ``'custom'``)."""
     for name in ('none', 'half', 'full', 'deep'):
@@ -888,6 +976,13 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
         'hausdorff_rel_mean': None,
         'hausdorff_input_to_coat': None,
         'fidelity_ok': None,
+        'normal_angle_p50': None,
+        'normal_angle_p95': None,
+        'normal_angle_p99': None,
+        'normal_angle_max': None,
+        'normal_angle_n': 0,
+        'components_after': None,
+        'volume_after': None,
         'drain': None,
         'defects': defects if defects in DEFECT_SETS else DEFECT_SET_DEFAULT,
         'r_max_scale': None,
@@ -1003,6 +1098,18 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
     report['si_after'] = _exact_si(wv, wt)
     report['si_exact_unknown'] = report['si_after'] is None
     report['faces_after'] = int(len(wt))
+
+    # normal-direction fidelity (voxel staircase / fluting detector) and the
+    # global shape guards the adoption gate uses (component count, volume)
+    na = normal_angle_deviation(wv, wt, v0, t0, defect_idx)
+    if na is not None:
+        report['normal_angle_p50'] = round(na['p50'], 4)
+        report['normal_angle_p95'] = round(na['p95'], 4)
+        report['normal_angle_p99'] = round(na['p99'], 4)
+        report['normal_angle_max'] = round(na['max'], 4)
+        report['normal_angle_n'] = int(na['n'])
+    report['components_after'] = count_components(wt)
+    report['volume_after'] = round(signed_volume(wv, wt), 6)
 
     # fidelity: every coat point near the input surface (the prototype's
     # fidelity proof); the input->coat direction is informational (a bridging

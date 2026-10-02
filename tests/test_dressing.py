@@ -441,6 +441,105 @@ def test_cleanup_noop_and_all_debris_fallback():
     assert np.array_equal(_t, ct)
 
 
+def test_resolve_dressing_default_switch():
+    """The single default switch turns Dressing into the Auto fallback; the
+    disable/force flags still win, and the OFF default is unchanged."""
+    import os
+    import repair
+    saved = os.environ.pop('SUTURA_DRESSING_DEFAULT', None)
+    try:
+        assert repair.resolve_dressing() is False
+        assert repair.resolve_dressing(default_enabled=True) == 'auto'
+        assert repair.resolve_dressing(default_enabled=False) is False
+        os.environ['SUTURA_DRESSING_DEFAULT'] = '1'
+        assert repair.resolve_dressing() == 'auto'
+        os.environ['SUTURA_DRESSING_DEFAULT'] = '0'
+        assert repair.resolve_dressing() is False
+        os.environ['SUTURA_DRESSING_DEFAULT'] = '1'
+        assert repair.resolve_dressing(no_dressing=True) is False
+        assert repair.resolve_dressing(force=True) is True
+    finally:
+        os.environ.pop('SUTURA_DRESSING_DEFAULT', None)
+        if saved is not None:
+            os.environ['SUTURA_DRESSING_DEFAULT'] = saved
+
+
+def test_dressing_trigger_si_only():
+    """The 'auto' fallback fires on an SI-only residual (holes/NM already 0)
+    but not on a clean result; an unmeasurable SI never triggers."""
+    import repair
+    assert repair._dressing_wanted('auto', 0, 0, 0) is False
+    assert repair._dressing_wanted('auto', 0, 0, None) is False
+    assert repair._dressing_wanted('auto', 0, 0, 5) is True
+    assert repair._dressing_wanted('auto', 1, 0, 0) is True
+    assert repair._dressing_wanted('auto', 0, 2, 0) is True
+    assert repair._dressing_wanted(True, 0, 0, 0) is True   # forced
+    assert repair._dressing_wanted(False, 1, 1, 9) is False
+
+
+def test_normal_angle_and_cad_helpers():
+    """normal-angle is ~0 for an identical mesh, grows on a voxel staircase;
+    cad_likeness separates a box (CAD) from a sphere (organic)."""
+    import trimesh
+    import repair
+    box = trimesh.creation.box(extents=[2.0, 2.0, 2.0])
+    bv = np.asarray(box.vertices, float)
+    bt = np.asarray(box.faces, np.int64)
+    iso = trimesh.creation.icosphere(subdivisions=3)
+    iv = np.asarray(iso.vertices, float)
+    it = np.asarray(iso.faces, np.int64)
+
+    na = dressing.normal_angle_deviation(bv, bt, bv, bt)
+    assert na is not None and na['p95'] < 1e-6, na
+    snapped = np.round(iv / 0.05) * 0.05
+    stair = dressing.normal_angle_deviation(snapped, it, iv, it)
+    assert stair is not None and stair['p95'] > 1.0, stair
+
+    assert abs(abs(dressing.signed_volume(bv, bt)) - 8.0) < 1e-6
+    assert dressing.count_components(bt) == 1
+    assert repair.cad_likeness(bv, bt)['cad_like'] is True
+    assert repair.cad_likeness(iv, it)['cad_like'] is False
+
+
+def test_dressing_gate_rejects_volume_parts_normal():
+    """A watertight, fidelity-clean candidate is still rejected on a volume
+    blow-up, a component explosion or a staircased normal profile."""
+    if ml is None:
+        print('    (pymeshlab unavailable: dressing gate test skipped)')
+        return
+    import repair
+
+    v = np.asarray(TET_V, float)
+    t = np.asarray(TET_T, np.int64)
+
+    def fake_bad(_v, _t, **kw):
+        rec = {'engine': 'numpy', 'fidelity_ok': True, 'si_exact_unknown': False,
+               'si_after': 0, 'si_before': 0, 'voxel': 0.5, 'faces_coat': len(t),
+               'decimated': False, 'holes_after': 0, 'nm_after': 0, 'ran': True,
+               'warnings': [], 'seconds': 0.1, 'volume_after': 1e9,
+               'components_after': 99, 'normal_angle_p95': 80.0}
+        return np.asarray(v, float), t, rec
+
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
+    after = ms.apply_filter('get_topological_measures')
+
+    orig = dressing.dressing_coat
+    try:
+        dressing.dressing_coat = fake_bad
+        stats = {}
+        repair.dressing_tier(ml, ms, after, stats, v, t, '/tmp',
+                             dressing=True)
+        rec = stats['dressing']
+        assert rec['adopted'] is False, rec
+        assert (rec['volume_ok'] is False and rec['parts_ok'] is False
+                and rec['normal_ok'] is False), rec
+        assert ('volume delta' in rec['reason'] and 'components' in rec['reason']
+                and 'normal p95' in rec['reason']), rec
+    finally:
+        dressing.dressing_coat = orig
+
+
 if __name__ == '__main__':
     fns = [v for k, v in sorted(globals().items())
            if k.startswith('test_') and callable(v)]

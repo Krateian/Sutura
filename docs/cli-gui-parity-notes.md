@@ -66,8 +66,12 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 
 - **Dressing (#16):** `--no-dressing` / `--experimental-dressing` and the
   batch-wide GUI checkbox (Options → Experimental) were added together, so the
-  parity rule holds. Dressing is opt-in (default off) until it is measured on
-  the real-world corpus.
+  parity rule holds. The new single default switch
+  (`DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT`, which makes Dressing
+  an Auto-ladder fallback) is an env/constant rollout knob, not a user control;
+  the GUI checkbox still maps to the forcing `--experimental-dressing`, and
+  `--no-dressing` / `SUTURA_DRESSING=0` remain the disable path on both sides.
+  The switch ships OFF until the fine-detail (voxel staircase) loss is fixed.
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
   CLI-only / GUI-only items above.

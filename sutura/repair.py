@@ -1667,14 +1667,19 @@ def resolve_graft(no_graft=False, force=False, environ=None):
     return 'auto'
 
 
-def resolve_dressing(no_dressing=False, force=False, environ=None):
+def resolve_dressing(no_dressing=False, force=False, environ=None,
+                     default_enabled=None):
     """Resolve the ``dressing`` argument (method #16, viscosity coat).
 
-    Unlike Graft, Dressing is **opt-in** until measured on the corpus:
-    ``--no-dressing`` disables it (the default), ``--experimental-dressing``
-    forces it and ``SUTURA_DRESSING`` may set ``0/1`` (env value has lower
-    precedence than an explicit CLI flag). The library default in
-    ``repair_mesh_from_arrays`` stays ``False``.
+    Returns ``False`` (disabled), ``True`` (forced, runs even without damage) or
+    ``'auto'`` (the Auto-ladder fallback: only when the current result still has
+    holes/non-manifold/exact-SI damage).  Precedence: ``--no-dressing`` disables;
+    ``--experimental-dressing`` forces; ``SUTURA_DRESSING`` may set ``0/1``.
+    With none of those set the answer follows the **single default switch**:
+    the :data:`DRESSING_DEFAULT_ENABLED` module constant or the
+    ``SUTURA_DRESSING_DEFAULT`` env var (``default_enabled`` overrides both for
+    tests).  The library default in ``repair_mesh_from_arrays`` stays ``False``,
+    and the switch is OFF until the fine-detail loss is fixed.
     """
     if no_dressing:
         return False
@@ -1687,7 +1692,9 @@ def resolve_dressing(no_dressing=False, force=False, environ=None):
             return False
         if val in ('1', 'true', 'yes', 'on'):
             return True
-    return False
+    if default_enabled is None:
+        default_enabled = _dressing_default_enabled()
+    return 'auto' if default_enabled else False
 
 
 def resolve_dressing_drain(cli_value=None, environ=None):
@@ -1714,6 +1721,93 @@ def resolve_dressing_drain(cli_value=None, environ=None):
 
 # Dressing defect-mask sets (must match sutura_engine.dressing.DEFECT_SETS).
 DRESSING_DEFECT_SETS = ('all', 'holes_nm')
+
+# ---------------------------------------------------------------------------
+# Dressing auto-fallback switch + adoption-gate bounds (single switch)
+# ---------------------------------------------------------------------------
+# Dressing stays OFF by default until the fine-detail (voxel staircase) loss is
+# fixed in the extraction core.  One knob turns it into an Auto-ladder fallback:
+# the module constant below, or the SUTURA_DRESSING_DEFAULT env var.  When on,
+# the deep-repair 'full' ladder tries Dressing after Graft whenever the current
+# result still has holes, non-manifold edges or exact self-intersections.
+DRESSING_DEFAULT_ENABLED = False
+
+# Adoption-gate bounds for the auto fallback (the explicit --experimental-
+# dressing path uses the same gate).  The volume is compared to the mesh the
+# ladder held just before Dressing (the best available reference; the raw input
+# signed volume is meaningless when it is itself damaged/open).
+DRESSING_MAX_VOLUME_DELTA = 0.10     # |dV| / |V_before|
+DRESSING_MAX_PARTS_SLACK = 1         # candidate components <= before + slack
+# Healthy-region coat-vs-input normal agreement; a voxel staircase / fluting
+# loss keeps positions within the Hausdorff gate but tilts the normals.  This is
+# a PLACEHOLDER threshold, measured on the 13-mesh set 2026-10: Dressing p95 is
+# 12-36 deg on the accepted coats and 82-88 deg on framebaroque / 100281 /
+# 1038439 / 1038441 / 145065 (the staircased, detail-lost ones).  The calibrated
+# detector will replace it.
+DRESSING_MAX_NORMAL_ANGLE_P95 = 30.0  # degrees
+# CAD-likeness placeholder threshold (the calibrated detector supplies the real
+# value).
+CAD_LIKENESS_THRESHOLD = 0.5
+
+
+def _dressing_default_enabled():
+    """The single Dressing-default switch: module constant overridden by the
+    ``SUTURA_DRESSING_DEFAULT`` env var (truthy = enable the Auto fallback)."""
+    raw = os.environ.get('SUTURA_DRESSING_DEFAULT')
+    if raw is None:
+        return bool(DRESSING_DEFAULT_ENABLED)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on', 'auto')
+
+
+def cad_likeness(verts, tris):
+    """Heuristic CAD/machined-vs-organic score for the Graft-vs-Dressing guard.
+
+    Returns ``{'score', 'planar_fraction', 'sharp_fraction', 'cad_like'}``.
+    Mechanical parts have many flat faces and/or many sharp dihedral edges;
+    organic scans do not.  The threshold is a PLACEHOLDER
+    (:data:`CAD_LIKENESS_THRESHOLD`) until the calibrated detector lands, and
+    the score is currently recorded only — the ladder keeps Graft first for
+    every input, which already satisfies the CAD guard (Graft runs before
+    Dressing and Dressing is only tried when damage remains).
+    """
+    try:
+        v = np.asarray(verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64)
+        F = len(t)
+        if F == 0 or len(v) == 0:
+            return {'score': 0.0, 'planar_fraction': 0.0,
+                    'sharp_fraction': 0.0, 'cad_like': False}
+        a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+        n = np.cross(b - a, c - a)
+        ln = np.linalg.norm(n, axis=1)
+        ln[ln == 0] = 1.0
+        n = n / ln[:, None]
+        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        fi = np.concatenate([np.arange(F), np.arange(F), np.arange(F)])
+        key = np.sort(e, axis=1)
+        key = key[:, 0].astype(np.int64) * (int(t.max()) + 1) + key[:, 1]
+        order = np.argsort(key, kind='stable')
+        ks = key[order]
+        fs = fi[order]
+        starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+        counts = np.diff(np.r_[starts, len(ks)])
+        pair = starts[counts == 2]
+        f1, f2 = fs[pair], fs[pair + 1]
+        dot = np.abs(np.einsum('ij,ij->i', n[f1], n[f2]))
+        ang = np.degrees(np.arccos(np.clip(dot, 0.0, 1.0)))
+        # true-flat edges (coplanar neighbours) vs sharp edges.  Smooth organics
+        # sit in between (gentle curvature), so neither fraction fires.
+        flat_edge = ang < 1.0
+        sharp_edge = ang > 30.0
+        flat_fraction = float(flat_edge.mean()) if len(ang) else 0.0
+        sharp_fraction = float(sharp_edge.mean()) if len(ang) else 0.0
+        score = max(flat_fraction, sharp_fraction)
+        return {'score': score, 'planar_fraction': flat_fraction,
+                'sharp_fraction': sharp_fraction,
+                'cad_like': bool(score >= CAD_LIKENESS_THRESHOLD)}
+    except Exception:  # noqa: BLE001 - the guard is best-effort
+        return {'score': None, 'planar_fraction': None,
+                'sharp_fraction': None, 'cad_like': False}
 
 
 def resolve_dressing_defects(cli_value=None, environ=None):
@@ -3242,6 +3336,12 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
            'drain': None, 'defects': None, 'r_max_scale': None,
            'sigma_scale': None, 'cleanup': None,
            'hausdorff_rel_max': None, 'hausdorff_input_to_coat': None,
+           'normal_angle_p50': None, 'normal_angle_p95': None,
+           'normal_angle_n': 0,
+           'volume_before': None, 'volume_after': None,
+           'volume_delta_rel': None, 'components_before': None,
+           'components_after': None,
+           'volume_ok': None, 'parts_ok': None, 'normal_ok': None,
            'si_before': None, 'si_after': None, 'si_exact_unknown': False,
            'holes': None, 'non_manifold': None,
            'within_time_budget': None, 'seconds': None,
@@ -3280,6 +3380,9 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
         rec['within_time_budget'] = drec.get('within_time_budget')
         rec['seconds'] = drec.get('seconds')
         rec['warnings'] = list(drec.get('warnings') or [])
+        rec['normal_angle_p50'] = drec.get('normal_angle_p50')
+        rec['normal_angle_p95'] = drec.get('normal_angle_p95')
+        rec['normal_angle_n'] = int(drec.get('normal_angle_n') or 0)
         if len(cand_t) == 0:
             rec['reason'] = 'dressing returned no geometry'
         else:
@@ -3295,8 +3398,45 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
             rec['faces'] = int(len(cand_t))
             si_after = drec.get('si_after')
             si_ok = si_after in (0, None)
+
+            # global-shape guards vs the mesh the ladder held before Dressing:
+            # a component-count explosion or a large volume change is not a
+            # repair.  The raw input signed volume is meaningless when the input
+            # is itself damaged/open, so the current result is the reference.
+            vol_before = parts_before = None
+            try:
+                cur_v = np.asarray(ms.current_mesh().vertex_matrix(),
+                                   dtype=np.float64)
+                cur_t = np.asarray(ms.current_mesh().face_matrix(),
+                                   dtype=np.int64)
+                vol_before = _dressing.signed_volume(cur_v, cur_t)
+                parts_before = _dressing.count_components(cur_t)
+            except Exception:  # noqa: BLE001 - guards degrade to "unknown"
+                pass
+            vol_after = drec.get('volume_after')
+            parts_after = drec.get('components_after')
+            rec['volume_before'] = (round(vol_before, 6)
+                                    if vol_before is not None else None)
+            rec['volume_after'] = vol_after
+            rec['components_before'] = parts_before
+            rec['components_after'] = parts_after
+            if vol_before is not None and vol_after is not None:
+                denom = max(abs(vol_before), 1e-12)
+                rec['volume_delta_rel'] = abs(vol_after - vol_before) / denom
+            vol_ok = (rec['volume_delta_rel'] is None
+                      or rec['volume_delta_rel'] <= DRESSING_MAX_VOLUME_DELTA)
+            parts_ok = (parts_before is None or parts_after is None
+                        or parts_after <= parts_before + DRESSING_MAX_PARTS_SLACK)
+            na95 = rec['normal_angle_p95']
+            normal_ok = (na95 is None
+                         or na95 <= DRESSING_MAX_NORMAL_ANGLE_P95)
+            rec['volume_ok'] = bool(vol_ok)
+            rec['parts_ok'] = bool(parts_ok)
+            rec['normal_ok'] = bool(normal_ok)
+
             if (cand_holes == 0 and cand_nm == 0 and si_ok
-                    and drec.get('fidelity_ok') is not False):
+                    and drec.get('fidelity_ok') is not False
+                    and vol_ok and parts_ok and normal_ok):
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
                 after = ms.apply_filter('get_topological_measures')
@@ -3314,6 +3454,16 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
                 if drec.get('fidelity_ok') is False:
                     reasons.append('fidelity %.3f%% > gate'
                                    % (100.0 * (rec['hausdorff_rel_max'] or 0)))
+                if not vol_ok:
+                    reasons.append('volume delta %.2f%% > gate'
+                                   % (100.0 * (rec['volume_delta_rel'] or 0)))
+                if not parts_ok:
+                    reasons.append('components %s > %s + %d'
+                                   % (parts_after, parts_before,
+                                      DRESSING_MAX_PARTS_SLACK))
+                if not normal_ok:
+                    reasons.append('normal p95 %.1f deg > gate'
+                                   % (na95 or 0.0))
                 rec['reason'] = ('candidate not adopted (%s)'
                                  % ', '.join(reasons) if reasons
                                  else 'candidate not adopted')
@@ -3523,6 +3673,41 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
     return ms, after
 
 
+def _dressing_wanted(dressing, holes, nm, si):
+    """Whether the Dressing fallback should run on the current result.
+
+    ``dressing is True`` (forced) always runs; ``'auto'`` (the default switch)
+    runs only when the result still has holes, non-manifold edges or a POSITIVE
+    exact self-intersection count (``si is None`` = unmeasurable never triggers).
+    """
+    if dressing is True:
+        return True
+    if dressing == 'auto':
+        return bool(holes > 0 or nm > 0 or (si is not None and si > 0))
+    return False
+
+
+def _dressing_damage(ms, after):
+    """``(holes, non_manifold, exact_si)`` of the current result.
+
+    ``exact_si`` is ``None`` when the classifier cannot measure it (empty/too
+    large mesh, or a build without the Rust extension).  Used to decide whether
+    the Dressing fallback should run on the result the ladder currently holds
+    (after Graft), so an SI-only residual counts as damage.
+    """
+    m = ms.current_mesh()
+    holes = boundary_loop_stats(m.vertex_matrix(), m.face_matrix())[0]
+    nm = int(after.get('non_two_manifold_edges', 0))
+    si = None
+    try:
+        from sutura_engine import dressing as _d
+        si = _d.si_face_count(np.asarray(m.vertex_matrix(), dtype=np.float64),
+                              np.asarray(m.face_matrix(), dtype=np.int64))
+    except Exception:  # noqa: BLE001 - unknown SI never blocks a repair
+        si = None
+    return int(holes), nm, si
+
+
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        ftetwild=False, spec=None, engines=None, engine_chain=None,
                        graft=False, dressing=False, dressing_drain=None,
@@ -3542,6 +3727,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     tiers_run = []
+    cad = None
+    dmg = None
     cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                     ms.current_mesh().face_matrix())[0]
     cur_nm = int(after.get('non_two_manifold_edges', 0))
@@ -3576,6 +3763,13 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # and fTetWild is skipped. When it closes the mesh but fidelity
             # fails, fTetWild is also tried and the watertight result with the
             # lower healthy deviation wins.
+            #
+            # CAD guard hook: the geometric CAD/machined-vs-organic score is
+            # recorded for every input.  The ladder keeps Graft first for ALL
+            # inputs (which satisfies the guard: a CAD-like part gets the
+            # verbatim Graft hybrid before Dressing and Dressing only runs when
+            # damage remains); the calibrated detector will drive the ordering.
+            cad = cad_likeness(v, t)
             graft_ms = graft_after = None
             graft_dev = None
             graft_ok = False
@@ -3598,53 +3792,64 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     else:
                         graft_ms, graft_after = _g_ms, _g_after
                         graft_dev = _g.get('hausdorff_healthy')
-            if graft_ok:
+
+            # Dressing (#16) sits AFTER Graft and BEFORE fTetWild: its
+            # volumetric skin targets the whole-shell folds and heavy
+            # self-intersections Graft's hybrid leaves behind.  When the switch
+            # is on it is an Auto fallback, tried whenever the result the ladder
+            # now holds (after Graft) still has holes, non-manifold edges or
+            # exact self-intersections; an explicit force runs regardless.
+            dressing_ok = False
+            _dh = _dnm = 0
+            _dsi = None
+            if dressing == 'auto':
+                _dh, _dnm, _dsi = _dressing_damage(ms, after)
+                dmg = {'holes': _dh, 'non_manifold': _dnm,
+                       'self_intersections': _dsi}
+            if _dressing_wanted(dressing, _dh, _dnm, _dsi):
+                _d_ms, _d_after = dressing_tier(
+                    ml, ms, after, stats, v, t, tmpdir, dressing=True,
+                    intensity=(getattr(spec, 'base', None)
+                               or getattr(spec, 'name', None)),
+                    drain=dressing_drain, defects=dressing_defects,
+                    r_max_scale=dressing_rmax_scale,
+                    sigma_scale=dressing_sigma_scale)
+                if (stats.get('dressing') or {}).get('adopted'):
+                    ms, after = _d_ms, _d_after
+                    dressing_ok = True
+                    tiers_run.append('dressing')
+
+            if dressing_ok:
+                stats['experimental_ftetwild'] = False
+                if graft_ms is not None:
+                    stats['graft']['adopted'] = False
+                    stats['graft']['reason'] = 'superseded by Dressing'
+            elif graft_ok:
                 stats['experimental_ftetwild'] = False
             else:
-                # Dressing (#16, opt-in) is tried AFTER Graft and BEFORE
-                # fTetWild: its volumetric skin targets the whole-shell folds
-                # and heavy self-intersections that Graft's hybrid leaves
-                # behind. It is only attempted when explicitly enabled.
-                dressing_ok = False
-                if dressing is True and (cur_holes > 0 or cur_nm > 0):
-                    _d_ms, _d_after = dressing_tier(
-                        ml, ms, after, stats, v, t, tmpdir, dressing=True,
-                        intensity=(getattr(spec, 'base', None)
-                                   or getattr(spec, 'name', None)),
-                        drain=dressing_drain, defects=dressing_defects,
-                        r_max_scale=dressing_rmax_scale,
-                        sigma_scale=dressing_sigma_scale)
-                    _d = stats.get('dressing') or {}
-                    if _d.get('adopted'):
-                        ms, after = _d_ms, _d_after
-                        dressing_ok = True
-                        tiers_run.append('dressing')
-                if dressing_ok:
-                    stats['experimental_ftetwild'] = False
-                else:
-                    ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
-                                               ftetwild, spec=spec)
-                    if (stats.get('experimental_ftetwild') or {}).get('ran'):
-                        tiers_run.append('ftetwild')
-                    if graft_ms is not None:
-                        ft_dev = (stats.get('experimental_ftetwild')
-                                  or {}).get('hausdorff_rel')
-                        ft_adopted = bool((stats.get('experimental_ftetwild')
-                                           or {}).get('adopted'))
-                        if (not ft_adopted
-                                or (ft_dev is not None and graft_dev is not None
-                                    and ft_dev < graft_dev)):
-                            stats['graft']['adopted'] = False
-                            stats['graft']['reason'] = (
-                                'superseded by fTetWild (lower healthy deviation)')
-                            tiers_run.append('graft')
-                        else:
-                            ms, after = graft_ms, graft_after
-                            stats['graft']['adopted'] = True
-                            stats['graft']['preferred_over_ftetwild'] = True
-                            if 'ftetwild' in tiers_run:
-                                tiers_run.remove('ftetwild')
-                            tiers_run.append('graft')
+                ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
+                                           ftetwild, spec=spec)
+                if (stats.get('experimental_ftetwild') or {}).get('ran'):
+                    tiers_run.append('ftetwild')
+                if graft_ms is not None:
+                    ft_dev = (stats.get('experimental_ftetwild')
+                              or {}).get('hausdorff_rel')
+                    ft_adopted = bool((stats.get('experimental_ftetwild')
+                                       or {}).get('adopted'))
+                    if (not ft_adopted
+                            or (ft_dev is not None and graft_dev is not None
+                                and ft_dev < graft_dev)):
+                        stats['graft']['adopted'] = False
+                        stats['graft']['reason'] = (
+                            'superseded by fTetWild (lower healthy deviation)')
+                        tiers_run.append('graft')
+                    else:
+                        ms, after = graft_ms, graft_after
+                        stats['graft']['adopted'] = True
+                        stats['graft']['preferred_over_ftetwild'] = True
+                        if 'ftetwild' in tiers_run:
+                            tiers_run.remove('ftetwild')
+                        tiers_run.append('graft')
     else:
         # mode 'off'/'local': Dressing is run whenever it is explicitly enabled
         # (method #16 sets deep_repair='off'), regardless of remaining holes, so
@@ -3672,6 +3877,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             'ftetwild': stats.get('experimental_ftetwild') or None,
             'graft': stats.get('graft') or None,
             'dressing': stats.get('dressing') or None,
+            'cad_likeness': cad,
+            'dressing_damage': dmg,
             'available': None,
         }
     return ms, after
@@ -5684,7 +5891,9 @@ def main():
     # before fTetWild). --experimental-graft forces it outside the ladder.
     _graft_arg = resolve_graft(no_graft=args.no_graft,
                                force=args.experimental_graft)
-    # Dressing (#16): opt-in (default off) until measured on the corpus.
+    # Dressing (#16): the single default switch (DRESSING_DEFAULT_ENABLED /
+    # SUTURA_DRESSING_DEFAULT) decides; --no-dressing disables and
+    # --experimental-dressing forces.
     _dressing_arg = resolve_dressing(no_dressing=args.no_dressing,
                                      force=args.experimental_dressing)
     _dressing_drain = resolve_dressing_drain(args.dressing_drain)

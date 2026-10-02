@@ -26,10 +26,21 @@ All notable changes to this project are documented here.
   (`meshing_decimation_quadric_edge_collapse`, `optimalplacement=False`,
   `planarquadric=True`, per the `/tmp/v073/dressing/decim` benchmark) rolls back
   atomically to the un-decimated coat when it would introduce holes, non-manifold
-  edges or exact self-intersections. Enabled with `--experimental-dressing` /
-  `SUTURA_DRESSING=1` / the GUI Options checkbox; it is attempted after Graft and
-  before fTetWild, and adopted only when strict-watertight, exact-SI-free and inside
-  the preset's coat->input fidelity gate. Report key `dressing`.
+  edges or exact self-intersections. It is attempted after Graft and before fTetWild.
+  **Now an Auto-ladder fallback behind a single default switch, shipped OFF**: with
+  `DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT=1` it runs on residual damage
+  (holes, non-manifold edges or a positive exact-SI count); `--experimental-dressing` /
+  `SUTURA_DRESSING=1` / the GUI Options checkbox **force** it; `--no-dressing` /
+  `SUTURA_DRESSING=0` disable it. Adoption requires strict-watertight, exact-SI-free,
+  the preset's coat->input fidelity gate and new shape-preservation gates: signed
+  volume delta <= `DRESSING_MAX_VOLUME_DELTA` (10 %) vs the pre-Dressing result,
+  component-count growth <= `DRESSING_MAX_PARTS_SLACK` (1), and healthy-surface P95
+  coat-vs-input vertex-normal angle below `DRESSING_MAX_NORMAL_ANGLE_P95` (30 deg, a
+  placeholder; the metric catches the voxel staircase the position-only Hausdorff gate
+  misses). The switch stays OFF because on a fine-detail relief (framebaroque) the
+  staircase visibly flattens fluting even at ~0.08 mm mean deviation; the geometric
+  CAD-vs-organic `cad_likeness` score is recorded on every Auto run for the future
+  calibrated CAD guard. Report key `dressing`.
 
 - **Dressing drain (healthy-region erode-back).** The coat sits ~`r_base` outside the
   original surface (dimension growth); Dressing can now erode it back **in the level
