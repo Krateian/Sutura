@@ -129,3 +129,12 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   parity holds) with an env opt-out only (`SUTURA_SI_EXCISE=0`), like the ray-stab vote.
   The refined Stage-1 hole fill (`SUTURA_REFINE_HOLE=1`) is an unproven evaluation switch,
   so it is env-only too; when it is proven it gets a CLI flag and a GUI control together.
+- **Localized exact self-union (`sutura/local_exact.py`, unreleased):** the tier that
+  replaces a residual Stage-2 self-intersecting cluster with the exact outer-hull
+  triangulation of a small patch. It is OPT-IN and OFF by default for every install
+  (experimental; measured on the 40-mesh corpus it removes SI on only an isolated mesh and
+  the framebaroque fold is global, not local — see the class docstring and
+  `docs/local-exact-notes.md`). It is forced with `SUTURA_LOCAL_EXACT=1` (values
+  `1/true/yes/on`) and disabled with `SUTURA_LOCAL_EXACT=0`; there is deliberately NO CLI
+  flag or GUI control, so CLI and GUI behave identically (parity by construction, like the
+  ray-stab vote).

@@ -410,6 +410,11 @@ impl MeshBvh {
         self.winding_node(0, p) / (4.0 * std::f64::consts::PI)
     }
 
+    /// Generalized winding number for many points, parallel across CPU cores.
+    pub fn winding_points_par(&self, points: &[[f64; 3]]) -> Vec<f64> {
+        points.par_iter().map(|p| self.winding_at(*p)).collect()
+    }
+
     fn winding_node(&self, idx: usize, p: [f64; 3]) -> f64 {
         let n = &self.nodes[idx];
         if n.left < 0 {
@@ -855,6 +860,26 @@ mod tests {
         let bvh = MeshBvh::from_arrays(&v, &f);
         let w = bvh.winding_at([3.0, 0.5, 0.5]);
         assert!(w.abs() < 1e-2, "outside winding {w}");
+    }
+
+    #[test]
+    fn winding_points_par_matches_scalar() {
+        let (v, f) = cube();
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        let pts = vec![
+            [0.5, 0.5, 0.5],
+            [3.0, 0.5, 0.5],
+            [0.5, -2.0, 0.5],
+            [0.5, 0.5, 4.0],
+        ];
+        let par = bvh.winding_points_par(&pts);
+        assert_eq!(par.len(), pts.len());
+        for (p, w) in pts.iter().zip(par.iter()) {
+            let s = bvh.winding_at(*p);
+            assert!((s - w).abs() < 1e-12, "p {p:?}: scalar {s} vs par {w}");
+        }
+        assert!((par[0] - 1.0).abs() < 1e-2);
+        assert!(par[1].abs() < 1e-2);
     }
 
     #[test]

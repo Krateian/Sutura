@@ -852,6 +852,51 @@ fn raystab_grid<'py>(
     ))
 }
 
+/// Python-exposed generalized-winding BVH over a triangle soup.
+///
+/// Build it once over the whole mesh and reuse it for many query points; the
+/// structure is read-only and the query methods are parallelised with rayon.
+#[pyclass]
+pub struct PyMeshBvh {
+    inner: winding::MeshBvh,
+}
+
+#[pymethods]
+impl PyMeshBvh {
+    #[new]
+    fn new(
+        verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+        tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    ) -> PyResult<Self> {
+        let (rv, rt) = parse_mesh(&verts, &tris)?;
+        Ok(Self {
+            inner: winding::MeshBvh::from_arrays(&rv, &rt),
+        })
+    }
+
+    /// Generalized winding number at a single `(x, y, z)` point.
+    fn winding_at(&self, point: (f64, f64, f64)) -> f64 {
+        self.inner.winding_at([point.0, point.1, point.2])
+    }
+
+    /// Generalized winding number for `(M, 3)` query points, parallel across
+    /// all CPU cores.  Returns a `(M,)` float64 array.
+    fn winding_points<'py>(
+        &self,
+        py: Python<'py>,
+        points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let pp = points.as_array();
+        if pp.ncols() != 3 {
+            return Err(PyValueError::new_err("points must be Mx3"));
+        }
+        let pts: Vec<[f64; 3]> = (0..pp.nrows())
+            .map(|i| [pp[[i, 0]], pp[[i, 1]], pp[[i, 2]]])
+            .collect();
+        Ok(PyArray1::from_vec(py, self.inner.winding_points_par(&pts)))
+    }
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -864,6 +909,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
+    m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
     m.add("RAYSTAB_DEFAULT_DIRS", raycast::DEFAULT_DIRS)?;

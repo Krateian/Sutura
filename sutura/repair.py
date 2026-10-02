@@ -31,6 +31,7 @@ from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
 import repair_score
 import history
+import local_exact
 import triage
 import methods as method_registry
 
@@ -451,6 +452,50 @@ def _si_excise_budget(spec):
     """SI-excise wall-clock budget (seconds) from the intensity preset."""
     key = getattr(spec, 'base', None) or getattr(spec, 'name', None)
     return SI_EXCISE_BUDGET_BY_INTENSITY.get(key, SI_EXCISE_DEFAULT_BUDGET)
+
+
+# Localized exact self-union of residual self-intersection clusters (after
+# Stage 2 + P-WELD). EXPERIMENTAL: measured on the 40-mesh corpus it removes SI
+# on only an isolated real mesh (see docs/cli-gui-parity-notes.md); the
+# framebaroque fold is global, not local, so patch boundaries never match
+# (97 % `boundary_split`). OFF by default; `SUTURA_LOCAL_EXACT=1` forces it.
+LOCAL_EXACT_DEFAULT_ENABLED = False
+LOCAL_EXACT_BUDGET_BY_INTENSITY = {
+    'quick': 0.0,
+    'balanced': 10.0,
+    'thorough': 45.0,
+    'extreme': 120.0,
+}
+LOCAL_EXACT_DEFAULT_BUDGET = 10.0
+
+
+def local_exact_enabled(enabled=None):
+    """Resolve the local-exact switch (default OFF) from an explicit value then
+    ``SUTURA_LOCAL_EXACT``."""
+    if enabled is None:
+        env = os.environ.get('SUTURA_LOCAL_EXACT', '').strip().lower()
+        if env in ('1', 'true', 'yes', 'on'):
+            enabled = True
+        elif env in ('0', 'false', 'no', 'off'):
+            enabled = False
+        else:
+            enabled = LOCAL_EXACT_DEFAULT_ENABLED
+    return bool(enabled)
+
+
+def _local_exact_budget(spec):
+    """Local-exact wall-clock budget (seconds) from the intensity preset."""
+    key = getattr(spec, 'base', None) or getattr(spec, 'name', None)
+    return LOCAL_EXACT_BUDGET_BY_INTENSITY.get(key, LOCAL_EXACT_DEFAULT_BUDGET)
+
+
+def _should_run_local_exact(report, spec):
+    """Gate: enabled, Stage 2 succeeded, and a positive time budget."""
+    if not local_exact_enabled():
+        return False
+    if not (report.get('stage2') or {}).get('ok'):
+        return False
+    return _local_exact_budget(spec or triage.resolve_intensity(None)) > 0.0
 
 
 def _si_count(ms):
@@ -3713,6 +3758,17 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         if _pwel is not None:
             report['p_weld'] = _pwel
 
+    # Localized exact self-union of residual SI clusters (experimental, OFF by
+    # default). Runs on the post-Stage-2 + post-P-WELD mesh; a no-op that
+    # returns the input arrays unchanged when disabled or when no cluster is
+    # accepted.
+    if _should_run_local_exact(report, triage_spec):
+        _lse_spec = triage_spec or triage.resolve_intensity(None)
+        new_v, new_t, _lse = local_exact.local_exact_self_union(
+            ml, new_v, new_t, time_budget=_local_exact_budget(_lse_spec))
+        if _lse.get('ran'):
+            report['local_exact'] = _lse
+
     # P-HONEST: the verdict must describe the mesh actually saved, not the
     # in-memory index topology. The final mesh is chosen above; judge it in
     # the save/reload-equivalent form and let that verdict win.
@@ -3848,6 +3904,13 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     new_v, new_t = run_after_stage2_engines(
                         ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
                         triage_spec or triage.resolve_intensity(None))
+                if _should_run_local_exact(rep, triage_spec):
+                    _lse_spec = triage_spec or triage.resolve_intensity(None)
+                    new_v, new_t, _lse = local_exact.local_exact_self_union(
+                        ml, new_v, new_t,
+                        time_budget=_local_exact_budget(_lse_spec))
+                    if _lse.get('ran'):
+                        rep['local_exact'] = _lse
                 # P-HONEST: judge the per-object mesh actually written into the
                 # archive (reload-equivalent form) before the confidence/score
                 # below, so those see the honest verdict too.
@@ -4223,6 +4286,16 @@ def human_report(r, show_defects=False, show_diff=False):
                      % (pw.get('holes_before', 0), pw.get('holes_after', 0),
                         pw.get('non_manifold_before', 0),
                         pw.get('non_manifold_after', 0), state))
+    le_r = r.get('local_exact')
+    if le_r and le_r.get('ran'):
+        if le_r.get('applied'):
+            state = '%d/%d cluster(s) accepted' % (le_r.get('accepted', 0),
+                                                   le_r.get('clusters', 0))
+        else:
+            state = 'no cluster accepted (%s)' % (le_r.get('reason') or '?')
+        lines.append('  Local exact self-union : SI %d -> %s, %s in %.2fs'
+                     % (le_r.get('si_before', 0), le_r.get('si_after'),
+                        state, le_r.get('seconds', 0)))
     if r.get('extreme_passes_applied'):
         lines.append('  Extreme passes          : applied (%d self-intersecting face(s) removed)'
                      % r.get('self_intersections_removed', 0))
