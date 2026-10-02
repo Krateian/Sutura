@@ -12,7 +12,7 @@
 //! inside the band, so extraction never needs a field value that was not
 //! computed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
@@ -36,6 +36,17 @@ const COARSE_STRIDE: usize = 3;
 const PRESCREEN_TOL: f64 = 0.1;
 const PRESCREEN_MARGIN: f64 = 0.15;
 
+/// Peel: a coat vertex is snapped onto the input surface only where the local
+/// defect influence is essentially zero (its radius is within this fraction of
+/// the base radius above `r_base`) and the closest input point is within this
+/// many voxels.  Snapping elsewhere would pull a genuine plug open.
+const PEEL_SNAP_VOXEL_FRAC: f64 = 0.75;
+const PEEL_HEALTHY_FRAC: f32 = 0.1;
+
+/// Bit index of the center cell in the 3x3x3 `(di+1) + 3*(dj+1) + 9*(dk+1)`
+/// neighbourhood encoding used by [`simple_point`].
+const CENTER_BIT: u32 = 13;
+
 /// Parameters for [`dressing_coat`].  `r_base`/`r_max`/`sigma` may be `None`,
 /// in which case they are derived from the input's median edge length.
 #[derive(Clone, Copy, Debug)]
@@ -52,6 +63,14 @@ pub struct DressingParams {
     /// defect coverage (whose `r` is much larger) untouched.  `0.0` keeps the
     /// plain outward coat.
     pub drain: f64,
+    /// Experimental: after building the thick coat solid `{F <= 0}`, peel the
+    /// added material back toward the original solid `{s < 0}` layer by layer
+    /// (homotopic thinning of the added voxels, outermost first, removing only
+    /// simple points), then extract the peeled solid and snap its healthy
+    /// vertices onto the input surface.  Keeps the thick coat where it is
+    /// needed to close an opening and reaches the original surface everywhere
+    /// else, so healthy ornament is not buried by the coat.
+    pub peel: bool,
 }
 
 impl Default for DressingParams {
@@ -64,6 +83,7 @@ impl Default for DressingParams {
             band_voxels: 2.0,
             margin_voxels: 3.0,
             drain: 0.0,
+            peel: false,
         }
     }
 }
@@ -91,6 +111,13 @@ pub struct DressingInfo {
     pub band_seconds: f64,
     pub field_seconds: f64,
     pub extract_seconds: f64,
+    /// Peel bookkeeping (all zero/false when `peel` is off).
+    pub peel: bool,
+    pub peeled_cells: usize,
+    pub snapped_verts: usize,
+    /// Whether the post-snap weld was kept (it is rejected when merging the
+    /// snapped vertices would break two-manifoldness).
+    pub peel_welded: bool,
 }
 
 /// Extracted coat mesh plus its report.
@@ -501,6 +528,10 @@ pub fn dressing_coat(
             band_seconds: 0.0,
             field_seconds: 0.0,
             extract_seconds: 0.0,
+            peel: params.peel,
+            peeled_cells: 0,
+            snapped_verts: 0,
+            peel_welded: false,
         },
     };
     if verts.is_empty() || tris.is_empty() {
@@ -681,10 +712,56 @@ pub fn dressing_coat(
             }
         });
 
+    // Peel (opt-in): thin the added coat material back toward the original
+    // solid, keeping only the plugs a hole/non-manifold gap needs, then extract
+    // the peeled solid and snap its healthy vertices onto the input.
+    let mut peeled_cells = 0usize;
+    let mut snapped_verts = 0usize;
+    let mut peel_welded = false;
+    if params.peel {
+        let mut s_dense = vec![0f32; n];
+        s_dense.par_iter_mut().enumerate().for_each(|(idx, sv)| {
+            let h = healthy_at(idx);
+            *sv = field[idx] - drain32 * h + r_dense[idx];
+        });
+        let mut occ = vec![0u8; n];
+        occ.par_iter_mut().enumerate().for_each(|(idx, o)| {
+            *o = u8::from(field[idx] <= 0.0);
+        });
+        peeled_cells = peel_solid(&mut occ, &s_dense, dims);
+        field = morph::signed_distance_from_occupancy(&occ, dims);
+        field.par_iter_mut().for_each(|v| *v *= voxel32);
+    }
     let field_seconds = t_field.elapsed().as_secs_f64();
     let t_extract = std::time::Instant::now();
     let dc = marching_tets_mesh(&field, dims, origin, voxel);
-    let (out_verts, mut out_tris) = weld_and_clean(&dc.verts, &dc.tris, voxel);
+    let (mut out_verts, mut out_tris) = weld_and_clean(&dc.verts, &dc.tris, voxel);
+    if params.peel {
+        snapped_verts = snap_peeled_vertices(
+            &mut out_verts,
+            &bvh,
+            &r_dense,
+            origin,
+            voxel32,
+            r_base32,
+            r_max32,
+            dims,
+        );
+        // Snapping healthy vertices onto the input can map several voxel-boundary
+        // vertices onto the same point (cube corners/edges); welding those would
+        // create non-manifold edges.  Keep the welded, merged mesh only when it
+        // stays two-manifold, otherwise keep the un-merged snap (topology is
+        // unchanged by vertex motion alone).
+        let (wv, mut wt) = weld_and_clean(&out_verts, &out_tris, voxel);
+        // `mesh_is_manifold` is orientation-sensitive, so establish a consistent
+        // orientation on the candidate before judging it.
+        orient_consistently(&mut wt);
+        if wt.len() <= out_tris.len() && mesh_is_manifold(&wv, &wt) {
+            out_verts = wv;
+            out_tris = wt;
+            peel_welded = true;
+        }
+    }
     orient_consistently(&mut out_tris);
     let manifold = mesh_is_manifold(&out_verts, &out_tris);
     // Consistent outward orientation: the coat encloses {F < 0}, so the signed
@@ -725,12 +802,246 @@ pub fn dressing_coat(
         band_seconds,
         field_seconds,
         extract_seconds: t_extract.elapsed().as_secs_f64(),
+        peel: params.peel,
+        peeled_cells,
+        snapped_verts,
+        peel_welded,
     };
     DressingMesh {
         verts: out_verts,
         tris: out_tris,
         info,
     }
+}
+
+/// Local topological simplicity of an occupancy voxel under (26,6) digital
+/// topology: removing `idx` preserves the topology of `occ` iff the 26-neighbour
+/// foreground has exactly one 26-connected component and the 26-neighbour
+/// background has exactly one 6-connected component.  Border voxels are never
+/// simple.
+fn simple_point(occ: &[u8], dims: [usize; 3], idx: usize) -> bool {
+    let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+    let i = idx % nx;
+    let j = (idx / nx) % ny;
+    let k = idx / (nx * ny);
+    if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
+        return false;
+    }
+    let mut fg: u32 = 0;
+    for dk in -1i32..=1 {
+        for dj in -1i32..=1 {
+            for di in -1i32..=1 {
+                if di == 0 && dj == 0 && dk == 0 {
+                    continue;
+                }
+                let ni = (i as i32 + di) as usize;
+                let nj = (j as i32 + dj) as usize;
+                let nk = (k as i32 + dk) as usize;
+                if occ[ni + nx * (nj + ny * nk)] != 0 {
+                    fg |= 1 << ((di + 1) + 3 * (dj + 1) + 9 * (dk + 1)) as u32;
+                }
+            }
+        }
+    }
+    if fg == 0 {
+        return false;
+    }
+    // foreground 26-components
+    let mut seen = 0u32;
+    let mut comps = 0;
+    for b in 0..27u32 {
+        if b == CENTER_BIT || (fg >> b) & 1 == 0 || (seen >> b) & 1 == 1 {
+            continue;
+        }
+        comps += 1;
+        if comps > 1 {
+            return false;
+        }
+        let mut stack = vec![b];
+        while let Some(x) = stack.pop() {
+            if (seen >> x) & 1 == 1 {
+                continue;
+            }
+            seen |= 1 << x;
+            let xi = (x % 3) as i32 - 1;
+            let xj = ((x / 3) % 3) as i32 - 1;
+            let xk = (x / 9) as i32 - 1;
+            for dk in -1i32..=1 {
+                for dj in -1i32..=1 {
+                    for di in -1i32..=1 {
+                        let ni = xi + di;
+                        let nj = xj + dj;
+                        let nk = xk + dk;
+                        if !(-1..=1).contains(&ni) || !(-1..=1).contains(&nj) || !(-1..=1).contains(&nk) {
+                            continue;
+                        }
+                        let nb = ((ni + 1) + 3 * (nj + 1) + 9 * (nk + 1)) as u32;
+                        if nb == CENTER_BIT {
+                            continue;
+                        }
+                        if (fg >> nb) & 1 == 1 && (seen >> nb) & 1 == 0 {
+                            stack.push(nb);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // background 6-components among the non-foreground 26-neighbours
+    let all26: u32 = ((1u32 << 27) - 1) & !(1 << CENTER_BIT);
+    let bg = all26 & !fg;
+    if bg == 0 {
+        return false;
+    }
+    let mut seen2 = 0u32;
+    let mut comps2 = 0;
+    for b in 0..27u32 {
+        if (bg >> b) & 1 == 0 || (seen2 >> b) & 1 == 1 {
+            continue;
+        }
+        comps2 += 1;
+        if comps2 > 1 {
+            return false;
+        }
+        let mut stack = vec![b];
+        while let Some(x) = stack.pop() {
+            if (seen2 >> x) & 1 == 1 {
+                continue;
+            }
+            seen2 |= 1 << x;
+            let xi = (x % 3) as i32 - 1;
+            let xj = ((x / 3) % 3) as i32 - 1;
+            let xk = (x / 9) as i32 - 1;
+            for (ddi, ddj, ddk) in [
+                (1i32, 0i32, 0i32),
+                (-1, 0, 0),
+                (0, 1, 0),
+                (0, -1, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+            ] {
+                let ni = xi + ddi;
+                let nj = xj + ddj;
+                let nk = xk + ddk;
+                if !(-1..=1).contains(&ni) || !(-1..=1).contains(&nj) || !(-1..=1).contains(&nk) {
+                    continue;
+                }
+                let nb = ((ni + 1) + 3 * (nj + 1) + 9 * (nk + 1)) as u32;
+                if (bg >> nb) & 1 == 1 && (seen2 >> nb) & 1 == 0 {
+                    stack.push(nb);
+                }
+            }
+        }
+    }
+    comps2 == 1
+}
+
+/// Peel the added material (`occ` minus `{s < 0}`) back toward the original
+/// solid, outermost first, removing only simple points.  Returns the number of
+/// removed cells.  Never touches a voxel with `s < 0` (the original solid).
+fn peel_solid(occ: &mut [u8], s_dense: &[f32], dims: [usize; 3]) -> usize {
+    let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+    let n = nx * ny * nz;
+    let key = |i: usize| -> i64 { (s_dense[i] as f64 * 4096.0) as i64 };
+    let mut heap: BinaryHeap<(i64, usize)> = BinaryHeap::with_capacity(1 << 16);
+    for i in 0..n {
+        if occ[i] != 0 && s_dense[i] >= 0.0 {
+            heap.push((key(i), i));
+        }
+    }
+    let mut removed = 0usize;
+    while let Some((_, idx)) = heap.pop() {
+        if occ[idx] == 0 || s_dense[idx] < 0.0 {
+            continue;
+        }
+        if !simple_point(occ, dims, idx) {
+            continue;
+        }
+        occ[idx] = 0;
+        removed += 1;
+        let i = idx % nx;
+        let j = (idx / nx) % ny;
+        let k = idx / (nx * ny);
+        for dk in -1i32..=1 {
+            for dj in -1i32..=1 {
+                for di in -1i32..=1 {
+                    if di == 0 && dj == 0 && dk == 0 {
+                        continue;
+                    }
+                    let ni = i as i32 + di;
+                    let nj = j as i32 + dj;
+                    let nk = k as i32 + dk;
+                    if ni < 0 || nj < 0 || nk < 0 || ni as usize >= nx || nj as usize >= ny || nk as usize >= nz {
+                        continue;
+                    }
+                    let nb = ni as usize + nx * (nj as usize + ny * nk as usize);
+                    if occ[nb] != 0 && s_dense[nb] >= 0.0 {
+                        heap.push((key(nb), nb));
+                    }
+                }
+            }
+        }
+    }
+    removed
+}
+
+/// Snap coat vertices onto the input surface where the peel reached it (local
+/// radius near `r_base`, closest input point within `PEEL_SNAP_VOXEL_FRAC`
+/// voxels).  Returns the number of moved vertices.
+#[allow(clippy::too_many_arguments)]
+fn snap_peeled_vertices(
+    verts: &mut [[f64; 3]],
+    bvh: &MeshBvh,
+    r_dense: &[f32],
+    origin: [f64; 3],
+    voxel: f32,
+    r_base: f32,
+    r_max: f32,
+    dims: [usize; 3],
+) -> usize {
+    let amp = r_max - r_base;
+    if amp <= 1.0e-12 {
+        return 0;
+    }
+    let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+    let tol = PEEL_SNAP_VOXEL_FRAC * voxel as f64;
+    // Two passes so that no two vertices end up at the same quantized position
+    // (which is what would make the post-snap weld non-manifold).  The second
+    // pass claims a target only when it is still free.
+    let scale = 1.0 / (voxel as f64 * 1.0e-6).max(1.0e-12);
+    let key = |p: [f64; 3]| -> (i64, i64, i64) {
+        (
+            (p[0] * scale).round() as i64,
+            (p[1] * scale).round() as i64,
+            (p[2] * scale).round() as i64,
+        )
+    };
+    let mut taken: HashSet<(i64, i64, i64)> = HashSet::with_capacity(verts.len());
+    for p in verts.iter() {
+        taken.insert(key(*p));
+    }
+    let mut moved = 0usize;
+    for p in verts.iter_mut() {
+        let ci = ((p[0] - origin[0]) / voxel as f64).round() as isize;
+        let cj = ((p[1] - origin[1]) / voxel as f64).round() as isize;
+        let ck = ((p[2] - origin[2]) / voxel as f64).round() as isize;
+        if ci < 0 || cj < 0 || ck < 0 || ci as usize >= nx || cj as usize >= ny || ck as usize >= nz {
+            continue;
+        }
+        let idx = ci as usize + nx * (cj as usize + ny * ck as usize);
+        if r_dense[idx] - r_base > PEEL_HEALTHY_FRAC * amp {
+            continue;
+        }
+        let (cp, dist, _) = bvh.closest_point(*p);
+        if dist < tol {
+            let k = key(cp);
+            if taken.insert(k) {
+                *p = cp;
+                moved += 1;
+            }
+        }
+    }
+    moved
 }
 
 #[cfg(test)]
@@ -999,5 +1310,100 @@ mod tests {
         let (v, f) = cube(2.0);
         let me = median_edge_length(&v, &f);
         assert!((me - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn peel_removes_only_the_added_layer() {
+        // 3x3x3 original solid, grown by one voxel layer; peeling must remove
+        // the whole layer and never a cell of the original solid.
+        let dims = [7usize, 7, 7];
+        let n = dims[0] * dims[1] * dims[2];
+        let mut occ = vec![0u8; n];
+        let mut s = vec![1.0f32; n];
+        for k in 1..6 {
+            for j in 1..6 {
+                for i in 1..6 {
+                    occ[i + 7 * (j + 7 * k)] = 1;
+                }
+            }
+        }
+        for k in 2..5 {
+            for j in 2..5 {
+                for i in 2..5 {
+                    s[i + 7 * (j + 7 * k)] = -1.0;
+                }
+            }
+        }
+        let before_solid = (0..n).filter(|&i| s[i] < 0.0).count();
+        assert_eq!(before_solid, 27);
+        let removed = peel_solid(&mut occ, &s, dims);
+        let left = occ.iter().filter(|&&o| o != 0).count();
+        assert_eq!(removed, 5 * 5 * 5 - 27, "all added cells are simple and peeled");
+        assert_eq!(left, 27, "only the original solid remains");
+        for i in 0..n {
+            if s[i] < 0.0 {
+                assert_eq!(occ[i], 1, "original solid cell must never be removed");
+            }
+        }
+    }
+
+    #[test]
+    fn peel_keeps_a_topology_bridge() {
+        // Two original blocks joined only by a 1-voxel coat bar: removing any
+        // bar cell would disconnect the solid, so the peel must leave it.
+        let dims = [14usize, 7, 7];
+        let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+        let n = nx * ny * nz;
+        let mut occ = vec![0u8; n];
+        let mut s = vec![1.0f32; n];
+        let mut block = |occ: &mut [u8], s: &mut [f32], i0: usize| {
+            for k in 1..4 {
+                for j in 1..4 {
+                    for i in i0..i0 + 3 {
+                        occ[i + nx * (j + ny * k)] = 1;
+                        s[i + nx * (j + ny * k)] = -1.0;
+                    }
+                }
+            }
+        };
+        block(&mut occ, &mut s, 1);
+        block(&mut occ, &mut s, 10);
+        // bar along i = 4..=9 at j = k = 4
+        for i in 4..10 {
+            occ[i + nx * (4 + ny * 4)] = 1;
+        }
+        let removed = peel_solid(&mut occ, &s, dims);
+        let bar: Vec<usize> = (4..10).map(|i| i + nx * (4 + ny * 4)).collect();
+        let bar_left = bar.iter().filter(|&&i| occ[i] != 0).count();
+        assert_eq!(removed, 0, "no cell can be peeled without cutting the bridge");
+        assert_eq!(bar_left, bar.len(), "the connecting bar must survive");
+    }
+
+    #[test]
+    fn coat_peel_stays_manifold() {
+        let (v, f) = cube(10.0);
+        let base = DressingParams {
+            voxel: Some(0.4),
+            r_base: Some(0.5),
+            r_max: Some(2.0),
+            sigma: Some(1.5),
+            ..Default::default()
+        };
+        let mut peeled = base;
+        peeled.peel = true;
+        let m = dressing_coat(&v, &f, &[[0.0, 0.0, 5.0]], &[], &peeled);
+        assert!(m.info.peel);
+        assert!(!m.tris.is_empty(), "peeled coat should have faces");
+        assert!(m.info.peeled_cells > 0, "the bubble should be peeled back");
+        assert!(m.info.manifold, "peeled coat should stay two-manifold");
+        // The peel reaches the clean faces, so some vertices snap onto the cube.
+        assert!(m.info.snapped_verts > 0, "healthy faces should snap to input");
+
+        // Uniform coat (no bubble) peels down to the input solid: no snapping
+        // (amp = 0) is needed and the result stays manifold.
+        let mut uniform = peeled;
+        uniform.r_max = Some(0.5);
+        let u = dressing_coat(&v, &f, &[], &[], &uniform);
+        assert!(u.info.peeled_cells > 0 && u.info.manifold);
     }
 }

@@ -657,7 +657,7 @@ fn morph_close<'py>(
 /// self-intersection vertex) nudge the isosurface off the healthy `s = 0`
 /// without a full coat bubble; values are clamped to `[r_base, r_max]`.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, defect_pts=None, defect_r=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0))]
+#[pyo3(signature = (verts, tris, defect_pts=None, defect_r=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0, peel=false))]
 fn dressing_coat<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -671,6 +671,7 @@ fn dressing_coat<'py>(
     band_voxels: f64,
     margin_voxels: f64,
     drain: f64,
+    peel: bool,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -704,6 +705,7 @@ fn dressing_coat<'py>(
         band_voxels,
         margin_voxels,
         drain,
+        peel,
     };
     let m = dressing::dressing_coat(&rv, &rt, &dp, &dr, &params);
 
@@ -737,6 +739,10 @@ fn dressing_coat<'py>(
     info.set_item("band_seconds", m.info.band_seconds)?;
     info.set_item("field_seconds", m.info.field_seconds)?;
     info.set_item("extract_seconds", m.info.extract_seconds)?;
+    info.set_item("peel", m.info.peel)?;
+    info.set_item("peeled_cells", m.info.peeled_cells)?;
+    info.set_item("snapped_verts", m.info.snapped_verts)?;
+    info.set_item("peel_welded", m.info.peel_welded)?;
     Ok((verts_np, tris_np, info))
 }
 
