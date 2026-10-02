@@ -120,7 +120,10 @@ def test_sphere_with_hole_watertight_and_report():
     assert rep["display_name"] == DISPLAY_NAME == "Graft"
     assert rep["invents_geometry"] is True
     assert rep["method"] == 13
-    assert rep["tries"] >= 1 and rep["r_used"] > 0
+    assert rep["tries"] >= 1
+    # Pass 0 (sign field, r = 0) either succeeds or the closing ladder runs;
+    # either way the chosen radius is non-negative and inside the ladder.
+    assert rep["r_used"] >= 0
     assert len(rep["per_vertex_deviation"]) == len(ov)
     # the hole is gone: volume close to a full unit sphere
     vol = signed_volume(ov, ot)
@@ -179,7 +182,8 @@ def test_local_mode_flag_runs_and_reports_mode():
     # a non-watertight original makes the manifold union fall back to whole
     # mode, which must still produce a valid watertight result.
     v, f = sphere_with_hole()
-    ov, ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08, local=True)
+    ov, ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08, local=True,
+                             sign_field=False)
     assert rep["mode"] in ("local", "whole")
     assert rep["ok"] and rep["holes"] == 0 and rep["non_manifold"] == 0
     assert manifold_ok(ot)
@@ -230,12 +234,48 @@ def test_hybrid_keeps_healthy_verbatim():
     assert h == 0 and nm == 0
 
     # A coarse envelope loses detail, so shell_wrap must fall back to the
-    # verbatim hybrid and report zero healthy deviation.
-    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, ml=pymeshlab)
+    # verbatim hybrid and report zero healthy deviation (sign-field Pass 0 is
+    # disabled here so the closing/hybrid path is the one under test).
+    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, ml=pymeshlab,
+                               sign_field=False)
     assert rep["ok"] and rep["mode"] == "hybrid"
     assert rep["detail_max_mm"] == 0.0
     assert rep["hausdorff_healthy"] == 0.0
     assert rep["holes"] == 0 and rep["non_manifold"] == 0
+
+
+def test_sign_field_pass0_runs_and_can_be_disabled():
+    # Pass 0 (r = 0) runs by default; with the guards off its watertight result
+    # is adopted and the ladder starts at zero.  sign_field=False restores the
+    # closing-only ladder unchanged.
+    v, f = sphere_with_hole()
+    ov, ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08, guard=False)
+    assert rep["sign_field"] is True
+    assert rep["r_ladder"][0] == 0.0
+    assert rep["mode"] == "sign_field"
+    assert rep["r_used"] == 0.0
+    assert rep["holes"] == 0 and rep["non_manifold"] == 0
+
+    _ov, _ot, rep2 = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                guard=False, sign_field=False)
+    assert rep2["sign_field"] is False
+    assert rep2["r_ladder"][0] > 0.0
+    assert rep2["r_used"] > 0.0
+
+
+def test_resolve_grid_budget_scales_with_intensity_and_ram():
+    from sutura_engine.graft import resolve_grid_budget
+    big = 1 << 40
+    assert resolve_grid_budget("quick", big) == 1_500_000
+    assert resolve_grid_budget("balanced", big) == 5_000_000
+    assert resolve_grid_budget("thorough", big) == 10_000_000
+    assert resolve_grid_budget("extreme", big) == 25_000_000
+    # Unknown/None falls back to the balanced target.
+    assert resolve_grid_budget(None, big) == 5_000_000
+    assert resolve_grid_budget("custom-profile", big) == 5_000_000
+    # A tiny machine clamps down to the floor, never below, never above the cap.
+    assert resolve_grid_budget("extreme", 1_000_000) == 1_500_000
+    assert resolve_grid_budget("extreme", 10**12) == 25_000_000
 
 
 if __name__ == "__main__":

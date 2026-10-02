@@ -1110,7 +1110,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # reload-watertight candidate; records the fidelity verdict + warnings under
     # ``stats['graft']``.
     ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
-                           graft=(graft is True))
+                           graft=(graft is True),
+                           intensity=(getattr(triage_spec, 'base', None)
+                                      or getattr(triage_spec, 'name', None)))
 
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
@@ -2779,7 +2781,7 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
     return ms, after
 
 
-def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False):
+def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
     Runs ``sutura_engine.graft.shell_wrap`` on the ORIGINAL input arrays (like
@@ -2805,7 +2807,8 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False):
             import shell_wrap as _graft
         in_v = np.asarray(v, dtype=np.float64)
         in_t = np.asarray(t, dtype=np.int64)
-        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml)
+        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml,
+                                                 intensity=intensity)
         rec['ran'] = True
         rec['fidelity_ok'] = grec.get('fidelity_ok')
         rec['hausdorff_healthy'] = grec.get('hausdorff_healthy')
@@ -3110,7 +3113,9 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # pay an unnecessary tier.
             if graft in (True, 'auto') and (cur_holes > 0 or cur_nm > 0):
                 _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
-                                             graft=True)
+                                             graft=True,
+                                             intensity=(getattr(spec, 'base', None)
+                                                        or getattr(spec, 'name', None)))
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
                     if _g.get('fidelity_ok') is not False:

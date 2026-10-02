@@ -17,6 +17,22 @@ All notable changes to this project are documented here.
   off by default and byte-identical to the winding-only path; the CLI/GUI switch is deferred
   until a real-world-corpus measurement.
 
+- **Graft sign-field Pass 0 (`morph_close(..., r=0)`, on by default).** Before its closing
+  ladder, Graft now contours the raw generalized-winding sign field with no dilation/EDT, so
+  genuine gaps stay open instead of being bridged; the result is adopted only when the strict
+  X-Ray reload verdict is watertight and the healthy-detail gate passes, otherwise the closing
+  ladder runs unchanged. Disable with `shell_wrap(..., sign_field=False)` /
+  `SUTURA_GRAFT_SIGN_FIELD=0`. The Rust core accepts `r == 0` as the sign-field path and exposes
+  `SIGN_FIELD_SUPPORTED` / `info['sign_field']`.
+
+### Changed
+
+- **Graft's grid budget scales with the Triage intensity preset and the available RAM.** The
+  fixed `GRID_BUDGET = 1_500_000` is replaced by `resolve_grid_budget(intensity, available_bytes)`
+  (Quick 1.5M, Balanced 5M, Thorough 10M, Extreme 25M; RAM-safe cap at 35 % of available memory
+  and a hard 25M ceiling; 1.5M floor). Explicit `grid_budget=` values are honoured verbatim. The
+  report carries the effective `grid_budget`, `intensity` and chosen `voxel`.
+
 ### Fixed
 
 - **OrcaCloud plugin publishing on every release.** The build workflows now run on a published

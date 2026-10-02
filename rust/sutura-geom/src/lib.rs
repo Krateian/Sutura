@@ -501,6 +501,10 @@ fn sdf_grid<'py>(
 /// window mode); `voxel` overrides the automatic voxel size; `fill_cavities`
 /// keeps only the outermost shell (enclosed cavities become solid).
 ///
+/// `r == 0` selects the sign-field path: the raw signed field is fed straight
+/// to dual contouring with no dilation/erosion, so genuine gaps stay open
+/// (the caller gates the result).  `info['sign_field']` records the mode.
+///
 /// `raystab=True` disambiguates the generalized-winding sign with the
 /// ray-stabbing vote in the ambiguous band before the closing; `info['raystab']`
 /// records the pass.  With `raystab=False` (the default) the output is
@@ -532,9 +536,6 @@ fn morph_close<'py>(
     if rv.is_empty() || rt.is_empty() {
         return Err(PyValueError::new_err("empty mesh"));
     }
-    if r == 0.0 {
-        return Err(PyValueError::new_err("r must be > 0"));
-    }
     let mesh_box = bbox_of(&rv);
     let (bmin, bmax) = match &r#box {
         Some(b) => parse_box(b)?,
@@ -554,7 +555,13 @@ fn morph_close<'py>(
     if !v0.is_finite() || v0 <= 0.0 {
         v0 = 1.0;
     }
-    let pad = (r / v0).ceil() as usize + 3;
+    // Sign-field mode (r == 0) bypasses the closing, so no dilation radius needs
+    // to be cleared by the padding; the default 3-cell boundary suffices.
+    let pad = if r > 0.0 {
+        (r / v0).ceil() as usize + 3
+    } else {
+        3
+    };
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, Some(v0), 96.0, pad);
 
     let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
@@ -575,11 +582,20 @@ fn morph_close<'py>(
             raycast::AMBIG_HI,
         ));
     }
-    let closed = morph::close_sdf(&s, dims, r as f32, voxel as f32);
-    let field = if fill_cavities {
-        morph::fill_cavities(&closed, dims, voxel as f32)
+    // r == 0 selects the sign-field path: the raw signed field (GWN sign,
+    // optionally ray-stab-corrected) feeds dual contouring directly, with no
+    // dilation/erosion.  This keeps real gaps open instead of bridging them.
+    let field = if r > 0.0 {
+        let closed = morph::close_sdf(&s, dims, r as f32, voxel as f32);
+        if fill_cavities {
+            morph::fill_cavities(&closed, dims, voxel as f32)
+        } else {
+            closed
+        }
+    } else if fill_cavities {
+        morph::fill_cavities(&s, dims, voxel as f32)
     } else {
-        closed
+        s.clone()
     };
     let use_tets = matches!(
         surface.as_deref(),
@@ -608,6 +624,7 @@ fn morph_close<'py>(
     info.set_item("caps_coarsened", coarsened)?;
     info.set_item("max_voxels", MAX_VOXELS)?;
     info.set_item("radius", r)?;
+    info.set_item("sign_field", !(r > 0.0))?;
     info.set_item("fallback", dc.fallback)?;
     info.set_item("manifold", dc.manifold)?;
     info.set_item("fill_cavities", fill_cavities)?;
@@ -851,6 +868,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
     m.add("RAYSTAB_DEFAULT_DIRS", raycast::DEFAULT_DIRS)?;
     m.add("RAYSTAB_MAX_DIRS", raycast::MAX_DIRS)?;
+    m.add("SIGN_FIELD_SUPPORTED", true)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

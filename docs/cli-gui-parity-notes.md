@@ -115,3 +115,12 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **Sutura Chart cache (v0.7.0):** CLI `--no-cache` and `sutura clear-cache` correspond
   to GUI Options → General *Enable Sutura Chart cache* checkbox and *Clear Cache* button,
   preserving parity across CLI and GUI workflows.
+- **Graft sign-field Pass 0 + intensity-scaled grid budget (unreleased):** Pass 0 is
+  automatic pipeline behaviour (on for every Graft run), so it needs no control; it can be
+  disabled from either side through the environment (`SUTURA_GRAFT_SIGN_FIELD=0`), like the
+  ray-stab vote — no CLI flag or GUI control by design. The grid budget is derived
+  automatically from the Triage intensity preset, which both the CLI (`--intensity`) and
+  the GUI (batch-wide *Intensity* picker) already set, so parity is automatic.
+- **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
+  environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
+  flag and a GUI control together, per the parity rule.

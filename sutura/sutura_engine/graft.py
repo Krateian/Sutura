@@ -10,9 +10,12 @@ self-intersections, then applies the reload-safe Stitch (P-WELD) pass and the
 X-Ray reload-honest verdict.
 
 Resolution is chosen automatically, finest first: the voxel size is the finest
-that fits the RAM/time grid budget (never finer than the input's median edge),
-and the closing radius ladder starts at the smallest useful radius
-(≈1.5 voxel) and grows ×1.6 only while the result is not reload-watertight.
+that fits the grid budget (never finer than the input's median edge), where the
+budget scales with the Triage intensity preset and the available system RAM
+(``resolve_grid_budget``).  Pass 0 first tries the raw sign field at r = 0 (no
+closing, so real gaps stay open); only when it is not reload-watertight and
+faithful does the closing radius ladder run, starting at the smallest useful
+radius (≈1.5 voxel) and growing ×1.6 while the result is not reload-watertight.
 
 The module is intentionally independent of ``methods.py``/the method registry:
 it imports only numpy, scipy, trimesh, ``sutura_geom`` and a handful of pure
@@ -26,7 +29,8 @@ Pure API::
     shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=3,
                target_edge=None, ml=None, si_check=True, guard=True,
-               grid_budget=GRID_BUDGET, detail_tol=None)
+               grid_budget=None, detail_tol=None, intensity=None,
+               sign_field=None)
         -> (verts_out, tris_out, report)
 
 No file is written.  ``report['per_vertex_deviation']`` carries the per-result-
@@ -35,6 +39,7 @@ vertex distance to the original surface for the heatmap view.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from collections import defaultdict
 
@@ -55,7 +60,21 @@ DISPLAY_NAME = "Graft"
 DISPLAY_NAME_FULL = "Graft (shell wrap)"
 
 # --- automatic resolution --------------------------------------------------
-GRID_BUDGET = 1_500_000          # max voxels the auto voxel may use
+# The auto voxel is coarsened only as far as the grid budget requires.  The
+# budget scales with the intensity preset and the available system RAM, capped
+# hard so a single morphology grid can never exhaust memory.  GRID_BUDGET is
+# the conservative floor (the historical fixed value); the peak Rust usage is
+# roughly GRID_BUDGET_BYTES_PER_CELL bytes per cell.
+GRID_BUDGET = 1_500_000          # minimum / Quick target
+GRID_BUDGET_HARD_MAX = 25_000_000  # never exceed, regardless of RAM/intensity
+GRID_BUDGET_BYTES_PER_CELL = 56  # empirical peak bytes per grid cell
+GRID_BUDGET_RAM_RESERVE = 0.35   # fraction of available RAM the grid may use
+GRID_BUDGET_BY_INTENSITY = {
+    'quick': 1_500_000,
+    'balanced': 5_000_000,
+    'thorough': 10_000_000,
+    'extreme': 25_000_000,
+}
 MIN_GRID_DIV = 32                # never coarser than bbox/32
 MAX_GRID_DIV = 512               # never finer than bbox/512
 BUDGET_PAD = 8                   # grid pad assumed while budgeting
@@ -113,6 +132,79 @@ def _resolve_raystab(raystab):
     if raystab is None:
         raystab = os.environ.get('SUTURA_RAYSTAB', '').strip().lower() in _RAYSTAB_ENV_TRUE
     return bool(raystab) and _RAYSTAB_SUPPORTED
+
+
+# --- sign-field Pass 0 (r = 0, no closing; DEFAULT ON) ---------------------
+# Before the closing ladder, Graft tries the raw generalized-winding sign field
+# (with the ray-stab vote when enabled) at r = 0.  That keeps genuine gaps open
+# instead of bridging them; the strict X-Ray reload check and the healthy-region
+# detail gate decide whether it is adopted, otherwise the closing ladder runs
+# unchanged.  Set sign_field=False / SUTURA_GRAFT_SIGN_FIELD=0 to disable.
+_SIGN_FIELD_SUPPORTED = bool(getattr(sutura_geom, 'SIGN_FIELD_SUPPORTED', False))
+_SIGN_FIELD_ENV_TRUE = {'1', 'true', 'yes', 'on'}
+_SIGN_FIELD_ENV_FALSE = {'0', 'false', 'no', 'off'}
+
+
+def _resolve_sign_field(sign_field):
+    """Resolve Pass 0 from the parameter, then SUTURA_GRAFT_SIGN_FIELD, then the
+    default (on).  Returns False when the extension cannot run r = 0."""
+    if sign_field is None:
+        env = os.environ.get('SUTURA_GRAFT_SIGN_FIELD', '').strip().lower()
+        if env in _SIGN_FIELD_ENV_FALSE:
+            sign_field = False
+        elif env in _SIGN_FIELD_ENV_TRUE:
+            sign_field = True
+        else:
+            sign_field = True
+    return bool(sign_field) and _SIGN_FIELD_SUPPORTED
+
+
+def _available_memory_bytes():
+    """Best-effort available RAM in bytes (stdlib only).
+
+    Order: psutil (if present) -> ``os.sysconf`` (Linux) -> ``sysctl hw.memsize``
+    halved on macOS -> a conservative 4 GB fallback.  Never raises.
+    """
+    try:
+        import psutil  # type: ignore
+        return int(psutil.virtual_memory().available)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        pages = os.sysconf('SC_AVPHYS_PAGES')
+        size = os.sysconf('SC_PAGE_SIZE')
+        if pages > 0 and size > 0:
+            return int(pages) * int(size)
+    except Exception:  # noqa: BLE001
+        pass
+    if sys.platform == 'darwin':
+        try:
+            import subprocess
+            out = subprocess.check_output(
+                ['sysctl', '-n', 'hw.memsize']).decode().strip()
+            return int(int(out) * 0.5)
+        except Exception:  # noqa: BLE001
+            pass
+    return 4 * 1024 * 1024 * 1024
+
+
+def resolve_grid_budget(intensity=None, available_bytes=None):
+    """Resolve the morphology grid budget (cells) from the intensity preset and
+    the available RAM, clamped to the floor and the hard cap.
+
+    ``intensity`` is the preset name (or a custom profile's base); unknown/None
+    resolves to the balanced target.  The RAM safety limit is
+    ``available * reserve / bytes_per_cell``.  Never exceeds
+    ``GRID_BUDGET_HARD_MAX`` and never drops below ``GRID_BUDGET``.
+    """
+    target = GRID_BUDGET_BY_INTENSITY.get(intensity,
+                                          GRID_BUDGET_BY_INTENSITY['balanced'])
+    if available_bytes is None:
+        available_bytes = _available_memory_bytes()
+    safe = int((max(0, int(available_bytes)) * GRID_BUDGET_RAM_RESERVE)
+               / GRID_BUDGET_BYTES_PER_CELL)
+    budget = min(int(target), safe, GRID_BUDGET_HARD_MAX)
+    return int(max(GRID_BUDGET, budget))
 
 
 # --------------------------------------------------------------------------- #
@@ -762,16 +854,24 @@ def _warnings_for(r_used, detail, diag):
 def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=MAX_TRIES,
                target_edge=None, ml=None, si_check=True, guard=True,
-               grid_budget=GRID_BUDGET, detail_tol=None,
+               grid_budget=None, detail_tol=None, intensity=None,
+               sign_field=None,
                raystab=None, raystab_dirs=None, raystab_seed=0,
                raystab_parity=False):
     """Graft (shell wrap) repair.
 
-    ``r`` fixes the closing radius (otherwise the finest-first ladder is used);
-    ``voxel``/``box`` are forwarded to ``sutura_geom.morph_close``;
-    ``local=True`` forces the local-window path (``None`` decides from the
-    damaged-region bbox); ``remesh`` toggles the isotropic re-mesh; ``ml`` is
-    an optional live pymeshlab module for the full Stitch (P-WELD) pass.
+    ``r`` fixes the closing radius (otherwise the sign-field Pass 0 + the
+    finest-first closing ladder is used); ``voxel``/``box`` are forwarded to
+    ``sutura_geom.morph_close``; ``local=True`` forces the local-window path
+    (``None`` decides from the damaged-region bbox); ``remesh`` toggles the
+    isotropic re-mesh; ``ml`` is an optional live pymeshlab module for the full
+    Stitch (P-WELD) pass.
+
+    ``grid_budget`` caps the grid cells; ``None`` resolves it from ``intensity``
+    (the Triage preset name) and the available system RAM (see
+    ``resolve_grid_budget``).  ``sign_field`` (or ``SUTURA_GRAFT_SIGN_FIELD``)
+    enables sign-field Pass 0; it is ON by default and falls back to the closing
+    ladder whenever the r = 0 result is not watertight and faithful.
 
     ``raystab`` (or the ``SUTURA_RAYSTAB`` env var) enables ray-stabbing
     disambiguation of the generalized-winding sign in the ambiguous band; it is
@@ -783,6 +883,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     t_start = time.perf_counter()
     v0 = _as_f64(verts)
     t0 = _as_i64(tris)
+    if grid_budget is None:
+        grid_budget = resolve_grid_budget(intensity)
+    grid_budget = int(grid_budget)
     report = {
         "method": METHOD_NUMBER,
         "display_name": DISPLAY_NAME,
@@ -796,6 +899,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "r_ladder": [],
         "voxel": None,
         "grid_budget": int(grid_budget) if grid_budget else None,
+        "intensity": intensity,
+        "sign_field": None,
         "projected_fraction": 0.0,
         "remeshed": False,
         "si_before": None,
@@ -833,6 +938,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             "raystab_parity": bool(raystab_parity),
         }
 
+    use_sign_field = _resolve_sign_field(sign_field)
+    report["sign_field"] = use_sign_field
+
     diag = _diag(v0)
     ext = v0.max(axis=0) - v0.min(axis=0)
     if voxel is None:
@@ -848,6 +956,10 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
 
     if r is None:
         ladder = _r_ladder(gap, voxel, diag, max_tries)
+        if use_sign_field:
+            # Pass 0: the raw sign field (r = 0), no closing.  It is adopted
+            # only when it is reload-watertight and passes the detail gate.
+            ladder = [0.0] + ladder
     else:
         ladder = [float(r)]
     report["r_ladder"] = [round(x, 6) for x in ladder]
@@ -870,18 +982,26 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     best = None
     for attempt, rval in enumerate(ladder):
         report["tries"] = attempt + 1
-        mode = "local" if use_local else "whole"
+        is_sign = float(rval) <= 0.0
+        # A sign field is a global isosurface; a local window is meaningless
+        # for r = 0, so Pass 0 always runs whole-mesh.
+        attempt_local = use_local and not is_sign
+        # r = 0 keeps the raw field, so the projection / behind-on-healthy
+        # distance scales with the voxel (the isosurface lies within ~1 voxel).
+        r_eff = float(rval) if float(rval) > 0.0 else float(voxel)
+        mode = ("sign_field" if is_sign
+                else ("local" if attempt_local else "whole"))
         try:
             ev, et, info = sutura_geom.morph_close(
                 v0, t0, float(rval), voxel,
-                local_box if use_local else box_arg, bool(fill_cavities),
+                local_box if attempt_local else box_arg, bool(fill_cavities),
                 **raystab_kwargs)
         except Exception:  # noqa: BLE001
             continue
         ev, et = _as_f64(ev), _as_i64(et)
         if len(et) == 0:
             continue
-        if use_local:
+        if attempt_local:
             sv, st, ok = _stitch_local(ev, et, v0, t0)
             if ok:
                 ev, et = sv, st
@@ -925,7 +1045,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             report["remeshed"] = False
 
         # wrap / projection (detail-preserving)
-        pv, healthy = _project_envelope(ev, et, v0, t0, float(rval))
+        pv, healthy = _project_envelope(ev, et, v0, t0, r_eff)
         wrapped_v, wrapped_t = pv, et
         si_before = ref_si
         si_after = ref_si
@@ -944,7 +1064,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             # intentionally does not reproduce the damaged input)
             h1, _m1 = _one_sided_hausdorff(v0, t0, wv, wt, diag, rng=rng)
             hh_behind = _behind_on_healthy(
-                v0, t0, region_mask, wv, wt, diag, float(rval), rng)
+                v0, t0, region_mask, wv, wt, diag, r_eff, rng)
         # exact healthy original -> result deviation (per original vertex)
         detail = _detail_loss(v0, t0, wv, wt, region_mask, diag, detail_tol)
         if guard and diag > 0.0:
@@ -969,7 +1089,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                         h1, _ = _one_sided_hausdorff(
                             v0, t0, wv, wt, diag, rng=rng)
                         hh_behind = _behind_on_healthy(
-                            v0, t0, region_mask, wv, wt, diag, float(rval), rng)
+                            v0, t0, region_mask, wv, wt, diag, r_eff, rng)
                     detail = _detail_loss(
                         v0, t0, wv, wt, region_mask, diag, detail_tol)
                     if guard and diag > 0.0:
@@ -981,7 +1101,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         watertight = (h == 0 and nm == 0)
         cand = {
             "v": wv, "t": wt, "holes": int(h), "non_manifold": int(nm),
-            "r": float(rval), "mode": mode, "attempt": attempt,
+            "r": float(rval), "r_eff": float(r_eff), "mode": mode,
+            "attempt": attempt,
             "watertight": watertight, "fidelity_ok": bool(fidelity_ok),
             "h1": h1, "hh": hh, "hh_behind": hh_behind,
             "projected_fraction": float(healthy.mean()),
@@ -1034,7 +1155,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "per_vertex_deviation": detail["per_vertex_deviation"],
     })
     report["detail_loss"] = report["hausdorff_healthy"]
-    report["warnings"] = _warnings_for(best["r"], detail, diag)
+    report["warnings"] = _warnings_for(best.get("r_eff", best["r"]), detail, diag)
     if best["watertight"] and not best["fidelity_ok"]:
         report["warnings"].append({
             "code": "fidelity",

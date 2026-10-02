@@ -106,12 +106,15 @@ w, u, s, info = sutura_geom.sdf_grid(verts, tris, voxel=0.1)
 
 # Morphological closing of the solid by r; box= restricts the window,
 # fill_cavities=True keeps only the outermost shell, surface="tets" uses
-# marching tetrahedra instead of dual contouring.
+# marching tetrahedra instead of dual contouring.  r == 0 is the sign-field
+# path: close_sdf (and the dilation padding) is skipped and the raw signed
+# field is contoured directly, so gaps stay open.
 ov, ot, info = sutura_geom.morph_close(verts, tris, r=0.2, voxel=None,
                                        box=None, fill_cavities=False,
                                        surface="dual")
 # info: dims, voxel, origin, voxels, caps_coarsened, fallback, manifold,
-#       radius, fill_cavities, surface
+#       radius, fill_cavities, surface, sign_field
+print(sutura_geom.SIGN_FIELD_SUPPORTED)  # feature-detect the r == 0 path
 
 # Closest point on the surface for each query point (parallel).
 xyz, dist, face_idx = sutura_geom.closest_points(verts, tris, points)
@@ -120,7 +123,8 @@ xyz, dist, face_idx = sutura_geom.closest_points(verts, tris, points)
 mask, count = sutura_geom.self_intersecting_faces(verts, tris)
 ```
 
-Regression tests: `tests/test_morph_geom.py` (sphere with a hole closes, two
+Regression tests: `tests/test_morph_geom.py` (sphere with a hole closes, the
+`r == 0` sign-field path closes it too, two
 overlapping cubes fuse, nested shell semantics, torus genus, sub-box, cap) and
 the timing run `tests/morph_timing_1038441.py`. Example timing (Apple M2,
 `thingi10k_1038441`, 10,418 faces, r = 2 % of the bbox diagonal): 2.8 s at the
