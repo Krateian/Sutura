@@ -370,6 +370,77 @@ def test_dressing_tier_adoption_gate():
         dressing.dressing_coat = orig
 
 
+def _ico(radius, invert=False, center=(0.0, 0.0, 0.0), sub=2):
+    import trimesh
+    m = trimesh.creation.icosphere(subdivisions=sub, radius=radius)
+    v = np.asarray(m.vertices, float) + np.asarray(center, float)
+    t = np.asarray(m.faces, np.int64)
+    if invert:
+        t = t[:, ::-1].copy()
+    return v, t
+
+
+def _merge(parts):
+    vs, ts, off = [], [], 0
+    for v, t in parts:
+        vs.append(v)
+        ts.append(t + off)
+        off += len(v)
+    return np.vstack(vs), np.vstack(ts)
+
+
+def test_cleanup_drops_debris_keeps_material():
+    """A tiny disconnected shell is dropped; the big material shell is kept."""
+    inp = _ico(10.0)
+    big = _ico(10.5)
+    tiny = _ico(0.3, center=(0.0, 0.0, 0.0))
+    cv, ct = _merge([big, tiny])
+    v, t, info = dressing._clean_coat_components(inp[0], inp[1], cv, ct, 0.5)
+    assert info['ran'] and info['components_before'] == 2, info
+    assert info['components_after'] == 1, info
+    assert info['removed_debris'] == 1 and info['removed_faces'] > 0, info
+    assert len(t) < len(ct), (len(t), len(ct))
+    assert manifold_ok(t)
+
+
+def test_cleanup_keeps_true_cavity_drops_stray_inverted_shell():
+    """A nested inverted shell is kept only when the input is genuinely empty
+    there (a hollow-shell input); against a solid input it is dropped."""
+    cov_pos = _ico(10.5)
+    cov_cav = _ico(5.0, invert=True)
+    cv, ct = _merge([cov_pos, cov_cav])
+
+    solid = _ico(10.0)
+    _v, _t, info = dressing._clean_coat_components(
+        solid[0], solid[1], cv, ct, 0.5)
+    assert info['input_winding'] is True, info
+    assert info['removed_negative'] == 1, info
+    assert info['components_after'] == 1, info
+
+    shell = _merge([_ico(10.0), _ico(5.0, invert=True)])
+    v, t, info2 = dressing._clean_coat_components(shell[0], shell[1], cv, ct, 0.5)
+    assert info2['kept_cavities'] == 1, info2
+    assert info2['components_after'] == 2, info2
+    assert manifold_ok(t)
+
+
+def test_cleanup_noop_and_all_debris_fallback():
+    """A single-component coat passes through byte-for-byte; a coat made only
+    of debris falls back to the original rather than returning nothing."""
+    inp = _ico(10.0)
+    single = _ico(10.5)
+    v, t, info = dressing._clean_coat_components(
+        inp[0], inp[1], single[0], single[1], 0.5)
+    assert info['ran'] and info['components_after'] == 1, info
+    assert info['removed_faces'] == 0 and np.array_equal(t, single[1])
+
+    cv, ct = _merge([_ico(0.2), _ico(0.25, center=(3.0, 0.0, 0.0))])
+    _v, _t, info2 = dressing._clean_coat_components(inp[0], inp[1], cv, ct, 0.5)
+    assert info2['ran'] is False, info2
+    assert 'remove all' in (info2['reason'] or ''), info2
+    assert np.array_equal(_t, ct)
+
+
 if __name__ == '__main__':
     fns = [v for k, v in sorted(globals().items())
            if k.startswith('test_') and callable(v)]

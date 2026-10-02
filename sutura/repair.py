@@ -3240,7 +3240,7 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
            'voxel': None, 'r_base': None, 'r_max': None, 'sigma': None,
            'faces': None, 'faces_coat': None, 'decimated': False,
            'drain': None, 'defects': None, 'r_max_scale': None,
-           'sigma_scale': None,
+           'sigma_scale': None, 'cleanup': None,
            'hausdorff_rel_max': None, 'hausdorff_input_to_coat': None,
            'si_before': None, 'si_after': None, 'si_exact_unknown': False,
            'holes': None, 'non_manifold': None,
@@ -3269,6 +3269,7 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
         rec['r_max'] = drec.get('r_max')
         rec['sigma'] = drec.get('sigma')
         rec['faces_coat'] = drec.get('faces_coat')
+        rec['cleanup'] = drec.get('cleanup')
         rec['decimated'] = bool(drec.get('decimated'))
         rec['fidelity_ok'] = drec.get('fidelity_ok')
         rec['hausdorff_rel_max'] = drec.get('hausdorff_rel_max')

@@ -534,6 +534,16 @@ tüm-kabuk topolojik katlanmaları için doğru araç yapar.
    *sigma* açılır listeleri) çözülen `r_max` / `sigma` değerlerini çarpar; varsayılan
    (ayarsız = 1,0) bayt düzeyinde aynıdır ve sıfır/negatif ya da ayrıştırılamayan
    değerler yok sayılır.
+7. **Bileşen temizliği**: küçültmeden önce çıkarılan üçgen çorbası köşe bağlantılı
+   bileşenlere ayrılır ve çıkarım artıkları — yüz sayısı, voxel hacmi ve göreli
+   hacim tabanlarının altındaki alt-voxel kabuklar — atılır. Ayakta kalan bir ters
+   kabuk yalnızca korunan bir madde kabuğunun içinde yuvalanmışsa *ve* girdinin
+   genelleştirilmiş sarmalım sayısı merkezinde ~0 ise (yani girdi orada gerçekten
+   boşsa, gerçek bir oyuk) tutulur. 13 mesh'lik `dressing_tuned` setinde bu,
+   `thingi10k_145065`'i 669 bileşenden 1'e ve `thingi10k_63785`'i 25'ten 1'e
+   indirdi (sonrasında OrcaSlicer'da her ikisi de `number_of_parts = 1`) ve
+   `thingi10k_1038439`'un üç gerçek madde yumrusunu korudu; atılan sayılar ve hacim
+   `report['dressing']['cleanup']` içinde raporlanır.
 
 #### Dürüst su geçirmezlik kararı (kaydet/yeniden yükle sonrası doğrulanır)
 

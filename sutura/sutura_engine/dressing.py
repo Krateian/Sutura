@@ -112,6 +112,23 @@ DRESSING_GRID_BUDGET = {
 SI_MAX_FACES = int(getattr(sutura_geom, "SI_MAX_FACES", 150_000))
 _ROUNDS = 1_000_000
 
+# --- post-coat component cleanup ------------------------------------------
+# The extracted level set is a triangle soup; marching-tets also leaves tiny
+# disconnected shells (band boundaries / grazing surfaces) and stray inverted
+# fragments inside the solid, which inflate the output's connected-component
+# count.  A component is extraction DEBRIS when it is below a face-count floor
+# OR below an absolute voxel-volume floor OR below a relative-volume floor set
+# by the largest component (measured on the 145065/63785/1038439 coats: debris
+# is <= 932 faces and <= ~0.6 voxel^3, the smallest genuine shell is 10 176
+# faces and ~5 000 voxel^3).  A surviving inverted component is kept only when
+# it is nested inside a kept positive component AND the input's generalized
+# winding number at its centre is ~0, i.e. the input is genuinely empty there
+# (a true cavity).  Everything else is dropped.  ``CLEANUP_*`` are module
+# constants so the thresholds are inspectable and reversible.
+CLEANUP_MIN_FACES = 64
+CLEANUP_ABS_VOXELS = 32.0
+CLEANUP_REL_VOLUME = 1e-3
+
 # --- marching tetrahedra tables (from the validated prototype) -------------
 _CUBE = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
                   [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], dtype=np.int64)
@@ -652,6 +669,158 @@ def _decimate_coat(ml, v, t, target_faces):
 
 
 # ---------------------------------------------------------------------------
+# post-coat component cleanup
+# ---------------------------------------------------------------------------
+def _component_labels(t):
+    """Vertex-connected face components as an ``(F,)`` int64 label array.
+
+    Faces are grouped when they share a vertex.  Uses scipy's sparse
+    connected-components; returns ``None`` when scipy is unavailable (the
+    caller then leaves the coat untouched rather than risk a wrong split).
+    """
+    F = len(t)
+    if F == 0:
+        return None
+    try:
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+    except Exception:  # noqa: BLE001 - optional fast path
+        return None
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    nv = int(t.max()) + 1
+    g = coo_matrix((np.ones(len(e), np.int8), (e[:, 0], e[:, 1])),
+                   shape=(nv, nv))
+    _n, vlab = connected_components(g, directed=False)
+    return vlab[t[:, 0]]
+
+
+def _clean_coat_components(v0, t0, cv, ct, voxel):
+    """Drop coat debris and stray inverted shells; keep material + cavities.
+
+    Returns ``(cv, ct, info)``.  Never raises: any failure returns the input
+    coat byte-for-byte with ``info['ran'] = False``.  See :data:`CLEANUP_MIN_FACES`
+    for the decision rules.  ``info`` records the component counts, the removed
+    counts/volume and the thresholds used.
+    """
+    info = {
+        'ran': True,
+        'components_before': 0,
+        'components_after': 0,
+        'kept_positive': 0,
+        'kept_cavities': 0,
+        'removed_debris': 0,
+        'removed_negative': 0,
+        'removed_other': 0,
+        'removed_faces': 0,
+        'removed_volume': 0.0,
+        'min_faces': int(CLEANUP_MIN_FACES),
+        'abs_voxels': float(CLEANUP_ABS_VOXELS),
+        'rel_volume': float(CLEANUP_REL_VOLUME),
+        'input_winding': False,
+        'reason': None,
+    }
+    if len(ct) == 0:
+        info['reason'] = 'empty'
+        return cv, ct, info
+    labels = _component_labels(ct)
+    if labels is None:
+        info['ran'] = False
+        info['reason'] = 'scipy unavailable'
+        return cv, ct, info
+    uniq, inv = np.unique(labels, return_inverse=True)
+    ncomp = int(len(uniq))
+    info['components_before'] = ncomp
+
+    V = cv.astype(np.float64)
+    a, b, d = V[ct[:, 0]], V[ct[:, 1]], V[ct[:, 2]]
+    fvol = np.einsum('ij,ij->i', a, np.cross(b, d)) / 6.0
+    cvol = np.zeros(ncomp, np.float64)
+    cfaces = np.zeros(ncomp, np.int64)
+    cmin = np.full((ncomp, 3), np.inf)
+    cmax = np.full((ncomp, 3), -np.inf)
+    ccent = np.zeros((ncomp, 3), np.float64)
+    np.add.at(cvol, inv, fvol)
+    np.add.at(cfaces, inv, 1)
+    np.add.at(ccent, inv, (a + b + d) / 3.0)
+    np.minimum.at(cmin, inv, np.minimum(np.minimum(a, b), d))
+    np.maximum.at(cmax, inv, np.maximum(np.maximum(a, b), d))
+    ccent /= cfaces[:, None]
+
+    largest = float(np.max(np.abs(cvol)))
+    floor = max(CLEANUP_ABS_VOXELS * float(voxel) ** 3,
+                CLEANUP_REL_VOLUME * largest)
+    debris = (cfaces < CLEANUP_MIN_FACES) | (np.abs(cvol) < floor)
+
+    in_min, in_max = V.min(axis=0), V.max(axis=0)
+    tol = float(voxel)
+    positive = cvol > 0.0
+    keep = np.zeros(ncomp, bool)
+    for i in range(ncomp):
+        if debris[i]:
+            continue
+        if not (np.all(cmax[i] >= in_min - tol)
+                and np.all(cmin[i] <= in_max + tol)):
+            continue  # floating outside the input: not input material
+        if positive[i]:
+            keep[i] = True
+        else:
+            keep[i] = False  # inverted: only a nested, genuinely-void shell
+
+    # inverted components: keep a true cavity (nested in a kept positive
+    # component and the input is empty at its centre per the winding number)
+    neg_ids = np.where((~positive) & (~debris))[0]
+    kept_pos = np.where(keep)[0]
+    if len(neg_ids) and len(kept_pos):
+        winding = None
+        try:
+            bvh = sutura_geom.PyMeshBvh(v0.astype(np.float64),
+                                        t0.astype(np.int64))
+            winding = np.asarray(bvh.winding_points(ccent[neg_ids]),
+                                 np.float64)
+            info['input_winding'] = True
+        except Exception:  # noqa: BLE001 - winding is an optional signal
+            winding = None
+        for k, i in enumerate(neg_ids):
+            nested = False
+            for p in kept_pos:
+                if (np.all(cmin[i] >= cmin[p] - tol)
+                        and np.all(cmax[i] <= cmax[p] + tol)):
+                    nested = True
+                    break
+            if not nested:
+                continue
+            if winding is None or float(winding[k]) < 0.5:
+                keep[i] = True
+
+    info['kept_positive'] = int(np.count_nonzero(keep & positive))
+    info['kept_cavities'] = int(np.count_nonzero(keep & ~positive))
+    info['components_after'] = int(np.count_nonzero(keep))
+
+    face_keep = keep[inv]
+    if not np.any(face_keep):
+        info['ran'] = False
+        info['reason'] = 'cleanup would remove all geometry'
+        return cv, ct, info
+    if np.all(face_keep):
+        return cv, ct, info
+
+    dropped = ~keep
+    info['removed_debris'] = int(np.count_nonzero(dropped & debris))
+    info['removed_negative'] = int(np.count_nonzero(
+        dropped & (~positive) & (~debris)))
+    info['removed_other'] = int(np.count_nonzero(
+        dropped & positive & (~debris)))
+    info['removed_faces'] = int(cfaces[dropped].sum())
+    info['removed_volume'] = float(np.abs(cvol[dropped]).sum())
+
+    kept_tris = ct[face_keep]
+    used = np.unique(kept_tris)
+    remap = -np.ones(len(cv), np.int64)
+    remap[used] = np.arange(len(used))
+    return V[used], remap[kept_tris], info
+
+
+# ---------------------------------------------------------------------------
 # main entry point
 # ---------------------------------------------------------------------------
 def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
@@ -811,6 +980,12 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
         'rust_manifold': meta.get('manifold'),
         'faces_coat': int(len(ct)),
     })
+
+    # post-coat component cleanup: drop extraction debris / stray inverted
+    # shells before decimation (a no-op for a single-component coat)
+    cv, ct, cleanup = _clean_coat_components(v0, t0, cv, ct, voxel)
+    report['cleanup'] = cleanup
+    report['faces_coat_clean'] = int(len(ct))
 
     # decimation toward the input face budget, with rollback
     target = _target_faces(len(t0))

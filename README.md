@@ -528,8 +528,19 @@ folds where local patch excision and hybrid splicing fail.
    edges is not thickened by spurious SI. `--dressing-rmax-scale F` /
    `--dressing-sigma-scale F` (`SUTURA_DRESSING_RMAX_SCALE` /
    `SUTURA_DRESSING_SIGMA_SCALE` / the GUI *r_max* and *sigma* combos) multiply
-   the resolved `r_max` / `sigma`; the default (unset = 1.0) is byte-identical,
-   and non-positive or unparseable values are ignored.
+    the resolved `r_max` / `sigma`; the default (unset = 1.0) is byte-identical,
+    and non-positive or unparseable values are ignored.
+7. **Component cleanup**: before decimation the extracted triangle soup is split
+   into vertex-connected components and the extraction debris — sub-voxel shells
+   below a face-count, voxel-volume and relative-volume floor — is dropped. A
+   surviving inverted shell is kept only when it is nested inside a kept material
+   shell *and* the input's generalized winding number at its centre is ~0, i.e.
+   the input is genuinely empty there (a true cavity). On the 13-mesh
+   `dressing_tuned` set this collapsed `thingi10k_145065` from 669 to 1
+   component and `thingi10k_63785` from 25 to 1 (both `number_of_parts = 1` in
+   OrcaSlicer afterwards) while keeping the three genuine material lumps of
+   `thingi10k_1038439`; the removed counts and volume are reported in
+   `report['dressing']['cleanup']`.
 
 #### Honest watertight verdict (verified after save/reload)
 
