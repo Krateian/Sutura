@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **OrcaCloud plugin publishing on every release.** The build workflows now run on a published
+  GitHub Release and attach their assets (AppImage, `.dmg`, prebuilt wheels +
+  `sutura_geom-SHA256SUMS`) to the release the maintainer publishes with `gh`, instead of
+  creating and publishing the release themselves with `GITHUB_TOKEN`. A `GITHUB_TOKEN`-authored
+  release does not fire the `release: published` event, which is why the OrcaCloud publish job
+  silently never ran. `publish-orcacloud.yml` drops the dead `workflow_dispatch` path (it is
+  rejected with HTTP 401; the retry path is draft -> published).
+
 ## [0.7.2] - 2026-10-02
 
 ### Added

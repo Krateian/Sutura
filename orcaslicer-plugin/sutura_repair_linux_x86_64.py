@@ -4,7 +4,7 @@
 #
 # [tool.orcaslicer.plugin]
 # name = "Sutura Repair"
-# description = "Repairs OrcaSlicer model parts with the Sutura pipeline from a dock panel and loads the repaired copy back as a new object."
+# description = "Sutura mesh repair in an OrcaSlicer dock panel: repairs the model parts on the plate with the Sutura CLI and loads the repaired copy back as a new object."
 # author = "Krateian"
 # version = "0.7.2"
 # ///

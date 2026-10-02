@@ -94,3 +94,40 @@ compatible, open an issue and ask before contributing it.
   English, one logical change each.
 - No secrets, no large corpus files (the benchmark corpus lives outside the
   repo and is published as a release asset), no copied copyleft code.
+
+## 5. Releasing
+
+Releases advance by one patch number (`vX.Y.Z` -> `vX.Y.(Z+1)`) unless the
+maintainer explicitly decides on a minor bump; changes accumulate in
+`CHANGELOG.md` between releases. The release is a single, manual step run from
+the maintainer's machine with the maintainer's own `gh` (a user token).
+
+1. Bump the version constant in `sutura/repair.py`, update `CHANGELOG.md`
+   (and the README "Version history" row when the release adds a feature), and
+   push `main`.
+2. Publish the release (this creates the tag `vX.Y.Z` at `main` and publishes
+   the release as the user):
+
+   ```sh
+   gh release create vX.Y.Z --target main --title vX.Y.Z --notes-file <notes>
+   ```
+
+3. The `release: published` event then starts four workflows:
+   - `build-appimage.yml`, `build-macos.yml`, `build-sutura-geom.yml` attach
+     the AppImage, `.dmg` and prebuilt wheels + `sutura_geom-SHA256SUMS` to the
+     existing release, preserving its body (they never pass `name`/`body`/
+     `draft`, so a manually written release body is never clobbered).
+   - `publish-orcacloud.yml` publishes the plugin to OrcaCloud (it is skipped
+     when the plugin file did not change since the previous tag).
+
+Never create or publish the release from a workflow with the automatic
+`GITHUB_TOKEN`. GitHub does not start workflow runs for `GITHUB_TOKEN`-authored
+events, so `release: published` would never fire and the OrcaCloud publish
+would silently never run.
+
+Verify with `gh release view vX.Y.Z --json body,assets` and the repository's
+Actions runs. To backfill a single build artifact onto an existing release, run
+that build workflow manually with its `tag` input. A failed OrcaCloud publish
+is retried by turning the release back into a draft and publishing it again
+(this re-fires `release: published`); the OrcaCloud side only accepts an OIDC
+token from a `release` event, so a `workflow_dispatch` re-run is rejected.
