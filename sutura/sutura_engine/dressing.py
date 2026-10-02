@@ -736,16 +736,23 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
     ct = _reorient_faces(cv, ct)
     report['ran'] = True
 
-    # actual (possibly coarsened) resolution for the report
+    # actual (possibly coarsened) resolution for the report.  The Rust core
+    # also reports its narrow-band stats / timings / manifold verdict; surface
+    # them when present (numpy path leaves them None).
     voxel = float(meta.get('voxel', voxel))
     report.update({
         'voxel': voxel,
         'dims': list(meta.get('dims', [])),
         'cells_evaluated': meta.get('voxels'),
         'grid_coarsened': bool(meta.get('coarsened', False)),
-        'r_base': round(rb, 6),
-        'r_max': round(rmx, 6),
-        'sigma': round(sg, 6),
+        'r_base': round(float(meta.get('r_base', rb)), 6),
+        'r_max': round(float(meta.get('r_max', rmx)), 6),
+        'sigma': round(float(meta.get('sigma', sg)), 6),
+        'band': meta.get('band'),
+        'band_cells': meta.get('band_cells'),
+        'field_seconds': meta.get('field_seconds'),
+        'extract_seconds': meta.get('extract_seconds'),
+        'rust_manifold': meta.get('manifold'),
         'faces_coat': int(len(ct)),
     })
 
