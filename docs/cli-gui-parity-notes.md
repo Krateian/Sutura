@@ -41,6 +41,7 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--no-graft` / `--experimental-graft` (GUI right-click method menu #13 Graft + auto fallback ladder) ·
 `--no-dressing` / `--experimental-dressing` (GUI checkbox *Dressing (viscosity coat)* in Options → Experimental; off by default; #16 is also selectable via the right-click *Use method* menu) ·
 `--dressing-drain MODE|mm` (GUI *Drain* combo next to the Dressing checkbox: Preset default / Off / Half / Full / Deep) ·
+`--si-mode {report,repair,off}` (GUI *Self-intersections* combo in Options → Repair: Report only / Repair / Do not measure; the worker adds `--si-mode` only when it differs from the default `report`) ·
 `--no-cache` / `clear-cache` (GUI Options → General *Enable Sutura Chart cache* checkbox + *Clear Cache* button) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all seven
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
@@ -64,6 +65,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 
 ## History
 
+- **Self-intersection policy:** `--si-mode {report,repair,off}` (env
+  `SUTURA_SI_MODE`, default `report`) and the GUI *Self-intersections* combo
+  (Options → Repair) were added together, so the parity rule holds. The combo
+  stores a batch-wide value and the worker passes `--si-mode` only when it is
+  not the default, keeping baseline commands unchanged.
 - **Dressing (#16):** `--no-dressing` / `--experimental-dressing` and the
   batch-wide GUI checkbox (Options → Experimental) were added together, so the
   parity rule holds. The new single default switch

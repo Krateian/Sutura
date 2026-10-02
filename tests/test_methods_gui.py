@@ -319,6 +319,36 @@ def main():
     assert '--dressing-drain' not in captured['args'], captured['args']
     print('ok  RepairWorker Dressing flag and drain override')
 
+    # SI policy: default 'report' adds no flag; 'repair'/'off' add --si-mode
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], si_mode='report')
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--si-mode' not in captured['args'], captured['args']
+    for mode in ('repair', 'off'):
+        captured.clear()
+        gui.subprocess.Popen = _fake_popen
+        try:
+            rw = gui.RepairWorker([b], si_mode=mode)
+            rw._run_one(b)
+        finally:
+            gui.subprocess.Popen = orig_popen
+        sargs = captured['args']
+        assert sargs[sargs.index('--si-mode') + 1] == mode, sargs
+    print('ok  RepairWorker SI-mode flag')
+
+    # The SI-mode combo maps Report/Repair/Off to report/repair/off
+    w.cmb_si_mode.setCurrentIndex(0)
+    assert w._si_mode == 'report'
+    w.cmb_si_mode.setCurrentIndex(1)
+    assert w._si_mode == 'repair'
+    w.cmb_si_mode.setCurrentIndex(2)
+    assert w._si_mode == 'off'
+    print('ok  SI-mode combo mapping')
+
     # The drain combo maps indices 0..4 to None/none/half/full/deep
     w.cmb_dressing_drain.setCurrentIndex(0)
     assert w._dressing_drain is None

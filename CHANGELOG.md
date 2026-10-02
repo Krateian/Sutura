@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Self-intersection policy (`--si-mode {report,repair,off}`, `SUTURA_SI_MODE`,
+  GUI Options → Repair combo).** `report` (the default) keeps measuring and
+  reporting the residual self-intersection count but no longer lets it escalate
+  the deep-repair ladder on its own or fail a result; holes and non-manifold
+  edges still count. `repair` restores the previous behaviour (a positive
+  exact-SI count is damage and triggers the automatic Dressing fallback).
+  `off` skips the exact classifier entirely and reports the count as
+  `null` ("not measured"). Explicit force flags (`--experimental-dressing`,
+  `--experimental-fallback-ftetwild`) override the policy and still act on
+  residual SI. The guarded `si_excise_recap` pass keeps its own independent
+  count in every mode. The chosen mode lands in the report as `si_mode` and in
+  `deep_repair.si_mode`; under `off` the stage-1 count is `null`.
+
 - **Dressing (method #16, variable-viscosity volumetric skinning) — opt-in, off by
   default.** A surgical sibling of Graft (#13): the input is dipped in a spatially
   varying "liquid" and the level set `F(x) = s(x) - r(x)` is extracted, where `s` is

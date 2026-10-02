@@ -465,16 +465,36 @@ def test_resolve_dressing_default_switch():
 
 
 def test_dressing_trigger_si_only():
-    """The 'auto' fallback fires on an SI-only residual (holes/NM already 0)
-    but not on a clean result; an unmeasurable SI never triggers."""
+    """The 'auto' fallback fires on an SI-only residual only under
+    --si-mode repair (the default 'report' measures but does not escalate) and
+    never on a clean result; an unmeasurable SI never triggers."""
     import repair
     assert repair._dressing_wanted('auto', 0, 0, 0) is False
     assert repair._dressing_wanted('auto', 0, 0, None) is False
-    assert repair._dressing_wanted('auto', 0, 0, 5) is True
+    # default 'report': SI alone does not escalate
+    assert repair._dressing_wanted('auto', 0, 0, 5) is False
+    assert repair._dressing_wanted('auto', 0, 0, 5, 'off') is False
+    # 'repair': SI alone escalates (historical behaviour)
+    assert repair._dressing_wanted('auto', 0, 0, 5, 'repair') is True
     assert repair._dressing_wanted('auto', 1, 0, 0) is True
     assert repair._dressing_wanted('auto', 0, 2, 0) is True
-    assert repair._dressing_wanted(True, 0, 0, 0) is True   # forced
+    # forced Dressing overrides si-mode
+    assert repair._dressing_wanted(True, 0, 0, 0) is True
+    assert repair._dressing_wanted(True, 0, 0, 0, 'off') is True
     assert repair._dressing_wanted(False, 1, 1, 9) is False
+
+
+def test_resolve_si_mode():
+    """SI-mode precedence: CLI > env > default 'report'; invalid env falls
+    back to the default."""
+    import repair
+    assert repair.resolve_si_mode() == 'report'
+    assert repair.resolve_si_mode('repair') == 'repair'
+    assert repair.resolve_si_mode('off') == 'off'
+    assert repair.resolve_si_mode(None, environ={'SUTURA_SI_MODE': 'off'}) == 'off'
+    assert repair.resolve_si_mode(None, environ={'SUTURA_SI_MODE': 'bogus'}) == 'report'
+    assert repair.resolve_si_mode('repair',
+                                  environ={'SUTURA_SI_MODE': 'off'}) == 'repair'
 
 
 def test_normal_angle_and_cad_helpers():

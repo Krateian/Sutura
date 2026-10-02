@@ -318,6 +318,17 @@ STRINGS = {
         'dressing_defects_preset': 'Preset default',
         'dressing_defects_all': 'Holes + NM + SI',
         'dressing_defects_holes_nm': 'Holes + NM only',
+        'si_mode_label': 'Self-intersections:',
+        'si_mode_tip': 'Self-intersection policy. "Report" (default) measures '
+                       'and reports self-intersections without escalating the '
+                       'deep-repair ladder or failing a result on them alone '
+                       '(holes and non-manifold edges always count). "Repair" '
+                       'treats residual self-intersections as damage and runs '
+                       'the automatic Dressing fallback. "Off" skips the exact '
+                       'classifier and reports them as not measured.',
+        'si_mode_report': 'Report only',
+        'si_mode_repair': 'Repair',
+        'si_mode_off': 'Do not measure',
         'dressing_rmax_scale_label': 'Bridge radius:',
         'dressing_rmax_scale_tip': 'Multiplier on the resolved r_max (the maximum '
                                    'viscosity / bridging radius): a smaller factor '
@@ -883,6 +894,18 @@ STRINGS = {
         'dressing_defects_preset': 'Ön ayar varsayılanı',
         'dressing_defects_all': 'Delik + NM + SI',
         'dressing_defects_holes_nm': 'Yalnızca delik + NM',
+        'si_mode_label': 'Kendisiyle-kesişim:',
+        'si_mode_tip': 'Kendisiyle-kesişim politikası. "Yalnızca bildir" '
+                       '(varsayılan) kendisiyle-kesişimleri ölçüp bildirir '
+                       'ancak tek başına derin onarım merdivenini '
+                       'tetiklemez ve bir sonucu başarısız saymaz (delik ve '
+                       'non-manifold kenarlar her zaman sayılır). "Onar" '
+                       'kalan kendisiyle-kesişimleri hasar sayar ve otomatik '
+                       'Dressing yedeğini çalıştırır. "Ölçme" kesin '
+                       'sınıflandırıcıyı atlar ve ölçülmedi olarak bildirir.',
+        'si_mode_report': 'Yalnızca bildir',
+        'si_mode_repair': 'Onar',
+        'si_mode_off': 'Ölçme',
         'dressing_rmax_scale_label': 'Köprü yarıçapı:',
         'dressing_rmax_scale_tip': 'Çözülen r_max (en büyük viskozite / köprü '
                                    'yarıçapı) çarpanı: küçük bir faktör daha '
@@ -1570,6 +1593,7 @@ class RepairWorker(QThread):
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
                  dressing_sigma_scale=None, intensity='balanced',
+                 si_mode='report',
                  methods_by_path=None,
                  engines_by_path=None, repeat_points_by_path=None, parent=None):
         super().__init__(parent)
@@ -1591,6 +1615,7 @@ class RepairWorker(QThread):
         self._dressing_defects = dressing_defects
         self._dressing_rmax_scale = dressing_rmax_scale
         self._dressing_sigma_scale = dressing_sigma_scale
+        self._si_mode = si_mode
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
         self._engines_by_path = dict(engines_by_path or {})
@@ -1658,6 +1683,8 @@ class RepairWorker(QThread):
                 args.append('--experimental-indirect-autorefine')
             if self._ftetwild_optimize:
                 args.append('--ftetwild-optimize')
+            if self._si_mode and self._si_mode != 'report':
+                args += ['--si-mode', self._si_mode]
             if self._dressing:
                 args.append('--experimental-dressing')
                 if self._dressing_drain in ('none', 'half', 'full', 'deep'):
@@ -2997,6 +3024,13 @@ class OptionsDialog(QDialog):
         int_row.addStretch(1)
         r.addLayout(int_row)
 
+        # Self-intersection policy (batch-wide).
+        si_row = QHBoxLayout()
+        si_row.addWidget(QLabel(_t('si_mode_label')))
+        si_row.addWidget(main.cmb_si_mode)
+        si_row.addStretch(1)
+        r.addLayout(si_row)
+
         # User profiles: create / duplicate / rename / delete on top of the
         # read-only built-in presets.
         prof_row = QHBoxLayout()
@@ -3494,6 +3528,7 @@ class MainWindow(QMainWindow):
         self._dressing_defects = None       # None = module default ('all')
         self._dressing_rmax_scale = None    # None = 1.0
         self._dressing_sigma_scale = None   # None = 1.0
+        self._si_mode = 'report'      # self-intersection policy: repair/report/off
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
@@ -3651,6 +3686,16 @@ class MainWindow(QMainWindow):
             for factor in (0.25, 0.5, 0.75, 1.0, 1.5, 2.0):
                 cmb.addItem('x%s' % ('%g' % factor), factor)
             cmb.currentIndexChanged.connect(handler)
+        # Self-intersection policy (batch-wide, Repair tab): 'report' (default)
+        # measures/reports SI without escalating; 'repair' keeps it as damage;
+        # 'off' skips the exact classifier.
+        self.cmb_si_mode = QComboBox()
+        self.cmb_si_mode.setToolTip(_t('si_mode_tip'))
+        for key, val in (('si_mode_report', 'report'),
+                         ('si_mode_repair', 'repair'),
+                         ('si_mode_off', 'off')):
+            self.cmb_si_mode.addItem(_t(key), val)
+        self.cmb_si_mode.currentIndexChanged.connect(self._on_si_mode_changed)
         # The batch-wide options above live in a separate, non-modal Options
         # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
         # is re-parented there unchanged, so every chk_* attribute keeps its
@@ -3889,6 +3934,10 @@ class MainWindow(QMainWindow):
             self._repeat_picker_worker.wait(6000)
         self._stop_update_check()
         super().closeEvent(event)
+
+    def _on_si_mode_changed(self, index):
+        """Store the batch-wide self-intersection policy."""
+        self._si_mode = self.cmb_si_mode.itemData(index) or 'report'
 
     def _on_dressing_drain_changed(self, index):
         """Map the Dressing drain combo to the CLI override ('' = preset)."""
@@ -4252,6 +4301,7 @@ class MainWindow(QMainWindow):
                                    dressing_defects=self._dressing_defects,
                                    dressing_rmax_scale=self._dressing_rmax_scale,
                                    dressing_sigma_scale=self._dressing_sigma_scale,
+                                   si_mode=self._si_mode,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
                                    engines_by_path=engines_by_path,
