@@ -8,7 +8,7 @@
 //! exact predicates on explicit and implicit points (`orient3d`, `orient2d`,
 //! `incircle`), and the predicate core for the future arrangement-lite engine.
 
-use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2};
+use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2, PyArrayLikeDyn};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
@@ -650,13 +650,20 @@ fn morph_close<'py>(
 /// `drain * (1 - g)` (with `g` the defect influence) so the healthy isosurface
 /// re-centres on the original boundary while the defect coverage is kept.
 /// `0.0` (the default) leaves the plain outward coat.
+///
+/// `defect_r` is an optional per-defect peak radius (N or Nx1, in mm; same
+/// length as `defect_pts`).  Empty/`None` means every defect peaks at `r_max`
+/// (the historical behaviour).  A small value lets a weak defect (e.g. a
+/// self-intersection vertex) nudge the isosurface off the healthy `s = 0`
+/// without a full coat bubble; values are clamped to `[r_base, r_max]`.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0))]
+#[pyo3(signature = (verts, tris, defect_pts=None, defect_r=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0))]
 fn dressing_coat<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
     defect_pts: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
+    defect_r: Option<PyArrayLikeDyn<'py, f64, AllowTypeChange>>,
     voxel: Option<f64>,
     r_base: Option<f64>,
     r_max: Option<f64>,
@@ -680,6 +687,15 @@ fn dressing_coat<'py>(
             dp.push([view[[i, 0]], view[[i, 1]], view[[i, 2]]]);
         }
     }
+    let dr: Vec<f64> = match &defect_r {
+        Some(arr) => arr.as_array().iter().copied().collect(),
+        None => Vec::new(),
+    };
+    if !dr.is_empty() && dr.len() != dp.len() {
+        return Err(PyValueError::new_err(
+            "defect_r must have the same length as defect_pts",
+        ));
+    }
     let params = dressing::DressingParams {
         voxel,
         r_base,
@@ -689,7 +705,7 @@ fn dressing_coat<'py>(
         margin_voxels,
         drain,
     };
-    let m = dressing::dressing_coat(&rv, &rt, &dp, &params);
+    let m = dressing::dressing_coat(&rv, &rt, &dp, &dr, &params);
 
     let out_verts: Vec<Vec<f64>> = m.verts.iter().map(|p| p.to_vec()).collect();
     let out_tris: Vec<Vec<i32>> = m

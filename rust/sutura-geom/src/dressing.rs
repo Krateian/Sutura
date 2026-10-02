@@ -459,11 +459,21 @@ fn orient_consistently(tris: &mut [[u32; 3]]) {
 }
 
 /// Full Dressing coat extraction.  See the module docs for the pipeline.
+///
+/// `defect_r` optionally gives the peak coat radius (in mm) at each
+/// `defect_pts[i]`.  An empty slice means every defect uses `r_max`, which is
+/// the historical behaviour and stays byte-identical.  A caller can pass a
+/// small radius for weak defects (e.g. self-intersection vertices, so the
+/// isosurface is nudged off `s = 0` without a full coat bubble) while the
+/// holes/non-manifold points keep `r_max`.  Values are clamped to
+/// `[r_base, r_max]`; the field is the per-cell maximum over the defects, and
+/// defects sharing a radius reuse one distance transform.
 #[allow(clippy::too_many_arguments)]
 pub fn dressing_coat(
     verts: &[[f64; 3]],
     tris: &[[usize; 3]],
     defect_pts: &[[f64; 3]],
+    defect_r: &[f64],
     params: &DressingParams,
 ) -> DressingMesh {
     let t_start = std::time::Instant::now();
@@ -546,28 +556,51 @@ pub fn dressing_coat(
 
     // Variable radius r(x): larger near defects.
     let has_defect = !defect_pts.is_empty();
-    let dseed = if has_defect {
-        defect_distance(dims, origin, voxel, defect_pts)
-    } else {
-        Vec::new()
-    };
     let voxel32 = voxel as f32;
-    let r_at = |idx: usize| -> f32 {
-        if !has_defect {
-            return r_base32;
-        }
-        let d = dseed[idx].max(0.0).sqrt() * voxel32;
-        let z = d / sigma32;
-        r_base32 + (r_max32 - r_base32) * (-0.5 * z * z).exp()
-    };
-
-    // Dense r for the flood fill's free test.
     let mut r_dense = vec![r_base32; n];
-    if has_defect {
-        r_dense
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(idx, rv)| *rv = r_at(idx));
+    if has_defect && defect_r.is_empty() {
+        // Historical path: every defect peaks at r_max.  Kept verbatim so an
+        // empty `defect_r` is byte-identical.
+        let dseed = defect_distance(dims, origin, voxel, defect_pts);
+        let amp = r_max32 - r_base32;
+        r_dense.par_iter_mut().enumerate().for_each(|(idx, rv)| {
+            let d = dseed[idx].max(0.0).sqrt() * voxel32;
+            let z = d / sigma32;
+            *rv = r_base32 + amp * (-0.5 * z * z).exp();
+        });
+    } else if has_defect {
+        // Per-defect radii: group points by their clamped peak radius so each
+        // distinct radius costs a single distance transform, then keep the
+        // maximum contribution per cell.
+        let mut groups: Vec<(f64, Vec<[f64; 3]>)> = Vec::new();
+        for (i, p) in defect_pts.iter().enumerate() {
+            let rr = defect_r
+                .get(i)
+                .copied()
+                .unwrap_or(r_max)
+                .clamp(r_base, r_max);
+            match groups.iter_mut().find(|(q, _)| (*q - rr).abs() <= 1.0e-12) {
+                Some((_, pts)) => pts.push(*p),
+                None => groups.push((rr, vec![*p])),
+            }
+        }
+        let amps: Vec<f32> = groups.iter().map(|(rr, _)| *rr as f32 - r_base32).collect();
+        let seeds: Vec<Vec<f32>> = groups
+            .iter()
+            .map(|(_, pts)| defect_distance(dims, origin, voxel, pts))
+            .collect();
+        r_dense.par_iter_mut().enumerate().for_each(|(idx, rv)| {
+            let mut best = 0.0f32;
+            for (g, seed) in seeds.iter().enumerate() {
+                let d = seed[idx].max(0.0).sqrt() * voxel32;
+                let z = d / sigma32;
+                let contrib = amps[g] * (-0.5 * z * z).exp();
+                if contrib > best {
+                    best = contrib;
+                }
+            }
+            *rv = r_base32 + best;
+        });
     }
     let ext = flood_exterior(dims, &band_mask, &u, &r_dense, voxel32);
 
@@ -805,7 +838,7 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let sm = dressing_coat(&sv, &sf, &[], &p);
+        let sm = dressing_coat(&sv, &sf, &[], &[], &p);
         let so = signed_offsets(&sm, &sv, &sf);
         report_stats("sphere", &so, 0.04);
         let mean = so.iter().sum::<f64>() / so.len() as f64;
@@ -822,7 +855,7 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let cm = dressing_coat(&cv, &cf, &[], &pc);
+        let cm = dressing_coat(&cv, &cf, &[], &[], &pc);
         let co = signed_offsets(&cm, &cv, &cf);
         report_stats("cube", &co, 0.1);
         let mean = co.iter().sum::<f64>() / co.len() as f64;
@@ -845,8 +878,8 @@ mod tests {
 
         // No defect: the healthy weight is 1 everywhere, so the whole coat
         // shifts inward by the drain amount.
-        let clean0 = dressing_coat(&v, &f, &[], &base);
-        let clean1 = dressing_coat(&v, &f, &[], &drained);
+        let clean0 = dressing_coat(&v, &f, &[], &[], &base);
+        let clean1 = dressing_coat(&v, &f, &[], &[], &drained);
         let o0 = signed_offsets(&clean0, &v, &f);
         let o1 = signed_offsets(&clean1, &v, &f);
         let m0 = o0.iter().sum::<f64>() / o0.len() as f64;
@@ -860,8 +893,8 @@ mod tests {
         // Defect on the +Z face: that face keeps its coverage, the far (-Z)
         // healthy face drains.
         let def = [[0.0, 0.0, 5.0]];
-        let d0 = dressing_coat(&v, &f, &def, &base);
-        let d1 = dressing_coat(&v, &f, &def, &drained);
+        let d0 = dressing_coat(&v, &f, &def, &[], &base);
+        let d1 = dressing_coat(&v, &f, &def, &[], &drained);
         let od0 = signed_offsets(&d0, &v, &f);
         let od1 = signed_offsets(&d1, &v, &f);
         let region_mean = |m: &DressingMesh, o: &[f64], near: bool| {
@@ -900,7 +933,7 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let m = dressing_coat(&v, &f, &[], &p);
+        let m = dressing_coat(&v, &f, &[], &[], &p);
         assert!(!m.tris.is_empty(), "coat should have faces");
         assert!(m.info.manifold, "coat should be two-manifold");
         assert!(m.info.gwn_cells > 0, "some sign cells are expected");
@@ -918,9 +951,47 @@ mod tests {
             sigma: Some(1.0),
             ..Default::default()
         };
-        let with = dressing_coat(&v, &f, &[[0.0, 0.0, 5.0]], &p);
-        let without = dressing_coat(&v, &f, &[], &p);
+        let with = dressing_coat(&v, &f, &[[0.0, 0.0, 5.0]], &[], &p);
+        let without = dressing_coat(&v, &f, &[], &[], &p);
         assert!(with.tris.len() > without.tris.len());
+    }
+
+    #[test]
+    fn per_defect_radius_weakens_the_coat() {
+        let (v, f) = cube(10.0);
+        let p = DressingParams {
+            voxel: Some(0.5),
+            r_base: Some(0.25),
+            r_max: Some(2.0),
+            sigma: Some(1.0),
+            ..Default::default()
+        };
+        let def = [[0.0, 0.0, 5.0]];
+
+        // Empty `defect_r` means every defect peaks at `r_max`; an explicit
+        // entry equal to `r_max` must reproduce it exactly.
+        let implicit = dressing_coat(&v, &f, &def, &[], &p);
+        let explicit = dressing_coat(&v, &f, &def, &[2.0], &p);
+        assert_eq!(implicit.verts, explicit.verts);
+        assert_eq!(implicit.tris, explicit.tris);
+
+        // A weak defect (r_base + 0.5*voxel) grows the coat far less than a
+        // full r_max bubble on the same point.
+        let weak = dressing_coat(&v, &f, &def, &[0.75], &p);
+        let max_z = |m: &DressingMesh| m.verts.iter().map(|q| q[2]).fold(f64::MIN, f64::max);
+        assert!(
+            max_z(&weak) < max_z(&explicit) - 0.1,
+            "weak coat max z {:.3} should stay well below strong {:.3}",
+            max_z(&weak),
+            max_z(&explicit)
+        );
+
+        // A radius at or below `r_base` is clamped: the coat matches the
+        // no-defect case (no negative bubble).
+        let clamped = dressing_coat(&v, &f, &def, &[0.0], &p);
+        let none = dressing_coat(&v, &f, &[], &[], &p);
+        assert_eq!(clamped.verts, none.verts);
+        assert_eq!(clamped.tris, none.tris);
     }
 
     #[test]
