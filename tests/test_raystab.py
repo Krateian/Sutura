@@ -111,6 +111,37 @@ def test_raystab_grid_centre_and_outside():
     assert grid[0, 0, 0] == 0, "grid corner not outside"
 
 
+def test_asymmetric_grid_axis_order():
+    # BUG-02 regression: the flat grid is i-fastest (Fortran); the Python array
+    # must expose [i, j, k] with matching strides, not a transposed X/Z view.
+    # Asymmetric dims (nx != nz) are what expose an order mismatch.
+    m = trimesh.creation.box(extents=(4.0, 1.0, 1.0))
+    m.apply_translation((1.0, 0.0, 0.0))
+    v = np.asarray(m.vertices, np.float64)
+    f = np.asarray(m.faces, np.int32)
+    w, _u, _s, info = sutura_geom.sdf_grid(v, f, voxel=0.5)
+    w = np.asarray(w)
+    assert info["dims"][0] != info["dims"][1], "fixture must be asymmetric"
+    o = info["origin"]
+    vx = info["voxel"]
+
+    def w_at(p):
+        c = [int(round((p[i] - o[i]) / vx)) for i in range(3)]
+        return c, float(w[c[0], c[1], c[2]])
+
+    _c_in, w_in = w_at((2.5, 0.0, 0.0))     # strictly inside the box
+    _c_out, w_out = w_at((-1.5, 0.5, 0.0))  # just outside along X
+    assert w_in > 0.5, ("inside point read as outside (axis order)", w_in)
+    assert w_out < 0.5, ("outside point read as inside", w_out)
+
+    grid, _score, ginfo = sutura_geom.raystab_grid(v, f, voxel=0.5, n_dirs=7)
+    grid = np.asarray(grid)
+    go = ginfo["origin"]
+    gv = ginfo["voxel"]
+    gc = [int(round((p - go[i]) / gv)) for i, p in enumerate((2.5, 0.0, 0.0))]
+    assert grid[gc[0], gc[1], gc[2]] == 1, "raystab_grid axis order"
+
+
 # --------------------------------------------------------------------------- #
 # sdf_grid / morph_close: off is byte-identical, on is reported
 # --------------------------------------------------------------------------- #

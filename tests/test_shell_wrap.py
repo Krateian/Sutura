@@ -244,23 +244,39 @@ def test_hybrid_keeps_healthy_verbatim():
     assert rep["holes"] == 0 and rep["non_manifold"] == 0
 
 
-def test_sign_field_pass0_runs_and_can_be_disabled():
-    # Pass 0 (r = 0) runs by default; with the guards off its watertight result
-    # is adopted and the ladder starts at zero.  sign_field=False restores the
-    # closing-only ladder unchanged.
+def test_sign_field_pass0_opt_in_and_default_off():
+    # Pass 0 is OFF by default: the ladder starts at the first closing radius.
     v, f = sphere_with_hole()
-    ov, ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08, guard=False)
+    _ov, _ot, rep0 = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                               guard=False)
+    assert rep0["sign_field"] is False
+    assert rep0["r_ladder"][0] > 0.0
+    # Opted in explicitly, Pass 0 runs, is adopted and the ladder starts at 0.
+    _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                               guard=False, sign_field=True)
     assert rep["sign_field"] is True
     assert rep["r_ladder"][0] == 0.0
     assert rep["mode"] == "sign_field"
     assert rep["r_used"] == 0.0
     assert rep["holes"] == 0 and rep["non_manifold"] == 0
 
-    _ov, _ot, rep2 = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
-                                guard=False, sign_field=False)
-    assert rep2["sign_field"] is False
-    assert rep2["r_ladder"][0] > 0.0
-    assert rep2["r_used"] > 0.0
+
+def test_sign_field_pass0_not_adopted_when_fidelity_fails():
+    # BUG-01 regression: a watertight sign-field candidate that FAILS the
+    # fidelity gate must never seed `best`, or it would block every closing
+    # ladder attempt (both have 0 holes+nm) and be adopted with a bad shape.
+    import sutura_engine.graft as graft_mod
+    saved = graft_mod.HEALTHY_HAUSDORFF_MAX
+    graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0  # force every real deviation to fail
+    try:
+        v, f = sphere_with_hole()
+        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                   guard=True, sign_field=True)
+    finally:
+        graft_mod.HEALTHY_HAUSDORFF_MAX = saved
+    assert rep["sign_field"] is True
+    assert rep["r_used"] > 0.0, rep
+    assert rep["mode"] != "sign_field", rep
 
 
 def test_resolve_grid_budget_scales_with_intensity_and_ram():
@@ -273,9 +289,15 @@ def test_resolve_grid_budget_scales_with_intensity_and_ram():
     # Unknown/None falls back to the balanced target.
     assert resolve_grid_budget(None, big) == 1_500_000
     assert resolve_grid_budget("custom-profile", big) == 1_500_000
-    # A tiny machine clamps down to the floor, never below, never above the cap.
-    assert resolve_grid_budget("extreme", 1_000_000) == 1_500_000
+    # A tiny machine must clamp BELOW the nominal floor: the RAM-safe limit is
+    # an absolute ceiling down to MIN_GRID_DIV**3 (BUG-03).
+    from sutura_engine.graft import MIN_GRID_DIV
+    floor = MIN_GRID_DIV ** 3
+    assert resolve_grid_budget("extreme", 1_000_000) == floor
+    assert resolve_grid_budget("balanced", 1_000_000) == floor
     assert resolve_grid_budget("extreme", 10**12) == 25_000_000
+    # A mid-size machine still gets the nominal target when it fits.
+    assert resolve_grid_budget("balanced", 10**12) == 1_500_000
 
 
 if __name__ == "__main__":

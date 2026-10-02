@@ -27,7 +27,7 @@ pub mod raycast;
 pub mod triangle_intersection;
 pub mod winding;
 
-use numpy::ndarray::Array3;
+use numpy::ndarray::{Array3, ShapeBuilder};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::types::PyList;
 use rayon::prelude::*;
@@ -342,7 +342,7 @@ fn vec_to_pyarray3<'py>(
     data: Vec<f32>,
     dims: [usize; 3],
 ) -> PyResult<Bound<'py, PyArray3<f32>>> {
-    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]), data)
+    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]).f(), data)
         .map_err(|e| PyValueError::new_err(format!("grid shape error: {e}")))?;
     Ok(PyArray3::from_owned_array(py, arr))
 }
@@ -356,7 +356,7 @@ fn vec_to_pyarray3_u8<'py>(
     data: Vec<u8>,
     dims: [usize; 3],
 ) -> PyResult<Bound<'py, PyArray3<u8>>> {
-    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]), data)
+    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]).f(), data)
         .map_err(|e| PyValueError::new_err(format!("grid shape error: {e}")))?;
     Ok(PyArray3::from_owned_array(py, arr))
 }
@@ -366,7 +366,7 @@ fn vec_to_pyarray3_i32<'py>(
     data: Vec<i32>,
     dims: [usize; 3],
 ) -> PyResult<Bound<'py, PyArray3<i32>>> {
-    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]), data)
+    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]).f(), data)
         .map_err(|e| PyValueError::new_err(format!("grid shape error: {e}")))?;
     Ok(PyArray3::from_owned_array(py, arr))
 }

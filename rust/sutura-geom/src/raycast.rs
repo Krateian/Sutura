@@ -246,7 +246,9 @@ pub fn disambiguate_sdf(
                         continue;
                     }
                     let s = uch[row + i];
-                    let was_inside = s < 0.0;
+                    // `s` is an UNSIGNED distance (always >= 0); the previous
+                    // inside/outside state comes from the SIGNED slice.
+                    let was_inside = sch[row + i] < 0.0;
                     if was_inside != v.inside {
                         flipped.fetch_add(1, Ordering::Relaxed);
                     }
@@ -267,7 +269,7 @@ pub fn disambiguate_sdf(
 }
 
 /// Full-grid inside mask (`1` inside) and signed vote score
-/// (`inside_votes - outside_votes`) for analysis and tests.  C order
+/// (`inside_votes - outside_votes`) for analysis and tests.  i-fastest
 /// `[i + nx*(j + ny*k)]`.
 pub struct GridVote {
     pub inside: Vec<u8>,

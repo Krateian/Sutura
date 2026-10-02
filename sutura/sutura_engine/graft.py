@@ -138,28 +138,28 @@ def _resolve_raystab(raystab):
     return bool(raystab) and _RAYSTAB_SUPPORTED
 
 
-# --- sign-field Pass 0 (r = 0, no closing; DEFAULT ON) ---------------------
-# Before the closing ladder, Graft tries the raw generalized-winding sign field
-# (with the ray-stab vote when enabled) at r = 0.  That keeps genuine gaps open
-# instead of bridging them; the strict X-Ray reload check and the healthy-region
-# detail gate decide whether it is adopted, otherwise the closing ladder runs
-# unchanged.  Set sign_field=False / SUTURA_GRAFT_SIGN_FIELD=0 to disable.
+# --- sign-field Pass 0 (r = 0, no closing; DEFAULT OFF, opt-in) -------------
+# When enabled, Graft tries the raw generalized-winding sign field (with the
+# ray-stab vote when enabled) at r = 0 before the closing ladder.  That keeps
+# genuine gaps open instead of bridging them; the strict X-Ray reload check and
+# the healthy-region detail gate decide whether it is adopted, otherwise the
+# closing ladder runs unchanged.  It is OFF by default: measured on
+# framebaroque it fails both gates (2 holes / 105 non-manifold edges and 1.29 %
+# detail loss vs the 0.25 % gate) and wastes ~326 s.  Enable with
+# sign_field=True / SUTURA_GRAFT_SIGN_FIELD=1.
 _SIGN_FIELD_SUPPORTED = bool(getattr(sutura_geom, 'SIGN_FIELD_SUPPORTED', False))
 _SIGN_FIELD_ENV_TRUE = {'1', 'true', 'yes', 'on'}
-_SIGN_FIELD_ENV_FALSE = {'0', 'false', 'no', 'off'}
 
 
 def _resolve_sign_field(sign_field):
     """Resolve Pass 0 from the parameter, then SUTURA_GRAFT_SIGN_FIELD, then the
-    default (on).  Returns False when the extension cannot run r = 0."""
+    default (off).  Returns False when the extension cannot run r = 0."""
     if sign_field is None:
         env = os.environ.get('SUTURA_GRAFT_SIGN_FIELD', '').strip().lower()
-        if env in _SIGN_FIELD_ENV_FALSE:
-            sign_field = False
-        elif env in _SIGN_FIELD_ENV_TRUE:
+        if env in _SIGN_FIELD_ENV_TRUE:
             sign_field = True
         else:
-            sign_field = True
+            sign_field = False
     return bool(sign_field) and _SIGN_FIELD_SUPPORTED
 
 
@@ -198,8 +198,10 @@ def resolve_grid_budget(intensity=None, available_bytes=None):
 
     ``intensity`` is the preset name (or a custom profile's base); unknown/None
     resolves to the balanced target.  The RAM safety limit is
-    ``available * reserve / bytes_per_cell``.  Never exceeds
-    ``GRID_BUDGET_HARD_MAX`` and never drops below ``GRID_BUDGET``.
+    ``available * reserve / bytes_per_cell`` and is an absolute ceiling: it can
+    clamp the budget BELOW ``GRID_BUDGET`` down to the practical grid floor
+    ``MIN_GRID_DIV ** 3`` (a low-memory host must never allocate the nominal
+    84 MB).  Never exceeds ``GRID_BUDGET_HARD_MAX``.
     """
     target = GRID_BUDGET_BY_INTENSITY.get(intensity,
                                           GRID_BUDGET_BY_INTENSITY['balanced'])
@@ -207,8 +209,9 @@ def resolve_grid_budget(intensity=None, available_bytes=None):
         available_bytes = _available_memory_bytes()
     safe = int((max(0, int(available_bytes)) * GRID_BUDGET_RAM_RESERVE)
                / GRID_BUDGET_BYTES_PER_CELL)
-    budget = min(int(target), safe, GRID_BUDGET_HARD_MAX)
-    return int(max(GRID_BUDGET, budget))
+    nominal = max(GRID_BUDGET, min(int(target), GRID_BUDGET_HARD_MAX))
+    ram_floor = min(GRID_BUDGET, MIN_GRID_DIV ** 3)
+    return int(max(ram_floor, min(nominal, safe)))
 
 
 # --------------------------------------------------------------------------- #
@@ -874,8 +877,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     ``grid_budget`` caps the grid cells; ``None`` resolves it from ``intensity``
     (the Triage preset name) and the available system RAM (see
     ``resolve_grid_budget``).  ``sign_field`` (or ``SUTURA_GRAFT_SIGN_FIELD``)
-    enables sign-field Pass 0; it is ON by default and falls back to the closing
-    ladder whenever the r = 0 result is not watertight and faithful.
+    enables sign-field Pass 0; it is OFF by default (opt-in) and falls back to
+    the closing ladder whenever the r = 0 result is not watertight and faithful.
 
     ``raystab`` (or the ``SUTURA_RAYSTAB`` env var) enables ray-stabbing
     disambiguation of the generalized-winding sign in the ambiguous band; it is
@@ -1117,9 +1120,16 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             "pweld": pw, "detail": detail,
             "raystab": info.get("raystab"),
         }
-        if best is None or (cand["holes"] + cand["non_manifold"]) < (
-                best["holes"] + best["non_manifold"]):
-            best = cand
+        # A sign-field (r = 0) candidate must NOT seed ``best``: if it is
+        # watertight but fails the fidelity gate it could otherwise never be
+        # replaced by a closing-ladder candidate (both have 0 holes+nm, so the
+        # monotonic comparison below is False) and would be adopted despite a
+        # shape-changing result.  Pass 0 is exploratory; only a
+        # watertight AND fidelity-clean candidate is ever recorded.
+        if not is_sign:
+            if best is None or (cand["holes"] + cand["non_manifold"]) < (
+                    best["holes"] + best["non_manifold"]):
+                best = cand
         if watertight and fidelity_ok:
             best = cand
             break
