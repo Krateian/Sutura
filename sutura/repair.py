@@ -1023,7 +1023,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             closing=None, proxy_template=False, repeat=None,
                             repeat_source=None, repeat_target=None,
                             wall_thicken=False, wall_min_thickness=None,
-                            graft=False):
+                            graft=False, dressing=False,
+                            dressing_drain=None, dressing_defects=None,
+                            dressing_rmax_scale=None, dressing_sigma_scale=None,
+                            si_mode=None, dressing_force_adopt=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -1051,6 +1054,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ``deep_repair`` selects the deep-repair ladder mode ('off'/'local'/
     'full', see ``deep_repair_ladder``); None (library default) keeps the
     pre-ladder behaviour and adds no ``deep_repair`` report.
+    ``si_mode`` selects the self-intersection policy ('repair'/'report'/'off',
+    see ``resolve_si_mode``); None resolves to the default 'report', which
+    measures/reports SI without escalating or failing on SI alone.
     ``triage_spec`` is the resolved intensity preset (sutura/triage.py) that
     supplies the post-Stage-1 knobs (deep-repair tier timeout/size cap,
     decimation ladder, Hausdorff sample count); None resolves to Balanced
@@ -1080,6 +1086,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if triage_spec is None:
         triage_spec = triage.resolve_intensity(None)
     stats.update(triage.triage_report_fields(triage_spec))
+    si_mode = resolve_si_mode(si_mode)
+    stats['si_mode'] = si_mode
 
     # before_stage1 engines run on the ORIGINAL input, before anything else
     # (including the unit heuristic and the classifier, which then see the
@@ -1371,7 +1379,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
                                    spec=triage_spec, engines=engines,
-                                   engine_chain=engine_chain, graft=graft)
+                                   engine_chain=engine_chain, graft=graft,
+                                   dressing=dressing,
+                                   dressing_drain=dressing_drain,
+                                   dressing_defects=dressing_defects,
+                                   dressing_rmax_scale=dressing_rmax_scale,
+                                   dressing_sigma_scale=dressing_sigma_scale,
+                                   si_mode=si_mode,
+                                   dressing_force_adopt=dressing_force_adopt)
 
     # Registry methods 11/12 (P-REP): repeated-element transplant, after the
     # whole stage-1 chain (the transplant needs a watertight M).
@@ -1481,9 +1496,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # 2's output is NOT re-measured here. When stage 2 runs and writes the
     # final mesh, this value is a conservative stage-1-based upper bound on
     # the health signal, which is fine for scoring.
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    stats['stage1']['self_intersections_remaining'] = int(
-        ms.current_mesh().face_selection_array().sum())
+    # Under --si-mode off the policy is 'not measured': skip the (estimated)
+    # count entirely and report None. The guarded si_excise pass keeps its own
+    # pymeshlab count independently, so it is unaffected.
+    if si_mode == 'off':
+        stats['stage1']['self_intersections_remaining'] = None
+    else:
+        ms.apply_filter('compute_selection_by_self_intersections_per_face')
+        stats['stage1']['self_intersections_remaining'] = int(
+            ms.current_mesh().face_selection_array().sum())
     return stats, new_verts, new_tris
 
 
@@ -1658,6 +1679,202 @@ def resolve_graft(no_graft=False, force=False, environ=None):
         if val in ('1', 'true', 'yes', 'on', 'auto'):
             return True if val not in ('auto',) else 'auto'
     return 'auto'
+
+
+def resolve_dressing(no_dressing=False, force=False, environ=None,
+                     default_enabled=None):
+    """Resolve the ``dressing`` argument (method #16, viscosity coat).
+
+    Returns ``False`` (disabled), ``True`` (forced, runs even without damage) or
+    ``'auto'`` (the Auto-ladder fallback: only when the current result still has
+    holes/non-manifold/exact-SI damage).  Precedence: ``--no-dressing`` disables;
+    ``--experimental-dressing`` forces; ``SUTURA_DRESSING`` may set ``0/1``.
+    With none of those set the answer follows the **single default switch**:
+    the :data:`DRESSING_DEFAULT_ENABLED` module constant or the
+    ``SUTURA_DRESSING_DEFAULT`` env var (``default_enabled`` overrides both for
+    tests).  The library default in ``repair_mesh_from_arrays`` stays ``False``,
+    and the switch is OFF until the fine-detail loss is fixed.
+    """
+    if no_dressing:
+        return False
+    if force:
+        return True
+    env = environ if environ is not None else os.environ.get('SUTURA_DRESSING')
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in ('0', 'false', 'no', 'off'):
+            return False
+        if val in ('1', 'true', 'yes', 'on'):
+            return True
+    if default_enabled is None:
+        default_enabled = _dressing_default_enabled()
+    return 'auto' if default_enabled else False
+
+
+def resolve_dressing_drain(cli_value=None, environ=None):
+    """Resolve the Dressing drain override (method #16).
+
+    Returns ``None`` (the preset's ``drain_factor`` default — full for
+    Balanced/Thorough, off for Quick, deep for Extreme), a mode name
+    (``none``/``half``/``full``/``deep``) or an explicit ``delta_r`` in mm.
+    Precedence: CLI flag > ``SUTURA_DRESSING_DRAIN`` > ``None``.
+    """
+    if cli_value is not None:
+        return cli_value
+    env = environ if environ is not None else os.environ.get('SUTURA_DRESSING_DRAIN')
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in ('none', 'off', 'half', 'full', 'deep'):
+            return val
+        try:
+            return float(val)
+        except ValueError:
+            return None
+    return None
+
+
+# Dressing defect-mask sets (must match sutura_engine.dressing.DEFECT_SETS).
+DRESSING_DEFECT_SETS = ('all', 'holes_nm')
+
+# ---------------------------------------------------------------------------
+# Dressing auto-fallback switch + adoption-gate bounds (single switch)
+# ---------------------------------------------------------------------------
+# Dressing stays OFF by default until the fine-detail (voxel staircase) loss is
+# fixed in the extraction core.  One knob turns it into an Auto-ladder fallback:
+# the module constant below, or the SUTURA_DRESSING_DEFAULT env var.  When on,
+# the deep-repair 'full' ladder tries Dressing after Graft whenever the current
+# result still has holes, non-manifold edges or exact self-intersections.
+DRESSING_DEFAULT_ENABLED = False
+
+# Adoption-gate bounds for the auto fallback (the explicit --experimental-
+# dressing path uses the same gate).  The volume is compared to the mesh the
+# ladder held just before Dressing (the best available reference; the raw input
+# signed volume is meaningless when it is itself damaged/open).
+DRESSING_MAX_VOLUME_DELTA = 0.10     # |dV| / |V_before|
+DRESSING_MAX_PARTS_SLACK = 1         # candidate components <= before + slack
+# Healthy-region coat-vs-input normal agreement; a voxel staircase / fluting
+# loss keeps positions within the Hausdorff gate but tilts the normals.  This is
+# a PLACEHOLDER threshold, measured on the 13-mesh set 2026-10: Dressing p95 is
+# 12-36 deg on the accepted coats and 82-88 deg on framebaroque / 100281 /
+# 1038439 / 1038441 / 145065 (the staircased, detail-lost ones).  The calibrated
+# detector will replace it.
+DRESSING_MAX_NORMAL_ANGLE_P95 = 30.0  # degrees
+# CAD-likeness placeholder threshold (the calibrated detector supplies the real
+# value).
+CAD_LIKENESS_THRESHOLD = 0.5
+
+
+def _dressing_default_enabled():
+    """The single Dressing-default switch: module constant overridden by the
+    ``SUTURA_DRESSING_DEFAULT`` env var (truthy = enable the Auto fallback)."""
+    raw = os.environ.get('SUTURA_DRESSING_DEFAULT')
+    if raw is None:
+        return bool(DRESSING_DEFAULT_ENABLED)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on', 'auto')
+
+
+def cad_likeness(verts, tris):
+    """Heuristic CAD/machined-vs-organic score for the Graft-vs-Dressing guard.
+
+    Returns ``{'score', 'planar_fraction', 'sharp_fraction', 'cad_like'}``.
+    Mechanical parts have many flat faces and/or many sharp dihedral edges;
+    organic scans do not.  The threshold is a PLACEHOLDER
+    (:data:`CAD_LIKENESS_THRESHOLD`) until the calibrated detector lands, and
+    the score is currently recorded only — the ladder keeps Graft first for
+    every input, which already satisfies the CAD guard (Graft runs before
+    Dressing and Dressing is only tried when damage remains).
+    """
+    try:
+        v = np.asarray(verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64)
+        F = len(t)
+        if F == 0 or len(v) == 0:
+            return {'score': 0.0, 'planar_fraction': 0.0,
+                    'sharp_fraction': 0.0, 'cad_like': False}
+        a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+        n = np.cross(b - a, c - a)
+        ln = np.linalg.norm(n, axis=1)
+        ln[ln == 0] = 1.0
+        n = n / ln[:, None]
+        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        fi = np.concatenate([np.arange(F), np.arange(F), np.arange(F)])
+        key = np.sort(e, axis=1)
+        key = key[:, 0].astype(np.int64) * (int(t.max()) + 1) + key[:, 1]
+        order = np.argsort(key, kind='stable')
+        ks = key[order]
+        fs = fi[order]
+        starts = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1]])
+        counts = np.diff(np.r_[starts, len(ks)])
+        pair = starts[counts == 2]
+        f1, f2 = fs[pair], fs[pair + 1]
+        dot = np.abs(np.einsum('ij,ij->i', n[f1], n[f2]))
+        ang = np.degrees(np.arccos(np.clip(dot, 0.0, 1.0)))
+        # true-flat edges (coplanar neighbours) vs sharp edges.  Smooth organics
+        # sit in between (gentle curvature), so neither fraction fires.
+        flat_edge = ang < 1.0
+        sharp_edge = ang > 30.0
+        flat_fraction = float(flat_edge.mean()) if len(ang) else 0.0
+        sharp_fraction = float(sharp_edge.mean()) if len(ang) else 0.0
+        score = max(flat_fraction, sharp_fraction)
+        return {'score': score, 'planar_fraction': flat_fraction,
+                'sharp_fraction': sharp_fraction,
+                'cad_like': bool(score >= CAD_LIKENESS_THRESHOLD)}
+    except Exception:  # noqa: BLE001 - the guard is best-effort
+        return {'score': None, 'planar_fraction': None,
+                'sharp_fraction': None, 'cad_like': False}
+
+
+def resolve_dressing_defects(cli_value=None, environ=None):
+    """Resolve the Dressing defect-set override (method #16).
+
+    Returns ``'all'`` (holes + non-manifold + self-intersections, the default),
+    ``'holes_nm'`` (holes + non-manifold only) or ``None`` (the module default).
+    Precedence: CLI flag > ``SUTURA_DRESSING_DEFECTS`` > ``None``.  An invalid
+    value at either level is ignored.
+    """
+    if cli_value is not None:
+        return cli_value if cli_value in DRESSING_DEFECT_SETS else None
+    env = environ if environ is not None else os.environ.get('SUTURA_DRESSING_DEFECTS')
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in DRESSING_DEFECT_SETS:
+            return val
+    return None
+
+
+def resolve_dressing_scale(cli_value=None, env_var='', environ=None):
+    """Resolve a positive Dressing scale factor (method #16).
+
+    Returns a positive ``float`` or ``None`` (the module default, 1.0).
+    Precedence: CLI flag > ``env_var`` > ``None``.  A non-positive or
+    unparseable value at either level is ignored.
+    """
+    if cli_value is not None:
+        try:
+            s = float(cli_value)
+        except (TypeError, ValueError):
+            return None
+        return s if s > 0.0 else None
+    env = environ if environ is not None else os.environ.get(env_var)
+    if env is not None:
+        try:
+            s = float(str(env).strip())
+        except (TypeError, ValueError):
+            return None
+        return s if s > 0.0 else None
+    return None
+
+
+def resolve_dressing_rmax_scale(cli_value=None, environ=None):
+    """Resolve the Dressing ``r_max`` scale factor (method #16)."""
+    return resolve_dressing_scale(cli_value, 'SUTURA_DRESSING_RMAX_SCALE',
+                                  environ=environ)
+
+
+def resolve_dressing_sigma_scale(cli_value=None, environ=None):
+    """Resolve the Dressing ``sigma`` scale factor (method #16)."""
+    return resolve_dressing_scale(cli_value, 'SUTURA_DRESSING_SIGMA_SCALE',
+                                  environ=environ)
 
 
 # ---------------------------------------------------------------------------
@@ -2326,6 +2543,32 @@ DEEP_REPAIR_MODES = ('off', 'local', 'full')
 DEEP_REPAIR_DEFAULT = _BALANCED_INTENSITY.deep_repair
 DEEP_REPAIR_ENV = 'SUTURA_DEEP_REPAIR'
 DEEP_REPAIR_CONFIG = os.path.expanduser('~/.config/sutura/config.json')
+
+# --------------------------------------------------------------------------
+# Self-intersection policy. 'repair' keeps the historical behaviour: a residual
+# positive exact-SI count is treated as damage and drives the AUTOMATIC
+# escalation (the Dressing auto fallback). 'report' (the default) still measures
+# and reports self-intersections but never escalates or fails a result on SI
+# alone -- holes/non-manifold edges always count, and an explicit force flag
+# (--experimental-fallback-ftetwild / --experimental-dressing) still acts on SI.
+# 'off' skips the EXACT SI classifier entirely (the estimated stage-1 count and
+# the guarded si_excise pass are unaffected) and reports SI as not measured.
+SI_MODES = ('repair', 'report', 'off')
+SI_MODE_DEFAULT = 'report'
+SI_MODE_ENV = 'SUTURA_SI_MODE'
+
+
+def resolve_si_mode(cli_value=None, environ=None):
+    """Self-intersection policy: CLI ``--si-mode`` > ``SUTURA_SI_MODE`` >
+    :data:`SI_MODE_DEFAULT`. An invalid env value falls back to the default (an
+    invalid CLI value is rejected by argparse)."""
+    if cli_value in SI_MODES:
+        return cli_value
+    env = (os.environ if environ is None else environ).get(SI_MODE_ENV)
+    if env in SI_MODES:
+        return env
+    return SI_MODE_DEFAULT
+
 
 # Run-time estimate coefficients. PLACEHOLDERS, not calibrated: they will be
 # fitted to the estimate_s / actual_s columns of the corpus benchmark.
@@ -3108,6 +3351,300 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
     return ms, after
 
 
+# CLI flags the Dressing suggestion points the user at: the plain opt-in, and
+# the shape-gate override that keeps a gate-rejected (but watertight) coat.
+DRESSING_SUGGEST_FLAG = '--experimental-dressing'
+DRESSING_FORCE_ADOPT_FLAG = '--dressing-force-adopt'
+
+
+def _obj_closed_result(r):
+    """True when one object's stage-1 output is a closed manifold (local copy
+    of ``classification._obj_closed`` so repair.py does not import a private
+    helper)."""
+    s1 = r.get('stage1', {}) if isinstance(r, dict) else {}
+    return bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0
+
+
+def _not_watertight_result(report):
+    """True when the FINAL repaired geometry is open or non-manifold.
+
+    The verdict is the post-ladder topology in ``stage1`` (``two_manifold`` /
+    ``holes_remaining`` / ``non_manifold_edges_remaining``), which
+    ``repair_mesh_from_arrays`` rewrites after every tier, so it describes the
+    mesh actually saved.  A residual self-intersection count is NOT a
+    "not watertight" signal: SI is reported, not repaired, under the default
+    ``si_mode='report'`` (a closed, SI-carrying result must not get a "Not
+    watertight" hint).  A hard error or a declined budget save is not a "try
+    Dressing" situation either.  Multi-object 3MF is judged across every
+    object."""
+    if not isinstance(report, dict):
+        return False
+    if report.get('error') or report.get('status') == 'budget_declined':
+        return False
+    reports = report.get('object_reports')
+    if reports:
+        return any(not _obj_closed_result(r) for r in reports)
+    s1 = report.get('stage1')
+    if not isinstance(s1, dict) or not s1:
+        return False
+    if not s1.get('two_manifold'):
+        return True
+    if s1.get('holes_remaining', 0):
+        return True
+    if s1.get('non_manifold_edges_remaining', 0):
+        return True
+    return False
+
+
+def _dressing_record(report):
+    """The Dressing record of a single-mesh or first-run multi-object report."""
+    dress = report.get('dressing')
+    if isinstance(dress, dict):
+        return dress
+    for r in report.get('object_reports') or []:
+        if isinstance(r.get('dressing'), dict):
+            return r['dressing']
+    return None
+
+
+def _dressing_gate_detail(sug):
+    """Human parenthesis with the gate numbers a rejected coat failed."""
+    parts = []
+    v = sug.get('volume_delta_rel')
+    if v is not None:
+        parts.append('volume %.2f%%' % (100.0 * v))
+    n = sug.get('normal_angle_p95')
+    if n is not None:
+        parts.append('normal p95 %.1f deg' % n)
+    if not parts:
+        r = sug.get('reason')
+        if r:
+            parts.append(str(r))
+    return ' (%s)' % ', '.join(parts) if parts else ''
+
+
+def _dressing_suggestions(report):
+    """Return the Dressing opt-in suggestion(s) for a still-broken result.
+
+    Empty list when the repair errored / was budget-declined, the result is
+    watertight, or Dressing was already adopted.  When Dressing ran but the
+    quality gate rejected it, the suggestion points at
+    ``--dressing-force-adopt``; otherwise it points at the plain
+    ``--experimental-dressing`` opt-in.  Never raises."""
+    try:
+        if not _not_watertight_result(report):
+            return []
+        dress = _dressing_record(report)
+        if isinstance(dress, dict) and dress.get('adopted'):
+            return []
+        suggestion = {
+            'method': 'dressing',
+            'flag': DRESSING_SUGGEST_FLAG,
+            'force': False,
+            'reason': 'dressing_not_run',
+            'warning': 'may_deform',
+        }
+        if isinstance(dress, dict) and dress.get('ran'):
+            suggestion['flag'] = DRESSING_FORCE_ADOPT_FLAG
+            suggestion['force'] = True
+            suggestion['reason'] = dress.get('reason') or 'gate_rejected'
+            suggestion['volume_delta_rel'] = dress.get('volume_delta_rel')
+            suggestion['normal_angle_p95'] = dress.get('normal_angle_p95')
+            suggestion['fidelity_ok'] = dress.get('fidelity_ok')
+        return [suggestion]
+    except Exception:  # noqa: BLE001 - a suggestion never breaks a repair
+        return []
+
+
+def _dressing_suggestion_text(sug):
+    """English CLI lines for one Dressing suggestion (CLI/human report)."""
+    if sug.get('force'):
+        return ('  \u26a0 Not watertight. Dressing ran but its result was '
+                'rejected by the quality gate%s.\n'
+                '    Force it with %s if you accept the deformation '
+                '(the shape may deform).'
+                % (_dressing_gate_detail(sug), sug.get('flag')))
+    return ('  \u26a0 Not watertight. You can try Dressing: %s (watertight, '
+            'but the shape may deform / fine detail may be lost).'
+            % sug.get('flag'))
+
+
+def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
+                  intensity=None, drain=None, defects=None,
+                  r_max_scale=None, sigma_scale=None, force_adopt=False):
+    """Variable-viscosity coat tier for registry method 16 (Dressing).
+
+    Runs ``sutura_engine.dressing.dressing_coat`` on the ORIGINAL input arrays
+    (like the closing / Graft / fTetWild tiers).  The candidate is adopted only
+    when it is strict-watertight after the save/reload-equivalent weld, free of
+    exact self-intersections and inside the preset's coat->input fidelity gate.
+    ``drain`` selects the healthy-region erode-back (``None`` = preset default,
+    a mode name, or an explicit delta in mm).  ``defects`` selects the mask
+    (``'all'`` default, ``'holes_nm'``); ``r_max_scale`` / ``sigma_scale``
+    multiply the resolved ``r_max`` / ``sigma``.  ``force_adopt``
+    (``--dressing-force-adopt``) skips the shape-preservation gates (volume,
+    component count, healthy-surface normal angle, coat fidelity) while STILL
+    requiring a strict-watertight, self-intersection-free candidate, so the
+    caller can keep a deformed coat it explicitly asked for.
+    ``stats['dressing']`` records
+    the parameters, the deviations, the exact-SI verdict and the EN/TR warnings
+    the CLI/GUI surface.  Never raises.
+    """
+    if not dressing:
+        return ms, after
+    rec = {'tier': 'dressing', 'ran': False, 'adopted': False,
+           'watertight': False, 'fidelity_ok': None, 'engine': None,
+           'voxel': None, 'r_base': None, 'r_max': None, 'sigma': None,
+           'faces': None, 'faces_coat': None, 'decimated': False,
+           'drain': None, 'defects': None, 'r_max_scale': None,
+           'sigma_scale': None, 'cleanup': None,
+           'hausdorff_rel_max': None, 'hausdorff_input_to_coat': None,
+           'normal_angle_p50': None, 'normal_angle_p95': None,
+           'normal_angle_n': 0,
+           'volume_before': None, 'volume_after': None,
+           'volume_delta_rel': None, 'components_before': None,
+           'components_after': None,
+           'volume_ok': None, 'parts_ok': None, 'normal_ok': None,
+           'si_before': None, 'si_after': None, 'si_exact_unknown': False,
+           'holes': None, 'non_manifold': None,
+           'within_time_budget': None, 'seconds': None,
+           'forced': False,
+           'warnings': [], 'reason': None}
+    try:
+        from sutura_engine import dressing as _dressing
+    except Exception as e:  # noqa: BLE001
+        rec['reason'] = 'sutura_engine.dressing unavailable: %s' % e
+        stats['dressing'] = rec
+        return ms, after
+    try:
+        in_v = np.asarray(v, dtype=np.float64)
+        in_t = np.asarray(t, dtype=np.int64)
+        cand_v, cand_t, drec = _dressing.dressing_coat(
+            in_v, in_t, ml=ml, intensity=intensity, drain=drain,
+            defects=defects, r_max_scale=r_max_scale, sigma_scale=sigma_scale)
+        rec['ran'] = True
+        rec['drain'] = drec.get('drain')
+        rec['defects'] = drec.get('defects')
+        rec['r_max_scale'] = drec.get('r_max_scale')
+        rec['sigma_scale'] = drec.get('sigma_scale')
+        rec['engine'] = drec.get('engine')
+        rec['voxel'] = drec.get('voxel')
+        rec['r_base'] = drec.get('r_base')
+        rec['r_max'] = drec.get('r_max')
+        rec['sigma'] = drec.get('sigma')
+        rec['faces_coat'] = drec.get('faces_coat')
+        rec['cleanup'] = drec.get('cleanup')
+        rec['decimated'] = bool(drec.get('decimated'))
+        rec['fidelity_ok'] = drec.get('fidelity_ok')
+        rec['hausdorff_rel_max'] = drec.get('hausdorff_rel_max')
+        rec['hausdorff_input_to_coat'] = drec.get('hausdorff_input_to_coat')
+        rec['si_before'] = drec.get('si_before')
+        rec['si_after'] = drec.get('si_after')
+        rec['si_exact_unknown'] = bool(drec.get('si_exact_unknown'))
+        rec['within_time_budget'] = drec.get('within_time_budget')
+        rec['seconds'] = drec.get('seconds')
+        rec['warnings'] = list(drec.get('warnings') or [])
+        rec['normal_angle_p50'] = drec.get('normal_angle_p50')
+        rec['normal_angle_p95'] = drec.get('normal_angle_p95')
+        rec['normal_angle_n'] = int(drec.get('normal_angle_n') or 0)
+        if len(cand_t) == 0:
+            rec['reason'] = 'dressing returned no geometry'
+        else:
+            cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v = np.asarray(cand_v, dtype=np.float32)
+            cand_t = np.asarray(cand_t, dtype=np.int32)
+            det = detect_defects(cand_v, cand_t)
+            cand_holes = len(det['holes'])
+            cand_nm = len(det['non_manifold'])
+            rec['holes'] = cand_holes
+            rec['non_manifold'] = cand_nm
+            rec['faces'] = int(len(cand_t))
+            si_after = drec.get('si_after')
+            si_ok = si_after in (0, None)
+
+            # global-shape guards vs the mesh the ladder held before Dressing:
+            # a component-count explosion or a large volume change is not a
+            # repair.  The raw input signed volume is meaningless when the input
+            # is itself damaged/open, so the current result is the reference.
+            vol_before = parts_before = None
+            try:
+                cur_v = np.asarray(ms.current_mesh().vertex_matrix(),
+                                   dtype=np.float64)
+                cur_t = np.asarray(ms.current_mesh().face_matrix(),
+                                   dtype=np.int64)
+                vol_before = _dressing.signed_volume(cur_v, cur_t)
+                parts_before = _dressing.count_components(cur_t)
+            except Exception:  # noqa: BLE001 - guards degrade to "unknown"
+                pass
+            vol_after = drec.get('volume_after')
+            parts_after = drec.get('components_after')
+            rec['volume_before'] = (round(vol_before, 6)
+                                    if vol_before is not None else None)
+            rec['volume_after'] = vol_after
+            rec['components_before'] = parts_before
+            rec['components_after'] = parts_after
+            if vol_before is not None and vol_after is not None:
+                denom = max(abs(vol_before), 1e-12)
+                rec['volume_delta_rel'] = abs(vol_after - vol_before) / denom
+            vol_ok = (rec['volume_delta_rel'] is None
+                      or rec['volume_delta_rel'] <= DRESSING_MAX_VOLUME_DELTA)
+            parts_ok = (parts_before is None or parts_after is None
+                        or parts_after <= parts_before + DRESSING_MAX_PARTS_SLACK)
+            na95 = rec['normal_angle_p95']
+            normal_ok = (na95 is None
+                         or na95 <= DRESSING_MAX_NORMAL_ANGLE_P95)
+            rec['volume_ok'] = bool(vol_ok)
+            rec['parts_ok'] = bool(parts_ok)
+            rec['normal_ok'] = bool(normal_ok)
+            shape_ok = (drec.get('fidelity_ok') is not False
+                        and vol_ok and parts_ok and normal_ok)
+            rec['shape_ok'] = bool(shape_ok)
+
+            if (cand_holes == 0 and cand_nm == 0 and si_ok
+                    and (shape_ok or force_adopt)):
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
+                after = ms.apply_filter('get_topological_measures')
+                rec['adopted'] = True
+                rec['forced'] = bool(force_adopt and not shape_ok)
+                rec['watertight'] = False  # stage 2 confirms at the top level
+                rec['candidate_watertight'] = True
+                rec['reason'] = ('strict-watertight candidate (stage 2 pending'
+                                 + (', shape gates forced)' if rec['forced']
+                                    else ')'))
+            else:
+                reasons = []
+                if cand_holes or cand_nm:
+                    reasons.append('holes=%d non-manifold=%d'
+                                   % (cand_holes, cand_nm))
+                if not si_ok:
+                    reasons.append('exact self-intersections=%s' % si_after)
+                if not force_adopt:
+                    if drec.get('fidelity_ok') is False:
+                        reasons.append('fidelity %.3f%% > gate'
+                                       % (100.0 * (rec['hausdorff_rel_max'] or 0)))
+                    if not vol_ok:
+                        reasons.append('volume delta %.2f%% > gate'
+                                       % (100.0 * (rec['volume_delta_rel'] or 0)))
+                    if not parts_ok:
+                        reasons.append('components %s > %s + %d'
+                                       % (parts_after, parts_before,
+                                          DRESSING_MAX_PARTS_SLACK))
+                    if not normal_ok:
+                        reasons.append('normal p95 %.1f deg > gate'
+                                       % (na95 or 0.0))
+                rec['reason'] = ('candidate not adopted (%s)'
+                                 % ', '.join(reasons) if reasons
+                                 else 'candidate not adopted')
+    except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        rec['reason'] = 'error: %s: %s' % (type(e).__name__, e)
+    stats['dressing'] = rec
+    return ms, after
+
+
 def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
     """Thin-wall thicken-to-min tier for registry method 15 (P-WALL).
 
@@ -3306,9 +3843,53 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
     return ms, after
 
 
+def _dressing_wanted(dressing, holes, nm, si, si_mode='report'):
+    """Whether the Dressing fallback should run on the current result.
+
+    ``dressing is True`` (forced) always runs -- it overrides ``si_mode``.
+    ``'auto'`` (the default switch) runs when the result still has holes or
+    non-manifold edges; a POSITIVE exact self-intersection count also triggers
+    it only under ``si_mode == 'repair'`` (``si is None`` = unmeasurable never
+    triggers).
+    """
+    if dressing is True:
+        return True
+    if dressing == 'auto':
+        si_damage = (si_mode == 'repair' and si is not None and si > 0)
+        return bool(holes > 0 or nm > 0 or si_damage)
+    return False
+
+
+def _dressing_damage(ms, after, measure_si=True):
+    """``(holes, non_manifold, exact_si)`` of the current result.
+
+    ``exact_si`` is ``None`` when the classifier cannot measure it (empty/too
+    large mesh, or a build without the Rust extension) or when ``measure_si``
+    is False (``--si-mode off``).  Used to decide whether the Dressing fallback
+    should run on the result the ladder currently holds (after Graft), so under
+    the default 'report' mode an SI-only residual is reported but not escalated.
+    """
+    m = ms.current_mesh()
+    holes = boundary_loop_stats(m.vertex_matrix(), m.face_matrix())[0]
+    nm = int(after.get('non_two_manifold_edges', 0))
+    si = None
+    if measure_si:
+        try:
+            from sutura_engine import dressing as _d
+            si = _d.si_face_count(
+                np.asarray(m.vertex_matrix(), dtype=np.float64),
+                np.asarray(m.face_matrix(), dtype=np.int64))
+        except Exception:  # noqa: BLE001 - unknown SI never blocks a repair
+            si = None
+    return int(holes), nm, si
+
+
 def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        ftetwild=False, spec=None, engines=None, engine_chain=None,
-                       graft=False):
+                       graft=False, dressing=False, dressing_drain=None,
+                       dressing_defects=None, dressing_rmax_scale=None,
+                       dressing_sigma_scale=None, si_mode='report',
+                       dressing_force_adopt=False):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
     default (no deep-repair report; ``ftetwild`` alone decides, as before
@@ -3323,6 +3904,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     tiers_run = []
+    cad = None
+    dmg = None
     cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
                                     ms.current_mesh().face_matrix())[0]
     cur_nm = int(after.get('non_two_manifold_edges', 0))
@@ -3357,6 +3940,13 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # and fTetWild is skipped. When it closes the mesh but fidelity
             # fails, fTetWild is also tried and the watertight result with the
             # lower healthy deviation wins.
+            #
+            # CAD guard hook: the geometric CAD/machined-vs-organic score is
+            # recorded for every input.  The ladder keeps Graft first for ALL
+            # inputs (which satisfies the guard: a CAD-like part gets the
+            # verbatim Graft hybrid before Dressing and Dressing only runs when
+            # damage remains); the calibrated detector will drive the ordering.
+            cad = cad_likeness(v, t)
             graft_ms = graft_after = None
             graft_dev = None
             graft_ok = False
@@ -3379,7 +3969,41 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     else:
                         graft_ms, graft_after = _g_ms, _g_after
                         graft_dev = _g.get('hausdorff_healthy')
-            if graft_ok:
+
+            # Dressing (#16) sits AFTER Graft and BEFORE fTetWild: its
+            # volumetric skin targets the whole-shell folds and heavy
+            # self-intersections Graft's hybrid leaves behind.  When the switch
+            # is on it is an Auto fallback, tried whenever the result the ladder
+            # now holds (after Graft) still has holes, non-manifold edges or
+            # exact self-intersections; an explicit force runs regardless.
+            dressing_ok = False
+            _dh = _dnm = 0
+            _dsi = None
+            if dressing == 'auto':
+                _dh, _dnm, _dsi = _dressing_damage(ms, after,
+                                                   measure_si=(si_mode != 'off'))
+                dmg = {'holes': _dh, 'non_manifold': _dnm,
+                       'self_intersections': _dsi}
+            if _dressing_wanted(dressing, _dh, _dnm, _dsi, si_mode):
+                _d_ms, _d_after = dressing_tier(
+                    ml, ms, after, stats, v, t, tmpdir, dressing=True,
+                    intensity=(getattr(spec, 'base', None)
+                               or getattr(spec, 'name', None)),
+                    drain=dressing_drain, defects=dressing_defects,
+                    r_max_scale=dressing_rmax_scale,
+                    sigma_scale=dressing_sigma_scale,
+                    force_adopt=dressing_force_adopt)
+                if (stats.get('dressing') or {}).get('adopted'):
+                    ms, after = _d_ms, _d_after
+                    dressing_ok = True
+                    tiers_run.append('dressing')
+
+            if dressing_ok:
+                stats['experimental_ftetwild'] = False
+                if graft_ms is not None:
+                    stats['graft']['adopted'] = False
+                    stats['graft']['reason'] = 'superseded by Dressing'
+            elif graft_ok:
                 stats['experimental_ftetwild'] = False
             else:
                 ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
@@ -3406,16 +4030,36 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                             tiers_run.remove('ftetwild')
                         tiers_run.append('graft')
     else:
+        # mode 'off'/'local': Dressing is run whenever it is explicitly enabled
+        # (method #16 sets deep_repair='off'), regardless of remaining holes, so
+        # an explicit choice is always honoured; the auto 'full' ladder stays
+        # conservative and only tries it when stage 1 left damage.
+        if dressing is True:
+            _d_ms, _d_after = dressing_tier(
+                ml, ms, after, stats, v, t, tmpdir, dressing=True,
+                intensity=(getattr(spec, 'base', None)
+                           or getattr(spec, 'name', None)),
+                drain=dressing_drain, defects=dressing_defects,
+                r_max_scale=dressing_rmax_scale,
+                sigma_scale=dressing_sigma_scale,
+                force_adopt=dressing_force_adopt)
+            if (stats.get('dressing') or {}).get('adopted'):
+                ms, after = _d_ms, _d_after
+                tiers_run.append('dressing')
         stats['experimental_ftetwild'] = False
     if mode is not None:
         stats['deep_repair'] = {
             'mode': mode,
+            'si_mode': si_mode,
             'holes_before': int(cur_holes),
             'nm_before': cur_nm,
             'tiers_run': tiers_run,
             'local': local_rep,
             'ftetwild': stats.get('experimental_ftetwild') or None,
             'graft': stats.get('graft') or None,
+            'dressing': stats.get('dressing') or None,
+            'cad_likeness': cad,
+            'dressing_damage': dmg,
             'available': None,
         }
     return ms, after
@@ -3436,6 +4080,8 @@ def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):
         final = 'ftetwild'
     elif (stats.get('graft') or {}).get('adopted'):
         final = 'graft'
+    elif (stats.get('dressing') or {}).get('adopted'):
+        final = 'dressing'
     elif (dr.get('local') or {}).get('adopted'):
         final = 'local'
     dr['final_tier'] = final
@@ -3703,7 +4349,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 triage_spec=None, engines=None, engine_chain=None,
                 closing=None, proxy_template=False, repeat=None,
                 repeat_source=None, repeat_target=None,
-                wall_thicken=False, wall_min_thickness=None, graft=False):
+                 wall_thicken=False, wall_min_thickness=None, graft=False,
+                 dressing=False, dressing_drain=None, dressing_defects=None,
+                 dressing_rmax_scale=None, dressing_sigma_scale=None,
+                 si_mode=None, dressing_force_adopt=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -3732,7 +4381,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         closing=closing, proxy_template=proxy_template, repeat=repeat,
         repeat_source=repeat_source, repeat_target=repeat_target,
         wall_thicken=wall_thicken, wall_min_thickness=wall_min_thickness,
-        graft=graft)
+        graft=graft, dressing=dressing, dressing_drain=dressing_drain,
+        dressing_defects=dressing_defects,
+        dressing_rmax_scale=dressing_rmax_scale,
+        dressing_sigma_scale=dressing_sigma_scale, si_mode=si_mode,
+        dressing_force_adopt=dressing_force_adopt)
     report['_fp'] = history.mesh_fingerprint(verts, tris)
     report['defects'] = detect_defects(verts, tris)
     if os.path.splitext(src)[1].lower() == '.obj':
@@ -3845,7 +4498,10 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                triage_spec=None, engines=None, engine_chain=None,
                closing=None, proxy_template=False, repeat=None,
                repeat_source=None, repeat_target=None,
-               wall_thicken=False, wall_min_thickness=None, graft=False):
+               wall_thicken=False, wall_min_thickness=None, graft=False,
+               dressing=False, dressing_drain=None, dressing_defects=None,
+               dressing_rmax_scale=None, dressing_sigma_scale=None,
+               si_mode=None, dressing_force_adopt=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -3893,7 +4549,13 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     closing=closing, proxy_template=proxy_template,
                     repeat=repeat, repeat_source=repeat_source,
                     repeat_target=repeat_target, wall_thicken=wall_thicken,
-                    wall_min_thickness=wall_min_thickness, graft=graft)
+                    wall_min_thickness=wall_min_thickness, graft=graft,
+                    dressing=dressing, dressing_drain=dressing_drain,
+                    dressing_defects=dressing_defects,
+                    dressing_rmax_scale=dressing_rmax_scale,
+                    dressing_sigma_scale=dressing_sigma_scale,
+                    si_mode=si_mode,
+                    dressing_force_adopt=dressing_force_adopt)
                 rep['defects'] = detect_defects(verts, tris)
                 rep['_fp'] = history.mesh_fingerprint(verts, tris)
                 # Per-object stage 2 first: closed objects get a watertight
@@ -3981,14 +4643,18 @@ def load_meshes(src):
              np.asarray(m.face_matrix(), dtype=np.int32))]
 
 
-def validate_mesh_from_arrays(verts, tris, engine='experimental', declared_unit=None):
+def validate_mesh_from_arrays(verts, tris, engine='experimental',
+                              declared_unit=None, si_mode=None):
     """Analyze one mesh WITHOUT repairing it.
 
     Combines defects.detect(), the mesh classifier and cheap pymeshlab
     measures (self-intersecting faces, connected components) into a
     read-only report. Never writes anything. ``declared_unit`` feeds the
-    non-blocking unit-warning heuristic (3MF only)."""
+    non-blocking unit-warning heuristic (3MF only). ``si_mode`` selects the
+    self-intersection policy; under 'off' the count is reported as None
+    ('not measured') and is not required by the watertight predicate."""
     import pymeshlab as ml
+    si_mode = resolve_si_mode(si_mode)
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
     if len(t) == 0 or len(v) == 0:
@@ -4004,8 +4670,11 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental', declared_unit=
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     topo = ms.apply_filter('get_topological_measures')
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    self_intersections = int(ms.current_mesh().face_selection_array().sum())
+    if si_mode == 'off':
+        self_intersections = None
+    else:
+        ms.apply_filter('compute_selection_by_self_intersections_per_face')
+        self_intersections = int(ms.current_mesh().face_selection_array().sum())
 
     vol = signed_volume(v, t)
     bridge = bool(os.path.exists(BRIDGE))
@@ -4016,7 +4685,8 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental', declared_unit=
         'non_manifold': nm,
         'self_intersections': self_intersections,
         'connected_components': int(topo.get('connected_components_number', 1)),
-        'watertight': bool(len(holes) == 0 and len(nm) == 0 and self_intersections == 0),
+        'watertight': bool(len(holes) == 0 and len(nm) == 0
+                           and self_intersections in (0, None)),
         'signed_volume': round(float(vol), 6),
         'surface_area': round(surface_area(v, t), 3),
         'orientation': 'inverted' if vol < 0 else 'consistent',
@@ -4043,7 +4713,7 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental', declared_unit=
             'estimated_confidence_factors': est['factors']}
 
 
-def validate_file(src, engine='experimental'):
+def validate_file(src, engine='experimental', si_mode=None):
     """Validate a mesh file without repairing it. Returns the report dict;
     a hard error (missing/malformed input) is a dict with an 'error' key."""
     result = {'input': src}
@@ -4060,7 +4730,8 @@ def validate_file(src, engine='experimental'):
         reports = []
         for name, vs, ts in meshes:
             declared = units.get(name) if name is not None else None
-            rep = validate_mesh_from_arrays(vs, ts, engine, declared_unit=declared)
+            rep = validate_mesh_from_arrays(vs, ts, engine, declared_unit=declared,
+                                            si_mode=si_mode)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -4077,7 +4748,7 @@ def validate_file(src, engine='experimental'):
 
 
 def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='experimental',
-                             declared_unit=None, triage_spec=None):
+                             declared_unit=None, triage_spec=None, si_mode=None):
     """Report what a repair WOULD do for one mesh, without doing it.
 
     Detects the type, resolves the mode/thresholds and counts the holes /
@@ -4088,6 +4759,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     (3MF only). ``triage_spec`` is the resolved intensity preset (Balanced
     when None); Stage 1 thresholds are unaffected by it."""
     import pymeshlab as ml
+    si_mode = resolve_si_mode(si_mode)
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
     if len(t) == 0 or len(v) == 0:
@@ -4111,9 +4783,12 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     topo = ms.apply_filter('get_topological_measures')
     # "found" counts describe the INPUT mesh (like defects.detect does), so
     # self-intersections are measured before the debris-removal step below.
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    self_intersections = int(ms.current_mesh().face_selection_array().sum())
-    ms.apply_filter('set_selection_none')
+    if si_mode == 'off':
+        self_intersections = None
+    else:
+        ms.apply_filter('compute_selection_by_self_intersections_per_face')
+        self_intersections = int(ms.current_mesh().face_selection_array().sum())
+        ms.apply_filter('set_selection_none')
     before_faces = ms.current_mesh().face_number()
     ms.apply_filter('meshing_remove_connected_component_by_face_number',
                     mincomponentsize=params['mincomponentsize'], removeunref=True)
@@ -4158,7 +4833,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
 
 
 def dry_run_file(src, mode='auto', profile=None, engine='experimental',
-                 triage_spec=None):
+                 triage_spec=None, si_mode=None):
     """Dry-run one mesh file. Returns the report dict; a hard error is a
     dict with an 'error' key. Never writes any output file."""
     result = {'input': src}
@@ -4177,7 +4852,8 @@ def dry_run_file(src, mode='auto', profile=None, engine='experimental',
             declared = units.get(name) if name is not None else None
             rep = dry_run_mesh_from_arrays(vs, ts, mode, profile, engine,
                                            declared_unit=declared,
-                                           triage_spec=triage_spec)
+                                           triage_spec=triage_spec,
+                                           si_mode=si_mode)
             if name is not None:
                 rep['model'] = name
             reports.append(rep)
@@ -4355,6 +5031,25 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('  Graft (shell wrap)      : %s faces in %.2fs, r=%s, %s%s'
                      % (gr.get('faces', 0), gr.get('seconds', 0),
                         gr.get('r_used'), gr.get('mode'), state))
+    dr_r = r.get('dressing')
+    if dr_r and dr_r.get('ran'):
+        if dr_r.get('adopted'):
+            state = ' adopted%s' % (
+                '' if dr_r.get('fidelity_ok') is not False
+                else ' (LOW FIDELITY: %.2f%% of diag)'
+                % (100.0 * (dr_r.get('hausdorff_rel_max') or 0)))
+        else:
+            state = ' NOT adopted (%s)' % (dr_r.get('reason') or '?')
+        _dd = dr_r.get('drain') or {}
+        _drain_txt = ('drain=%s' % _dd.get('mode')
+                      if _dd and _dd.get('drained')
+                      else 'drain=off')
+        lines.append('  Dressing (viscosity)    : %s faces in %.2fs, '
+                     'voxel=%s, r=%s, %s, holes=%s nm=%s%s'
+                     % (dr_r.get('faces') or dr_r.get('faces_coat', 0),
+                        dr_r.get('seconds', 0), dr_r.get('voxel'),
+                        dr_r.get('r_base'), _drain_txt, dr_r.get('holes'),
+                        dr_r.get('non_manifold'), state))
     eng_r = r.get('engines')
     if eng_r:
         lines.append('')
@@ -4494,6 +5189,10 @@ def human_report(r, show_defects=False, show_diff=False):
         ds = human_defects(r)
         if ds:
             lines.append(ds)
+    for _sug in r.get('suggestions', []):
+        if _sug.get('method') == 'dressing':
+            lines.append('')
+            lines.append(_dressing_suggestion_text(_sug))
     return '\n'.join(lines)
 
 
@@ -4602,7 +5301,10 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  extra_features=False, deep_repair=None, triage_spec=None,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
-                 repeat_target=None, wall_min_thickness=None, graft=False):
+                 repeat_target=None, wall_min_thickness=None, graft=False,
+                 dressing=False, dressing_drain=None, dressing_defects=None,
+                 dressing_rmax_scale=None, dressing_sigma_scale=None,
+                 si_mode=None, dressing_force_adopt=False):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -4666,7 +5368,12 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
             repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
-            graft=graft))
+            graft=graft, dressing=dressing, dressing_drain=dressing_drain,
+            dressing_defects=dressing_defects,
+            dressing_rmax_scale=dressing_rmax_scale,
+            dressing_sigma_scale=dressing_sigma_scale,
+            si_mode=si_mode,
+            dressing_force_adopt=dressing_force_adopt))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
         # gating below). Multi-object 3MF carries these per object already.
@@ -4725,6 +5432,12 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     category, issues, _summary = classify(result)
     result['category'] = category
     result['issues'] = issues
+    # The Dressing opt-in hint is kept SEPARATE from the issue codes: it is a
+    # suggestion (a next action), not a defect in this result, so the category
+    # and the batch issue_counts stay unchanged. Only set when non-empty.
+    _suggestions = _dressing_suggestions(result)
+    if _suggestions:
+        result['suggestions'] = _suggestions
 
     _fps = history.pop_fingerprints(result)
     if not no_history:
@@ -5055,6 +5768,48 @@ def main():
                              'with --deep-repair off). Primarily for its own '
                              'evaluation; the auto path (default) already '
                              'prefers Graft over fTetWild')
+    parser.add_argument('--no-dressing', action='store_true',
+                        help='disable the Dressing (viscosity coat) tier (#16); '
+                             'this is the default (Dressing is opt-in)')
+    parser.add_argument('--experimental-dressing', action='store_true',
+                        help='enable the Dressing (viscosity coat) tier (#16): '
+                             'extract a variable-thickness isosurface of the '
+                             'generalized-winding signed field (2-manifold and '
+                             'self-intersection-free by construction). Opt-in '
+                             'until measured on the corpus; tried after Graft '
+                             'and before fTetWild')
+    parser.add_argument('--dressing-drain', default=None,
+                        help='Dressing (#16) healthy-region erode-back: a mode '
+                             '(none, half, full, deep), an explicit delta_r in '
+                             'mm, or unset for the intensity preset default '
+                             '(Quick off; Balanced/Thorough full; Extreme deep). '
+                             'Applied in the level set (F = s - r + delta_r), '
+                             'never by vertex projection')
+    parser.add_argument('--dressing-defects', choices=DRESSING_DEFECT_SETS,
+                        default=None,
+                        help='Dressing (#16) viscosity-mask defect set: "all" '
+                             '(default) = holes + non-manifold + '
+                             'self-intersections, "holes_nm" = holes + '
+                             'non-manifold only (self-intersections are '
+                             'ignored). Env: SUTURA_DRESSING_DEFECTS')
+    parser.add_argument('--dressing-rmax-scale', type=float, default=None,
+                        metavar='F',
+                        help='Dressing (#16) multiplier on the resolved r_max '
+                             '(bridging radius); default 1.0. A value < 1 gives '
+                             'a narrower coat. Env: SUTURA_DRESSING_RMAX_SCALE')
+    parser.add_argument('--dressing-sigma-scale', type=float, default=None,
+                        metavar='F',
+                        help='Dressing (#16) multiplier on the resolved sigma '
+                             '(defect-influence width); default 1.0. Env: '
+                             'SUTURA_DRESSING_SIGMA_SCALE')
+    parser.add_argument('--dressing-force-adopt', action='store_true',
+                        help='Dressing (#16) skip the shape-preservation '
+                             'gates (volume / component count / healthy-surface '
+                             'normal angle / coat fidelity) and adopt a '
+                             'gate-rejected coat that is still strictly '
+                             'watertight and self-intersection-free. The shape '
+                             'may deform; offered by the non-watertight '
+                             'suggestion. Implies --experimental-dressing')
     parser.add_argument('--deep-repair', choices=DEEP_REPAIR_MODES, default=None,
                         help='deep-repair ladder after the fast repair, when '
                              'holes or non-manifold edges remain: "full" '
@@ -5066,6 +5821,19 @@ def main():
                              'rough time estimate. Default from %s or the '
                              '"deep_repair" key of ~/.config/sutura/config.json'
                              % DEEP_REPAIR_ENV)
+    parser.add_argument('--si-mode', choices=SI_MODES, default=None,
+                        help='self-intersection policy: "report" (default) '
+                             'measures and reports self-intersections but '
+                             'never escalates the deep-repair ladder or fails '
+                             'a result on self-intersections alone (holes and '
+                             'non-manifold edges always count); "repair" treats '
+                             'a residual self-intersection count as damage and '
+                             'runs the automatic Dressing fallback; "off" '
+                             'skips the exact self-intersection classifier and '
+                             'reports it as not measured. Explicit '
+                             '--experimental-fallback-ftetwild / '
+                             '--experimental-dressing still act on '
+                             'self-intersections. Env: %s' % SI_MODE_ENV)
     parser.add_argument('--experimental-indirect-autorefine', action='store_true',
                         help='experimental prototype: exact arrangement-lite '
                              'self-intersection split via the rust/sutura-geom '
@@ -5115,6 +5883,7 @@ def main():
     mode = args.mode
     dry_run = args.dry_run
     engine = resolve_classifier_engine(args.classifier_engine)
+    si_mode = resolve_si_mode(args.si_mode)
     triage_spec = triage.resolve_intensity(args.intensity,
                                            user_profiles=_profiles)
 
@@ -5259,7 +6028,7 @@ def main():
         if engines_sel is not None:
             print(json.dumps({'error': '--engines is not valid with validate'}))
             sys.exit(1)
-        results = [validate_file(f, engine) for f in targets]
+        results = [validate_file(f, engine, si_mode=si_mode) for f in targets]
         nerr = sum(1 for r in results if 'error' in r)
         if len(targets) == 1:
             result = results[0]
@@ -5323,7 +6092,8 @@ def main():
             print(json.dumps({'error': '--engines is not valid with --dry-run'}))
             sys.exit(1)
         results = [dry_run_file(f, mode=mode, profile=args.profile, engine=engine,
-                                triage_spec=triage_spec) for f in files]
+                                triage_spec=triage_spec, si_mode=si_mode)
+                   for f in files]
         nerr = sum(1 for r in results if 'error' in r)
         if len(files) == 1:
             result = results[0]
@@ -5357,6 +6127,20 @@ def main():
     # before fTetWild). --experimental-graft forces it outside the ladder.
     _graft_arg = resolve_graft(no_graft=args.no_graft,
                                force=args.experimental_graft)
+    # Dressing (#16): the single default switch (DRESSING_DEFAULT_ENABLED /
+    # SUTURA_DRESSING_DEFAULT) decides; --no-dressing disables and
+    # --experimental-dressing forces.
+    _dressing_arg = resolve_dressing(no_dressing=args.no_dressing,
+                                     force=args.experimental_dressing)
+    # --dressing-force-adopt can only act on a coat, so it implies enabling
+    # Dressing even when --no-dressing / the default switch would disable it.
+    if args.dressing_force_adopt:
+        _dressing_arg = True
+    _dressing_drain = resolve_dressing_drain(args.dressing_drain)
+    _dressing_defects = resolve_dressing_defects(args.dressing_defects)
+    _dressing_rmax_scale = resolve_dressing_rmax_scale(args.dressing_rmax_scale)
+    _dressing_sigma_scale = resolve_dressing_sigma_scale(
+        args.dressing_sigma_scale)
     # External engines are loaded ONCE for the whole batch; broken configs
     # only warn and never fail a repair.
     _engines, _engine_chain, _engine_warnings = load_engine_run()
@@ -5372,7 +6156,13 @@ def main():
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
                             ftetwild=_ft_arg, deep_repair=_dr_mode,
-                            graft=_graft_arg,
+                            graft=_graft_arg, dressing=_dressing_arg,
+                            dressing_drain=_dressing_drain,
+                            dressing_defects=_dressing_defects,
+                            dressing_rmax_scale=_dressing_rmax_scale,
+                            dressing_sigma_scale=_dressing_sigma_scale,
+                            si_mode=si_mode,
+                            dressing_force_adopt=args.dressing_force_adopt,
                             indirect_autorefine=args.experimental_indirect_autorefine,
                             extra_features=args.experimental_edge_tiebreak,
                             triage_spec=triage_spec, engines=_engines,

@@ -410,12 +410,28 @@ impl MeshBvh {
         self.winding_node(0, p) / (4.0 * std::f64::consts::PI)
     }
 
+    /// Generalized winding number at `p` using a caller-supplied far-field
+    /// tolerance.  Aggregating a node into the dipole far-field whenever its
+    /// subtended solid angle is below `tol` makes the query cheaper at the cost
+    /// of accuracy.  Used as a fast sign prescreen for the narrow-band Dressing
+    /// field, where the exact value is only needed near the sign boundary.
+    pub fn winding_at_tol(&self, p: [f64; 3], tol: f64) -> f64 {
+        if self.nodes.is_empty() {
+            return 0.0;
+        }
+        self.winding_node_tol(0, p, tol) / (4.0 * std::f64::consts::PI)
+    }
+
     /// Generalized winding number for many points, parallel across CPU cores.
     pub fn winding_points_par(&self, points: &[[f64; 3]]) -> Vec<f64> {
         points.par_iter().map(|p| self.winding_at(*p)).collect()
     }
 
     fn winding_node(&self, idx: usize, p: [f64; 3]) -> f64 {
+        self.winding_node_tol(idx, p, WINDING_FAR_TOL)
+    }
+
+    fn winding_node_tol(&self, idx: usize, p: [f64; 3], tol: f64) -> f64 {
         let n = &self.nodes[idx];
         if n.left < 0 {
             let mut s = 0.0;
@@ -425,7 +441,7 @@ impl MeshBvh {
             return s;
         }
         let d2 = n.bbox.dist2(p);
-        if d2 > 0.0 && n.area_sum / d2 < WINDING_FAR_TOL {
+        if d2 > 0.0 && n.area_sum / d2 < tol {
             let r = sub(n.center, p);
             let r2 = dot(r, r);
             if r2 <= 0.0 {
@@ -433,7 +449,7 @@ impl MeshBvh {
             }
             return dot(n.vec_area, r) / (r2 * r2.sqrt());
         }
-        self.winding_node(n.left as usize, p) + self.winding_node(n.right as usize, p)
+        self.winding_node_tol(n.left as usize, p, tol) + self.winding_node_tol(n.right as usize, p, tol)
     }
 
     /// Unsigned distance from `p` to the nearest triangle.

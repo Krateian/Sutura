@@ -30,9 +30,9 @@ EXPECTED = {
     5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild',
     8: 'balloon', 9: 'backplate', 10: 'scaffold',
     11: 'transplant', 12: 'transplant_plus', 13: 'graft',
-    14: 'mirror_complete', 15: 'wall_thicken',
+    14: 'mirror_complete', 15: 'wall_thicken', 16: 'dressing',
 }
-ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
             'pattern'}
 
@@ -166,6 +166,10 @@ def test_kwargs_mapping(tmp):
     assert methods.get_method(15).kwargs['wall_thicken'] is True
     assert methods.get_method(15).invents_geometry is True
     assert methods.get_method(15).needs_user_input is True
+    assert methods.get_method(16).kwargs['dressing'] is True
+    assert methods.get_method(16).kwargs['deep_repair'] == 'off'
+    assert methods.get_method(16).invents_geometry is True
+    assert methods.get_method(16).needs_user_input is True
 
 
 # --- templates / ranking ----------------------------------------------------
@@ -757,6 +761,7 @@ def test_cli_list_methods(tmp):
     assert 'Balloon' in r.stdout, r.stdout      # display name shown
     assert 'Exact Refine' in r.stdout, r.stdout
     assert 'Graft' in r.stdout, r.stdout        # method #13 display name
+    assert 'Dressing' in r.stdout, r.stdout     # method #16 display name
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
     assert [m['num'] for m in data] == ALL_NUMS
@@ -850,9 +855,18 @@ def test_cli_engines_validation(tmp):
 
 
 def main():
+    start_cwd = os.getcwd()
     with tempfile.TemporaryDirectory(prefix='sutura-methods-') as tmp:
         for name, fn in sorted(globals().items()):
             if name.startswith('test_') and callable(fn):
+                try:
+                    os.chdir(start_cwd)
+                except OSError:
+                    pass
+                # Some in-process tests exercise repair_with_methods, which can
+                # leave the process cwd inside a since-deleted temp dir; restore
+                # it before every test so the later subprocess calls can resolve
+                # their own paths.
                 fn(tmp)
                 print('ok  %s' % name)
     print('methods tests passed')

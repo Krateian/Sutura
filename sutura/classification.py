@@ -23,6 +23,7 @@ ISSUE_LABELS = {
     'budget_exceeded': 'Repair budget exceeded',
     'shape_changed': 'Shape changed by the fTetWild fallback',
     'graft_detail_loss': 'Graft smoothed fine surface detail (see warnings)',
+    'dressing_detail_loss': 'Dressing coat deviates from the input surface (see warnings)',
 }
 
 # Stable summary keys returned by classify(); the GUI maps these to localized
@@ -51,6 +52,9 @@ def _classify_objects(reports, issues):
     if any(isinstance(r.get('graft'), dict) and r['graft'].get('adopted')
            and r['graft'].get('warnings') for r in reports):
         issues.append('graft_detail_loss')
+    if any(isinstance(r.get('dressing'), dict) and r['dressing'].get('adopted')
+           and r['dressing'].get('warnings') for r in reports):
+        issues.append('dressing_detail_loss')
     closed = [_obj_closed(r) for r in reports]
     all_closed = n > 0 and all(closed)
 
@@ -139,6 +143,13 @@ def classify(data):
     if (isinstance(_graft, dict) and _graft.get('adopted')
             and _graft.get('warnings')):
         issues.append('graft_detail_loss')
+
+    # Dressing (#16) fidelity/time warning: same rule as Graft, it never
+    # changes the category.
+    _dressing = data.get('dressing')
+    if (isinstance(_dressing, dict) and _dressing.get('adopted')
+            and _dressing.get('warnings')):
+        issues.append('dressing_detail_loss')
 
     # Stage 2 outcome: present-and-ok, explicitly skipped, or errored.
     s2 = data.get('stage2')

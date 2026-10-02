@@ -39,6 +39,9 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--experimental-fallback-ftetwild` (GUI checkbox *+ self-intersections (slow)* next to it) ·
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
 `--no-graft` / `--experimental-graft` (GUI right-click method menu #13 Graft + auto fallback ladder) ·
+`--no-dressing` / `--experimental-dressing` (GUI checkbox *Dressing (viscosity coat)* in Options → Experimental; off by default; #16 is also selectable via the right-click *Use method* menu) ·
+`--dressing-drain MODE|mm` (GUI *Drain* combo next to the Dressing checkbox: Preset default / Off / Half / Full / Deep) ·
+`--si-mode {report,repair,off}` (GUI *Self-intersections* combo in Options → Repair: Report only / Repair / Do not measure; the worker adds `--si-mode` only when it differs from the default `report`) ·
 `--no-cache` / `clear-cache` (GUI Options → General *Enable Sutura Chart cache* checkbox + *Clear Cache* button) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all seven
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
@@ -62,6 +65,26 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 
 ## History
 
+- **Self-intersection policy:** `--si-mode {report,repair,off}` (env
+  `SUTURA_SI_MODE`, default `report`) and the GUI *Self-intersections* combo
+  (Options → Repair) were added together, so the parity rule holds. The combo
+  stores a batch-wide value and the worker passes `--si-mode` only when it is
+  not the default, keeping baseline commands unchanged.
+- **Dressing (#16):** `--no-dressing` / `--experimental-dressing` and the
+  batch-wide GUI checkbox (Options → Experimental) were added together, so the
+  parity rule holds. The new single default switch
+  (`DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT`, which makes Dressing
+  an Auto-ladder fallback) is an env/constant rollout knob, not a user control;
+  the GUI checkbox still maps to the forcing `--experimental-dressing`, and
+  `--no-dressing` / `SUTURA_DRESSING=0` remain the disable path on both sides.
+  The switch ships OFF until the fine-detail (voxel staircase) loss is fixed.
+- **Dressing opt-in UX:** `--dressing-force-adopt` (implies
+  `--experimental-dressing`) and the batch-wide GUI checkbox (Options →
+  Experimental) plus the post-batch "⚠ Try Dressing" button were added
+  together, so the parity rule holds. The report's `suggestions` list is a
+  separate output field (not an issue code); the GUI reads the same key to
+  decide whether to show the button, so both sides consume the identical
+  payload.
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
   CLI-only / GUI-only items above.

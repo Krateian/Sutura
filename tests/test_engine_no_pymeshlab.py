@@ -39,7 +39,7 @@ def test_root_bootstrap_imports_from_repo_root():
         f"sys.path.insert(0, {REPO!r})\n"
         "import sutura_engine\n"
         "import sutura_engine.methods as m\n"
-        "assert len(m.all_methods()) == 15, m.all_methods()\n"
+        "assert len(m.all_methods()) == 16, m.all_methods()\n"
         "assert hasattr(sutura_engine, '__path__')\n"
         "print('root bootstrap import OK')\n"
     )

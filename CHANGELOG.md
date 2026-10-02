@@ -6,6 +6,105 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Dressing opt-in UX: non-watertight suggestions + `--dressing-force-adopt`.**
+  When a plain Auto repair still leaves the geometry open, non-manifold or
+  self-intersecting, the report now carries `suggestions` (a list of
+  `{'method': 'dressing', 'flag', 'force', 'reason', 'warning'}`), separate from
+  the defect `issues`, so the category and the batch issue counts are unchanged.
+  The CLI `--human` report prints a marked hint (`⚠ Not watertight…`): the plain
+  `--experimental-dressing` opt-in when Dressing never ran, or
+  `--dressing-force-adopt` when Dressing ran and the quality gate rejected its
+  coat (with the failed volume / normal numbers in parentheses). The new
+  `--dressing-force-adopt` flag (implies `--experimental-dressing`) bypasses the
+  shape-preservation gates (volume, component count, healthy-surface normal
+  angle, coat fidelity) while STILL requiring a strict-watertight,
+  self-intersection-free candidate; the record's `forced` field marks when the
+  shape gates were bypassed, and the GUI exposes the same flag as a batch-wide
+  Options → Experimental checkbox. The main window shows a non-blocking
+  "⚠ Try Dressing" button after a batch in which any result offered the
+  suggestion; clicking it re-runs exactly those files with the force flag and
+  sets the same checkbox, so the choice is explicit and visible.
+
+- **Self-intersection policy (`--si-mode {report,repair,off}`, `SUTURA_SI_MODE`,
+  GUI Options → Repair combo).** `report` (the default) keeps measuring and
+  reporting the residual self-intersection count but no longer lets it escalate
+  the deep-repair ladder on its own or fail a result; holes and non-manifold
+  edges still count. `repair` restores the previous behaviour (a positive
+  exact-SI count is damage and triggers the automatic Dressing fallback).
+  `off` skips the exact classifier entirely and reports the count as
+  `null` ("not measured"). Explicit force flags (`--experimental-dressing`,
+  `--experimental-fallback-ftetwild`) override the policy and still act on
+  residual SI. The guarded `si_excise_recap` pass keeps its own independent
+  count in every mode. The chosen mode lands in the report as `si_mode` and in
+  `deep_repair.si_mode`; under `off` the stage-1 count is `null`.
+
+- **Dressing (method #16, variable-viscosity volumetric skinning) — opt-in, off by
+  default.** A surgical sibling of Graft (#13): the input is dipped in a spatially
+  varying "liquid" and the level set `F(x) = s(x) - r(x)` is extracted, where `s` is
+  the generalized-winding signed distance and `r` a viscosity radius that is thin over
+  detailed healthy surface and thicker over damage. The isosurface of a scalar field is
+  2-manifold and self-intersection-free by construction, which is what targets
+  whole-shell topological folds where local patch excision and hybrid splicing fail.
+  The backend is the validated numpy prototype (`sutura_engine/dressing.py`:
+  `sdf_grid` -> variable radius -> marching tetrahedra -> decimation -> P-WELD); the
+  Rust `sutura_geom.dressing_coat` narrow-band core is feature-detected and used
+  automatically when present (numpy fallback otherwise); the binding takes
+  `defect_pts` as Nx3 points and gained the `drain` kwarg (feature-detected via
+  `_rust_signature_has_drain`, so an extension that predates it still falls back to
+  numpy for a positive drain). The voxel size follows the
+  characteristic feature size (`median_edge / 1.5`, clipped to the preset diagonal
+  band) instead of only the bounding box, which fixes the small-model oversampling
+  (thingi10k_100827 was evaluated at 7.3 % deviation at `diag/200`). Decimation
+  (`meshing_decimation_quadric_edge_collapse`, `optimalplacement=False`,
+  `planarquadric=True`, per the `/tmp/v073/dressing/decim` benchmark) rolls back
+  atomically to the un-decimated coat when it would introduce holes, non-manifold
+  edges or exact self-intersections. It is attempted after Graft and before fTetWild.
+  **Now an Auto-ladder fallback behind a single default switch, shipped OFF**: with
+  `DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT=1` it runs on residual damage
+  (holes, non-manifold edges or a positive exact-SI count); `--experimental-dressing` /
+  `SUTURA_DRESSING=1` / the GUI Options checkbox **force** it; `--no-dressing` /
+  `SUTURA_DRESSING=0` disable it. Adoption requires strict-watertight, exact-SI-free,
+  the preset's coat->input fidelity gate and new shape-preservation gates: signed
+  volume delta <= `DRESSING_MAX_VOLUME_DELTA` (10 %) vs the pre-Dressing result,
+  component-count growth <= `DRESSING_MAX_PARTS_SLACK` (1), and healthy-surface P95
+  coat-vs-input vertex-normal angle below `DRESSING_MAX_NORMAL_ANGLE_P95` (30 deg, a
+  placeholder; the metric catches the voxel staircase the position-only Hausdorff gate
+  misses). The switch stays OFF because on a fine-detail relief (framebaroque) the
+  staircase visibly flattens fluting even at ~0.08 mm mean deviation; the geometric
+  CAD-vs-organic `cad_likeness` score is recorded on every Auto run for the future
+  calibrated CAD guard. Report key `dressing`.
+
+- **Dressing drain (healthy-region erode-back).** The coat sits ~`r_base` outside the
+  original surface (dimension growth); Dressing can now erode it back **in the level
+  set** (`F = s - r + delta_r`), never by vertex projection (which re-introduced 7,850
+  self-intersections and stays permanently rejected). Full drain (`delta_r = r_base`)
+  cuts healthy growth ~40 % (median +0.33 -> +0.20 mm raw) with a ~4 um median inward
+  dip and keeps defects covered, per the `/tmp/v073/dressing/offset` measurements; it
+  stays 0 holes / 0 non-manifold / 0 self-intersections. `dressing_coat(drain=...)`
+  accepts a mode (`none`/`half`/`full`/`deep`), an explicit `delta_r` in mm, or `None`
+  for the preset default (Quick off, Balanced/Thorough full, Extreme deep). CLI
+  `--dressing-drain MODE|mm` / `SUTURA_DRESSING_DRAIN` (`resolve_dressing_drain`) and
+  the GUI Options combo (*Preset default / Off / Half / Full / Deep*) override it;
+  `report['dressing']['drain']` carries the mode, factor, amount and `drained`. A
+  residual ~0.2 mm (~0.4 voxel) outward bias remains even at full drain — the
+  extractor's discretization, to be addressed in the Rust core, not hidden here.
+
+- **Dressing defect-set and viscosity overrides.** `dressing_coat(defects=..., r_max_scale=..., sigma_scale=...)`
+  selects which input defects drive the viscosity mask and scales the resolved
+  viscosity extent. `defects='all'` (the default) keeps holes + non-manifold +
+  self-intersections; `defects='holes_nm'` drops the self-intersection term, so a
+  scan whose only damage is holes/non-manifold edges is not thickened by spurious
+  SI. `r_max_scale`/`sigma_scale` multiply the resolved `r_max`/`sigma` (unset =
+  1.0, byte-identical; zero, negative and unparseable values are ignored, so the
+  default is unchanged). CLI `--dressing-defects {all,holes_nm}`,
+  `--dressing-rmax-scale F`, `--dressing-sigma-scale F`; env
+  `SUTURA_DRESSING_DEFECTS` / `SUTURA_DRESSING_RMAX_SCALE` /
+  `SUTURA_DRESSING_SIGMA_SCALE`; GUI Options→Experimental combos *Defects*,
+  *r_max* and *sigma*. `report['dressing']['defects']` / `['r_max_scale']` /
+  `['sigma_scale']` carry the effective values. Note: the Rust drain path yields a
+  changed isosurface without changing the grid face count, so the healthy-growth
+  regression asserts a shrinking bbox span, not a face-count delta.
+
 - **Ray-stabbing inside/outside vote in the Rust core (experimental, off by default).** The
   `sutura_geom` morphology core now exposes `raystab_points` and `raystab_grid`, and an opt-in
   `raystab=` keyword on `sdf_grid`/`morph_close` that overrides the generalized-winding sign in
