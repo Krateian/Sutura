@@ -14,6 +14,7 @@ omission must be documented here. This file records the current parity gaps
 | `-o/--output` | GUI always writes the default `_fixed` file in place; a custom output path is a scripting need. |
 | `--human`, `--defects`, `--diff` | Text-report presentation flags; the GUI renders the same data graphically (defect panel, repair log, before/after). |
 | `export-history` (`--last`/`--clear`/`--summary-only`) | Usage-history is an anonymous CLI/telemetry feature; no GUI viewer yet. |
+| Ray-stabbing vote (`raystab=` / `SUTURA_RAYSTAB`, library/Graft only) | Experimental inside/outside disambiguation; no CLI flag or GUI control yet by design. Deliberately deferred until it is measured on the real-world corpus, at which point it gets both a CLI flag and a GUI control. |
 
 ## GUI-only (allowed exceptions — visual features)
 
@@ -114,3 +115,26 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **Sutura Chart cache (v0.7.0):** CLI `--no-cache` and `sutura clear-cache` correspond
   to GUI Options → General *Enable Sutura Chart cache* checkbox and *Clear Cache* button,
   preserving parity across CLI and GUI workflows.
+- **Graft sign-field Pass 0 + intensity-scaled grid budget (unreleased):** Pass 0 is
+  OFF by default and is an opt-in evaluation switch (`SUTURA_GRAFT_SIGN_FIELD=1`), like the
+  ray-stab vote — env-only, no CLI flag or GUI control by design (it is not proven; on
+  framebaroque it fails both gates and costs ~326 s). The grid budget is derived
+  automatically from the Triage intensity preset, which both the CLI (`--intensity`) and
+  the GUI (batch-wide *Intensity* picker) already set, so parity is automatic.
+- **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
+  environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
+  flag and a GUI control together, per the parity rule.
+- **Guarded SI excise + refined Stage-1 hole fill (unreleased):** the Full-Mend
+  self-intersection excise is automatic pipeline behaviour (both CLI and GUI get it, so
+  parity holds) with an env opt-out only (`SUTURA_SI_EXCISE=0`), like the ray-stab vote.
+  The refined Stage-1 hole fill (`SUTURA_REFINE_HOLE=1`) is an unproven evaluation switch,
+  so it is env-only too; when it is proven it gets a CLI flag and a GUI control together.
+- **Localized exact self-union (`sutura/local_exact.py`, unreleased):** the tier that
+  replaces a residual Stage-2 self-intersecting cluster with the exact outer-hull
+  triangulation of a small patch. It is OPT-IN and OFF by default for every install
+  (experimental; measured on the 40-mesh corpus it removes SI on only an isolated mesh and
+  the framebaroque fold is global, not local — see the class docstring and
+  `docs/local-exact-notes.md`). It is forced with `SUTURA_LOCAL_EXACT=1` (values
+  `1/true/yes/on`) and disabled with `SUTURA_LOCAL_EXACT=0`; there is deliberately NO CLI
+  flag or GUI control, so CLI and GUI behave identically (parity by construction, like the
+  ray-stab vote).

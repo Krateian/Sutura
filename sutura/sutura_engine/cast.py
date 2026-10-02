@@ -12,6 +12,8 @@ Provides:
   - orient3d(): Exact sign of oriented volume of a tetrahedron
   - insphere(): Exact sign of whether a point lies within a sphere
   - arrangement_lite(): Exact self-intersection split on triangle meshes
+  - raystab_points(): Ray-stabbing inside/outside vote for arbitrary points
+  - raystab_grid(): Full-grid ray-stabbing inside mask (analysis/tests)
   - set_cdt_experimental(): Developer hook for experimental CDT options
 """
 from typing import Any, Dict, Optional, Tuple
@@ -82,11 +84,44 @@ def set_cdt_experimental(bits: int) -> int:
     return _geom._set_cdt_experimental(bits)
 
 
+def raystab_points(verts: np.ndarray, tris: np.ndarray, points: np.ndarray,
+                   n_dirs: Optional[int] = None, seed: int = 0,
+                   parity: bool = False,
+                   escape_weight: float = 2.0) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Ray-stabbing inside/outside vote at query points.
+
+    The vote is the oriented net crossing count with a parity fallback for
+    orientation-inconsistent rays; ``parity=True`` forces parity everywhere.
+
+    Returns:
+        (inside, inside_votes, outside_votes, escape_votes)
+    """
+    _require_geom()
+    return _geom.raystab_points(verts, tris, points, n_dirs=n_dirs, seed=seed,
+                                parity=parity, escape_weight=escape_weight)
+
+
+def raystab_grid(verts: np.ndarray, tris: np.ndarray, voxel: Optional[float] = None,
+                 box: Optional[np.ndarray] = None, n_dirs: Optional[int] = None,
+                 seed: int = 0, parity: bool = False,
+                 escape_weight: float = 2.0) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    """Full-grid ray-stabbing inside mask and vote score.
+
+    Returns:
+        (inside, score, info)
+    """
+    _require_geom()
+    return _geom.raystab_grid(verts, tris, voxel=voxel, box=box, n_dirs=n_dirs,
+                              seed=seed, parity=parity, escape_weight=escape_weight)
+
+
 __all__ = [
     'is_available',
     'version',
     'orient3d',
     'insphere',
     'arrangement_lite',
+    'raystab_points',
+    'raystab_grid',
     'set_cdt_experimental',
 ]

@@ -4,8 +4,67 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Ray-stabbing inside/outside vote in the Rust core (experimental, off by default).** The
+  `sutura_geom` morphology core now exposes `raystab_points` and `raystab_grid`, and an opt-in
+  `raystab=` keyword on `sdf_grid`/`morph_close` that overrides the generalized-winding sign in
+  the ambiguous band (`0.3 < w < 0.7`) with a Nooruddin & Turk sphere-spray vote. The vote is the
+  oriented net crossing sum (correct for overlapping unioned shells; reduces to parity for a
+  single shell) with a per-ray parity fallback for orientation-inconsistent soups, and an
+  escaping ray counts as a strong outside vote. Graft exposes it as
+  `shell_wrap(..., raystab=True)` / `SUTURA_RAYSTAB=1` and reports `report["raystab"]`. It is
+  off by default and byte-identical to the winding-only path; the CLI/GUI switch is deferred
+  until a real-world-corpus measurement.
+
+- **Graft sign-field Pass 0 (`morph_close(..., r=0)`, opt-in, OFF by default).** When enabled,
+  Graft contours the raw generalized-winding sign field with no dilation/EDT before its closing
+  ladder, so genuine gaps stay open instead of being bridged; the result is adopted only when the
+  strict X-Ray reload verdict is watertight and the healthy-detail gate passes, otherwise the
+  closing ladder runs unchanged. Enable with `shell_wrap(..., sign_field=True)` /
+  `SUTURA_GRAFT_SIGN_FIELD=1`. It is off by default because on framebaroque it fails both gates
+  (2 holes / 105 non-manifold edges and 1.29 % detail loss vs the 0.25 % gate) and costs ~326 s
+  for a result the verbatim hybrid reproduces. The Rust core accepts `r == 0` as the sign-field
+  path and exposes `SIGN_FIELD_SUPPORTED` / `info['sign_field']`.
+
+- **Guarded self-intersection excise + refined re-cap in Full Mend.** After the
+  Stage-1 chain, Full Mend now removes residual self-intersecting faces (the
+  faces plus a one-ring band) and re-closes the opened loops with PyMeshLab's
+  self-intersection-preventing hole fill (Liepa-refined on meshes up to 20k
+  faces; the refinement cost ~3 s/round on 90k meshes and changed no corpus
+  outcome), committing a round only when
+  the self-intersection count strictly drops while boundary edges (not the
+  unreliable `number_holes`, which reads -1 on some non-manifold meshes) and
+  non-manifold edges do not increase (otherwise the pre-round mesh is restored
+  byte-for-byte). It
+  never drops a connected component, runs at most three rounds under the
+  intensity preset's time budget (Balanced 5 s / Thorough 20 s / Extreme 60 s)
+  and is a no-op on meshes without self-intersections (`SUTURA_SI_EXCISE=0`
+  disables it). Report key `si_excise`. Also adds the experimental
+  `SUTURA_REFINE_HOLE=1` refined Stage-1 hole fill (off by default, unproven on
+  the corpora).
+
+### Changed
+
+- **Graft's grid budget scales with the Triage intensity preset and the available RAM.** The
+  fixed `GRID_BUDGET = 1_500_000` is replaced by `resolve_grid_budget(intensity, available_bytes)`
+  (Quick/Balanced 1.5M, Thorough 10M, Extreme 25M; RAM-safe cap at 35 % of available memory
+  and a hard 25M ceiling; 1.5M floor). Balanced keeps the historical 1.5M budget after the
+  40-mesh corpus regression check showed the 5M target doubled Graft time for no watertight
+  gain. Explicit `grid_budget=` values are honoured verbatim. The report carries the effective
+  `grid_budget`, `intensity` and chosen `voxel`.
+
 ### Fixed
 
+- **Review findings in the ray-stab / Graft sign-field batch.** (1) A watertight sign-field
+  Pass 0 candidate that failed the fidelity gate could seed Graft's `best` and never be
+  replaced by a closing-ladder candidate (both have 0 holes+nm); sign-field candidates are now
+  never recorded as `best`. (2) `resolve_grid_budget` let the nominal 1.5M floor override the
+  RAM-safe limit; the RAM ceiling can now clamp below the floor down to `MIN_GRID_DIV**3`.
+  (3) The ray-stab `cells_flipped` counter compared the unsigned distance (`>= 0`) and always
+  read "outside"; it now reads the signed slice. (4) The Python grid arrays returned by
+  `sdf_grid`/`raystab_grid` were built in C order while the flat buffer is i-fastest, transposing
+  X/Z on asymmetric grids; they are now built with the matching Fortran order.
 - **OrcaCloud plugin publishing on every release.** The build workflows now run on a published
   GitHub Release and attach their assets (AppImage, `.dmg`, prebuilt wheels +
   `sutura_geom-SHA256SUMS`) to the release the maintainer publishes with `gh`, instead of

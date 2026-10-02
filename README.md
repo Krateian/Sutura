@@ -98,6 +98,19 @@ whenever its optional extra is installed:
   (only the boundary is used, and it mostly costs time);
   `--ftetwild-optimize` (GUI: *Optimise tetrahedra*, not recommended)
   turns it on.
+* *In Full Mend, after stage 1:* a **guarded self-intersection excise + re-cap**
+  removes residual self-intersecting faces (the faces plus a one-ring band),
+  closes the opened loops with PyMeshLab's refined hole filling
+  (`refinehole=True`, `selfintersection=True` — which *prevents* new crossing
+  caps) and commits a round only when the self-intersection count strictly drops
+  while holes and non-manifold edges do not increase; otherwise the pre-round
+  mesh is restored byte-for-byte. No connected component is ever dropped, at
+  most three rounds run under the intensity preset's time budget (Balanced 5 s,
+  Thorough 20 s, Extreme 60 s), and the step is a no-op on meshes without
+  self-intersections. Disable it with `SUTURA_SI_EXCISE=0`. The Stage-1 hole
+  fill itself can additionally be refined (`refinehole=True`) with the
+  experimental `SUTURA_REFINE_HOLE=1`; it is off by default because it is not
+  yet proven on the corpora.
 
 These after-stage-1 tiers form the **deep-repair ladder**, selected with
 `--deep-repair {off,local,full}` (or `SUTURA_DEEP_REPAIR`, or the

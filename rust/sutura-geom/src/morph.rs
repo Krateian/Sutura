@@ -59,7 +59,7 @@ fn intersection(fq: f32, q: f32, fv: f32, v: f32) -> f32 {
     ((fq + q * q) - (fv + v * v)) / (2.0 * (q - v))
 }
 
-/// Exact separable 3-D Euclidean squared-distance transform, C order
+/// Exact separable 3-D Euclidean squared-distance transform, i-fastest order
 /// `[i + nx*(j + ny*k)]`.
 pub fn edt_3d(f: &mut [f32], dims: [usize; 3]) {
     let (nx, ny, nz) = (dims[0], dims[1], dims[2]);

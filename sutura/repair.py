@@ -31,6 +31,7 @@ from defects import detect as detect_defects
 from mesh_classifier import classify_mesh
 import repair_score
 import history
+import local_exact
 import triage
 import methods as method_registry
 
@@ -282,6 +283,28 @@ TOPOMETRICS = [
 ]
 
 
+def _refine_hole_enabled():
+    """Experimental (env-gated): refine the Stage-1 hole fill.
+
+    ``SUTURA_REFINE_HOLE=1`` makes ``meshing_close_holes`` use Liepa-style
+    refinement (``refinehole=True``, default 3 % edge length) so large /
+    non-convex boundary loops get interior vertices instead of long ear-cut
+    chords. OFF by default; not yet proven on the real-world corpus, so it
+    stays behind the env flag and out of the CLI/GUI (see
+    ``docs/cli-gui-parity-notes.md``).
+    """
+    return os.environ.get('SUTURA_REFINE_HOLE', '').strip().lower() in (
+        '1', 'true', 'yes', 'on')
+
+
+def _close_holes_step(maxholesize):
+    """The ``meshing_close_holes`` chain entry, refined only when opted in."""
+    params = {'maxholesize': maxholesize}
+    if _refine_hole_enabled():
+        params['refinehole'] = True
+    return ('meshing_close_holes', params)
+
+
 def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
     chain = [
         ('meshing_remove_duplicate_faces', {}),
@@ -302,7 +325,7 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False
         # so the mesh must be vertex-manifold first. A final close_holes pass
         # re-closes anything the debris removal / re-orient opened.
         ('meshing_repair_non_manifold_vertices', {}),
-        ('meshing_close_holes', {'maxholesize': maxholesize}),
+        _close_holes_step(maxholesize),
         # --experimental-join-components replaces this removal step with a
         # join (small components are moved onto the nearest larger component
         # instead of being deleted) -- prototype, flag-gated, see
@@ -311,7 +334,7 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False
          {'mincomponentsize': mincomponentsize, 'removeunref': True}),
         ('meshing_remove_unreferenced_vertices', {}),
         ('meshing_re_orient_faces_coherently', {}),
-        ('meshing_close_holes', {'maxholesize': maxholesize}),
+        _close_holes_step(maxholesize),
     ]
     if join_components:
         chain = [s for s in chain if s[0] != 'meshing_remove_connected_component_by_face_number']
@@ -335,7 +358,7 @@ def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8, join_compone
         ('meshing_remove_connected_component_by_face_number',
          {'mincomponentsize': mincomponentsize, 'removeunref': True}),
         ('meshing_re_orient_faces_coherently', {}),
-        ('meshing_close_holes', {'maxholesize': maxholesize}),
+        _close_holes_step(maxholesize),
     ]
     if join_components:
         chain = [s for s in chain if s[0] != 'meshing_remove_connected_component_by_face_number']
@@ -382,6 +405,220 @@ def extreme_extra_passes(ms, ml, params):
     ms.apply_filter('meshing_remove_unreferenced_vertices')
     applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
     return True, found, removed, applied2, skipped2
+
+
+# --- Guarded self-intersection excise + re-cap (Full Mend) ------------------
+# After the Stage-1 chain, Full Mend (deep_repair='full') may still carry
+# residual self-intersecting faces (overlapping / folded caps). The legacy
+# extreme-only pass deletes them blindly and re-runs the whole chain (which
+# can drop newly-severed small components); this guarded loop instead
+# localises the excision (SI faces + 1 ring), re-caps with Liepa refinement
+# and accepts a round ONLY when self-intersections strictly decrease and
+# holes / non-manifold edges do not increase -- otherwise it atomically
+# rolls back to the pre-round mesh. The connected-component removal filter is
+# never called, so no component is ever dropped. OFF-by-env switch
+# (SUTURA_SI_EXCISE=0); no CLI/GUI flag (see docs/cli-gui-parity-notes.md).
+SI_EXCISE_MAX_ROUNDS = 3
+SI_EXCISE_MAX_FACE_FRACTION = 0.30  # scope brake: never excise > 30 % at once
+SI_EXCISE_REFINE_EDGE_PCT = 2.0     # refineholeedgelen, % of bbox diagonal
+# Liepa refinement (refinehole=True) costs ~3 s per round on a 90k-face mesh
+# but, measured on the 40-mesh corpus, changed NO excise outcome vs the plain
+# cap; it is therefore used only where it is cheap (small meshes).
+SI_EXCISE_REFINE_MAX_FACES = 20000
+SI_EXCISE_DEFAULT_BUDGET = 5.0
+SI_EXCISE_BUDGET_BY_INTENSITY = {
+    'quick': 0.0,
+    'balanced': 5.0,
+    'thorough': 20.0,
+    'extreme': 60.0,
+}
+
+
+def si_excise_enabled(enabled=None):
+    """Resolve the SI-excise switch (default on) from an explicit value then
+    ``SUTURA_SI_EXCISE``."""
+    if enabled is None:
+        env = os.environ.get('SUTURA_SI_EXCISE', '').strip().lower()
+        if env in ('0', 'false', 'no', 'off'):
+            enabled = False
+        elif env in ('1', 'true', 'yes', 'on'):
+            enabled = True
+        else:
+            enabled = True
+    return bool(enabled)
+
+
+def _si_excise_budget(spec):
+    """SI-excise wall-clock budget (seconds) from the intensity preset."""
+    key = getattr(spec, 'base', None) or getattr(spec, 'name', None)
+    return SI_EXCISE_BUDGET_BY_INTENSITY.get(key, SI_EXCISE_DEFAULT_BUDGET)
+
+
+# Localized exact self-union of residual self-intersection clusters (after
+# Stage 2 + P-WELD). EXPERIMENTAL: measured on the 40-mesh corpus it removes SI
+# on only an isolated real mesh (see docs/cli-gui-parity-notes.md); the
+# framebaroque fold is global, not local, so patch boundaries never match
+# (97 % `boundary_split`). OFF by default; `SUTURA_LOCAL_EXACT=1` forces it.
+LOCAL_EXACT_DEFAULT_ENABLED = False
+LOCAL_EXACT_BUDGET_BY_INTENSITY = {
+    'quick': 0.0,
+    'balanced': 10.0,
+    'thorough': 45.0,
+    'extreme': 120.0,
+}
+LOCAL_EXACT_DEFAULT_BUDGET = 10.0
+
+
+def local_exact_enabled(enabled=None):
+    """Resolve the local-exact switch (default OFF) from an explicit value then
+    ``SUTURA_LOCAL_EXACT``."""
+    if enabled is None:
+        env = os.environ.get('SUTURA_LOCAL_EXACT', '').strip().lower()
+        if env in ('1', 'true', 'yes', 'on'):
+            enabled = True
+        elif env in ('0', 'false', 'no', 'off'):
+            enabled = False
+        else:
+            enabled = LOCAL_EXACT_DEFAULT_ENABLED
+    return bool(enabled)
+
+
+def _local_exact_budget(spec):
+    """Local-exact wall-clock budget (seconds) from the intensity preset."""
+    key = getattr(spec, 'base', None) or getattr(spec, 'name', None)
+    return LOCAL_EXACT_BUDGET_BY_INTENSITY.get(key, LOCAL_EXACT_DEFAULT_BUDGET)
+
+
+def _should_run_local_exact(report, spec):
+    """Gate: enabled, Stage 2 succeeded, and a positive time budget."""
+    if not local_exact_enabled():
+        return False
+    if not (report.get('stage2') or {}).get('ok'):
+        return False
+    return _local_exact_budget(spec or triage.resolve_intensity(None)) > 0.0
+
+
+def _si_count(ms):
+    """Number of faces flagged by the self-intersection filter (selection is
+    cleared afterwards; the filter never changes geometry)."""
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    n = int(ms.current_mesh().face_selection_array().sum())
+    ms.apply_filter('set_selection_none')
+    return n
+
+
+def si_excise_recap(ms, ml, *, maxholesize=1000,
+                    max_rounds=SI_EXCISE_MAX_ROUNDS,
+                    time_budget=SI_EXCISE_DEFAULT_BUDGET,
+                    face_fraction=SI_EXCISE_MAX_FACE_FRACTION):
+    """Guarded self-intersection excise + refined re-cap for the Full Mend path.
+
+    Selects the self-intersecting faces, dilates the selection by one ring,
+    deletes it, then re-caps the opened loops with ``meshing_close_holes``
+    (``selfintersection=True`` -- which PREVENTS new self-intersecting caps;
+    ``refinehole=True`` only up to ``SI_EXCISE_REFINE_MAX_FACES``, since the
+    Liepa refinement costs ~3 s/round on a 90k mesh without changing the
+    corpus outcome). A round is committed only when the
+    self-intersection count strictly decreases and holes / non-manifold edges
+    do not increase; otherwise the pre-round mesh is restored byte-for-byte.
+    The connected-component removal filter is never called (no component is
+    dropped). Returns ``(ms, report)``; ``report`` is JSON-serialisable.
+    """
+    report = {
+        'ran': False, 'applied': False, 'rounds': 0, 'initial_si': 0,
+        'si_after': 0, 'removed_si': 0, 'reason': None,
+        'budget_s': (None if time_budget is None else float(time_budget)),
+        'seconds': 0.0, 'history': [],
+    }
+    try:
+        report['initial_si'] = _si_count(ms)
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        report['reason'] = 'error: %s' % e
+        return ms, report
+    if report['initial_si'] == 0:
+        report['reason'] = 'no_si'
+        return ms, report
+    if time_budget is not None and time_budget <= 0.0:
+        report['reason'] = 'budget'
+        return ms, report
+
+    report['ran'] = True
+    t0 = time.perf_counter()
+    current_si = report['initial_si']
+    total_faces = int(ms.current_mesh().face_number())
+    for round_idx in range(max_rounds):
+        if time_budget is not None and (time.perf_counter() - t0) > time_budget:
+            report['reason'] = 'budget'
+            break
+        topo_before = ms.apply_filter('get_topological_measures')
+        # Use boundary EDGES, not ``number_holes``: the latter is unreliable on
+        # meshes with non-manifold vertices (reported -1 on thingi10k_145065,
+        # which let a round that opened 42 boundary loops be accepted).
+        holes_before = int(topo_before.get('boundary_edges', 0) or 0)
+        nm_before = (int(topo_before.get('non_two_manifold_edges', 0) or 0)
+                     + int(topo_before.get('non_two_manifold_vertices', 0) or 0))
+        saved_v = ms.current_mesh().vertex_matrix().copy()
+        saved_t = ms.current_mesh().face_matrix().copy()
+        try:
+            ms.apply_filter('compute_selection_by_self_intersections_per_face')
+            ms.apply_filter('apply_selection_dilatation')
+            selected = int(ms.current_mesh().face_selection_array().sum())
+            if selected == 0:
+                ms.apply_filter('set_selection_none')
+                report['reason'] = 'no_selection'
+                break
+            if selected > face_fraction * max(total_faces, 1):
+                ms.apply_filter('set_selection_none')
+                report['reason'] = 'scope'
+                break
+            ms.apply_filter('meshing_remove_selected_faces')
+            ms.apply_filter('meshing_remove_unreferenced_vertices')
+            ms.apply_filter('meshing_repair_non_manifold_edges')
+            ms.apply_filter('meshing_repair_non_manifold_vertices')
+            close_kwargs = {'maxholesize': maxholesize,
+                            'newfaceselected': False,
+                            'selfintersection': True}
+            if total_faces <= SI_EXCISE_REFINE_MAX_FACES:
+                close_kwargs['refinehole'] = True
+                close_kwargs['refineholeedgelen'] = ml.PercentageValue(
+                    SI_EXCISE_REFINE_EDGE_PCT)
+            ms.apply_filter('meshing_close_holes', **close_kwargs)
+            ms.apply_filter('meshing_remove_unreferenced_vertices')
+            topo_after = ms.apply_filter('get_topological_measures')
+            holes_after = int(topo_after.get('boundary_edges', 0) or 0)
+            nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)
+                        + int(topo_after.get('non_two_manifold_vertices', 0) or 0))
+            si_after = _si_count(ms)
+        except Exception:  # noqa: BLE001 - reject and roll back on any error
+            ms.clear()
+            ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
+            report['reason'] = 'rollback'
+            break
+        if (si_after < current_si and holes_after <= holes_before
+                and nm_after <= nm_before):
+            report['history'].append({
+                'round': round_idx + 1,
+                'si_before': int(current_si),
+                'si_after': int(si_after),
+                'faces_after': int(topo_after.get('faces_number', 0) or 0),
+            })
+            current_si = si_after
+            report['rounds'] += 1
+            if current_si == 0:
+                report['reason'] = 'clean'
+                break
+            if round_idx + 1 >= max_rounds:
+                report['reason'] = 'max_rounds'
+        else:
+            ms.clear()
+            ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
+            report['reason'] = 'rollback'
+            break
+    report['si_after'] = int(current_si)
+    report['removed_si'] = int(report['initial_si'] - current_si)
+    report['applied'] = report['rounds'] > 0
+    report['seconds'] = round(time.perf_counter() - t0, 3)
+    return ms, report
 
 
 def join_small_components(ms, ml, mincomponentsize, maxholesize):
@@ -1046,6 +1283,23 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 'below the size threshold); try a less aggressive mode (e.g. Auto)')
         raise ValueError('all faces are degenerate; nothing to repair')
 
+    # Guarded SI excise + refined re-cap (Full Mend path). Runs after the
+    # Stage-1 chain (+ delete-fallback + join), before the deep-repair ladder.
+    # Gated to deep_repair == 'full' (Quick is 'off'; the library default None
+    # is untouched) and skipped for mode == 'extreme', which keeps its legacy
+    # extreme_extra_passes. A no-op on meshes with no self-intersections.
+    if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled():
+        ms, _si_rec = si_excise_recap(
+            ms, ml, maxholesize=_p['maxholesize'],
+            time_budget=_si_excise_budget(triage_spec))
+        # Only report when a round was actually accepted (self-intersections
+        # strictly reduced, holes/nm not worse); a mesh the excision cannot
+        # improve -- including any 0-SI mesh -- keeps the pre-existing report
+        # and output byte-identical.
+        if _si_rec.get('applied'):
+            stats['si_excise'] = _si_rec
+            after = ms.apply_filter('get_topological_measures')
+
     # Extreme-only extra passes (Stage C): self-intersection cleanup + one more
     # run of the main chain to close the holes / drop the debris the removal
     # exposed. ONLY for mode == 'extreme'; every other mode is untouched.
@@ -1110,7 +1364,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # reload-watertight candidate; records the fidelity verdict + warnings under
     # ``stats['graft']``.
     ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
-                           graft=(graft is True))
+                           graft=(graft is True),
+                           intensity=(getattr(triage_spec, 'base', None)
+                                      or getattr(triage_spec, 'name', None)))
 
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
@@ -2779,7 +3035,7 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
     return ms, after
 
 
-def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False):
+def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
     Runs ``sutura_engine.graft.shell_wrap`` on the ORIGINAL input arrays (like
@@ -2805,7 +3061,8 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False):
             import shell_wrap as _graft
         in_v = np.asarray(v, dtype=np.float64)
         in_t = np.asarray(t, dtype=np.int64)
-        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml)
+        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml,
+                                                 intensity=intensity)
         rec['ran'] = True
         rec['fidelity_ok'] = grec.get('fidelity_ok')
         rec['hausdorff_healthy'] = grec.get('hausdorff_healthy')
@@ -3110,7 +3367,9 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # pay an unnecessary tier.
             if graft in (True, 'auto') and (cur_holes > 0 or cur_nm > 0):
                 _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
-                                             graft=True)
+                                             graft=True,
+                                             intensity=(getattr(spec, 'base', None)
+                                                        or getattr(spec, 'name', None)))
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
                     if _g.get('fidelity_ok') is not False:
@@ -3499,6 +3758,17 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         if _pwel is not None:
             report['p_weld'] = _pwel
 
+    # Localized exact self-union of residual SI clusters (experimental, OFF by
+    # default). Runs on the post-Stage-2 + post-P-WELD mesh; a no-op that
+    # returns the input arrays unchanged when disabled or when no cluster is
+    # accepted.
+    if _should_run_local_exact(report, triage_spec):
+        _lse_spec = triage_spec or triage.resolve_intensity(None)
+        new_v, new_t, _lse = local_exact.local_exact_self_union(
+            ml, new_v, new_t, time_budget=_local_exact_budget(_lse_spec))
+        if _lse.get('ran'):
+            report['local_exact'] = _lse
+
     # P-HONEST: the verdict must describe the mesh actually saved, not the
     # in-memory index topology. The final mesh is chosen above; judge it in
     # the save/reload-equivalent form and let that verdict win.
@@ -3634,6 +3904,13 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     new_v, new_t = run_after_stage2_engines(
                         ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
                         triage_spec or triage.resolve_intensity(None))
+                if _should_run_local_exact(rep, triage_spec):
+                    _lse_spec = triage_spec or triage.resolve_intensity(None)
+                    new_v, new_t, _lse = local_exact.local_exact_self_union(
+                        ml, new_v, new_t,
+                        time_budget=_local_exact_budget(_lse_spec))
+                    if _lse.get('ran'):
+                        rep['local_exact'] = _lse
                 # P-HONEST: judge the per-object mesh actually written into the
                 # archive (reload-equivalent form) before the confidence/score
                 # below, so those see the honest verdict too.
@@ -4009,6 +4286,16 @@ def human_report(r, show_defects=False, show_diff=False):
                      % (pw.get('holes_before', 0), pw.get('holes_after', 0),
                         pw.get('non_manifold_before', 0),
                         pw.get('non_manifold_after', 0), state))
+    le_r = r.get('local_exact')
+    if le_r and le_r.get('ran'):
+        if le_r.get('applied'):
+            state = '%d/%d cluster(s) accepted' % (le_r.get('accepted', 0),
+                                                   le_r.get('clusters', 0))
+        else:
+            state = 'no cluster accepted (%s)' % (le_r.get('reason') or '?')
+        lines.append('  Local exact self-union : SI %d -> %s, %s in %.2fs'
+                     % (le_r.get('si_before', 0), le_r.get('si_after'),
+                        state, le_r.get('seconds', 0)))
     if r.get('extreme_passes_applied'):
         lines.append('  Extreme passes          : applied (%d self-intersecting face(s) removed)'
                      % r.get('self_intersections_removed', 0))

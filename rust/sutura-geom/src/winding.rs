@@ -25,6 +25,19 @@ pub const WINDING_FAR_TOL: f64 = 1e-2;
 const LEAF_SIZE: usize = 8;
 const MAX_DEPTH: usize = 64;
 
+/// Maximum ray/triangle hits buffered per ray before the (rare) overflow path
+/// switches to un-deduplicated accumulation.  Dense scans can be crossed many
+/// times, so this is generous.
+const MAX_RAY_HITS: usize = 256;
+
+/// Relative grazing threshold: a ray hit is ignored when the cosine between the
+/// ray direction and the (unnormalised) triangle normal is below
+/// `GRAZE_EPS * |n|`, i.e. the ray is almost parallel to the triangle plane.
+pub const GRAZE_EPS: f64 = 1e-7;
+
+/// Barycentric slack for the ray/triangle acceptance test.
+const BARY_EPS: f64 = 1e-9;
+
 #[inline]
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -139,6 +152,39 @@ impl Aabb {
         norm(sub(self.max, self.min))
     }
 
+    /// True when the ray `o + t*d` intersects the box for some `t` in
+    /// `[0, t_max]`.  `inv_d` is `1/d` precomputed once per ray; an infinite
+    /// component means the ray is axis-parallel to that slab and is accepted
+    /// only when `o` already lies inside it.  This is the classic slab test and
+    /// is exact for axis-parallel rays.
+    pub fn ray_hits(&self, o: [f64; 3], inv_d: [f64; 3], t_max: f64) -> bool {
+        let mut t0 = 0.0f64;
+        let mut t1 = t_max;
+        for i in 0..3 {
+            if !inv_d[i].is_finite() {
+                if o[i] < self.min[i] || o[i] > self.max[i] {
+                    return false;
+                }
+                continue;
+            }
+            let mut near = (self.min[i] - o[i]) * inv_d[i];
+            let mut far = (self.max[i] - o[i]) * inv_d[i];
+            if near > far {
+                std::mem::swap(&mut near, &mut far);
+            }
+            if near > t0 {
+                t0 = near;
+            }
+            if far < t1 {
+                t1 = far;
+            }
+            if t0 > t1 {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn longest_axis(&self) -> usize {
         let e = sub(self.max, self.min);
         if e[0] >= e[1] && e[0] >= e[2] {
@@ -213,6 +259,113 @@ pub struct MeshBvh {
     tris: Vec<Tri>,
 }
 
+/// Summary of one ray cast against the soup.
+///
+/// `net` is the oriented crossing sum `Σ sign(dot(dir, n_face))`: `+1` for a
+/// crossing whose outward face normal points along the ray, `-1` against.
+/// For a consistently outward-oriented closed surface this equals the number of
+/// shells containing the ray origin (and is therefore `>= 0`), while `crossings`
+/// is the raw (deduplicated) count used for the orientation-independent parity
+/// fallback.
+#[derive(Clone, Copy, Debug)]
+pub struct RayQuery {
+    pub net: i32,
+    pub crossings: u32,
+    pub nearest_t: f64,
+    pub suspect: bool,
+}
+
+/// Outcome of a single ray/triangle test.
+enum TriHit {
+    Miss,
+    /// Ray lies (almost) in the triangle plane; ignored but flagged.
+    Graze,
+    Hit { t: f64, sign: i8 },
+}
+
+/// Fixed-capacity buffer of ray hits along one ray, with an overflow path.
+struct HitBuf {
+    t: [f64; MAX_RAY_HITS],
+    s: [i8; MAX_RAY_HITS],
+    n: usize,
+    overflow_net: i32,
+    overflow_count: u32,
+    suspect: bool,
+}
+
+impl HitBuf {
+    fn new() -> Self {
+        HitBuf {
+            t: [0.0; MAX_RAY_HITS],
+            s: [0; MAX_RAY_HITS],
+            n: 0,
+            overflow_net: 0,
+            overflow_count: 0,
+            suspect: false,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, t: f64, sign: i8) {
+        if self.n < MAX_RAY_HITS {
+            self.t[self.n] = t;
+            self.s[self.n] = sign;
+            self.n += 1;
+        } else {
+            self.overflow_net += sign as i32;
+            self.overflow_count += 1;
+            self.suspect = true;
+        }
+    }
+
+    #[inline]
+    fn graze(&mut self) {
+        self.suspect = true;
+    }
+}
+
+/// Möller–Trumbore ray/triangle intersection with an explicit grazing test.
+///
+/// `d` must be normalised.  The returned `sign` is `sign(dot(d, n))` with
+/// `n = cross(b - a, c - a)`, the quantity the oriented crossing sum needs.
+fn ray_tri_hit(o: [f64; 3], d: [f64; 3], tri: &Tri, t_max: f64) -> TriHit {
+    let e1 = sub(tri.b, tri.a);
+    let e2 = sub(tri.c, tri.a);
+    let n = cross(e1, e2);
+    let nl = norm(n);
+    if nl == 0.0 {
+        return TriHit::Miss;
+    }
+    let cosang = dot(d, n);
+    if cosang.abs() < GRAZE_EPS * nl {
+        return TriHit::Graze;
+    }
+    let pvec = cross(d, e2);
+    let det = dot(e1, pvec);
+    if det == 0.0 {
+        return TriHit::Graze;
+    }
+    let inv_det = 1.0 / det;
+    let tvec = sub(o, tri.a);
+    let u = dot(tvec, pvec) * inv_det;
+    if u < -BARY_EPS || u > 1.0 + BARY_EPS {
+        return TriHit::Miss;
+    }
+    let qvec = cross(tvec, e1);
+    let v = dot(d, qvec) * inv_det;
+    if v < -BARY_EPS || u + v > 1.0 + BARY_EPS {
+        return TriHit::Miss;
+    }
+    let t = dot(e2, qvec) * inv_det;
+    if t < 0.0 || t > t_max {
+        return TriHit::Miss;
+    }
+    TriHit::Hit {
+        t,
+        sign: if cosang > 0.0 { 1 } else { -1 },
+    }
+}
+
 impl MeshBvh {
     pub fn from_arrays(verts: &[[f64; 3]], tris_idx: &[[usize; 3]]) -> Self {
         let mut tris = Vec::with_capacity(tris_idx.len());
@@ -241,12 +394,25 @@ impl MeshBvh {
         self.tris.len()
     }
 
+    /// Bounding box of the whole soup (`empty` for an empty mesh).
+    pub fn bounds(&self) -> Aabb {
+        self.nodes
+            .first()
+            .map(|n| n.bbox)
+            .unwrap_or_else(Aabb::empty)
+    }
+
     /// Generalized winding number at `p`; ~1 inside a closed shell, ~0 outside.
     pub fn winding_at(&self, p: [f64; 3]) -> f64 {
         if self.nodes.is_empty() {
             return 0.0;
         }
         self.winding_node(0, p) / (4.0 * std::f64::consts::PI)
+    }
+
+    /// Generalized winding number for many points, parallel across CPU cores.
+    pub fn winding_points_par(&self, points: &[[f64; 3]]) -> Vec<f64> {
+        points.par_iter().map(|p| self.winding_at(*p)).collect()
     }
 
     fn winding_node(&self, idx: usize, p: [f64; 3]) -> f64 {
@@ -421,6 +587,101 @@ impl MeshBvh {
                 }
             });
         (winding, unsigned, signed)
+    }
+
+    /// Cast a ray against the soup, returning the oriented and raw crossing
+    /// counts.  `d` must be normalised; `t_max` bounds the ray (use at least
+    /// the bbox diagonal).  Hits closer together than `merge_eps` along the ray
+    /// are treated as one (shared-edge duplicates from adjacent triangles);
+    /// when their signs disagree the ray is flagged `suspect`.
+    ///
+    /// Unlike `winding_at`, this never uses the far-field dipole shortcut: a
+    /// ray needs the exact set of real crossings.
+    pub fn intersect_ray(
+        &self,
+        o: [f64; 3],
+        d: [f64; 3],
+        t_max: f64,
+        merge_eps: f64,
+    ) -> RayQuery {
+        let mut q = RayQuery {
+            net: 0,
+            crossings: 0,
+            nearest_t: f64::INFINITY,
+            suspect: false,
+        };
+        if self.nodes.is_empty() {
+            return q;
+        }
+        let inv_d = [1.0 / d[0], 1.0 / d[1], 1.0 / d[2]];
+        let mut hb = HitBuf::new();
+        self.ray_node(0, o, d, &inv_d, t_max, &mut hb);
+
+        // Insertion sort by `t` (hit counts are small).
+        for i in 1..hb.n {
+            let t = hb.t[i];
+            let s = hb.s[i];
+            let mut j = i;
+            while j > 0 && hb.t[j - 1] > t {
+                hb.t[j] = hb.t[j - 1];
+                hb.s[j] = hb.s[j - 1];
+                j -= 1;
+            }
+            hb.t[j] = t;
+            hb.s[j] = s;
+        }
+
+        let mut last_t = f64::NEG_INFINITY;
+        let mut last_sign: i8 = 0;
+        for i in 0..hb.n {
+            if hb.t[i] - last_t <= merge_eps {
+                if hb.s[i] != last_sign {
+                    q.suspect = true;
+                }
+                continue;
+            }
+            q.crossings += 1;
+            q.net += hb.s[i] as i32;
+            if hb.t[i] < q.nearest_t {
+                q.nearest_t = hb.t[i];
+            }
+            last_t = hb.t[i];
+            last_sign = hb.s[i];
+        }
+        q.net += hb.overflow_net;
+        q.crossings += hb.overflow_count;
+        if hb.suspect {
+            q.suspect = true;
+        }
+        q
+    }
+
+    fn ray_node(
+        &self,
+        idx: usize,
+        o: [f64; 3],
+        d: [f64; 3],
+        inv_d: &[f64; 3],
+        t_max: f64,
+        hb: &mut HitBuf,
+    ) {
+        let n = &self.nodes[idx];
+        if !n.bbox.ray_hits(o, *inv_d, t_max) {
+            return;
+        }
+        if n.left < 0 {
+            for i in n.start..n.start + n.count {
+                let tri = &self.tris[self.order[i as usize] as usize];
+                match ray_tri_hit(o, d, tri, t_max) {
+                    TriHit::Hit { t, sign } => hb.push(t, sign),
+                    TriHit::Graze => hb.graze(),
+                    TriHit::Miss => {}
+                }
+            }
+            return;
+        }
+        self.ray_node(n.left as usize, o, d, inv_d, t_max, hb);
+        self.ray_node(n.right as usize, o, d, inv_d, t_max, hb);
     }
 }
 
@@ -602,6 +863,26 @@ mod tests {
     }
 
     #[test]
+    fn winding_points_par_matches_scalar() {
+        let (v, f) = cube();
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        let pts = vec![
+            [0.5, 0.5, 0.5],
+            [3.0, 0.5, 0.5],
+            [0.5, -2.0, 0.5],
+            [0.5, 0.5, 4.0],
+        ];
+        let par = bvh.winding_points_par(&pts);
+        assert_eq!(par.len(), pts.len());
+        for (p, w) in pts.iter().zip(par.iter()) {
+            let s = bvh.winding_at(*p);
+            assert!((s - w).abs() < 1e-12, "p {p:?}: scalar {s} vs par {w}");
+        }
+        assert!((par[0] - 1.0).abs() < 1e-2);
+        assert!(par[1].abs() < 1e-2);
+    }
+
+    #[test]
     fn unsigned_distance_cube() {
         let (v, f) = cube();
         let bvh = MeshBvh::from_arrays(&v, &f);
@@ -613,5 +894,81 @@ mod tests {
         // Inside: distance to the nearest face is 0.5.
         let d = bvh.unsigned_distance_at([0.5, 0.5, 0.5]);
         assert!((d - 0.5).abs() < 1e-6, "inside distance {d}");
+    }
+
+    #[test]
+    fn ray_bounds_and_escape() {
+        let (v, f) = cube();
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        let b = bvh.bounds();
+        assert!((b.min[0] - 0.0).abs() < 1e-12 && (b.max[2] - 1.0).abs() < 1e-12);
+        // A ray leaving the cube without hitting its surface escapes.
+        let q = bvh.intersect_ray([0.5, 0.5, 0.5], [0.0, 0.0, 1.0], 10.0, 0.0);
+        assert_eq!(q.crossings, 1, "one exit crossing");
+        // A ray that misses the cube entirely.
+        let q = bvh.intersect_ray([5.0, 5.0, 5.0], [0.0, 0.0, 1.0], 10.0, 0.0);
+        assert_eq!(q.crossings, 0);
+        assert!(q.nearest_t.is_infinite());
+    }
+
+    #[test]
+    fn ray_net_inside_and_outside_cube() {
+        let (v, f) = cube();
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        // Interior: outgoing rays net +1.
+        for d in [
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.577, 0.577, 0.577],
+        ] {
+            let q = bvh.intersect_ray([0.5, 0.5, 0.5], d, 10.0, 0.0);
+            assert_eq!(q.net, 1, "dir {d:?} net {}", q.net);
+            assert_eq!(q.crossings, 1);
+        }
+        // Exterior with the ray passing right through: entry + exit cancel.
+        let q = bvh.intersect_ray([-1.0, 0.5, 0.5], [1.0, 0.0, 0.0], 10.0, 0.0);
+        assert_eq!(q.net, 0, "through-ray net {}", q.net);
+        assert_eq!(q.crossings, 2);
+    }
+
+    #[test]
+    fn ray_through_shared_edge_counts_once() {
+        // Two triangles sharing the diagonal (0,0,0)-(1,1,0) of a unit square.
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let tris = vec![[0, 1, 2], [0, 2, 3]];
+        let bvh = MeshBvh::from_arrays(&verts, &tris);
+        // Ray straight through the shared-edge midpoint.
+        let q = bvh.intersect_ray([0.5, 0.5, -1.0], [0.0, 0.0, 1.0], 10.0, 1e-9);
+        assert_eq!(q.crossings, 1, "shared edge double-counted: {:?}", q);
+    }
+
+    #[test]
+    fn ray_grazing_is_flagged_not_counted() {
+        // A single z=0 triangle; a ray lying in its plane must be flagged as a
+        // graze and contribute no crossing.
+        let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let tris = vec![[0, 1, 2]];
+        let bvh = MeshBvh::from_arrays(&verts, &tris);
+        let q = bvh.intersect_ray([0.2, 0.2, 0.0], [1.0, 0.0, 0.0], 10.0, 0.0);
+        assert!(q.suspect, "grazing ray not flagged: {q:?}");
+        assert_eq!(q.crossings, 0);
+    }
+
+    #[test]
+    fn ray_orientation_inconsistency_visible_as_negative_net() {
+        // A single triangle with a ray crossing it from the back: net -1.
+        let verts = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let tris = vec![[0, 1, 2]];
+        let bvh = MeshBvh::from_arrays(&verts, &tris);
+        // Triangle normal is +z; ray travelling -z hits its back -> sign -1.
+        let q = bvh.intersect_ray([0.25, 0.25, 1.0], [0.0, 0.0, -1.0], 10.0, 0.0);
+        assert_eq!(q.net, -1);
+        assert_eq!(q.crossings, 1);
     }
 }
