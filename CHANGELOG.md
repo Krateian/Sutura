@@ -15,8 +15,10 @@ All notable changes to this project are documented here.
   whole-shell topological folds where local patch excision and hybrid splicing fail.
   The backend is the validated numpy prototype (`sutura_engine/dressing.py`:
   `sdf_grid` -> variable radius -> marching tetrahedra -> decimation -> P-WELD); the
-  Rust `sutura_geom.dressing_coat` narrow-band core is feature-detected and used
-  automatically once it lands (numpy fallback otherwise). The voxel size follows the
+  Rust `sutura_geom.dressing_coat` narrow-band core (`feat/dressing` c2f2116) is
+  feature-detected and used automatically when present (numpy fallback otherwise;
+  the c2f2116 binding takes `defect_pts` as Nx3 points and has no `drain` kwarg, so
+  a positive drain uses the numpy path until the Rust `delta_r` commit lands). The voxel size follows the
   characteristic feature size (`median_edge / 1.5`, clipped to the preset diagonal
   band) instead of only the bounding box, which fixes the small-model oversampling
   (thingi10k_100827 was evaluated at 7.3 % deviation at `diag/200`). Decimation

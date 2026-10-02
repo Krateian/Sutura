@@ -399,24 +399,62 @@ def _variable_radius(dims, origin, voxel, defect_idx, verts, r_base, r_max, sigm
 # ---------------------------------------------------------------------------
 # extraction (Rust when available, numpy prototype otherwise)
 # ---------------------------------------------------------------------------
+def _rust_signature_has_drain(fn):
+    """True when the installed ``sutura_geom.dressing_coat`` accepts a ``drain``
+    keyword.  The c2f2116 build does not; a later commit adds it.  Inspected
+    once per call (cheap; the binding is a builtin without a Python signature,
+    so probe with an empty keyword call and treat "unexpected keyword drain" as
+    absent)."""
+    try:
+        import inspect
+        params = inspect.signature(fn).parameters
+        if params:
+            return 'drain' in params
+    except (TypeError, ValueError):
+        pass
+    # Builtin without an introspectable signature: feature-probe via a tiny
+    # call that raises TypeError mentioning 'drain' only if the kwarg is
+    # unknown.  Any other outcome (success or a different error) is treated as
+    # "unknown", so the caller falls back to the drain-free numpy path.
+    probe = np.zeros((0, 3), dtype=np.float64)
+    try:
+        fn(probe, np.zeros((0, 3), dtype=np.int32), drain=0.0)
+        return True
+    except TypeError as e:
+        return 'drain' not in str(e)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _rust_dressing_coat(v, t, voxel, r_base, r_max, sigma, defect_idx, box,
                         drain_delta=0.0):
     """Delegate to ``sutura_geom.dressing_coat`` when the installed extension
     provides it.  Returns ``(verts, tris, info)`` or ``None``.
 
-    The Rust binding is still being built; any signature mismatch or runtime
-    error falls back to the numpy path (never raises)."""
+    The c2f2116 binding signature is
+    ``dressing_coat(verts, tris, defect_pts=None, voxel=None, r_base=None,
+    r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0)`` where
+    ``defect_pts`` is an Nx3 point array (not vertex indices).  It has no
+    ``drain`` parameter, so when a positive drain is requested and the build
+    cannot take it, this returns ``None`` and the caller uses the numpy path
+    (which applies the drain in the level set).  Any signature mismatch or
+    runtime error falls back to numpy (never raises).
+    """
     fn = getattr(sutura_geom, 'dressing_coat', None)
     if fn is None:
         return None
+    fn_takes_drain = _rust_signature_has_drain(fn)
+    if drain_delta and not fn_takes_drain:
+        # No drain support in this build -> numpy path applies it.
+        return None
+    defect_pts = (np.asarray(v, np.float64)[defect_idx]
+                  if len(defect_idx) else np.zeros((0, 3), np.float64))
+    kwargs = dict(defect_pts=defect_pts, voxel=float(voxel),
+                  r_base=float(r_base), r_max=float(r_max), sigma=float(sigma))
+    if fn_takes_drain:
+        kwargs['drain'] = float(drain_delta)
     try:
-        out = fn(v, t, voxel=voxel, r_base=r_base, r_max=r_max, sigma=sigma,
-                 defect_verts=defect_idx, box=box, drain=drain_delta)
-    except TypeError:
-        try:
-            out = fn(v, t, voxel, r_base, r_max, sigma, defect_idx, box)
-        except Exception:  # noqa: BLE001
-            return None
+        out = fn(v, t, **kwargs)
     except Exception:  # noqa: BLE001
         return None
     try:

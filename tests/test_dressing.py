@@ -93,6 +93,29 @@ def test_voxel_clipped_to_preset_band_for_dense_meshes():
     assert lo - 1e-12 <= vox <= hi + 1e-12, (vox, lo, hi)
 
 
+def test_rust_backend_feature_detection():
+    """When the installed sutura_geom exposes dressing_coat, it is used (with
+    the c2f2116 signature); a positive drain on a build without the parameter
+    falls back to the numpy path so the drain is still applied."""
+    if sutura_geom is None or not hasattr(sutura_geom, 'dressing_coat'):
+        print('    (sutura_geom.dressing_coat unavailable: Rust backend test skipped)')
+        return
+    takes_drain = dressing._rust_signature_has_drain(sutura_geom.dressing_coat)
+    V = np.array(CUBE_V, float)
+    T = np.array(CUBE_T[:-1], np.int64)
+    # no drain -> Rust path
+    _vo, _to, off = dressing.dressing_coat(V, T, intensity='quick', drain='none')
+    assert off['engine'] == 'rust', off['engine']
+    assert off['holes_after'] == 0 and off['nm_after'] == 0, off
+    assert off['si_after'] in (0, None), off
+    # positive drain -> numpy unless the build already takes a drain kwarg
+    _vf, _tf, full = dressing.dressing_coat(V, T, intensity='quick', drain='full')
+    assert full['drain']['drained'] is True, full['drain']
+    if not takes_drain:
+        assert full['engine'] == 'numpy', full['engine']
+    assert full['holes_after'] == 0 and full['nm_after'] == 0, full
+
+
 def test_coat_is_two_manifold_and_si_free():
     for V, T, name in ((TET_V, TET_T, 'tet'), (CUBE_V, CUBE_T[:-1], 'open_cube')):
         v, t, rep = dressing.dressing_coat(np.array(V, float),
