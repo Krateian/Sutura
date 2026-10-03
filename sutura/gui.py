@@ -291,6 +291,13 @@ STRINGS = {
                           '2025). NEVER deletes input faces; adopted only when '
                            'the result is not worse than the default chain '
                            '(NOT the default).',
+        'flap_label': 'Flap surface hole fill',
+        'flap_tip': 'Off by default. Cover each residual Stage-1 boundary '
+                    'loop with a minimum-area triangulation refined to the '
+                    'surrounding edge length and faired with a thin-plate '
+                    'solve that continues the neighbouring surface. Original '
+                    'triangles are kept verbatim; adopted only when the '
+                    'reload-honest holes + non-manifold count does not worsen.',
         'dressing_label': 'Dressing (viscosity coat)',
         'dressing_tip': 'Opt-in (#16): skin self-intersections and complex '
                         'open defects with a variable-viscosity narrow-band '
@@ -889,6 +896,14 @@ STRINGS = {
                           'yüzeylerini ASLA silmez; yalnızca sonuç varsayılan '
                           'zincirden daha kötü değilse uygulanır (varsayılan '
                           'değil).',
+        'flap_label': 'Flap yüzey delik doldurma',
+        'flap_tip': 'Varsayılan olarak kapalı. Aşama-1 sonrası kalan her '
+                    'sınır halkasını, çevre kenar uzunluğuna göre '
+                    'inceltilmiş en-küçük-alanlı üçgenlemeyle kapatır ve '
+                    'komşu yüzeyi sürdüren ince-plaka çözümüyle '
+                    'yumuşatır. Özgün üçgenler aynen korunur; yalnızca '
+                    'yeniden-yükleme dürüst delik + iki-manifold-olmayan '
+                    'sayısı kötüleşmezse benimsenir.',
         'dressing_label': 'Pansuman (viskozite kaplama)',
         'dressing_tip': 'İsteğe bağlı (#16): kendisiyle-kesişimleri ve '
                         'karmaşık açık kusurları genelleştirilmiş sarımlı '
@@ -1638,6 +1653,7 @@ class RepairWorker(QThread):
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
+                 flap=False,
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
                  dressing_sigma_scale=None, dressing_force_adopt=False,
@@ -1659,6 +1675,7 @@ class RepairWorker(QThread):
         self._autorefine = autorefine
         self._ftetwild = ftetwild
         self._indirect_autorefine = indirect_autorefine
+        self._flap = flap
         self._dressing = dressing
         self._dressing_drain = dressing_drain
         self._dressing_defects = dressing_defects
@@ -1735,6 +1752,8 @@ class RepairWorker(QThread):
                 args.append('--ftetwild-optimize')
             if self._si_mode and self._si_mode != 'report':
                 args += ['--si-mode', self._si_mode]
+            if self._flap:
+                args.append('--flap')
             if self._dressing or self._dressing_force_adopt:
                 args.append('--experimental-dressing')
                 if self._dressing_drain in ('none', 'half', 'full', 'deep'):
@@ -3167,6 +3186,7 @@ class OptionsDialog(QDialog):
         e.addWidget(warn)
         for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
                     main.chk_join_components, main.chk_edge_tiebreak,
+                    main.chk_flap,
                     main.chk_dressing, main.chk_dressing_force_adopt):
             e.addWidget(chk)
         _drain_row = QHBoxLayout()
@@ -3602,6 +3622,7 @@ class MainWindow(QMainWindow):
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
         self._ftetwild = 'auto'       # fTetWild fallback tier: 'auto' (default) / False (off) / True (+SI)
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
+        self._flap = False            # batch-wide opt-in Flap surface hole fill (Stage 1)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
         self._dressing_drain = None   # batch-wide Dressing drain override (None = preset)
         self._dressing_defects = None       # None = module default ('all')
@@ -3728,6 +3749,11 @@ class MainWindow(QMainWindow):
         self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
         self.chk_indirect_autorefine.toggled.connect(
             lambda on: setattr(self, '_indirect_autorefine', on))
+        # opt-in Flap surface hole fill (Stage 1, batch-wide; off by default)
+        self.chk_flap = QCheckBox(_t('flap_label'))
+        self.chk_flap.setToolTip(_t('flap_tip'))
+        self.chk_flap.toggled.connect(
+            lambda on: setattr(self, '_flap', on))
         # opt-in Dressing viscosity coat (#16, batch-wide; off by default until
         # measured on the corpus)
         self.chk_dressing = QCheckBox(_t('dressing_label'))
@@ -3798,6 +3824,7 @@ class MainWindow(QMainWindow):
             (self.chk_indirect_autorefine, False),
             (self.chk_join_components, False),
             (self.chk_edge_tiebreak, False),
+            (self.chk_flap, False),
             (self.chk_dressing, False),
             (self.chk_dressing_force_adopt, False),
         )
@@ -4397,6 +4424,7 @@ class MainWindow(QMainWindow):
                                    ftetwild=self._ftetwild,
                                    indirect_autorefine=self._indirect_autorefine,
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
+                                   flap=self._flap,
                                    dressing=self._dressing,
                                    dressing_drain=self._dressing_drain,
                                    dressing_defects=self._dressing_defects,

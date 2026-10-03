@@ -1022,11 +1022,11 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                             triage_spec=None, engines=None, engine_chain=None,
                             closing=None, proxy_template=False, repeat=None,
                             repeat_source=None, repeat_target=None,
-                            wall_thicken=False, wall_min_thickness=None,
-                            graft=False, dressing=False,
-                            dressing_drain=None, dressing_defects=None,
-                            dressing_rmax_scale=None, dressing_sigma_scale=None,
-                            si_mode=None, dressing_force_adopt=False):
+                             wall_thicken=False, wall_min_thickness=None,
+                             graft=False, flap=False, dressing=False,
+                             dressing_drain=None, dressing_defects=None,
+                             dressing_rmax_scale=None, dressing_sigma_scale=None,
+                             si_mode=None, dressing_force_adopt=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -1072,6 +1072,13 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     candidate is adopted only when it is strict-watertight (no holes, no
     non-manifold edges) and no worse than the stage-1 baseline; None/False
     (library default) keeps the output byte-identical to today.
+    ``flap`` enables the surface-based hole filler (``sutura_engine.flap``) as
+    the FIRST Stage-1 hole-fill step: it runs on the ORIGINAL input (like the
+    standalone Flap->Graft pipeline, so the deep-repair tiers that work from
+    the original arrays also see its patches) and is adopted only when the
+    reload-honest damage (holes + non-manifold edges) does not rise; the
+    chain's own meshing_close_holes remains the fallback for any loop it skips
+    or rejects, so False (library default) keeps the output byte-identical.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -1162,6 +1169,28 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     components_before = before.get('connected_components_number', 0)
     holes_before = boundary_loop_stats(v, t)[0]
     nm_before = before.get('non_two_manifold_edges', 0)
+
+    # Flap: surface-based hole fill (OFF by default). It is the FIRST Stage-1
+    # step and runs on the ORIGINAL input, like the standalone Flap->Graft
+    # pipeline. The chain's own meshing_close_holes remains the fallback for
+    # any loop Flap skips or rejects, and a candidate is adopted only when the
+    # reload-honest damage (holes + non-manifold edges) does not rise, so the
+    # output is never worse than today. Running on the raw input -- rather than
+    # the post-chain result -- is what lets the deep-repair Graft tier, which
+    # also works from the original arrays, see the flap patches: measured on
+    # framebaroque, the standalone Flap->Graft output (Orca 2 parts, 3494 SI
+    # faces, volume 58762) is reproduced exactly, whereas a post-chain flap
+    # cannot reach Graft and left the output byte-identical to flap-OFF. The
+    # reported 'before' metrics above are still the true input's.
+    if flap:
+        _fms = ml.MeshSet()
+        _fms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
+        _fafter = _fms.apply_filter('get_topological_measures')
+        _fms, _fafter = _flap_step(ml, _fms, _fafter, stats, None)
+        if (stats.get('flap') or {}).get('adopted'):
+            v = np.asarray(_fms.current_mesh().vertex_matrix(), dtype=np.float32)
+            t = np.asarray(_fms.current_mesh().face_matrix(), dtype=np.int32)
+            verts, tris = v, t
 
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -1696,6 +1725,31 @@ def resolve_graft(no_graft=False, force=False, environ=None):
         if val in ('1', 'true', 'yes', 'on', 'auto'):
             return True if val not in ('auto',) else 'auto'
     return 'auto'
+
+
+FLAP_ENV = 'SUTURA_FLAP'
+
+
+def resolve_flap(no_flap=False, force=False, environ=None):
+    """Resolve the ``flap`` argument (surface-based hole filler, Stage 1).
+
+    The flap is OFF by default: ``--flap`` / ``force`` enables it, ``--no-flap``
+    disables it, and ``SUTURA_FLAP`` may set ``0/1``. The library default in
+    ``repair_mesh_from_arrays`` stays ``False`` so direct library calls keep
+    their pre-Flap behaviour.
+    """
+    if no_flap:
+        return False
+    if force:
+        return True
+    env = (os.environ if environ is None else environ).get(FLAP_ENV)
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in ('1', 'true', 'yes', 'on'):
+            return True
+        if val in ('0', 'false', 'no', 'off'):
+            return False
+    return False
 
 
 def resolve_dressing(no_dressing=False, force=False, environ=None,
@@ -3198,6 +3252,242 @@ def enforce_reload_verdict(report, verts, tris):
     return True
 
 
+FLAP_SKIP_KEYS = ('loops_skipped_nm', 'loops_skipped_flat',
+                  'loops_skipped_sheet', 'loops_skipped_coplanar',
+                  'loops_skipped_sliver', 'loops_fan_fallback')
+
+
+def _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):
+    """Whether a flap candidate should replace the pre-flap Stage-1 mesh.
+
+    Holes and non-manifold edges are both boundary defects, so a candidate is
+    accepted when the combined reload-honest damage ``holes + non-manifold``
+    does not increase. This lets a flap that closes many loops while welding
+    near-coincident rims (which introduces a few new non-manifold edges) be
+    adopted -- the deep-repair ladder rebuilds the residual non-manifold edges
+    -- while still rejecting a candidate that opens holes or explodes the
+    non-manifold count. Measured on framebaroque (67/16 -> 16/22) and
+    artec_metal-nut (2/1 -> 0/2), which the old ``holes<= and nm<=`` gate
+    rejected despite the standalone flap->Graft pipeline being a clear win.
+    """
+    return (int(cand_holes) + int(cand_nm)) <= (int(base_holes) + int(base_nm))
+
+
+def _flap_max_orig_move(frep):
+    """Largest movement of an ORIGINAL vertex from the flap's crack weld (mm).
+
+    ``flap_fill`` welds nearly-coincident open-chain ends before filling; each
+    merge records ``(va, vb, dist, is_orig)`` in ``boundary_normalize``'s
+    ``weld_sites``. Only merges that touch an original vertex move one, so the
+    max ``dist`` over those is the geometry change the flap imposes on the input
+    surface (the patch itself is new geometry built from hole vertices).
+    """
+    sites = (frep.get('boundary_normalize') or {}).get('weld_sites') or []
+    moves = [float(s[2]) for s in sites if len(s) >= 4 and s[3]]
+    return round(max(moves), 6) if moves else 0.0
+
+
+def _flap_step(ml, ms, after, stats, _p):
+    """Stage-1 hole fill via the Flap surface filler (OFF by default).
+
+    Runs ``sutura_engine.flap.flap_fill`` on the mesh in ``ms`` (the ORIGINAL
+    input when called as the Stage-1 pre-pass; see ``repair_mesh_from_arrays``),
+    covering the boundary loops VCG's flat ``meshing_close_holes`` left open
+    with a patch that continues the surrounding curvature. The candidate is
+    adopted when the combined reload-honest damage ``holes + non-manifold
+    edges`` does not increase. Holes and non-manifold edges are both boundary
+    defects, so a flap that closes many loops while welding near-coincident
+    rims introduces a few new non-manifold edges (see the standalone
+    flap->Graft measurements on framebaroque and artec_metal-nut) is a net
+    improvement and is adopted; the Specular chain / deep-repair ladder then
+    rebuilds the residual non-manifold edges it left. A candidate whose
+    combined count rises (holes open or non-manifold edges explode) is
+    rejected and the pre-flap result is kept byte-for-byte, so the output can
+    never worsen. Records ``stats['flap']`` with the loop/patch statistics;
+    never raises.
+    """
+    rec = {'ran': False, 'adopted': False, 'reason': None,
+           'baseline_holes': None, 'baseline_non_manifold': None,
+           'baseline_damage': None, 'candidate_holes': None,
+           'candidate_non_manifold': None, 'candidate_damage': None,
+           'loops_found': None, 'loops_filled': None, 'loops_skipped': None,
+           'loops_skipped_by_reason': None, 'patch_faces': None,
+           'new_vertices': None, 'time_s': None,
+           'max_orig_vertex_move_mm': None}
+    base_v = np.asarray(ms.current_mesh().vertex_matrix())
+    base_t = np.asarray(ms.current_mesh().face_matrix())
+    try:
+        base_holes, base_nm = reload_strict_holes_nm(base_v, base_t)
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['reason'] = 'baseline measure failed: %s' % e
+        stats['flap'] = rec
+        return ms, after
+    rec['baseline_holes'] = int(base_holes)
+    rec['baseline_non_manifold'] = int(base_nm)
+    if base_holes == 0 and base_nm == 0:
+        rec['reason'] = 'no residual boundary loops or non-manifold edges'
+        stats['flap'] = rec
+        return ms, after
+
+    t0 = time.perf_counter()
+    try:
+        from sutura_engine import flap as _flap
+        cand_v, cand_t, frep = _flap.flap_fill(base_v, base_t,
+                                               separate_stl=False)
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['reason'] = 'flap error: %s' % e
+        stats['flap'] = rec
+        return ms, after
+    rec['ran'] = True
+    rec['time_s'] = round(time.perf_counter() - t0, 3)
+    rec['loops_found'] = frep.get('loops_found')
+    rec['loops_filled'] = frep.get('loops_filled')
+    rec['loops_skipped'] = frep.get('loops_skipped')
+    rec['loops_skipped_by_reason'] = {
+        k: int(frep.get(k) or 0) for k in FLAP_SKIP_KEYS}
+    rec['patch_faces'] = frep.get('patch_faces')
+    rec['new_vertices'] = frep.get('new_vertices')
+    rec['max_orig_vertex_move_mm'] = _flap_max_orig_move(frep)
+
+    if not len(cand_t):
+        rec['reason'] = 'flap returned no geometry'
+        stats['flap'] = rec
+        return ms, after
+    try:
+        cand_holes, cand_nm = reload_strict_holes_nm(cand_v, cand_t)
+    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+        rec['reason'] = 'candidate measure failed: %s' % e
+        stats['flap'] = rec
+        return ms, after
+    rec['candidate_holes'] = int(cand_holes)
+    rec['candidate_non_manifold'] = int(cand_nm)
+    base_damage = int(base_holes) + int(base_nm)
+    cand_damage = int(cand_holes) + int(cand_nm)
+    rec['baseline_damage'] = base_damage
+    rec['candidate_damage'] = cand_damage
+    if _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):
+        ms = ml.MeshSet()
+        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
+                            face_matrix=np.asarray(cand_t, np.int32)))
+        after = ms.apply_filter('get_topological_measures')
+        rec['adopted'] = True
+        rec['reason'] = ('adopted (holes %d->%d, non-manifold %d->%d; '
+                         'damage %d->%d)' % (
+                             base_holes, cand_holes, base_nm, cand_nm,
+                             base_damage, cand_damage))
+    else:
+        rec['reason'] = ('rejected: reload damage %d->%d would worsen '
+                         '(holes %d->%d, non-manifold %d->%d)' % (
+                             base_damage, cand_damage, base_holes, cand_holes,
+                             base_nm, cand_nm))
+    stats['flap'] = rec
+    return ms, after
+
+
+# Flap debris cleanup: after Flap changes the surface the deep-repair tiers
+# start from, the shell wrap / Stage-2 rebuild can leave a few extra closed
+# shells (thingi10k_1038441: 2 output parts -> 11, nine of them 4-8 faces with
+# ~zero volume). They are FLAT, effectively zero-volume sheets carrying no
+# printable material (effective thickness 2*V/A far below the part's own
+# bounding-box diagonal, or an absolute volume below the floor), exactly the
+# debris ``manifold_bridge._is_debris_part`` already prunes before a union.
+# A genuine solid part has 2*V/A ~= its wall thickness (measured 2.0-2.6 on
+# every corpus part) and is never dropped. See ``drop_flap_debris``.
+FLAP_DEBRIS_VOLUME_EPS = 1e-3
+FLAP_DEBRIS_VOLUME_REL = 1e-9
+FLAP_DEBRIS_FLATNESS = 1e-4
+
+
+def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
+    """Drop flat, effectively zero-volume components the repair left behind.
+
+    Flap changes the surface the deep-repair tiers start from, and on a small
+    number of meshes the shell-wrap / Stage-2 rebuild then leaves a handful of
+    extra closed shells (thingi10k_1038441: 2 output parts -> 11). They are
+    flat sheets with no printable material, not parts: a component is dropped
+    only when it is NOT the largest and either
+
+    - carries effectively no volume, or
+    - is a collapsed sheet: its effective thickness ``2*V/A`` is at or below
+      ``FLAP_DEBRIS_FLATNESS`` of its own bounding-box diagonal.
+
+    The volume floor scales with the input bbox (``max(FLAP_DEBRIS_VOLUME_EPS,
+    in_diag**3 * FLAP_DEBRIS_VOLUME_REL)``); a genuine solid part has thickness
+    ~= its wall size and orders of magnitude more volume, so it is never
+    dropped (measured: every legit corpus part has ``2*V/A`` ~2.0-2.6 vs
+    debris 4e-9..4e-4). The largest component is always kept and the mesh is
+    never emptied. Runs on the STL save/reload-equivalent form
+    (``weld_reload_equivalent``) so the verdict sees exactly what is dropped.
+    Pure numpy/scipy; never raises; a byte-identical no-op (returns the input
+    arrays and ``None``) when nothing qualifies, when scipy is unavailable, or
+    on any error. Returns ``(verts, tris, info)``; ``info['dropped']`` logs
+    every removed component (faces, volume, thickness, diag, centroid).
+    """
+    try:
+        import scipy.sparse as _sp
+        from scipy.sparse.csgraph import connected_components as _cc
+
+        iv, _it = weld_reload_equivalent(in_verts, in_tris)
+        wv, wt = weld_reload_equivalent(out_verts, out_tris)
+        if len(iv) == 0 or len(wt) == 0:
+            return out_verts, out_tris, None
+        n = len(wv)
+        edges = np.vstack([wt[:, [0, 1]], wt[:, [1, 2]], wt[:, [2, 0]]])
+        adj = _sp.coo_matrix(
+            (np.ones(len(edges), dtype=np.int8), (edges[:, 0], edges[:, 1])),
+            shape=(n, n))
+        ncomp, labels = _cc(adj, directed=False)
+        face_label = labels[wt[:, 0]]
+        face_counts = np.bincount(face_label, minlength=ncomp)
+        in_diag = float(np.linalg.norm(iv.max(0) - iv.min(0)))
+        vol_eps = max(FLAP_DEBRIS_VOLUME_EPS,
+                      (in_diag ** 3) * FLAP_DEBRIS_VOLUME_REL)
+        main = int(np.argmax(face_counts))
+        keep = np.ones(ncomp, dtype=bool)
+        dropped = []
+        for c in range(ncomp):
+            if c == main or face_counts[c] == 0:
+                continue
+            tri = wt[face_label == c]
+            p0 = wv[tri[:, 0]].astype(np.float64)
+            p1 = wv[tri[:, 1]].astype(np.float64)
+            p2 = wv[tri[:, 2]].astype(np.float64)
+            vol = abs(float(np.einsum('ij,ij->i', p0,
+                                      np.cross(p1, p2)).sum() / 6.0))
+            area = float(0.5 * np.linalg.norm(
+                np.cross(p1 - p0, p2 - p0), axis=1).sum())
+            cxyz = wv[np.unique(tri)].astype(np.float64)
+            diag = float(np.linalg.norm(cxyz.max(0) - cxyz.min(0)))
+            thickness = (2.0 * vol / area) if area > 0.0 else 0.0
+            flat = (area <= 0.0 or diag <= 0.0 or vol <= 0.0
+                    or thickness <= FLAP_DEBRIS_FLATNESS * diag)
+            if vol <= vol_eps or flat:
+                keep[c] = False
+                dropped.append({
+                    'faces': int(face_counts[c]),
+                    'volume': vol,
+                    'thickness': thickness,
+                    'diag': diag,
+                    'centroid': [round(float(x), 4) for x in cxyz.mean(0)]})
+        if not dropped:
+            return out_verts, out_tris, None
+        fkeep = keep[face_label]
+        if not fkeep.any():
+            return out_verts, out_tris, None
+        cv, ct = weld_reload_equivalent(wv, wt[fkeep])
+        info = {
+            'components_before': int(np.count_nonzero(face_counts)),
+            'components_after': int(np.unique(face_label[fkeep]).size),
+            'dropped_faces': int(np.count_nonzero(~fkeep)),
+            'dropped_volume': float(sum(d['volume'] for d in dropped)),
+            'volume_eps': vol_eps,
+            'dropped': dropped,
+        }
+        return cv, ct, info
+    except Exception:  # noqa: BLE001 - a cleanup never crashes a repair
+        return out_verts, out_tris, None
+
+
 def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                    closing=None, proxy_template=False):
     """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
@@ -4419,6 +4709,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 closing=None, proxy_template=False, repeat=None,
                 repeat_source=None, repeat_target=None,
                  wall_thicken=False, wall_min_thickness=None, graft=False,
+                 flap=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
                  si_mode=None, dressing_force_adopt=False):
@@ -4450,7 +4741,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         closing=closing, proxy_template=proxy_template, repeat=repeat,
         repeat_source=repeat_source, repeat_target=repeat_target,
         wall_thicken=wall_thicken, wall_min_thickness=wall_min_thickness,
-        graft=graft, dressing=dressing, dressing_drain=dressing_drain,
+        graft=graft, flap=flap,
+        dressing=dressing, dressing_drain=dressing_drain,
         dressing_defects=dressing_defects,
         dressing_rmax_scale=dressing_rmax_scale,
         dressing_sigma_scale=dressing_sigma_scale, si_mode=si_mode,
@@ -4490,6 +4782,21 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             ml, new_v, new_t, time_budget=_local_exact_budget(_lse_spec))
         if _lse.get('ran'):
             report['local_exact'] = _lse
+
+    # Flap debris cleanup (only when Flap was adopted): drop the flat,
+    # effectively zero-volume closed shells the repair left behind, so a
+    # Flap-ON result is never worse than flap-OFF on the part count. Solid
+    # parts are never dropped and the cleanup is adopted only when the reload
+    # holes/non-manifold count does not rise; every dropped component is
+    # reported. See drop_flap_debris.
+    if (report.get('flap') or {}).get('adopted'):
+        _cl_v, _cl_t, _cl_info = drop_flap_debris(verts, tris, new_v, new_t)
+        if _cl_info:
+            _bh, _bnm = reload_strict_holes_nm(new_v, new_t)
+            _ch, _cnm = reload_strict_holes_nm(_cl_v, _cl_t)
+            if _ch <= _bh and _cnm <= _bnm:
+                new_v, new_t = _cl_v, _cl_t
+                report['flap']['debris_cleanup'] = _cl_info
 
     # P-HONEST: the verdict must describe the mesh actually saved, not the
     # in-memory index topology. The final mesh is chosen above; judge it in
@@ -4568,6 +4875,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                closing=None, proxy_template=False, repeat=None,
                repeat_source=None, repeat_target=None,
                wall_thicken=False, wall_min_thickness=None, graft=False,
+               flap=False,
                dressing=False, dressing_drain=None, dressing_defects=None,
                dressing_rmax_scale=None, dressing_sigma_scale=None,
                si_mode=None, dressing_force_adopt=False):
@@ -4619,6 +4927,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     repeat=repeat, repeat_source=repeat_source,
                     repeat_target=repeat_target, wall_thicken=wall_thicken,
                     wall_min_thickness=wall_min_thickness, graft=graft,
+                    flap=flap,
                     dressing=dressing, dressing_drain=dressing_drain,
                     dressing_defects=dressing_defects,
                     dressing_rmax_scale=dressing_rmax_scale,
@@ -4642,6 +4951,17 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                         time_budget=_local_exact_budget(_lse_spec))
                     if _lse.get('ran'):
                         rep['local_exact'] = _lse
+                # Flap debris cleanup (only when Flap was adopted); see the
+                # single-mesh path and drop_flap_debris.
+                if (rep.get('flap') or {}).get('adopted'):
+                    _cl_v, _cl_t, _cl_info = drop_flap_debris(
+                        verts, tris, new_v, new_t)
+                    if _cl_info:
+                        _bh, _bnm = reload_strict_holes_nm(new_v, new_t)
+                        _ch, _cnm = reload_strict_holes_nm(_cl_v, _cl_t)
+                        if _ch <= _bh and _cnm <= _bnm:
+                            new_v, new_t = _cl_v, _cl_t
+                            rep['flap']['debris_cleanup'] = _cl_info
                 # P-HONEST: judge the per-object mesh actually written into the
                 # archive (reload-equivalent form) before the confidence/score
                 # below, so those see the honest verdict too.
@@ -5088,6 +5408,17 @@ def human_report(r, show_defects=False, show_diff=False):
                              ft_r.get('output_faces', 0), ft_r.get('time', 0), pp,
                              ft_r.get('output_holes'), ft_r.get('output_non_manifold'),
                              adopted))
+    fl_r = r.get('flap')
+    if fl_r and fl_r.get('ran'):
+        if fl_r.get('adopted'):
+            state = ' adopted'
+        else:
+            state = ' NOT adopted (kept stage-1 output)'
+        lines.append('  Flap (surface fill)     : filled %s/%s loops, '
+                     '%s patch faces in %.2fs, max original move %.3g%s'
+                     % (fl_r.get('loops_filled'), fl_r.get('loops_found'),
+                        fl_r.get('patch_faces'), fl_r.get('time_s') or 0,
+                        fl_r.get('max_orig_vertex_move_mm') or 0, state))
     gr = r.get('graft')
     if gr and gr.get('ran'):
         if gr.get('adopted'):
@@ -5371,6 +5702,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  engines=None, engine_chain=None, engine_warnings=None,
                  methods=None, engine_filter=None, repeat_source=None,
                  repeat_target=None, wall_min_thickness=None, graft=False,
+                 flap=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
                  si_mode=None, dressing_force_adopt=False):
@@ -5437,7 +5769,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             triage_spec=triage_spec, engines=engines,
             engine_chain=engine_chain, repeat_source=repeat_source,
             repeat_target=repeat_target, wall_min_thickness=wall_min_thickness,
-            graft=graft, dressing=dressing, dressing_drain=dressing_drain,
+            graft=graft, flap=flap,
+            dressing=dressing, dressing_drain=dressing_drain,
             dressing_defects=dressing_defects,
             dressing_rmax_scale=dressing_rmax_scale,
             dressing_sigma_scale=dressing_sigma_scale,
@@ -5837,6 +6170,19 @@ def main():
                              'with --deep-repair off). Primarily for its own '
                              'evaluation; the auto path (default) already '
                              'prefers Graft over fTetWild')
+    parser.add_argument('--flap', action='store_true',
+                        help='enable the Flap surface-based hole filler as the '
+                             'last Stage-1 hole-fill step: every residual '
+                             'boundary loop is covered with a minimum-area '
+                             'triangulation refined to the surrounding edge '
+                             'length and faired with a thin-plate solve that '
+                             'continues the neighbouring surface. Original '
+                             'triangles are kept verbatim and the result is '
+                             'adopted only when the reload-honest holes + '
+                             'non-manifold count does not worsen. Off by '
+                             'default; env: SUTURA_FLAP')
+    parser.add_argument('--no-flap', action='store_true',
+                        help='disable the Flap hole filler (the default)')
     parser.add_argument('--no-dressing', action='store_true',
                         help='disable the Dressing (viscosity coat) tier (#16); '
                              'this is the default (Dressing is opt-in)')
@@ -6196,6 +6542,9 @@ def main():
     # before fTetWild). --experimental-graft forces it outside the ladder.
     _graft_arg = resolve_graft(no_graft=args.no_graft,
                                force=args.experimental_graft)
+    # Flap: off by default; --flap enables it, --no-flap disables it,
+    # SUTURA_FLAP may set 0/1.
+    _flap_arg = resolve_flap(no_flap=args.no_flap, force=args.flap)
     # Dressing (#16): the single default switch (DRESSING_DEFAULT_ENABLED /
     # SUTURA_DRESSING_DEFAULT) decides; --no-dressing disables and
     # --experimental-dressing forces.
@@ -6225,7 +6574,8 @@ def main():
                             join_components=args.experimental_join_components,
                             autorefine=args.experimental_autorefine,
                             ftetwild=_ft_arg, deep_repair=_dr_mode,
-                            graft=_graft_arg, dressing=_dressing_arg,
+                            graft=_graft_arg, flap=_flap_arg,
+                            dressing=_dressing_arg,
                             dressing_drain=_dressing_drain,
                             dressing_defects=_dressing_defects,
                             dressing_rmax_scale=_dressing_rmax_scale,
