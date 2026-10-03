@@ -196,7 +196,8 @@ with the optimisation on.
 ### Triage Engine intensity presets and named profiles
 
 The effort spent *after* Stage 1 — the deep-repair ladder, the fTetWild
-tier's on/off state, its input-size cap and wall-clock budget, the dense
+tier's on/off state, its input-size cap and wall-clock budget, the Graft
+shell-wrap tier's own input-size cap and wall-clock budget, the dense
 boundary decimation ladder and the Hausdorff sample count — is grouped into
 four read-only presets plus any number of user-named profiles, selected with
 `--intensity <name>` (or `SUTURA_INTENSITY`, or the `intensity` key of
@@ -213,15 +214,18 @@ values and exits.
   fastest run, which leaves hard meshes open.
 - **Balanced** — the default and the shipped behaviour: every knob is the
   historical `repair.py` constant (fTetWild `auto` when installed, 180 s
-  budget, 300,000-face cap, `(1.5, 3.0)` decimation ladder, 200,000 Hausdorff
+  budget, 300,000-face cap, Graft bounded to a 300 s budget and a
+  2,000,000-face cap, `(1.5, 3.0)` decimation ladder, 200,000 Hausdorff
   samples). `--intensity balanced` is byte-identical to running without the
   flag.
-- **Thorough** — a 600 s fTetWild budget, 400,000 Hausdorff samples and one
-  extra decimation rung, `threshold` (= `DENSE_RATIO × max(input, 20,000)`).
-- **Extreme** — no input-size cap, a 1,800 s budget, 1,000,000 Hausdorff
-  samples, the extra `threshold` rung, and, when every rung of a wastefully
-  dense boundary fails, one more fTetWild run with the tetrahedron-quality
-  optimisation on before falling back to the undecimated boundary.
+- **Thorough** — a 600 s fTetWild budget, a 900 s Graft budget, 400,000
+  Hausdorff samples and one extra decimation rung, `threshold`
+  (= `DENSE_RATIO × max(input, 20,000)`).
+- **Extreme** — no input-size cap for fTetWild or Graft, a 1,800 s budget for
+  both, 1,000,000 Hausdorff samples, the extra `threshold` rung, and, when
+  every rung of a wastefully dense boundary fails, one more fTetWild run with
+  the tetrahedron-quality optimisation on before falling back to the
+  undecimated boundary.
 
 The extra `threshold` rung targets the failure mode where a wastefully dense
 fTetWild boundary cannot be decimated watertight at the lower `1.5×`/`3×`

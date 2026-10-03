@@ -202,6 +202,7 @@ sayılar optimizasyon açıkken ölçülmüştür.
 
 Aşama 1'den *sonra* harcanan çaba — derin-onarım merdiveni, fTetWild
 katmanının açık/kapalı durumu, girdi boyut sınırı ve duvar-saati bütçesi,
+Graft shell-wrap katmanının kendi girdi boyut sınırı ve duvar-saati bütçesi,
 yoğun sınır sadeleştirme merdiveni ve Hausdorff örnek sayısı — dört salt-
 okunur preset ve istenildiği kadar kullanıcı profili ile toplanmıştır:
 `--intensity <ad>` (veya `SUTURA_INTENSITY`, veya
@@ -218,13 +219,15 @@ değerleriyle yazdırıp çıkar.
   hızlı çalışma; zor ağları açık bırakır.
 - **Balanced** — varsayılan ve mevcut sürüm davranışı: her düğme tarihsel
   `repair.py` sabitidir (kuruluysa fTetWild `auto`, 180 sn bütçe, 300.000
-  yüz sınırı, `(1.5, 3.0)` sadeleştirme merdiveni, 200.000 Hausdorff
-  örneği). `--intensity balanced`, bayraksız çalıştırmayla bayt-birebirdir.
-- **Thorough** — 600 sn fTetWild bütçesi, 400.000 Hausdorff örneği ve bir
-  fazladan sadeleştirme basamağı, `threshold` (= `DENSE_RATIO ×
-  max(girdi, 20.000)`).
-- **Extreme** — girdi boyut sınırı yok, 1.800 sn bütçe, 1.000.000 Hausdorff
-  örneği, fazladan `threshold` basamağı ve savurgan yoğunlukta bir sınırın
+  yüz sınırı, Graft 300 sn bütçe ve 2.000.000 yüz sınırı, `(1.5, 3.0)`
+  sadeleştirme merdiveni, 200.000 Hausdorff örneği). `--intensity balanced`,
+  bayraksız çalıştırmayla bayt-birebirdir.
+- **Thorough** — 600 sn fTetWild bütçesi, 900 sn Graft bütçesi, 400.000
+  Hausdorff örneği ve bir fazladan sadeleştirme basamağı, `threshold`
+  (= `DENSE_RATIO × max(girdi, 20.000)`).
+- **Extreme** — fTetWild ve Graft için girdi boyut sınırı yok, ikisi için
+  1.800 sn bütçe, 1.000.000 Hausdorff örneği, fazladan `threshold` basamağı
+  ve savurgan yoğunlukta bir sınırın
   her basamağı başarısız olduğunda, sadeleştirilmemiş sınıra dönmeden önce
   tetrahedron kalite optimizasyonu açık bir fTetWild çalışması daha.
 

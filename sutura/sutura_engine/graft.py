@@ -862,7 +862,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=MAX_TRIES,
                target_edge=None, ml=None, si_check=True, guard=True,
                grid_budget=None, detail_tol=None, intensity=None,
-               sign_field=None,
+               time_budget=None, sign_field=None,
                raystab=None, raystab_dirs=None, raystab_seed=0,
                raystab_parity=False):
     """Graft (shell wrap) repair.
@@ -876,7 +876,12 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
 
     ``grid_budget`` caps the grid cells; ``None`` resolves it from ``intensity``
     (the Triage preset name) and the available system RAM (see
-    ``resolve_grid_budget``).  ``sign_field`` (or ``SUTURA_GRAFT_SIGN_FIELD``)
+    ``resolve_grid_budget``).  ``time_budget`` (seconds) bounds the closing
+    ladder: once a candidate exists and the budget is spent the loop stops and
+    returns the best candidate so far (``budget_exceeded`` is set in the
+    report).  A single ``morph_close`` attempt is not interruptible, so callers
+    pair it with an input face cap for a hard bound.  ``sign_field`` (or
+    ``SUTURA_GRAFT_SIGN_FIELD``)
     enables sign-field Pass 0; it is OFF by default (opt-in) and falls back to
     the closing ladder whenever the r = 0 result is not watertight and faithful.
 
@@ -888,6 +893,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     ``method=13``, ``display_name='Graft'`` and ``invents_geometry=True``.
     """
     t_start = time.perf_counter()
+    deadline = (t_start + float(time_budget)) if time_budget else None
     v0 = _as_f64(verts)
     t0 = _as_i64(tris)
     if grid_budget is None:
@@ -907,6 +913,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "voxel": None,
         "grid_budget": int(grid_budget) if grid_budget else None,
         "intensity": intensity,
+        "time_budget": (float(time_budget) if time_budget else None),
+        "budget_exceeded": False,
         "sign_field": None,
         "projected_fraction": 0.0,
         "remeshed": False,
@@ -988,6 +996,13 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     rng = np.random.default_rng(20260928)
     best = None
     for attempt, rval in enumerate(ladder):
+        # Stop between attempts once the tier budget is spent.  A candidate
+        # must already exist (otherwise stopping would return no geometry);
+        # the outcome stays the best found so far, never a broken mesh.
+        if deadline is not None and best is not None \
+                and time.perf_counter() >= deadline:
+            report["budget_exceeded"] = True
+            break
         report["tries"] = attempt + 1
         is_sign = float(rval) <= 0.0
         # A sign field is a global isosurface; a local window is meaningless

@@ -1374,7 +1374,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
                            graft=(graft is True),
                            intensity=(getattr(triage_spec, 'base', None)
-                                      or getattr(triage_spec, 'name', None)))
+                                      or getattr(triage_spec, 'name', None)),
+                           spec=triage_spec)
 
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair, ftetwild=ftetwild,
@@ -1580,6 +1581,22 @@ FTETWILD_RETRY_MIN_SECONDS = 10.0
 # repository, the benchmark's input_faces column verifies the split. The active
 # cap comes from the intensity spec (None = no cap, Extreme).
 FTETWILD_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
+
+# Bound for the Graft (#13) shell-wrap tier, the morphology sibling of the
+# fTetWild tier above. Graft has no equivalent of fTetWild's solver timeout:
+# it runs an r-ladder of ``morph_close`` attempts on the ORIGINAL 1-6 M-face
+# scans, so without a bound the six dense Artec scans of the 115-mesh corpus
+# run past the 600 s harness timeout (they do not reach watertight either).
+# GRAFT_MAX_FACES is the hard input cap (a single ``morph_close`` call is not
+# interruptible, so a between-attempt budget cannot bound it); GRAFT_TIMEOUT
+# is the wall-clock budget for the whole ladder, checked between attempts.
+# 2,000,000 faces sits above every mesh Graft adopts today (largest:
+# framebaroque, 396,549 faces; Graft's own tier time there was 133 s unloaded)
+# and below the smallest observed hang (2,110,072 faces), so it changes only
+# the six timeouts. The active values come from the intensity spec (None cap =
+# no limit, Extreme). Provisional; the corpus face counts are not in the repo.
+GRAFT_MAX_FACES = _BALANCED_INTENSITY.graft_max_faces
+GRAFT_TIMEOUT = _BALANCED_INTENSITY.graft_timeout
 
 # Decimation of a wastefully dense fTetWild boundary. fTetWild with
 # optimize=False can return a boundary far denser than the input (measured on
@@ -3278,7 +3295,8 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
     return ms, after
 
 
-def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
+def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
+               spec=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
     Runs ``sutura_engine.graft.shell_wrap`` on the ORIGINAL input arrays (like
@@ -3287,16 +3305,33 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
     records the fidelity verdict (``fidelity_ok``, ``hausdorff_healthy``,
     ``detail_max_mm``/``detail_area_moved``) and the EN/TR detail-loss
     warnings the CLI/GUI surface; the auto policy reads ``fidelity_ok`` to
-    decide whether to also try fTetWild.  Never raises.
+    decide whether to also try fTetWild.
+
+    The tier is bounded like the fTetWild tier: ``spec`` (the Triage
+    ``IntensitySpec``) supplies ``graft_max_faces`` (a hard input cap; a single
+    ``morph_close`` attempt is not interruptible) and ``graft_timeout`` (the
+    wall-clock budget for the closing ladder).  Inputs above the cap, or
+    ladders that spend the budget before finding a watertight candidate, are
+    reported honestly (``skipped_budget`` / ``timed_out`` / ``reject_reason``)
+    and keep the stage-1 result.  Never raises.
     """
     if not graft:
         return ms, after
+    cap = getattr(spec, 'graft_max_faces', GRAFT_MAX_FACES) if spec is not None \
+        else GRAFT_MAX_FACES
+    timeout = getattr(spec, 'graft_timeout', GRAFT_TIMEOUT) if spec is not None \
+        else GRAFT_TIMEOUT
     rec = {'tier': 'graft', 'ran': False, 'adopted': False,
            'watertight': False, 'fidelity_ok': None,
            'hausdorff_healthy': None, 'detail_max_mm': None,
            'detail_area_moved': None, 'r_used': None, 'mode': None,
            'faces': None, 'holes': None, 'non_manifold': None,
-           'warnings': [], 'reason': None}
+           'warnings': [], 'reason': None,
+           'skipped_budget': False, 'timed_out': False,
+           'reject_reason': None,
+           'input_faces': None,
+           'max_faces': int(cap) if cap is not None else None,
+           'time_budget': (float(timeout) if timeout else None)}
     try:
         try:
             from sutura_engine import graft as _graft
@@ -3304,9 +3339,27 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
             import shell_wrap as _graft
         in_v = np.asarray(v, dtype=np.float64)
         in_t = np.asarray(t, dtype=np.int64)
+        rec['input_faces'] = int(len(in_t))
+        if cap is not None and len(in_t) > int(cap):
+            # Hard input cap: a morph_close call is not interruptible, so do
+            # not start the ladder on a mesh too large to finish in budget.
+            rec['skipped_budget'] = True
+            rec['reject_reason'] = 'too_large'
+            rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
+            rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining')
+            rec['reason'] = ('input has %d faces, above the Graft cap of %d; '
+                             'stage-1 result kept' % (len(in_t), int(cap)))
+            stats['graft'] = rec
+            return ms, after
         cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml,
-                                                 intensity=intensity)
+                                                 intensity=intensity,
+                                                 time_budget=timeout)
         rec['ran'] = True
+        rec['budget_exceeded'] = bool(grec.get('budget_exceeded'))
+        if rec['budget_exceeded']:
+            rec['timed_out'] = True
+            rec['reject_reason'] = 'budget'
         rec['fidelity_ok'] = grec.get('fidelity_ok')
         rec['hausdorff_healthy'] = grec.get('hausdorff_healthy')
         rec['detail_max_mm'] = grec.get('detail_max_mm')
@@ -3340,6 +3393,21 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None):
                                  % (cand_holes, cand_nm))
         else:
             rec['reason'] = 'graft returned no geometry'
+        if rec['adopted']:
+            # A watertight candidate was found before the budget ran out.
+            rec['timed_out'] = False
+            rec['reject_reason'] = None
+        elif rec.get('timed_out'):
+            # Budget spent without a watertight candidate: keep stage 1.
+            rec['skipped_budget'] = True
+            if rec['holes'] is None:
+                rec['holes'] = (stats.get('stage1') or {}).get(
+                    'holes_remaining')
+                rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                    'non_manifold_edges_remaining')
+            rec['reason'] = ('Graft exceeded its %ss budget before a '
+                             'watertight candidate; stage-1 result kept'
+                             % (('%g' % timeout) if timeout else '?'))
     except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
         # PyO3 surfaces a Rust panic as pyo3_runtime.PanicException, which
         # subclasses BaseException (not Exception); a tier must degrade to its
@@ -3959,7 +4027,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
                                              graft=True,
                                              intensity=(getattr(spec, 'base', None)
-                                                        or getattr(spec, 'name', None)))
+                                                        or getattr(spec, 'name', None)),
+                                             spec=spec)
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
                     if _g.get('fidelity_ok') is not False:
