@@ -562,8 +562,8 @@ def _target_faces(n_input_faces):
 def _qem_decimate(ml, v, t, target_faces):
     """PyMeshLab quadric edge collapse that preserves topology / normals.
 
-    Configuration from the decimation benchmark (`/tmp/v073/dressing/decim/
-    report.md`, framebaroque 1.36 M-face coat): ``optimalplacement=False``
+    Configuration from the decimation benchmark (internal report,
+    framebaroque 1.36 M-face coat): ``optimalplacement=False``
     ("subset placement") with ``planarquadric=True`` yields **0 self-
     intersections**, sub-micron fidelity to the coat and ~20 s at a 400k
     target, whereas unconstrained placement introduces up to 30 SI faces.  A

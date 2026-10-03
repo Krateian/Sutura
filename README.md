@@ -49,6 +49,55 @@ a while going forward — the project is not abandoned, only slower-paced.
 
 ![Sutura GUI](assets/screenshot.png)
 
+## How Sutura repairs a mesh, in plain words
+
+A broken 3D model is like damaged skin. A scanner leaves **holes** where it saw
+nothing, triangles get **glued together wrongly** (non-manifold edges), and parts
+of the surface **pass through each other** (self-intersections). Slicers either
+refuse such a file or print it wrong.
+
+Sutura works like a careful surgeon: it treats the damage and leaves healthy
+skin alone. A repair runs as a short chain of steps, and each later step only
+acts when the earlier ones left work behind:
+
+```
+your file ─► Flap ─► Stage 1 clean-up ─► (still broken?) Graft ─► Stage 2 solid ─► repaired copy
+             fills holes   fixes edges,         rebuilds only        one closed,
+             along the     closes what is       the damaged areas    printable solid
+             surface       left
+```
+
+1. **Flap: fills holes the way the surface wants to go** (new in 0.8.0, on by
+   default). A classic hole fill puts a flat lid on a hole. Flap continues the
+   surrounding surface into the hole instead, like brushing liquid primer or
+   epoxy over a gap: the patch leaves the rim at the same slope as its
+   neighbours, so a hole in a curved surface gets a curved patch, not a dent or
+   a flat spot. Your original triangles are not moved; only the patch is new.
+   If Flap cannot fill a hole safely it leaves it to the next step, so a file is
+   never worse with Flap than without it. Turn it off with `--no-flap` or the
+   *Flap surface hole fill* checkbox.
+2. **Stage 1: clean-up (PyMeshLab).** Removes duplicate and broken triangles,
+   untangles bad edges, makes every face point the same way and closes any
+   hole that is still open.
+3. **Graft: only when the damage is serious.** If the model is still open or
+   tangled, Graft builds a fresh closed shell over the damaged areas and grafts
+   it onto the healthy original surface, like a skin graft. Healthy areas keep
+   their original triangles, so fine detail such as engraving or ornament
+   survives. Very large scans have a size and time limit so they never hang.
+4. **Stage 2: make it one solid (manifold3d).** Rebuilds the result as a valid
+   closed solid, the same library Bambu Studio uses.
+5. **Optional extras, off by default.** **Dressing** dips the whole model in a
+   virtual coat that always comes out closed, but it can soften fine detail, so
+   Sutura only *suggests* it when everything else failed and you decide.
+   **fTetWild** is a last-resort rebuild for badly broken files.
+
+After every step Sutura counts holes and bad edges again, as if the file had
+been re-opened from disk; a step that makes things worse is thrown away. Your
+original file is never changed: you get a repaired copy and a report that lists
+exactly which steps ran. Small self-intersections that slicers ignore are
+reported but no longer treated as failures (`--si-mode repair` restores the
+strict behaviour).
+
 ## Why a staged pipeline
 
 * **Stage 1 - PyMeshLab (VCG).** Removes duplicate and degenerate faces,
@@ -517,8 +566,7 @@ dropped anything.
 Measured on the 41-mesh regression: Flap was adopted on 13 meshes, and the run
 ended reload-watertight on all 41. Across the corpus it reduced the total
 Stage-1 self-intersection count from 10,051 to 8,880; on framebaroque it
-collapsed the part count from 2 to 1 and reduced the Stage-1 self-intersections
-from 4,016 to 3,005; and the maximum surface deviation on thingi10k_1038441
+reduced the Stage-1 self-intersections from 4,016 to 3,005; and the maximum surface deviation on thingi10k_1038441
 dropped from 4.11 mm to 0.60 mm. The Rust engine keeps the whole 41-mesh corpus
 Flap step at 7.2 s.
 
@@ -1967,7 +2015,7 @@ Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
 
-- **v0.8.0 — 2026-TBD** — **Flap** surface hole fill (covers a boundary loop by
+- **v0.8.0 — 2026-10-03** — **Flap** surface hole fill (covers a boundary loop by
   continuing the neighbouring surface instead of a flat lid; on by default,
   `--no-flap` / `SUTURA_FLAP=0` disables); **Dressing** (method #16, opt-in
   variable-viscosity level-set skin) with a non-watertight suggestion and

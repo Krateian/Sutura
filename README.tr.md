@@ -52,6 +52,58 @@ edilmiş değil, sadece tempo yavaşlayacak.
 
 ![Sutura GUI](assets/screenshot.png)
 
+## Sutura bir modeli nasıl onarır, sade anlatım
+
+Bozuk bir 3B model hasarlı bir deri gibidir. Tarayıcı göremediği yerlerde
+**delik** bırakır, üçgenler **yanlış yerlerden birbirine yapışır** (manifold
+olmayan kenarlar) ve yüzeyin bazı kısımları **birbirinin içinden geçer**
+(kendisiyle kesişme). Dilimleyiciler böyle bir dosyayı ya reddeder ya da yanlış
+basar.
+
+Sutura dikkatli bir cerrah gibi çalışır: hasarı tedavi eder, sağlam deriye
+dokunmaz. Onarım kısa bir adım zinciridir ve her adım yalnızca önceki adımlar iş
+bıraktıysa devreye girer:
+
+```
+dosyan ─► Flap ─► Aşama 1 temizlik ─► (hâlâ bozuk mu?) Graft ─► Aşama 2 katı ─► onarılmış kopya
+          delikleri   kenarları düzeltir,     yalnızca hasarlı        tek parça, kapalı,
+          yüzeyi      kalan delikleri         bölgeleri yeniden       basılabilir katı
+          sürdürerek  kapatır                 kurar
+          kapatır
+```
+
+1. **Flap: delikleri yüzeyin gittiği yöne doğru doldurur** (0.8.0'da yeni,
+   varsayılan açık). Klasik delik doldurma deliğe düz bir kapak koyar. Flap ise
+   çevredeki yüzeyi deliğin içine doğru devam ettirir; bir boşluğun üstüne sıvı
+   astar ya da epoksi sürmek gibi: yama, kenardan komşu yüzeyle aynı eğimle
+   çıkar, böylece kavisli bir yüzeydeki delik çukur ya da düz bir leke değil,
+   kavisli bir yama alır. Orijinal üçgenlerin yerinden oynamaz; yalnızca yama
+   yenidir. Flap bir deliği güvenle dolduramıyorsa onu bir sonraki adıma bırakır,
+   yani bir dosya Flap ile asla Flap'siz halinden kötü olmaz. Kapatmak için
+   `--no-flap` ya da *Flap yüzey delik doldurma* kutusu.
+2. **Aşama 1: temizlik (PyMeshLab).** Tekrarlanan ve bozuk üçgenleri siler,
+   hatalı kenarları çözer, tüm yüzleri aynı yöne çevirir ve hâlâ açık kalan
+   delikleri kapatır.
+3. **Graft: yalnızca hasar ciddiyse.** Model hâlâ açık ya da karışıksa Graft,
+   hasarlı bölgelerin üstüne yeni ve kapalı bir kabuk kurar ve bunu sağlam
+   orijinal yüzeye deri nakli gibi diker. Sağlam bölgeler orijinal üçgenlerini
+   korur; böylece oyma ya da süsleme gibi ince ayrıntılar kaybolmaz. Çok büyük
+   taramalar için boyut ve süre sınırı vardır, takılıp kalmaz.
+4. **Aşama 2: tek bir katı yap (manifold3d).** Sonucu geçerli, kapalı bir katı
+   olarak yeniden kurar; Bambu Studio'nun kullandığı kütüphanenin aynısı.
+5. **İsteğe bağlı ekler, varsayılan kapalı.** **Pansuman (Dressing)** tüm modeli
+   her zaman kapalı çıkan sanal bir kaplamaya batırır, ama ince ayrıntıyı
+   yumuşatabilir; bu yüzden Sutura onu yalnızca her şey başarısız olduğunda
+   *önerir*, karar senindir. **fTetWild** çok bozuk dosyalar için son çare
+   yeniden kurulumdur.
+
+Sutura her adımdan sonra delikleri ve hatalı kenarları, dosya diskten yeniden
+açılmış gibi tekrar sayar; işleri kötüleştiren adım çöpe atılır. Orijinal
+dosyan asla değişmez: onarılmış bir kopya ve tam olarak hangi adımların
+çalıştığını gösteren bir rapor alırsın. Dilimleyicilerin görmezden geldiği küçük
+kendisiyle kesişmeler raporlanır ama artık hata sayılmaz (`--si-mode repair`
+katı davranışı geri getirir).
+
 ## Neden aşamalı hat
 
 * **Aşama 1 - PyMeshLab (VCG).** Yinelenen ve dejenere yüzleri kaldırır,
@@ -515,9 +567,8 @@ Rapor, `flap` anahtarını yalnızca anahtar açıkken taşır: `ran`, `adopted`
 
 41 mesh'lik regresyonda ölçüm: Flap 13 mesh'te benimsendi ve koşu 41 mesh'in
 tamamında yeniden-yüklemede su geçirmez sonuçlandı. Korpusta toplam Aşama-1
-kendisiyle-kesişim sayısını 10.051'den 8.880'e düşürdü; framebaroque'da parça
-sayısını 2'den 1'e indirdi ve Aşama-1 kendisiyle-kesişimlerini 4.016'dan
-3.005'e düşürdü; thingi10k_1038441'de en büyük yüzey sapması 4,11 mm'den
+kendisiyle-kesişim sayısını 10.051'den 8.880'e düşürdü; framebaroque'da
+Aşama-1 kendisiyle-kesişimlerini 4.016'dan 3.005'e düşürdü; thingi10k_1038441'de en büyük yüzey sapması 4,11 mm'den
 0,60 mm'ye indi. Rust motoru 41 mesh'lik korpusun tamamında Flap adımını
 7,2 sn'de tutar.
 
@@ -1984,7 +2035,7 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
-- **v0.8.0 — 2026-TBD** — **Flap** yüzey delik doldurma (bir sınır halkasını düz
+- **v0.8.0 — 2026-10-03** — **Flap** yüzey delik doldurma (bir sınır halkasını düz
   kapak yerine komşu yüzeyi sürdürerek kapatır; varsayılan açık, `--no-flap` /
   `SUTURA_FLAP=0` kapatır); **Pansuman** (#16 yöntemi, isteğe bağlı değişken
   viskoziteli seviye kümesi kaplaması) ile su geçirmez olmayan sonuçlarda öneri ve

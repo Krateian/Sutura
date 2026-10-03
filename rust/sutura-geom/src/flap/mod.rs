@@ -1,6 +1,5 @@
 //! Flap: surface-based boundary-loop hole filling (Rust port of the validated
-//! Python prototype `/tmp/v073/epoxy/flap.py`, reference state documented in
-//! `report.md` §10 and `rust-spec.md`).
+//! Python oracle `flap_fill_python` in `sutura/sutura_engine/flap.py`).
 //!
 //! Every output triangle is either an input triangle (kept verbatim) or a flap
 //! face built from a hole's own boundary vertices plus new interior points.

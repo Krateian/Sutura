@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [0.8.0] - TBD
+## [0.8.0] - 2026-10-03
 
 ### Added
 
@@ -24,8 +24,8 @@ All notable changes to this project are documented here.
   Options → Experimental checkbox *Flap surface hole fill* (TR: *Flap yüzey delik
   doldurma*). Measured on the 41-mesh regression: Flap was adopted on 13 meshes
   and the run ended reload-watertight on all 41; across the corpus the total
-  Stage-1 self-intersection count fell from 10,051 to 8,880, framebaroque's part
-  count from 2 to 1 and its Stage-1 self-intersections from 4,016 to 3,005, and
+  Stage-1 self-intersection count fell from 10,051 to 8,880, framebaroque's
+  Stage-1 self-intersections from 4,016 to 3,005, and
   the maximum surface deviation on thingi10k_1038441 from 4.11 mm to 0.60 mm. The
   Rust engine keeps the whole 41-mesh corpus Flap step at 7.2 s.
 
@@ -101,7 +101,7 @@ All notable changes to this project are documented here.
   band) instead of only the bounding box, which fixes the small-model oversampling
   (thingi10k_100827 was evaluated at 7.3 % deviation at `diag/200`). Decimation
   (`meshing_decimation_quadric_edge_collapse`, `optimalplacement=False`,
-  `planarquadric=True`, per the `/tmp/v073/dressing/decim` benchmark) rolls back
+  `planarquadric=True`, per the decimation benchmark) rolls back
   atomically to the un-decimated coat when it would introduce holes, non-manifold
   edges or exact self-intersections. It is attempted after Graft and before fTetWild.
 
@@ -110,7 +110,7 @@ All notable changes to this project are documented here.
   set** (`F = s - r + delta_r`), never by vertex projection (which re-introduced 7,850
   self-intersections and stays permanently rejected). Full drain (`delta_r = r_base`)
   cuts healthy growth ~40 % (median +0.33 -> +0.20 mm raw) with a ~4 um median inward
-  dip and keeps defects covered, per the `/tmp/v073/dressing/offset` measurements; it
+  dip and keeps defects covered, per the offset measurements; it
   stays 0 holes / 0 non-manifold / 0 self-intersections. `dressing_coat(drain=...)`
   accepts a mode (`none`/`half`/`full`/`deep`), an explicit `delta_r` in mm, or `None`
   for the preset default (Quick off, Balanced/Thorough full, Extreme deep). CLI

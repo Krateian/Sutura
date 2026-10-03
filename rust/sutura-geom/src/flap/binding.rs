@@ -78,7 +78,7 @@ fn quality_dict<'py>(py: Python<'py>, q: &QualityAgg) -> PyResult<Bound<'py, PyD
 
 /// Fill boundary loops with minimum-area patches (Flap).
 ///
-/// See the Python prototype `/tmp/v073/epoxy/flap.py` for the reference
+/// See the Python oracle `flap_fill_python` (`sutura_engine/flap.py`) for the reference
 /// semantics.  Returns `(verts, tris, report)`.
 #[pyfunction]
 #[pyo3(name = "flap_fill")]
