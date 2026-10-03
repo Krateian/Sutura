@@ -14,6 +14,7 @@ Provides:
 from typing import Any, Optional, Tuple
 import numpy as np
 
+import topology
 from sutura_engine.xray import reload_strict_holes_nm, weld_reload_equivalent
 
 P_WELD_MAX_NUDGE_ATTEMPTS = 12
@@ -28,7 +29,7 @@ def _separate_weld_collisions(verts: np.ndarray, tris: np.ndarray) -> Tuple[np.n
     if len(v64) == 0 or len(t) == 0:
         return v64.astype(np.float32), t
     v32 = v64.astype(np.float32)
-    inv = np.asarray(np.unique(v32, axis=0, return_inverse=True)[1]).reshape(-1)
+    inv = topology.weld_vertices(v32)[1]
     counts = np.bincount(inv, minlength=int(inv.max()) + 1)
     if (counts <= 1).all():
         return v32, t
@@ -46,7 +47,7 @@ def _separate_weld_collisions(verts: np.ndarray, tris: np.ndarray) -> Tuple[np.n
         step = ulp[nonrep] * rank[nonrep] * (2.0 ** (attempt + 1))
         d[nonrep] += step[:, None] * direction[None, :]
         d32 = d.astype(np.float32)
-        if len(np.unique(d32, axis=0)) == len(d32):
+        if len(topology.weld_vertices(d32)[0]) == len(d32):
             return d32, t
     return v32, t
 

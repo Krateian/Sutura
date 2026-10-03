@@ -33,6 +33,7 @@ from mesh_classifier import classify_mesh
 import repair_score
 import history
 import local_exact
+import topology
 import triage
 import methods as method_registry
 
@@ -151,7 +152,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -3057,27 +3058,7 @@ def weld_reload_equivalent(verts, tris):
     faces dropped, unreferenced vertices removed. Pure numpy (no pymeshlab) so
     the method registry's guard can apply the same rule without importing it.
     """
-    v = np.asarray(verts, dtype=np.float32)
-    t = np.asarray(tris, dtype=np.int64)
-    if len(v) == 0 or len(t) == 0:
-        return v, t
-    unique, inverse = np.unique(v, axis=0, return_inverse=True)
-    inverse = np.asarray(inverse).reshape(-1)
-    t = inverse[t.reshape(-1)].reshape(t.shape).astype(np.int64)
-    nondeg = ((t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2])
-              & (t[:, 0] != t[:, 2]))
-    t = t[nondeg]
-    if len(t) == 0:
-        return np.zeros((0, 3), dtype=np.float32), t
-    # drop duplicate faces (same unordered vertex set), keep first occurrence
-    keys = np.sort(t, axis=1)
-    _uniq, first = np.unique(keys, axis=0, return_index=True)
-    t = t[np.sort(first)]
-    # drop unreferenced vertices and remap
-    used = np.unique(t)
-    remap = np.full(len(unique), -1, dtype=np.int64)
-    remap[used] = np.arange(len(used))
-    return unique[used], remap[t]
+    return topology.weld_reload_equivalent(verts, tris)
 
 
 def _repair_welded_topology(ml, verts, tris):
@@ -3137,7 +3118,7 @@ def _separate_weld_collisions(verts, tris):
     if len(v64) == 0 or len(t) == 0:
         return v64.astype(np.float32), t
     v32 = v64.astype(np.float32)
-    inv = np.asarray(np.unique(v32, axis=0, return_inverse=True)[1]).reshape(-1)
+    inv = topology.weld_vertices(v32)[1]
     counts = np.bincount(inv, minlength=int(inv.max()) + 1)
     if (counts <= 1).all():
         return v32, t
@@ -3155,7 +3136,7 @@ def _separate_weld_collisions(verts, tris):
         step = ulp[nonrep] * rank[nonrep] * (2.0 ** (attempt + 1))
         d[nonrep] += step[:, None] * direction[None, :]
         d32 = d.astype(np.float32)
-        if len(np.unique(d32, axis=0)) == len(d32):
+        if len(topology.weld_vertices(d32)[0]) == len(d32):
             return d32, t
     return v32, t
 

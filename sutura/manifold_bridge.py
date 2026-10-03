@@ -52,6 +52,37 @@ def _is_debris_part(part):
         return False
 
 
+def _drop_post_union_debris(man, report):
+    """Drop micro-slivers the boolean union isolated from the input shells.
+
+    The pre-union filter removes flat/zero-volume shells, but the CSG union
+    itself can clip intersecting shells at shallow angles and leave tiny
+    disconnected fragments that no slicer should print. Decompose the unioned
+    solid, keep the largest part unconditionally and drop only parts that
+    satisfy ``_is_debris_part``; the surviving parts are already disjoint, so
+    they are reassembled with ``compose`` (no further CSG cuts, which could
+    create new slivers). Records ``report['post_union_debris_dropped']`` when
+    anything is dropped and returns ``(manifold, dropped)``.
+    """
+    parts = man.decompose()
+    if len(parts) <= 1:
+        return man, 0
+    vols = [abs(float(p.volume())) for p in parts]
+    largest_idx = int(np.argmax(vols))
+    kept = [p for i, p in enumerate(parts)
+            if i == largest_idx or not _is_debris_part(p)]
+    dropped = len(parts) - len(kept)
+    if not dropped:
+        return man, 0
+    # kept is never empty: the largest part is always retained.
+    if len(kept) == 1:
+        man = kept[0]
+    else:
+        man = m3d.Manifold.compose(kept)
+    report['post_union_debris_dropped'] = int(dropped)
+    return man, dropped
+
+
 def write_obj(path, verts, tris):
     with open(path, 'w') as f:
         f.write('# manifold3d repair output\n')
@@ -83,6 +114,7 @@ def run_bridge(src, dst):
 
     report['volume_before'] = float(man.volume())
 
+    # Pre-union debris filter: drop collapsed/flat shells before boolean union.
     parts = man.decompose()
     report['shells_found'] = len(parts)
     if len(parts) > 1:
@@ -98,6 +130,9 @@ def run_bridge(src, dst):
         else:
             man = m3d.Manifold.batch_boolean(kept, m3d.OpType.Add)
         report['volume_after_union'] = float(man.volume())
+
+    # Post-union debris filter: CSG can cut or isolate micro-slivers.
+    man, _ = _drop_post_union_debris(man, report)
 
     out = man.to_mesh()
     out_verts = np.asarray(out.vert_properties)[:, :3]

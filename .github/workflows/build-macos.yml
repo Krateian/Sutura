@@ -110,7 +110,7 @@ jobs:
             "--hidden-import" "pymeshlab" "--hidden-import" "manifold3d"
             "--hidden-import" "trimesh"
             "--hidden-import" "classification" "--hidden-import" "confidence"
-            "--hidden-import" "defects" "--hidden-import" "mesh_classifier"
+            "--hidden-import" "defects" "--hidden-import" "topology" "--hidden-import" "mesh_classifier"
             "--hidden-import" "history" "--hidden-import" "heatmap"
             "--hidden-import" "heatmap_render" "--hidden-import" "viewer_common"
             "--hidden-import" "updater" "--hidden-import" "numpy"
@@ -162,7 +162,7 @@ jobs:
             --hidden-import pymeshlab --hidden-import manifold3d \
             --hidden-import trimesh \
             --hidden-import classification --hidden-import confidence \
-            --hidden-import defects --hidden-import mesh_classifier \
+            --hidden-import defects --hidden-import topology --hidden-import mesh_classifier \
             --hidden-import history --hidden-import heatmap \
             --hidden-import heatmap_render --hidden-import viewer_common \
             --hidden-import updater --hidden-import numpy \

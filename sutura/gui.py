@@ -707,10 +707,10 @@ STRINGS = {
         'method_name_transplant': 'Nakil (yineleme, otomatik)',
         'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
         'method_name_graft': 'Graft (kabuk sarma)',
-        'method_name_dressing': 'Pansuman (viskozite kaplama)',
+        'method_name_dressing': 'Pansuman (Dressing)',
         'method_name_mirror_complete': 'Aynalı Tamamlama',
         'method_name_wall_thicken': 'Duvar Kalınlaştır',
-        'method_tip_dressing': 'PANSUMAN (#16) — değişken viskoziteli hacimsel '
+        'method_tip_dressing': 'PANSUMAN (Dressing) (#16) — değişken viskoziteli hacimsel '
             'kaplama: genelleştirilmiş sarımlı, dar bantlı bir seviye '
             'kümesi çıkarır; yarıçap sağlıklı ince yüzeyde ince, hasar '
             'bölgesinde daha kalındır. Yapısı gereği two-manifold ve '
@@ -751,7 +751,7 @@ STRINGS = {
             "Hızlı Temizlik (#1), Yerel Onarım (#2), Tam Onarım (#3), Birleştir (#4), Kendini Onarım (#5), "
             "Kesin Onarım (#6), fTetWild (#7), Balon (#8), Arka Plaka (#9), İskelet (#10), "
             "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15), "
-            "Pansuman (#16)."
+            "Pansuman (Dressing) (#16)."
         ),
         'about_credits': (
             "Üçüncü Taraf Uyarlayıcılar ve Algoritmalar:\n"
@@ -882,7 +882,7 @@ STRINGS = {
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
         'repair_log_graft': 'Graft (kabuk sarma): %d yüz, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detay kaybı: %s',
-        'repair_log_dressing': 'Pansuman (viskozite kaplama): %d yüz, voxel=%s, r=%s',
+        'repair_log_dressing': 'Pansuman (Dressing): %d yüz, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Pansuman sadakati: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
@@ -910,16 +910,16 @@ STRINGS = {
                     'yumuşatır. Özgün üçgenler aynen korunur; yalnızca '
                     'yeniden-yükleme dürüst delik + iki-manifold-olmayan '
                     'sayısı kötüleşmezse benimsenir.',
-        'dressing_label': 'Pansuman (viskozite kaplama)',
-        'dressing_tip': 'İsteğe bağlı (#16): kendisiyle-kesişimleri ve '
+        'dressing_label': 'Pansuman (Dressing)',
+        'dressing_tip': 'Pansuman (Dressing) — isteğe bağlı (#16): kendisiyle-kesişimleri ve '
                         'karmaşık açık kusurları genelleştirilmiş sarımlı '
                         'alanın değişken viskoziteli dar bantlı seviye '
                         'kümesiyle kaplar. Yapısı gereği two-manifold ve '
                         'kendisiyle-kesişimsizdir; Graft sonrası ve fTetWild '
                         'öncesi denenir. Korpus üzerinde ölçülene kadar '
                         'varsayılan olarak kapalıdır.',
-        'dressing_force_adopt_label': 'Pansuman: zorla benimse (deforme olabilir)',
-        'dressing_force_adopt_tip': 'Pansuman\'ın şekil koruma kapılarını '
+        'dressing_force_adopt_label': 'Pansuman (Dressing): zorla benimse (deforme olabilir)',
+        'dressing_force_adopt_tip': 'Pansuman (Dressing)\'in şekil koruma kapılarını '
                                     '(hacim / bileşen sayısı / sağlıklı yüzey '
                                     'normal açısı / kaplama sadakati) atlar ve '
                                     'yine de kesin su geçirmez ve '
@@ -927,11 +927,11 @@ STRINGS = {
                                     'kaplamayı benimser. Parça deforme olabilir; '
                                     'su geçirmez olmayan sonuçta önerilen '
                                     'seçeneğin aynısı.',
-        'try_dressing_btn': '\u26a0 Dressing ile dene (su geçirmez yapar, ama '
+        'try_dressing_btn': '\u26a0 Pansuman (Dressing) ile dene (su geçirmez yapar, ama '
                             'parça deforme olabilir)',
-        'try_dressing_btn_n': '\u26a0 %d dosyada Dressing ile dene (su geçirmez, '
+        'try_dressing_btn_n': '\u26a0 %d dosyada Pansuman (Dressing) ile dene (su geçirmez, '
                               'ama parça deforme olabilir)',
-        'try_dressing_tip': 'Önerilen dosyaları Dressing şekil-koruma kapılarını '
+        'try_dressing_tip': 'Önerilen dosyaları Pansuman (Dressing) şekil-koruma kapılarını '
                             'atlatarak yeniden çalıştırır. Sonuç kesin su '
                             'geçirmez ve kendisiyle-kesişimsizdir, ancak ince '
                             'detay kaybolabilir.',
@@ -963,7 +963,7 @@ STRINGS = {
                        'tetiklemez ve bir sonucu başarısız saymaz (delik ve '
                        'non-manifold kenarlar her zaman sayılır). "Onar" '
                        'kalan kendisiyle-kesişimleri hasar sayar ve otomatik '
-                       'Dressing yedeğini çalıştırır. "Ölçme" kesin '
+                       'Pansuman (Dressing) yedeğini çalıştırır. "Ölçme" kesin '
                        'sınıflandırıcıyı atlar ve ölçülmedi olarak bildirir.',
         'si_mode_report': 'Yalnızca bildir',
         'si_mode_repair': 'Onar',

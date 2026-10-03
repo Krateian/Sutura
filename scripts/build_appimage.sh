@@ -93,7 +93,7 @@ SUTURA_GEOM_REQUIRED=1 "$SCRIPT_DIR/install_sutura_geom.sh" "$LIB/venv311/bin/py
 "$LIB/venv311/bin/python" -c "import sutura_geom; print('sutura_geom OK (venv311 3.11)')"
 
 echo "==> copying application modules"
-for f in repair.py gui.py classification.py defects.py mesh_classifier.py \
+for f in repair.py gui.py classification.py defects.py topology.py mesh_classifier.py \
          mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py csg_bridge.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \
          before_after_render.py viewer_common.py viewer_data_render.py \
          confidence.py history.py repair_score.py open.sh __init__.py; do

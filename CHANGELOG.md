@@ -2,6 +2,54 @@
 
 All notable changes to this project are documented here.
 
+## [0.8.1] - 2026-10-03
+
+### Added
+
+- **Rust topology kernel (`sutura_geom.edge_table`, `sutura_geom.weld_vertices`, `sutura_geom.weld_reload_equivalent`).**
+  Integer and float array topology primitives are now accelerated by a dedicated Rust kernel in `sutura_geom`,
+  routing through the new `sutura.topology` module. When the prebuilt extension is absent, calls fall back
+  transparently to a pure-numpy oracle (`_edge_table_numpy`, `_weld_vertices_numpy`, `_weld_reload_equivalent_numpy`).
+  The oracle can be explicitly forced via `SUTURA_TOPOLOGY=python` or `topology.set_engine('python')`. Parity tests
+  verify bit-for-bit identity across 86 diverse test geometries. In 3-round interleaved benchmarks across 5 representative
+  models, the kernel delivers +4.0% to +29.3% end-to-end wall-clock speedups (e.g. thingi10k_1038441 from 14.79 s to 10.45 s),
+  with 40 of 41 corpus meshes producing bit-for-bit identical SHA256 hashes (the single difference being the nondeterministic
+  fTetWild tier on thingi10k_100827).
+
+### Fixed
+
+- **Stage-2 post-union micro-debris filter.**
+  In `sutura.manifold_bridge`, CSG boolean union operations (`m3d.Manifold.batch_boolean`) across complex multi-shell
+  meshes can isolate microscopic, detached slivers at intersecting feature boundaries. A second debris filter now inspects
+  the decomposition immediately after union, pruning zero-volume micro-slivers (V <= 1e-3 mm^3 or relative
+  thickness 2V/A <= 1e-4 * diag) while unconditionally anchoring the largest body and preserving all
+  genuine solid parts. Disjoint kept parts are assembled via `m3d.Manifold.compose` without invoking further CSG cuts.
+  On an ornate frame scan (~400k triangles), this eliminates a 6-face micro-sliver (V ~ 2.15e-5 mm^3)
+  and reduces the slicer part count from 2 to 1 (0 open edges, manifold). On thingi10k_1038441, 10 boolean
+  micro-slivers are pruned (the slicer part count drops from 3 to 1, the manifold3d shell count from 11 to 1)
+  and exact self-intersections drop from 283 to 268, while genuine multi-solid assemblies remain completely untouched
+  (thingi10k_1038439 keeps 3 parts, thingi10k_228302 keeps 8 parts). Under the hood the filter is unconditional and
+  on by default; it only ever removes parts that satisfy the flat/zero-volume debris test.
+
+- **Non-manifold half-edge face attribution in `defects.detect_non_manifold`.**
+  The non-manifold region detector mapped half-edges in the block-stacked edge array `[tris[:, [0,1]], tris[:, [1,2]], tris[:, [2,0]]]`
+  using `np.repeat(..., 3)` (h // 3, face-major) instead of `np.tile(..., 3)` (h % F). Corrected the mapping so
+  reported `faces_idx` and `verts_idx` in `defects.non_manifold` and the GUI defect heatmap accurately identify the triangles
+  incident to non-manifold edges.
+
+  Measured effect on the 41-model corpus: the correction changes the `defects` report on 8 models, 7 of which also show
+  corrected counts in the `flap`/`p_weld` diagnostic metadata. No repair decision, output geometry, watertight verdict,
+  part count or self-intersection count changes: 40 of 41 outputs remain byte-identical, the only differing model
+  (thingi10k_100827) being the nondeterministic fTetWild case. The Rust topology kernel does not implement this pairing
+  and needs no corresponding change.
+
+### Changed
+
+- **Documentation and localization.**
+  Updated `README.md` test suite references to reflect the current test inventory (63 Python test modules, 92 Rust unit tests).
+  Standardized Turkish localization of Dressing (method #16) as "Pansuman (Dressing)" across documentation, GUI options,
+  and CLI hints.
+
 ## [0.8.0] - 2026-10-03
 
 ### Added
