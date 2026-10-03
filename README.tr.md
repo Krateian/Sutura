@@ -139,16 +139,19 @@ sonucu değiştirmedi. 40 gerçek örnekte 3 mesh'i daha kesin su geçirmez yapt
 (31 → 34); 115 mesh'lik corpus'ta hiçbirini yapmadı, bu yüzden `full`'un
 parçası değildir.
 
-**Self-intersection politikası** `--si-mode {report,repair,off}` ile seçilir
-(ya da `SUTURA_SI_MODE`, ya da GUI Seçenekler → Onarım açılır listesi).
+**Self-intersection politikası** `--si-mode {repair,report,off}` ile seçilir
+(ya da `SUTURA_SI_MODE`, ya da GUI Seçenekler → Onarım açılır listesi *Kendisiyle-kesişim*
+[*Yalnızca bildir* / *Onar* / *Ölçme*]).
 `report` (varsayılan) kalan self-intersection sayısını ölçüp bildirmeye devam
-eder, ancak tek başına self-intersection ne derin onarım merdivenini
-tetikler ne de bir sonucu başarısız sayar — otomatik katmanları ve nihai
-kararı yalnızca delik ve non-manifold kenarlar belirler; sayı
-`stage1.self_intersections_remaining` alanında görünür kalır. `repair`, pozitif
-bir sayının hasar sayıldığı ve otomatik Dressing yedeğini tetikleyebildiği
-önceki davranışı geri getirir. `off`, kesin sınıflandırıcıyı atlar ve sayıyı
-`null` ("ölçülmedi") olarak bildirir. Açık zorlama bayrakları
+eder, ancak self-intersection'lar artık kapalı bir 2-manifold yüzeyde
+`watertight` sınıflandırma kararını engellemez ve tek başına derin onarım
+merdivenini tetiklemez — otomatik katmanları ve nihai kararı yalnızca delik
+ve non-manifold kenarlar belirler; sayı `stage1.self_intersections_remaining`
+alanında görünür kalır. Sıfır delik ve sıfır non-manifold kenara sahip bir mesh,
+kalan self-intersection'lar olsa dahi `report` modunda `watertight` olarak
+sınıflandırılır. `repair`, pozitif bir sayının hasar sayıldığı ve otomatik
+Dressing yedeğini tetikleyebildiği önceki davranışı geri getirir. `off`, kesin
+sınıflandırıcıyı atlar ve sayıyı `null` ("ölçülmedi") olarak bildirir. Açık zorlama bayrakları
 (`--experimental-dressing`, `--experimental-fallback-ftetwild`) politikayı
 geçersiz kılar ve kalan self-intersection'lara yine de müdahale eder. Korumalı
 `si_excise_recap` geçişi her modda kendi bağımsız sayımını korur. Seçilen mod
@@ -535,16 +538,19 @@ tüm-kabuk topolojik katlanmaları için doğru araç yapar.
    *Boşaltma* açılır listesi ön ayar varsayılanını geçersiz kılar (Hızlı
    kapalı, Dengeli/Titiz tam, Aşırı derin).
 5. **Tek bir varsayılan anahtarın arkasında Auto-merdiven yedeği, KAPALI
-   gönderilir.** Anahtar açıkken (`DRESSING_DEFAULT_ENABLED` /
+   gönderilir.** #13 Graft (kelimesi kelimesine hibrit) yöntemi, sağlıklı orijinal
+   üçgenleri mümkün olduğunca aynen koruyarak Aşama 1'den sonraki varsayılan otomatik
+   onarım adımı olarak kalır. Anahtar açıkken (`DRESSING_DEFAULT_ENABLED` /
    `SUTURA_DRESSING_DEFAULT=1`) Auto merdiveni Dressing'i Graft'tan sonra ve
-   fTetWild'dan önce son-çare katman olarak ele alır ve yalnızca merdivenin o an
-   tuttuğu sonuçta hâlâ delik, non-manifold kenar veya pozitif tam
-   kendisiyle-kesişim sayısı varsa dener (yalnızca-SI artığı da hasar sayılır).
-   `--experimental-dressing` / `SUTURA_DRESSING=1` / GUI onay kutusu hasardan
-   bağımsız olarak **zorlar**; `--no-dressing` / `SUTURA_DRESSING=0` kapatır.
-   Benimseme katı-su geçirmez, tam-SI'sız, ön ayarın kaplama→girdi sadakat kapısı
-   ve aşağıdaki şekil-koruma kapılarını gerektirir. **Anahtar varsayılan olarak
-   KAPALIDIR**: ince-detaylı bir kabartmada (framebaroque) voxel merdiveni,
+   fTetWild'dan önce isteğe bağlı bir yedek olarak dener; `--si-mode repair` altında
+   pozitif bir kesin self-intersection sayısı da katmanı tetikler (varsayılan
+   `--si-mode report` altında yalnızca kalan delikler ve non-manifold kenarlar
+   yedekleri tetikler). `--experimental-dressing` / `SUTURA_DRESSING=1` / GUI onay
+   kutusu *Pansuman (viskozite kaplaması)* çalışmaya **zorlar** (uyarı:
+   *watertight, but the shape may deform / fine detail may be lost*);
+   `--no-dressing` / `SUTURA_DRESSING=0` kapatır. Benimseme katı-su geçirmez,
+   tam-SI'sız, ön ayarın kaplama→girdi sadakat kapısı ve aşağıdaki şekil-koruma
+   kapılarını gerektirir. **Anahtar varsayılan olarak KAPALIDIR**: ince-detaylı bir kabartmada (framebaroque) voxel merdiveni,
    ortalama sapma ~0,08 mm kalmasına rağmen olukları görünür biçimde düzleştirir,
    bu yüzden bu kalite sorunu düzeltilene kadar Dressing böyle parçalarda
    kelimesi kelimesine Graft/fTetWild sonucunun yerini almamalıdır.
@@ -584,19 +590,25 @@ tüm-kabuk topolojik katlanmaları için doğru araç yapar.
    `thingi10k_1038439`'un üç gerçek madde yumrusunu korudu; atılan sayılar ve hacim
    `report['dressing']['cleanup']` içinde raporlanır.
 9. **İsteğe bağlı öneri ve `--dressing-force-adopt`.** Düz bir Auto onarımı
-   geometriyi hâlâ açık, non-manifold veya kendisiyle-kesişir bıraktığında rapor
-   bir `suggestions` listesi taşır (`method = dressing`; kusur `issues`'ından
-   ayrıdır, böylece kategori değişmez). `--human` raporu işaretli bir ipucu basar:
-   Dressing hiç çalışmadıysa `--experimental-dressing`'e, Dressing çalışıp
-   kaplaması şekil kapıları tarafından reddedildiyse `--dressing-force-adopt`'a
+   geometriyi hâlâ açık veya non-manifold bıraktığında (varsayılan `--si-mode report`
+   altında), rapor bir `suggestions` listesi taşır (`method = dressing`; kusur
+   `issues`'ından ayrıdır, böylece kategori değişmez). `--human` raporu işaretli bir
+   ipucu basar (`⚠ Not watertight…`): Dressing hiç çalışmadıysa
+   `--experimental-dressing`'e:
+   `  ⚠ Not watertight. You can try Dressing: --experimental-dressing (watertight, but the shape may deform / fine detail may be lost).`
+   Dressing çalışıp kaplaması şekil kapıları tarafından reddedildiyse `--dressing-force-adopt`'a:
+   `  ⚠ Not watertight. Dressing ran but its result was rejected by the quality gate (...).`
+   `    Force it with --dressing-force-adopt if you accept the deformation (the shape may deform).`
    işaret eder (parantez içinde başarısız hacim / normal sayılarıyla).
    `--dressing-force-adopt` `--experimental-dressing`'i gerektirir ve hacim /
    bileşen / normal / sadakat kapılarını atlar; yine de kesin su geçirmez ve
    kendisiyle-kesişimsiz bir aday şarttır; kaydın `forced` alanı kapıların
    atlandığını işaretler. GUI aynı bayrağı toplu bir Options → Deneysel onay
-   kutusu olarak sunar ve herhangi bir sonucun ipucu verdiği bir toplu işten
-   sonra, tam o dosyaları bayrakla yeniden çalıştıran (ve onay kutusunu işaretleyen)
-   engellemeyen bir **⚠ Dressing ile dene** düğmesi gösterir.
+   kutusu *Pansuman: zorla benimse (deforme olabilir)* olarak sunar ve herhangi bir
+   sonucun ipucu verdiği bir toplu işten sonra, tam o dosyaları bayrakla yeniden
+   çalıştıran (ve onay kutusunu işaretleyen) engellemeyen bir **⚠ Dressing ile dene
+   (su geçirmez yapar, ama parça deforme olabilir)** (veya *⚠ %d dosyada Dressing ile dene
+   (su geçirmez, ama parça deforme olabilir)*) düğmesi gösterir.
 
 #### Dürüst su geçirmezlik kararı (kaydet/yeniden yükle sonrası doğrulanır)
 

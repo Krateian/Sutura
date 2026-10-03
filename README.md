@@ -136,12 +136,16 @@ watertight (31 → 34); on the 115-mesh corpus it gained none, which is why it
 is not part of `full`.
 
 The **self-intersection policy** is selected with `--si-mode
-{report,repair,off}` (or `SUTURA_SI_MODE`, or the GUI Options → Repair combo).
-`report` (the default) still measures and reports the residual
-self-intersection count, but a self-intersection count on its own neither
-escalates the deep-repair ladder nor fails a result — only holes and
+{repair,report,off}` (or `SUTURA_SI_MODE`, or the GUI Options → Repair combo
+*Self-intersections* [Report only / Repair / Do not measure]).
+`report` (the default) measures and reports the residual
+self-intersection count, but self-intersections no longer block the
+`watertight` classification verdict on a closed 2-manifold surface, nor do
+they escalate the deep-repair ladder on their own — only holes and
 non-manifold edges drive the automatic tiers and the verdict; the count stays
-visible in `stage1.self_intersections_remaining`. `repair` restores the
+visible in `stage1.self_intersections_remaining`. A mesh with zero holes and
+zero non-manifold edges is classified as `watertight` under `report` even when
+residual self-intersections remain. `repair` restores the
 earlier behaviour where a positive count counts as damage and can trigger the
 automatic Dressing fallback. `off` skips the exact classifier and reports the
 count as `null` ("not measured"). Explicit force flags
@@ -531,14 +535,17 @@ folds where local patch excision and hybrid splicing fail.
    covered. `--dressing-drain MODE|mm` / `SUTURA_DRESSING_DRAIN` / the GUI
    *Drain* combo override the preset default (Quick off, Balanced/Thorough
    full, Extreme deep).
-5. **Auto-ladder fallback behind a single default switch, shipped OFF.** With
-   the switch on (`DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT=1`) the
-   Auto ladder treats Dressing as the last-resort tier after Graft and before
-   fTetWild, and tries it only when the result the ladder currently holds still
-   has holes, non-manifold edges or a positive exact self-intersection count
-   (an SI-only residual counts as damage). `--experimental-dressing` /
-   `SUTURA_DRESSING=1` / the GUI checkbox **force** it to run regardless of
-   damage; `--no-dressing` / `SUTURA_DRESSING=0` disable it. Adoption requires
+5. **Auto-ladder fallback behind a single default switch, shipped OFF.** Method
+   #13 Graft (verbatim hybrid) remains the default automated repair pass after
+   Stage 1 (it keeps healthy original triangles verbatim where it can). With the
+   switch on (`DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT=1`) the Auto
+   ladder treats Dressing as an opt-in fallback after Graft and before fTetWild;
+   under `--si-mode repair`, a positive exact self-intersection count also
+   triggers the tier (under default `--si-mode report`, only remaining holes and
+   non-manifold edges trigger fallbacks). `--experimental-dressing` /
+   `SUTURA_DRESSING=1` / the GUI checkbox *Dressing (viscosity coat)* **force**
+   it to run (warning: *watertight, but the shape may deform / fine detail may be lost*);
+   `--no-dressing` / `SUTURA_DRESSING=0` disable it. Adoption requires
    strict-watertight, exact-SI-free, the preset's coat→input fidelity gate, and
    the shape-preservation gates below. **The switch is OFF by default**: on a
    fine-detail relief (framebaroque) the voxel staircase visibly flattens
@@ -581,18 +588,25 @@ folds where local patch excision and hybrid splicing fail.
    `thingi10k_1038439`; the removed counts and volume are reported in
    `report['dressing']['cleanup']`.
 9. **Opt-in suggestion and `--dressing-force-adopt`.** When a plain Auto
-   repair still leaves the geometry open, non-manifold or self-intersecting,
-   the report carries a `suggestions` list (`method = dressing`, separate from
-   the defect `issues`, so the category is unchanged). The `--human` report
-   prints a marked hint that points at `--experimental-dressing` when Dressing
-   never ran, or at `--dressing-force-adopt` when Dressing ran and its coat was
-   rejected by the shape gates (with the failed volume / normal numbers in
-   parentheses). `--dressing-force-adopt` implies `--experimental-dressing` and
+   repair still leaves the geometry open or non-manifold (under default
+   `--si-mode report`), the report carries a `suggestions` list (`method = dressing`,
+   separate from the defect `issues`, so the category is unchanged). The `--human`
+   report prints a marked hint (`⚠ Not watertight…`) that points at
+   `--experimental-dressing` when Dressing never ran:
+   `  ⚠ Not watertight. You can try Dressing: --experimental-dressing (watertight, but the shape may deform / fine detail may be lost).`
+   or at `--dressing-force-adopt` when Dressing ran and its coat was rejected by
+   the shape-preservation gates (with the failed volume / normal numbers in
+   parentheses):
+   `  ⚠ Not watertight. Dressing ran but its result was rejected by the quality gate (...).`
+   `    Force it with --dressing-force-adopt if you accept the deformation (the shape may deform).`
+   `--dressing-force-adopt` implies `--experimental-dressing` and
    skips the volume / components / normal / fidelity gates while STILL
    requiring a strict-watertight, self-intersection-free candidate; the record's
    `forced` field marks when the gates were bypassed. The GUI exposes the same
-   flag as a batch-wide Options → Experimental checkbox and, after a batch in
-   which any result offered the hint, a non-blocking **⚠ Try Dressing** button
+   flag as a batch-wide Options → Experimental checkbox *Dressing: force adopt (may deform)*
+   and, after a batch in which any result offered the hint, a non-blocking button
+   *⚠ Try Dressing (makes it watertight, but the part may deform)* (or
+   *⚠ Try Dressing on %d file(s) (watertight, but the part may deform)*)
    that re-runs exactly those files with the flag (and sets the checkbox).
 
 #### Honest watertight verdict (verified after save/reload)
