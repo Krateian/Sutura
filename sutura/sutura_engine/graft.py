@@ -47,6 +47,7 @@ import numpy as np
 import trimesh
 
 import sutura_geom
+import topology
 from defects import detect as detect_defects
 from repair import (
     _damaged_region,
@@ -257,17 +258,13 @@ def _vertex_normals(v, t):
 
 
 def _unique_edges(t):
-    he = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]], axis=0)
-    key = np.sort(he, axis=1)
-    uniq, inv = np.unique(key, axis=0, return_inverse=True)
-    return uniq, np.asarray(inv).reshape(-1)
+    edges, _counts, inv = topology.edge_table(np.asarray(t, dtype=np.int64))
+    return edges, inv
 
 
 def _edge_use_counts(t):
-    he = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]], axis=0)
-    key = np.sort(he, axis=1)
-    uniq, counts = np.unique(key, axis=0, return_counts=True)
-    return uniq, np.asarray(counts)
+    edges, counts, _inv = topology.edge_table(np.asarray(t, dtype=np.int64))
+    return edges, counts
 
 
 def _edge_lengths(v, edges):

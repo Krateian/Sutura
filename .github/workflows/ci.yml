@@ -287,6 +287,12 @@ jobs:
       - name: "Test: Graft / shell wrap (method #13)"
         run: ./.venv/bin/python tests/test_shell_wrap.py
 
+      # Pins the Rust topology kernel (edge_table / weld_vertices /
+      # weld_reload_equivalent) against the numpy oracle bit-for-bit, and
+      # proves the transparent numpy fallback for a wheel without the kernel.
+      - name: "Test: topology kernel Rust/numpy parity"
+        run: ./.venv/bin/python tests/test_topology_parity.py
+
       # Pins the Rust flap_fill port against the numpy oracle (both use
       # trimesh/scipy installed above; the test skips without the extension).
       - name: "Test: Flap Rust/numpy parity"
