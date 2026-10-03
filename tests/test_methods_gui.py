@@ -331,19 +331,21 @@ def main():
     captured.clear()
     gui.subprocess.Popen = _fake_popen
     try:
-        rw = gui.RepairWorker([b])
+        rw = gui.RepairWorker([b], flap=False)
         rw._run_one(b)
     finally:
         gui.subprocess.Popen = orig_popen
+    assert '--no-flap' in captured['args'], captured['args']
     assert '--flap' not in captured['args'], captured['args']
     print('ok  RepairWorker Flap flag')
 
-    # the Flap checkbox maps to MainWindow._flap and carries default False
-    w.chk_flap.setChecked(True)
-    assert w._flap is True
+    # the Flap checkbox maps to MainWindow._flap and is checked by default
+    assert w._flap is True and w.chk_flap.isChecked()
     w.chk_flap.setChecked(False)
     assert w._flap is False
-    assert (w.chk_flap, False) in w._options_defaults
+    w.chk_flap.setChecked(True)
+    assert w._flap is True
+    assert (w.chk_flap, True) in w._options_defaults
 
     # SI policy: default 'report' adds no flag; 'repair'/'off' add --si-mode
     captured.clear()

@@ -1737,12 +1737,30 @@ def resolve_graft(no_graft=False, force=False, environ=None):
 
 FLAP_ENV = 'SUTURA_FLAP'
 
+# Single default switch for the Flap pre-pass.  Flap is ON by default: the
+# module constant below, overridable by the SUTURA_FLAP_DEFAULT env var.  The
+# CLI honours --no-flap to disable it per run; the library default in
+# ``repair_mesh_from_arrays`` stays ``False`` so direct library calls keep
+# their pre-Flap behaviour.
+FLAP_DEFAULT_ENABLED = True
+
+
+def _flap_default_enabled():
+    """The single Flap-default switch: module constant overridden by the
+    ``SUTURA_FLAP_DEFAULT`` env var (truthy = run the pre-pass by default)."""
+    raw = os.environ.get('SUTURA_FLAP_DEFAULT')
+    if raw is None:
+        return bool(FLAP_DEFAULT_ENABLED)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
 
 def resolve_flap(no_flap=False, force=False, environ=None):
     """Resolve the ``flap`` argument (surface-based hole filler, Stage 1).
 
-    The flap is OFF by default: ``--flap`` / ``force`` enables it, ``--no-flap``
-    disables it, and ``SUTURA_FLAP`` may set ``0/1``. The library default in
+    Precedence: ``--no-flap`` disables, ``--flap`` / ``force`` enables,
+    ``SUTURA_FLAP`` (``0/1/true/false/...``) overrides both; with none set the
+    answer follows the single default switch (:data:`FLAP_DEFAULT_ENABLED` or
+    the ``SUTURA_FLAP_DEFAULT`` env var).  The library default in
     ``repair_mesh_from_arrays`` stays ``False`` so direct library calls keep
     their pre-Flap behaviour.
     """
@@ -1757,7 +1775,7 @@ def resolve_flap(no_flap=False, force=False, environ=None):
             return True
         if val in ('0', 'false', 'no', 'off'):
             return False
-    return False
+    return _flap_default_enabled()
 
 
 def resolve_dressing(no_dressing=False, force=False, environ=None,
@@ -6368,7 +6386,7 @@ def main():
                              'evaluation; the auto path (default) already '
                              'prefers Graft over fTetWild')
     parser.add_argument('--flap', action='store_true',
-                        help='enable the Flap surface-based hole filler as the '
+                        help='run the Flap surface-based hole filler as the '
                              'FIRST Stage-1 step (a pre-pass on the input, '
                              'before the VCG chain): every open boundary loop '
                              'is covered with a minimum-area triangulation '
@@ -6378,10 +6396,10 @@ def main():
                              'verbatim and the result is adopted only when the '
                              'reload-honest holes + non-manifold count does not '
                              'worsen; repair_file re-runs with Flap OFF if the '
-                             'final mesh still ends up worse. Off by default; '
-                             'env: SUTURA_FLAP')
+                             'final mesh still ends up worse. On by default; '
+                             'env: SUTURA_FLAP / SUTURA_FLAP_DEFAULT')
     parser.add_argument('--no-flap', action='store_true',
-                        help='disable the Flap hole filler (the default)')
+                        help='disable the Flap hole filler (it is on by default)')
     parser.add_argument('--no-dressing', action='store_true',
                         help='disable the Dressing (viscosity coat) tier (#16); '
                              'this is the default (Dressing is opt-in)')
@@ -6743,8 +6761,8 @@ def main():
     # before fTetWild). --experimental-graft forces it outside the ladder.
     _graft_arg = resolve_graft(no_graft=args.no_graft,
                                force=args.experimental_graft)
-    # Flap: off by default; --flap enables it, --no-flap disables it,
-    # SUTURA_FLAP may set 0/1.
+    # Flap: on by default; --no-flap disables it, --flap forces it, SUTURA_FLAP
+    # may set 0/1 and SUTURA_FLAP_DEFAULT overrides the built-in default.
     _flap_arg = resolve_flap(no_flap=args.no_flap, force=args.flap)
     # Dressing (#16): the single default switch (DRESSING_DEFAULT_ENABLED /
     # SUTURA_DRESSING_DEFAULT) decides; --no-dressing disables and

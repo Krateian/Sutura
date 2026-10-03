@@ -292,7 +292,7 @@ STRINGS = {
                            'the result is not worse than the default chain '
                            '(NOT the default).',
         'flap_label': 'Flap surface hole fill',
-        'flap_tip': 'Off by default. Cover each residual Stage-1 boundary '
+        'flap_tip': 'On by default. Cover each residual Stage-1 boundary '
                     'loop with a minimum-area triangulation refined to the '
                     'surrounding edge length and faired with a thin-plate '
                     'solve that continues the neighbouring surface. Original '
@@ -897,7 +897,7 @@ STRINGS = {
                           'zincirden daha kötü değilse uygulanır (varsayılan '
                           'değil).',
         'flap_label': 'Flap yüzey delik doldurma',
-        'flap_tip': 'Varsayılan olarak kapalı. Aşama-1 sonrası kalan her '
+        'flap_tip': 'Varsayılan olarak açık. Aşama-1 sonrası kalan her '
                     'sınır halkasını, çevre kenar uzunluğuna göre '
                     'inceltilmiş en-küçük-alanlı üçgenlemeyle kapatır ve '
                     'komşu yüzeyi sürdüren ince-plaka çözümüyle '
@@ -1754,6 +1754,8 @@ class RepairWorker(QThread):
                 args += ['--si-mode', self._si_mode]
             if self._flap:
                 args.append('--flap')
+            else:
+                args.append('--no-flap')
             if self._dressing or self._dressing_force_adopt:
                 args.append('--experimental-dressing')
                 if self._dressing_drain in ('none', 'half', 'full', 'deep'):
@@ -3622,7 +3624,7 @@ class MainWindow(QMainWindow):
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
         self._ftetwild = 'auto'       # fTetWild fallback tier: 'auto' (default) / False (off) / True (+SI)
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
-        self._flap = False            # batch-wide opt-in Flap surface hole fill (Stage 1)
+        self._flap = True             # batch-wide Flap surface hole fill (Stage 1, on by default)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
         self._dressing_drain = None   # batch-wide Dressing drain override (None = preset)
         self._dressing_defects = None       # None = module default ('all')
@@ -3752,6 +3754,7 @@ class MainWindow(QMainWindow):
         # opt-in Flap surface hole fill (Stage 1, batch-wide; off by default)
         self.chk_flap = QCheckBox(_t('flap_label'))
         self.chk_flap.setToolTip(_t('flap_tip'))
+        self.chk_flap.setChecked(self._flap)
         self.chk_flap.toggled.connect(
             lambda on: setattr(self, '_flap', on))
         # opt-in Dressing viscosity coat (#16, batch-wide; off by default until
@@ -3824,7 +3827,7 @@ class MainWindow(QMainWindow):
             (self.chk_indirect_autorefine, False),
             (self.chk_join_components, False),
             (self.chk_edge_tiebreak, False),
-            (self.chk_flap, False),
+            (self.chk_flap, True),
             (self.chk_dressing, False),
             (self.chk_dressing_force_adopt, False),
         )

@@ -73,18 +73,39 @@ def test_flap_fill_is_a_noop_on_a_closed_mesh():
 
 
 def test_resolve_flap_precedence_and_env():
-    assert repair.resolve_flap() is False
+    assert repair.resolve_flap() is True
     assert repair.resolve_flap(no_flap=True) is False
     assert repair.resolve_flap(force=True) is True
     assert repair.resolve_flap(force=True, no_flap=True) is False
+    # an unrecognised SUTURA_FLAP value falls back to the default switch
     for raw, expected in (('1', True), ('off', False), ('yes', True),
-                          ('no', False), ('bogus', False)):
+                          ('no', False),
+                          ('bogus', repair.FLAP_DEFAULT_ENABLED)):
         assert repair.resolve_flap(environ={'SUTURA_FLAP': raw}) is expected
     # explicit arguments beat the env
     assert repair.resolve_flap(force=True,
                                environ={'SUTURA_FLAP': '0'}) is True
     assert repair.resolve_flap(no_flap=True,
                                environ={'SUTURA_FLAP': '1'}) is False
+
+
+def test_flap_default_switch_is_overridable():
+    import os
+    old = os.environ.get('SUTURA_FLAP_DEFAULT')
+    try:
+        os.environ['SUTURA_FLAP_DEFAULT'] = '0'
+        assert repair.resolve_flap() is False
+        os.environ['SUTURA_FLAP_DEFAULT'] = '1'
+        assert repair.resolve_flap() is True
+        # explicit flags still win over the default switch
+        os.environ['SUTURA_FLAP_DEFAULT'] = '0'
+        assert repair.resolve_flap(force=True) is True
+        assert repair.resolve_flap(no_flap=True) is False
+    finally:
+        if old is None:
+            os.environ.pop('SUTURA_FLAP_DEFAULT', None)
+        else:
+            os.environ['SUTURA_FLAP_DEFAULT'] = old
 
 
 def _meshset(v, t):
