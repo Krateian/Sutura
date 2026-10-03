@@ -151,6 +151,23 @@ All notable changes to this project are documented here.
   `SUTURA_REFINE_HOLE=1` refined Stage-1 hole fill (off by default, unproven on
   the corpora).
 
+- **Graft shell-wrap input face cap and time budget (`graft_max_faces`, `graft_timeout`).**
+  The Graft (#13) morphology tier now enforces an intensity-preset face cap and
+  a wall-clock ladder budget, preventing un-interruptible operations on massive
+  scans from exceeding harness timeouts. `triage.IntensitySpec` defines
+  `graft_max_faces` (Quick/Balanced: 2,000,000 faces; Thorough: 2,000,000;
+  Extreme: uncapped) and `graft_timeout` (Quick/Balanced: 300 s; Thorough: 900 s;
+  Extreme: 1,800 s). `repair.graft_tier` evaluates the input against the cap,
+  skipping oversized inputs with `reject_reason='too_large'` while preserving the
+  completed Stage-1 mesh. `graft.shell_wrap` checks the wall-clock deadline between
+  attempts, returning the best candidate found so far with `budget_exceeded: true`.
+  The report records `skipped_budget`, `timed_out`, `reject_reason`, `max_faces`,
+  and `time_budget` under `report['graft']`. In the GUI, the Triage Profile Editor
+  exposes both fields (EN/TR) for full CLI parity. Measured across the benchmark
+  suite: the 6 dense Artec scans that previously exceeded 600 s now exit 0 cleanly
+  in 164–348 s, and the 41-mesh regression suite remains byte-identical for 40/41
+  meshes (with only `thingi10k_100827` differing due to documented fTetWild non-determinism).
+
 ### Changed
 
 - **Graft's grid budget scales with the Triage intensity preset and the available RAM.** The
