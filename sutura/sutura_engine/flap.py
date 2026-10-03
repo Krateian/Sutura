@@ -24,6 +24,36 @@ import scipy.sparse.linalg as spla
 from scipy.spatial import cKDTree
 
 
+# ---------------------------------------------------------------------------
+# Rust core selection
+# ---------------------------------------------------------------------------
+# ``sutura_geom.flap_fill`` is the Rust port of this module's oracle (bit-for-
+# bit identical on the validated corpus, and ~6x faster on framebaroque).  It is
+# feature-detected here, exactly like the other Rust paths (``sdf_grid`` /
+# ``dressing_coat`` in ``sutura_engine.dressing``): a build without it, or one
+# whose extension predates the binding, transparently falls back to the numpy
+# implementation below.  ``None`` means "not probed yet"; ``False`` means
+# "probed and absent".
+_RUST_FLAP = None
+
+
+def _load_rust_flap():
+    """Return ``sutura_geom.flap_fill`` when the extension provides it, else None.
+
+    The result is cached. The lookup never raises: an absent/incompatible
+    extension degrades to the numpy oracle.
+    """
+    global _RUST_FLAP
+    if _RUST_FLAP is None:
+        try:
+            import sutura_geom as _sg
+            fn = getattr(_sg, 'flap_fill', None)
+            _RUST_FLAP = fn if callable(fn) else False
+        except Exception:  # noqa: BLE001 - absence is not an error
+            _RUST_FLAP = False
+    return _RUST_FLAP or None
+
+
 def _face_cent_norm(P, faces):
     """Centroid, unit normal and longest-edge length of each triangle."""
     tri = P[np.asarray(faces, np.int64)]
@@ -1360,13 +1390,18 @@ def drop_lone_triangles(v, t):
 # ---------------------------------------------------------------------------
 # top level
 # ---------------------------------------------------------------------------
-def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
-              max_faces=400000, collect_quality=False,
-              drop_lone_tris=True, weld_cracks=True, split_nm=True,
-              separate_stl=True, bridge_open_chains=False, weld_max_frac=0.02,
-              orient="reverse", avoid_coplanar=True, coplanar_frac=0.05,
-              coplanar_cos=0.99, sliver_cleanup=False):
+def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
+                     max_faces=400000, collect_quality=False,
+                     drop_lone_tris=True, weld_cracks=True, split_nm=True,
+                     separate_stl=True, bridge_open_chains=False,
+                     weld_max_frac=0.02, orient="reverse", avoid_coplanar=True,
+                     coplanar_frac=0.05, coplanar_cos=0.99,
+                     sliver_cleanup=False):
     """Cover every simple boundary loop with a fair surface flap.
+
+    The pure-numpy reference oracle.  ``flap_fill`` dispatches to the Rust port
+    when the extension exposes it; this function remains the fallback and the
+    parity oracle for the port.
 
     ``collect_quality`` adds aggregate patch triangle-quality percentiles
     (min-angle p5/p50, aspect p50/p95) for the DP patch *before* refinement and
@@ -1726,3 +1761,46 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
             "aspect_p50": _pct(_q_after_asp, 50),
             "aspect_p95": _pct(_q_after_asp, 95)}
     return out_v, out_t, report
+
+
+def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
+              max_faces=400000, collect_quality=False,
+              drop_lone_tris=True, weld_cracks=True, split_nm=True,
+              separate_stl=True, bridge_open_chains=False, weld_max_frac=0.02,
+              orient="reverse", avoid_coplanar=True, coplanar_frac=0.05,
+              coplanar_cos=0.99, sliver_cleanup=False):
+    """Fill boundary loops, using the Rust port when the extension has it.
+
+    Dispatches to ``sutura_geom.flap_fill`` (bit-for-bit parity with
+    :func:`flap_fill_python`, verified by ``tests/test_flap_rust_parity.py``)
+    and falls back to the numpy oracle when the extension is absent, predates
+    the binding, or errors.  The signature and the returned ``(verts, tris,
+    report)`` are identical for both engines.
+    """
+    rfn = _load_rust_flap()
+    if rfn is not None:
+        try:
+            rv, rt, rrep = rfn(
+                np.ascontiguousarray(verts, dtype=np.float64),
+                np.ascontiguousarray(tris, dtype=np.int64),
+                refine=refine, fair=fair, max_loop=max_loop,
+                max_faces=max_faces, collect_quality=collect_quality,
+                drop_lone_tris=drop_lone_tris, weld_cracks=weld_cracks,
+                split_nm=split_nm, separate_stl=separate_stl,
+                bridge_open_chains=bridge_open_chains,
+                weld_max_frac=weld_max_frac, orient=orient,
+                avoid_coplanar=avoid_coplanar, coplanar_frac=coplanar_frac,
+                coplanar_cos=coplanar_cos, sliver_cleanup=sliver_cleanup)
+            return (np.asarray(rv, dtype=np.float64),
+                    np.asarray(rt, dtype=np.int64), dict(rrep))
+        except Exception:  # noqa: BLE001 - a repair tier never crashes
+            pass
+    return flap_fill_python(
+        verts, tris, refine=refine, fair=fair, max_loop=max_loop,
+        max_faces=max_faces, collect_quality=collect_quality,
+        drop_lone_tris=drop_lone_tris, weld_cracks=weld_cracks,
+        split_nm=split_nm, separate_stl=separate_stl,
+        bridge_open_chains=bridge_open_chains, weld_max_frac=weld_max_frac,
+        orient=orient, avoid_coplanar=avoid_coplanar,
+        coplanar_frac=coplanar_frac, coplanar_cos=coplanar_cos,
+        sliver_cleanup=sliver_cleanup)
