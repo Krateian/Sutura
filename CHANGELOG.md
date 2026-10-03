@@ -2,9 +2,32 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.8.0] - TBD
 
 ### Added
+
+- **Flap surface hole fill (on by default, `--no-flap` / `SUTURA_FLAP=0` to disable).**
+  A new Stage-1 pre-pass (`sutura_engine.flap`) fills each boundary loop by
+  continuing the neighbouring surface instead of laying a flat lid: the loop is
+  triangulated with a minimum-area dynamic program, refined to the surrounding
+  edge length and faired with a discrete biharmonic (thin-plate) solve that
+  carries the rim's position and slope into the patch. The original triangles are
+  kept verbatim -- only the new patch is added -- and every loop Flap skips or
+  rejects is left to the ordinary Stage-1 flat hole fill, so every hole still
+  gets a lid. A candidate is adopted only when the reload-honest `holes +
+  non-manifold` count does not worsen; a flatness-based cleanup then drops
+  zero-thickness debris sheets and never a legitimate solid part. The fill core
+  has a Rust implementation (`sutura_geom.flap_fill`) used automatically when
+  present with a pure-numpy oracle (`flap_fill_python`) fallback, the two
+  bit-for-bit equivalent in topology and report fields (faired vertices agree to
+  ~1e-8). The report carries a `flap` key; the GUI exposes the switch as the
+  Options → Experimental checkbox *Flap surface hole fill* (TR: *Flap yüzey delik
+  doldurma*). Measured on the 41-mesh regression: Flap was adopted on 13 meshes
+  and the run ended reload-watertight on all 41; across the corpus the total
+  Stage-1 self-intersection count fell from 10,051 to 8,880, framebaroque's part
+  count from 2 to 1 and its Stage-1 self-intersections from 4,016 to 3,005, and
+  the maximum surface deviation on thingi10k_1038441 from 4.11 mm to 0.60 mm. The
+  Rust engine keeps the whole 41-mesh corpus Flap step at 7.2 s.
 
 - **Dressing opt-in UX: non-watertight suggestions + `--dressing-force-adopt`.**
   When a plain Auto repair still leaves the geometry open or non-manifold (under

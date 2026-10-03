@@ -96,7 +96,7 @@ _PANEL_CREATE_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
 _MESH_EXTENSIONS = ('.stl', '.obj', '.3mf')
 
 # The dock page, embedded verbatim from orcaslicer-plugin/panel/panel.html
-# (sha256 6e4a6189a8c061a701daa84bfeb1035b3ba2f6d5b6ce5b9e96193bb6af88862a).
+# (sha256 0ecbd3ca727eab38f595ff178a4c3ffd6b45fd1c379a1cbd2604233e6a082bd3).
 # It is embedded so the published single-file plugin is self-contained; whenever
 # panel/panel.html changes, copy its full contents back into this raw string and
 # update the digest.
@@ -217,6 +217,7 @@ button, input { font-family: inherit; font-size: inherit; }
 .chip-cancelled { color: var(--orca-muted); background: var(--orca-border); }
 .link-show-file { background: transparent; border: none; color: var(--orca-accent); cursor: pointer; font-size: 11px; text-decoration: underline; padding: 2px 4px; }
 .result-hint { margin-top: 4px; color: var(--orca-muted); font-size: 11px; line-height: 1.4; }
+.result-suggestion { color: var(--orca-warning, #f59e0b); }
 
 /* Analysis Drawer */
 .analysis-drawer { margin-top: 6px; padding: 8px; border-radius: 6px; border: 1px solid var(--orca-border); display: flex; flex-direction: column; gap: 6px; }
@@ -430,6 +431,9 @@ button, input { font-family: inherit; font-size: inherit; }
       h += `</div>`;
       if (job.phase === 'done') {
         h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        if (job.result?.suggestion) {
+          h += `<div class="result-hint result-suggestion">Tip: ${esc(job.result.suggestion)}</div>`;
+        }
       }
     }
 
@@ -1175,7 +1179,31 @@ def _job_result(report, out_path):
         method = 'stage 1'
     return {'watertight': bool(watertight), 'method': method,
             'holes_before': holes_before, 'holes_after': holes_after,
-            'output_path': out_path}
+            'output_path': out_path,
+            'suggestion': _suggestion_text(report)}
+
+
+def _suggestion_text(report):
+    """Human hint for the CLI's Dressing opt-in suggestion, or ''.
+
+    The CLI attaches ``suggestions`` (a next action, not a defect) when a
+    result is still not watertight and the Dressing tier was not adopted.
+    Surfaced as a short panel hint; the full multi-line text stays in the
+    CLI `--human` report.  Never raises."""
+    try:
+        sugs = report.get('suggestions') or []
+        if not sugs:
+            return ''
+        sug = sugs[0] if isinstance(sugs[0], dict) else {}
+        if sug.get('force'):
+            return ('Not watertight — Dressing was rejected by the quality '
+                    'gate; force it with %s if the deformation is acceptable'
+                    % (sug.get('flag') or '--dressing-force-adopt'))
+        return ('Not watertight — you can try Dressing: %s (watertight, but '
+                'fine detail may be lost)'
+                % (sug.get('flag') or '--experimental-dressing'))
+    except Exception:  # noqa: BLE001 - a hint never breaks a job
+        return ''
 
 
 def _analysis_message(report):
