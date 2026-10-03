@@ -61,6 +61,7 @@ APP_MODULES = (
     'classification.py',
     'confidence.py',
     'defects.py',
+    'topology.py',
     'mesh_classifier.py',
     'mesh_classifier_v2.py',
     'autorefine.py',

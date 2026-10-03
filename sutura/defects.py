@@ -11,6 +11,8 @@ values as "mesh units").
 """
 import numpy as np
 
+import topology
+
 
 def _edge_keys(edges):
     """Map each undirected edge (pair of vertex indices) to a scalar key."""
@@ -26,18 +28,21 @@ def _boundary_edges(tris):
     vertices it connects to via a boundary edge.
     """
     tris = np.asarray(tris, dtype=np.int64)
-    edges = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0)
-    keys = _edge_keys(edges)
-    uniq, counts = np.unique(keys, return_counts=True)
-    boundary = set(int(k) for k in uniq[counts == 1])
+    _edges, counts, inv = topology.edge_table(tris)
+    if len(tris):
+        he = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0)
+    else:
+        he = np.zeros((0, 2), dtype=np.int64)
+    boundary_pairs = he[counts[inv] == 1] if len(he) else he
+    keys = _edge_keys(boundary_pairs)
+    boundary = set(int(k) for k in keys)
     # boundary vertex adjacency: vertex -> [neighbour vertices]
     adj = {}
-    for i in range(len(edges)):
-        if keys[i] in boundary:
-            a, b = int(edges[i][0]), int(edges[i][1])
-            adj.setdefault(a, []).append(b)
-            adj.setdefault(b, []).append(a)
-    return boundary, adj, edges, keys
+    for a, b in boundary_pairs:
+        a, b = int(a), int(b)
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    return boundary, adj, boundary_pairs, keys
 
 
 def _boundary_loops(adj):
@@ -111,22 +116,16 @@ def detect_non_manifold(verts, tris, with_indices=False):
     a renderer can highlight the region. The default (False) keeps the CLI
     JSON contract unchanged."""
     tris = np.asarray(tris, dtype=np.int64)
-    tri_idx = np.repeat(np.arange(len(tris)), 3)
-    edges = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0)
-    keys = _edge_keys(edges)
-    uniq, counts = np.unique(keys, return_counts=True)
-    nm_keys = set(int(k) for k in uniq[counts > 2])
-    if not nm_keys:
+    F = len(tris)
+    if F == 0:
         return []
-    # faces adjacent to any non-manifold edge, plus edge->faces for clustering
-    edge_to_faces = {}
-    nm_faces = set()
-    for i in range(len(edges)):
-        if keys[i] in nm_keys:
-            f = int(tri_idx[i])
-            nm_faces.add(f)
-            edge_to_faces.setdefault(int(keys[i]), set()).add(f)
-    nm_faces = sorted(nm_faces)
+    _edges, counts, inv = topology.edge_table(tris)
+    nm_ids = np.nonzero(counts > 2)[0]
+    if len(nm_ids) == 0:
+        return []
+    # faces adjacent to any non-manifold edge
+    face_of = np.repeat(np.arange(F), 3)
+    nm_faces = np.unique(face_of[counts[inv] > 2]).tolist()
     fmap = {f: i for i, f in enumerate(nm_faces)}
     parent = list(range(len(nm_faces)))
 
@@ -141,19 +140,23 @@ def detect_non_manifold(verts, tris, with_indices=False):
         if ra != rb:
             parent[ra] = rb
 
-    # faces sharing a non-manifold edge belong to the same region
-    for faces in edge_to_faces.values():
-        faces = list(faces)
-        for i in range(1, len(faces)):
-            union(fmap[faces[0]], fmap[faces[i]])
-    # also union faces sharing any (not just nm) edge, to merge touching regions
-    edge_faces = {}
-    for i in range(len(edges)):
-        edge_faces.setdefault(int(keys[i]), set()).add(int(tri_idx[i]))
-    for faces in edge_faces.values():
-        faces = [f for f in faces if f in fmap]
-        for i in range(1, len(faces)):
-            union(fmap[faces[0]], fmap[faces[i]])
+    # union faces sharing any edge (not just non-manifold ones) so touching
+    # regions merge; only non-manifold faces can be unioned, so restrict to them
+    nm_face_bool = np.zeros(F, dtype=bool)
+    nm_face_bool[nm_faces] = True
+    sel = np.nonzero(np.repeat(nm_face_bool, 3))[0]
+    if len(sel):
+        s_inv = inv[sel]
+        s_face = face_of[sel]
+        order = np.argsort(s_inv, kind='stable')
+        s_inv = s_inv[order]
+        s_face = s_face[order]
+        starts = np.flatnonzero(np.r_[True, s_inv[1:] != s_inv[:-1]])
+        ends = np.r_[starts[1:], len(s_inv)]
+        for st, en in zip(starts, ends):
+            f0 = fmap[int(s_face[st])]
+            for k in range(st + 1, en):
+                union(f0, fmap[int(s_face[k])])
 
     groups = {}
     for i, f in enumerate(nm_faces):

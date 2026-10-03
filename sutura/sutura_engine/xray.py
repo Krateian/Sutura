@@ -16,27 +16,15 @@ Provides:
 from typing import Tuple
 import numpy as np
 
+import topology
+
 
 def weld_reload_equivalent(verts: np.ndarray, tris: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Weld a mesh into the form an STL save/reload reproduces. Pure numpy."""
-    v = np.asarray(verts, dtype=np.float32)
-    t = np.asarray(tris, dtype=np.int64)
-    if len(v) == 0 or len(t) == 0:
-        return v, t
-    unique, inverse = np.unique(v, axis=0, return_inverse=True)
-    inverse = np.asarray(inverse).reshape(-1)
-    t = inverse[t.reshape(-1)].reshape(t.shape).astype(np.int64)
-    nondeg = ((t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2]))
-    t = t[nondeg]
-    if len(t) == 0:
-        return np.zeros((0, 3), dtype=np.float32), t
-    keys = np.sort(t, axis=1)
-    _uniq, first = np.unique(keys, axis=0, return_index=True)
-    t = t[np.sort(first)]
-    used = np.unique(t)
-    remap = np.full(len(unique), -1, dtype=np.int64)
-    remap[used] = np.arange(len(used))
-    return unique[used], remap[t]
+    """Weld a mesh into the form an STL save/reload reproduces.
+
+    Delegates to the shared topology kernel (Rust when available, numpy oracle
+    otherwise); the output is bit-for-bit identical to the pure-numpy form."""
+    return topology.weld_reload_equivalent(verts, tris)
 
 
 def reload_strict_holes_nm(verts: np.ndarray, tris: np.ndarray) -> Tuple[int, int]:

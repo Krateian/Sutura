@@ -26,6 +26,7 @@ pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
 pub mod raycast;
+pub mod topology;
 pub mod triangle_intersection;
 pub mod winding;
 
@@ -1000,6 +1001,9 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::edge_table, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::weld_vertices, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::weld_reload_equivalent, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
