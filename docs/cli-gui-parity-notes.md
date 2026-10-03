@@ -150,7 +150,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **Graft sign-field Pass 0 + intensity-scaled grid budget (unreleased):** Pass 0 is
   OFF by default and is an opt-in evaluation switch (`SUTURA_GRAFT_SIGN_FIELD=1`), like the
   ray-stab vote — env-only, no CLI flag or GUI control by design (it is not proven; on
-  framebaroque it fails both gates and costs ~326 s). The grid budget is derived
+  ornate-frame it fails both gates and costs ~326 s). The grid budget is derived
   automatically from the Triage intensity preset, which both the CLI (`--intensity`) and
   the GUI (batch-wide *Intensity* picker) already set, so parity is automatic.
 - **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
@@ -165,7 +165,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   replaces a residual Stage-2 self-intersecting cluster with the exact outer-hull
   triangulation of a small patch. It is OPT-IN and OFF by default for every install
   (experimental; measured on the 40-mesh corpus it removes SI on only an isolated mesh and
-  the framebaroque fold is global, not local — see the class docstring and
+  the ornate-frame fold is global, not local — see the class docstring and
   `docs/local-exact-notes.md`). It is forced with `SUTURA_LOCAL_EXACT=1` (values
   `1/true/yes/on`) and disabled with `SUTURA_LOCAL_EXACT=0`; there is deliberately NO CLI
   flag or GUI control, so CLI and GUI behave identically (parity by construction, like the

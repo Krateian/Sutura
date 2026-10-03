@@ -27,7 +27,7 @@ def bbox_diag(verts):
 # diagonal, or an absolute volume below DEBRIS_VOLUME_EPS cubic units) so
 # dropping them before the union removes only debris. Both tests are
 # conservative: a genuine plate or thin feature is orders of magnitude
-# thicker. Measured on the framebaroque Stage-2 input: 13 parts dropped
+# thicker. Measured on the ornate-frame Stage-2 input: 13 parts dropped
 # (effective thickness 4e-9..2.5e-6 units), volume change 3e-8 relative,
 # self-intersections 6,441 -> 4,704.
 DEBRIS_VOLUME_EPS = 1e-3

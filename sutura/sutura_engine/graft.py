@@ -144,7 +144,7 @@ def _resolve_raystab(raystab):
 # genuine gaps open instead of bridging them; the strict X-Ray reload check and
 # the healthy-region detail gate decide whether it is adopted, otherwise the
 # closing ladder runs unchanged.  It is OFF by default: measured on
-# framebaroque it fails both gates (2 holes / 105 non-manifold edges and 1.29 %
+# ornate-frame it fails both gates (2 holes / 105 non-manifold edges and 1.29 %
 # detail loss vs the 0.25 % gate) and wastes ~326 s.  Enable with
 # sign_field=True / SUTURA_GRAFT_SIGN_FIELD=1.
 _SIGN_FIELD_SUPPORTED = bool(getattr(sutura_geom, 'SIGN_FIELD_SUPPORTED', False))

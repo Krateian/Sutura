@@ -13,7 +13,7 @@ dense scans.
 MEASURED OUTCOME (2026-09, 40-mesh real-world corpus + a private heavy fold):
 the locality hypothesis does NOT hold for densely folded scans.  Across the 12
 corpus meshes with residual SI the tier accepts clusters on one mesh only
-(``thingi10k_63785``, 81 -> 75 of 81) and on the private ``framebaroque`` fold
+(``thingi10k_63785``, 81 -> 75 of 81) and on the private ``ornate-frame`` fold
 it accepts 1 of 80 clusters because the whole shell is folded (97 %
 ``boundary_split``).  It is therefore OFF by default, opt-in with
 ``SUTURA_LOCAL_EXACT=1``; see ``docs/local-exact-notes.md``.  The code is kept

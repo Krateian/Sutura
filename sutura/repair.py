@@ -458,7 +458,7 @@ def _si_excise_budget(spec):
 # Localized exact self-union of residual self-intersection clusters (after
 # Stage 2 + P-WELD). EXPERIMENTAL: measured on the 40-mesh corpus it removes SI
 # on only an isolated real mesh (see docs/cli-gui-parity-notes.md); the
-# framebaroque fold is global, not local, so patch boundaries never match
+# ornate-frame fold is global, not local, so patch boundaries never match
 # (97 % `boundary_split`). OFF by default; `SUTURA_LOCAL_EXACT=1` forces it.
 LOCAL_EXACT_DEFAULT_ENABLED = False
 LOCAL_EXACT_BUDGET_BY_INTENSITY = {
@@ -1183,7 +1183,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # skips or rejects, and a candidate is adopted only when the reload-honest
     # damage (holes + non-manifold edges) does not rise. Running here -- rather
     # than post-chain -- is what lets the deep-repair Graft tier, which also
-    # works from these arrays, see the flap patches: measured on framebaroque,
+    # works from these arrays, see the flap patches: measured on ornate-frame,
     # the standalone Flap->Graft output (Orca 2 parts, 3494 SI faces, volume
     # 58762) is reproduced exactly, whereas a post-chain flap cannot reach Graft
     # and left the output byte-identical to flap-OFF. This gate is pre-chain and
@@ -1628,7 +1628,7 @@ FTETWILD_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
 # interruptible, so a between-attempt budget cannot bound it); GRAFT_TIMEOUT
 # is the wall-clock budget for the whole ladder, checked between attempts.
 # 2,000,000 faces sits above every mesh Graft adopts today (largest:
-# framebaroque, 396,549 faces; Graft's own tier time there was 133 s unloaded)
+# ornate-frame, 396,549 faces; Graft's own tier time there was 133 s unloaded)
 # and below the smallest observed hang (2,110,072 faces), so it changes only
 # the six timeouts. The active values come from the intensity spec (None cap =
 # no limit, Extreme). Provisional; the corpus face counts are not in the repo.
@@ -1852,7 +1852,7 @@ DRESSING_MAX_PARTS_SLACK = 1         # candidate components <= before + slack
 # Healthy-region coat-vs-input normal agreement; a voxel staircase / fluting
 # loss keeps positions within the Hausdorff gate but tilts the normals.  This is
 # a PLACEHOLDER threshold, measured on the 13-mesh set 2026-10: Dressing p95 is
-# 12-36 deg on the accepted coats and 82-88 deg on framebaroque / 100281 /
+# 12-36 deg on the accepted coats and 82-88 deg on ornate-frame / 100281 /
 # 1038439 / 1038441 / 145065 (the staircased, detail-lost ones).  The calibrated
 # detector will replace it.
 DRESSING_MAX_NORMAL_ANGLE_P95 = 30.0  # degrees
@@ -3292,7 +3292,7 @@ def _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):
     near-coincident rims (which introduces a few new non-manifold edges) be
     adopted -- the deep-repair ladder rebuilds the residual non-manifold edges
     -- while still rejecting a candidate that opens holes or explodes the
-    non-manifold count. Measured on framebaroque (67/16 -> 16/22) and
+    non-manifold count. Measured on ornate-frame (67/16 -> 16/22) and
     artec_metal-nut (2/1 -> 0/2), which the old ``holes<= and nm<=`` gate
     rejected despite the standalone flap->Graft pipeline being a clear win.
     """

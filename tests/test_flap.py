@@ -133,7 +133,7 @@ def test_flap_step_adopts_a_hole_closure():
 
 
 def test_flap_adopt_gate_combined_damage():
-    # framebaroque: VCG leaves 67 holes / 16 nm, flap closes to 16 holes but
+    # ornate-frame: VCG leaves 67 holes / 16 nm, flap closes to 16 holes but
     # welding the rims adds nm edges (22). Net damage falls -> adopt.
     assert repair._flap_adopt(67, 16, 16, 22) is True
     # artec_metal-nut: 2 holes / 1 nm -> 0 holes / 2 nm. Net damage falls.

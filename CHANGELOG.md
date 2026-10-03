@@ -24,7 +24,7 @@ All notable changes to this project are documented here.
   Options → Experimental checkbox *Flap surface hole fill* (TR: *Flap yüzey delik
   doldurma*). Measured on the 41-mesh regression: Flap was adopted on 13 meshes
   and the run ended reload-watertight on all 41; across the corpus the total
-  Stage-1 self-intersection count fell from 10,051 to 8,880, framebaroque's
+  Stage-1 self-intersection count fell from 10,051 to 8,880, ornate-frame's
   Stage-1 self-intersections from 4,016 to 3,005, and
   the maximum surface deviation on thingi10k_1038441 from 4.11 mm to 0.60 mm. The
   Rust engine keeps the whole 41-mesh corpus Flap step at 7.2 s.
@@ -87,7 +87,7 @@ All notable changes to this project are documented here.
   and healthy-surface P95 coat-vs-input vertex-normal angle below
   `DRESSING_MAX_NORMAL_ANGLE_P95` (30 deg, a placeholder; the metric catches the
   voxel staircase the position-only Hausdorff gate misses). The switch stays OFF
-  because on a fine-detail relief (framebaroque) the staircase visibly flattens
+  because on a fine-detail relief (ornate-frame) the staircase visibly flattens
   fluting even at ~0.08 mm mean deviation; the geometric CAD-vs-organic `cad_likeness`
   score is recorded on every Auto run for the future calibrated CAD guard. Report key `dressing`.
   The backend is the validated numpy prototype (`sutura_engine/dressing.py`:
@@ -152,7 +152,7 @@ All notable changes to this project are documented here.
   ladder, so genuine gaps stay open instead of being bridged; the result is adopted only when the
   strict X-Ray reload verdict is watertight and the healthy-detail gate passes, otherwise the
   closing ladder runs unchanged. Enable with `shell_wrap(..., sign_field=True)` /
-  `SUTURA_GRAFT_SIGN_FIELD=1`. It is off by default because on framebaroque it fails both gates
+  `SUTURA_GRAFT_SIGN_FIELD=1`. It is off by default because on ornate-frame it fails both gates
   (2 holes / 105 non-manifold edges and 1.29 % detail loss vs the 0.25 % gate) and costs ~326 s
   for a result the verbatim hybrid reproduces. The Rust core accepts `r == 0` as the sign-field
   path and exposes `SIGN_FIELD_SUPPORTED` / `info['sign_field']`.

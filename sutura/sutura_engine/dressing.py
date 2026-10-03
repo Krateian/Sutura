@@ -100,7 +100,7 @@ FACE_BUDGET_MIN = 50_000
 FACE_BUDGET_MAX = 500_000
 
 # grid cell budget per preset (the numpy prototype needs the head-room that
-# framebaroque's 6.9 M-voxel slab required); ``sdf_grid`` still applies its own
+# ornate-frame's 6.9 M-voxel slab required); ``sdf_grid`` still applies its own
 # absolute MAX_VOXELS cap on top.
 DRESSING_GRID_BUDGET = {
     'quick': 2_000_000,
@@ -366,7 +366,7 @@ def resolve_viscosity(ell_median, voxel, intensity=None, gap=None,
     """``(r_base, r_max, sigma)`` for one mesh.
 
     Thin base radius over healthy detailed surface (the fidelity mechanism;
-    framebaroque r_base ~= 0.17 mm -> 0.06 % of the diagonal), a preset-capped
+    ornate-frame r_base ~= 0.17 mm -> 0.06 % of the diagonal), a preset-capped
     bridging radius near defects (also capped at 45 % of the largest gap, so a
     coat over a big opening cannot balloon past the model), and a transition
     width tied to the feature size / voxel.  ``r_max_scale`` / ``sigma_scale``
@@ -563,7 +563,7 @@ def _qem_decimate(ml, v, t, target_faces):
     """PyMeshLab quadric edge collapse that preserves topology / normals.
 
     Configuration from the decimation benchmark (internal report,
-    framebaroque 1.36 M-face coat): ``optimalplacement=False``
+    ornate-frame 1.36 M-face coat): ``optimalplacement=False``
     ("subset placement") with ``planarquadric=True`` yields **0 self-
     intersections**, sub-micron fidelity to the coat and ~20 s at a 400k
     target, whereas unconstrained placement introduces up to 30 SI faces.  A

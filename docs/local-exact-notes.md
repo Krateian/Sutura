@@ -62,9 +62,9 @@ arrangement work that is then rejected.
 A 2026-09 run over the full 40-mesh corpus with the tier forced on reached the
 same conclusion (one mesh changed, `thingi10k_63785` 135 -> 125).
 
-### The framebaroque fold is global, not local
+### The ornate-frame fold is global, not local
 
-The private `framebaroque` Full-Mend output carries 6014 residual
+The private `ornate-frame` Full-Mend output carries 6014 residual
 self-intersections concentrated in a heavily folded main shell (376,556
 faces).  With a 90 s budget the tier accepted **1 of 80** clusters and moved
 SI 6014 -> 6010.  The rejection histogram is dominated by `boundary_split`

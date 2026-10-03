@@ -28,7 +28,7 @@ from scipy.spatial import cKDTree
 # Rust core selection
 # ---------------------------------------------------------------------------
 # ``sutura_geom.flap_fill`` is the Rust port of this module's oracle (bit-for-
-# bit identical on the validated corpus, and ~6x faster on framebaroque).  It is
+# bit identical on the validated corpus, and ~6x faster on ornate-frame).  It is
 # feature-detected here, exactly like the other Rust paths (``sdf_grid`` /
 # ``dressing_coat`` in ``sutura_engine.dressing``): a build without it, or one
 # whose extension predates the binding, transparently falls back to the numpy
@@ -71,7 +71,7 @@ def _component_stats(v2, t2, f_rfc, f_ffo, f_frs, angle_deg=2.0):
     surface area and a flat/coplanar flag per component.
 
     Used to refuse a fill that would close a component into a zero-volume
-    double-face shell (agy: the 25 spurious framebaroque parts).  A component
+    double-face shell (the 25 spurious parts measured on a private scan).  A component
     whose signed volume after the fill is ~0 for its surface area is a flat
     sheet, not a real solid.
     """
@@ -555,7 +555,7 @@ def min_area_triangulation(P, cap=1200, forbidden=None):
         return [(0, i, i + 1) for i in range(1, m - 1)]
     # precompute the area of triangle (i, k, j) in plain Python floats; the
     # per-triangle numpy cross/norm calls dominated the DP (3.4M calls on
-    # framebaroque), so the (i, j, k) area is memoised lazily.
+    # ornate-frame), so the (i, j, k) area is memoised lazily.
     X = P[:, 0].tolist()
     Y = P[:, 1].tolist()
     Z = P[:, 2].tolist()
@@ -1534,8 +1534,8 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
         report["loop_log"].append(log)
 
         # A loop on a flat coplanar sheet must stay open: capping it would
-        # close the sheet into a zero-volume double-face shell (agy: the 25
-        # spurious parts Flap fed Graft on framebaroque).  Graft handles it.
+        # close the sheet into a zero-volume double-face shell (the 25
+        # spurious parts Flap fed Graft on ornate-frame).  Graft handles it.
         _g0, _g1 = int(loop_arr[0]), int(loop_arr[1])
         _fi = orig_edge_face.get((_g0, _g1) if _g0 < _g1 else (_g1, _g0))
         if _fi is not None and _flatc[int(_lab[_fi])]:
@@ -1649,7 +1649,7 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
         # component, the patch closes that component.  When the closed signed
         # volume is ~0 for its surface area, the component is a flat sheet and
         # the fill would manufacture a zero-thickness double-face shell (the
-        # 25 spurious framebaroque parts agy measured).  Leave it open.
+        # 25 spurious parts measured on a private scan).  Leave it open.
         if _fi is not None:
             _comp = int(_lab[_fi])
             if nloops_c[_comp] == 1:
