@@ -80,6 +80,8 @@ class IntensitySpec:
     ftetwild_enabled: bool = True
     ftetwild_max_faces: Optional[int] = 300000
     ftetwild_timeout: float = 180.0
+    graft_max_faces: Optional[int] = 2000000
+    graft_timeout: float = 300.0
     ftetwild_optimize_retry_on_dense_fail: bool = False
     deep_repair: str = 'full'
     dense_target_ladder: tuple = (1.5, 3.0)
@@ -103,6 +105,9 @@ PRESETS = {
     'thorough': IntensitySpec(
         name='thorough',
         ftetwild_timeout=600.0,
+        # Graft's own tier budget mirrors fTetWild's per-preset budget so a
+        # hard mesh fails over to fTetWild instead of running unbounded.
+        graft_timeout=900.0,
         dense_target_ladder=(1.5, 3.0, 'threshold'),
         ftetwild_hausdorff_samples=400000,
     ),
@@ -110,6 +115,8 @@ PRESETS = {
         name='extreme',
         ftetwild_max_faces=None,
         ftetwild_timeout=1800.0,
+        graft_max_faces=None,
+        graft_timeout=1800.0,
         ftetwild_optimize_retry_on_dense_fail=True,
         dense_target_ladder=(1.5, 3.0, 'threshold'),
         ftetwild_hausdorff_samples=1000000,
@@ -146,13 +153,13 @@ def _coerce_ladder(value: Any) -> Any:
 def _coerce_field(field: str, value: Any) -> Any:
     if field in ('ftetwild_enabled', 'ftetwild_optimize_retry_on_dense_fail'):
         return value if isinstance(value, bool) else _INVALID
-    if field == 'ftetwild_max_faces':
+    if field in ('ftetwild_max_faces', 'graft_max_faces'):
         if value is None:
             return None
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return _INVALID
         return int(value) if int(value) > 0 else None
-    if field == 'ftetwild_timeout':
+    if field in ('ftetwild_timeout', 'graft_timeout'):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return _INVALID
         return float(value) if float(value) > 0 else _INVALID
@@ -404,12 +411,15 @@ def _format_row(row: dict) -> str:
                    'yes' if spec.ftetwild_optimize_retry_on_dense_fail
                    else 'no')) if spec.ftetwild_enabled else 'off'
     ladder = ','.join(str(x) for x in spec.dense_target_ladder) or '-'
+    gcap = 'no-limit' if spec.graft_max_faces is None \
+        else str(spec.graft_max_faces)
+    graft = 'graft(cap=%s,timeout=%gs)' % (gcap, spec.graft_timeout)
     base = ' [base=%s]' % spec.base if spec.base else ''
     return ('%-20s ftetwild=%s deep_repair=%s ladder=%s ratio=%d '
-            'min_faces=%d hausdorff=%d%s'
+            'min_faces=%d hausdorff=%d %s%s'
             % (row['name'], ftetwild, spec.deep_repair, ladder,
                spec.dense_ratio, spec.dense_min_faces,
-               spec.ftetwild_hausdorff_samples, base))
+               spec.ftetwild_hausdorff_samples, graft, base))
 
 
 def format_intensities(profiles: Optional[dict] = None, profiles_path: Optional[str] = None) -> str:

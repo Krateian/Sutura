@@ -279,6 +279,78 @@ def test_sign_field_pass0_not_adopted_when_fidelity_fails():
     assert rep["mode"] != "sign_field", rep
 
 
+def test_time_budget_stops_between_attempts():
+    """A spent budget stops the closing ladder after the current attempt and
+    returns the best candidate found so far (never hangs, never a crash)."""
+    import time as _time
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    calls = {"n": 0}
+    real_close = graft_mod.sutura_geom.morph_close
+    real_ladder = graft_mod._r_ladder
+    real_max = graft_mod.HEALTHY_HAUSDORFF_MAX
+
+    def fake_ladder(gap, voxel, diag, max_tries):
+        return [1e-4, 2e-4, 4e-4, 8e-4]
+
+    def fake_close(*args, **kwargs):
+        calls["n"] += 1
+        _time.sleep(0.02)
+        return real_close(*args, **kwargs)
+
+    # Force the fidelity gate to fail so no rung can break early; only the
+    # budget may stop the ladder.
+    graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0
+    graft_mod._r_ladder = fake_ladder
+    graft_mod.sutura_geom.morph_close = fake_close
+    try:
+        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                   guard=True, time_budget=1e-6)
+    finally:
+        graft_mod._r_ladder = real_ladder
+        graft_mod.sutura_geom.morph_close = real_close
+        graft_mod.HEALTHY_HAUSDORFF_MAX = real_max
+
+    assert rep["budget_exceeded"] is True
+    assert rep["tries"] == 1, rep["tries"]
+    assert calls["n"] == 1, calls
+    assert rep["time_budget"] == 1e-6
+
+
+def test_no_time_budget_runs_full_ladder():
+    """Without a budget the same multi-rung ladder is not stopped early."""
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    calls = {"n": 0}
+    real_close = graft_mod.sutura_geom.morph_close
+    real_ladder = graft_mod._r_ladder
+    real_max = graft_mod.HEALTHY_HAUSDORFF_MAX
+
+    def fake_ladder(gap, voxel, diag, max_tries):
+        return [1e-4, 2e-4, 4e-4, 8e-4]
+
+    def fake_close(*args, **kwargs):
+        calls["n"] += 1
+        return real_close(*args, **kwargs)
+
+    graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0
+    graft_mod._r_ladder = fake_ladder
+    graft_mod.sutura_geom.morph_close = fake_close
+    try:
+        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                   guard=True)
+    finally:
+        graft_mod._r_ladder = real_ladder
+        graft_mod.sutura_geom.morph_close = real_close
+        graft_mod.HEALTHY_HAUSDORFF_MAX = real_max
+
+    assert rep["budget_exceeded"] is False
+    assert rep["tries"] == 4, rep["tries"]
+    assert calls["n"] == 4, calls
+
+
 def test_resolve_grid_budget_scales_with_intensity_and_ram():
     from sutura_engine.graft import resolve_grid_budget
     big = 1 << 40

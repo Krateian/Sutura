@@ -615,6 +615,8 @@ STRINGS = {
         'field_ftetwild_max_faces': 'Max input faces',
         'field_no_limit': 'No limit',
         'field_ftetwild_timeout': 'fTetWild timeout (s)',
+        'field_graft_max_faces': 'Graft max input faces',
+        'field_graft_timeout': 'Graft timeout (s)',
         'field_optimize_retry': 'Optimise retry on dense failure',
         'field_deep_repair': 'Deep-repair tier',
         'field_ladder': 'Dense decimation ladder',
@@ -629,6 +631,12 @@ STRINGS = {
         'field_ftetwild_max_faces_tip': 'Skip fTetWild for inputs above this face '
                                         'count ("No limit" disables the cap).',
         'field_ftetwild_timeout_tip': 'Wall-clock budget for one fTetWild attempt.',
+        'field_graft_max_faces_tip': 'Skip the Graft shell-wrap tier for inputs '
+                                     'above this face count ("No limit" disables '
+                                     'the cap).',
+        'field_graft_timeout_tip': 'Wall-clock budget for the whole Graft closing '
+                                   'ladder; the best stage-1 candidate is kept '
+                                   'when it runs out.',
         'field_optimize_retry_tip': 'Run one extra fTetWild attempt with '
                                     'tetrahedron optimisation when every dense '
                                     'decimation rung fails.',
@@ -1208,6 +1216,8 @@ STRINGS = {
         'field_ftetwild_max_faces': 'En fazla giriş yüzü',
         'field_no_limit': 'Sınır yok',
         'field_ftetwild_timeout': 'fTetWild zaman aşımı (sn)',
+        'field_graft_max_faces': 'Graft en fazla giriş yüzü',
+        'field_graft_timeout': 'Graft zaman aşımı (sn)',
         'field_optimize_retry': 'Yoğun başarısızlıkta optimize denemesi',
         'field_deep_repair': 'Derin onarım katmanı',
         'field_ladder': 'Yoğun sadeleştirme merdiveni',
@@ -1222,6 +1232,11 @@ STRINGS = {
         'field_ftetwild_max_faces_tip': 'Bu yüz sayısının üzerindeki girdilerde '
                                         'fTetWild atlanır ("Sınır yok" sınırı kapatır).',
         'field_ftetwild_timeout_tip': 'Tek bir fTetWild denemesi için zaman bütçesi.',
+        'field_graft_max_faces_tip': 'Bu yüz sayısının üzerindeki girdilerde Graft '
+                                     'zarf katmanı atlanır ("Sınır yok" sınırı '
+                                     'kapatır).',
+        'field_graft_timeout_tip': 'Tüm Graft kapama merdiveni için zaman bütçesi; '
+                                   'dolduğunda en iyi stage-1 adayı korunur.',
         'field_optimize_retry_tip': 'Her yoğun sadeleştirme basamağı başarısız '
                                     'olursa tetrahedron optimizasyonlu bir '
                                     'fTetWild denemesi daha çalıştır.',
@@ -2721,6 +2736,26 @@ class ProfileEditor(QWidget):
         self.spin_timeout.setToolTip(_t('field_ftetwild_timeout_tip'))
         form.addRow(_t('field_ftetwild_timeout'), self.spin_timeout)
 
+        graft_max_wrap = QWidget()
+        graft_max_layout = QHBoxLayout(graft_max_wrap)
+        graft_max_layout.setContentsMargins(0, 0, 0, 0)
+        self.chk_graft_no_limit = QCheckBox(_t('field_no_limit'))
+        self.spin_graft_max_faces = QSpinBox()
+        self.spin_graft_max_faces.setRange(1, 100000000)
+        self.chk_graft_no_limit.toggled.connect(
+            lambda on: self.spin_graft_max_faces.setEnabled(not on))
+        graft_max_layout.addWidget(self.chk_graft_no_limit)
+        graft_max_layout.addWidget(self.spin_graft_max_faces, 1)
+        graft_max_wrap.setToolTip(_t('field_graft_max_faces_tip'))
+        form.addRow(_t('field_graft_max_faces'), graft_max_wrap)
+
+        self.spin_graft_timeout = QDoubleSpinBox()
+        self.spin_graft_timeout.setRange(1.0, 36000.0)
+        self.spin_graft_timeout.setDecimals(1)
+        self.spin_graft_timeout.setSuffix(' s')
+        self.spin_graft_timeout.setToolTip(_t('field_graft_timeout_tip'))
+        form.addRow(_t('field_graft_timeout'), self.spin_graft_timeout)
+
         self.chk_optimize = QCheckBox()
         self.chk_optimize.setToolTip(_t('field_optimize_retry_tip'))
         form.addRow(_t('field_optimize_retry'), self.chk_optimize)
@@ -2758,6 +2793,10 @@ class ProfileEditor(QWidget):
         self.spin_max_faces.setValue(spec.ftetwild_max_faces or 300000)
         self.spin_max_faces.setEnabled(spec.ftetwild_max_faces is not None)
         self.spin_timeout.setValue(float(spec.ftetwild_timeout))
+        self.chk_graft_no_limit.setChecked(spec.graft_max_faces is None)
+        self.spin_graft_max_faces.setValue(spec.graft_max_faces or 2000000)
+        self.spin_graft_max_faces.setEnabled(spec.graft_max_faces is not None)
+        self.spin_graft_timeout.setValue(float(spec.graft_timeout))
         self.chk_optimize.setChecked(
             bool(spec.ftetwild_optimize_retry_on_dense_fail))
         idx = self.cmb_deep.findData(spec.deep_repair)
@@ -2791,6 +2830,9 @@ class ProfileEditor(QWidget):
             'ftetwild_max_faces': (None if self.chk_no_limit.isChecked()
                                    else self.spin_max_faces.value()),
             'ftetwild_timeout': self.spin_timeout.value(),
+            'graft_max_faces': (None if self.chk_graft_no_limit.isChecked()
+                                else self.spin_graft_max_faces.value()),
+            'graft_timeout': self.spin_graft_timeout.value(),
             'ftetwild_optimize_retry_on_dense_fail':
                 self.chk_optimize.isChecked(),
             'deep_repair': self.cmb_deep.currentData(),
