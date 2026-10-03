@@ -123,8 +123,11 @@ def detect_non_manifold(verts, tris, with_indices=False):
     nm_ids = np.nonzero(counts > 2)[0]
     if len(nm_ids) == 0:
         return []
-    # faces adjacent to any non-manifold edge
-    face_of = np.repeat(np.arange(F), 3)
+    # faces adjacent to any non-manifold edge.  ``edge_table``'s half-edge
+    # array is block-stacked ([all (v0,v1), then (v1,v2), then (v2,v0)]), so
+    # half-edge ``h`` belongs to face ``h % F`` -- ``np.tile``, NOT
+    # ``np.repeat`` (which is face-major, ``h // 3``).
+    face_of = np.tile(np.arange(F), 3)
     nm_faces = np.unique(face_of[counts[inv] > 2]).tolist()
     fmap = {f: i for i, f in enumerate(nm_faces)}
     parent = list(range(len(nm_faces)))
@@ -144,7 +147,8 @@ def detect_non_manifold(verts, tris, with_indices=False):
     # regions merge; only non-manifold faces can be unioned, so restrict to them
     nm_face_bool = np.zeros(F, dtype=bool)
     nm_face_bool[nm_faces] = True
-    sel = np.nonzero(np.repeat(nm_face_bool, 3))[0]
+    # same block-stacked layout as ``face_of`` above
+    sel = np.nonzero(np.tile(nm_face_bool, 3))[0]
     if len(sel):
         s_inv = inv[sel]
         s_face = face_of[sel]

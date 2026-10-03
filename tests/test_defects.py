@@ -6,6 +6,8 @@ Checks that:
      pymeshlab/trimesh/manifold3d), so it stays importable anywhere.
   2. detect() finds holes and non-manifold regions on a broken mesh, and
      returns nothing for a clean mesh.
+  3. detect_non_manifold() pairs each half-edge with the correct face
+     (block-stacked layout: half-edge h belongs to face h % F).
 Usage: python3 tests/test_defects.py
 """
 import os
@@ -64,6 +66,28 @@ def test_non_manifold_detected():
     t = np.vstack([t, t[0]])
     d = defects.detect(v, t)
     assert len(d['non_manifold']) >= 1, d['non_manifold']
+
+
+def test_non_manifold_face_pairing_block_stacked():
+    import defects
+    # edge (1,3) is used by faces 1, 2 and 3; face 0 does not touch it.  The
+    # old `np.repeat(arange(F), 3)` pairing returned [0, 1] (face 0 is not
+    # even incident to the non-manifold edge).
+    v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]],
+                 dtype=np.float64)
+    t = np.array([[0, 1, 2], [1, 3, 4], [1, 3, 0], [1, 3, 2]], dtype=np.int64)
+    d = defects.detect_non_manifold(v, t, with_indices=True)
+    assert len(d) == 1, d
+    assert d[0]['faces'] == 3, d
+    assert d[0]['faces_idx'] == [1, 2, 3], d
+    # a case where the region partition itself differed under the buggy pairing
+    # (one merged region (0,1,3,4,5,6,7) vs the correct (0,1,3,5,7) + (2,))
+    v8 = np.zeros((6, 3))
+    t8 = np.array([[2, 3, 3], [3, 3, 5], [4, 4, 4], [3, 2, 5],
+                   [2, 1, 5], [0, 5, 3], [0, 0, 2], [0, 0, 3]], dtype=np.int64)
+    regions = sorted(r['faces_idx']
+                     for r in defects.detect_non_manifold(v8, t8, with_indices=True))
+    assert regions == [[0, 1, 3, 5, 7], [2]], regions
 
 
 def main():
