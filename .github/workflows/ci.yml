@@ -230,6 +230,10 @@ jobs:
         if: matrix.python-version == '3.11'
         run: ./sutura/venv311/bin/python tests/test_manifold3d_watertight.py
 
+      - name: "Test: manifold3d post-union debris filter (F-06)"
+        if: matrix.python-version == '3.11'
+        run: ./sutura/venv311/bin/python tests/test_manifold_post_union_debris.py
+
       - name: "Test: real-world corpus regression (~2 min)"
         if: matrix.python-version == '3.11'   # expected results assume stage 2
         env:
