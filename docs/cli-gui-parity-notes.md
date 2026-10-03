@@ -40,8 +40,9 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
 `--no-graft` / `--experimental-graft` (GUI right-click method menu #13 Graft + auto fallback ladder) ·
 `--no-dressing` / `--experimental-dressing` (GUI checkbox *Dressing (viscosity coat)* in Options → Experimental; off by default; #16 is also selectable via the right-click *Use method* menu) ·
-`--dressing-drain MODE|mm` (GUI *Drain* combo next to the Dressing checkbox: Preset default / Off / Half / Full / Deep) ·
-`--si-mode {report,repair,off}` (GUI *Self-intersections* combo in Options → Repair: Report only / Repair / Do not measure; the worker adds `--si-mode` only when it differs from the default `report`) ·
+`--dressing-defects {all,holes_nm}`, `--dressing-rmax-scale F`, `--dressing-sigma-scale F` (GUI Options → Experimental combos *Defects*, *Bridge radius*, *Influence width*) ·
+`--dressing-force-adopt` (GUI checkbox *Dressing: force adopt (may deform)* in Options → Experimental, and post-batch *⚠ Try Dressing (makes it watertight, but the part may deform)* button; implies `--experimental-dressing`) ·
+`--si-mode {repair,report,off}` (GUI *Self-intersections* combo in Options → Repair: Report only / Repair / Do not measure; the worker adds `--si-mode` only when it differs from the default `report`; SI no longer blocks watertight verdict) ·
 `--no-cache` / `clear-cache` (GUI Options → General *Enable Sutura Chart cache* checkbox + *Clear Cache* button) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all seven
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
@@ -65,11 +66,14 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 
 ## History
 
-- **Self-intersection policy:** `--si-mode {report,repair,off}` (env
+- **Self-intersection policy:** `--si-mode {repair,report,off}` (env
   `SUTURA_SI_MODE`, default `report`) and the GUI *Self-intersections* combo
-  (Options → Repair) were added together, so the parity rule holds. The combo
-  stores a batch-wide value and the worker passes `--si-mode` only when it is
-  not the default, keeping baseline commands unchanged.
+  (Options → Repair: *Report only* / *Repair* / *Do not measure*) were added
+  together, so the parity rule holds. Under `report`, self-intersections no
+  longer block the `watertight` classification verdict on closed 2-manifold
+  surfaces. The combo stores a batch-wide value and the worker passes
+  `--si-mode` only when it is not the default, keeping baseline commands
+  unchanged.
 - **Dressing (#16):** `--no-dressing` / `--experimental-dressing` and the
   batch-wide GUI checkbox (Options → Experimental) were added together, so the
   parity rule holds. The new single default switch
@@ -79,12 +83,17 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `--no-dressing` / `SUTURA_DRESSING=0` remain the disable path on both sides.
   The switch ships OFF until the fine-detail (voxel staircase) loss is fixed.
 - **Dressing opt-in UX:** `--dressing-force-adopt` (implies
-  `--experimental-dressing`) and the batch-wide GUI checkbox (Options →
-  Experimental) plus the post-batch "⚠ Try Dressing" button were added
+  `--experimental-dressing`) and the batch-wide GUI checkbox *Dressing: force adopt (may deform)*
+  (Options → Experimental) plus the post-batch button *⚠ Try Dressing (makes it watertight, but the part may deform)*
+  (or *⚠ Try Dressing on %d file(s) (watertight, but the part may deform)*) were added
   together, so the parity rule holds. The report's `suggestions` list is a
   separate output field (not an issue code); the GUI reads the same key to
   decide whether to show the button, so both sides consume the identical
-  payload.
+  payload. The CLI `--human` output emits the exact suggestion strings:
+  `  ⚠ Not watertight. You can try Dressing: --experimental-dressing (watertight, but the shape may deform / fine detail may be lost).`
+  when not run, or
+  `  ⚠ Not watertight. Dressing ran but its result was rejected by the quality gate (...).\n    Force it with --dressing-force-adopt if you accept the deformation (the shape may deform).`
+  when gate-rejected.
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
   CLI-only / GUI-only items above.
