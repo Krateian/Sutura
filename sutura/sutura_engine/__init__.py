@@ -21,7 +21,7 @@ def _get_version():
                             return line.split('=')[1].strip().strip('\'"')
     except Exception:
         pass
-    return "0.8.0"
+    return "0.8.1"
 
 
 VERSION = _get_version()
