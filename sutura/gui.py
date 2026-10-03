@@ -139,17 +139,20 @@ STRINGS = {
             "• X-Ray (P-HONEST): Strict post-save reload verification ensuring honest watertightness.\n"
             "• Hull: Exterior shell extraction and degenerate multi-component resolution.\n"
             "• Cast: High-performance exact geometry core in Rust (sutura_geom).\n\n"
-            "Methods #1–#15:\n"
+            "Methods #1–#16:\n"
             "Quick Clean (#1), Local Mend (#2), Full Mend (#3), Join (#4), Autorefine (#5), "
             "Exact Refine (#6), fTetWild (#7), Balloon (#8), Backplate (#9), Scaffold (#10), "
-            "Transplant (#11), Transplant+ (#12), Graft (#13), Mirror Complete (#14), Wall Thicken (#15)."
+            "Transplant (#11), Transplant+ (#12), Graft (#13), Mirror Complete (#14), Wall Thicken (#15), "
+            "Dressing (#16)."
         ),
         'about_credits': (
             "Third-Party Adapters & Algorithms:\n"
             "• PyMeshLab / VCG Library (GPL-3.0) — Stage 1 topological repair and surface filtering.\n"
             "• Manifold3D (Apache-2.0) — Stage 2 volumetric manifold solid rebuilding.\n"
+            "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Array math, sparse/geometry algorithms and mesh IO across the tiers.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Robust tetrahedralization envelope fallback.\n"
             "• pyrobust-predicates / Shewchuk (Public Domain) — Exact 3D geometric orientation.\n"
+            "• sutura_geom Rust crates: robust, faer, rayon, num-* (MIT/Apache-2.0) — Exact predicates, sparse LU, morphology and the Flap/Dressing accelerators.\n"
             "• PySide6 / Qt (LGPL-3.0) — Native graphical user interface framework."
         ),
         'about_license': (
