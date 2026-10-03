@@ -312,7 +312,7 @@ body.theme-dark {
   <div class="preset-bar" id="preset-bar">
     <div class="segmented" role="radiogroup" aria-label="Repair Preset">
       <button type="button" class="seg-btn" data-preset="quick" title="Fast repair, skips heavy solid rebuild">Quick</button>
-      <button type="button" class="seg-btn active" data-preset="balanced" title="Default two-stage repair with manifold3d rebuild">Balanced</button>
+      <button type="button" class="seg-btn active" data-preset="balanced" title="Default staged repair with manifold3d rebuild">Balanced</button>
       <button type="button" class="seg-btn" data-preset="thorough" title="Aggressive repair with lower thresholds for stubborn defects">Thorough</button>
       <button type="button" class="seg-btn" data-preset="extreme" title="Maximum hole filling and aggressive component merging">Extreme</button>
     </div>
@@ -388,7 +388,7 @@ body.theme-dark {
   function broadcastState() {
     sendToPage({
       command: "state",
-      cli: { found: cliFound, path: "~/.local/bin/sutura", version: "Sutura 0.7.2" },
+      cli: { found: cliFound, path: "~/.local/bin/sutura", version: "Sutura 0.8.0" },
       settings: currentSettings,
       objects: objectsList
     });

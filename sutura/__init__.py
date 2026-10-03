@@ -1,4 +1,4 @@
-"""Sutura Triage Engine: two-stage PyMeshLab + manifold3d core with 15 ranked repair methods."""
+"""Sutura Triage Engine: a staged PyMeshLab + manifold3d mesh-repair pipeline with 16 ranked repair methods."""
 
 from .repair import VERSION
 

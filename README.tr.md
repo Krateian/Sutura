@@ -890,7 +890,7 @@ sistem paket yöneticinize hiçbir şey dokunmaz. GUI, PySide6 (~79 MB indirme,
 `venv`'in parçası) gerektirir; iki sanal ortamın toplam kurulu boyutu yaklaşık
 800 MB'dır.
 
-**Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~0,7 MB),
+**Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~1 MB),
 `install.sh` ve `install-macos.sh` tarafından otomatik olarak kurulur (GitHub
 sürümünden eşleşen doğrulanmış hazır tekerlek indirilir veya Rust araç zinciri
 varsa `rust/sutura-geom` üzerinden derlenir; AppImage ve macOS .app/.dmg

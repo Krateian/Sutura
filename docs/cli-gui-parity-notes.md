@@ -123,7 +123,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `None` runs every enabled engine as before), so the parity rule holds.
 - **Closing / proxy-template methods (#8–#10):** the standalone
   `closing.py` / `proxy_repair.py` tiers are reachable from the CLI
-  (`--methods 8/9/10`) and from the GUI *Use method* list (all fifteen methods);
+  (`--methods 8/9/10`) and from the GUI *Use method* list (all sixteen methods);
   no separate flag exists, so parity holds without a dedicated control.
 - **Method #14 Mirror Complete / #15 Wall Thicken (v0.6.1):** both are in the
   shared method registry, so the GUI *Use method* menu lists and tags them with

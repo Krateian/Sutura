@@ -747,17 +747,20 @@ STRINGS = {
             "• X-Ray (P-HONEST): Kayıt sonrası yeniden yüklemeyle doğrulanan dürüst su geçirmezlik.\n"
             "• Hull (Kabuk): Çok bileşenli montajlarda dış yüzey kabuğu çıkarımı.\n"
             "• Cast (Döküm): Rust tabanlı yüksek başarımlı kesin geometri çekirdeği (sutura_geom).\n\n"
-            "Onarım Yöntemleri #1–#15:\n"
+            "Onarım Yöntemleri #1–#16:\n"
             "Hızlı Temizlik (#1), Yerel Onarım (#2), Tam Onarım (#3), Birleştir (#4), Kendini Onarım (#5), "
             "Kesin Onarım (#6), fTetWild (#7), Balon (#8), Arka Plaka (#9), İskelet (#10), "
-            "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15)."
+            "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15), "
+            "Pansuman (#16)."
         ),
         'about_credits': (
             "Üçüncü Taraf Uyarlayıcılar ve Algoritmalar:\n"
             "• PyMeshLab / VCG Kütüphanesi (GPL-3.0) — Aşama 1 topolojik onarım ve filtreleme.\n"
             "• Manifold3D (Apache-2.0) — Aşama 2 hacimsel manifold katı yeniden inşası.\n"
+            "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Katmanlar genelinde dizi matematiği, seyrek/geometri algoritmaları ve mesh G/Ç.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Sağlam tetrahedralizasyon son-çare zarfı.\n"
             "• pyrobust-predicates / Shewchuk (Kamu Malı) — Kesin 3D geometrik yönelim.\n"
+            "• sutura_geom Rust crate'leri: robust, faer, rayon, num-* (MIT/Apache-2.0) — Kesin predikatlar, seyrek LU, morfoloji ve Flap/Dressing hızlandırıcıları.\n"
             "• PySide6 / Qt (LGPL-3.0) — Yerel grafik kullanıcı arayüzü çatısı."
         ),
         'about_license': (

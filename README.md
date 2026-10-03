@@ -889,7 +889,7 @@ required, nothing touches your system package manager. The GUI needs
 PySide6 (~79 MB download, part of the `venv`); total installed size for
 the two virtualenvs is roughly 800 MB.
 
-**Rust extension (`sutura_geom`).** The Rust extension `sutura_geom` (~0.7 MB)
+**Rust extension (`sutura_geom`).** The Rust extension `sutura_geom` (~1 MB)
 is installed automatically by `install.sh` and `install-macos.sh` (which download
 and verify a matching prebuilt abi3 wheel from GitHub releases, or compile from
 `rust/sutura-geom` when a Rust toolchain is present; AppImage and macOS .app/.dmg

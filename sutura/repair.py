@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sutura Triage Engine: two-stage PyMeshLab + manifold3d core with 15 ranked repair methods.
+"""Sutura Triage Engine: a staged PyMeshLab + manifold3d mesh-repair pipeline with 16 ranked repair methods.
 
 Stage 1 (PyMeshLab/VCG): clean up, orient, close holes, drop debris.
 Stage 2 (manifold3d): rebuild the closed mesh as a watertight solid and
@@ -151,7 +151,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.7.2"
+VERSION = "0.8.0"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -6206,7 +6206,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(
         prog='sutura',
-        description='Sutura Triage Engine: two-stage robust mesh repair for STL, OBJ, and 3MF files.',
+        description='Sutura Triage Engine: staged robust mesh repair for STL, OBJ, and 3MF files.',
         epilog=(
             'subcommands (first argument):\n'
             '  validate FILE          read-only mesh validation (no repair, no output file)\n'

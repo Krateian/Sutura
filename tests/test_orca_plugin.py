@@ -646,7 +646,7 @@ def test_repair_message_protocol():
     done = _posts(handle, 'job')[-1]
     assert done['phase'] == 'done', done
     assert done['result']['watertight'] is True, done
-    assert done['result']['method'] == 'two-stage rebuild', done
+    assert done['result']['method'] == 'staged rebuild', done
     assert done['result']['holes_before'] == 2, done
     assert done['result']['holes_after'] == 0, done
     assert done['result']['output_path'].endswith('.stl'), done

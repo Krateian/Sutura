@@ -6,7 +6,7 @@
 # name = "Sutura Repair"
 # description = "Sutura mesh repair in an OrcaSlicer dock panel: repairs the model parts on the plate with the Sutura CLI and loads the repaired copy back as a new object."
 # author = "Krateian"
-# version = "0.7.2"
+# version = "0.8.0"
 # ///
 """Sutura Repair - OrcaSlicer script plugin (v2, dock panel).
 
@@ -96,7 +96,7 @@ _PANEL_CREATE_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
 _MESH_EXTENSIONS = ('.stl', '.obj', '.3mf')
 
 # The dock page, embedded verbatim from orcaslicer-plugin/panel/panel.html
-# (sha256 0ecbd3ca727eab38f595ff178a4c3ffd6b45fd1c379a1cbd2604233e6a082bd3).
+# (sha256 8eb797ee925f1258dead8d90b63131d89b0f650d0175c933db0d747173620271).
 # It is embedded so the published single-file plugin is self-contained; whenever
 # panel/panel.html changes, copy its full contents back into this raw string and
 # update the digest.
@@ -274,7 +274,7 @@ button, input { font-family: inherit; font-size: inherit; }
   <div class="preset-bar" id="preset-bar">
     <div class="segmented" role="radiogroup" aria-label="Repair Preset">
       <button type="button" class="seg-btn" data-preset="quick" title="Fast repair, skips heavy solid rebuild">Quick</button>
-      <button type="button" class="seg-btn active" data-preset="balanced" title="Default two-stage repair with manifold3d rebuild">Balanced</button>
+      <button type="button" class="seg-btn active" data-preset="balanced" title="Default staged repair with manifold3d rebuild">Balanced</button>
       <button type="button" class="seg-btn" data-preset="thorough" title="Aggressive repair with lower thresholds for stubborn defects">Thorough</button>
       <button type="button" class="seg-btn" data-preset="extreme" title="Maximum hole filling and aggressive component merging">Extreme</button>
     </div>
@@ -1172,7 +1172,7 @@ def _job_result(report, out_path):
     if holes_after is None:
         holes_after = 0 if watertight else None
     if stage2.get('ok'):
-        method = 'two-stage rebuild'
+        method = 'staged rebuild'
     elif stage1.get('two_manifold'):
         method = 'stage 1 close'
     else:
