@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [0.8.1] - TBD
+## [0.8.1] - 2026-10-03
 
 ### Added
 
