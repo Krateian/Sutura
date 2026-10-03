@@ -105,8 +105,8 @@ def _run_all(topo_engine):
 
 
 def test_parity():
-    if not topology._geom:
-        print('skip: sutura_geom not importable; numpy oracle only')
+    if not topology._rust_kernel_available():
+        print('skip: sutura_geom topology kernel not importable; numpy oracle only')
         return
     py = _run_all('python')
     rs = _run_all('rust')
@@ -119,8 +119,34 @@ def test_parity():
     print('parity OK on %d meshes (Rust == numpy oracle, bit-for-bit)' % len(py))
 
 
+def test_fallback_when_kernel_missing():
+    """An older wheel imports but lacks the kernels: every call must fall back
+    to the numpy oracle transparently, and engine() must report 'python'."""
+    saved = topology._geom
+    try:
+        for replacement in (None, object()):
+            topology.set_engine('auto')
+            topology._geom = replacement
+            assert topology.engine() == 'python', topology.engine()
+            assert not topology._use_rust()
+            v, t = _cube()
+            t = np.ascontiguousarray(t, dtype=np.int64)
+            e, c, inv = topology.edge_table(t)
+            assert e.dtype == np.int64 and c.tobytes() == (
+                topology._edge_table_numpy(t)[1].tobytes())
+            topology.set_engine('rust')  # forced but unavailable -> still numpy
+            assert not topology._use_rust()
+            wv, wt = topology.weld_reload_equivalent(v, t)
+            assert wv.tobytes() == topology._weld_reload_equivalent_numpy(v, t)[0].tobytes()
+    finally:
+        topology._geom = saved
+        topology.set_engine('auto')
+    print('fallback OK (missing kernel -> numpy oracle)')
+
+
 def main():
     test_parity()
+    test_fallback_when_kernel_missing()
     topology.set_engine('auto')
     print('topology parity tests passed')
 

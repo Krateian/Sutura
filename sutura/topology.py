@@ -47,11 +47,23 @@ def engine():
     env = os.environ.get('SUTURA_TOPOLOGY', '').strip().lower()
     if env in ('rust', 'python'):
         return env
-    return 'rust' if _geom is not None else 'python'
+    return 'rust' if _rust_kernel_available() else 'python'
+
+
+_RUST_FNS = ('edge_table', 'weld_vertices', 'weld_reload_equivalent')
+
+
+def _rust_kernel_available():
+    """True when the importable extension actually carries all three kernels.
+
+    An older/pre-kernel wheel imports fine but lacks the functions; the
+    fallback must be transparent, so this is checked rather than assuming the
+    module is enough."""
+    return _geom is not None and all(hasattr(_geom, f) for f in _RUST_FNS)
 
 
 def _use_rust():
-    return _geom is not None and engine() == 'rust'
+    return _rust_kernel_available() and engine() == 'rust'
 
 
 # --- numpy oracle --------------------------------------------------------- #
