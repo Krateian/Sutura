@@ -737,6 +737,50 @@ def _cap_boundary_loops(v, t):
     return nv[used], remap[nt]
 
 
+# --- experimental flap-first close (perf/hybrid-close, default OFF) --------
+# When enabled, the hybrid close first tries the validated
+# ``sutura_geom.flap_fill`` to seal the dropped-region opening directly: when
+# that yields a reload-watertight mesh the PyMeshLab repair/close path is
+# SKIPPED entirely (the profile showed that path is the hybrid cost).  When
+# Flap does not seal it, the existing PyMeshLab path runs unchanged, so
+# sealing is never weakened.  Off by default: ``SUTURA_HYBRID_FLAP=1`` opts in.
+HYBRID_FLAP_LOG = []
+
+
+def _hybrid_flap_enabled():
+    return os.environ.get('SUTURA_HYBRID_FLAP', '0').lower() not in (
+        '', '0', 'false', 'no', 'off')
+
+
+def _flap_close(bv, bt):
+    """Try to seal the dropped-region opening with ``flap_fill`` alone.
+
+    Returns ``(verts, tris)`` when Flap + Stitch yields a reload-watertight
+    mesh (so the PyMeshLab close can be skipped), else ``None``.
+    """
+    try:
+        from sutura_engine import flap as _flap
+        fv, ft, frep = _flap.flap_fill(
+            np.asarray(bv, np.float64), np.asarray(bt, np.int64),
+            separate_stl=False)
+        if not len(ft):
+            return None
+        fv, ft, _ = _p_weld(fv, ft, None)
+        h, nm = reload_strict_holes_nm(fv, ft)
+        HYBRID_FLAP_LOG.append({
+            'faces_in': int(len(bt)), 'faces_out': int(len(ft)),
+            'loops_found': int(frep.get('loops_found') or 0),
+            'loops_filled': int(frep.get('loops_filled') or 0),
+            'patch_faces': int(frep.get('patch_faces') or 0),
+            'holes_after': int(h), 'non_manifold_after': int(nm),
+        })
+        if h == 0 and nm == 0:
+            return np.asarray(fv, np.float64), np.asarray(ft, np.int64)
+    except Exception:  # noqa: BLE001 - a repair tier never crashes
+        pass
+    return None
+
+
 def _hybrid_close(v0, t0, region_mask, ml):
     """Verbatim hybrid: drop the damaged-region faces and close the openings
     with the pymeshlab repair path plus a numpy boundary cap, keeping every
@@ -747,6 +791,10 @@ def _hybrid_close(v0, t0, region_mask, ml):
     bv, bt = _referenced_only(v0, t0[~region_mask])
     if len(bt) == 0:
         return None
+    if _hybrid_flap_enabled():
+        fast = _flap_close(bv, bt)
+        if fast is not None:
+            return fast
     try:
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(bv, np.float64),
