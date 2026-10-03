@@ -1175,7 +1175,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     holes_before = boundary_loop_stats(v, t)[0]
     nm_before = before.get('non_two_manifold_edges', 0)
 
-    # Flap: surface-based hole fill (OFF by default). It is the FIRST Stage-1
+    # Flap: surface-based hole fill (on by default in the CLI). It is the FIRST Stage-1
     # step, a pre-pass on the input as it stands here (normally the original
     # surface; note the outer-shell extraction above may already have replaced
     # v,t for mode='auto', so this is not unconditionally the raw input). The
@@ -3394,7 +3394,7 @@ def _flap_cache_key(base_v, base_t):
 
 
 def _flap_step(ml, ms, after, stats, _p=None):
-    """Stage-1 hole fill via the Flap surface filler (OFF by default).
+    """Stage-1 hole fill via the Flap surface filler (on by default in the CLI).
 
     Runs ``sutura_engine.flap.flap_fill`` on the mesh in ``ms`` (the input as
     it stands before the VCG chain -- normally the original surface, though
