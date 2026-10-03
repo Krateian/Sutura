@@ -30,6 +30,9 @@ num-traits = "0.2"
 # dependency; ~1.1 MB of source in the lockfile (rayon + rayon-core +
 # crossbeam-deque/epoch + either), MIT OR Apache-2.0.
 rayon = "1.12"
+# Sparse direct LU for the Flap fairing normal-equation system.
+# Pure Rust, MIT; no C/LAPACK/system dependency in the default build.
+faer = { version = "0.24", features = ["sparse-linalg"] }
 
 [dev-dependencies]
 rand = "0.8"

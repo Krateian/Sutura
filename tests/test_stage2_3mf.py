@@ -138,6 +138,24 @@ def test_identical_objects_each_reported_with_stage2(tmp):
     assert os.path.exists(path[:-4] + '_fixed.3mf')
 
 
+def test_multi_object_3mf_reports_flap_aggregate(tmp):
+    """LOW-8: with Flap on by default, every object carries a per-object
+    ``flap`` record and the file-level aggregate summarises them."""
+    path = os.path.join(tmp, 'layered_flap.3mf')
+    _make_layered(path)
+    r = _run([path])
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    d = _json(r)
+    reports = d.get('object_reports', [])
+    assert reports, d
+    for rep in reports:
+        assert isinstance(rep.get('flap'), dict), rep.keys()
+    agg = d.get('flap')
+    assert isinstance(agg, dict), d.keys()
+    assert agg['objects'] == len(reports), (agg, len(reports))
+    assert agg['adopted'] <= agg['ran'] <= agg['objects'], agg
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='sutura-stage2-3mf-') as tmp:
         failed = 0
