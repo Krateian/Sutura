@@ -2,10 +2,216 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.8.0] - 2026-10-03
+
+### Added
+
+- **Flap surface hole fill (on by default, `--no-flap` / `SUTURA_FLAP=0` to disable).**
+  A new Stage-1 pre-pass (`sutura_engine.flap`) fills each boundary loop by
+  continuing the neighbouring surface instead of laying a flat lid: the loop is
+  triangulated with a minimum-area dynamic program, refined to the surrounding
+  edge length and faired with a discrete biharmonic (thin-plate) solve that
+  carries the rim's position and slope into the patch. The original triangles are
+  kept verbatim -- only the new patch is added -- and every loop Flap skips or
+  rejects is left to the ordinary Stage-1 flat hole fill, so every hole still
+  gets a lid. A candidate is adopted only when the reload-honest `holes +
+  non-manifold` count does not worsen; a flatness-based cleanup then drops
+  zero-thickness debris sheets and never a legitimate solid part. The fill core
+  has a Rust implementation (`sutura_geom.flap_fill`) used automatically when
+  present with a pure-numpy oracle (`flap_fill_python`) fallback, the two
+  bit-for-bit equivalent in topology and report fields (faired vertices agree to
+  ~1e-8). The report carries a `flap` key; the GUI exposes the switch as the
+  Options → Experimental checkbox *Flap surface hole fill* (TR: *Flap yüzey delik
+  doldurma*). Measured on the 41-mesh regression: Flap was adopted on 13 meshes
+  and the run ended reload-watertight on all 41; across the corpus the total
+  Stage-1 self-intersection count fell from 10,051 to 8,880, ornate-frame's
+  Stage-1 self-intersections from 4,016 to 3,005, and
+  the maximum surface deviation on thingi10k_1038441 from 4.11 mm to 0.60 mm. The
+  Rust engine keeps the whole 41-mesh corpus Flap step at 7.2 s.
+
+- **Dressing opt-in UX: non-watertight suggestions + `--dressing-force-adopt`.**
+  When a plain Auto repair still leaves the geometry open or non-manifold (under
+  default `--si-mode report`), the report now carries `suggestions` (a list of
+  `{'method': 'dressing', 'flag', 'force', 'reason', 'warning'}`), separate from
+  the defect `issues`, so the category and the batch issue counts are unchanged.
+  The CLI `--human` report prints a marked hint (`⚠ Not watertight…`): the plain
+  `--experimental-dressing` opt-in when Dressing never ran (`  ⚠ Not watertight. You can try Dressing: --experimental-dressing (watertight, but the shape may deform / fine detail may be lost).`),
+  or `--dressing-force-adopt` when Dressing ran and the quality gate rejected its
+  coat (`  ⚠ Not watertight. Dressing ran but its result was rejected by the quality gate (...).\n    Force it with --dressing-force-adopt if you accept the deformation (the shape may deform).`,
+  with the failed volume / normal numbers in parentheses). The new
+  `--dressing-force-adopt` flag (implies `--experimental-dressing`) bypasses the
+  shape-preservation gates (volume, component count, healthy-surface normal
+  angle, coat fidelity) while STILL requiring a strict-watertight,
+  self-intersection-free candidate; the record's `forced` field marks when the
+  shape gates were bypassed, and the GUI exposes the same flag as a batch-wide
+  Options → Experimental checkbox *Dressing: force adopt (may deform)* (TR: *Pansuman: zorla benimse (deforme olabilir)*).
+  The main window shows a non-blocking button *⚠ Try Dressing (makes it watertight, but the part may deform)*
+  (or *⚠ Try Dressing on %d file(s) (watertight, but the part may deform)*; TR: *⚠ Dressing ile dene (su geçirmez yapar, ama parça deforme olabilir)*)
+  after a batch in which any result offered the suggestion; clicking it re-runs exactly those files with the force
+  flag and sets the same checkbox, so the choice is explicit and visible.
+
+- **Self-intersection policy (`--si-mode {repair,report,off}`, `SUTURA_SI_MODE`,
+  GUI Options → Repair combo *Self-intersections* [*Report only* / *Repair* / *Do not measure*]).**
+  `report` (the default) keeps measuring and reporting the residual self-intersection count,
+  but self-intersections no longer block the `watertight` classification verdict on a closed 2-manifold
+  mesh, nor do they escalate the deep-repair ladder on their own; only holes and non-manifold
+  edges drive the automatic tiers and verdict. `repair` restores the previous behaviour (a positive
+  exact-SI count is damage and triggers the automatic Dressing fallback). `off` skips the exact
+  classifier entirely and reports the count as `null` ("not measured"). Explicit force flags
+  (`--experimental-dressing`, `--experimental-fallback-ftetwild`) override the policy and still act
+  on residual SI. The guarded `si_excise_recap` pass keeps its own independent count in every mode.
+  The chosen mode lands in the report as `si_mode` and in `deep_repair.si_mode`; under `off` the
+  stage-1 count is `null`.
+
+- **Dressing (method #16, variable-viscosity volumetric skinning) — opt-in, off by
+  default.** A surgical sibling of Graft (#13): the input is dipped in a spatially
+  varying "liquid" and the level set `F(x) = s(x) - r(x)` is extracted, where `s` is
+  the generalized-winding signed distance and `r` a viscosity radius that is thin over
+  detailed healthy surface and thicker over damage. The isosurface of a scalar field is
+  2-manifold and self-intersection-free by construction, which is what targets
+  whole-shell topological folds where local patch excision and hybrid splicing fail.
+  Method #13 Graft (verbatim hybrid) remains the default automated repair pass.
+  Dressing
+  is an opt-in experimental fallback (warning: *watertight, but the shape may deform /
+  fine detail may be lost*), shipped OFF by default: with
+  `DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT=1` it acts as an opt-in
+  tier tried after Graft and before fTetWild; under `--si-mode repair`, a positive
+  exact-SI count also triggers the tier (under default `--si-mode report`, only
+  remaining holes and non-manifold edges trigger fallbacks).
+  `--experimental-dressing` / `SUTURA_DRESSING=1` / the GUI Options checkbox
+  *Dressing (viscosity coat)* (TR: *Pansuman (viskozite kaplaması)*) **force** it;
+  `--no-dressing` / `SUTURA_DRESSING=0` disable it. Adoption requires strict-watertight,
+  exact-SI-free, the preset's coat->input fidelity gate and shape-preservation
+  gates: signed volume delta <= `DRESSING_MAX_VOLUME_DELTA` (10 %) vs the
+  pre-Dressing result, component-count growth <= `DRESSING_MAX_PARTS_SLACK` (1),
+  and healthy-surface P95 coat-vs-input vertex-normal angle below
+  `DRESSING_MAX_NORMAL_ANGLE_P95` (30 deg, a placeholder; the metric catches the
+  voxel staircase the position-only Hausdorff gate misses). The switch stays OFF
+  because on a fine-detail relief (ornate-frame) the staircase visibly flattens
+  fluting even at ~0.08 mm mean deviation; the geometric CAD-vs-organic `cad_likeness`
+  score is recorded on every Auto run for the future calibrated CAD guard. Report key `dressing`.
+  The backend is the validated numpy prototype (`sutura_engine/dressing.py`:
+  `sdf_grid` -> variable radius -> marching tetrahedra -> decimation -> P-WELD); the
+  Rust `sutura_geom.dressing_coat` narrow-band core is feature-detected and used
+  automatically when present (numpy fallback otherwise); the binding takes
+  `defect_pts` as Nx3 points and gained the `drain` kwarg (feature-detected via
+  `_rust_signature_has_drain`, so an extension that predates it still falls back to
+  numpy for a positive drain). The voxel size follows the
+  characteristic feature size (`median_edge / 1.5`, clipped to the preset diagonal
+  band) instead of only the bounding box, which fixes the small-model oversampling
+  (thingi10k_100827 was evaluated at 7.3 % deviation at `diag/200`). Decimation
+  (`meshing_decimation_quadric_edge_collapse`, `optimalplacement=False`,
+  `planarquadric=True`, per the decimation benchmark) rolls back
+  atomically to the un-decimated coat when it would introduce holes, non-manifold
+  edges or exact self-intersections. It is attempted after Graft and before fTetWild.
+
+- **Dressing drain (healthy-region erode-back).** The coat sits ~`r_base` outside the
+  original surface (dimension growth); Dressing can now erode it back **in the level
+  set** (`F = s - r + delta_r`), never by vertex projection (which re-introduced 7,850
+  self-intersections and stays permanently rejected). Full drain (`delta_r = r_base`)
+  cuts healthy growth ~40 % (median +0.33 -> +0.20 mm raw) with a ~4 um median inward
+  dip and keeps defects covered, per the offset measurements; it
+  stays 0 holes / 0 non-manifold / 0 self-intersections. `dressing_coat(drain=...)`
+  accepts a mode (`none`/`half`/`full`/`deep`), an explicit `delta_r` in mm, or `None`
+  for the preset default (Quick off, Balanced/Thorough full, Extreme deep). CLI
+  `--dressing-drain MODE|mm` / `SUTURA_DRESSING_DRAIN` (`resolve_dressing_drain`) and
+  the GUI Options combo (*Preset default / Off / Half / Full / Deep*) override it;
+  `report['dressing']['drain']` carries the mode, factor, amount and `drained`. A
+  residual ~0.2 mm (~0.4 voxel) outward bias remains even at full drain — the
+  extractor's discretization, to be addressed in the Rust core, not hidden here.
+
+- **Dressing defect-set and viscosity overrides.** `dressing_coat(defects=..., r_max_scale=..., sigma_scale=...)`
+  selects which input defects drive the viscosity mask and scales the resolved
+  viscosity extent. `defects='all'` (the default) keeps holes + non-manifold +
+  self-intersections; `defects='holes_nm'` drops the self-intersection term, so a
+  scan whose only damage is holes/non-manifold edges is not thickened by spurious
+  SI. `r_max_scale`/`sigma_scale` multiply the resolved `r_max`/`sigma` (unset =
+  1.0, byte-identical; zero, negative and unparseable values are ignored, so the
+  default is unchanged). CLI `--dressing-defects {all,holes_nm}`,
+  `--dressing-rmax-scale F`, `--dressing-sigma-scale F`; env
+  `SUTURA_DRESSING_DEFECTS` / `SUTURA_DRESSING_RMAX_SCALE` /
+  `SUTURA_DRESSING_SIGMA_SCALE`; GUI Options→Experimental combos *Defects*,
+  *Bridge radius* (TR: *Köprüleme yarıçapı:*) and *Influence width* (TR: *Etki genişliği:*). `report['dressing']['defects']` / `['r_max_scale']` /
+  `['sigma_scale']` carry the effective values. Note: the Rust drain path yields a
+  changed isosurface without changing the grid face count, so the healthy-growth
+  regression asserts a shrinking bbox span, not a face-count delta.
+
+- **Ray-stabbing inside/outside vote in the Rust core (experimental, off by default).** The
+  `sutura_geom` morphology core now exposes `raystab_points` and `raystab_grid`, and an opt-in
+  `raystab=` keyword on `sdf_grid`/`morph_close` that overrides the generalized-winding sign in
+  the ambiguous band (`0.3 < w < 0.7`) with a Nooruddin & Turk sphere-spray vote. The vote is the
+  oriented net crossing sum (correct for overlapping unioned shells; reduces to parity for a
+  single shell) with a per-ray parity fallback for orientation-inconsistent soups, and an
+  escaping ray counts as a strong outside vote. Graft exposes it as
+  `shell_wrap(..., raystab=True)` / `SUTURA_RAYSTAB=1` and reports `report["raystab"]`. It is
+  off by default and byte-identical to the winding-only path; the CLI/GUI switch is deferred
+  until a real-world-corpus measurement.
+
+- **Graft sign-field Pass 0 (`morph_close(..., r=0)`, opt-in, OFF by default).** When enabled,
+  Graft contours the raw generalized-winding sign field with no dilation/EDT before its closing
+  ladder, so genuine gaps stay open instead of being bridged; the result is adopted only when the
+  strict X-Ray reload verdict is watertight and the healthy-detail gate passes, otherwise the
+  closing ladder runs unchanged. Enable with `shell_wrap(..., sign_field=True)` /
+  `SUTURA_GRAFT_SIGN_FIELD=1`. It is off by default because on ornate-frame it fails both gates
+  (2 holes / 105 non-manifold edges and 1.29 % detail loss vs the 0.25 % gate) and costs ~326 s
+  for a result the verbatim hybrid reproduces. The Rust core accepts `r == 0` as the sign-field
+  path and exposes `SIGN_FIELD_SUPPORTED` / `info['sign_field']`.
+
+- **Guarded self-intersection excise + refined re-cap in Full Mend.** After the
+  Stage-1 chain, Full Mend now removes residual self-intersecting faces (the
+  faces plus a one-ring band) and re-closes the opened loops with PyMeshLab's
+  self-intersection-preventing hole fill (Liepa-refined on meshes up to 20k
+  faces; the refinement cost ~3 s/round on 90k meshes and changed no corpus
+  outcome), committing a round only when
+  the self-intersection count strictly drops while boundary edges (not the
+  unreliable `number_holes`, which reads -1 on some non-manifold meshes) and
+  non-manifold edges do not increase (otherwise the pre-round mesh is restored
+  byte-for-byte). It
+  never drops a connected component, runs at most three rounds under the
+  intensity preset's time budget (Balanced 5 s / Thorough 20 s / Extreme 60 s)
+  and is a no-op on meshes without self-intersections (`SUTURA_SI_EXCISE=0`
+  disables it). Report key `si_excise`. Also adds the experimental
+  `SUTURA_REFINE_HOLE=1` refined Stage-1 hole fill (off by default, unproven on
+  the corpora).
+
+- **Graft shell-wrap input face cap and time budget (`graft_max_faces`, `graft_timeout`).**
+  The Graft (#13) morphology tier now enforces an intensity-preset face cap and
+  a wall-clock ladder budget, preventing un-interruptible operations on massive
+  scans from exceeding harness timeouts. `triage.IntensitySpec` defines
+  `graft_max_faces` (Quick/Balanced: 2,000,000 faces; Thorough: 2,000,000;
+  Extreme: uncapped) and `graft_timeout` (Quick/Balanced: 300 s; Thorough: 900 s;
+  Extreme: 1,800 s). `repair.graft_tier` evaluates the input against the cap,
+  skipping oversized inputs with `reject_reason='too_large'` while preserving the
+  completed Stage-1 mesh. `graft.shell_wrap` checks the wall-clock deadline between
+  attempts, returning the best candidate found so far with `budget_exceeded: true`.
+  The report records `skipped_budget`, `timed_out`, `reject_reason`, `max_faces`,
+  and `time_budget` under `report['graft']`. In the GUI, the Triage Profile Editor
+  exposes both fields (EN/TR) for full CLI parity. Measured across the benchmark
+  suite: the 6 dense Artec scans that previously exceeded 600 s now exit 0 cleanly
+  in 164–348 s, and the 41-mesh regression suite remains byte-identical for 40/41
+  meshes (with only `thingi10k_100827` differing due to documented fTetWild non-determinism).
+
+### Changed
+
+- **Graft's grid budget scales with the Triage intensity preset and the available RAM.** The
+  fixed `GRID_BUDGET = 1_500_000` is replaced by `resolve_grid_budget(intensity, available_bytes)`
+  (Quick/Balanced 1.5M, Thorough 10M, Extreme 25M; RAM-safe cap at 35 % of available memory
+  and a hard 25M ceiling; 1.5M floor). Balanced keeps the historical 1.5M budget after the
+  40-mesh corpus regression check showed the 5M target doubled Graft time for no watertight
+  gain. Explicit `grid_budget=` values are honoured verbatim. The report carries the effective
+  `grid_budget`, `intensity` and chosen `voxel`.
 
 ### Fixed
 
+- **Review findings in the ray-stab / Graft sign-field batch.** (1) A watertight sign-field
+  Pass 0 candidate that failed the fidelity gate could seed Graft's `best` and never be
+  replaced by a closing-ladder candidate (both have 0 holes+nm); sign-field candidates are now
+  never recorded as `best`. (2) `resolve_grid_budget` let the nominal 1.5M floor override the
+  RAM-safe limit; the RAM ceiling can now clamp below the floor down to `MIN_GRID_DIV**3`.
+  (3) The ray-stab `cells_flipped` counter compared the unsigned distance (`>= 0`) and always
+  read "outside"; it now reads the signed slice. (4) The Python grid arrays returned by
+  `sdf_grid`/`raystab_grid` were built in C order while the flat buffer is i-fastest, transposing
+  X/Z on asymmetric grids; they are now built with the matching Fortran order.
 - **OrcaCloud plugin publishing on every release.** The build workflows now run on a published
   GitHub Release and attach their assets (AppImage, `.dmg`, prebuilt wheels +
   `sutura_geom-SHA256SUMS`) to the release the maintainer publishes with `gh`, instead of

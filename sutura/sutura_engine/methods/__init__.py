@@ -17,6 +17,7 @@ from sutura_engine.diagnosis import SCORE_TEMPLATES, to_dict, analyze_file, comb
 from sutura_engine.methods.availability import (
     always_available,
     closing_available,
+    dressing_available,
     ftetwild_available,
     graft_available,
     indirect_available,
@@ -42,6 +43,7 @@ _closing_available = closing_available
 _proxy_available = proxy_available
 _repeat_available = repeat_available
 _graft_available = graft_available
+_dressing_available = dressing_available
 
 
 def _not_implemented(phase: str) -> Callable[[], Tuple[bool, str]]:
@@ -86,6 +88,8 @@ _METHOD_ALIASES: Dict[str, int] = {
     '14': 14, 'm14': 14, 'mirror_complete': 14, 'mirror': 14,
     # 15: Wall Thicken
     '15': 15, 'm15': 15, 'wall_thicken': 15, 'wall': 15, 'thicken': 15,
+    # 16: Dressing (variable-viscosity volumetric skinning)
+    '16': 16, 'm16': 16, 'dressing': 16, 'coat': 16, 'dipcoat': 16,
 }
 
 
@@ -189,7 +193,7 @@ _CANONICAL_BY_NUM = {
     1: 'quick_clean', 2: 'local_mend', 3: 'full_mend', 4: 'join',
     5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild', 8: 'balloon',
     9: 'backplate', 10: 'scaffold', 11: 'transplant', 12: 'transplant_plus',
-    13: 'graft', 14: 'mirror_complete', 15: 'wall_thicken',
+    13: 'graft', 14: 'mirror_complete', 15: 'wall_thicken', 16: 'dressing',
 }
 
 
@@ -303,6 +307,16 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
         # Opt-in only (needs_user_input excludes it from the ranking); the
         # thicken decision is a shape change the user must make explicitly.
         return 0.0, 'opt-in thin-wall thicken', 'rec_reason_wall_optin', ()
+    if method_id == 'dressing':
+        # Opt-in only (needs_user_input excludes it from the ranking until it is
+        # measured on the corpus); favours heavy self-intersection / complex
+        # fold load where a volumetric skin is more robust than patching.
+        score = (0.45 * _clamp01(open_ratio / 0.05)
+                 + 0.30 * _clamp01((holes + nm) / 3.0)
+                 + 0.25 * _clamp01(si / 2000.0))
+        return (_clamp01(score),
+                'complex folds / heavy self-intersections skin-coatable',
+                'rec_reason_dressing', ())
     return 0.0, 'not implemented yet', 'rec_reason_not_implemented', ()
 
 

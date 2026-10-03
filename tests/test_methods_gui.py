@@ -118,13 +118,13 @@ def main():
         'method_auto_rec', 3, gui._method_name(3), 82), w._item_by_path[a].text(1)
     print('ok  recommendation shown in the Method column')
 
-    # Use method menu: 15 entries, placeholders / needs-input disabled
+    # Use method menu: 16 entries, placeholders / needs-input disabled
     w._on_tag_toggle([b], 'method', 3)
     m = gui.QMenu(w.tree)
     um = gui._KeepOpenMenu(gui._t('menu_use_method'), m)
     w._build_use_method_menu(um, [b], b)
     acts = um.actions()
-    assert len(acts) == 15, len(acts)
+    assert len(acts) == 16, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
     # 8-12 are implemented and enabled (12 opens the repeat picker); 14
     # (Mirror Complete) is enabled.  13 Graft needs the Rust sutura_geom
@@ -140,6 +140,9 @@ def main():
         if 'sutura_geom' in (g_reason or ''):
             assert 'sutura_geom' in tip, (tip, g_reason)
     assert acts[13].isEnabled(), 'method 14 (Mirror Complete) must be enabled'
+    # 16 Dressing is opt-in (needs_user_input) but still selectable.
+    assert acts[15].text().startswith('Dressing') or 'Dressing' in acts[15].text(), \
+        acts[15].text()
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live
@@ -292,6 +295,197 @@ def main():
     assert args[args.index('--methods') + 1] == '5,3', args
     assert args[args.index('--engines') + 1] == 'copycat', args
     print('ok  RepairWorker per-file --methods/--engines')
+
+    # Dressing (#16) batch-wide: checkbox -> --experimental-dressing, drain
+    # combo -> --dressing-drain <mode>
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_drain='deep')
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    dargs = captured['args']
+    assert '--experimental-dressing' in dargs, dargs
+    assert dargs[dargs.index('--dressing-drain') + 1] == 'deep', dargs
+    # preset default (None) adds no drain flag
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_drain=None)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--dressing-drain' not in captured['args'], captured['args']
+    print('ok  RepairWorker Dressing flag and drain override')
+
+    # Flap (Stage-1 surface hole fill) batch-wide: checkbox -> --flap
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], flap=True)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--flap' in captured['args'], captured['args']
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], flap=False)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--no-flap' in captured['args'], captured['args']
+    assert '--flap' not in captured['args'], captured['args']
+    print('ok  RepairWorker Flap flag')
+
+    # the Flap checkbox maps to MainWindow._flap and is checked by default
+    assert w._flap is True and w.chk_flap.isChecked()
+    w.chk_flap.setChecked(False)
+    assert w._flap is False
+    w.chk_flap.setChecked(True)
+    assert w._flap is True
+    assert (w.chk_flap, True) in w._options_defaults
+
+    # SI policy: default 'report' adds no flag; 'repair'/'off' add --si-mode
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], si_mode='report')
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--si-mode' not in captured['args'], captured['args']
+    for mode in ('repair', 'off'):
+        captured.clear()
+        gui.subprocess.Popen = _fake_popen
+        try:
+            rw = gui.RepairWorker([b], si_mode=mode)
+            rw._run_one(b)
+        finally:
+            gui.subprocess.Popen = orig_popen
+        sargs = captured['args']
+        assert sargs[sargs.index('--si-mode') + 1] == mode, sargs
+    print('ok  RepairWorker SI-mode flag')
+
+    # The SI-mode combo maps Report/Repair/Off to report/repair/off
+    w.cmb_si_mode.setCurrentIndex(0)
+    assert w._si_mode == 'report'
+    w.cmb_si_mode.setCurrentIndex(1)
+    assert w._si_mode == 'repair'
+    w.cmb_si_mode.setCurrentIndex(2)
+    assert w._si_mode == 'off'
+    print('ok  SI-mode combo mapping')
+
+    # The drain combo maps indices 0..4 to None/none/half/full/deep
+    w.cmb_dressing_drain.setCurrentIndex(0)
+    assert w._dressing_drain is None
+    for idx, mode in enumerate(('none', 'half', 'full', 'deep'), start=1):
+        w.cmb_dressing_drain.setCurrentIndex(idx)
+        assert w._dressing_drain == mode, (idx, w._dressing_drain)
+    print('ok  Dressing drain combo mapping')
+
+    # Defect-set combo maps Preset/all/holes_nm to None/'all'/'holes_nm'
+    w.cmb_dressing_defects.setCurrentIndex(0)
+    assert w._dressing_defects is None
+    w.cmb_dressing_defects.setCurrentIndex(1)
+    assert w._dressing_defects == 'all'
+    w.cmb_dressing_defects.setCurrentIndex(2)
+    assert w._dressing_defects == 'holes_nm'
+    print('ok  Dressing defect-set combo mapping')
+
+    # Scale combos map Preset/x0.25../x2 to None/0.25../2.0
+    for cmb, attr in ((w.cmb_dressing_rmax_scale, '_dressing_rmax_scale'),
+                      (w.cmb_dressing_sigma_scale, '_dressing_sigma_scale')):
+        cmb.setCurrentIndex(0)
+        assert getattr(w, attr) is None
+        for idx, factor in enumerate((0.25, 0.5, 0.75, 1.0, 1.5, 2.0), 1):
+            cmb.setCurrentIndex(idx)
+            assert getattr(w, attr) == factor, (attr, idx, getattr(w, attr))
+    print('ok  Dressing scale-factor combo mapping')
+
+    # RepairWorker adds the defect-set / scale flags when set
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_defects='holes_nm',
+                              dressing_rmax_scale=0.5,
+                              dressing_sigma_scale=2.0)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    xargs = captured['args']
+    assert xargs[xargs.index('--dressing-defects') + 1] == 'holes_nm', xargs
+    assert xargs[xargs.index('--dressing-rmax-scale') + 1] == '0.5', xargs
+    assert xargs[xargs.index('--dressing-sigma-scale') + 1] == '2.0', xargs
+    # preset defaults (None) add no defect-set / scale flags
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing=True, dressing_defects=None,
+                              dressing_rmax_scale=None,
+                              dressing_sigma_scale=None)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    for flag in ('--dressing-defects', '--dressing-rmax-scale',
+                 '--dressing-sigma-scale'):
+        assert flag not in captured['args'], (flag, captured['args'])
+    print('ok  RepairWorker Dressing defect-set / scale overrides')
+
+    # --dressing-force-adopt implies --experimental-dressing (the flag skips
+    # Dressing's shape gate but only means anything with Dressing enabled)
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], dressing_force_adopt=True)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    fargs = captured['args']
+    assert '--dressing-force-adopt' in fargs, fargs
+    assert '--experimental-dressing' in fargs, fargs
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b])
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--dressing-force-adopt' not in captured['args'], captured['args']
+    assert '--experimental-dressing' not in captured['args'], captured['args']
+    print('ok  RepairWorker force-adopt implies experimental dressing')
+
+    # The force-adopt checkbox maps to MainWindow._dressing_force_adopt and is
+    # registered in the options defaults (options-window counter).
+    w.chk_dressing_force_adopt.setChecked(True)
+    assert w._dressing_force_adopt is True
+    w.chk_dressing_force_adopt.setChecked(False)
+    assert w._dressing_force_adopt is False
+    assert (w.chk_dressing_force_adopt, False) in w._options_defaults
+    print('ok  Dressing force-adopt checkbox + defaults')
+
+    # The post-batch "Try Dressing" button appears only when a finished result
+    # suggested Dressing, and clicking it force-reruns exactly those files.
+    assert w.btn_try_dressing.isHidden()
+    w._suggestion_by_path = {a: [{'method': 'dressing', 'force': True}],
+                             b: [{'method': 'other'}]}
+    w._refresh_dressing_suggestion()
+    assert not w.btn_try_dressing.isHidden()
+    assert w._dressing_suggestion_files() == [a], w._dressing_suggestion_files()
+    saved_worker = gui.RepairWorker
+    gui.RepairWorker = _FakeWorker
+    try:
+        w._on_try_dressing()
+    finally:
+        gui.RepairWorker = saved_worker
+    assert w.chk_dressing_force_adopt.isChecked(), 'force checkbox not set'
+    assert w._dressing_force_adopt is True
+    assert _FakeWorker.captured.get('dressing_force_adopt') is True, \
+        _FakeWorker.captured
+    assert _FakeWorker.captured.get('force') is True, _FakeWorker.captured
+    assert w.btn_try_dressing.isHidden()
+    print('ok  Try Dressing button + force re-run')
 
     # MainWindow maps the tag lists onto RepairWorker kwargs
     saved_worker = gui.RepairWorker

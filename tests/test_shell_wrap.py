@@ -120,7 +120,10 @@ def test_sphere_with_hole_watertight_and_report():
     assert rep["display_name"] == DISPLAY_NAME == "Graft"
     assert rep["invents_geometry"] is True
     assert rep["method"] == 13
-    assert rep["tries"] >= 1 and rep["r_used"] > 0
+    assert rep["tries"] >= 1
+    # Pass 0 (sign field, r = 0) either succeeds or the closing ladder runs;
+    # either way the chosen radius is non-negative and inside the ladder.
+    assert rep["r_used"] >= 0
     assert len(rep["per_vertex_deviation"]) == len(ov)
     # the hole is gone: volume close to a full unit sphere
     vol = signed_volume(ov, ot)
@@ -179,7 +182,8 @@ def test_local_mode_flag_runs_and_reports_mode():
     # a non-watertight original makes the manifold union fall back to whole
     # mode, which must still produce a valid watertight result.
     v, f = sphere_with_hole()
-    ov, ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08, local=True)
+    ov, ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08, local=True,
+                             sign_field=False)
     assert rep["mode"] in ("local", "whole")
     assert rep["ok"] and rep["holes"] == 0 and rep["non_manifold"] == 0
     assert manifold_ok(ot)
@@ -230,12 +234,142 @@ def test_hybrid_keeps_healthy_verbatim():
     assert h == 0 and nm == 0
 
     # A coarse envelope loses detail, so shell_wrap must fall back to the
-    # verbatim hybrid and report zero healthy deviation.
-    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, ml=pymeshlab)
+    # verbatim hybrid and report zero healthy deviation (sign-field Pass 0 is
+    # disabled here so the closing/hybrid path is the one under test).
+    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, ml=pymeshlab,
+                               sign_field=False)
     assert rep["ok"] and rep["mode"] == "hybrid"
     assert rep["detail_max_mm"] == 0.0
     assert rep["hausdorff_healthy"] == 0.0
     assert rep["holes"] == 0 and rep["non_manifold"] == 0
+
+
+def test_sign_field_pass0_opt_in_and_default_off():
+    # Pass 0 is OFF by default: the ladder starts at the first closing radius.
+    v, f = sphere_with_hole()
+    _ov, _ot, rep0 = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                               guard=False)
+    assert rep0["sign_field"] is False
+    assert rep0["r_ladder"][0] > 0.0
+    # Opted in explicitly, Pass 0 runs, is adopted and the ladder starts at 0.
+    _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                               guard=False, sign_field=True)
+    assert rep["sign_field"] is True
+    assert rep["r_ladder"][0] == 0.0
+    assert rep["mode"] == "sign_field"
+    assert rep["r_used"] == 0.0
+    assert rep["holes"] == 0 and rep["non_manifold"] == 0
+
+
+def test_sign_field_pass0_not_adopted_when_fidelity_fails():
+    # BUG-01 regression: a watertight sign-field candidate that FAILS the
+    # fidelity gate must never seed `best`, or it would block every closing
+    # ladder attempt (both have 0 holes+nm) and be adopted with a bad shape.
+    import sutura_engine.graft as graft_mod
+    saved = graft_mod.HEALTHY_HAUSDORFF_MAX
+    graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0  # force every real deviation to fail
+    try:
+        v, f = sphere_with_hole()
+        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                   guard=True, sign_field=True)
+    finally:
+        graft_mod.HEALTHY_HAUSDORFF_MAX = saved
+    assert rep["sign_field"] is True
+    assert rep["r_used"] > 0.0, rep
+    assert rep["mode"] != "sign_field", rep
+
+
+def test_time_budget_stops_between_attempts():
+    """A spent budget stops the closing ladder after the current attempt and
+    returns the best candidate found so far (never hangs, never a crash)."""
+    import time as _time
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    calls = {"n": 0}
+    real_close = graft_mod.sutura_geom.morph_close
+    real_ladder = graft_mod._r_ladder
+    real_max = graft_mod.HEALTHY_HAUSDORFF_MAX
+
+    def fake_ladder(gap, voxel, diag, max_tries):
+        return [1e-4, 2e-4, 4e-4, 8e-4]
+
+    def fake_close(*args, **kwargs):
+        calls["n"] += 1
+        _time.sleep(0.02)
+        return real_close(*args, **kwargs)
+
+    # Force the fidelity gate to fail so no rung can break early; only the
+    # budget may stop the ladder.
+    graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0
+    graft_mod._r_ladder = fake_ladder
+    graft_mod.sutura_geom.morph_close = fake_close
+    try:
+        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                   guard=True, time_budget=1e-6)
+    finally:
+        graft_mod._r_ladder = real_ladder
+        graft_mod.sutura_geom.morph_close = real_close
+        graft_mod.HEALTHY_HAUSDORFF_MAX = real_max
+
+    assert rep["budget_exceeded"] is True
+    assert rep["tries"] == 1, rep["tries"]
+    assert calls["n"] == 1, calls
+    assert rep["time_budget"] == 1e-6
+
+
+def test_no_time_budget_runs_full_ladder():
+    """Without a budget the same multi-rung ladder is not stopped early."""
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    calls = {"n": 0}
+    real_close = graft_mod.sutura_geom.morph_close
+    real_ladder = graft_mod._r_ladder
+    real_max = graft_mod.HEALTHY_HAUSDORFF_MAX
+
+    def fake_ladder(gap, voxel, diag, max_tries):
+        return [1e-4, 2e-4, 4e-4, 8e-4]
+
+    def fake_close(*args, **kwargs):
+        calls["n"] += 1
+        return real_close(*args, **kwargs)
+
+    graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0
+    graft_mod._r_ladder = fake_ladder
+    graft_mod.sutura_geom.morph_close = fake_close
+    try:
+        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                   guard=True)
+    finally:
+        graft_mod._r_ladder = real_ladder
+        graft_mod.sutura_geom.morph_close = real_close
+        graft_mod.HEALTHY_HAUSDORFF_MAX = real_max
+
+    assert rep["budget_exceeded"] is False
+    assert rep["tries"] == 4, rep["tries"]
+    assert calls["n"] == 4, calls
+
+
+def test_resolve_grid_budget_scales_with_intensity_and_ram():
+    from sutura_engine.graft import resolve_grid_budget
+    big = 1 << 40
+    assert resolve_grid_budget("quick", big) == 1_500_000
+    assert resolve_grid_budget("balanced", big) == 1_500_000
+    assert resolve_grid_budget("thorough", big) == 10_000_000
+    assert resolve_grid_budget("extreme", big) == 25_000_000
+    # Unknown/None falls back to the balanced target.
+    assert resolve_grid_budget(None, big) == 1_500_000
+    assert resolve_grid_budget("custom-profile", big) == 1_500_000
+    # A tiny machine must clamp BELOW the nominal floor: the RAM-safe limit is
+    # an absolute ceiling down to MIN_GRID_DIV**3 (BUG-03).
+    from sutura_engine.graft import MIN_GRID_DIV
+    floor = MIN_GRID_DIV ** 3
+    assert resolve_grid_budget("extreme", 1_000_000) == floor
+    assert resolve_grid_budget("balanced", 1_000_000) == floor
+    assert resolve_grid_budget("extreme", 10**12) == 25_000_000
+    # A mid-size machine still gets the nominal target when it fits.
+    assert resolve_grid_budget("balanced", 10**12) == 1_500_000
 
 
 if __name__ == "__main__":

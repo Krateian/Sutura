@@ -115,6 +115,7 @@ jobs:
             "--hidden-import" "heatmap_render" "--hidden-import" "viewer_common"
             "--hidden-import" "updater" "--hidden-import" "numpy"
             "--hidden-import" "autorefine" "--hidden-import" "mesh_classifier_v2"
+            "--hidden-import" "local_exact"
             "--hidden-import" "triage" "--hidden-import" "engines"
             "--hidden-import" "ftetwild_manager"
             "--hidden-import" "methods" "--hidden-import" "object_analysis"

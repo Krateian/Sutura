@@ -115,6 +115,7 @@ button, input { font-family: inherit; font-size: inherit; }
 .chip-cancelled { color: var(--orca-muted); background: var(--orca-border); }
 .link-show-file { background: transparent; border: none; color: var(--orca-accent); cursor: pointer; font-size: 11px; text-decoration: underline; padding: 2px 4px; }
 .result-hint { margin-top: 4px; color: var(--orca-muted); font-size: 11px; line-height: 1.4; }
+.result-suggestion { color: var(--orca-warning, #f59e0b); }
 
 /* Analysis Drawer */
 .analysis-drawer { margin-top: 6px; padding: 8px; border-radius: 6px; border: 1px solid var(--orca-border); display: flex; flex-direction: column; gap: 6px; }
@@ -171,7 +172,7 @@ button, input { font-family: inherit; font-size: inherit; }
   <div class="preset-bar" id="preset-bar">
     <div class="segmented" role="radiogroup" aria-label="Repair Preset">
       <button type="button" class="seg-btn" data-preset="quick" title="Fast repair, skips heavy solid rebuild">Quick</button>
-      <button type="button" class="seg-btn active" data-preset="balanced" title="Default two-stage repair with manifold3d rebuild">Balanced</button>
+      <button type="button" class="seg-btn active" data-preset="balanced" title="Default staged repair with manifold3d rebuild">Balanced</button>
       <button type="button" class="seg-btn" data-preset="thorough" title="Aggressive repair with lower thresholds for stubborn defects">Thorough</button>
       <button type="button" class="seg-btn" data-preset="extreme" title="Maximum hole filling and aggressive component merging">Extreme</button>
     </div>
@@ -328,6 +329,9 @@ button, input { font-family: inherit; font-size: inherit; }
       h += `</div>`;
       if (job.phase === 'done') {
         h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        if (job.result?.suggestion) {
+          h += `<div class="result-hint result-suggestion">Tip: ${esc(job.result.suggestion)}</div>`;
+        }
       }
     }
 

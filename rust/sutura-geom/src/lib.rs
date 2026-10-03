@@ -16,17 +16,20 @@ use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 
 pub mod arrangement;
 pub mod cdt2d;
+pub mod dressing;
 pub mod dual_contour;
+pub mod flap;
 pub mod interval;
 pub mod morph;
 pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
+pub mod raycast;
 pub mod triangle_intersection;
 pub mod winding;
 
-use numpy::ndarray::Array3;
+use numpy::ndarray::{Array3, ShapeBuilder};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::types::PyList;
 use rayon::prelude::*;
@@ -39,7 +42,7 @@ pub const MAX_VOXELS: u64 = 512 * 512 * 512;
 /// Face count above which `self_intersecting_faces` refuses to run the exact
 /// classifier (the broad phase plus exact predicates are super-linear); the
 /// caller sees a `skipped` report instead.
-pub const SI_MAX_FACES: usize = 150_000;
+pub const SI_MAX_FACES: usize = 2_000_000;
 
 /// Parse a point argument into `[f64; 3]`, accepting a tuple, list, or numpy
 /// 1-D array of length 3.
@@ -341,7 +344,7 @@ fn vec_to_pyarray3<'py>(
     data: Vec<f32>,
     dims: [usize; 3],
 ) -> PyResult<Bound<'py, PyArray3<f32>>> {
-    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]), data)
+    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]).f(), data)
         .map_err(|e| PyValueError::new_err(format!("grid shape error: {e}")))?;
     Ok(PyArray3::from_owned_array(py, arr))
 }
@@ -350,20 +353,85 @@ fn dims_to_list<'py>(py: Python<'py>, dims: [usize; 3]) -> PyResult<Bound<'py, P
     PyList::new(py, [dims[0], dims[1], dims[2]])
 }
 
+fn vec_to_pyarray3_u8<'py>(
+    py: Python<'py>,
+    data: Vec<u8>,
+    dims: [usize; 3],
+) -> PyResult<Bound<'py, PyArray3<u8>>> {
+    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]).f(), data)
+        .map_err(|e| PyValueError::new_err(format!("grid shape error: {e}")))?;
+    Ok(PyArray3::from_owned_array(py, arr))
+}
+
+fn vec_to_pyarray3_i32<'py>(
+    py: Python<'py>,
+    data: Vec<i32>,
+    dims: [usize; 3],
+) -> PyResult<Bound<'py, PyArray3<i32>>> {
+    let arr = Array3::from_shape_vec((dims[0], dims[1], dims[2]).f(), data)
+        .map_err(|e| PyValueError::new_err(format!("grid shape error: {e}")))?;
+    Ok(PyArray3::from_owned_array(py, arr))
+}
+
+/// Build a ray-stab direction set for `bvh` with the documented defaults.
+fn build_stabber(
+    bvh: &winding::MeshBvh,
+    n_dirs: Option<usize>,
+    seed: u64,
+    parity: bool,
+) -> raycast::Stabber {
+    raycast::Stabber::new(
+        &bvh.bounds(),
+        n_dirs.unwrap_or(raycast::DEFAULT_DIRS),
+        seed,
+        parity,
+        raycast::DEFAULT_ESCAPE_WEIGHT,
+    )
+}
+
+fn raystab_info<'py>(
+    py: Python<'py>,
+    dirs: usize,
+    seed: u64,
+    parity: bool,
+    stats: &raycast::RayStabStats,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("enabled", true)?;
+    d.set_item("dirs", dirs)?;
+    d.set_item("seed", seed)?;
+    d.set_item("parity", parity)?;
+    d.set_item("cells_ambiguous", stats.cells_ambiguous)?;
+    d.set_item("cells_flipped", stats.cells_flipped)?;
+    d.set_item("cells_unresolved", stats.cells_unresolved)?;
+    d.set_item("rays_cast", stats.rays_cast)?;
+    d.set_item("seconds", stats.seconds)?;
+    Ok(d)
+}
+
 /// Signed/unsigned/winding distance grids over the mesh (or a sub-box).
 ///
 /// Returns `(winding, unsigned, signed, info)` where each grid is a 3-D f32
 /// numpy array in `[i, j, k]` order.  Signed distance is
 /// `sign(winding - 0.5) * unsigned`.  `info` carries `dims`, `voxel`,
 /// `origin`, `voxels`, `caps_coarsened`.
+///
+/// `raystab=True` overrides the sign in the generalized-winding-ambiguous band
+/// with the ray-stabbing vote (see `raycast`); `info['raystab']` then records
+/// the pass.  With `raystab=False` (the default) the output is byte-identical
+/// to the winding-only field.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, voxel=None, r#box=None))]
+#[pyo3(signature = (verts, tris, voxel=None, r#box=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false))]
 fn sdf_grid<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
     voxel: Option<f64>,
     r#box: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
+    raystab: bool,
+    raystab_dirs: Option<usize>,
+    raystab_seed: u64,
+    raystab_parity: bool,
 ) -> PyResult<(
     Bound<'py, PyArray3<f32>>,
     Bound<'py, PyArray3<f32>>,
@@ -381,7 +449,23 @@ fn sdf_grid<'py>(
     };
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, voxel, 96.0, 2);
     let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
-    let (w, u, s) = bvh.sdf_grid(origin, voxel, dims);
+    let (w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
+    let mut stab_stats = None;
+    if raystab {
+        let stabber = build_stabber(&bvh, raystab_dirs, raystab_seed, raystab_parity);
+        stab_stats = Some(raycast::disambiguate_sdf(
+            &bvh,
+            &w,
+            &u,
+            &mut s,
+            origin,
+            voxel,
+            dims,
+            &stabber,
+            raycast::AMBIG_LO,
+            raycast::AMBIG_HI,
+        ));
+    }
 
     let info = PyDict::new(py);
     info.set_item("dims", dims_to_list(py, dims)?)?;
@@ -390,6 +474,18 @@ fn sdf_grid<'py>(
     info.set_item("voxels", winding::voxel_count(dims))?;
     info.set_item("caps_coarsened", coarsened)?;
     info.set_item("max_voxels", MAX_VOXELS)?;
+    if let Some(st) = stab_stats {
+        info.set_item(
+            "raystab",
+            raystab_info(
+                py,
+                st.dirs,
+                raystab_seed,
+                st.parity,
+                &st,
+            )?,
+        )?;
+    }
 
     Ok((
         vec_to_pyarray3(py, w, dims)?,
@@ -406,8 +502,17 @@ fn sdf_grid<'py>(
 /// Returns `(verts, tris, info)`.  `box` restricts the grid AABB (local
 /// window mode); `voxel` overrides the automatic voxel size; `fill_cavities`
 /// keeps only the outermost shell (enclosed cavities become solid).
+///
+/// `r == 0` selects the sign-field path: the raw signed field is fed straight
+/// to dual contouring with no dilation/erosion, so genuine gaps stay open
+/// (the caller gates the result).  `info['sign_field']` records the mode.
+///
+/// `raystab=True` disambiguates the generalized-winding sign with the
+/// ray-stabbing vote in the ambiguous band before the closing; `info['raystab']`
+/// records the pass.  With `raystab=False` (the default) the output is
+/// byte-identical to the winding-only path.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None))]
+#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false))]
 fn morph_close<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -417,6 +522,10 @@ fn morph_close<'py>(
     r#box: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
     fill_cavities: bool,
     surface: Option<String>,
+    raystab: bool,
+    raystab_dirs: Option<usize>,
+    raystab_seed: u64,
+    raystab_parity: bool,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -428,9 +537,6 @@ fn morph_close<'py>(
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     if rv.is_empty() || rt.is_empty() {
         return Err(PyValueError::new_err("empty mesh"));
-    }
-    if r == 0.0 {
-        return Err(PyValueError::new_err("r must be > 0"));
     }
     let mesh_box = bbox_of(&rv);
     let (bmin, bmax) = match &r#box {
@@ -451,16 +557,47 @@ fn morph_close<'py>(
     if !v0.is_finite() || v0 <= 0.0 {
         v0 = 1.0;
     }
-    let pad = (r / v0).ceil() as usize + 3;
+    // Sign-field mode (r == 0) bypasses the closing, so no dilation radius needs
+    // to be cleared by the padding; the default 3-cell boundary suffices.
+    let pad = if r > 0.0 {
+        (r / v0).ceil() as usize + 3
+    } else {
+        3
+    };
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, Some(v0), 96.0, pad);
 
     let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
-    let (_w, _u, s) = bvh.sdf_grid(origin, voxel, dims);
-    let closed = morph::close_sdf(&s, dims, r as f32, voxel as f32);
-    let field = if fill_cavities {
-        morph::fill_cavities(&closed, dims, voxel as f32)
+    let (w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
+    let mut stab_stats = None;
+    if raystab {
+        let stabber = build_stabber(&bvh, raystab_dirs, raystab_seed, raystab_parity);
+        stab_stats = Some(raycast::disambiguate_sdf(
+            &bvh,
+            &w,
+            &u,
+            &mut s,
+            origin,
+            voxel,
+            dims,
+            &stabber,
+            raycast::AMBIG_LO,
+            raycast::AMBIG_HI,
+        ));
+    }
+    // r == 0 selects the sign-field path: the raw signed field (GWN sign,
+    // optionally ray-stab-corrected) feeds dual contouring directly, with no
+    // dilation/erosion.  This keeps real gaps open instead of bridging them.
+    let field = if r > 0.0 {
+        let closed = morph::close_sdf(&s, dims, r as f32, voxel as f32);
+        if fill_cavities {
+            morph::fill_cavities(&closed, dims, voxel as f32)
+        } else {
+            closed
+        }
+    } else if fill_cavities {
+        morph::fill_cavities(&s, dims, voxel as f32)
     } else {
-        closed
+        s.clone()
     };
     let use_tets = matches!(
         surface.as_deref(),
@@ -489,10 +626,102 @@ fn morph_close<'py>(
     info.set_item("caps_coarsened", coarsened)?;
     info.set_item("max_voxels", MAX_VOXELS)?;
     info.set_item("radius", r)?;
+    info.set_item("sign_field", !(r > 0.0))?;
     info.set_item("fallback", dc.fallback)?;
     info.set_item("manifold", dc.manifold)?;
     info.set_item("fill_cavities", fill_cavities)?;
     info.set_item("surface", if use_tets { "tets" } else { "dual" })?;
+    if let Some(st) = stab_stats {
+        info.set_item("raystab", raystab_info(py, st.dirs, raystab_seed, st.parity, &st)?)?;
+    }
+    Ok((verts_np, tris_np, info))
+}
+
+/// Variable-thickness coat ("Dressing", method #16).
+///
+/// Extracts the `F = s(x) - r(x) = 0` isosurface of a narrow-band signed field:
+/// the generalized-winding sign and the unsigned distance are evaluated only
+/// for cells within `band = r_max + 2*voxel` of the surface, and the sign
+/// outside the band comes from a boundary flood fill.  `r(x)` grows from
+/// `r_base` to `r_max` near the defect points (`defect_pts`, Nx3; empty means a
+/// uniform `r_base`).  Returns `(verts, tris, info)` with a watertight,
+/// two-manifold marching-tetrahedra coat.
+///
+/// `drain` is the healthy-region erode-back, in mm: the field adds
+/// `drain * (1 - g)` (with `g` the defect influence) so the healthy isosurface
+/// re-centres on the original boundary while the defect coverage is kept.
+/// `0.0` (the default) leaves the plain outward coat.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0))]
+fn dressing_coat<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    defect_pts: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
+    voxel: Option<f64>,
+    r_base: Option<f64>,
+    r_max: Option<f64>,
+    sigma: Option<f64>,
+    band_voxels: f64,
+    margin_voxels: f64,
+    drain: f64,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let mut dp: Vec<[f64; 3]> = Vec::new();
+    if let Some(arr) = &defect_pts {
+        let view = arr.as_array();
+        if view.ncols() != 3 {
+            return Err(PyValueError::new_err("defect_pts must be Nx3"));
+        }
+        for i in 0..view.nrows() {
+            dp.push([view[[i, 0]], view[[i, 1]], view[[i, 2]]]);
+        }
+    }
+    let params = dressing::DressingParams {
+        voxel,
+        r_base,
+        r_max,
+        sigma,
+        band_voxels,
+        margin_voxels,
+        drain,
+    };
+    let m = dressing::dressing_coat(&rv, &rt, &dp, &params);
+
+    let out_verts: Vec<Vec<f64>> = m.verts.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = m
+        .tris
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let verts_np = PyArray2::from_vec2(py, &out_verts)?;
+    let tris_np = PyArray2::from_vec2(py, &out_tris)?;
+
+    let info = PyDict::new(py);
+    info.set_item("dims", dims_to_list(py, m.info.dims)?)?;
+    info.set_item("voxel", m.info.voxel)?;
+    info.set_item("origin", PyList::new(py, m.info.origin)?)?;
+    info.set_item("voxels", m.info.voxels)?;
+    info.set_item("r_base", m.info.r_base)?;
+    info.set_item("r_max", m.info.r_max)?;
+    info.set_item("sigma", m.info.sigma)?;
+    info.set_item("drain", m.info.drain)?;
+    info.set_item("band", m.info.band)?;
+    info.set_item("band_cells", m.info.band_cells)?;
+    info.set_item("sign_cells", m.info.sign_cells)?;
+    info.set_item("gwn_cells", m.info.gwn_cells)?;
+    info.set_item("gwn_exact_cells", m.info.gwn_exact_cells)?;
+    info.set_item("coarsened", m.info.coarsened)?;
+    info.set_item("fallback", m.info.fallback)?;
+    info.set_item("manifold", m.info.manifold)?;
+    info.set_item("seconds", m.info.seconds)?;
+    info.set_item("band_seconds", m.info.band_seconds)?;
+    info.set_item("field_seconds", m.info.field_seconds)?;
+    info.set_item("extract_seconds", m.info.extract_seconds)?;
     Ok((verts_np, tris_np, info))
 }
 
@@ -592,6 +821,172 @@ fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool
     (mask, count, false)
 }
 
+/// Ray-stabbing inside/outside for arbitrary query points.
+///
+/// Returns `(inside, inside_votes, outside_votes, escape_votes)` per point.
+/// The vote is the oriented net crossing count with a parity fallback for
+/// orientation-inconsistent rays; `parity=True` forces parity everywhere.  A ray
+/// escaping without a hit is an outside vote weighted `escape_weight` in the
+/// majority score (it is still reported once in `escape_votes`).
+#[pyfunction]
+#[pyo3(signature = (verts, tris, points, n_dirs=None, seed=0, parity=false, escape_weight=2.0))]
+fn raystab_points<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    n_dirs: Option<usize>,
+    seed: u64,
+    parity: bool,
+    escape_weight: f64,
+) -> PyResult<(
+    Bound<'py, PyArray1<bool>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i32>>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    if rv.is_empty() || rt.is_empty() {
+        return Err(PyValueError::new_err("empty mesh"));
+    }
+    let pp = points.as_array();
+    if pp.ncols() != 3 {
+        return Err(PyValueError::new_err("points must be Mx3"));
+    }
+    let m = pp.nrows();
+    let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
+    let stabber = raycast::Stabber::new(
+        &bvh.bounds(),
+        n_dirs.unwrap_or(raycast::DEFAULT_DIRS),
+        seed,
+        parity,
+        escape_weight,
+    );
+    let votes: Vec<raycast::StabVote> = (0..m)
+        .into_par_iter()
+        .map(|i| stabber.vote(&bvh, [pp[[i, 0]], pp[[i, 1]], pp[[i, 2]]]))
+        .collect();
+    let inside: Vec<bool> = votes.iter().map(|v| v.inside).collect();
+    let iv: Vec<i32> = votes.iter().map(|v| v.inside_votes as i32).collect();
+    let ov: Vec<i32> = votes.iter().map(|v| v.outside_votes as i32).collect();
+    let ev: Vec<i32> = votes.iter().map(|v| v.escape_votes as i32).collect();
+    Ok((
+        PyArray1::from_vec(py, inside),
+        PyArray1::from_vec(py, iv),
+        PyArray1::from_vec(py, ov),
+        PyArray1::from_vec(py, ev),
+    ))
+}
+
+/// Full-grid ray-stabbing inside mask (analysis / tests).
+///
+/// Returns `(inside, score, info)`: `inside` is a 3-D uint8 grid (1 = inside),
+/// `score` is `inside_votes - (outside_votes + escape_votes)` per cell.  This
+/// votes every cell and is therefore much more expensive than the
+/// ambiguous-band pass used by `morph_close`.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, voxel=None, r#box=None, n_dirs=None, seed=0, parity=false, escape_weight=2.0))]
+fn raystab_grid<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    voxel: Option<f64>,
+    r#box: Option<PyArrayLike2<'py, f64, AllowTypeChange>>,
+    n_dirs: Option<usize>,
+    seed: u64,
+    parity: bool,
+    escape_weight: f64,
+) -> PyResult<(
+    Bound<'py, PyArray3<u8>>,
+    Bound<'py, PyArray3<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    if rv.is_empty() || rt.is_empty() {
+        return Err(PyValueError::new_err("empty mesh"));
+    }
+    let mesh_box = bbox_of(&rv);
+    let (bmin, bmax) = match &r#box {
+        Some(b) => parse_box(b)?,
+        None => (mesh_box.min, mesh_box.max),
+    };
+    let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, voxel, 96.0, 2);
+    let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
+    let stabber = raycast::Stabber::new(
+        &bvh.bounds(),
+        n_dirs.unwrap_or(raycast::DEFAULT_DIRS),
+        seed,
+        parity,
+        escape_weight,
+    );
+    let t0 = std::time::Instant::now();
+    let grid = raycast::raystab_grid(&bvh, origin, voxel, dims, &stabber);
+    let seconds = t0.elapsed().as_secs_f64();
+
+    let info = PyDict::new(py);
+    info.set_item("dims", dims_to_list(py, dims)?)?;
+    info.set_item("voxel", voxel)?;
+    info.set_item("origin", PyList::new(py, origin)?)?;
+    info.set_item("voxels", winding::voxel_count(dims))?;
+    info.set_item("caps_coarsened", coarsened)?;
+    info.set_item("dirs", stabber.n_dirs())?;
+    info.set_item("seed", seed)?;
+    info.set_item("parity", parity)?;
+    info.set_item("escape_weight", escape_weight)?;
+    info.set_item("seconds", seconds)?;
+
+    Ok((
+        vec_to_pyarray3_u8(py, grid.inside, dims)?,
+        vec_to_pyarray3_i32(py, grid.score, dims)?,
+        info,
+    ))
+}
+
+/// Python-exposed generalized-winding BVH over a triangle soup.
+///
+/// Build it once over the whole mesh and reuse it for many query points; the
+/// structure is read-only and the query methods are parallelised with rayon.
+#[pyclass]
+pub struct PyMeshBvh {
+    inner: winding::MeshBvh,
+}
+
+#[pymethods]
+impl PyMeshBvh {
+    #[new]
+    fn new(
+        verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+        tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    ) -> PyResult<Self> {
+        let (rv, rt) = parse_mesh(&verts, &tris)?;
+        Ok(Self {
+            inner: winding::MeshBvh::from_arrays(&rv, &rt),
+        })
+    }
+
+    /// Generalized winding number at a single `(x, y, z)` point.
+    fn winding_at(&self, point: (f64, f64, f64)) -> f64 {
+        self.inner.winding_at([point.0, point.1, point.2])
+    }
+
+    /// Generalized winding number for `(M, 3)` query points, parallel across
+    /// all CPU cores.  Returns a `(M,)` float64 array.
+    fn winding_points<'py>(
+        &self,
+        py: Python<'py>,
+        points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let pp = points.as_array();
+        if pp.ncols() != 3 {
+            return Err(PyValueError::new_err("points must be Mx3"));
+        }
+        let pts: Vec<[f64; 3]> = (0..pp.nrows())
+            .map(|i| [pp[[i, 0]], pp[[i, 1]], pp[[i, 2]]])
+            .collect();
+        Ok(PyArray1::from_vec(py, self.inner.winding_points_par(&pts)))
+    }
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -600,10 +995,18 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_set_cdt_experimental, m)?)?;
     m.add_function(wrap_pyfunction!(sdf_grid, m)?)?;
     m.add_function(wrap_pyfunction!(morph_close, m)?)?;
+    m.add_function(wrap_pyfunction!(dressing_coat, m)?)?;
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
+    m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
+    m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
+    m.add("RAYSTAB_DEFAULT_DIRS", raycast::DEFAULT_DIRS)?;
+    m.add("RAYSTAB_MAX_DIRS", raycast::MAX_DIRS)?;
+    m.add("SIGN_FIELD_SUPPORTED", true)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

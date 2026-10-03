@@ -6,7 +6,7 @@
 # name = "Sutura Repair"
 # description = "Sutura mesh repair in an OrcaSlicer dock panel: repairs the model parts on the plate with the Sutura CLI and loads the repaired copy back as a new object."
 # author = "Krateian"
-# version = "0.7.2"
+# version = "0.8.0"
 # ///
 """Sutura Repair - OrcaSlicer script plugin (v2, dock panel).
 
@@ -96,7 +96,7 @@ _PANEL_CREATE_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
 _MESH_EXTENSIONS = ('.stl', '.obj', '.3mf')
 
 # The dock page, embedded verbatim from orcaslicer-plugin/panel/panel.html
-# (sha256 6e4a6189a8c061a701daa84bfeb1035b3ba2f6d5b6ce5b9e96193bb6af88862a).
+# (sha256 8eb797ee925f1258dead8d90b63131d89b0f650d0175c933db0d747173620271).
 # It is embedded so the published single-file plugin is self-contained; whenever
 # panel/panel.html changes, copy its full contents back into this raw string and
 # update the digest.
@@ -217,6 +217,7 @@ button, input { font-family: inherit; font-size: inherit; }
 .chip-cancelled { color: var(--orca-muted); background: var(--orca-border); }
 .link-show-file { background: transparent; border: none; color: var(--orca-accent); cursor: pointer; font-size: 11px; text-decoration: underline; padding: 2px 4px; }
 .result-hint { margin-top: 4px; color: var(--orca-muted); font-size: 11px; line-height: 1.4; }
+.result-suggestion { color: var(--orca-warning, #f59e0b); }
 
 /* Analysis Drawer */
 .analysis-drawer { margin-top: 6px; padding: 8px; border-radius: 6px; border: 1px solid var(--orca-border); display: flex; flex-direction: column; gap: 6px; }
@@ -273,7 +274,7 @@ button, input { font-family: inherit; font-size: inherit; }
   <div class="preset-bar" id="preset-bar">
     <div class="segmented" role="radiogroup" aria-label="Repair Preset">
       <button type="button" class="seg-btn" data-preset="quick" title="Fast repair, skips heavy solid rebuild">Quick</button>
-      <button type="button" class="seg-btn active" data-preset="balanced" title="Default two-stage repair with manifold3d rebuild">Balanced</button>
+      <button type="button" class="seg-btn active" data-preset="balanced" title="Default staged repair with manifold3d rebuild">Balanced</button>
       <button type="button" class="seg-btn" data-preset="thorough" title="Aggressive repair with lower thresholds for stubborn defects">Thorough</button>
       <button type="button" class="seg-btn" data-preset="extreme" title="Maximum hole filling and aggressive component merging">Extreme</button>
     </div>
@@ -430,6 +431,9 @@ button, input { font-family: inherit; font-size: inherit; }
       h += `</div>`;
       if (job.phase === 'done') {
         h += `<div class="result-hint">Added as a new object — press <b>A</b> (Arrange) to separate it from the original; <b>Ctrl/Cmd+Z</b> removes it.</div>`;
+        if (job.result?.suggestion) {
+          h += `<div class="result-hint result-suggestion">Tip: ${esc(job.result.suggestion)}</div>`;
+        }
       }
     }
 
@@ -1168,14 +1172,38 @@ def _job_result(report, out_path):
     if holes_after is None:
         holes_after = 0 if watertight else None
     if stage2.get('ok'):
-        method = 'two-stage rebuild'
+        method = 'staged rebuild'
     elif stage1.get('two_manifold'):
         method = 'stage 1 close'
     else:
         method = 'stage 1'
     return {'watertight': bool(watertight), 'method': method,
             'holes_before': holes_before, 'holes_after': holes_after,
-            'output_path': out_path}
+            'output_path': out_path,
+            'suggestion': _suggestion_text(report)}
+
+
+def _suggestion_text(report):
+    """Human hint for the CLI's Dressing opt-in suggestion, or ''.
+
+    The CLI attaches ``suggestions`` (a next action, not a defect) when a
+    result is still not watertight and the Dressing tier was not adopted.
+    Surfaced as a short panel hint; the full multi-line text stays in the
+    CLI `--human` report.  Never raises."""
+    try:
+        sugs = report.get('suggestions') or []
+        if not sugs:
+            return ''
+        sug = sugs[0] if isinstance(sugs[0], dict) else {}
+        if sug.get('force'):
+            return ('Not watertight — Dressing was rejected by the quality '
+                    'gate; force it with %s if the deformation is acceptable'
+                    % (sug.get('flag') or '--dressing-force-adopt'))
+        return ('Not watertight — you can try Dressing: %s (watertight, but '
+                'fine detail may be lost)'
+                % (sug.get('flag') or '--experimental-dressing'))
+    except Exception:  # noqa: BLE001 - a hint never breaks a job
+        return ''
 
 
 def _analysis_message(report):

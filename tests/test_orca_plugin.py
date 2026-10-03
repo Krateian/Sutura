@@ -628,7 +628,9 @@ def test_repair_message_protocol():
     report = {'category': 'watertight',
               'stage1': {'holes_remaining': 0, 'two_manifold': True},
               'stage2': {'ok': True},
-              'defects': {'holes': [1, 2], 'non_manifold': []}}
+              'defects': {'holes': [1, 2], 'non_manifold': []},
+              'suggestions': [{'method': 'dressing',
+                               'flag': '--experimental-dressing'}]}
     mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
     mod._run_repair = lambda cli, src, out, preset, cancel_event, timeout=None, on_proc=None: \
         ('ok', report, '')
@@ -644,10 +646,25 @@ def test_repair_message_protocol():
     done = _posts(handle, 'job')[-1]
     assert done['phase'] == 'done', done
     assert done['result']['watertight'] is True, done
-    assert done['result']['method'] == 'two-stage rebuild', done
+    assert done['result']['method'] == 'staged rebuild', done
     assert done['result']['holes_before'] == 2, done
     assert done['result']['holes_after'] == 0, done
     assert done['result']['output_path'].endswith('.stl'), done
+    assert 'Dressing' in done['result']['suggestion'], done
+    assert '--experimental-dressing' in done['result']['suggestion'], done
+
+
+def test_suggestion_text_force_and_plain():
+    mod = _load_plugin(_Model([]), tempfile.mkdtemp())[0]
+    assert mod._suggestion_text({}) == ''
+    assert mod._suggestion_text({'suggestions': []}) == ''
+    plain = mod._suggestion_text(
+        {'suggestions': [{'flag': '--experimental-dressing'}]})
+    assert '--experimental-dressing' in plain, plain
+    forced = mod._suggestion_text(
+        {'suggestions': [{'flag': '--dressing-force-adopt', 'force': True}]})
+    assert '--dressing-force-adopt' in forced, forced
+    assert 'gate' in forced, forced
 
 
 class _Proc:

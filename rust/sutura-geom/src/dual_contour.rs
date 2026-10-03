@@ -535,13 +535,17 @@ fn marching_tets(
     origin: [f64; 3],
     voxel: f64,
 ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    // Star decomposition of the cube around the body diagonal 0-7.  The
+    // earlier table was authored for a corner numbering where index 6 was the
+    // corner opposite 0; with this module's `CORNER` (6 = (0,1,1)) it left
+    // overlaps and gaps and produced a cracked, non-manifold surface.
     const TETS: [[usize; 4]; 6] = [
-        [0, 5, 1, 6],
-        [0, 1, 2, 6],
-        [0, 2, 3, 6],
-        [0, 3, 7, 6],
-        [0, 7, 4, 6],
-        [0, 4, 5, 6],
+        [0, 5, 1, 7],
+        [0, 1, 3, 7],
+        [0, 3, 2, 7],
+        [0, 2, 6, 7],
+        [0, 6, 4, 7],
+        [0, 4, 5, 7],
     ];
     let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
     if nx < 2 || ny < 2 || nz < 2 {
@@ -579,27 +583,44 @@ fn marching_tets(
                     if cnt == 0 || cnt == 4 {
                         continue;
                     }
-                    let mut pts: Vec<[f64; 3]> = Vec::new();
-                    for a in 0..4 {
-                        for b in (a + 1)..4 {
-                            if inside[a] != inside[b] {
-                                let va = vals[tet[a]] as f64;
-                                let vb = vals[tet[b]] as f64;
-                                let t = if (vb - va).abs() > 1e-12 {
-                                    (-va / (vb - va)).clamp(0.0, 1.0)
-                                } else {
-                                    0.5
-                                };
-                                let pa = pos[tet[a]];
-                                let pb = pos[tet[b]];
-                                pts.push([
-                                    pa[0] + t * (pb[0] - pa[0]),
-                                    pa[1] + t * (pb[1] - pa[1]),
-                                    pa[2] + t * (pb[2] - pa[2]),
-                                ]);
-                            }
+                    // Crossing point on the segment between an inside and an
+                    // outside vertex of the tet, with the inside vertex first.
+                    let crossing = |ia: usize, ib: usize| -> [f64; 3] {
+                        let va = vals[tet[ia]] as f64;
+                        let vb = vals[tet[ib]] as f64;
+                        let t = if (vb - va).abs() > 1e-12 {
+                            (-va / (vb - va)).clamp(0.0, 1.0)
+                        } else {
+                            0.5
+                        };
+                        let pa = pos[tet[ia]];
+                        let pb = pos[tet[ib]];
+                        [
+                            pa[0] + t * (pb[0] - pa[0]),
+                            pa[1] + t * (pb[1] - pa[1]),
+                            pa[2] + t * (pb[2] - pa[2]),
+                        ]
+                    };
+                    let ins: Vec<usize> = (0..4).filter(|&i| inside[i]).collect();
+                    let outs: Vec<usize> = (0..4).filter(|&i| !inside[i]).collect();
+                    let pts: Vec<[f64; 3]> = if cnt == 1 || cnt == 3 {
+                        if cnt == 1 {
+                            outs.iter().map(|&o| crossing(ins[0], o)).collect()
+                        } else {
+                            ins.iter().map(|&i| crossing(i, outs[0])).collect()
                         }
-                    }
+                    } else {
+                        // 2-2 split: order the four crossing points cyclically
+                        // around the quad so neighbouring tets share whole
+                        // edges (an unordered quad triangulation leaves
+                        // T-junction cracks).
+                        vec![
+                            crossing(ins[0], outs[0]),
+                            crossing(ins[0], outs[1]),
+                            crossing(ins[1], outs[1]),
+                            crossing(ins[1], outs[0]),
+                        ]
+                    };
                     let push_tri = |verts: &mut Vec<[f64; 3]>,
                                     tris: &mut Vec<[u32; 3]>,
                                     a: usize,
@@ -681,6 +702,49 @@ mod tests {
         assert!(m.manifold);
         assert!(mesh_is_manifold(&m.verts, &m.tris));
         assert!(m.verts.len() > 100);
+    }
+
+    #[test]
+    fn marching_tets_sphere_is_closed() {
+        // Regression: the tet table used to assume corner 6 was opposite 0;
+        // with this module's CORNER it left cracks.  Weld by position and
+        // require every undirected edge to be used exactly twice.
+        let (f, dims, origin, voxel) = sphere_field(24);
+        let (v, t) = marching_tets(&f, dims, origin, voxel);
+        let scale = 1.0 / (voxel * 1.0e-6);
+        let mut map: std::collections::HashMap<(i64, i64, i64), u32> =
+            std::collections::HashMap::new();
+        let mut remap = vec![0u32; v.len()];
+        for (i, p) in v.iter().enumerate() {
+            let k = (
+                (p[0] * scale).round() as i64,
+                (p[1] * scale).round() as i64,
+                (p[2] * scale).round() as i64,
+            );
+            remap[i] = match map.get(&k) {
+                Some(e) => *e,
+                None => {
+                    let e = map.len() as u32;
+                    map.insert(k, e);
+                    e
+                }
+            };
+        }
+        let mut und: std::collections::HashMap<(u32, u32), u32> = std::collections::HashMap::new();
+        for tri in &t {
+            let a = remap[tri[0] as usize];
+            let b = remap[tri[1] as usize];
+            let c = remap[tri[2] as usize];
+            if a == b || b == c || c == a {
+                continue;
+            }
+            for (x, y) in [(a, b), (b, c), (c, a)] {
+                let k = if x < y { (x, y) } else { (y, x) };
+                *und.entry(k).or_insert(0) += 1;
+            }
+        }
+        let bad = und.values().filter(|&&c| c != 2).count();
+        assert_eq!(bad, 0, "surface is not closed: {bad} bad edges");
     }
 
     #[test]

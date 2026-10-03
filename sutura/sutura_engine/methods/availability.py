@@ -104,6 +104,37 @@ def repeat_available() -> Tuple[bool, Optional[str]]:
         return False, 'repeat repair unavailable: %s' % e
 
 
+def dressing_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 16 needs the Dressing tier and its field backend.
+
+    Available when either the Rust ``sutura_geom.dressing_coat`` core exists or
+    the numpy fallback prerequisites are present (``sutura_geom.sdf_grid`` plus
+    scipy, both already required by Graft)."""
+    try:
+        if (importlib.util.find_spec('sutura_engine.dressing') is None
+                and importlib.util.find_spec('dressing') is None):
+            return False, 'sutura_engine.dressing is not available'
+        try:
+            spec = importlib.util.find_spec('sutura_geom')
+        except Exception as e:
+            return False, 'rust extension sutura_geom is not installed (%s)' % e
+        if spec is None:
+            return False, 'rust extension sutura_geom is not installed'
+        try:
+            import sutura_geom
+            if not hasattr(sutura_geom, 'dressing_coat') \
+                    and not hasattr(sutura_geom, 'sdf_grid'):
+                return False, 'sutura_geom has neither dressing_coat nor sdf_grid'
+        except Exception as e:
+            return False, 'sutura_geom import failed: %s' % e
+        for mod in ('numpy', 'scipy'):
+            if importlib.util.find_spec(mod) is None:
+                return False, '%s is not available' % mod
+        return True, None
+    except Exception as e:
+        return False, 'dressing unavailable: %s' % e
+
+
 def graft_available() -> Tuple[bool, Optional[str]]:
     """Registry method 13 needs the Rust morphology core (Cast)."""
     try:

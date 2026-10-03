@@ -101,8 +101,14 @@ STRINGS = {
         'method_name_transplant': 'Transplant (repeat auto)',
         'method_name_transplant_plus': 'Transplant+ (repeat manual)',
         'method_name_graft': 'Graft (shell wrap)',
+        'method_name_dressing': 'Dressing (viscosity coat)',
         'method_name_mirror_complete': 'Mirror Complete',
         'method_name_wall_thicken': 'Wall Thicken',
+        'method_tip_dressing': 'DRESSING (#16) — variable-viscosity volumetric '
+            'skinning: extract a narrow-band generalized-winding isosurface '
+            'whose radius is thin over detailed healthy surface and thicker '
+            'over damage. 2-manifold and self-intersection-free by '
+            'construction; opt-in (never runs automatically).',
         'method_tip_graft': 'GRAFT (#13) — morphology shell wrap: close '
             'damaged regions with a generalized-winding signed-distance '
             'envelope, keep healthy geometry verbatim, and report detail loss. '
@@ -133,17 +139,20 @@ STRINGS = {
             "• X-Ray (P-HONEST): Strict post-save reload verification ensuring honest watertightness.\n"
             "• Hull: Exterior shell extraction and degenerate multi-component resolution.\n"
             "• Cast: High-performance exact geometry core in Rust (sutura_geom).\n\n"
-            "Methods #1–#15:\n"
+            "Methods #1–#16:\n"
             "Quick Clean (#1), Local Mend (#2), Full Mend (#3), Join (#4), Autorefine (#5), "
             "Exact Refine (#6), fTetWild (#7), Balloon (#8), Backplate (#9), Scaffold (#10), "
-            "Transplant (#11), Transplant+ (#12), Graft (#13), Mirror Complete (#14), Wall Thicken (#15)."
+            "Transplant (#11), Transplant+ (#12), Graft (#13), Mirror Complete (#14), Wall Thicken (#15), "
+            "Dressing (#16)."
         ),
         'about_credits': (
             "Third-Party Adapters & Algorithms:\n"
             "• PyMeshLab / VCG Library (GPL-3.0) — Stage 1 topological repair and surface filtering.\n"
             "• Manifold3D (Apache-2.0) — Stage 2 volumetric manifold solid rebuilding.\n"
+            "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Array math, sparse/geometry algorithms and mesh IO across the tiers.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Robust tetrahedralization envelope fallback.\n"
             "• pyrobust-predicates / Shewchuk (Public Domain) — Exact 3D geometric orientation.\n"
+            "• sutura_geom Rust crates: robust, faer, rayon, num-* (MIT/Apache-2.0) — Exact predicates, sparse LU, morphology and the Flap/Dressing accelerators.\n"
             "• PySide6 / Qt (LGPL-3.0) — Native graphical user interface framework."
         ),
         'about_license': (
@@ -222,6 +231,7 @@ STRINGS = {
         'rec_reason_si': 'self-intersections present (%d)',
         'rec_reason_ftetwild': 'large openings / heavy self-intersections',
         'rec_reason_graft': 'openings / holes closable by a shell wrap',
+        'rec_reason_dressing': 'complex folds / heavy self-intersections skin-coatable',
         'rec_reason_not_scan': 'not a single-sided open scan',
         'rec_reason_poisson': 'single-sided open scan (%.2f)',
         'rec_reason_not_relief': 'no relief-like opening',
@@ -264,6 +274,8 @@ STRINGS = {
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
         'repair_log_graft': 'Graft (shell wrap): %d faces, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detail loss: %s',
+        'repair_log_dressing': 'Dressing (viscosity coat): %d faces, voxel=%s, r=%s',
+        'repair_log_dressing_warn': 'Dressing fidelity: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
@@ -280,8 +292,78 @@ STRINGS = {
                           'intersecting triangles along their intersection '
                           'segments instead of deleting faces (Lazard & Valque '
                           '2025). NEVER deletes input faces; adopted only when '
-                          'the result is not worse than the default chain '
-                          '(NOT the default).',
+                           'the result is not worse than the default chain '
+                           '(NOT the default).',
+        'flap_label': 'Flap surface hole fill',
+        'flap_tip': 'On by default. Cover each residual Stage-1 boundary '
+                    'loop with a minimum-area triangulation refined to the '
+                    'surrounding edge length and faired with a thin-plate '
+                    'solve that continues the neighbouring surface. Original '
+                    'triangles are kept verbatim; adopted only when the '
+                    'reload-honest holes + non-manifold count does not worsen.',
+        'dressing_label': 'Dressing (viscosity coat)',
+        'dressing_tip': 'Opt-in (#16): skin self-intersections and complex '
+                        'open defects with a variable-viscosity narrow-band '
+                        'level set of the generalized-winding field. '
+                        '2-manifold and self-intersection-free by '
+                        'construction; tried after Graft and before fTetWild. '
+                        'Off by default until measured on the corpus.',
+        'dressing_force_adopt_label': 'Dressing: force adopt (may deform)',
+        'dressing_force_adopt_tip': 'Skip Dressing\'s shape-preservation gates '
+                                    '(volume / component count / healthy-surface '
+                                    'normal angle / coat fidelity) and adopt a '
+                                    'gate-rejected coat that is still strictly '
+                                    'watertight and self-intersection-free. The '
+                                    'shape may deform; the same option the '
+                                    'non-watertight suggestion offers.',
+        'try_dressing_btn': '\u26a0 Try Dressing (makes it watertight, but the '
+                            'part may deform)',
+        'try_dressing_btn_n': '\u26a0 Try Dressing on %d file(s) '
+                              '(watertight, but the part may deform)',
+        'try_dressing_tip': 'Re-run the suggested file(s) with Dressing forced '
+                            'past its shape-preservation gates. The result is '
+                            'strictly watertight and self-intersection-free, '
+                            'but fine detail may be lost.',
+        'dressing_drain_label': 'Drain:',
+        'dressing_drain_tip': 'Healthy-region erode-back: reduce the coat\'s '
+                              'outward growth toward the original surface '
+                              'while keeping defects covered (applied in the '
+                              'level set). "Preset" uses the intensity default '
+                              '(Quick off, Balanced/Thorough full, Extreme deep).',
+        'dressing_drain_preset': 'Preset default',
+        'dressing_drain_off': 'Off',
+        'dressing_drain_half': 'Half',
+        'dressing_drain_full': 'Full',
+        'dressing_drain_deep': 'Deep',
+        'dressing_defects_label': 'Defects:',
+        'dressing_defects_tip': 'Which input defects the viscosity mask covers: '
+                                '"All" (holes + non-manifold + '
+                                'self-intersections) or "Holes + non-manifold" '
+                                '(self-intersections ignored). "Preset" uses '
+                                'the module default (All).',
+        'dressing_defects_preset': 'Preset default',
+        'dressing_defects_all': 'Holes + NM + SI',
+        'dressing_defects_holes_nm': 'Holes + NM only',
+        'si_mode_label': 'Self-intersections:',
+        'si_mode_tip': 'Self-intersection policy. "Report" (default) measures '
+                       'and reports self-intersections without escalating the '
+                       'deep-repair ladder or failing a result on them alone '
+                       '(holes and non-manifold edges always count). "Repair" '
+                       'treats residual self-intersections as damage and runs '
+                       'the automatic Dressing fallback. "Off" skips the exact '
+                       'classifier and reports them as not measured.',
+        'si_mode_report': 'Report only',
+        'si_mode_repair': 'Repair',
+        'si_mode_off': 'Do not measure',
+        'dressing_rmax_scale_label': 'Bridge radius:',
+        'dressing_rmax_scale_tip': 'Multiplier on the resolved r_max (the maximum '
+                                   'viscosity / bridging radius): a smaller factor '
+                                   'gives a narrower coat. "Preset" = 1.0.',
+        'dressing_sigma_scale_label': 'Influence width:',
+        'dressing_sigma_scale_tip': 'Multiplier on the resolved sigma (defect '
+                                    'influence width of the viscosity field). '
+                                    '"Preset" = 1.0.',
+        'dressing_scale_preset': 'Preset (1.0)',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Last-resort solidifier, on by default: when the '
                         'stage-1 chain still leaves holes or non-manifold '
@@ -380,6 +462,7 @@ STRINGS = {
         'issue_budget_exceeded': 'Repair budget exceeded',
         'issue_shape_changed': 'Shape changed by the fTetWild fallback',
         'issue_graft_detail_loss': 'Graft smoothed fine surface detail (see warnings)',
+        'issue_dressing_detail_loss': 'Dressing coat deviates from the input surface (see warnings)',
         'analyze': 'Analyze',
         'analyze_tip': ('Run read-only analysis (validate + dry-run) on the '
                         'selected files — never modifies the input.'),
@@ -542,6 +625,8 @@ STRINGS = {
         'field_ftetwild_max_faces': 'Max input faces',
         'field_no_limit': 'No limit',
         'field_ftetwild_timeout': 'fTetWild timeout (s)',
+        'field_graft_max_faces': 'Graft max input faces',
+        'field_graft_timeout': 'Graft timeout (s)',
         'field_optimize_retry': 'Optimise retry on dense failure',
         'field_deep_repair': 'Deep-repair tier',
         'field_ladder': 'Dense decimation ladder',
@@ -556,6 +641,12 @@ STRINGS = {
         'field_ftetwild_max_faces_tip': 'Skip fTetWild for inputs above this face '
                                         'count ("No limit" disables the cap).',
         'field_ftetwild_timeout_tip': 'Wall-clock budget for one fTetWild attempt.',
+        'field_graft_max_faces_tip': 'Skip the Graft shell-wrap tier for inputs '
+                                     'above this face count ("No limit" disables '
+                                     'the cap).',
+        'field_graft_timeout_tip': 'Wall-clock budget for the whole Graft closing '
+                                   'ladder; the best stage-1 candidate is kept '
+                                   'when it runs out.',
         'field_optimize_retry_tip': 'Run one extra fTetWild attempt with '
                                     'tetrahedron optimisation when every dense '
                                     'decimation rung fails.',
@@ -616,8 +707,15 @@ STRINGS = {
         'method_name_transplant': 'Nakil (yineleme, otomatik)',
         'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
         'method_name_graft': 'Graft (kabuk sarma)',
+        'method_name_dressing': 'Pansuman (viskozite kaplama)',
         'method_name_mirror_complete': 'Aynalı Tamamlama',
         'method_name_wall_thicken': 'Duvar Kalınlaştır',
+        'method_tip_dressing': 'PANSUMAN (#16) — değişken viskoziteli hacimsel '
+            'kaplama: genelleştirilmiş sarımlı, dar bantlı bir seviye '
+            'kümesi çıkarır; yarıçap sağlıklı ince yüzeyde ince, hasar '
+            'bölgesinde daha kalındır. Yapısı gereği two-manifold ve '
+            'kendisiyle-kesişimsizdir; isteğe bağlıdır (asla otomatik '
+            'çalışmaz).',
         'method_tip_graft': 'GRAFT (#13) — morfoloji kabuk sarma: hasarlı '
             'bölgeleri genelleştirilmiş sarımlı işaretli mesafe zarfıyla kapatır, '
             'sağlıklı geometriyi birebir korur ve ayrıntı kaybını raporlar. '
@@ -649,17 +747,20 @@ STRINGS = {
             "• X-Ray (P-HONEST): Kayıt sonrası yeniden yüklemeyle doğrulanan dürüst su geçirmezlik.\n"
             "• Hull (Kabuk): Çok bileşenli montajlarda dış yüzey kabuğu çıkarımı.\n"
             "• Cast (Döküm): Rust tabanlı yüksek başarımlı kesin geometri çekirdeği (sutura_geom).\n\n"
-            "Onarım Yöntemleri #1–#15:\n"
+            "Onarım Yöntemleri #1–#16:\n"
             "Hızlı Temizlik (#1), Yerel Onarım (#2), Tam Onarım (#3), Birleştir (#4), Kendini Onarım (#5), "
             "Kesin Onarım (#6), fTetWild (#7), Balon (#8), Arka Plaka (#9), İskelet (#10), "
-            "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15)."
+            "Nakil (#11), Nakil+ (#12), Graft (#13), Aynalı Tamamlama (#14), Duvar Kalınlaştır (#15), "
+            "Pansuman (#16)."
         ),
         'about_credits': (
             "Üçüncü Taraf Uyarlayıcılar ve Algoritmalar:\n"
             "• PyMeshLab / VCG Kütüphanesi (GPL-3.0) — Aşama 1 topolojik onarım ve filtreleme.\n"
             "• Manifold3D (Apache-2.0) — Aşama 2 hacimsel manifold katı yeniden inşası.\n"
+            "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Katmanlar genelinde dizi matematiği, seyrek/geometri algoritmaları ve mesh G/Ç.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Sağlam tetrahedralizasyon son-çare zarfı.\n"
             "• pyrobust-predicates / Shewchuk (Kamu Malı) — Kesin 3D geometrik yönelim.\n"
+            "• sutura_geom Rust crate'leri: robust, faer, rayon, num-* (MIT/Apache-2.0) — Kesin predikatlar, seyrek LU, morfoloji ve Flap/Dressing hızlandırıcıları.\n"
             "• PySide6 / Qt (LGPL-3.0) — Yerel grafik kullanıcı arayüzü çatısı."
         ),
         'about_license': (
@@ -738,6 +839,7 @@ STRINGS = {
         'rec_reason_si': 'kendisiyle-kesişim var (%d)',
         'rec_reason_ftetwild': 'büyük açıklıklar / yoğun kendisiyle-kesişim',
         'rec_reason_graft': 'kabuk sarma ile kapatılabilir açıklıklar / delikler',
+        'rec_reason_dressing': 'karmaşık katlanmalar / yoğun kendisiyle-kesişim kaplanabilir',
         'rec_reason_not_scan': 'tek yönlü açık tarama değil',
         'rec_reason_poisson': 'tek yönlü açık tarama (%.2f)',
         'rec_reason_not_relief': 'kabartma benzeri açıklık yok',
@@ -780,6 +882,8 @@ STRINGS = {
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
         'repair_log_graft': 'Graft (kabuk sarma): %d yüz, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detay kaybı: %s',
+        'repair_log_dressing': 'Pansuman (viskozite kaplama): %d yüz, voxel=%s, r=%s',
+        'repair_log_dressing_warn': 'Pansuman sadakati: %s',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
@@ -798,6 +902,80 @@ STRINGS = {
                           'yüzeylerini ASLA silmez; yalnızca sonuç varsayılan '
                           'zincirden daha kötü değilse uygulanır (varsayılan '
                           'değil).',
+        'flap_label': 'Flap yüzey delik doldurma',
+        'flap_tip': 'Varsayılan olarak açık. Aşama-1 sonrası kalan her '
+                    'sınır halkasını, çevre kenar uzunluğuna göre '
+                    'inceltilmiş en-küçük-alanlı üçgenlemeyle kapatır ve '
+                    'komşu yüzeyi sürdüren ince-plaka çözümüyle '
+                    'yumuşatır. Özgün üçgenler aynen korunur; yalnızca '
+                    'yeniden-yükleme dürüst delik + iki-manifold-olmayan '
+                    'sayısı kötüleşmezse benimsenir.',
+        'dressing_label': 'Pansuman (viskozite kaplama)',
+        'dressing_tip': 'İsteğe bağlı (#16): kendisiyle-kesişimleri ve '
+                        'karmaşık açık kusurları genelleştirilmiş sarımlı '
+                        'alanın değişken viskoziteli dar bantlı seviye '
+                        'kümesiyle kaplar. Yapısı gereği two-manifold ve '
+                        'kendisiyle-kesişimsizdir; Graft sonrası ve fTetWild '
+                        'öncesi denenir. Korpus üzerinde ölçülene kadar '
+                        'varsayılan olarak kapalıdır.',
+        'dressing_force_adopt_label': 'Pansuman: zorla benimse (deforme olabilir)',
+        'dressing_force_adopt_tip': 'Pansuman\'ın şekil koruma kapılarını '
+                                    '(hacim / bileşen sayısı / sağlıklı yüzey '
+                                    'normal açısı / kaplama sadakati) atlar ve '
+                                    'yine de kesin su geçirmez ve '
+                                    'kendisiyle-kesişimsiz olan kapı-reddi '
+                                    'kaplamayı benimser. Parça deforme olabilir; '
+                                    'su geçirmez olmayan sonuçta önerilen '
+                                    'seçeneğin aynısı.',
+        'try_dressing_btn': '\u26a0 Dressing ile dene (su geçirmez yapar, ama '
+                            'parça deforme olabilir)',
+        'try_dressing_btn_n': '\u26a0 %d dosyada Dressing ile dene (su geçirmez, '
+                              'ama parça deforme olabilir)',
+        'try_dressing_tip': 'Önerilen dosyaları Dressing şekil-koruma kapılarını '
+                            'atlatarak yeniden çalıştırır. Sonuç kesin su '
+                            'geçirmez ve kendisiyle-kesişimsizdir, ancak ince '
+                            'detay kaybolabilir.',
+        'dressing_drain_label': 'Boşaltma:',
+        'dressing_drain_tip': 'Sağlıklı bölge geri aşındırma: kaplamanın dışa '
+                              'doğru büyümesini özgün yüzeye doğru azaltırken '
+                              'kusurları kaplı tutar (seviye kümesinde '
+                              'uygulanır). "Ön ayar" yoğunluk varsayılanını '
+                              'kullanır (Hızlı kapalı, Dengeli/Titiz tam, Aşırı '
+                              'derin).',
+        'dressing_drain_preset': 'Ön ayar varsayılanı',
+        'dressing_drain_off': 'Kapalı',
+        'dressing_drain_half': 'Yarım',
+        'dressing_drain_full': 'Tam',
+        'dressing_drain_deep': 'Derin',
+        'dressing_defects_label': 'Kusurlar:',
+        'dressing_defects_tip': 'Viskozite maskesinin kapsadığı girdi kusurları: '
+                                '"Tümü" (delik + non-manifold + '
+                                'kendisiyle-kesişim) veya "Delik + non-manifold" '
+                                '(kendisiyle-kesişim yok sayılır). "Ön ayar" '
+                                'modül varsayılanını (Tümü) kullanır.',
+        'dressing_defects_preset': 'Ön ayar varsayılanı',
+        'dressing_defects_all': 'Delik + NM + SI',
+        'dressing_defects_holes_nm': 'Yalnızca delik + NM',
+        'si_mode_label': 'Kendisiyle-kesişim:',
+        'si_mode_tip': 'Kendisiyle-kesişim politikası. "Yalnızca bildir" '
+                       '(varsayılan) kendisiyle-kesişimleri ölçüp bildirir '
+                       'ancak tek başına derin onarım merdivenini '
+                       'tetiklemez ve bir sonucu başarısız saymaz (delik ve '
+                       'non-manifold kenarlar her zaman sayılır). "Onar" '
+                       'kalan kendisiyle-kesişimleri hasar sayar ve otomatik '
+                       'Dressing yedeğini çalıştırır. "Ölçme" kesin '
+                       'sınıflandırıcıyı atlar ve ölçülmedi olarak bildirir.',
+        'si_mode_report': 'Yalnızca bildir',
+        'si_mode_repair': 'Onar',
+        'si_mode_off': 'Ölçme',
+        'dressing_rmax_scale_label': 'Köprü yarıçapı:',
+        'dressing_rmax_scale_tip': 'Çözülen r_max (en büyük viskozite / köprü '
+                                   'yarıçapı) çarpanı: küçük bir faktör daha '
+                                   'dar bir kaplama verir. "Ön ayar" = 1.0.',
+        'dressing_sigma_scale_label': 'Etki genişliği:',
+        'dressing_sigma_scale_tip': 'Çözülen sigma (viskozite alanının kusur '
+                                    'etki genişliği) çarpanı. "Ön ayar" = 1.0.',
+        'dressing_scale_preset': 'Ön ayar (1.0)',
         'ftetwild_label': 'fTetWild fallback',
         'ftetwild_tip': 'Son çare katılaştırıcı, varsayılan olarak açık: '
                         'stage-1 zinciri hâlâ delik veya non-manifold kenar '
@@ -895,6 +1073,7 @@ STRINGS = {
         'issue_budget_exceeded': 'Onarım bütçesi aşıldı',
         'issue_shape_changed': 'Şekil fTetWild yedek katmanıyla değişti',
         'issue_graft_detail_loss': 'Graft ince yüzey detayını yumuşattı (uyarılara bakın)',
+        'issue_dressing_detail_loss': 'Pansuman kaplaması girdi yüzeyinden sapıyor (uyarılara bakın)',
         'analyze': 'Analiz Et',
         'analyze_tip': ('Seçili dosyalar için salt-okunur analiz çalıştır '
                         '(validate + dry-run) — girdiyi asla değiştirmez.'),
@@ -1058,6 +1237,8 @@ STRINGS = {
         'field_ftetwild_max_faces': 'En fazla giriş yüzü',
         'field_no_limit': 'Sınır yok',
         'field_ftetwild_timeout': 'fTetWild zaman aşımı (sn)',
+        'field_graft_max_faces': 'Graft en fazla giriş yüzü',
+        'field_graft_timeout': 'Graft zaman aşımı (sn)',
         'field_optimize_retry': 'Yoğun başarısızlıkta optimize denemesi',
         'field_deep_repair': 'Derin onarım katmanı',
         'field_ladder': 'Yoğun sadeleştirme merdiveni',
@@ -1072,6 +1253,11 @@ STRINGS = {
         'field_ftetwild_max_faces_tip': 'Bu yüz sayısının üzerindeki girdilerde '
                                         'fTetWild atlanır ("Sınır yok" sınırı kapatır).',
         'field_ftetwild_timeout_tip': 'Tek bir fTetWild denemesi için zaman bütçesi.',
+        'field_graft_max_faces_tip': 'Bu yüz sayısının üzerindeki girdilerde Graft '
+                                     'zarf katmanı atlanır ("Sınır yok" sınırı '
+                                     'kapatır).',
+        'field_graft_timeout_tip': 'Tüm Graft kapama merdiveni için zaman bütçesi; '
+                                   'dolduğunda en iyi stage-1 adayı korunur.',
         'field_optimize_retry_tip': 'Her yoğun sadeleştirme basamağı başarısız '
                                     'olursa tetrahedron optimizasyonlu bir '
                                     'fTetWild denemesi daha çalıştır.',
@@ -1473,7 +1659,13 @@ class RepairWorker(QThread):
                  max_geom_change=None, max_risk=None, edge_tiebreak=False,
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
-                 intensity='balanced', methods_by_path=None,
+                 flap=False,
+                 dressing=False, dressing_drain=None,
+                 dressing_defects=None, dressing_rmax_scale=None,
+                 dressing_sigma_scale=None, dressing_force_adopt=False,
+                 intensity='balanced',
+                 si_mode='report',
+                 methods_by_path=None,
                  engines_by_path=None, repeat_points_by_path=None, parent=None):
         super().__init__(parent)
         self._files = list(files)
@@ -1489,6 +1681,14 @@ class RepairWorker(QThread):
         self._autorefine = autorefine
         self._ftetwild = ftetwild
         self._indirect_autorefine = indirect_autorefine
+        self._flap = flap
+        self._dressing = dressing
+        self._dressing_drain = dressing_drain
+        self._dressing_defects = dressing_defects
+        self._dressing_rmax_scale = dressing_rmax_scale
+        self._dressing_sigma_scale = dressing_sigma_scale
+        self._dressing_force_adopt = dressing_force_adopt
+        self._si_mode = si_mode
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
         self._engines_by_path = dict(engines_by_path or {})
@@ -1556,6 +1756,26 @@ class RepairWorker(QThread):
                 args.append('--experimental-indirect-autorefine')
             if self._ftetwild_optimize:
                 args.append('--ftetwild-optimize')
+            if self._si_mode and self._si_mode != 'report':
+                args += ['--si-mode', self._si_mode]
+            if self._flap:
+                args.append('--flap')
+            else:
+                args.append('--no-flap')
+            if self._dressing or self._dressing_force_adopt:
+                args.append('--experimental-dressing')
+                if self._dressing_drain in ('none', 'half', 'full', 'deep'):
+                    args += ['--dressing-drain', self._dressing_drain]
+                if self._dressing_defects in ('all', 'holes_nm'):
+                    args += ['--dressing-defects', self._dressing_defects]
+                if self._dressing_rmax_scale is not None:
+                    args += ['--dressing-rmax-scale',
+                             repr(self._dressing_rmax_scale)]
+                if self._dressing_sigma_scale is not None:
+                    args += ['--dressing-sigma-scale',
+                             repr(self._dressing_sigma_scale)]
+            if self._dressing_force_adopt:
+                args.append('--dressing-force-adopt')
             method_nums = self._methods_by_path.get(path)
             if method_nums:
                 args += ['--methods', ','.join(str(n) for n in method_nums)]
@@ -2543,6 +2763,26 @@ class ProfileEditor(QWidget):
         self.spin_timeout.setToolTip(_t('field_ftetwild_timeout_tip'))
         form.addRow(_t('field_ftetwild_timeout'), self.spin_timeout)
 
+        graft_max_wrap = QWidget()
+        graft_max_layout = QHBoxLayout(graft_max_wrap)
+        graft_max_layout.setContentsMargins(0, 0, 0, 0)
+        self.chk_graft_no_limit = QCheckBox(_t('field_no_limit'))
+        self.spin_graft_max_faces = QSpinBox()
+        self.spin_graft_max_faces.setRange(1, 100000000)
+        self.chk_graft_no_limit.toggled.connect(
+            lambda on: self.spin_graft_max_faces.setEnabled(not on))
+        graft_max_layout.addWidget(self.chk_graft_no_limit)
+        graft_max_layout.addWidget(self.spin_graft_max_faces, 1)
+        graft_max_wrap.setToolTip(_t('field_graft_max_faces_tip'))
+        form.addRow(_t('field_graft_max_faces'), graft_max_wrap)
+
+        self.spin_graft_timeout = QDoubleSpinBox()
+        self.spin_graft_timeout.setRange(1.0, 36000.0)
+        self.spin_graft_timeout.setDecimals(1)
+        self.spin_graft_timeout.setSuffix(' s')
+        self.spin_graft_timeout.setToolTip(_t('field_graft_timeout_tip'))
+        form.addRow(_t('field_graft_timeout'), self.spin_graft_timeout)
+
         self.chk_optimize = QCheckBox()
         self.chk_optimize.setToolTip(_t('field_optimize_retry_tip'))
         form.addRow(_t('field_optimize_retry'), self.chk_optimize)
@@ -2580,6 +2820,10 @@ class ProfileEditor(QWidget):
         self.spin_max_faces.setValue(spec.ftetwild_max_faces or 300000)
         self.spin_max_faces.setEnabled(spec.ftetwild_max_faces is not None)
         self.spin_timeout.setValue(float(spec.ftetwild_timeout))
+        self.chk_graft_no_limit.setChecked(spec.graft_max_faces is None)
+        self.spin_graft_max_faces.setValue(spec.graft_max_faces or 2000000)
+        self.spin_graft_max_faces.setEnabled(spec.graft_max_faces is not None)
+        self.spin_graft_timeout.setValue(float(spec.graft_timeout))
         self.chk_optimize.setChecked(
             bool(spec.ftetwild_optimize_retry_on_dense_fail))
         idx = self.cmb_deep.findData(spec.deep_repair)
@@ -2613,6 +2857,9 @@ class ProfileEditor(QWidget):
             'ftetwild_max_faces': (None if self.chk_no_limit.isChecked()
                                    else self.spin_max_faces.value()),
             'ftetwild_timeout': self.spin_timeout.value(),
+            'graft_max_faces': (None if self.chk_graft_no_limit.isChecked()
+                                else self.spin_graft_max_faces.value()),
+            'graft_timeout': self.spin_graft_timeout.value(),
             'ftetwild_optimize_retry_on_dense_fail':
                 self.chk_optimize.isChecked(),
             'deep_repair': self.cmb_deep.currentData(),
@@ -2883,6 +3130,13 @@ class OptionsDialog(QDialog):
         int_row.addStretch(1)
         r.addLayout(int_row)
 
+        # Self-intersection policy (batch-wide).
+        si_row = QHBoxLayout()
+        si_row.addWidget(QLabel(_t('si_mode_label')))
+        si_row.addWidget(main.cmb_si_mode)
+        si_row.addStretch(1)
+        r.addLayout(si_row)
+
         # User profiles: create / duplicate / rename / delete on top of the
         # read-only built-in presets.
         prof_row = QHBoxLayout()
@@ -2939,8 +3193,34 @@ class OptionsDialog(QDialog):
         warn.setObjectName('optWarning')
         e.addWidget(warn)
         for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
-                    main.chk_join_components, main.chk_edge_tiebreak):
+                    main.chk_join_components, main.chk_edge_tiebreak,
+                    main.chk_flap,
+                    main.chk_dressing, main.chk_dressing_force_adopt):
             e.addWidget(chk)
+        _drain_row = QHBoxLayout()
+        _drain_row.setContentsMargins(22, 0, 0, 0)
+        _drain_row.addWidget(QLabel(_t('dressing_drain_label')))
+        _drain_row.addWidget(main.cmb_dressing_drain)
+        _drain_row.addStretch(1)
+        e.addLayout(_drain_row)
+        _def_row = QHBoxLayout()
+        _def_row.setContentsMargins(22, 0, 0, 0)
+        _def_row.addWidget(QLabel(_t('dressing_defects_label')))
+        _def_row.addWidget(main.cmb_dressing_defects)
+        _def_row.addStretch(1)
+        e.addLayout(_def_row)
+        _rmax_row = QHBoxLayout()
+        _rmax_row.setContentsMargins(22, 0, 0, 0)
+        _rmax_row.addWidget(QLabel(_t('dressing_rmax_scale_label')))
+        _rmax_row.addWidget(main.cmb_dressing_rmax_scale)
+        _rmax_row.addStretch(1)
+        e.addLayout(_rmax_row)
+        _sig_row = QHBoxLayout()
+        _sig_row.setContentsMargins(22, 0, 0, 0)
+        _sig_row.addWidget(QLabel(_t('dressing_sigma_scale_label')))
+        _sig_row.addWidget(main.cmb_dressing_sigma_scale)
+        _sig_row.addStretch(1)
+        e.addLayout(_sig_row)
         e.addStretch(1)
         self.tabs.addTab(exp, _t('opt_tab_experimental'))
 
@@ -3350,9 +3630,18 @@ class MainWindow(QMainWindow):
         self._autorefine = False      # batch-wide opt-in autorefine SI resolution (FAZ16)
         self._ftetwild = 'auto'       # fTetWild fallback tier: 'auto' (default) / False (off) / True (+SI)
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
+        self._flap = True             # batch-wide Flap surface hole fill (Stage 1, on by default)
+        self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
+        self._dressing_drain = None   # batch-wide Dressing drain override (None = preset)
+        self._dressing_defects = None       # None = module default ('all')
+        self._dressing_rmax_scale = None    # None = 1.0
+        self._dressing_sigma_scale = None   # None = 1.0
+        self._dressing_force_adopt = False  # batch-wide: skip Dressing shape gates
+        self._si_mode = 'report'      # self-intersection policy: repair/report/off
         self._max_geom_change = None  # batch-wide repair budget: max geometry change % (None = no limit)
         self._max_risk = None         # batch-wide repair budget: max risk score (None = no limit)
         self._declined_by_path = {}   # path -> report of budget-declined (unsaved) files
+        self._suggestion_by_path = {}  # path -> non-blocking next-action suggestions
         self._rerun = False           # True while re-running declined files with --force
 
         self._build_ui()
@@ -3468,6 +3757,68 @@ class MainWindow(QMainWindow):
         self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
         self.chk_indirect_autorefine.toggled.connect(
             lambda on: setattr(self, '_indirect_autorefine', on))
+        # opt-in Flap surface hole fill (Stage 1, batch-wide; off by default)
+        self.chk_flap = QCheckBox(_t('flap_label'))
+        self.chk_flap.setToolTip(_t('flap_tip'))
+        self.chk_flap.setChecked(self._flap)
+        self.chk_flap.toggled.connect(
+            lambda on: setattr(self, '_flap', on))
+        # opt-in Dressing viscosity coat (#16, batch-wide; off by default until
+        # measured on the corpus)
+        self.chk_dressing = QCheckBox(_t('dressing_label'))
+        self.chk_dressing.setToolTip(_t('dressing_tip'))
+        self.chk_dressing.toggled.connect(
+            lambda on: setattr(self, '_dressing', on))
+        # Force-adopt: bypass Dressing's shape-preservation gates when the
+        # non-watertight suggestion offers it. Still requires a strictly
+        # watertight, self-intersection-free coat; the shape may deform.
+        self.chk_dressing_force_adopt = QCheckBox(_t('dressing_force_adopt_label'))
+        self.chk_dressing_force_adopt.setToolTip(_t('dressing_force_adopt_tip'))
+        self.chk_dressing_force_adopt.toggled.connect(
+            lambda on: setattr(self, '_dressing_force_adopt', on))
+        # Drain (healthy-region erode-back) override for Dressing; the empty
+        # entry means "use the intensity preset default".
+        self.cmb_dressing_drain = QComboBox()
+        self.cmb_dressing_drain.setToolTip(_t('dressing_drain_tip'))
+        for key in ('dressing_drain_preset', 'dressing_drain_off',
+                    'dressing_drain_half', 'dressing_drain_full',
+                    'dressing_drain_deep'):
+            self.cmb_dressing_drain.addItem(_t(key))
+        self.cmb_dressing_drain.currentIndexChanged.connect(
+            self._on_dressing_drain_changed)
+        # Defect-set override for Dressing (which input defects the viscosity
+        # mask covers); the empty entry means the module default ('all').
+        self.cmb_dressing_defects = QComboBox()
+        self.cmb_dressing_defects.setToolTip(_t('dressing_defects_tip'))
+        for key, val in (('dressing_defects_preset', None),
+                         ('dressing_defects_all', 'all'),
+                         ('dressing_defects_holes_nm', 'holes_nm')):
+            self.cmb_dressing_defects.addItem(_t(key), val)
+        self.cmb_dressing_defects.currentIndexChanged.connect(
+            self._on_dressing_defects_changed)
+        # Scale factors on the resolved r_max / sigma; the empty entry = 1.0.
+        self.cmb_dressing_rmax_scale = QComboBox()
+        self.cmb_dressing_rmax_scale.setToolTip(_t('dressing_rmax_scale_tip'))
+        self.cmb_dressing_sigma_scale = QComboBox()
+        self.cmb_dressing_sigma_scale.setToolTip(_t('dressing_sigma_scale_tip'))
+        for cmb, handler in ((self.cmb_dressing_rmax_scale,
+                              self._on_dressing_rmax_scale_changed),
+                             (self.cmb_dressing_sigma_scale,
+                              self._on_dressing_sigma_scale_changed)):
+            cmb.addItem(_t('dressing_scale_preset'), None)
+            for factor in (0.25, 0.5, 0.75, 1.0, 1.5, 2.0):
+                cmb.addItem('x%s' % ('%g' % factor), factor)
+            cmb.currentIndexChanged.connect(handler)
+        # Self-intersection policy (batch-wide, Repair tab): 'report' (default)
+        # measures/reports SI without escalating; 'repair' keeps it as damage;
+        # 'off' skips the exact classifier.
+        self.cmb_si_mode = QComboBox()
+        self.cmb_si_mode.setToolTip(_t('si_mode_tip'))
+        for key, val in (('si_mode_report', 'report'),
+                         ('si_mode_repair', 'repair'),
+                         ('si_mode_off', 'off')):
+            self.cmb_si_mode.addItem(_t(key), val)
+        self.cmb_si_mode.currentIndexChanged.connect(self._on_si_mode_changed)
         # The batch-wide options above live in a separate, non-modal Options
         # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
         # is re-parented there unchanged, so every chk_* attribute keeps its
@@ -3482,6 +3833,9 @@ class MainWindow(QMainWindow):
             (self.chk_indirect_autorefine, False),
             (self.chk_join_components, False),
             (self.chk_edge_tiebreak, False),
+            (self.chk_flap, True),
+            (self.chk_dressing, False),
+            (self.chk_dressing_force_adopt, False),
         )
         self._options_dialog = OptionsDialog(self)
         self._sync_intensity_checkboxes()
@@ -3540,6 +3894,16 @@ class MainWindow(QMainWindow):
         self.summary.linkActivated.connect(self._on_summary_link)
         self.summary.setVisible(False)
         layout.addWidget(self.summary)
+
+        # Post-batch opt-in suggestion row: shown only when at least one file
+        # finished non-watertight and the CLI offered Dressing (a method that
+        # makes it watertight but may deform the shape). Non-blocking — it is
+        # a button, never a modal dialog.
+        self.btn_try_dressing = QPushButton(_t('try_dressing_btn'))
+        self.btn_try_dressing.setToolTip(_t('try_dressing_tip'))
+        self.btn_try_dressing.setVisible(False)
+        self.btn_try_dressing.clicked.connect(self._on_try_dressing)
+        layout.addWidget(self.btn_try_dressing)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -3705,6 +4069,28 @@ class MainWindow(QMainWindow):
             self._repeat_picker_worker.wait(6000)
         self._stop_update_check()
         super().closeEvent(event)
+
+    def _on_si_mode_changed(self, index):
+        """Store the batch-wide self-intersection policy."""
+        self._si_mode = self.cmb_si_mode.itemData(index) or 'report'
+
+    def _on_dressing_drain_changed(self, index):
+        """Map the Dressing drain combo to the CLI override ('' = preset)."""
+        self._dressing_drain = (
+            None if index <= 0 else ('none', 'half', 'full', 'deep')[index - 1])
+
+    def _on_dressing_defects_changed(self, index):
+        """Map the Dressing defect-set combo to the CLI override."""
+        self._dressing_defects = self.cmb_dressing_defects.itemData(index)
+
+    def _on_dressing_rmax_scale_changed(self, index):
+        """Map the Dressing r_max scale combo to the CLI override."""
+        self._dressing_rmax_scale = self.cmb_dressing_rmax_scale.itemData(index)
+
+    def _on_dressing_sigma_scale_changed(self, index):
+        """Map the Dressing sigma scale combo to the CLI override."""
+        self._dressing_sigma_scale = self.cmb_dressing_sigma_scale.itemData(
+            index)
 
     def _sync_ftetwild(self, *_):
         """Map the two fTetWild checkboxes to the CLI tri-state."""
@@ -3992,10 +4378,12 @@ class MainWindow(QMainWindow):
         if not self.files or self.worker is not None:
             return
         self._declined_by_path = {}
+        self._suggestion_by_path = {}
         self._rerun = False
         for i in range(self.tree.topLevelItemCount()):
             self.tree.topLevelItem(i).setText(2, '')
         self._batch_results = []
+        self.btn_try_dressing.setVisible(False)
         self._defects_by_path = {}
         self._type_by_path = {}
         self._score_by_path = {}
@@ -4045,6 +4433,14 @@ class MainWindow(QMainWindow):
                                    ftetwild=self._ftetwild,
                                    indirect_autorefine=self._indirect_autorefine,
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
+                                   flap=self._flap,
+                                   dressing=self._dressing,
+                                   dressing_drain=self._dressing_drain,
+                                   dressing_defects=self._dressing_defects,
+                                   dressing_rmax_scale=self._dressing_rmax_scale,
+                                   dressing_sigma_scale=self._dressing_sigma_scale,
+                                   dressing_force_adopt=self._dressing_force_adopt,
+                                   si_mode=self._si_mode,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
                                    engines_by_path=engines_by_path,
@@ -4362,6 +4758,9 @@ class MainWindow(QMainWindow):
             self._repair_log_by_path[path] = data
             if data.get('status') == 'budget_declined':
                 self._declined_by_path[path] = data
+            _sug = data.get('suggestions')
+            if _sug:
+                self._suggestion_by_path[path] = _sug
             if self._item_by_path.get(path) is self.tree.currentItem():
                 self._show_defects(path)
                 self._render_repair_log(path, data)
@@ -4496,6 +4895,17 @@ class MainWindow(QMainWindow):
                 _msg = _warns[0].get('message_tr' if _is_tr else 'message_en') \
                     or _warns[0].get('message_en', '')
                 lines.append(_t('repair_log_graft_warn', _msg))
+        dr_r = data.get('dressing')
+        if dr_r and dr_r.get('ran'):
+            lines.append(_t('repair_log_dressing',
+                            dr_r.get('faces') or dr_r.get('faces_coat', 0),
+                            dr_r.get('voxel'), dr_r.get('r_base')))
+            _dwarns = dr_r.get('warnings') or []
+            if _dwarns:
+                _is_tr = QLocale.system().name().startswith('tr')
+                _dmsg = _dwarns[0].get('message_tr' if _is_tr else 'message_en') \
+                    or _dwarns[0].get('message_en', '')
+                lines.append(_t('repair_log_dressing_warn', _dmsg))
         ia_r = data.get('experimental_indirect_autorefine')
         if ia_r and not ia_r.get('skipped') and 'error' not in ia_r:
             key = 'repair_log_indirect' if ia_r.get('adopted') \
@@ -5127,6 +5537,36 @@ class MainWindow(QMainWindow):
                 self._render_summary()
             if self._declined_by_path:
                 self._ask_budget_rerun()
+            self._refresh_dressing_suggestion()
+
+    def _dressing_suggestion_files(self):
+        """Files whose report offered Dressing as a non-blocking next action."""
+        out = []
+        for p, sugs in self._suggestion_by_path.items():
+            if any(s.get('method') == 'dressing' for s in sugs):
+                out.append(p)
+        return sorted(out)
+
+    def _refresh_dressing_suggestion(self):
+        files = self._dressing_suggestion_files()
+        self.btn_try_dressing.setVisible(bool(files))
+        if files:
+            self.btn_try_dressing.setText(
+                _t('try_dressing_btn_n', len(files)))
+
+    def _on_try_dressing(self):
+        """Re-run the suggested files with --dressing-force-adopt (opt-in)."""
+        files = self._dressing_suggestion_files()
+        if not files:
+            self.btn_try_dressing.setVisible(False)
+            return
+        # The CLI flag implies --experimental-dressing; mirror that in the
+        # batch-wide option so the re-run (and its report) is self-consistent.
+        self.chk_dressing_force_adopt.setChecked(True)
+        self._suggestion_by_path = {}
+        self.btn_try_dressing.setVisible(False)
+        self._rerun = True  # keep the original batch summary after the re-run
+        self._run_batch(files, force=True)
 
     def _ask_budget_rerun(self):
         """Offer to re-run the budget-declined files with --force.

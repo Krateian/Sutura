@@ -142,6 +142,24 @@ def test_sphere_with_hole_closes():
     assert vol > 3.0, f"volume {vol} (hole not closed)"
 
 
+def test_sign_field_r0_closes_hole_without_edt():
+    # r == 0 is the sign-field path: no dilation/EDT, the raw winding field is
+    # contoured.  It must be accepted (not rejected) and still seal the hole.
+    mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+    c = mesh.triangles_center
+    mesh.update_faces(c[:, 2] < 0.55)
+    mesh.remove_unreferenced_vertices()
+    v, f = as_arrays(mesh)
+    ov, ot, info = closing(v, f, r=0.0, voxel=0.05)
+    assert info["sign_field"] is True
+    assert info["radius"] == 0.0
+    assert info["manifold"], "sign-field output not manifold"
+    assert manifold_ok(ot), "sign-field edge-use not manifold"
+    assert signed_volume(ov, ot) > 3.0, "sign-field did not close the hole"
+    # An older extension that predates the feature must be detectable.
+    assert sutura_geom.SIGN_FIELD_SUPPORTED is True
+
+
 # --------------------------------------------------------------------------- #
 # 2. two overlapping cubes -> single shell
 # --------------------------------------------------------------------------- #

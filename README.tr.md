@@ -17,8 +17,8 @@
   <img src="https://img.shields.io/github/commit-activity/y/Krateian/Sutura" alt="Commit etkinliği">
 </p>
 
-Sutura Triage Engine: STL, OBJ ve 3MF dosyaları için 15 sıralı onarım yöntemine sahip
-iki aşamalı PyMeshLab + manifold3d çekirdekli mesh onarımı. Linux için geliştirildi,
+Sutura Triage Engine: STL, OBJ ve 3MF dosyaları için 16 sıralı onarım yöntemine sahip,
+PyMeshLab + manifold3d çekirdekli aşamalı mesh onarım hattı. Linux için geliştirildi,
 macOS tam destekli.
 
 Linux'ta Windows'un sağ tık "Fix model" (3D Builder, Netfabb) ya da Bambu
@@ -31,8 +31,8 @@ modelleri, bozuk dosyalar, düşmanca girdiler ve işkence senaryoları (devasa
 mesh'ler, ince duvarlar, çok parçalı montajlar) — ve her değişiklik, her push
 ve pull request'te CI tarafından otomatik doğrulanır.
 
-**Güvenebileceğiniz kısım.** İki aşamalı STL onarım hattı (VCG + manifold3d),
-sıkı bir `defects.detect()` kapalı-döngü kontrolüyle 115 mesh'lik gerçek dünya
+**Güvenebileceğiniz kısım.** Aşamalı STL onarım hattı (Aşama 1 VCG + Aşama 2
+manifold3d), sıkı bir `defects.detect()` kapalı-döngü kontrolüyle 115 mesh'lik gerçek dünya
 tarama corpus'unda doğrulanmıştır: 103/115 (~%90) gerçekten su geçirmez, 0
 çökme, her hat iddiası birebir doğrulandı ve bağımsız manifold3d kontrolü 115
 mesh'in tamamında uyumlu. Kusur tespiti, tek doğruluk kaynağı (stdlib+numpy),
@@ -52,7 +52,59 @@ edilmiş değil, sadece tempo yavaşlayacak.
 
 ![Sutura GUI](assets/screenshot.png)
 
-## Neden iki aşama
+## Sutura bir modeli nasıl onarır, sade anlatım
+
+Bozuk bir 3B model hasarlı bir deri gibidir. Tarayıcı göremediği yerlerde
+**delik** bırakır, üçgenler **yanlış yerlerden birbirine yapışır** (manifold
+olmayan kenarlar) ve yüzeyin bazı kısımları **birbirinin içinden geçer**
+(kendisiyle kesişme). Dilimleyiciler böyle bir dosyayı ya reddeder ya da yanlış
+basar.
+
+Sutura dikkatli bir cerrah gibi çalışır: hasarı tedavi eder, sağlam deriye
+dokunmaz. Onarım kısa bir adım zinciridir ve her adım yalnızca önceki adımlar iş
+bıraktıysa devreye girer:
+
+```
+dosyan ─► Flap ─► Aşama 1 temizlik ─► (hâlâ bozuk mu?) Graft ─► Aşama 2 katı ─► onarılmış kopya
+          delikleri   kenarları düzeltir,     yalnızca hasarlı        tek parça, kapalı,
+          yüzeyi      kalan delikleri         bölgeleri yeniden       basılabilir katı
+          sürdürerek  kapatır                 kurar
+          kapatır
+```
+
+1. **Flap: delikleri yüzeyin gittiği yöne doğru doldurur** (0.8.0'da yeni,
+   varsayılan açık). Klasik delik doldurma deliğe düz bir kapak koyar. Flap ise
+   çevredeki yüzeyi deliğin içine doğru devam ettirir; bir boşluğun üstüne sıvı
+   astar ya da epoksi sürmek gibi: yama, kenardan komşu yüzeyle aynı eğimle
+   çıkar, böylece kavisli bir yüzeydeki delik çukur ya da düz bir leke değil,
+   kavisli bir yama alır. Orijinal üçgenlerin yerinden oynamaz; yalnızca yama
+   yenidir. Flap bir deliği güvenle dolduramıyorsa onu bir sonraki adıma bırakır,
+   yani bir dosya Flap ile asla Flap'siz halinden kötü olmaz. Kapatmak için
+   `--no-flap` ya da *Flap yüzey delik doldurma* kutusu.
+2. **Aşama 1: temizlik (PyMeshLab).** Tekrarlanan ve bozuk üçgenleri siler,
+   hatalı kenarları çözer, tüm yüzleri aynı yöne çevirir ve hâlâ açık kalan
+   delikleri kapatır.
+3. **Graft: yalnızca hasar ciddiyse.** Model hâlâ açık ya da karışıksa Graft,
+   hasarlı bölgelerin üstüne yeni ve kapalı bir kabuk kurar ve bunu sağlam
+   orijinal yüzeye deri nakli gibi diker. Sağlam bölgeler orijinal üçgenlerini
+   korur; böylece oyma ya da süsleme gibi ince ayrıntılar kaybolmaz. Çok büyük
+   taramalar için boyut ve süre sınırı vardır, takılıp kalmaz.
+4. **Aşama 2: tek bir katı yap (manifold3d).** Sonucu geçerli, kapalı bir katı
+   olarak yeniden kurar; Bambu Studio'nun kullandığı kütüphanenin aynısı.
+5. **İsteğe bağlı ekler, varsayılan kapalı.** **Pansuman (Dressing)** tüm modeli
+   her zaman kapalı çıkan sanal bir kaplamaya batırır, ama ince ayrıntıyı
+   yumuşatabilir; bu yüzden Sutura onu yalnızca her şey başarısız olduğunda
+   *önerir*, karar senindir. **fTetWild** çok bozuk dosyalar için son çare
+   yeniden kurulumdur.
+
+Sutura her adımdan sonra delikleri ve hatalı kenarları, dosya diskten yeniden
+açılmış gibi tekrar sayar; işleri kötüleştiren adım çöpe atılır. Orijinal
+dosyan asla değişmez: onarılmış bir kopya ve tam olarak hangi adımların
+çalıştığını gösteren bir rapor alırsın. Dilimleyicilerin görmezden geldiği küçük
+kendisiyle kesişmeler raporlanır ama artık hata sayılmaz (`--si-mode repair`
+katı davranışı geri getirir).
+
+## Neden aşamalı hat
 
 * **Aşama 1 - PyMeshLab (VCG).** Yinelenen ve dejenere yüzleri kaldırır,
   non-manifold kenar ve köşeleri onarır, yüzleri tutarlı şekilde yönlendirir,
@@ -75,7 +127,7 @@ bunun yerine süreç içinde (in-process) çalışır. manifold3d hiç yoksa rap
 bunu açıkça belirtir: `Stage 2 skipped: manifold3d not available in this
 environment.` — asla sessizce atlanmaz.
 
-**İsteğe bağlı katmanlar.** İki aşamanın etrafında, self-intersection
+**İsteğe bağlı katmanlar.** İki çekirdek aşamanın etrafında, self-intersection
 içeren ve ağır bozuk mesh'ler için katmanlar bulunur. Deneysel olanlar
 varsayılan olarak kapalıdır ve kendi CLI bayrağı ya da GUI'deki **Seçenekler** penceresindeki bir kutuyla açılır;
 fTetWild yedek katmanı ise isteğe bağlı eki kuruluysa varsayılan olarak
@@ -102,6 +154,19 @@ açıktır:
   optimizasyonu kapalıdır (yalnızca dış yüzey kullanılır, çoğunlukla süre
   kaybıdır); `--ftetwild-optimize` (GUI: *Tetrahedra optimizasyonu*,
   önerilmez) açar.
+* *Full Mend içinde, Stage 1'den sonra:* **guard'lı self-intersection kesme +
+  yeniden kapatma** artakalan self-intersection yüzlerini (yüzler ve bir
+  halkalık kuşak) kaldırır, açılan döngüleri PyMeshLab'ın rafine delik
+  doldurmasıyla (`refinehole=True`, `selfintersection=True` — bu yeni kesişen
+  kapakları *önler*) kapatır ve bir turu yalnızca self-intersection sayısı
+  kesin azalırken delikler ve non-manifold kenarlar artmadığında kabul eder;
+  aksi hâlde tur-öncesi ağ bayt bayt geri yüklenir. Hiçbir bağlı bileşen
+  düşürülmez, yoğunluk ön ayarının zaman bütçesiyle (Balanced 5 sn, Thorough
+  20 sn, Extreme 60 sn) en fazla üç tur çalışır ve self-intersection içermeyen
+  ağlarda no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır. Stage 1 delik
+  doldurması ayrıca deneysel `SUTURA_REFINE_HOLE=1` ile rafine edilebilir
+  (`refinehole=True`); korpuslarda henüz kanıtlanmadığı için varsayılan
+  kapalıdır.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya
@@ -126,8 +191,26 @@ sonucu değiştirmedi. 40 gerçek örnekte 3 mesh'i daha kesin su geçirmez yapt
 (31 → 34); 115 mesh'lik corpus'ta hiçbirini yapmadı, bu yüzden `full`'un
 parçası değildir.
 
-Her katman ancak sonucu, delik ve non-manifold kenar açısından düz iki
-aşamalı sonuçtan kötü değilse benimsenir; yani iki aşamalı yol her zaman
+**Self-intersection politikası** `--si-mode {repair,report,off}` ile seçilir
+(ya da `SUTURA_SI_MODE`, ya da GUI Seçenekler → Onarım açılır listesi *Kendisiyle-kesişim*
+[*Yalnızca bildir* / *Onar* / *Ölçme*]).
+`report` (varsayılan) kalan self-intersection sayısını ölçüp bildirmeye devam
+eder, ancak self-intersection'lar artık kapalı bir 2-manifold yüzeyde
+`watertight` sınıflandırma kararını engellemez ve tek başına derin onarım
+merdivenini tetiklemez — otomatik katmanları ve nihai kararı yalnızca delik
+ve non-manifold kenarlar belirler; sayı `stage1.self_intersections_remaining`
+alanında görünür kalır. Sıfır delik ve sıfır non-manifold kenara sahip bir mesh,
+kalan self-intersection'lar olsa dahi `report` modunda `watertight` olarak
+sınıflandırılır. `repair`, pozitif bir sayının hasar sayıldığı ve otomatik
+Dressing yedeğini tetikleyebildiği önceki davranışı geri getirir. `off`, kesin
+sınıflandırıcıyı atlar ve sayıyı `null` ("ölçülmedi") olarak bildirir. Açık zorlama bayrakları
+(`--experimental-dressing`, `--experimental-fallback-ftetwild`) politikayı
+geçersiz kılar ve kalan self-intersection'lara yine de müdahale eder. Korumalı
+`si_excise_recap` geçişi her modda kendi bağımsız sayımını korur. Seçilen mod
+raporda `si_mode` (ve `deep_repair.si_mode`) olarak yer alır.
+
+Her katman ancak sonucu, delik ve non-manifold kenar açısından düz
+aşamalı sonuçtan kötü değilse benimsenir; yani çekirdek aşamalı yol her zaman
 güvenlik ağı olarak kalır. Benimsenen bir fTetWild sonucunun çıktıdan
 girdiye tek yönlü Hausdorff mesafesi sınır kutusu köşegeninin %1'ini aşarsa
 (geçici eşik) sonuç korunur ama işaretlenir: rapor `shape_changed: true` ve
@@ -144,7 +227,7 @@ girdilerde fTetWild katmanı atlanır (`reject_reason: too_large`): 40
 taramalar bütçe içinde bitemez; 115 mesh'lik corpus'taki yoğun Artec
 taramaları da her koşuda zaman aşımına uğradı. fTetWild
 eki kurulu değilse ve hiçbir bayrak verilmezse davranış tam olarak
-yukarıdaki iki aşamadır.
+yukarıdaki Aşama-1 + Aşama-2 çekirdeğidir.
 
 40 gerçek örnek üzerinde ölçüldü (`scripts/benchmark_repair_corpus.py`,
 2 vCPU'lu x86_64 VM): yedek katman olmadan kesin su geçirmez 31/40,
@@ -174,6 +257,7 @@ sayılar optimizasyon açıkken ölçülmüştür.
 
 Aşama 1'den *sonra* harcanan çaba — derin-onarım merdiveni, fTetWild
 katmanının açık/kapalı durumu, girdi boyut sınırı ve duvar-saati bütçesi,
+Graft shell-wrap katmanının kendi girdi boyut sınırı ve duvar-saati bütçesi,
 yoğun sınır sadeleştirme merdiveni ve Hausdorff örnek sayısı — dört salt-
 okunur preset ve istenildiği kadar kullanıcı profili ile toplanmıştır:
 `--intensity <ad>` (veya `SUTURA_INTENSITY`, veya
@@ -190,13 +274,15 @@ değerleriyle yazdırıp çıkar.
   hızlı çalışma; zor ağları açık bırakır.
 - **Balanced** — varsayılan ve mevcut sürüm davranışı: her düğme tarihsel
   `repair.py` sabitidir (kuruluysa fTetWild `auto`, 180 sn bütçe, 300.000
-  yüz sınırı, `(1.5, 3.0)` sadeleştirme merdiveni, 200.000 Hausdorff
-  örneği). `--intensity balanced`, bayraksız çalıştırmayla bayt-birebirdir.
-- **Thorough** — 600 sn fTetWild bütçesi, 400.000 Hausdorff örneği ve bir
-  fazladan sadeleştirme basamağı, `threshold` (= `DENSE_RATIO ×
-  max(girdi, 20.000)`).
-- **Extreme** — girdi boyut sınırı yok, 1.800 sn bütçe, 1.000.000 Hausdorff
-  örneği, fazladan `threshold` basamağı ve savurgan yoğunlukta bir sınırın
+  yüz sınırı, Graft 300 sn bütçe ve 2.000.000 yüz sınırı, `(1.5, 3.0)`
+  sadeleştirme merdiveni, 200.000 Hausdorff örneği). `--intensity balanced`,
+  bayraksız çalıştırmayla bayt-birebirdir.
+- **Thorough** — 600 sn fTetWild bütçesi, 900 sn Graft bütçesi, 400.000
+  Hausdorff örneği ve bir fazladan sadeleştirme basamağı, `threshold`
+  (= `DENSE_RATIO × max(girdi, 20.000)`).
+- **Extreme** — fTetWild ve Graft için girdi boyut sınırı yok, ikisi için
+  1.800 sn bütçe, 1.000.000 Hausdorff örneği, fazladan `threshold` basamağı
+  ve savurgan yoğunlukta bir sınırın
   her basamağı başarısız olduğunda, sadeleştirilmemiş sınıra dönmeden önce
   tetrahedron kalite optimizasyonu açık bir fTetWild çalışması daha.
 
@@ -236,7 +322,7 @@ yazılır.
 ### Onarım yöntem kayıt defteri ve nesne-başına öneriler
 
 `sutura_engine.methods` (`sutura/methods.py` üzerinden geriye dönük uyumlu),
-on beş onarım **yönteminin** genişletilebilir kayıt defteridir (`--list-methods`
+on altı onarım **yönteminin** genişletilebilir kayıt defteridir (`--list-methods`
 numara, kimlik, aile, kullanılabilirlik ve görünen adı yazdırır). 1–7 numaralı
 yöntemler temel boru hattı üzerinde seçicilerdir (#1 Hızlı Temizlik, #2 Yerel Onarım,
 #3 Tam Onarım, #4 Birleştir, #5 Kendini Onarım, #6 Kesin Onarım, #7 fTetWild);
@@ -244,8 +330,9 @@ yöntemler temel boru hattı üzerinde seçicilerdir (#1 Hızlı Temizlik, #2 Ye
 #9 Arka Plaka düz kapatma, #10 İskelet vekil şablon onarımı); #11 Nakil ve #12 Nakil+
 otomatik ve nokta kılavuzlu yineleme onarımlarıdır; #13 Graft sağlıklı üçgenleri
 birebir koruyarak hasarı kapatan morfoloji kabuk sarma katmanıdır; #14 Aynalı Tamamlama
-simetrik taramaların eksik arkasını tamamlar; ve #15 Duvar Kalınlaştır isteğe bağlı
-morfolojik ince-duvar kalınlaştırıcıdır (asla otomatik çalışmaz).
+simetrik taramaların eksik arkasını tamamlar; #15 Duvar Kalınlaştır isteğe bağlı
+morfolojik ince-duvar kalınlaştırıcıdır (asla otomatik çalışmaz); ve #16 Pansuman
+isteğe bağlı, değişken viskoziteli seviye kümesi kaplamasıdır (aşağıda kendi bölümü).
 8–10 numaralı yöntemler girdi üzerinde çalışır (fTetWild katmanı gibi) ve
 sonuçlarını yalnızca katı-su geçirmez olduğunda ve özgün yüzey hâlâ
 kapsandığında (tek-taraflı girdi→çıktı Hausdorff koruması) benimser, böylece
@@ -260,9 +347,9 @@ kaldığında, temelden daha kötü olmadığında ve dokunulmamış geometri
 kaymadığında (`hausdorff_outside`) benimsenir; `repeat` rapor anahtarı desen
 tipini ve onarılan konum sayısını taşır.
 
-#### Onarım yöntemleri (#1–#15)
+#### Onarım yöntemleri (#1–#16)
 
-`--list-methods` çıktısındaki kararlı tamsayı sırasıyla on beş yöntem (kanonik
+`--list-methods` çıktısındaki kararlı tamsayı sırasıyla on altı yöntem (kanonik
 kimlikler gösterilmektedir; eski slug'lar takma ad olarak desteklenir):
 
 | # | Kanonik ID | Görünen Ad | Aile | Ne yapar | Geometri uydurur mu? |
@@ -282,14 +369,17 @@ kimlikler gösterilmektedir; eski slug'lar takma ad olarak desteklenir):
 | 13 | `graft` | Graft | zarf | Sağlıklı üçgenleri birebir koruyarak hasarı kapatan morfoloji kabuk sarma. | evet (kabuk sarma) |
 | 14 | `mirror_complete` | Aynalı Tamamlama | kapama | Simetrik tek-taraflı taramayı tespit edilen simetri düzleminden aynalar. | evet (aynalı arka) |
 | 15 | `wall_thicken` | Duvar Kalınlaştır | zarf | SDF ızgarasından ince duvarları tespit edip morfolojik öteleme ile kalınlaştırır. | evet (öteleme) |
+| 16 | `dressing` | Pansuman | zarf | İsteğe bağlı, değişken viskoziteli seviye kümesi kaplaması; yapısı gereği 2-manifold ve SI'sız. | evet (viskozite kaplama) |
 
 Geometri uyduran yöntemler asla korumasız çalışmaz: #7 tek-taraflı çıktı→girdi
 Hausdorff korumasıyla; #8, #9, #10 ve #14 girdi→çıktı korumasıyla (özgün yüzey
 tamamen kapsanmalıdır); #11 ve #12 dokunulmamış geometrinin kaymasını engelleyen
 `hausdorff_outside` ile; #13 Graft sağlıklı ayrıntı kaybında otomatik olarak
-fTetWild'a dönen kendi özgün→çıktı sadakat koruması (`fidelity_ok`) ile; ve #15
+fTetWild'a dönen kendi özgün→çıktı sadakat koruması (`fidelity_ok`) ile; #15
 Duvar Kalınlaştır girdi→çıktı korumasıyla sınırlandırılmıştır (#15 şekil kararı
-olduğu için sıralamaya dahil edilmez, açıkça seçilmelidir).
+olduğu için sıralamaya dahil edilmez, açıkça seçilmelidir); #16 Pansuman ise
+kendi kaplama→girdi sadakat kapısıyla korunur ve aynı şekilde sıralamaya dahil
+edilmez (korpus üzerinde ölçülene kadar isteğe bağlıdır).
 
 #### Nesne analizi ve öneriler
 
@@ -338,8 +428,8 @@ sütunu *Otomatik*, analizden sonra *Otomatik (öneri #3 … %82)* ya da
 kullanıcının seçtiği etiket zincirini gösterir. Bir veya birkaç dosyaya sağ
 tıklamak bir menü açar: *Analiz et* nesne-başına analizi (`--analyze`) arka
 planda çalıştırır, *Önerilen yöntemler* sıralanmış en iyi yöntemleri bir puan
-çubuğu ve gerekçesi ipucunda olacak şekilde listeler, *Yöntem kullan* on dört
-yöntemin (#1–#15) tümünü sırayı koruyan işaretlenebilir bir açılır menü olarak
+çubuğu ve gerekçesi ipucunda olacak şekilde listeler, *Yöntem kullan* on altı
+yöntemin (#1–#16) tümünü sırayı koruyan işaretlenebilir bir açılır menü olarak
 listeler (işaretlenme sırası deneme sırasıdır, örn. `#2 → #3 → #5`); #12'yi
 seçmek, nesneyi CPU ile tarayan (OpenGL yok) küçük bir seçici açar; kullanıcı
 önce sağlam kaynak ögeye, sonra hasarlı hedef ögeye tıklar ve *Harici
@@ -443,6 +533,45 @@ gelir. Bir yüz bütçesiyle sınırlıdır ve kapama katmanları gibi yalnızca
 katı-su geçirmez olduğunda ve özgün yüzey kapsanmış kaldığında (girdi→çıktı
 koruması) benimsenir.
 
+#### Flap (yüzey delik doldurma)
+
+Flap (`sutura_engine.flap`), bir sınır halkasını üzerine düz bir kapak
+oturtmak yerine komşu yüzeyi sürdürerek kapatan yüzey tabanlı bir delik
+doldurucudur. Ham girdi üzerinde bir **Aşama-1 ön adımı** olarak, VCG
+zincirinden ve Graft/fTetWild katmanlarından önce çalışır; böylece bu katmanlar
+Flap ile kapatılmış yüzeyi görür. Her halka en-küçük-alanlı bir dinamik
+programla üçgenlenir, çevre kenar uzunluğuna göre inceltilir ve çemberin
+konumunu ve eğimini yamaya taşıyan ayrık biharmonik (ince-plaka) bir çözümle
+yumuşatılır. Özgün üçgenler aynen korunur -- yalnızca yeni yama eklenir -- ve
+Flap'ın atladığı ya da reddettiği her halka olağan Aşama-1 düz delik doldurmaya
+bırakılır, böylece her delik yine bir kapak alır.
+
+**Varsayılan olarak açıktır.** `--no-flap` (veya `SUTURA_FLAP=0`) kapatır,
+`--flap` (veya `SUTURA_FLAP=1`) açıkça zorlar; GUI aynı anahtarı Seçenekler →
+Deneysel sekmesindeki **Flap yüzey delik doldurma** onay kutusuyla sunar. Bir
+aday yalnızca yeniden-yüklemede dürüst `delik + non-manifold` sayısı
+kötüleşmediğinde benimsenir; ardından düzlük-tabanlı bir temizlik sıfır
+kalınlıklı kalıntı tabakalarını atar, gerçek katı bir parçayı asla atmaz.
+
+Doldurma çekirdeğinin Rust uygulaması (`sutura_geom.flap_fill`, `sutura_geom`
+eklentisinin parçası) bulunduğunda otomatik kullanılır; aksi halde saf numpy
+oracle'ı `flap_fill_python` devreye girer. İkisi topolojide ve rapor alanlarında
+bayt-birebir eşdeğerdir (yumuşatılmış köşeler yaklaşık 1e-8'e kadar örtüşür),
+bu yüzden sonuç hangi motorun bulunduğuna bağlı değildir.
+
+Rapor, `flap` anahtarını yalnızca anahtar açıkken taşır: `ran`, `adopted`,
+`reason`, `baseline_holes`, `baseline_non_manifold`, `candidate_holes`,
+`candidate_non_manifold`, `loops_found`, `loops_filled`, `loops_skipped`,
+`loops_skipped_by_reason`, `patch_faces`, `new_vertices`, `time_s`,
+`max_orig_vertex_move_mm` ve temizlik bir şey attığında `debris_cleanup`.
+
+41 mesh'lik regresyonda ölçüm: Flap 13 mesh'te benimsendi ve koşu 41 mesh'in
+tamamında yeniden-yüklemede su geçirmez sonuçlandı. Korpusta toplam Aşama-1
+kendisiyle-kesişim sayısını 10.051'den 8.880'e düşürdü; ornate-frame'da
+Aşama-1 kendisiyle-kesişimlerini 4.016'dan 3.005'e düşürdü; thingi10k_1038441'de en büyük yüzey sapması 4,11 mm'den
+0,60 mm'ye indi. Rust motoru 41 mesh'lik korpusun tamamında Flap adımını
+7,2 sn'de tutar.
+
 #### Graft (morfoloji kabuk sarma, #13)
 
 #13 Graft yöntemi (`sutura_engine.graft`, eski adıyla `sutura/shell_wrap.py`),
@@ -468,6 +597,113 @@ sadakatli bir morfoloji kabuk sarma katmanıdır.
    kabul edilir. Sağlıklı yüzeydeki sapma eşiği aşarsa (`fidelity_ok == False`),
    otomatik triyaj fTetWild'ı da dener ve sağlıklı yüzey sapması daha düşük olanı
    benimser. Ayrıntı kaybı raporda (`graft.warnings`) gösterilir.
+
+#### Pansuman (değişken viskoziteli hacimsel kaplama, #16)
+
+#16 Pansuman (`sutura_engine.dressing`), Graft'ın cerrahi kardeşidir: hasarlı
+bölgeyi köprülemek yerine parçanın tamamını uzamsal olarak değişen bir
+"sıvıya" batırır ve `F(x) = s(x) - r(x)` seviye kümesini çıkarır; burada `s`
+genelleştirilmiş sarımlı işaretli mesafe, `r` ise ayrıntılı sağlıklı yüzeyde
+ince kalan ve hasar bölgesinde kalınlaşan viskozite yarıçapıdır. Bir skaler
+alanın izo-yüzeyi yapısı gereği 2-manifold ve kendisiyle-kesişimsizdir; bu,
+Pansuman'ı yerel yama eksizyonunun ve hibrit eklemenin başarısız olduğu
+tüm-kabuk topolojik katlanmaları için doğru araç yapar.
+
+1. **Özellik-çıpalı çözünürlük**: voksel boyutu mesh'in karakteristik özellik
+   boyutunu (medyan kenar uzunluğu) takip eder ve yoğunluk ön ayarının çapraz
+   bandına kırpılır; böylece kaba bir açık parça aşırı örneklenmez (önceki
+   `diag/200` kuralı 71 yüzlü bir mesh'te 1 M yüzlü kaplama ve %7 sapma
+   üretiyordu).
+2. **Değişken viskozite**: temel yarıçap incedir (sadakat yüzeye yapıştırmadan
+   değil, ince kaplamadan gelir — kaplamayı girdi üzerine geri izdüşürmek
+   binlerce kendisiyle-kesişim üretip kalıcı olarak reddedilmiştir), köprüleme
+   yarıçapı ön ayarla ve en büyük boşluğun %45'iyle sınırlıdır.
+3. **Numpy prototip arka ucu, Rust'a hazır**: alan kurulumu ve yürüyen
+   tetrahedra bugün numpy'de çalışır; Rust `sutura_geom.dressing_coat` dar-bant
+   çekirdeği özellik-algılamayla bulunur ve mevcut olduğunda otomatik devralır.
+   Sadeleştirme, bir delik açacak, non-manifold kenar oluşturacak ya da tam
+   kendisiyle-kesişim ekleyecek olursa atomik olarak geri alınan bir PyMeshLab
+   quadric çökeltmesidir (`optimalplacement=False`, `planarquadric=True`).
+4. **Boşaltma (sağlıklı bölge geri aşındırma)**: kaplama özgün yüzeyin ~`r_base`
+   dışında oturur; bu yüzden seviye kümesinin **içine** bir boşaltma terimi
+   eklenir (`F = s - r + delta_r`) — 7.850 kendisiyle-kesişim üreten tepe
+   izdüşümüyle asla. Tam boşaltma sağlıklı büyümeyi ~%40 azaltır (medyan
+   +0,33 → +0,20 mm) ve zararsız ~4 µm medyan içe çökme bırakırken kusurlar
+   kaplı kalır. `--dressing-drain MODE|mm` / `SUTURA_DRESSING_DRAIN` / GUI
+   *Boşaltma* açılır listesi ön ayar varsayılanını geçersiz kılar (Hızlı
+   kapalı, Dengeli/Titiz tam, Aşırı derin).
+5. **Tek bir varsayılan anahtarın arkasında Auto-merdiven yedeği, KAPALI
+   gönderilir.** #13 Graft (kelimesi kelimesine hibrit) yöntemi, sağlıklı orijinal
+   üçgenleri mümkün olduğunca aynen koruyarak Aşama 1'den sonraki varsayılan otomatik
+   onarım adımı olarak kalır. Anahtar açıkken (`DRESSING_DEFAULT_ENABLED` /
+   `SUTURA_DRESSING_DEFAULT=1`) Auto merdiveni Dressing'i Graft'tan sonra ve
+   fTetWild'dan önce isteğe bağlı bir yedek olarak dener; `--si-mode repair` altında
+   pozitif bir kesin self-intersection sayısı da katmanı tetikler (varsayılan
+   `--si-mode report` altında yalnızca kalan delikler ve non-manifold kenarlar
+   yedekleri tetikler). `--experimental-dressing` / `SUTURA_DRESSING=1` / GUI onay
+   kutusu *Pansuman (viskozite kaplaması)* çalışmaya **zorlar** (uyarı:
+   *watertight, but the shape may deform / fine detail may be lost*);
+   `--no-dressing` / `SUTURA_DRESSING=0` kapatır. Benimseme katı-su geçirmez,
+   tam-SI'sız, ön ayarın kaplama→girdi sadakat kapısı ve aşağıdaki şekil-koruma
+   kapılarını gerektirir. **Anahtar varsayılan olarak KAPALIDIR**: ince-detaylı bir kabartmada (ornate-frame) voxel merdiveni,
+   ortalama sapma ~0,08 mm kalmasına rağmen olukları görünür biçimde düzleştirir,
+   bu yüzden bu kalite sorunu düzeltilene kadar Dressing böyle parçalarda
+   kelimesi kelimesine Graft/fTetWild sonucunun yerini almamalıdır.
+6. **Şekil-koruma kapıları.** Sadakatin yanı sıra bir aday, yalnızca Dressing'den
+   önce merdivenin tuttuğu sonuca göre: işaretli hacim en fazla
+   `DRESSING_MAX_VOLUME_DELTA` (%10) değişiyorsa, bağlı-bileşen sayısı en fazla
+   `DRESSING_MAX_PARTS_SLACK` (1) artıyorsa ve sağlıklı yüzey üzerinde P95
+   kaplama-vs-girdi **tepe-normal** açısı `DRESSING_MAX_NORMAL_ANGLE_P95` (30°,
+   bir yer tutucu — ölçülen kaplama P95'i kabul edilen mesh'lerde 12–36°, detay
+   kayıplı karelerde 82–88°) altında kalıyorsa benimsenir. Normal metriği (KD-tree
+   ile en yakın girdi tepe noktası, sağlıklı = kusur tepe noktası değil) yalnızca
+   konuma bakan Hausdorff kapısının yakalayamadığı merdiveni yakalar; hacim/parça
+   kapıları bir oyuğu yutan veya artıklara dağılan kaplamayı yakalar. Geometrik
+   CAD/işlenmiş-vs-organik puanı (`cad_likeness`) her Auto çalışmasında kaydedilir
+   (gelecekteki kalibre CAD koruması için); merdiven zaten tüm girdilerde önce
+   Graft'ı çalıştırır, böylece CAD benzeri bir parça Dressing'den önce kelimesi
+   kelimesine Graft hibritini alır ve Dressing yalnızca hasar kaldığında çalışır.
+7. **Kusur kümesi ve viskozite geçersiz kılmaları**:
+   `--dressing-defects {all,holes_nm}` (`SUTURA_DRESSING_DEFECTS` / GUI *Kusurlar*
+   açılır listesi) viskozite maskesini süren girdi kusurlarını seçer — `all`
+   (varsayılan) delikler, non-manifold kenarlar ve kendisiyle-kesişimler;
+   `holes_nm` kendisiyle-kesişim terimini düşürür, böylece tek hasarı delik /
+   non-manifold kenar olan bir tarama sözde SI ile kalınlaştırılmaz.
+   `--dressing-rmax-scale F` / `--dressing-sigma-scale F`
+   (`SUTURA_DRESSING_RMAX_SCALE` / `SUTURA_DRESSING_SIGMA_SCALE` / GUI *r_max* ve
+   *sigma* açılır listeleri) çözülen `r_max` / `sigma` değerlerini çarpar; varsayılan
+   (ayarsız = 1,0) bayt düzeyinde aynıdır ve sıfır/negatif ya da ayrıştırılamayan
+   değerler yok sayılır.
+8. **Bileşen temizliği**: küçültmeden önce çıkarılan üçgen çorbası köşe bağlantılı
+   bileşenlere ayrılır ve çıkarım artıkları — yüz sayısı, voxel hacmi ve göreli
+   hacim tabanlarının altındaki alt-voxel kabuklar — atılır. Ayakta kalan bir ters
+   kabuk yalnızca korunan bir madde kabuğunun içinde yuvalanmışsa *ve* girdinin
+   genelleştirilmiş sarmalım sayısı merkezinde ~0 ise (yani girdi orada gerçekten
+   boşsa, gerçek bir oyuk) tutulur. 13 mesh'lik `dressing_tuned` setinde bu,
+   `thingi10k_145065`'i 669 bileşenden 1'e ve `thingi10k_63785`'i 25'ten 1'e
+   indirdi (sonrasında OrcaSlicer'da her ikisi de `number_of_parts = 1`) ve
+   `thingi10k_1038439`'un üç gerçek madde yumrusunu korudu; atılan sayılar ve hacim
+   `report['dressing']['cleanup']` içinde raporlanır.
+9. **İsteğe bağlı öneri ve `--dressing-force-adopt`.** Düz bir Auto onarımı
+   geometriyi hâlâ açık veya non-manifold bıraktığında (varsayılan `--si-mode report`
+   altında), rapor bir `suggestions` listesi taşır (`method = dressing`; kusur
+   `issues`'ından ayrıdır, böylece kategori değişmez). `--human` raporu işaretli bir
+   ipucu basar (`⚠ Not watertight…`): Dressing hiç çalışmadıysa
+   `--experimental-dressing`'e:
+   `  ⚠ Not watertight. You can try Dressing: --experimental-dressing (watertight, but the shape may deform / fine detail may be lost).`
+   Dressing çalışıp kaplaması şekil kapıları tarafından reddedildiyse `--dressing-force-adopt`'a:
+   `  ⚠ Not watertight. Dressing ran but its result was rejected by the quality gate (...).`
+   `    Force it with --dressing-force-adopt if you accept the deformation (the shape may deform).`
+   işaret eder (parantez içinde başarısız hacim / normal sayılarıyla).
+   `--dressing-force-adopt` `--experimental-dressing`'i gerektirir ve hacim /
+   bileşen / normal / sadakat kapılarını atlar; yine de kesin su geçirmez ve
+   kendisiyle-kesişimsiz bir aday şarttır; kaydın `forced` alanı kapıların
+   atlandığını işaretler. GUI aynı bayrağı toplu bir Options → Deneysel onay
+   kutusu *Pansuman: zorla benimse (deforme olabilir)* olarak sunar ve herhangi bir
+   sonucun ipucu verdiği bir toplu işten sonra, tam o dosyaları bayrakla yeniden
+   çalıştıran (ve onay kutusunu işaretleyen) engellemeyen bir **⚠ Dressing ile dene
+   (su geçirmez yapar, ama parça deforme olabilir)** (veya *⚠ %d dosyada Dressing ile dene
+   (su geçirmez, ama parça deforme olabilir)*) düğmesi gösterir.
 
 #### Dürüst su geçirmezlik kararı (kaydet/yeniden yükle sonrası doğrulanır)
 
@@ -556,11 +792,11 @@ söyler.
 
 | Alan | Olgunluk | Ne sağlam / Nerede dikkatli |
 |---|---|---|
-| STL onarımı (iki aşamalı) | ~%96 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmış ve 75 modellik gerçek dünya korpusunda (0 sert hata; Aşama 1 zinciri yeniden düzenlendi ve `maxholesize` mesh-duyarlı hale getirildi, böylece büyük tarama delikleri kapanıyor) ayrıca 115 mesh'lik gerçek-dünya tarama korpusunda doğrulanmıştır (gerçek çıktı geometrisi üzerinde sıkı bir `defects.detect()` kapalı-döngü kontrolüyle yeniden ölçüldü: 0 çökme, 103/115 = ~%90 sıkı su geçirmez, her hat iddiası birebir doğrulandı — bkz. `docs/repair-benchmark-strict-watertight-2026-09.md`). Üst düzey karar **yeniden-yükleme dürüstüdür** (P-HONEST): bir mesh yalnızca kaydedilen dosya katı-su geçirmez yeniden yüklendiğinde su geçirmez sayılır ve **P-WELD** son geçişi, 40 örnekten 7'sini eskiden yeniden yüklemede non-manifold yapan STL float32 dikiş çökmesini — yüz sayıları değişmeden — iyileştirir; zaten su geçirmez mesh'lere dokunulmaz. %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve tarama mesh'lerindeki son birkaç inatçı delik / ağır non-manifold yapı gerçek bir VCG sınırıdır. |
+| STL onarımı (aşamalı hat) | ~%96 | VCG + manifold3d hattı, bozuk/düşmanca/işkence girdilerine karşı CI ile sağlamlaştırılmış ve 75 modellik gerçek dünya korpusunda (0 sert hata; Aşama 1 zinciri yeniden düzenlendi ve `maxholesize` mesh-duyarlı hale getirildi, böylece büyük tarama delikleri kapanıyor) ayrıca 115 mesh'lik gerçek-dünya tarama korpusunda doğrulanmıştır (gerçek çıktı geometrisi üzerinde sıkı bir `defects.detect()` kapalı-döngü kontrolüyle yeniden ölçüldü: 0 çökme, 103/115 = ~%90 sıkı su geçirmez, her hat iddiası birebir doğrulandı — bkz. `docs/repair-benchmark-strict-watertight-2026-09.md`). Üst düzey karar **yeniden-yükleme dürüstüdür** (P-HONEST): bir mesh yalnızca kaydedilen dosya katı-su geçirmez yeniden yüklendiğinde su geçirmez sayılır ve **P-WELD** son geçişi, 40 örnekten 7'sini eskiden yeniden yüklemede non-manifold yapan STL float32 dikiş çökmesini — yüz sayıları değişmeden — iyileştirir; zaten su geçirmez mesh'lere dokunulmaz. %100 değil: patolojik kendisiyle-kesişimler aşama 2'nin yeniden kurmasında yeniden şekillenebilir ve tarama mesh'lerindeki son birkaç inatçı delik / ağır non-manifold yapı gerçek bir VCG sınırıdır. |
 | 3MF çok nesneli | ~%92 | Her nesne bellekte bağımsız onarılır ve geri yazılır, böylece hiçbir nesne kaybolmaz. Aşama 1'in kapattığı her nesne artık tek-mesh dosyalarıyla aynı paylaşılan yardımcı aracılığıyla **nesne başına aşama 2** (manifold3d su geçirmez yeniden kurma) alır: nesne başına `stage2` raporları, `objects_watertight` / `objects_stage2_ok` özetleri ve dosya düzeyi karar TÜM nesneleri dikkate alır (yalnızca nesne 0'ı değil). Bayt bayt özdeş nesneler tek onarımı paylaşır ama her biri yine kendi raporunu alır. Otomatik kademelendirme **nesne başınadır**: temel onarımda su geçirmez olan nesneler el değmeden korunur, başarısız olanlar bağımsız olarak önerilen yedek yöntemlerle onarılır (nesne başına `method_used` raporlanır). Katmanlı/yinelenen köşeli (Bambu tarzı) bir 3MF, Aşama 1'de düzeltilir (köşe tekilleştirmesinden sonra ikinci bir yinelenen-yüz geçişi) ve nesne başına 12 yüz / 0 deliğe onarılır, nesne başına aşama 2 ile su geçirmez doğrulanır. Regression testiyle doğrulanır (`tests/test_stage2_3mf.py`, `tests/test_multiobject_escalation.py`). Bilinen sınırlar: nesne başına aşama 2 yalnızca Aşama 1'in gerçekten kapattığı nesnelere uygulanır (açık nesneler aşama 1 çıktısı olarak kalır), nesne 0'ın `stage1`/`stage2` üst düzey alanları geriye dönük uyumluluk için korunur ve `<vertex>` ayrıştırıcısı x,y,z öznitelik sırasını varsayar. |
 | Kusur tespiti (delik / non-manifold) | ~%90 | Stdlib+numpy, tek doğruluk kaynağı, temiz ve kırık küplerde birim testlerle doğrulanır. %100 değil: yalnızca girdi kusurlarını bildirir; binlerce mikro çatlaklı bir mesh'te kusur başına liste büyür ve CLI JSON'u, yalnızca çizim amaçlı dizin verisini içermez. |
-| GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), **renk-kodlu kusur görünümü** (kırmızı = non-manifold, turuncu = ters sarmalım, sarı = dejenere yüz — FAZ11), **"ne değişti" onarım günlüğü paneli** (kapatılan delikler, düzeltilen non-manifold kenarlar, silinen yüzler, bileşenler, aşama 2 — FAZ11), **sekmeli bir *Seçenekler* penceresi** (Genel / Onarım / Deneysel / Güncellemeler / Değişiklikler / Motorlar; Ctrl+, / Cmd+,) batch geneli seçeneklerle (fTetWild yedek katmanı — FAZ17 — ve isteğe bağlı deneysel olanlar: edge-tiebreak sınıflandırıcı kafası; küçük-parçaları-birleştir — FAZ14; autorefine self-intersection çözümü — FAZ16; exact indirect autorefine — Faz B/C1), onarım modu seçici + onarım profili açılır listesi, *Onarım* sekmesinde preset başına ipuçlu bir **Triage yoğunluk** açılır listesi (presetler + kullanıcı profilleri), **Yeni/Çoğalt/Yeniden adlandır/Sil profil düğmeleri ve satır içi Profil ayarları düzenleyicisi** ve bir *Önerilene sıfırla* düğmesi, bir **Motorlar** sekmesi (boyutlu ve iptal edilebilir ilerleme pencereli fTetWild kur/kaldır yöneticisi, ayrıca yapılandırılmış harici motor listesi ve motor belgelerine bağlantı), durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS'ta Finder sağ tık onarımı GUI'nin kendisi yerine ayrı Quick Action ile sağlanır. |
-| CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--intensity <preset|profil>`, `--list-intensities`, `--analyze`, `--list-methods`, `--methods {1..15}`, `--no-graft`, `--experimental-graft`, `--no-cache`, `--engines AD`, `--repeat-source X,Y,Z` / `--repeat-target X,Y,Z`, `--wall-min-thickness T`, `--dry-run`, `--deep-repair {off,local,full}`, `--ftetwild-optimize`, `--version`), salt-okunur `validate`, `clear-cache`, `clear-learning`, `export-history`, `engines list|check` ve `ftetwild status` (ayrıca `install|uninstall`) alt komutları, JSON raporları, batch özeti, çıkış kodları. Ayrıca deneysel/prototip bayraklar: `--experimental-join-components` (küçük bileşenleri silmek yerine en yakın büyük bileşene taşır; geometriyi değiştirir, yalnızca değerlendirme), `--experimental-autorefine` (self-intersection'ları yüz silmek yerine kesişen üçgenleri kesişim doğruları boyunca alt üçgenlere bölerek çözer — Lazard & Valque 2025; girdi yüzeylerini ASLA silmez; yalnızca sonucu varsayılan zincirden daha kötü değilse uygulanır; orta-düzey SI mesh'lerde SI'yı azaltır, yoğun-SI taramalarda float64 kurulumu sınırlıdır — bkz. `docs/alpha-wrap-feasibility-2026-09.md`; 25 Eylül 2026'da 45 gerçek örnek üzerinde yeniden ölçüldü: hiçbir nihai sonucu değiştirmedi — her iki durumda 31/45 kesin su geçirmez — toplam süre ise ~33 sn'den ~1003 sn'ye çıktı, bu yüzden isteğe bağlı kalıyor), `--no-fallback-ftetwild` / `--experimental-fallback-ftetwild` (fTetWild son çare katılaştırıcısı — ORİJİNAL girdiyi pytetwild üzerinden fTetWild ile tetrahedralize edip (MPL-2.0) su geçirmez, SI-free bir yüzey çıkarır; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır — isteğe bağlı ~1,1 GB'lık eki kuruluysa varsayılan olarak AÇIKTIR, `SUTURA_WITH_FTETWILD=1`, ve yalnızca stage 1 delik veya non-manifold kenar bıraktığında çalışır: gerçek örneklerde kesin su geçirmez 31/40 → 39/40; ilk bayrak kapatır, ikincisi kapalı ama hâlâ self-intersection içeren sonuçlarda da çalıştırır), `--experimental-indirect-autorefine` (Phase B prototipi: rust/sutura-geom uzantısıyla exact arrangement-lite self-intersection bölmesi — indirect predikatlar, broad phase + exact üçgen sınıflandırıcı + üçgen başına 2D CDT + exact-rasyonel welding; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır, `--experimental-autorefine` ile aynı koruma; yalnızca değerlendirme amaçlı; yoğun thingi10k_1038441 taraması artık yaklaşık on saniyede tamamlanıyor — M2'de ~463 sn (C1) → 29,8 sn (C2) → 10,6 sn (C4); 2 vCPU'lu bir x86_64 VM'de 830 sn → 52,5 sn (C2) → 17,6 sn (C4) — katman varsayılan olarak kapalıdır ve değerlendirme amaçlıdır) ve `--experimental-edge-tiebreak` (opt-in 11-özellikli sınıflandırıcı kafası — temel + FAZ10 taramasının beş güçlü sinyali; kazanç küçük, 71 mesh'lik etiketli sette 1 mesh, ama sinyal istatistiksel olarak gerçek; varsayılan değil), ayrıca `--wall-min-thickness T` (#15 Duvar Kalınlaştır yöntemi için hedef) ve `--no-learning-triage` / `clear-learning` alt komutu (sınırlı yerel-geçmiş sıralama bonusunu açıp kapatır ve sıfırlar). `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
+| GUI | ~%89 | Yerel Qt batch onarımı, sürükle & bırak, kusur paneli, mod önerili onarım öncesi analiz, ısı haritası, öncesi/sonrası karşılaştırma (statik + yüzey sapması olan interaktif 3D görüntüleyici), **renk-kodlu kusur görünümü** (kırmızı = non-manifold, turuncu = ters sarmalım, sarı = dejenere yüz — FAZ11), **"ne değişti" onarım günlüğü paneli** (kapatılan delikler, düzeltilen non-manifold kenarlar, silinen yüzler, bileşenler, aşama 2 — FAZ11), **sekmeli bir *Seçenekler* penceresi** (Genel / Onarım / Deneysel / Güncellemeler / Değişiklikler / Motorlar; Ctrl+, / Cmd+,) batch geneli seçeneklerle (fTetWild yedek katmanı — FAZ17; varsayılan açık Flap yüzey delik doldurma; ve isteğe bağlı deneysel olanlar: edge-tiebreak sınıflandırıcı kafası; küçük-parçaları-birleştir — FAZ14; autorefine self-intersection çözümü — FAZ16; exact indirect autorefine — Faz B/C1), onarım modu seçici + onarım profili açılır listesi, *Onarım* sekmesinde preset başına ipuçlu bir **Triage yoğunluk** açılır listesi (presetler + kullanıcı profilleri), **Yeni/Çoğalt/Yeniden adlandır/Sil profil düğmeleri ve satır içi Profil ayarları düzenleyicisi** ve bir *Önerilene sıfırla* düğmesi, bir **Motorlar** sekmesi (boyutlu ve iptal edilebilir ilerleme pencereli fTetWild kur/kaldır yöneticisi, ayrıca yapılandırılmış harici motor listesi ve motor belgelerine bağlantı), durum/sürüm satırı, i18n (EN/TR). Eksikler: CLI'yı ayrı bir süreç olarak çağırır (süreç içi ilerleme yok), yerel KDE dosya diyaloğu yalnızca sistem Qt'si PySide6'nınkiyle eşleştiğinde çalışır ve macOS'ta Finder sağ tık onarımı GUI'nin kendisi yerine ayrı Quick Action ile sağlanır. |
+| CLI | ~%90 | Sabit bayraklar (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--intensity <preset\|profil>`, `--list-intensities`, `--analyze`, `--list-methods`, `--methods {1..16}`, `--no-graft`, `--experimental-graft`, `--no-dressing`, `--experimental-dressing`, `--dressing-drain MODE\|mm`, `--dressing-defects {all,holes_nm}`, `--dressing-rmax-scale F`, `--dressing-sigma-scale F`, `--dressing-force-adopt`, `--no-cache`, `--engines AD`, `--repeat-source X,Y,Z` / `--repeat-target X,Y,Z`, `--wall-min-thickness T`, `--dry-run`, `--deep-repair {off,local,full}`, `--si-mode {report,repair,off}`, `--flap`/`--no-flap` (yüzey delik doldurma, varsayılan AÇIK; `SUTURA_FLAP=0` kapatır), `--ftetwild-optimize`, `--version`), salt-okunur `validate`, `clear-cache`, `clear-learning`, `export-history`, `engines list\|check` ve `ftetwild status` (ayrıca `install\|uninstall`) alt komutları, JSON raporları, batch özeti, çıkış kodları. Ayrıca deneysel/prototip bayraklar: `--experimental-join-components` (küçük bileşenleri silmek yerine en yakın büyük bileşene taşır; geometriyi değiştirir, yalnızca değerlendirme), `--experimental-autorefine` (self-intersection'ları yüz silmek yerine kesişen üçgenleri kesişim doğruları boyunca alt üçgenlere bölerek çözer — Lazard & Valque 2025; girdi yüzeylerini ASLA silmez; yalnızca sonucu varsayılan zincirden daha kötü değilse uygulanır; orta-düzey SI mesh'lerde SI'yı azaltır, yoğun-SI taramalarda float64 kurulumu sınırlıdır — bkz. `docs/alpha-wrap-feasibility-2026-09.md`; 25 Eylül 2026'da 45 gerçek örnek üzerinde yeniden ölçüldü: hiçbir nihai sonucu değiştirmedi — her iki durumda 31/45 kesin su geçirmez — toplam süre ise ~33 sn'den ~1003 sn'ye çıktı, bu yüzden isteğe bağlı kalıyor), `--no-fallback-ftetwild` / `--experimental-fallback-ftetwild` (fTetWild son çare katılaştırıcısı — ORİJİNAL girdiyi pytetwild üzerinden fTetWild ile tetrahedralize edip (MPL-2.0) su geçirmez, SI-free bir yüzey çıkarır; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır — isteğe bağlı ~1,1 GB'lık eki kuruluysa varsayılan olarak AÇIKTIR, `SUTURA_WITH_FTETWILD=1`, ve yalnızca stage 1 delik veya non-manifold kenar bıraktığında çalışır: gerçek örneklerde kesin su geçirmez 31/40 → 39/40; ilk bayrak kapatır, ikincisi kapalı ama hâlâ self-intersection içeren sonuçlarda da çalıştırır), `--experimental-indirect-autorefine` (Phase B prototipi: rust/sutura-geom uzantısıyla exact arrangement-lite self-intersection bölmesi — indirect predikatlar, broad phase + exact üçgen sınıflandırıcı + üçgen başına 2D CDT + exact-rasyonel welding; yalnızca delik+non-manifold ölçüsünde daha kötü değilse uygulanır, `--experimental-autorefine` ile aynı koruma; yalnızca değerlendirme amaçlı; yoğun thingi10k_1038441 taraması artık yaklaşık on saniyede tamamlanıyor — M2'de ~463 sn (C1) → 29,8 sn (C2) → 10,6 sn (C4); 2 vCPU'lu bir x86_64 VM'de 830 sn → 52,5 sn (C2) → 17,6 sn (C4) — katman varsayılan olarak kapalıdır ve değerlendirme amaçlıdır) ve `--experimental-edge-tiebreak` (opt-in 11-özellikli sınıflandırıcı kafası — temel + FAZ10 taramasının beş güçlü sinyali; kazanç küçük, 71 mesh'lik etiketli sette 1 mesh, ama sinyal istatistiksel olarak gerçek; varsayılan değil), ayrıca `--wall-min-thickness T` (#15 Duvar Kalınlaştır yöntemi için hedef) ve `--no-learning-triage` / `clear-learning` alt komutu (sınırlı yerel-geçmiş sıralama bonusunu açıp kapatır ve sıfırlar). `--human` raporu yalnızca İngilizcedir (yerelleştirme yalnızca GUI'yi ilgilendirir). |
 | Batch işleme | ~%90 | Dosya başına sonuçları ve bir özeti olan çok dosyalı onarım. Sert durdurma (Ctrl-C / Durdur) desteklenir; batch kaldığı yerden sürdürülemez ve başarısız bir dosya diğerlerini durdurmaz. |
 | Kusur ısı haritası | ~%80 | İsteğe bağlı CPU rasterizer (GL yok), alt süreçte çalışır, GUI'yi asla çökertmez. Bilinçli olarak yalnızca CPU: ekransız sistemlerde ekran dışı OpenGL çağrıları segfault verir, bu yüzden tam GL gölgeleme yerine üç noktalı ışık modeliyle düz gölgelenir ve çok nesneli 3MF'de yalnızca ilk nesne çizilir. |
 | Öncesi/sonrası karşılaştırma | ~%80 | Orijinal ve onarılmış görünümler arasında statik, CPU ile çizilmiş görüntülerin tıkla-geçişi; **en yoğun bozukluk bölgesi yakın çekimi** ve üç durumlu renk şemasıyla (gri = hiç bozulmamış, yeşil `(46,204,113)` = düzelen, turuncu `(255,140,60)` = hâlâ bozuk). Düzelen harita uzaysaldır (onarılmış yüz merkezleri, orijinal kusur uzantılarına göre) ve tarama mesh'lerinin hızlı kalması için en büyük 256 kusurla sınırlıdır. **Statik/İnteraktif** anahtarı, CPU tabanlı etkileşimli 3D görünüm ekler (sürükleyerek döndür, tekerlekle yakınlaştır; sürüklemede LOD, sonra tam çözünürlüklü son kare) ve **yüzey-sapması** modu (pymeshlab'ın en-yakın-yüzey-noktası filter'ıyla yüzey başına onarılmış→orijinal uzaklık + global Hausdorff maks.), ikisi de ilk kullanımda tembel üretilir ve diyalog başına önbelleğe alınır; interaktif LOD hedefi 75 modellik korpusa göre ayarlanır (720×540'ta medyan ~71 FPS). Isı haritasıyla aynı GL kısıtı CPU çizicisinde kalmasını gerektirir; çok nesneli 3MF'de yalnızca ilk nesne karşılaştırılır. Regression testleriyle doğrulanır (`tests/test_healed_mask.py`, `tests/test_before_after_render.py`, `tests/test_viewer_data.py`, `scripts/verify_before_after_dialog.py`). |
@@ -569,7 +805,7 @@ söyler.
 | Onarım modları (`--mode` merdiveni) | ~%80 | Aşama 1 eşikleri için beş kademeli agresiflik merdiveni (`low`/`medium`/`auto`/`aggressive`/`extreme`); hem CLI bayrağı hem batch geneli GUI seçici olarak sunulur; `auto`, tarihsel sınıflandırıcı + güven eşiği davranışını birebir korur ve regression testiyle doğrulanır (`tests/test_repair_mode.py`). Mod, taban `maxholesize`'ı belirler ve bu değer daha sonra mesh-duyarlı şekilde yukarı çekilir (`max(taban, 2 × en uzun girdi loop'u)`, asla düşürülmez) böylece büyük tarama delikleri her modda kapanır. Uyarılar: `extreme` küçük bir nesneyi silebilir (bu, bozuk girdi değil, ayrı `extreme_removed_object` hatası olarak raporlanır) ve tür başına ayarlı eşik değerleri deneyseldir. |
 | Onarım profilleri (`--profile`) | ~%70 (yeni) | Beş adlandırılmış Aşama 1 eşik preseti (`mechanical`/`organic`/`scan`/`miniature`/`fast`), CLI veya batch geneli GUI açılır listesiyle devreye girer; yalnızca mod `auto` iken etkilidir (açık sabit mod kazanır). Varsayılan (profil yok) eskisiyle bayt-birebir aynıdır. Uyarı: `miniature` `mincomponentsize`'ı 1'e indirir (bilinçli bir opt-in; varsayılan yol `>= 8` tutar). |
 | Harici motorlar + fTetWild yöneticisi | ~%65 (yeni) | Kullanıcının kurduğu üçüncü taraf onarım motorları TOML dosyaları (`~/.config/sutura/engines/*.toml`) olarak yapılandırılır ve zincire adlandırılmış bir yerleşimle veya açık bir `chain.toml` sırasıyla yerleşir; **her motor sonucu fTetWild ile aynı delik/non-manifold + Hausdorff korumasından geçer** (yalnızca daha kötü değilse uygulanır, uzak bir sonuç `shape_changed` işaretlenir, asla atlanamaz), motor başına rapor girdileri, bozuk yapılandırmalar yalnızca uyarır. Motor yoksa çıktı öncekiyle bayt-birebir aynıdır. `sutura engines list\|check` ve CLI/GUI fTetWild yöneticisi (`sutura ftetwild status\|install\|uninstall`, Seçenekler **Motorlar** sekmesi) isteğe bağlı fTetWild ekini yalnızca Sutura ortamına kurar veya temiz kaldırır; boyutlar ve onay gösterilir, AppImage/donmuş/sistem-Python düzenleri gerekçeyle reddedilir. Uyarı: motor sözleşmesi yeni (henüz üçüncü taraf motor külliyatı yok) ve koruma, fTetWild ile aynı şekil işaretiyle delik/non-manifold daha-kötü-değil kuralıyla uygular. |
-| Triage yoğunluğu (`--intensity`) | ~%85 | Aşama 1 sonrası çaba için dört salt-okunur preset (`quick`/`balanced`/`thorough`/`extreme`) — derin-onarım katmanı, fTetWild durumu/sınırı/bütçesi, sadeleştirme merdiveni, Hausdorff örnekleri — tek doğruluk kaynağı `sutura/triage.py`. Balanced tarihsel modül sabitlerine eşittir ve bayt-birebir regression testiyle doğrulanır; CLI/GUI önceliği CLI > `SUTURA_INTENSITY` > config > balanced. Quick/Thorough/Extreme iki zor başarısızlık modunu (fTetWild girdi boyutu, yoğun-sınır sadeleştirmesi) sınırlamak veya genişletmek için de kullanılır. Presetlerin üzerine, **adlandırılmış kullanıcı profilleri** (taban preset + seyrek alan geçersiz kılmaları; `~/.config/sutura/profiles.json` içinde şema-sürümlü ve atomik) GUI'de oluşturulup yeniden adlandırılabilir/çoğaltılabilir/silinebilir ve `--intensity <profil>` ile seçilir; `--list-intensities` etkin değerleri yazdırır, rapor `triage_profile_base`/`triage_overrides` ekler ve 200.000 Hausdorff alt sınırı çözücüde de sınırlanır. Uyarı: preset değerleri mühendislik tercihleridir, korpus-kalibreli değildir. |
+| Triage yoğunluğu (`--intensity`) | ~%85 | Aşama 1 sonrası çaba için dört salt-okunur preset (`quick`/`balanced`/`thorough`/`extreme`) — derin-onarım katmanı, fTetWild durumu/sınırı/bütçesi, Graft girdi yüz sınırı + duvar-saati bütçesi, sadeleştirme merdiveni, Hausdorff örnekleri — tek doğruluk kaynağı `sutura/triage.py`. Balanced tarihsel modül sabitlerine eşittir ve bayt-birebir regression testiyle doğrulanır; CLI/GUI önceliği CLI > `SUTURA_INTENSITY` > config > balanced. Quick/Thorough/Extreme iki zor başarısızlık modunu (fTetWild girdi boyutu, yoğun-sınır sadeleştirmesi) sınırlamak veya genişletmek için de kullanılır. Presetlerin üzerine, **adlandırılmış kullanıcı profilleri** (taban preset + seyrek alan geçersiz kılmaları; `~/.config/sutura/profiles.json` içinde şema-sürümlü ve atomik) GUI'de oluşturulup yeniden adlandırılabilir/çoğaltılabilir/silinebilir ve `--intensity <profil>` ile seçilir; `--list-intensities` etkin değerleri yazdırır, rapor `triage_profile_base`/`triage_overrides` ekler ve 200.000 Hausdorff alt sınırı çözücüde de sınırlanır. Uyarı: preset değerleri mühendislik tercihleridir, korpus-kalibreli değildir. |
 | Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). **Varsayılan** motor **experimental**'dir (`sutura/mesh_classifier_v2.py`): RANSAC düzlem segmentasyonu + eğrilik gelişebilirlik sinyali + küçük eğitilmiş başlık. 40 mesh'lik gerçek dünya korpusunda (36 etiketli) 29/36'ya karşı classic 16/36 (mekanik isabet 16/20'ye karşı 2/20 — classic tarayıcı yanlılığı genişletilmiş korpusta çok daha görünür), 71 mesh'lik etiketli sette LOO-CV 0.845'e karşı classic 0.648. Classic'in unknown okuduğu kavisli-ama-mekanik parçaları (silindir, tüp, yuvarlatma) sınıflandırır; istisna/geçersiz sonuçta classic'e sessizce geri döner ve `--classifier-engine classic` / `SUTURA_CLASSIFIER_ENGINE=classic` ile eski motor seçilebilir kalır. Bir **sınır-yakını classic-uzlaşma geri dönüşü**, başlık yazı-tura durumundayken (`\|p_mech − 0.5\|·2 < 0.15`) ve classic seçilen sınıfla güçlü biçimde hemfikirken (sınıf puanı ≥ 0.70) başlığın sınıfını korur ama classic'in güvenini miras alır, böylece güçlü bir hemfikir sinyal ince ayar eşiğinde asla kaybolmaz (bu, `artec_metal-nut.stl`'yi su geçirmezliğe geri getirdi — tarama korpusunda 103/115). Deneysel: tür başına değerler tahmini başlangıç noktalarıdır, zor serbest-form/kavisli örnekler (bükülmüş boru, sarmal boru, kavisli kanca, dekoratif kâseler mekanik okunur) hâlâ ıskalanır ve kendinden emin ama yanlış bir v2 tahmini classic'e karşı yeniden kontrol edilmez — tarama kaynaklı girdide tespit edilen türü temkinli yorumlayın. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Onarım Sağlığı / Riski | ~%60 (yeni) | Klasik güvenin üzerine ayrı, eklemeli bir skorlama sistemi: `repair_health` (0–100, final mesh sağlamlığı: su geçirmez + non-manifold/self-intersection/delik yok) ve `repair_risk` (0–100, onarımın mesh'i ne kadar değiştirdiği: yüz/vertex/bileşen/hacim deltaları), ayrıca bir config lookup tablosundan türetilen iki-eksenli status etiketi (`safe`/`review`/`caution`/`failed`/`unavailable`). Ağırlıklar/eşikler kodda değil `sutura/repair_score_config.json`'da; fail-silent (onarımı asla bozmaz); regression testiyle doğrulanır (`tests/test_repair_score.py`). Deneysel: ağırlık değerleri ve tier sınırları başlangıç noktalarıdır. |
@@ -580,7 +816,7 @@ söyler.
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%70 — deneysel | Yeni OrcaSlicer betik-eklentisi API'si için tek başına çalışan betik eklentisi (nightly / 2.4.2'den yeni sürümler; stabil 2.4.x'te eklenti sistemi yoktur). 3D görünümün yanındaki bir **"Sutura" yan paneli**, plate'teki **her nesneyi** bir Quick/Balanced/Thorough/Extreme preset seçici (varsayılan Balanced), nesne başına **Analyze** (salt-okunur: delikler / non-manifold / self-intersection'lar ve en üst sıradaki onarım yöntemleri) ve **Repair**, "Repair selected (n)" ve "Select broken", Cancel düğmeli canlı iş aşamaları (queued → exporting → repairing → loading → done/failed/cancelled) ve bir **Show file** bağlantısıyla listeler. Non-manifold nesneler (ya da Orca'nın içe aktarımda onardığı mesh hataları olan nesneler) **nesne başına oturumda bir kez** "Repair with Sutura" eylemli bir uyarı bildirimi üretir. Dışa aktarım her model-parça hacmini **dünya koordinatlarında** yazar (aynalanmış parçalar dışa bakan sarmalımı korur), parametre değiştiricilerini / negatif hacimleri / destek engelleyicilerini atlar, çok parçalı nesneleri tek bir STL'de birleştirir ve onarılan kopyayı **yeni bir nesne** olarak geri yükler (Undo çalışır; çıktılar 7 gün saklanır). `numpy` beyan edilmiş bir eklenti bağımlılığıdır; numpy'siz bir geri dönüş yolu vardır. Gerçek bir OrcaSlicer **2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux, macOS doğrulanmış bir bonus. `request_permissions` CLI yolunun fs_read iznini önceden beyan eder (subprocess istemleri kalır — bir OrcaSlicer denetim API kısıtı). Deneysel: bir taklit host'a karşı taklit-test edilir, CI'da canlı uçtan uca test yoktur. |
 | Dolaylı predikatlar / exact arrangement-lite (Faz B + C1–C4) | ~%50 — deneysel | Self-intersection geometrisini `--experimental-autorefine`'ın float64 snap-rounding'i yerine exact dolaylı predikatlarla bölen bir Rust prototipi (`--experimental-indirect-autorefine`, `rust/sutura-geom`). Faz B zinciri kurdu (predikat çekirdeği, exact üçgen–üçgen sınıflandırıcı, implicit noktalarla 2D CDT, `arrangement_lite` PyO3 bağlaması, `repair.py` bağlantısı). Faz C1 (0.4.0) her kesişim noktasını, oluşturulmuş noktaları zincirlemek yerine orijinal girdi düzlemlerinden/doğrularından kurar ve exact `BigRational` predikatlarının önüne kesin bir aralık-aritmetiği filtresi ekler (sonuçlar yapı gereği değişmez, fark testleriyle doğrulandı). thingi10k_1038441 üzerinde ölçüldü (M2): 1001 yüzlük alt küme 53 sn → 6 sn, 5000 yüzlük alt küme zaman aşımı → 31 sn, tam mesh 30+ dk'da bitmiyordu → ~463 sn; çıktı yüz sayıları birebir aynı. Faz C2, üçgen başına kısıtlı üçgenlemedeki doğrusal taramaları kaldırır (yürüyerek nokta konumlama, segment koridoru yürüyüşü, yerel güncellemeler, tamsayı tabanlı exact geri dönüş); çıktı bayt düzeyinde aynıdır: aynı x86_64 VM'de tam mesh 830 sn'den 52,5 sn'ye indi (5000 yüzlük alt küme 56 sn → 13 sn); M2'de tam mesh artık 29,8 sn (C1: ~463 sn). Faz C3 (sınıflandırma kısayolları, tamsayı tabanlı exact aritmetik, çıktı yine birebir aynı) VM süresini 28,1 sn'ye, Faz C4 (indirgenmiş exact anahtarların doğrudan hash'lenmesi, tamsayı tabanlı implicit nokta kurulumu, çıktı birebir aynı) ise 17,6 sn'ye indirir (M2: C3 sonrası 16,8 sn, C4 sonrası 10,6 sn). Bilinen sınırlamalar: varsayılan olarak kapalıdır (değerlendirme amaçlıdır); kurulumcularda ve AppImage/.dmg sürümlerinde paketlidir, ancak 115 mesh'lik corpus'ta henüz ölçülmemiştir. Harici bir alternatif olan Geogram `MeshSurfaceIntersection` ölçüldü ve reddedildi (çıktısı manifold3d yeniden kurmasınca kabul edilmiyor, topluluk sürümü yoğun taramalarda çöküyor) — bkz. `docs/geogram-spike-2026-09-24.md`. |
-| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, aynalı tamamlama, ince-duvar analizi/kalınlaştırma, öğrenen triyaj, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi v2 taklidi (dünya-dönüşümü/sarmalım aktarımı, çok parçalı birleştirme, numpy'siz geri dönüş, mesaj protokolü, yaşam döngüsü debounce'u, bildirim tekilleştirmesi), geçmiş, gerçek-dünya corpus, manifold3d su geçirmezlik kontrolü, kabuk-sarma graft (`tests/test_shell_wrap.py`), pymeshlab'sız motor yalıtımı (`tests/test_engine_no_pymeshlab.py`)). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır (stage-2'ye bağlı bütçe, stage2-3mf ve gerçek-dünya corpus süitleri yalnızca 3.11 kolunda); ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 54 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, aynalı tamamlama, ince-duvar analizi/kalınlaştırma, öğrenen triyaj, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi v2 taklidi (dünya-dönüşümü/sarmalım aktarımı, çok parçalı birleştirme, numpy'siz geri dönüş, mesaj protokolü, yaşam döngüsü debounce'u, bildirim tekilleştirmesi), geçmiş, gerçek-dünya corpus, manifold3d su geçirmezlik kontrolü, kabuk-sarma graft (`tests/test_shell_wrap.py`), viskozite-kaplama pansuman (`tests/test_dressing.py`), pymeshlab'sız motor yalıtımı (`tests/test_engine_no_pymeshlab.py`)). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır (stage-2'ye bağlı bütçe, stage2-3mf ve gerçek-dünya corpus süitleri yalnızca 3.11 kolunda); ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 89 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
 
@@ -705,12 +941,15 @@ sistem paket yöneticinize hiçbir şey dokunmaz. GUI, PySide6 (~79 MB indirme,
 `venv`'in parçası) gerektirir; iki sanal ortamın toplam kurulu boyutu yaklaşık
 800 MB'dır.
 
-**Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~0,7 MB),
+**Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~1 MB),
 `install.sh` ve `install-macos.sh` tarafından otomatik olarak kurulur (GitHub
 sürümünden eşleşen doğrulanmış hazır tekerlek indirilir veya Rust araç zinciri
 varsa `rust/sutura-geom` üzerinden derlenir; AppImage ve macOS .app/.dmg
-paketlerine dahildir). Yöntem #13 Graft (morfoloji kabuk sarma) ve kesin dolaylı
-predikatları sağlar. Eklentiyi kurmamak için `SUTURA_NO_GEOM=1`, kaynaktan
+paketlerine dahildir). Yöntem #13 Graft (morfoloji kabuk sarma), Flap yüzey-delik
+doldurma (`flap_fill`) ve Dressing kaplamasını (`dressing_coat`) hızlandırır ve
+kesin dolaylı predikatları taşır. Flap ve Dressing, eklenti yokken saf-numpy
+uygulamalarına geri döner; yani yalnızca Graft ve exact arrangement katmanı
+eklentiyi zorunlu kullanır. Eklentiyi kurmamak için `SUTURA_NO_GEOM=1`, kaynaktan
 derlemeye zorlamak için `SUTURA_GEOM_FROM_SOURCE=1` kullanılabilir.
 
 **İsteğe bağlı ek — fTetWild yedek katmanı.** fTetWild yedek katmanı
@@ -1611,11 +1850,12 @@ güvenilir şekilde algılayabilir.
 |---|---|---|
 | PyMeshLab | aşama 1 filtre zinciri | VCG tabanlı, baskı onarımı için kanıtlanmış, her boyuttaki deliği doldurur, Python 3.14 wheel'i mevcut |
 | manifold3d | aşama 2 katı yeniden kurma | su geçirmezlik garantisi, sağlam boolean, Bambu Studio ile aynı motor |
-| trimesh | aşama 2 G/Ç + yöntem kayıt defteri | manifold venv'inde OBJ/mesh yükleme, ayrıca kapama, vekil ve yinelenen öge katmanlarında en yakın-nokta izdüşümü / mesh G/Ç (kurulumda ~4,6 MB) |
-| scipy | yöntem kayıt defteri | kapama, vekil ve yinelenen öge katmanları için bağlı-bileşen etiketleme (`scipy.sparse.csgraph`) ve KD-tree'ler (`scipy.spatial`) (kurulumda ~99 MB; bir `cp314` manylinux/arm64 wheel'i ~36–40 MB) |
+| numpy | hat geneli | CLI, GUI, kusur tespiti, geçmiş ve tüm saf-Python katmanlar için dizi matematiği; ayrıca Flap ve Dressing Rust yollarını isteğe bağlı kılan geri dönüş |
+| trimesh | aşama 2 G/Ç + yöntem kayıt defteri | manifold venv'inde OBJ/mesh yükleme, ayrıca kapama, vekil ve yinelenen öge katmanlarında en yakın-nokta izdüşümü / mesh G/Ç ve Graft/Dressing katmanlarında G/Ç (kurulumda ~4,6 MB) |
+| scipy | yöntem kayıt defteri + Flap/Dressing | kapama, vekil, yinelenen öge, Flap ve Dressing katmanları için bağlı-bileşen etiketleme (`scipy.sparse.csgraph`), seyrek doğrusal cebir ve KD-tree'ler (`scipy.spatial`) (kurulumda ~99 MB; bir `cp314` manylinux/arm64 wheel'i ~36–40 MB) |
 | pyrobust-predicates | autorefine katmanı | `--experimental-autorefine` için exact adaptif `orient3d` (Unlicense / kamu malı, saf Python) |
 | pytetwild + pyvista | fTetWild yedek katmanı (isteğe bağlı ek) | fTetWild tetrahedralizasyonu (MPL-2.0); pyvista VTK'yı getirir, kurulu ~1,1 GB, bu yüzden `SUTURA_WITH_FTETWILD=1` ile isteğe bağlıdır |
-| sutura-geom (Rust: `robust`, `num-rational`, `pyo3`) | exact arrangement katmanı & morfoloji hızlandırma | `--experimental-indirect-autorefine` için dolaylı predikatlar, aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama; yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
+| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `pyo3`, `numpy`) | exact arrangement, morfoloji, Flap ve Dressing hızlandırma | `--experimental-indirect-autorefine` için dolaylı predikatlar, aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma ve `dressing_coat` dar-bant çıkarıcısı; `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
 
 `requirements.txt`, `requirements-311.txt` ve (isteğe bağlı)
 `requirements-ftetwild.txt` içinde sabitlenmiştir; Rust crate'leri
@@ -1693,7 +1933,7 @@ Sutura, güvenilirlik, katman izolasyonu ve genişletilebilirlik için tasarlanm
 * **`sutura_engine.xray`** — Yeniden yüklemeye dürüst katı su geçirmezlik kararı (`P-HONEST`): yeniden yüklemede su geçirmez olmayan bir mesh için asla su geçirmez iddia etmez.
 * **`sutura_engine.hull`** — Çok bileşenli montajlar için dış yüzey kabuğu çıkarımı.
 * **`sutura_engine.cast`** — Rust `sutura_geom` uzantısı etrafında ince sarmalayıcı (kesin yüklemler, `arrangement_lite`).
-* **`sutura_engine.methods`** — `RepairMethodProtocol` standardına uyan eklenebilir onarım yöntemleri: yöntem başına bir adlandırılmış modülden otomatik olarak keşfedilen yerleşik yöntemler (`#1` Hızlı Temizlik - `#15` Duvar Kalınlaştır), tarama kapatma, vekil şablon, morfoloji graft ve tekrarlayan geometri katmanları.
+* **`sutura_engine.methods`** — `RepairMethodProtocol` standardına uyan eklenebilir onarım yöntemleri: yöntem başına bir adlandırılmış modülden otomatik olarak keşfedilen yerleşik yöntemler (`#1` Hızlı Temizlik - `#16` Pansuman), tarama kapatma, vekil şablon, morfoloji graft ve tekrarlayan geometri katmanları.
 * **`sutura_engine.triage`** — Akıllı kademelendirme politikası: geometrik analize göre onarım yöntemlerini puanlar, kullanıcı yoğunluk profillerini (*Hızlı*, *Dengeli*, *Kapsamlı*, *Ekstrem*) uygular ve çalışma süresi bütçelerini yönetir.
 * **`sutura_engine.adapters`** — Harici ve üçüncü parti kütüphaneler için katı izolasyon sınırları (PyMeshLab, Manifold3D, fTetWild ve harici CLI motorları). Yalnızca ilgili yöntem çalıştırıldığında tembel (lazy) olarak yüklenir.
 
@@ -1795,6 +2035,14 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.8.0 — 2026-10-03** — **Flap** yüzey delik doldurma (bir sınır halkasını düz
+  kapak yerine komşu yüzeyi sürdürerek kapatır; varsayılan açık, `--no-flap` /
+  `SUTURA_FLAP=0` kapatır); **Pansuman** (#16 yöntemi, isteğe bağlı değişken
+  viskoziteli seviye kümesi kaplaması) ile su geçirmez olmayan sonuçlarda öneri ve
+  `--dressing-force-adopt`; `--si-mode` self-intersection politikası (varsayılan
+  *Yalnızca raporla*); Graft girdi yüz sınırı + duvar-saati bütçesi; ve Tam
+  Onarım'da korumalı Aşama-1 self-intersection eksizyonu + inceltilmiş yeniden
+  kapama.
 - **v0.7.2 — 2026-10-02** — OrcaSlicer eklentisi v2 (yan panel, onarım bildirimleri,
   doğru dönüşümler, geri yükleme); simetri tespiti 2-3,7 kat hızlı.
 - **v0.7.1 — 2026-10-01** — Graft artık kurulu derlemelerde çalışıyor: Rust
@@ -1805,7 +2053,7 @@ düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGE
   X-Ray, Kabuk/Hull ve Döküm/Cast); genişletilebilir Eklenti API'si
   (`RepairMethodProtocol`); içerik adresli Chart önbelleği (`~/.cache/sutura/`);
   #13 **Graft** yöntemi (fTetWild öncesi sağlıklı yüzey sadakat korumalı morfoloji
-  kabuk sarma); resmi görünen adlarla 15 yöntemli kayıt defteri; ve çalışma
+  kabuk sarma); resmi görünen adlarla 16 yöntemli kayıt defteri; ve çalışma
   süresi bütçeli otomatik kademelendirme.
 - **v0.6.1 — 2026-09-28** — İki isteğe bağlı geometri yöntemi: **Aynalı
   Tamamlama** (#14, tek-taraflı simetrik bir taramanın eksik arkasını algılanan

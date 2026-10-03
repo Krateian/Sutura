@@ -64,6 +64,7 @@ APP_MODULES = (
     'mesh_classifier.py',
     'mesh_classifier_v2.py',
     'autorefine.py',
+    'local_exact.py',
     'triage.py',
     'engines.py',
     'ftetwild_manager.py',

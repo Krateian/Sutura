@@ -14,6 +14,7 @@ omission must be documented here. This file records the current parity gaps
 | `-o/--output` | GUI always writes the default `_fixed` file in place; a custom output path is a scripting need. |
 | `--human`, `--defects`, `--diff` | Text-report presentation flags; the GUI renders the same data graphically (defect panel, repair log, before/after). |
 | `export-history` (`--last`/`--clear`/`--summary-only`) | Usage-history is an anonymous CLI/telemetry feature; no GUI viewer yet. |
+| Ray-stabbing vote (`raystab=` / `SUTURA_RAYSTAB`, library/Graft only) | Experimental inside/outside disambiguation; no CLI flag or GUI control yet by design. Deliberately deferred until it is measured on the real-world corpus, at which point it gets both a CLI flag and a GUI control. |
 
 ## GUI-only (allowed exceptions — visual features)
 
@@ -38,6 +39,10 @@ declined-file re-run) · `--no-history` (GUI first-run checkbox /
 `--experimental-fallback-ftetwild` (GUI checkbox *+ self-intersections (slow)* next to it) ·
 `--ftetwild-optimize` (GUI checkbox *Optimise tetrahedra (not recommended)* below it) ·
 `--no-graft` / `--experimental-graft` (GUI right-click method menu #13 Graft + auto fallback ladder) ·
+`--no-dressing` / `--experimental-dressing` (GUI checkbox *Dressing (viscosity coat)* in Options → Experimental; off by default; #16 is also selectable via the right-click *Use method* menu) ·
+`--dressing-defects {all,holes_nm}`, `--dressing-rmax-scale F`, `--dressing-sigma-scale F` (GUI Options → Experimental combos *Defects*, *Bridge radius*, *Influence width*) ·
+`--dressing-force-adopt` (GUI checkbox *Dressing: force adopt (may deform)* in Options → Experimental, and post-batch *⚠ Try Dressing (makes it watertight, but the part may deform)* button; implies `--experimental-dressing`) ·
+`--si-mode {repair,report,off}` (GUI *Self-intersections* combo in Options → Repair: Report only / Repair / Do not measure; the worker adds `--si-mode` only when it differs from the default `report`; SI no longer blocks watertight verdict) ·
 `--no-cache` / `clear-cache` (GUI Options → General *Enable Sutura Chart cache* checkbox + *Clear Cache* button) ·
 `--experimental-indirect-autorefine` (GUI checkbox — Phase B; all seven
 batch-wide checkboxes above sit in the GUI's *Options* window) ·
@@ -61,6 +66,34 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 
 ## History
 
+- **Self-intersection policy:** `--si-mode {repair,report,off}` (env
+  `SUTURA_SI_MODE`, default `report`) and the GUI *Self-intersections* combo
+  (Options → Repair: *Report only* / *Repair* / *Do not measure*) were added
+  together, so the parity rule holds. Under `report`, self-intersections no
+  longer block the `watertight` classification verdict on closed 2-manifold
+  surfaces. The combo stores a batch-wide value and the worker passes
+  `--si-mode` only when it is not the default, keeping baseline commands
+  unchanged.
+- **Dressing (#16):** `--no-dressing` / `--experimental-dressing` and the
+  batch-wide GUI checkbox (Options → Experimental) were added together, so the
+  parity rule holds. The new single default switch
+  (`DRESSING_DEFAULT_ENABLED` / `SUTURA_DRESSING_DEFAULT`, which makes Dressing
+  an Auto-ladder fallback) is an env/constant rollout knob, not a user control;
+  the GUI checkbox still maps to the forcing `--experimental-dressing`, and
+  `--no-dressing` / `SUTURA_DRESSING=0` remain the disable path on both sides.
+  The switch ships OFF until the fine-detail (voxel staircase) loss is fixed.
+- **Dressing opt-in UX:** `--dressing-force-adopt` (implies
+  `--experimental-dressing`) and the batch-wide GUI checkbox *Dressing: force adopt (may deform)*
+  (Options → Experimental) plus the post-batch button *⚠ Try Dressing (makes it watertight, but the part may deform)*
+  (or *⚠ Try Dressing on %d file(s) (watertight, but the part may deform)*) were added
+  together, so the parity rule holds. The report's `suggestions` list is a
+  separate output field (not an issue code); the GUI reads the same key to
+  decide whether to show the button, so both sides consume the identical
+  payload. The CLI `--human` output emits the exact suggestion strings:
+  `  ⚠ Not watertight. You can try Dressing: --experimental-dressing (watertight, but the shape may deform / fine detail may be lost).`
+  when not run, or
+  `  ⚠ Not watertight. Dressing ran but its result was rejected by the quality gate (...).\n    Force it with --dressing-force-adopt if you accept the deformation (the shape may deform).`
+  when gate-rejected.
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
   CLI-only / GUI-only items above.
@@ -90,7 +123,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `None` runs every enabled engine as before), so the parity rule holds.
 - **Closing / proxy-template methods (#8–#10):** the standalone
   `closing.py` / `proxy_repair.py` tiers are reachable from the CLI
-  (`--methods 8/9/10`) and from the GUI *Use method* list (all fifteen methods);
+  (`--methods 8/9/10`) and from the GUI *Use method* list (all sixteen methods);
   no separate flag exists, so parity holds without a dedicated control.
 - **Method #14 Mirror Complete / #15 Wall Thicken (v0.6.1):** both are in the
   shared method registry, so the GUI *Use method* menu lists and tags them with
@@ -114,3 +147,26 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 - **Sutura Chart cache (v0.7.0):** CLI `--no-cache` and `sutura clear-cache` correspond
   to GUI Options → General *Enable Sutura Chart cache* checkbox and *Clear Cache* button,
   preserving parity across CLI and GUI workflows.
+- **Graft sign-field Pass 0 + intensity-scaled grid budget (unreleased):** Pass 0 is
+  OFF by default and is an opt-in evaluation switch (`SUTURA_GRAFT_SIGN_FIELD=1`), like the
+  ray-stab vote — env-only, no CLI flag or GUI control by design (it is not proven; on
+  ornate-frame it fails both gates and costs ~326 s). The grid budget is derived
+  automatically from the Triage intensity preset, which both the CLI (`--intensity`) and
+  the GUI (batch-wide *Intensity* picker) already set, so parity is automatic.
+- **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
+  environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
+  flag and a GUI control together, per the parity rule.
+- **Guarded SI excise + refined Stage-1 hole fill (unreleased):** the Full-Mend
+  self-intersection excise is automatic pipeline behaviour (both CLI and GUI get it, so
+  parity holds) with an env opt-out only (`SUTURA_SI_EXCISE=0`), like the ray-stab vote.
+  The refined Stage-1 hole fill (`SUTURA_REFINE_HOLE=1`) is an unproven evaluation switch,
+  so it is env-only too; when it is proven it gets a CLI flag and a GUI control together.
+- **Localized exact self-union (`sutura/local_exact.py`, unreleased):** the tier that
+  replaces a residual Stage-2 self-intersecting cluster with the exact outer-hull
+  triangulation of a small patch. It is OPT-IN and OFF by default for every install
+  (experimental; measured on the 40-mesh corpus it removes SI on only an isolated mesh and
+  the ornate-frame fold is global, not local — see the class docstring and
+  `docs/local-exact-notes.md`). It is forced with `SUTURA_LOCAL_EXACT=1` (values
+  `1/true/yes/on`) and disabled with `SUTURA_LOCAL_EXACT=0`; there is deliberately NO CLI
+  flag or GUI control, so CLI and GUI behave identically (parity by construction, like the
+  ray-stab vote).
