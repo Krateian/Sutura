@@ -172,6 +172,9 @@ jobs:
       - name: "Test: join components"
         run: ./venv/bin/python tests/test_join_components.py
 
+      - name: "Test: Flap hole filler"
+        run: ./venv/bin/python tests/test_flap.py
+
       - name: "Test: update-check shutdown"
         run: ./venv/bin/python tests/test_update_check_shutdown.py
 
@@ -283,3 +286,8 @@ jobs:
 
       - name: "Test: Graft / shell wrap (method #13)"
         run: ./.venv/bin/python tests/test_shell_wrap.py
+
+      # Pins the Rust flap_fill port against the numpy oracle (both use
+      # trimesh/scipy installed above; the test skips without the extension).
+      - name: "Test: Flap Rust/numpy parity"
+        run: ./.venv/bin/python tests/test_flap_rust_parity.py

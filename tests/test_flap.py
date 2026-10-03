@@ -192,6 +192,115 @@ def test_drop_flap_debris_noop_on_single_part():
     assert len(out_t) == len(t)
 
 
+def test_flap_max_orig_move_handles_missing_and_malformed_sites():
+    assert repair._flap_max_orig_move({}) == 0.0
+    assert repair._flap_max_orig_move({'boundary_normalize': {}}) == 0.0
+    # only merges touching an original vertex (is_orig truthy) count
+    frep = {'boundary_normalize': {'weld_sites': [
+        (0, 1, 2.5, True), (0, 1, 9.0, False), (0, 1, 1.0, True)]}}
+    assert repair._flap_max_orig_move(frep) == 2.5
+    # short / malformed entries are ignored, never raise
+    assert repair._flap_max_orig_move(
+        {'boundary_normalize': {'weld_sites': [(0, 1)]}}) == 0.0
+
+
+def test_flap_step_never_raises_when_flap_fill_fails():
+    # MEDIUM-2: the pre-pass has no surrounding try, so a raising flap_fill
+    # must be swallowed by _flap_step itself and the input mesh returned.
+    v, t = _holed_sphere(radius=6.0, cut=4.5)  # unique content -> no cache
+    ms = _meshset(v, t)
+    after = ms.apply_filter('get_topological_measures')
+    orig = flap.flap_fill
+
+    def _boom(*_a, **_k):
+        raise RuntimeError('boom')
+
+    flap.flap_fill = _boom
+    try:
+        stats = {'stage1': {}}
+        out, _ = repair._flap_step(ml, ms, after, stats)
+    finally:
+        flap.flap_fill = orig
+    rec = stats['flap']
+    assert rec['ran'] is False, rec
+    assert 'flap error' in rec['reason'], rec
+    assert out.current_mesh().face_number() == len(t)
+
+
+def test_flap_step_never_raises_on_malformed_report():
+    # MEDIUM-2: a differently-shaped report (e.g. a future/older binding) must
+    # not escape through _flap_max_orig_move / the adopted-MeshSet block.
+    v, t = _holed_sphere(radius=8.0, cut=6.0)  # unique content -> no cache
+    ms = _meshset(v, t)
+    after = ms.apply_filter('get_topological_measures')
+    orig = flap.flap_fill
+
+    def _bad(verts, tris, **k):
+        cv, ct, rep = orig(verts, tris, **k)
+        rep = dict(rep)
+        rep['boundary_normalize'] = {'weld_sites': [(0, 1, 'x', True)]}
+        return cv, ct, rep
+
+    flap.flap_fill = _bad
+    try:
+        stats = {'stage1': {}}
+        out, _ = repair._flap_step(ml, ms, after, stats)
+    finally:
+        flap.flap_fill = orig
+    assert 'flap error' in stats['flap']['reason'], stats['flap']
+    assert out.current_mesh().face_number() == len(t)
+
+
+def test_flap_step_quick_budget_skips_and_caches_across_repeats():
+    # MEDIUM-3: the quick preset disables Flap entirely.
+    v, t = _holed_sphere(radius=7.0, cut=5.0)
+    ms = _meshset(v, t)
+    after = ms.apply_filter('get_topological_measures')
+    stats = {'stage1': {}, 'triage_intensity': 'quick'}
+    repair._flap_step(ml, ms, after, stats)
+    rec = stats['flap']
+    assert rec['ran'] is False, rec
+    assert 'budget' in rec['reason'], rec
+    # ... while balanced runs it once and reuses the cached candidate on a
+    # repeat (the triage escalation path).
+    stats1 = {'stage1': {}, 'triage_intensity': 'balanced'}
+    repair._flap_step(ml, _meshset(v, t), after, stats1)
+    assert stats1['flap']['ran'] is True, stats1['flap']
+    assert stats1['flap']['cache_hit'] is False, stats1['flap']
+    stats2 = {'stage1': {}, 'triage_intensity': 'balanced'}
+    repair._flap_step(ml, _meshset(v, t), after, stats2)
+    assert stats2['flap']['cache_hit'] is True, stats2['flap']
+    assert stats2['flap']['adopted'] is True, stats2['flap']
+
+
+def test_flap_final_safety_net_helpers():
+    # HIGH-1: the safety net flags a final mesh that is not strict-watertight
+    # or has gained parts, and only prefers flap-OFF when it is better.
+    box_v, box_t = _box((10.0, 10.0, 10.0), (0.0, 0.0, 0.0))
+    reason, m = repair._flap_final_needs_off(box_v, box_t, box_v, box_t)
+    assert reason is None, (reason, m)
+    assert m['watertight'] and m['input_parts'] == m['output_parts'] == 1, m
+
+    hv, ht = _holed_sphere()
+    reason, m = repair._flap_final_needs_off(
+        box_v, box_t, hv.astype(np.float32), ht.astype(np.int32))
+    assert reason == 'not_watertight', (reason, m)
+    assert m['watertight'] is False, m
+
+    extra_v, extra_t = _box((1.0, 1.0, 1.0), (40.0, 0.0, 0.0))
+    mv = np.vstack([box_v, extra_v]).astype(np.float32)
+    mt = np.vstack([box_t, extra_t + len(box_v)]).astype(np.int32)
+    reason, m = repair._flap_final_needs_off(box_v, box_t, mv, mt)
+    assert reason == 'more_parts', (reason, m)
+    assert m['output_parts'] == 2 and m['input_parts'] == 1, m
+
+    clean = (None, {'holes': 0, 'non_manifold': 0, 'input_parts': 1,
+                    'output_parts': 1, 'watertight': True})
+    on = (reason, m)
+    assert repair._flap_off_preferred(on, clean) is True
+    assert repair._flap_off_preferred(on, (None, m)) is False
+
+
 def test_flap_off_leaves_no_report_key():
     m = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
     v = np.asarray(m.vertices, np.float32)
