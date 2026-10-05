@@ -250,30 +250,52 @@ pub fn dual_contour_octree(
 
     // Local edge definitions for an octree cell (corners 0..7)
     const CELL_EDGES: [[usize; 2]; 12] = [
-        [0, 1], [2, 3], [4, 5], [6, 7], // along X
-        [0, 2], [1, 3], [4, 6], [5, 7], // along Y
-        [0, 4], [1, 5], [2, 6], [3, 7], // along Z
+        [0, 1], [2, 3], [4, 5], [6, 7], // along X (edges 0..3)
+        [0, 2], [1, 3], [4, 6], [5, 7], // along Y (edges 4..7)
+        [0, 4], [1, 5], [2, 6], [3, 7], // along Z (edges 8..11)
     ];
 
-    // Compute dual vertices for sign-changing leaves in parallel with Rayon
-    let leaf_qef_results: Vec<(usize, Option<[f64; 3]>)> = (0..sorted_leaves.len())
+    const FACE_CORNERS: [[usize; 4]; 6] = [
+        [0, 2, 6, 4], // -x
+        [1, 3, 7, 5], // +x
+        [0, 1, 5, 4], // -y
+        [2, 3, 7, 6], // +y
+        [0, 1, 3, 2], // -z
+        [4, 5, 7, 6], // +z
+    ];
+
+    const FACE_EDGES: [[usize; 4]; 6] = [
+        [4, 10, 6, 8],
+        [5, 11, 7, 9],
+        [0, 9, 2, 8],
+        [1, 11, 3, 10],
+        [0, 5, 1, 4],
+        [2, 7, 3, 6],
+    ];
+
+    // Compute dual vertices for sign-changing leaves in parallel with Rayon.
+    // Emits one QEF vertex per surface component of the cell (Manifold Dual Contouring).
+    let leaf_qef_results: Vec<(usize, Vec<[f64; 3]>, [i32; 12])> = (0..sorted_leaves.len())
         .into_par_iter()
         .map(|leaf_pos| {
             let l_idx = sorted_leaves[leaf_pos];
             let c_idx = &leaf_corners[leaf_pos];
-            let mut has_pos = false;
-            let mut has_neg = false;
 
-            for &ci in c_idx {
-                if corner_data[ci].0 <= 0.0 {
-                    has_neg = true;
-                } else {
-                    has_pos = true;
-                }
+            let mut present = [false; 12];
+            let mut any_present = false;
+
+            for e in 0..12 {
+                let ci0 = c_idx[CELL_EDGES[e][0]];
+                let ci1 = c_idx[CELL_EDGES[e][1]];
+                let f0 = corner_data[ci0].0;
+                let f1 = corner_data[ci1].0;
+                let s = (f0 <= 0.0 && f1 > 0.0) || (f0 > 0.0 && f1 <= 0.0);
+                present[e] = s;
+                any_present |= s;
             }
 
-            if !has_pos || !has_neg {
-                return (l_idx, None);
+            if !any_present {
+                return (l_idx, Vec::new(), [-1; 12]);
             }
 
             let node = &tree.nodes[l_idx];
@@ -285,131 +307,227 @@ pub fn dual_contour_octree(
                 cell_min[2] + h_cell,
             ];
 
-            let mut a_mat = [[0.0f64; 3]; 3];
-            let mut b_vec = [0.0f64; 3];
-            let mut p_sum = [0.0f64; 3];
-            let mut count = 0usize;
+            // Union-find over the 12 local edges using the 6 faces
+            let mut parent = [0usize, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+            fn find(parent: &mut [usize; 12], mut x: usize) -> usize {
+                while parent[x] != x {
+                    parent[x] = parent[parent[x]];
+                    x = parent[x];
+                }
+                x
+            }
+            let union = |parent: &mut [usize; 12], a: usize, b: usize| {
+                let ra = find(parent, a);
+                let rb = find(parent, b);
+                if ra != rb {
+                    parent[ra] = rb;
+                }
+            };
 
-            for &[e0, e1] in &CELL_EDGES {
+            for face in 0..6 {
+                let fe = FACE_EDGES[face];
+                let pc = FACE_CORNERS[face];
+                let act: Vec<usize> = fe.iter().copied().filter(|&e| present[e]).collect();
+                match act.len() {
+                    0 | 1 => {}
+                    2 => union(&mut parent, act[0], act[1]),
+                    4 => {
+                        // Asymptotic decider (Nielson & Hamann):
+                        let v0 = corner_data[c_idx[pc[0]]].0;
+                        let v1 = corner_data[c_idx[pc[1]]].0;
+                        let v2 = corner_data[c_idx[pc[2]]].0;
+                        let v3 = corner_data[c_idx[pc[3]]].0;
+                        let s = v0 * v2 - v1 * v3;
+                        if s > 0.0 {
+                            union(&mut parent, fe[0], fe[1]);
+                            union(&mut parent, fe[2], fe[3]);
+                        } else {
+                            union(&mut parent, fe[1], fe[2]);
+                            union(&mut parent, fe[3], fe[0]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Group edges by component root
+            let mut comp_of_edge = [-1i32; 12];
+            let mut root_to_comp = [-1i32; 12];
+            let mut comp_edges: Vec<Vec<usize>> = Vec::new();
+
+            for e in 0..12 {
+                if !present[e] {
+                    continue;
+                }
+                let r = find(&mut parent, e);
+                if root_to_comp[r] < 0 {
+                    root_to_comp[r] = comp_edges.len() as i32;
+                    comp_edges.push(Vec::new());
+                }
+                let cid = root_to_comp[r] as usize;
+                comp_of_edge[e] = cid as i32;
+                comp_edges[cid].push(e);
+            }
+
+            // Compute Hermite point and normal for each present edge
+            let mut edge_hermite: [Option<([f64; 3], [f64; 3])>; 12] = [None; 12];
+            for e in 0..12 {
+                if !present[e] {
+                    continue;
+                }
+                let [e0, e1] = CELL_EDGES[e];
                 let ci0 = c_idx[e0];
                 let ci1 = c_idx[e1];
                 let (f0, w0, d0, p0) = corner_data[ci0];
                 let (f1, w1, d1, p1) = corner_data[ci1];
 
-                if (f0 <= 0.0 && f1 > 0.0) || (f0 > 0.0 && f1 <= 0.0) {
-                    let edge_len = ((p1[0] - p0[0]).powi(2)
-                        + (p1[1] - p0[1]).powi(2)
-                        + (p1[2] - p0[2]).powi(2))
-                    .sqrt();
+                let edge_len = ((p1[0] - p0[0]).powi(2)
+                    + (p1[1] - p0[1]).powi(2)
+                    + (p1[2] - p0[2]).powi(2))
+                .sqrt();
 
-                    // Crossing a hole membrane (C2):
-                    // In the middle of a hole, distance to the input mesh is strictly positive on both ends (d > 0.5*edge_len)
-                    // while winding flips across 0.5.
-                    let is_hole_membrane = d0 > 0.5 * edge_len
-                        && d1 > 0.5 * edge_len
-                        && (w0 - 0.5) * (w1 - 0.5) <= 0.0
-                        && (w0 - w1).abs() > 1e-6;
+                let is_hole_membrane = d0 > 0.5 * edge_len
+                    && d1 > 0.5 * edge_len
+                    && (w0 - 0.5) * (w1 - 0.5) <= 0.0
+                    && (w0 - w1).abs() > 1e-6;
 
-                    let (p_int, normal) = if is_hole_membrane {
-                        // Bisect w to 0.5
-                        let mut t0 = 0.0f64;
-                        let mut t1 = 1.0f64;
-                        let mut p_mid = [0.0; 3];
+                let (p_int, normal) = if is_hole_membrane {
+                    let mut t0 = 0.0f64;
+                    let mut t1 = 1.0f64;
+                    let mut p_mid = [0.0; 3];
 
-                        for _ in 0..8 {
-                            let t = (t0 + t1) * 0.5;
-                            p_mid = [
-                                p0[0] + t * (p1[0] - p0[0]),
-                                p0[1] + t * (p1[1] - p0[1]),
-                                p0[2] + t * (p1[2] - p0[2]),
-                            ];
-                            let w_mid = bvh.winding_at(p_mid);
-                            if (w0 - 0.5) * (w_mid - 0.5) <= 0.0 {
-                                t1 = t;
-                            } else {
-                                t0 = t;
-                            }
-                        }
-
-                        // Normal from -grad(w) via finite difference
-                        let eps = 1e-4 * tree.h_min.max(1e-4);
-                        let gw = [
-                            (bvh.winding_at([p_mid[0] + eps, p_mid[1], p_mid[2]])
-                                - bvh.winding_at([p_mid[0] - eps, p_mid[1], p_mid[2]]))
-                                / (2.0 * eps),
-                            (bvh.winding_at([p_mid[0], p_mid[1] + eps, p_mid[2]])
-                                - bvh.winding_at([p_mid[0], p_mid[1] - eps, p_mid[2]]))
-                                / (2.0 * eps),
-                            (bvh.winding_at([p_mid[0], p_mid[1], p_mid[2] + eps])
-                                - bvh.winding_at([p_mid[0], p_mid[1], p_mid[2] - eps]))
-                                / (2.0 * eps),
-                        ];
-                        let glen = (gw[0] * gw[0] + gw[1] * gw[1] + gw[2] * gw[2]).sqrt();
-                        let n = if glen > 1e-9 {
-                            [-gw[0] / glen, -gw[1] / glen, -gw[2] / glen]
-                        } else {
-                            let diff = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-                            let dl = (diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]).sqrt();
-                            if dl > 1e-12 {
-                                [diff[0] / dl, diff[1] / dl, diff[2] / dl]
-                            } else {
-                                [0.0, 0.0, 1.0]
-                            }
-                        };
-                        (p_mid, n)
-                    } else {
-                        // Regular surface crossing: linear interpolation + closest point normal
-                        let denom = f1 - f0;
-                        let t = if denom.abs() > 1e-12 {
-                            (-f0 / denom).clamp(0.0, 1.0)
-                        } else {
-                            0.5
-                        };
-                        let p_int = [
+                    for _ in 0..8 {
+                        let t = (t0 + t1) * 0.5;
+                        p_mid = [
                             p0[0] + t * (p1[0] - p0[0]),
                             p0[1] + t * (p1[1] - p0[1]),
                             p0[2] + t * (p1[2] - p0[2]),
                         ];
-                        let (closest, _d, fid) = bvh.closest_point(p_int);
-                        let n = bvh.tri_normal(fid);
-                        (closest, n)
-                    };
-
-                    for i in 0..3 {
-                        for j in 0..3 {
-                            a_mat[i][j] += normal[i] * normal[j];
+                        let w_mid = bvh.winding_at(p_mid);
+                        if (w0 - 0.5) * (w_mid - 0.5) <= 0.0 {
+                            t1 = t;
+                        } else {
+                            t0 = t;
                         }
-                        b_vec[i] += normal[i] * (normal[0] * p_int[0] + normal[1] * p_int[1] + normal[2] * p_int[2]);
-                        p_sum[i] += p_int[i];
                     }
-                    count += 1;
+
+                    let eps = 1e-4 * tree.h_min.max(1e-4);
+                    let gw = [
+                        (bvh.winding_at([p_mid[0] + eps, p_mid[1], p_mid[2]])
+                            - bvh.winding_at([p_mid[0] - eps, p_mid[1], p_mid[2]]))
+                            / (2.0 * eps),
+                        (bvh.winding_at([p_mid[0], p_mid[1] + eps, p_mid[2]])
+                            - bvh.winding_at([p_mid[0], p_mid[1] - eps, p_mid[2]]))
+                            / (2.0 * eps),
+                        (bvh.winding_at([p_mid[0], p_mid[1], p_mid[2] + eps])
+                            - bvh.winding_at([p_mid[0], p_mid[1], p_mid[2] - eps]))
+                            / (2.0 * eps),
+                    ];
+                    let glen = (gw[0] * gw[0] + gw[1] * gw[1] + gw[2] * gw[2]).sqrt();
+                    let n = if glen > 1e-9 {
+                        [-gw[0] / glen, -gw[1] / glen, -gw[2] / glen]
+                    } else {
+                        let diff = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+                        let dl = (diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]).sqrt();
+                        if dl > 1e-12 {
+                            [diff[0] / dl, diff[1] / dl, diff[2] / dl]
+                        } else {
+                            [0.0, 0.0, 1.0]
+                        }
+                    };
+                    (p_mid, n)
+                } else {
+                    let denom = f1 - f0;
+                    let t = if denom.abs() > 1e-12 {
+                        (-f0 / denom).clamp(0.0, 1.0)
+                    } else {
+                        0.5
+                    };
+                    let p_int = [
+                        p0[0] + t * (p1[0] - p0[0]),
+                        p0[1] + t * (p1[1] - p0[1]),
+                        p0[2] + t * (p1[2] - p0[2]),
+                    ];
+                    let (closest, _d, fid) = bvh.closest_point(p_int);
+                    let n = bvh.tri_normal(fid);
+                    (closest, n)
+                };
+
+                edge_hermite[e] = Some((p_int, normal));
+            }
+
+            // Solve a separate QEF for each surface component of this cell
+            let mut comp_verts: Vec<[f64; 3]> = Vec::with_capacity(comp_edges.len());
+
+            for edges in &comp_edges {
+                let mut a_mat = [[0.0f64; 3]; 3];
+                let mut b_vec = [0.0f64; 3];
+                let mut p_sum = [0.0f64; 3];
+                let count = edges.len();
+
+                for &e in edges {
+                    if let Some((p_int, normal)) = edge_hermite[e] {
+                        for i in 0..3 {
+                            for j in 0..3 {
+                                a_mat[i][j] += normal[i] * normal[j];
+                            }
+                            b_vec[i] += normal[i] * (normal[0] * p_int[0] + normal[1] * p_int[1] + normal[2] * p_int[2]);
+                            p_sum[i] += p_int[i];
+                        }
+                    }
                 }
+
+                if count == 0 {
+                    continue;
+                }
+
+                let mass = [
+                    p_sum[0] / count as f64,
+                    p_sum[1] / count as f64,
+                    p_sum[2] / count as f64,
+                ];
+
+                let x_star = solve_qef_svd(&a_mat, &b_vec, mass, cell_min, cell_max, 0.05);
+                comp_verts.push(x_star);
             }
 
-            if count == 0 {
-                return (l_idx, None);
-            }
-
-            let mass = [
-                p_sum[0] / count as f64,
-                p_sum[1] / count as f64,
-                p_sum[2] / count as f64,
-            ];
-
-            let x_star = solve_qef_svd(&a_mat, &b_vec, mass, cell_min, cell_max, 0.05);
-
-            (l_idx, Some(x_star))
+            (l_idx, comp_verts, comp_of_edge)
         })
         .collect();
 
-    let mut leaf_vertex_map: HashMap<usize, u32> = HashMap::with_capacity(leaf_qef_results.len());
-    let mut out_verts: Vec<[f64; 3]> = Vec::with_capacity(leaf_qef_results.len());
 
-    for (l_idx, opt_v) in leaf_qef_results {
-        if let Some(x_star) = opt_v {
-            let v_idx = out_verts.len() as u32;
-            out_verts.push(x_star);
-            leaf_vertex_map.insert(l_idx, v_idx);
+    let mut out_verts: Vec<[f64; 3]> = Vec::with_capacity(leaf_count * 2);
+    let mut leaf_edge_vert: HashMap<(usize, usize), u32> = HashMap::with_capacity(leaf_count * 4);
+    let mut leaf_face_vert: HashMap<(usize, usize), u32> = HashMap::with_capacity(leaf_count * 2);
+    let mut leaf_default_vert: HashMap<usize, u32> = HashMap::with_capacity(leaf_count);
+
+    for (l_idx, comp_verts, comp_of_edge) in leaf_qef_results {
+        if comp_verts.is_empty() {
+            continue;
+        }
+        let base_vid = out_verts.len() as u32;
+        for &v in &comp_verts {
+            out_verts.push(v);
+        }
+        leaf_default_vert.insert(l_idx, base_vid);
+
+        for e in 0..12 {
+            let cid = comp_of_edge[e];
+            if cid >= 0 && (cid as usize) < comp_verts.len() {
+                let vid = base_vid + cid as u32;
+                leaf_edge_vert.insert((l_idx, e), vid);
+            }
+        }
+
+        for face in 0..6 {
+            for &e in &FACE_EDGES[face] {
+                let cid = comp_of_edge[e];
+                if cid >= 0 && (cid as usize) < comp_verts.len() {
+                    let vid = base_vid + cid as u32;
+                    leaf_face_vert.entry((l_idx, face)).or_insert(vid);
+                    break;
+                }
+            }
         }
     }
 
@@ -523,7 +641,54 @@ pub fn dual_contour_octree(
             let mut cycle_leaves = Vec::with_capacity(4);
             for opt_leaf in quad_leaves {
                 if let Some(leaf_id) = opt_leaf {
-                    if let Some(&vid) = leaf_vertex_map.get(&leaf_id) {
+                    let node = &tree.nodes[leaf_id];
+                    let shift = (md - node.depth) as u32;
+                    let step = 1u32 << shift;
+                    let x0 = node.x << shift;
+                    let y0 = node.y << shift;
+                    let z0 = node.z << shift;
+                    let x1 = x0 + step;
+                    let y1 = y0 + step;
+                    let z1 = z0 + step;
+
+                    let opt_local_edge = match axis {
+                        0 => {
+                            if ey == y0 && ez == z0 { Some(0) }
+                            else if ey == y1 && ez == z0 { Some(1) }
+                            else if ey == y0 && ez == z1 { Some(2) }
+                            else if ey == y1 && ez == z1 { Some(3) }
+                            else { None }
+                        }
+                        1 => {
+                            if ex == x0 && ez == z0 { Some(4) }
+                            else if ex == x1 && ez == z0 { Some(5) }
+                            else if ex == x0 && ez == z1 { Some(6) }
+                            else if ex == x1 && ez == z1 { Some(7) }
+                            else { None }
+                        }
+                        _ => {
+                            if ex == x0 && ey == y0 { Some(8) }
+                            else if ex == x1 && ey == y0 { Some(9) }
+                            else if ex == x0 && ey == y1 { Some(10) }
+                            else if ex == x1 && ey == y1 { Some(11) }
+                            else { None }
+                        }
+                    };
+
+                    let opt_vid = if let Some(e) = opt_local_edge {
+                        leaf_edge_vert.get(&(leaf_id, e)).copied().or_else(|| leaf_default_vert.get(&leaf_id).copied())
+                    } else {
+                        let opt_face = match axis {
+                            0 => if ez == z0 { Some(4) } else if ez == z1 { Some(5) } else if ey == y0 { Some(2) } else if ey == y1 { Some(3) } else { None },
+                            1 => if ex == x0 { Some(0) } else if ex == x1 { Some(1) } else if ez == z0 { Some(4) } else if ez == z1 { Some(5) } else { None },
+                            _ => if ex == x0 { Some(0) } else if ex == x1 { Some(1) } else if ey == y0 { Some(2) } else if ey == y1 { Some(3) } else { None },
+                        };
+                        opt_face
+                            .and_then(|f| leaf_face_vert.get(&(leaf_id, f)).copied())
+                            .or_else(|| leaf_default_vert.get(&leaf_id).copied())
+                    };
+
+                    if let Some(vid) = opt_vid {
                         if cycle_verts.last() != Some(&vid) {
                             cycle_verts.push(vid);
                             cycle_leaves.push(leaf_id);

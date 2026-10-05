@@ -322,7 +322,11 @@ impl Octree {
             }
 
             let h = self.cell_size(d);
-            let circumradius = (sqrt3 * 0.5) * h + r + 1e-6;
+            let circumradius = if d + 1 == self.max_depth {
+                (1.5 * self.h_min + r + 1e-6).min((sqrt3 * 0.5) * h + r + 1e-6)
+            } else {
+                (sqrt3 * 0.5) * h + r + 1e-6
+            };
             let boundary_h = (sqrt3 * 0.5) * h;
             let ambig_thresh = 4.0 * self.h_min;
 
