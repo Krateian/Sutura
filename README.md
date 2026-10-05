@@ -2010,6 +2010,18 @@ is a permanent commitment. For commercial use, please contact the maintainer.
 Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 [Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE).
 
+The reason for this change: Sutura was not born as a business plan or a
+startup — it began as a personal need, and the cost of the AI tooling used
+to develop it is paid by the maintainer out of pocket. For personal,
+non-commercial use, Sutura will always remain free — this is not a marketing
+promise but a permanent commitment. Future development will require more
+time and resources, and allowing a company to use it commercially for free
+would not be fair to the maintainer; the project is not a charity.
+Commercial use therefore requires contacting the maintainer. If the
+maintainer can no longer dedicate time to the project at some point in the
+future, the plan is to release Sutura fully open source and hand it to the
+community — but for now, it will continue like this.
+
 ## Version history
 
 Only versions that added user-facing features are listed (bug-fix-only
@@ -2103,15 +2115,3 @@ versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
   (`sutura/defects.py`); mesh type-aware repair; Turkish README.
 - **v0.1.3 — 2026-08-19** — opt-in update checker; self-update with backup
   and rollback.
-
-The reason for this change: Sutura was not born as a business plan or a
-startup — it began as a personal need, and the cost of the AI tooling used
-to develop it is paid by the maintainer out of pocket. For personal,
-non-commercial use, Sutura will always remain free — this is not a marketing
-promise but a permanent commitment. Future development will require more
-time and resources, and allowing a company to use it commercially for free
-would not be fair to the maintainer; the project is not a charity.
-Commercial use therefore requires contacting the maintainer. If the
-maintainer can no longer dedicate time to the project at some point in the
-future, the plan is to release Sutura fully open source and hand it to the
-community — but for now, it will continue like this.
