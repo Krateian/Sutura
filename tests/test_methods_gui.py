@@ -118,13 +118,13 @@ def main():
         'method_auto_rec', 3, gui._method_name(3), 82), w._item_by_path[a].text(1)
     print('ok  recommendation shown in the Method column')
 
-    # Use method menu: 16 entries, placeholders / needs-input disabled
+    # Use method menu: 17 entries, placeholders / needs-input disabled
     w._on_tag_toggle([b], 'method', 3)
     m = gui.QMenu(w.tree)
     um = gui._KeepOpenMenu(gui._t('menu_use_method'), m)
     w._build_use_method_menu(um, [b], b)
     acts = um.actions()
-    assert len(acts) == 16, len(acts)
+    assert len(acts) == 17, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
     # 8-12 are implemented and enabled (12 opens the repeat picker); 14
     # (Mirror Complete) is enabled.  13 Graft needs the Rust sutura_geom
@@ -143,6 +143,11 @@ def main():
     # 16 Dressing is opt-in (needs_user_input) but still selectable.
     assert acts[15].text().startswith('Dressing') or 'Dressing' in acts[15].text(), \
         acts[15].text()
+    # 17 Tamponade is opt-in (needs_user_input) but still selectable; enabled
+    # iff the Rust extension exposes sutura_geom.tamponade.
+    assert 'Tamponade' in acts[16].text(), acts[16].text()
+    t_ok, _t_reason = methods.get_method(17).available()
+    assert acts[16].isEnabled() is t_ok, (acts[16].isEnabled(), t_ok)
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live

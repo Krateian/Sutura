@@ -170,3 +170,10 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `1/true/yes/on`) and disabled with `SUTURA_LOCAL_EXACT=0`; there is deliberately NO CLI
   flag or GUI control, so CLI and GUI behave identically (parity by construction, like the
   ray-stab vote).
+- **Tamponade (#17, interior hole plug + SI melt, unreleased):** CLI
+  `--tamponade` / `--no-tamponade` and env `SUTURA_TAMPONADE` /
+  `SUTURA_TAMPONADE_DEFAULT` control the opt-in interior-plug tier; the GUI
+  exposes the same as Options → Repair *Tamponade (fill holes from inside)*
+  (EN/TR), and the repair-log panel renders the adopted / not-adopted verdict.
+  The library default (`tamponade=False`, `TAMPONADE_DEFAULT_ENABLED = False`)
+  keeps every existing path byte-identical until the corpus measurement.
