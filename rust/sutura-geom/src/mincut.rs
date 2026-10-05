@@ -259,4 +259,63 @@ mod tests {
         assert!(g.is_in_source(1));
         assert!(g.is_in_source(2));
     }
+
+    #[test]
+    fn test_bk_known_cut_value() {
+        // S --100-- 0 --3-- 1 --5-- 2 --2-- 3 --100-- T
+        // The bottleneck is the 2-capacity edge, so the min cut is 2.
+        let mut g = BkGraph::new(4);
+        g.add_tweights(0, 100.0, 0.0);
+        g.add_edge(0, 1, 3.0, 0.0);
+        g.add_edge(1, 2, 5.0, 0.0);
+        g.add_edge(2, 3, 2.0, 0.0);
+        g.add_tweights(3, 0.0, 100.0);
+
+        let max_flow = g.maxflow();
+        assert!((max_flow - 2.0).abs() < 1e-6, "flow = {}", max_flow);
+        assert!(g.is_in_source(0));
+        assert!(g.is_in_source(1));
+        assert!(g.is_in_source(2));
+        assert!(!g.is_in_source(3));
+    }
+
+    #[test]
+    fn test_bk_disconnected_sink() {
+        // S -> 0 -> 1, but 2 -> T is in a separate component: no path, flow 0.
+        let mut g = BkGraph::new(3);
+        g.add_tweights(0, 10.0, 0.0);
+        g.add_edge(0, 1, 4.0, 0.0);
+        g.add_tweights(2, 0.0, 10.0);
+
+        let max_flow = g.maxflow();
+        assert!(max_flow.abs() < 1e-9);
+        assert!(g.is_in_source(0));
+        assert!(g.is_in_source(1));
+        assert!(!g.is_in_source(2));
+    }
+
+    #[test]
+    fn test_bk_zero_capacity_edge_blocks() {
+        // A single zero-capacity edge cannot carry flow.
+        let mut g = BkGraph::new(2);
+        g.add_tweights(0, 10.0, 0.0);
+        g.add_edge(0, 1, 0.0, 0.0);
+        g.add_tweights(1, 0.0, 10.0);
+
+        let max_flow = g.maxflow();
+        assert!(max_flow.abs() < 1e-9);
+        assert!(g.is_in_source(0));
+        assert!(!g.is_in_source(1));
+    }
+
+    #[test]
+    fn test_bk_no_source_terminals() {
+        // No source-terminal capacity at all -> zero flow even with edges.
+        let mut g = BkGraph::new(2);
+        g.add_edge(0, 1, 7.0, 0.0);
+        g.add_tweights(1, 0.0, 10.0);
+
+        let max_flow = g.maxflow();
+        assert!(max_flow.abs() < 1e-9);
+    }
 }

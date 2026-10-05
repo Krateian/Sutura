@@ -730,6 +730,74 @@ fn dressing_coat<'py>(
     Ok((verts_np, tris_np, info))
 }
 
+/// Tamponade (Method #17): seal open holes at their narrowest throat.
+///
+/// L2a: every input triangle is returned verbatim, plus one fan cap per open
+/// boundary loop through an apex placed at the minimum s-t cut throat. Returns
+/// `(verts, tris, info)`; a closed, empty or boundary-free input is returned
+/// byte-identical with `info["reason"] == "no_holes"`.
+#[pyfunction]
+#[pyo3(name = "tamponade")]
+#[pyo3(signature = (verts, tris, h_min=None, melt_si=true, max_nodes=None, time_budget_s=None))]
+fn tamponade_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    h_min: Option<f64>,
+    melt_si: bool,
+    max_nodes: Option<usize>,
+    time_budget_s: Option<f64>,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt_usize) = parse_mesh(&verts, &tris)?;
+    let rt: Vec<[u32; 3]> = rt_usize
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let config = tamponade::TamponadeConfig {
+        h_min,
+        melt_si,
+        max_nodes,
+        time_budget_s,
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        tamponade::tamponade_repair(&rv, &rt, &config)
+    }));
+    let (ov, ot, info) = match outcome {
+        Ok(v) => v,
+        Err(_) => {
+            let mut info = tamponade::TamponadeInfo::default();
+            info.healthy_faces_kept = rt.len();
+            info.reason = "internal error".to_string();
+            (rv.clone(), rt.clone(), info)
+        }
+    };
+
+    let out_verts: Vec<Vec<f64>> = ov.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = ot
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let verts_np = PyArray2::from_vec2(py, &out_verts)?;
+    let tris_np = PyArray2::from_vec2(py, &out_tris)?;
+
+    let d = PyDict::new(py);
+    d.set_item("plugs", info.plugs)?;
+    d.set_item("plug_faces", info.plug_faces)?;
+    d.set_item("melt_layers_tried", info.melt_layers_tried)?;
+    d.set_item("melt_layers_accepted", info.melt_layers_accepted)?;
+    d.set_item("melt_layers_rolled_back", info.melt_layers_rolled_back)?;
+    d.set_item("micro_welds_ok", info.micro_welds_ok)?;
+    d.set_item("micro_welds_failed", info.micro_welds_failed)?;
+    d.set_item("healthy_faces_kept", info.healthy_faces_kept)?;
+    d.set_item("seconds", info.seconds)?;
+    d.set_item("reason", info.reason.clone())?;
+    Ok((verts_np, tris_np, d))
+}
+
 /// Closest point on the triangle soup for every query point.
 ///
 /// Returns `(xyz, distance, face_index)`; each query gives the closest point
@@ -1010,12 +1078,14 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::weld_reload_equivalent, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
+    m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
     m.add("RAYSTAB_DEFAULT_DIRS", raycast::DEFAULT_DIRS)?;
     m.add("RAYSTAB_MAX_DIRS", raycast::MAX_DIRS)?;
     m.add("SIGN_FIELD_SUPPORTED", true)?;
+    m.add("TAMPONADE_SUPPORTED", true)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
