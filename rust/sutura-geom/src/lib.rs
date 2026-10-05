@@ -20,7 +20,9 @@ pub mod dressing;
 pub mod dual_contour;
 pub mod flap;
 pub mod interval;
+pub mod lava;
 pub mod morph;
+pub mod octree;
 pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
@@ -1005,6 +1007,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::weld_vertices, m)?)?;
     m.add_function(wrap_pyfunction!(topology::weld_reload_equivalent, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
+    m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
