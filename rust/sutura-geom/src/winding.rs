@@ -473,6 +473,21 @@ impl MeshBvh {
         (best.0, best.1.sqrt(), best.2)
     }
 
+    /// Outward unit normal of triangle at index `tri_idx`.
+    pub fn tri_normal(&self, tri_idx: usize) -> [f64; 3] {
+        if tri_idx < self.tris.len() {
+            let n = self.tris[tri_idx].area_vector();
+            let l = norm(n);
+            if l > 1e-12 {
+                [n[0] / l, n[1] / l, n[2] / l]
+            } else {
+                [0.0, 0.0, 1.0]
+            }
+        } else {
+            [0.0, 0.0, 1.0]
+        }
+    }
+
     fn closest_node(&self, idx: usize, p: [f64; 3], best: &mut ([f64; 3], f64, usize)) {
         let n = &self.nodes[idx];
         if n.bbox.dist2(p) >= best.1 {
