@@ -6627,7 +6627,7 @@ def main():
                              'before Graft/fTetWild; adopted only when the '
                              'reload-honest holes + non-manifold count strictly '
                              'falls without raising the part count or losing '
-                             'more than 1% of the healthy faces. Opt-in for now; '
+                             'more than 1%% of the healthy faces. Opt-in for now; '
                              'env: SUTURA_TAMPONADE / SUTURA_TAMPONADE_DEFAULT')
     parser.add_argument('--no-tamponade', action='store_true',
                         help='disable the Tamponade tier (#17); this is the '
