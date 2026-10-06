@@ -139,6 +139,8 @@ def build_record(result, fingerprint, version, elapsed_ms, fmt=None):
             result.get('experimental_indirect_autorefine')
             and result.get('experimental_indirect_autorefine')
             .get('adopted')),
+        'tamponade_applied': bool(result.get('tamponade')
+                                  and result.get('tamponade').get('adopted')),
     }
 
 

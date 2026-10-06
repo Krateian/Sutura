@@ -31,10 +31,11 @@ EXPECTED = {
     8: 'balloon', 9: 'backplate', 10: 'scaffold',
     11: 'transplant', 12: 'transplant_plus', 13: 'graft',
     14: 'mirror_complete', 15: 'wall_thicken', 16: 'dressing',
+    17: 'tamponade',
 }
-ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
-            'pattern'}
+            'pattern', 'interior'}
 
 
 def _env(tmp):
@@ -170,6 +171,13 @@ def test_kwargs_mapping(tmp):
     assert methods.get_method(16).kwargs['deep_repair'] == 'off'
     assert methods.get_method(16).invents_geometry is True
     assert methods.get_method(16).needs_user_input is True
+    assert methods.get_method(17).kwargs['tamponade'] is True
+    assert methods.get_method(17).kwargs['deep_repair'] == 'off'
+    assert methods.get_method(17).invents_geometry is True
+    assert methods.get_method(17).self_guarded is True
+    assert methods.get_method(17).needs_user_input is True
+    for alias in ('17', 'm17', 'tamponade', 'lava'):
+        assert methods.get_method(alias).num == 17, alias
 
 
 # --- templates / ranking ----------------------------------------------------
@@ -762,6 +770,7 @@ def test_cli_list_methods(tmp):
     assert 'Exact Refine' in r.stdout, r.stdout
     assert 'Graft' in r.stdout, r.stdout        # method #13 display name
     assert 'Dressing' in r.stdout, r.stdout     # method #16 display name
+    assert 'Tamponade' in r.stdout, r.stdout    # method #17 display name
     rj = _run(['--list-methods', '--json'], env=_env(tmp))
     data = _json(rj)
     assert [m['num'] for m in data] == ALL_NUMS

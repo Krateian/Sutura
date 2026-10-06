@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Tamponade (repair method #17, interior hole plug; alias `lava`).**
+  A new opt-in geometry-inventing tier (`sutura_engine.tamponade`, Rust
+  `sutura_geom.tamponade`) that closes open boundaries from the inside: each
+  boundary loop is plugged at its narrowest point without touching the
+  surrounding healthy triangles, and residual self-intersections are melted in
+  thin layers that are individually rolled back when they do not reduce the
+  crossing count. It never deletes an input triangle (`healthy_faces_kept`
+  counts the faces carried through verbatim). It runs on the current Stage-1
+  result, after Flap and before the Graft/fTetWild deep tiers, and is registered
+  as method #17 in `--list-methods` (`17`/`m17`/`tamponade`/`lava`).
+  Adoption requires the reload-honest (welded) holes + non-manifold count to
+  strictly fall, the component count not to rise and at least 99 % of the
+  pre-tier faces to be kept; the tier's own guard is authoritative, so the
+  generic one-sided Hausdorff guard is skipped. The wall-clock budget follows
+  the Triage intensity preset (`quick` disables the tier). The Rust extension
+  must provide `sutura_geom.tamponade` (there is no numpy fallback); otherwise
+  the method reports itself unavailable and is skipped. **Off by default:**
+  `--tamponade` / `--no-tamponade`, env `SUTURA_TAMPONADE` /
+  `SUTURA_TAMPONADE_DEFAULT`, and the GUI Options → Repair checkbox
+  **Tamponade (fill holes from inside)**; the library default stays off and
+  byte-identical. The report carries a `tamponade` key (`ran`, `adopted`,
+  `reason`, `plugs`, `plug_faces`, `melt_layers_tried`/`_accepted`/`_rolled_back`,
+  `micro_welds_ok`/`_failed`, `healthy_faces_kept`, `input_faces`,
+  `output_faces`, `seconds`). The tier stays opt-in until it is measured on the
+  real-world corpus. Covered by `tests/test_tamponade_integration.py`.
+
+### Fixed
+
+- **README license-rationale paragraph placement.** Moved the license-rationale
+  paragraph ("The reason for this change: ...") from the end of `README.md`,
+  where it sat after the version history, into the `## License` section
+  immediately after the Apache 2.0 paragraph, matching `README.tr.md`. The
+  paragraph is unchanged; only its position changed.
+
 ## [0.8.1] - 2026-10-03
 
 ### Added

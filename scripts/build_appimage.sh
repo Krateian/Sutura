@@ -121,6 +121,15 @@ if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
     exit 1
 fi
 echo "    Graft (#13) available in the bundled stage-1 runtime"
+# Tamponade (#17) is opt-in and ships inside the copied sutura_engine package
+# (no flat module entry needed, like Dressing); report its availability for
+# diagnostics but never fail the build on an older wheel without it.
+if "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
+        | awk '$1==17 && $4=="yes" {ok=1} END {exit !ok}'; then
+    echo "    Tamponade (#17) available in the bundled stage-1 runtime"
+else
+    echo "    Tamponade (#17) not available in the bundled runtime (opt-in)" >&2
+fi
 # The stage-2 runtime must also load the extension (abl3 wheel, no pymeshlab
 # there); graft_available only needs sutura_geom + numpy/trimesh/scipy, all
 # present in requirements-311.txt. PYTHONPATH=$LIB seeds sys.path (a -c
