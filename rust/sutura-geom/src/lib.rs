@@ -801,6 +801,7 @@ fn tamponade_py<'py>(
     d.set_item("healthy_faces_kept", info.healthy_faces_kept)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
+    d.set_item("loop_diag", info.loop_diag.clone())?;
     Ok((verts_np, tris_np, d))
 }
 

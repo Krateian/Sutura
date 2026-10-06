@@ -28,6 +28,12 @@ const PLUG_DP_CAP: usize = 300;
 /// Plug triangles with an area at or below this (in the mesh's units, squared)
 /// are treated as degenerate and cause the loop's plug to be rejected.
 const PLUG_MIN_AREA: f64 = 1e-12;
+/// Boundary loops at or below this vertex count are treated as genuine holes
+/// without the min-cut test. A tiny rim cannot separate a meaningful interior
+/// from the exterior, and the coarse occupancy grid used by the cut rejects
+/// real tiny holes (e.g. artec_copper-key's four 3-vertex rims) as
+/// `NoSeparation`.
+const TINY_LOOP_MAX: usize = 8;
 
 #[derive(Clone, Debug)]
 pub struct TamponadeConfig {
@@ -62,6 +68,9 @@ pub struct TamponadeInfo {
     pub healthy_faces_kept: usize,
     pub seconds: f64,
     pub reason: String,
+    /// One entry per boundary loop: its vertex count and the decision taken
+    /// (`sealed`, `tiny_sealed`, or a rejection reason). Diagnostic only.
+    pub loop_diag: Vec<String>,
 }
 
 /// Compute a robust median edge length of the input mesh.
@@ -144,9 +153,16 @@ pub fn directed_boundary_edges(tris: &[[u32; 3]]) -> Vec<(u32, u32)> {
             *count.entry(key).or_insert(0) += 1;
         }
     }
+    // Emit in the block-stacked half-edge order used by the Python verifier's
+    // `defects._boundary_edges` (all (0,1) edges, then all (1,2), then all
+    // (2,0)). The loop walker's greedy choice at a shared rim vertex depends on
+    // this order, so the CLI and the Rust kernel must decompose a rim the same
+    // way.
     let mut out = Vec::new();
-    for t in tris {
-        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+    for &(i, j) in &[(0usize, 1usize), (1, 2), (2, 0)] {
+        for t in tris {
+            let a = t[i];
+            let b = t[j];
             let key = if a < b { (a, b) } else { (b, a) };
             if count.get(&key) == Some(&1) {
                 out.push((a, b));
@@ -160,69 +176,70 @@ pub fn directed_boundary_edges(tris: &[[u32; 3]]) -> Vec<(u32, u32)> {
 /// that inconsistently wound inputs (mixed face normals) still yield clean
 /// rims. A non-manifold vertex with several incident boundary edges is split
 /// greedily; every used edge appears in at most one loop.
+///
+/// This is a deliberate port of the Python verifier's `defects._boundary_loops`
+/// (insertion-ordered adjacency, vertex-marking greedy) so the kernel and the
+/// verifier decompose a shared-vertex / non-manifold rim identically. The
+/// earlier edge-marking walker chose a different loop through a shared vertex,
+/// which made the plug miss the real holes.
 pub fn build_boundary_loops(directed: &[(u32, u32)]) -> Vec<Vec<u32>> {
-    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
-
+    let mut order: Vec<u32> = Vec::new();
     let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
     for &(a, b) in directed {
         if a == b {
             continue;
         }
-        adj.entry(a).or_default().push(b);
-        adj.entry(b).or_default().push(a);
+        for (x, y) in [(a, b), (b, a)] {
+            if !adj.contains_key(&x) {
+                order.push(x);
+                adj.insert(x, Vec::new());
+            }
+            adj.get_mut(&x).unwrap().push(y);
+        }
     }
 
-    let mut used: HashSet<(u32, u32)> = HashSet::new();
+    let mut used: HashSet<u32> = HashSet::new();
     let mut loops = Vec::new();
-
-    for &(start_a, start_b) in directed {
-        if start_a == start_b || used.contains(&key(start_a, start_b)) {
+    for &start in &order {
+        if used.contains(&start) {
             continue;
         }
-        used.insert(key(start_a, start_b));
-
-        let mut loop_v = vec![start_a, start_b];
-        let mut prev = start_a;
-        let mut cur = start_b;
-        let mut guard = 0usize;
-        let guard_max = directed.len() + 2;
-
-        while cur != start_a {
-            guard += 1;
-            if guard > guard_max {
-                break;
-            }
-            let nbrs = match adj.get(&cur) {
-                Some(v) => v,
-                None => break,
-            };
-            let mut nxt = None;
-            for &cand in nbrs {
-                if cand == prev {
-                    continue;
-                }
-                if !used.contains(&key(cur, cand)) {
-                    nxt = Some(cand);
-                    break;
+        let mut loop_v = vec![start];
+        used.insert(start);
+        let mut prev: Option<u32> = None;
+        let mut cur = start;
+        loop {
+            let mut nxt: Option<u32> = None;
+            if let Some(nbrs) = adj.get(&cur) {
+                for &nb in nbrs {
+                    if Some(nb) == prev {
+                        continue;
+                    }
+                    if nb == start && loop_v.len() > 2 {
+                        nxt = Some(nb);
+                        break;
+                    }
+                    if !used.contains(&nb) {
+                        nxt = Some(nb);
+                        break;
+                    }
                 }
             }
-            let nxt = match nxt {
-                Some(c) => c,
+            match nxt {
                 None => break,
-            };
-            used.insert(key(cur, nxt));
-            prev = cur;
-            cur = nxt;
-            if cur != start_a {
-                loop_v.push(cur);
+                Some(n) if n == start => break,
+                Some(n) => {
+                    used.insert(n);
+                    loop_v.push(n);
+                    prev = Some(cur);
+                    cur = n;
+                }
             }
         }
-
         if loop_v.len() >= 3 {
             loops.push(loop_v);
         }
     }
-
     loops
 }
 
@@ -558,6 +575,20 @@ fn ekey2(a: u32, b: u32) -> (u32, u32) {
     }
 }
 
+/// Undirected edge-use multiplicities for a triangle soup.
+fn edge_use_counts(tris: &[[u32; 3]]) -> HashMap<(u32, u32), i32> {
+    let mut c: HashMap<(u32, u32), i32> = HashMap::with_capacity(tris.len() * 3);
+    for t in tris {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if a == b {
+                continue;
+            }
+            *c.entry(ekey2(a, b)).or_insert(0) += 1;
+        }
+    }
+    c
+}
+
 /// Structural safety gate for one loop's rim-only plug: every triangle must be
 /// non-degenerate, and the plug's boundary edges (those used an odd number of
 /// times) must be exactly the rim edge set. This guarantees no new boundary
@@ -642,17 +673,24 @@ fn plug_gate(
         && cancellation_count(tris, rim, directed_set) * 2 > rim.len()
 }
 
-/// Triangulate one boundary loop with rim vertices only. Returns `None` when
-/// the loop cannot be sealed cleanly (triangulation failure, mixed winding or
-/// a degenerate triangle), in which case the caller leaves the hole open.
+/// Triangulate one boundary loop with rim vertices only.
+///
+/// Returns `Err(reason)` when the loop cannot be sealed cleanly
+/// (triangulation failure, degenerate triangle, or inconsistent winding), in
+/// which case the caller leaves the hole open. `allow_tie` accepts a
+/// winding-orientation tie for small loops: the structural gate already
+/// guarantees the plug's boundary is exactly the rim, and the caller's
+/// edge-collision guard guarantees no edge gains a third face, so the
+/// orientation alone cannot create a non-manifold edge.
 fn triangulate_rim_loop(
     rim: &[u32],
     verts: &[[f64; 3]],
     directed_set: &HashSet<(u32, u32)>,
-) -> Option<Vec<[u32; 3]>> {
+    allow_tie: bool,
+) -> Result<Vec<[u32; 3]>, &'static str> {
     let m = rim.len();
     if m < 3 {
-        return None;
+        return Err("too_small");
     }
     let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
     let local = if m <= PLUG_DP_CAP {
@@ -664,13 +702,13 @@ fn triangulate_rim_loop(
         if std::env::var("TAMP_DBG").is_ok() {
             eprintln!("TAMP_TRI m={} local={} dp_fail", m, local.len());
         }
-        return None;
+        return Err("dp_fail");
     }
 
     // The rim may be consistently or inconsistently wound (scans and legacy
     // fixtures). Both orientations share the same structure/areas; keep the
     // one that cancels the most input boundary edges, and require a strict
-    // majority so a genuinely pinched loop is left open.
+    // majority so a genuinely pinched loop is left open (unless `allow_tie`).
     let base = orient_tris(&local, rim, false);
     let struct_ok = plug_structure_ok(&base, rim, verts);
     let flipped = orient_tris(&local, rim, true);
@@ -683,12 +721,14 @@ fn triangulate_rim_loop(
         );
     }
     if !struct_ok {
-        return None;
+        return Err("degenerate");
     }
-    if cb.max(cf) * 2 <= m {
-        return None;
+    let majority = cb.max(cf) * 2 > m;
+    let tie_ok = allow_tie && cb == cf && cb > 0;
+    if !majority && !tie_ok {
+        return Err("winding");
     }
-    Some(if cf > cb { flipped } else { base })
+    Ok(if cf > cb { flipped } else { base })
 }
 
 /// Main entry point for the L2a Tamponade repair.
@@ -746,6 +786,11 @@ pub fn tamponade_repair(
     let mut plug_inconclusive_count = 0usize;
     let mut plug_face_count = 0usize;
 
+    // Running undirected edge multiplicities, so a plug can be rejected before
+    // it pushes any edge past two faces (i.e. manufactures a non-manifold
+    // edge). Pre-existing non-manifold edges of the input are preserved.
+    let mut edge_count = edge_use_counts(&out_tris);
+
     for loop_v in &loops {
         if let Some(budget) = config.time_budget_s {
             if t0.elapsed().as_secs_f64() > budget {
@@ -765,26 +810,56 @@ pub fn tamponade_repair(
 
         // The min-cut decides only WHETHER this loop is a real hole (its
         // throat separates interior from exterior); it never places a vertex.
-        // An inconclusive cut is treated as a hole (seal with the safe rim
-        // plug) rather than rejected, matching R1 usefulness.
-        match throat_separates(verts, &rim, h, model_diag, &bvh, config) {
-            CutVerdict::NoSeparation => {
-                plug_rejected_count += 1;
-                continue;
+        // A loop small enough that the coarse cut grid cannot resolve it is
+        // treated as a hole without the test. An inconclusive cut is also
+        // treated as a hole (seal with the safe rim plug) rather than rejected,
+        // matching R1 usefulness.
+        let tiny = rim.len() <= TINY_LOOP_MAX;
+        if !tiny {
+            match throat_separates(verts, &rim, h, model_diag, &bvh, config) {
+                CutVerdict::NoSeparation => {
+                    info.loop_diag
+                        .push(format!("m={} rejected:no_separation", rim.len()));
+                    plug_rejected_count += 1;
+                    continue;
+                }
+                CutVerdict::Inconclusive => {
+                    plug_inconclusive_count += 1;
+                }
+                CutVerdict::Separates => {}
             }
-            CutVerdict::Inconclusive => {
-                plug_inconclusive_count += 1;
-            }
-            CutVerdict::Separates => {}
         }
 
-        match triangulate_rim_loop(&rim, verts, &directed_set) {
-            Some(tris) => {
-                plug_face_count += tris.len();
-                out_tris.extend(tris);
+        match triangulate_rim_loop(&rim, verts, &directed_set, tiny) {
+            Ok(cand) => {
+                // Structural safety: never raise an edge above two faces. This
+                // is what keeps a shared-vertex / non-manifold rim from turning
+                // a well-formed cap into a new non-manifold edge.
+                let cand_counts = edge_use_counts(&cand);
+                let collides = cand_counts.iter().any(|(e, &d)| {
+                    edge_count.get(e).copied().unwrap_or(0) + d > 2
+                });
+                if collides {
+                    info.loop_diag
+                        .push(format!("m={} rejected:edge_collision", rim.len()));
+                    plug_rejected_count += 1;
+                    continue;
+                }
+                for (e, &d) in &cand_counts {
+                    *edge_count.entry(*e).or_insert(0) += d;
+                }
+                plug_face_count += cand.len();
+                out_tris.extend(cand);
                 plug_count += 1;
+                info.loop_diag.push(format!(
+                    "m={} sealed{}",
+                    rim.len(),
+                    if tiny { ":tiny" } else { "" }
+                ));
             }
-            None => {
+            Err(why) => {
+                info.loop_diag
+                    .push(format!("m={} rejected:{}", rim.len(), why));
                 plug_rejected_count += 1;
             }
         }
@@ -1043,7 +1118,8 @@ mod tests {
             .map(|i| (rim[i], rim[(i + 1) % rim.len()]))
             .collect();
         let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
-        let tris = triangulate_rim_loop(&rim, &verts, &directed_set).expect("slot must seal");
+        let tris = triangulate_rim_loop(&rim, &verts, &directed_set, false)
+            .expect("slot must seal");
         assert_eq!(tris.len(), rim.len() - 2);
         for t in &tris {
             for &v in t {
@@ -1054,6 +1130,39 @@ mod tests {
         // No directed edge of the plug is left without its reverse except the
         // rim cancellation edges.
         assert_eq!(boundary_edge_count(&tris), rim.len());
+    }
+
+    #[test]
+    fn test_boundary_loops_disjoint_squares() {
+        // Two disjoint square rims must decompose into two 4-loops and must not
+        // be merged: the half-edges are emitted block-stacked, matching the
+        // Python verifier's `defects._boundary_edges`.
+        let tris = vec![[0u32, 1, 2], [0, 2, 3], [4, 5, 6], [4, 6, 7]];
+        let directed = directed_boundary_edges(&tris);
+        assert_eq!(
+            directed,
+            vec![(0, 1), (4, 5), (1, 2), (2, 3), (5, 6), (6, 7), (3, 0), (7, 4)]
+        );
+        let loops = build_boundary_loops(&directed);
+        assert_eq!(loops, vec![vec![0u32, 1, 2, 3], vec![4u32, 5, 6, 7]]);
+    }
+
+    #[test]
+    fn test_boundary_loops_shared_vertex_fixture() {
+        // Two rims meeting at the shared vertices 0 and 3. The old edge-marking
+        // walker over the per-face half-edge order merged them into a single
+        // 7-vertex loop; the block-stacked order plus the vertex-marking walker
+        // (a port of the Python verifier's `defects._boundary_loops`) returns
+        // this decomposition. Regression for the thingi10k_100827 hole mismatch
+        // where the kernel's loops did not match `defects.detect`.
+        let tris = vec![[1u32, 3, 2], [0, 3, 4], [0, 1, 2]];
+        let directed = directed_boundary_edges(&tris);
+        assert_eq!(
+            directed,
+            vec![(1, 3), (0, 3), (0, 1), (3, 2), (3, 4), (4, 0), (2, 0)]
+        );
+        let loops = build_boundary_loops(&directed);
+        assert_eq!(loops, vec![vec![1u32, 3, 0]]);
     }
 
     #[test]
