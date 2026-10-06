@@ -8,14 +8,26 @@
 //! boundary loop. A local occupancy grid is built around the loop; the
 //! generalized winding number classifies interior (source) and exterior
 //! (sink) cells, wall-crossing cell edges are removed, and the minimum
-//! s-t cut locates the narrowest throat of the opening. The plug is a cap of
-//! the rim loop through an apex placed at the throat centroid, so the result
-//! is reload-watertight by construction.
+//! s-t cut is used only to DECIDE whether the loop's throat region really
+//! separates source from sink (i.e. whether it is a hole worth sealing). The
+//! plug itself is a rim-only triangulation (Liepa-style minimum-area dynamic
+//! programme, ear-clip fallback) that adds no vertices at all, so every plug
+//! vertex lies exactly on the input surface. A per-loop safety gate rejects a
+//! plug that would introduce a boundary edge, a zero-area triangle or a
+//! winding inconsistent with the rim.
 
+use crate::flap::dp::min_area_triangulation;
 use crate::mincut::BkGraph;
 use crate::winding::MeshBvh;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
+
+/// Boundary loops up to this size are triangulated by the exact O(n^3)
+/// minimum-area DP; larger loops use the O(n^2) ear-clipping fallback.
+const PLUG_DP_CAP: usize = 300;
+/// Plug triangles with an area at or below this (in the mesh's units, squared)
+/// are treated as degenerate and cause the loop's plug to be rejected.
+const PLUG_MIN_AREA: f64 = 1e-12;
 
 #[derive(Clone, Debug)]
 pub struct TamponadeConfig {
@@ -39,6 +51,7 @@ impl Default for TamponadeConfig {
 #[derive(Clone, Debug, Default)]
 pub struct TamponadeInfo {
     pub plugs: usize,
+    pub plugs_rejected: usize,
     pub plug_faces: usize,
     pub melt_layers_tried: usize,
     pub melt_layers_accepted: usize,
@@ -223,18 +236,20 @@ fn crosses_wall(bvh: &MeshBvh, p1: [f64; 3], p2: [f64; 3]) -> bool {
     hit.crossings > 0
 }
 
-/// Localize the narrowest throat of one open boundary loop with a minimum
-/// s-t cut over an occupancy grid. Returns the area-weighted centroid of the
-/// cut faces, or `None` when no clean cut exists (caller falls back to a flat
-/// cap of the rim).
-fn find_throat_centroid(
+/// Decide whether one open boundary loop is a genuine hole to seal: build a
+/// local occupancy grid around the loop, classify interior (source) and
+/// exterior (sink) cells by the generalized winding number, treat cell edges
+/// crossing an input triangle as impassable walls, and report whether a
+/// minimum s-t cut of finite, non-trivial value separates the two. The cut is
+/// used ONLY as this decision; no vertex is ever placed at the cut.
+fn throat_separates(
     verts: &[[f64; 3]],
     loop_v: &[u32],
     h: f64,
     model_diag: f64,
     bvh: &MeshBvh,
     config: &TamponadeConfig,
-) -> Option<[f64; 3]> {
+) -> bool {
     const TERM: f64 = 1.0e12;
 
     let mut bbox = BBox::empty();
@@ -242,7 +257,7 @@ fn find_throat_centroid(
         bbox.expand_point(verts[v as usize]);
     }
     if !bbox.min[0].is_finite() {
-        return None;
+        return false;
     }
     let pad = (3.0 * h).max(0.15 * model_diag);
     bbox.pad(pad);
@@ -258,7 +273,7 @@ fn find_throat_centroid(
     let total = nx * ny * nz;
     let cap = config.max_nodes.unwrap_or(400_000);
     if total > cap {
-        return None;
+        return false;
     }
 
     let hx = dx / nx as f64;
@@ -325,77 +340,303 @@ fn find_throat_centroid(
     }
 
     let flow = g.maxflow();
-    if !flow.is_finite() || flow <= 1e-12 || flow >= 1e11 {
-        return None;
-    }
+    flow.is_finite() && flow > 1e-12 && flow < 1e11
+}
 
-    // Area-weighted centroid of the S/T interface faces (non-wall only).
-    let mut acc = [0.0f64; 3];
-    let mut wsum = 0.0f64;
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let u = cell_idx(ix, iy, iz);
-                if !g.is_in_source(u) {
+/// Cross product z/area helper: the area of triangle `(a, b, c)`.
+#[inline]
+fn tri_area(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let cx = ab[1] * ac[2] - ab[2] * ac[1];
+    let cy = ab[2] * ac[0] - ab[0] * ac[2];
+    let cz = ab[0] * ac[1] - ab[1] * ac[0];
+    0.5 * (cx * cx + cy * cy + cz * cz).sqrt()
+}
+
+#[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+#[inline]
+fn norm3(a: [f64; 3]) -> f64 {
+    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
+}
+
+/// Newell's method: a robust best-fit normal of a (possibly non-planar) 3-D
+/// polygon given by its vertices in loop order.
+fn newell_normal(p: &[[f64; 3]]) -> [f64; 3] {
+    let m = p.len();
+    let mut n = [0.0f64; 3];
+    for i in 0..m {
+        let a = p[i];
+        let b = p[(i + 1) % m];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    n
+}
+
+/// Ear-clipping triangulation of a simple 3-D polygon `p`, used as the
+/// O(n^2) fallback above `PLUG_DP_CAP`. Returns local index triples with a
+/// consistent orientation, or an empty vec when no ear can be found.
+fn ear_clip(p: &[[f64; 3]]) -> Vec<[u32; 3]> {
+    let m = p.len();
+    if m < 3 {
+        return Vec::new();
+    }
+    let n0 = newell_normal(p);
+    let nl = norm3(n0);
+    if nl < 1e-20 {
+        return Vec::new();
+    }
+    let n = [n0[0] / nl, n0[1] / nl, n0[2] / nl];
+    let refv = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let u0 = cross3(refv, n);
+    let ul = norm3(u0);
+    if ul < 1e-20 {
+        return Vec::new();
+    }
+    let u = [u0[0] / ul, u0[1] / ul, u0[2] / ul];
+    let v = cross3(n, u);
+    let p2: Vec<[f64; 2]> = p
+        .iter()
+        .map(|q| {
+            let d = [q[0] - p[0][0], q[1] - p[0][1], q[2] - p[0][2]];
+            [dot3(d, u), dot3(d, v)]
+        })
+        .collect();
+
+    // Polygon orientation in the projected plane.
+    let mut signed = 0.0f64;
+    for i in 0..m {
+        let a = p2[i];
+        let b = p2[(i + 1) % m];
+        signed += a[0] * b[1] - b[0] * a[1];
+    }
+    let mut order: Vec<usize> = if signed >= 0.0 {
+        (0..m).collect()
+    } else {
+        (0..m).rev().collect()
+    };
+
+    let mut out: Vec<[u32; 3]> = Vec::with_capacity(m - 2);
+    let mut guard = 0usize;
+    while order.len() > 3 {
+        guard += 1;
+        if guard > m * m + 4 {
+            return Vec::new();
+        }
+        let l = order.len();
+        let mut clipped = false;
+        for i in 0..l {
+            let ia = order[(i + l - 1) % l];
+            let ib = order[i];
+            let ic = order[(i + 1) % l];
+            let a = p2[ia];
+            let b = p2[ib];
+            let c = p2[ic];
+            let cr = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            if cr <= 1e-20 {
+                continue;
+            }
+            let mut ok = true;
+            for &j in &order {
+                if j == ia || j == ib || j == ic {
                     continue;
                 }
-                let cu = cell_center(ix, iy, iz);
-                let mut add = |cv: [f64; 3]| {
-                    acc[0] += 0.5 * (cu[0] + cv[0]);
-                    acc[1] += 0.5 * (cu[1] + cv[1]);
-                    acc[2] += 0.5 * (cu[2] + cv[2]);
-                    wsum += 1.0;
-                };
-                if ix + 1 < nx {
-                    let v = cell_idx(ix + 1, iy, iz);
-                    let cv = cell_center(ix + 1, iy, iz);
-                    if !g.is_in_source(v) && !crosses_wall(bvh, cu, cv) {
-                        add(cv);
-                    }
-                }
-                if ix > 0 {
-                    let v = cell_idx(ix - 1, iy, iz);
-                    let cv = cell_center(ix - 1, iy, iz);
-                    if !g.is_in_source(v) && !crosses_wall(bvh, cu, cv) {
-                        add(cv);
-                    }
-                }
-                if iy + 1 < ny {
-                    let v = cell_idx(ix, iy + 1, iz);
-                    let cv = cell_center(ix, iy + 1, iz);
-                    if !g.is_in_source(v) && !crosses_wall(bvh, cu, cv) {
-                        add(cv);
-                    }
-                }
-                if iy > 0 {
-                    let v = cell_idx(ix, iy - 1, iz);
-                    let cv = cell_center(ix, iy - 1, iz);
-                    if !g.is_in_source(v) && !crosses_wall(bvh, cu, cv) {
-                        add(cv);
-                    }
-                }
-                if iz + 1 < nz {
-                    let v = cell_idx(ix, iy, iz + 1);
-                    let cv = cell_center(ix, iy, iz + 1);
-                    if !g.is_in_source(v) && !crosses_wall(bvh, cu, cv) {
-                        add(cv);
-                    }
-                }
-                if iz > 0 {
-                    let v = cell_idx(ix, iy, iz - 1);
-                    let cv = cell_center(ix, iy, iz - 1);
-                    if !g.is_in_source(v) && !crosses_wall(bvh, cu, cv) {
-                        add(cv);
-                    }
+                let q = p2[j];
+                let d1 = (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]);
+                let d2 = (c[0] - b[0]) * (q[1] - b[1]) - (c[1] - b[1]) * (q[0] - b[0]);
+                let d3 = (a[0] - c[0]) * (q[1] - c[1]) - (a[1] - c[1]) * (q[0] - c[0]);
+                if d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0 {
+                    ok = false;
+                    break;
                 }
             }
+            if ok {
+                out.push([ia as u32, ib as u32, ic as u32]);
+                order.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        if !clipped {
+            return Vec::new();
+        }
+    }
+    out.push([order[0] as u32, order[1] as u32, order[2] as u32]);
+    out
+}
+
+/// Rewind a local triangulation onto the global `rim` indices.
+fn orient_tris(local: &[[u32; 3]], rim: &[u32], flip: bool) -> Vec<[u32; 3]> {
+    local
+        .iter()
+        .map(|t| {
+            let a = rim[t[0] as usize];
+            let b = rim[t[1] as usize];
+            let c = rim[t[2] as usize];
+            if flip {
+                [a, c, b]
+            } else {
+                [a, b, c]
+            }
+        })
+        .collect()
+}
+
+#[inline]
+fn ekey2(a: u32, b: u32) -> (u32, u32) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Structural safety gate for one loop's rim-only plug: every triangle must be
+/// non-degenerate, and the plug's boundary edges (those used an odd number of
+/// times) must be exactly the rim edge set. This guarantees no new boundary
+/// edge is introduced and each rim edge gains exactly one cap face. The check
+/// is independent of the plug's overall winding.
+fn plug_structure_ok(tris: &[[u32; 3]], rim: &[u32], verts: &[[f64; 3]]) -> bool {
+    let mut count: HashMap<(u32, u32), i32> = HashMap::with_capacity(tris.len() * 3);
+    for t in tris {
+        if tri_area(
+            verts[t[0] as usize],
+            verts[t[1] as usize],
+            verts[t[2] as usize],
+        ) <= PLUG_MIN_AREA
+        {
+            return false;
+        }
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if a == b {
+                return false;
+            }
+            *count.entry(ekey2(a, b)).or_insert(0) += 1;
         }
     }
 
-    if wsum <= 0.0 {
+    let mut boundary: HashSet<(u32, u32)> = HashSet::new();
+    for (&e, &c) in &count {
+        if c % 2 == 1 {
+            boundary.insert(e);
+        }
+    }
+    let m = rim.len();
+    let mut rim_edges: HashSet<(u32, u32)> = HashSet::with_capacity(m);
+    for i in 0..m {
+        rim_edges.insert(ekey2(rim[i], rim[(i + 1) % m]));
+    }
+    boundary == rim_edges
+}
+
+/// Count how many rim edges the plug caps in the direction opposite to their
+/// incident input triangle (a consistent cap cancels every edge; a
+/// mixed-winding rim can only cancel a majority).
+fn cancellation_count(tris: &[[u32; 3]], rim: &[u32], directed_set: &HashSet<(u32, u32)>) -> usize {
+    let mut dir: HashSet<(u32, u32)> = HashSet::with_capacity(tris.len() * 3);
+    for t in tris {
+        dir.insert((t[0], t[1]));
+        dir.insert((t[1], t[2]));
+        dir.insert((t[2], t[0]));
+    }
+    let m = rim.len();
+    let mut cancels = 0usize;
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        if a == b {
+            continue;
+        }
+        let boundary = if directed_set.contains(&(a, b)) {
+            (a, b)
+        } else if directed_set.contains(&(b, a)) {
+            (b, a)
+        } else {
+            continue;
+        };
+        if dir.contains(&(boundary.1, boundary.0)) && !dir.contains(&boundary) {
+            cancels += 1;
+        }
+    }
+    cancels
+}
+
+/// Full safety gate: structure plus a strict-majority winding agreement with
+/// the rim. A loop failing either is left open. Exercised by the unit tests;
+/// the production path uses the two halves directly to pick the orientation.
+#[cfg(test)]
+fn plug_gate(
+    tris: &[[u32; 3]],
+    rim: &[u32],
+    directed_set: &HashSet<(u32, u32)>,
+    verts: &[[f64; 3]],
+) -> bool {
+    plug_structure_ok(tris, rim, verts)
+        && cancellation_count(tris, rim, directed_set) * 2 > rim.len()
+}
+
+/// Triangulate one boundary loop with rim vertices only. Returns `None` when
+/// the loop cannot be sealed cleanly (triangulation failure, mixed winding or
+/// a degenerate triangle), in which case the caller leaves the hole open.
+fn triangulate_rim_loop(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    directed_set: &HashSet<(u32, u32)>,
+) -> Option<Vec<[u32; 3]>> {
+    let m = rim.len();
+    if m < 3 {
         return None;
     }
-    Some([acc[0] / wsum, acc[1] / wsum, acc[2] / wsum])
+    let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    let local = if m <= PLUG_DP_CAP {
+        min_area_triangulation(&pts, PLUG_DP_CAP, &HashSet::new())
+    } else {
+        ear_clip(&pts)
+    };
+    if local.len() != m - 2 {
+        if std::env::var("TAMP_DBG").is_ok() {
+            eprintln!("TAMP_TRI m={} local={} dp_fail", m, local.len());
+        }
+        return None;
+    }
+
+    // The rim may be consistently or inconsistently wound (scans and legacy
+    // fixtures). Both orientations share the same structure/areas; keep the
+    // one that cancels the most input boundary edges, and require a strict
+    // majority so a genuinely pinched loop is left open.
+    let base = orient_tris(&local, rim, false);
+    let struct_ok = plug_structure_ok(&base, rim, verts);
+    let flipped = orient_tris(&local, rim, true);
+    let cb = cancellation_count(&base, rim, directed_set);
+    let cf = cancellation_count(&flipped, rim, directed_set);
+    if std::env::var("TAMP_DBG").is_ok() {
+        eprintln!(
+            "TAMP_TRI m={} struct={} cb={} cf={}",
+            m, struct_ok, cb, cf
+        );
+    }
+    if !struct_ok {
+        return None;
+    }
+    if cb.max(cf) * 2 <= m {
+        return None;
+    }
+    Some(if cf > cb { flipped } else { base })
 }
 
 /// Main entry point for the L2a Tamponade repair.
@@ -446,9 +687,10 @@ pub fn tamponade_repair(
     }
     let model_diag = model_box.diagonal().max(h);
 
-    let mut out_verts = verts.to_vec();
+    let out_verts = verts.to_vec();
     let mut out_tris = tris.to_vec();
     let mut plug_count = 0usize;
+    let mut plug_rejected_count = 0usize;
     let mut plug_face_count = 0usize;
 
     for loop_v in &loops {
@@ -468,45 +710,27 @@ pub fn tamponade_repair(
             continue;
         }
 
-        let mut rim_centroid = [0.0f64; 3];
-        for &v in &rim {
-            let p = out_verts[v as usize];
-            rim_centroid[0] += p[0];
-            rim_centroid[1] += p[1];
-            rim_centroid[2] += p[2];
+        // The min-cut decides only WHETHER this loop is a real hole (its
+        // throat separates interior from exterior); it never places a vertex.
+        if !throat_separates(verts, &rim, h, model_diag, &bvh, config) {
+            plug_rejected_count += 1;
+            continue;
         }
-        let n = rim.len() as f64;
-        rim_centroid[0] /= n;
-        rim_centroid[1] /= n;
-        rim_centroid[2] /= n;
 
-        let apex = find_throat_centroid(verts, &rim, h, model_diag, &bvh, config).unwrap_or(rim_centroid);
-        let apex_id = out_verts.len() as u32;
-        out_verts.push(apex);
-
-        let m = rim.len();
-        for i in 0..m {
-            let a = rim[i];
-            let b = rim[(i + 1) % m];
-            if a == b {
-                continue;
+        match triangulate_rim_loop(&rim, verts, &directed_set) {
+            Some(tris) => {
+                plug_face_count += tris.len();
+                out_tris.extend(tris);
+                plug_count += 1;
             }
-            // Boundary edge is directed a -> b by its incident triangle; the
-            // cap contributes the opposite orientation b -> a.
-            let tri = if directed_set.contains(&(a, b)) {
-                [apex_id, b, a]
-            } else if directed_set.contains(&(b, a)) {
-                [apex_id, a, b]
-            } else {
-                [apex_id, b, a]
-            };
-            out_tris.push(tri);
-            plug_face_count += 1;
+            None => {
+                plug_rejected_count += 1;
+            }
         }
-        plug_count += 1;
     }
 
     info.plugs = plug_count;
+    info.plugs_rejected = plug_rejected_count;
     info.plug_faces = plug_face_count;
     if info.reason.is_empty() {
         info.reason = "ok".to_string();
@@ -579,6 +803,16 @@ mod tests {
         directed_boundary_edges(tris).len()
     }
 
+    /// Vertices referenced by the added (plug) triangles that follow the
+    /// `kept` original triangles.
+    fn plug_vertex_set(out_tris: &[[u32; 3]], kept: usize) -> HashSet<u32> {
+        let mut vs = HashSet::new();
+        for t in &out_tris[kept..] {
+            vs.extend(t.iter().copied());
+        }
+        vs
+    }
+
     #[test]
     fn test_closed_sphere_untouched() {
         let (verts, tris) = unit_sphere();
@@ -608,20 +842,27 @@ mod tests {
         // Reload-watertight: no remaining boundary edges.
         assert_eq!(boundary_edge_count(&out_tris), 0);
 
-        // Flat plug flush with the top rim (z = 1).
-        assert_eq!(out_verts.len(), verts.len() + 1);
-        let apex = out_verts[out_verts.len() - 1];
-        assert!((apex[2] - 1.0).abs() < 0.2, "apex z = {} should be near 1.0", apex[2]);
+        // Rim-only plug: no vertex is added, and the plug references exactly
+        // the four top-rim vertices (indices 4..8 at z = 1).
+        assert_eq!(out_verts.len(), verts.len());
+        let plug_vs = plug_vertex_set(&out_tris, tris.len());
+        let rim: HashSet<u32> = [4, 5, 6, 7].into_iter().collect();
+        assert_eq!(plug_vs, rim);
+        for &v in &plug_vs {
+            assert!((out_verts[v as usize][2] - 1.0).abs() < 1e-9);
+        }
     }
 
     #[test]
     fn test_open_top_cube_flush_throat() {
-        // Finer grid: the cut must still land at the opening.
+        // Finer grid: the throat decision must still accept the opening.
         let (verts, tris) = unit_cube_open_top();
         let config = TamponadeConfig { h_min: Some(0.25), ..Default::default() };
-        let (_out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        let (out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
         assert_eq!(info.plugs, 1);
+        assert_eq!(info.plugs_rejected, 0);
         assert_eq!(boundary_edge_count(&out_tris), 0);
+        assert_eq!(out_verts.len(), verts.len());
     }
 
     #[test]
@@ -651,10 +892,12 @@ mod tests {
             assert_eq!(out_tris[i], tris[i]);
         }
 
-        // One new apex, near the top plane (the opening lies at z = 1).
-        assert_eq!(out_verts.len(), verts.len() + 1);
-        let apex = out_verts[out_verts.len() - 1];
-        assert!((apex[2] - 1.0).abs() < 0.25, "apex z = {} should be near 1.0", apex[2]);
+        // Rim-only plug: no vertex is added and every plug vertex lies on the
+        // top plane (the opening lies at z = 1).
+        assert_eq!(out_verts.len(), verts.len());
+        for &v in &plug_vertex_set(&out_tris, tris.len()) {
+            assert!((out_verts[v as usize][2] - 1.0).abs() < 1e-9);
+        }
     }
 
     /// Extrude a \(1 \times 1\) square cross-section along x over `xs`
@@ -702,9 +945,9 @@ mod tests {
     }
 
     #[test]
-    fn test_off_center_opening_apex_follows_hole() {
+    fn test_off_center_opening_sealed_on_rim() {
         // A long solid bar (x in [0,4]) whose top is missing over x in [2,4].
-        // The apex must sit inside that opening, not at the bar centroid x=2.
+        // The plug must cover only that opening (no vertex at the bar centroid).
         let xs = [0.0, 1.0, 2.0, 3.0, 4.0];
         let (verts, tris) = extruded_box(&xs, &[2, 3]);
         assert_eq!(boundary_edge_count(&tris) > 0, true);
@@ -713,9 +956,42 @@ mod tests {
         assert_eq!(info.reason, "ok");
         assert_eq!(info.plugs, 1);
         assert_eq!(boundary_edge_count(&out_tris), 0);
-        let apex = out_verts[out_verts.len() - 1];
-        assert!(apex[0] > 2.5, "apex x = {} should follow the opening", apex[0]);
-        assert!((apex[2] - 1.0).abs() < 0.25, "apex z = {} should be near 1.0", apex[2]);
+        assert_eq!(out_verts.len(), verts.len());
+        for &v in &plug_vertex_set(&out_tris, tris.len()) {
+            assert!(out_verts[v as usize][0] >= 2.0 - 1e-9, "plug vertex x should follow the opening");
+            assert!((out_verts[v as usize][2] - 1.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_long_thin_slot_loop_sealed_without_new_vertices() {
+        // A 2.0 x 0.02 rectangular rim (8 vertices) is the canonical long,
+        // thin slot: the DP must triangulate it with rim vertices only.
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 0.02, 0.0],
+            [1.0, 0.02, 0.0],
+            [0.0, 0.02, 0.0],
+            [0.0, 0.01, 0.0], // slight non-planarity so the fit plane is real
+        ];
+        let rim: Vec<u32> = (0..verts.len() as u32).collect();
+        let directed: Vec<(u32, u32)> = (0..rim.len())
+            .map(|i| (rim[i], rim[(i + 1) % rim.len()]))
+            .collect();
+        let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
+        let tris = triangulate_rim_loop(&rim, &verts, &directed_set).expect("slot must seal");
+        assert_eq!(tris.len(), rim.len() - 2);
+        for t in &tris {
+            for &v in t {
+                assert!((v as usize) < verts.len());
+            }
+        }
+        assert!(plug_gate(&tris, &rim, &directed_set, &verts));
+        // No directed edge of the plug is left without its reverse except the
+        // rim cancellation edges.
+        assert_eq!(boundary_edge_count(&tris), rim.len());
     }
 
     #[test]
@@ -725,9 +1001,11 @@ mod tests {
         let xs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
         let (verts, tris) = extruded_box(&xs, &[1, 3]);
         let config = TamponadeConfig { h_min: Some(0.25), ..Default::default() };
-        let (_out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        let (out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
         assert_eq!(info.reason, "ok");
         assert_eq!(info.plugs, 2);
+        assert_eq!(info.plugs_rejected, 0);
         assert_eq!(boundary_edge_count(&out_tris), 0);
+        assert_eq!(out_verts.len(), verts.len());
     }
 }

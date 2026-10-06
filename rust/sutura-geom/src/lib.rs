@@ -732,10 +732,14 @@ fn dressing_coat<'py>(
 
 /// Tamponade (Method #17): seal open holes at their narrowest throat.
 ///
-/// L2a: every input triangle is returned verbatim, plus one fan cap per open
-/// boundary loop through an apex placed at the minimum s-t cut throat. Returns
-/// `(verts, tris, info)`; a closed, empty or boundary-free input is returned
-/// byte-identical with `info["reason"] == "no_holes"`.
+/// L2a: every input triangle is returned verbatim, plus one rim-only plug per
+/// open boundary loop the min-cut accepts as a real hole. The plug is a
+/// minimum-area triangulation of the loop's own vertices (no new vertex), so
+/// it stays on the surface; a safety gate rejects a plug that would add a
+/// boundary edge, a zero-area face or an inconsistent winding
+/// (`info["plugs_rejected"]` counts those loops). Returns `(verts, tris,
+/// info)`; a closed, empty or boundary-free input is returned byte-identical
+/// with `info["reason"] == "no_holes"`.
 #[pyfunction]
 #[pyo3(name = "tamponade")]
 #[pyo3(signature = (verts, tris, h_min=None, melt_si=true, max_nodes=None, time_budget_s=None))]
@@ -786,6 +790,7 @@ fn tamponade_py<'py>(
 
     let d = PyDict::new(py);
     d.set_item("plugs", info.plugs)?;
+    d.set_item("plugs_rejected", info.plugs_rejected)?;
     d.set_item("plug_faces", info.plug_faces)?;
     d.set_item("melt_layers_tried", info.melt_layers_tried)?;
     d.set_item("melt_layers_accepted", info.melt_layers_accepted)?;
