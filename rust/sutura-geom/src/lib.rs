@@ -791,6 +791,7 @@ fn tamponade_py<'py>(
     let d = PyDict::new(py);
     d.set_item("plugs", info.plugs)?;
     d.set_item("plugs_rejected", info.plugs_rejected)?;
+    d.set_item("plugs_inconclusive", info.plugs_inconclusive)?;
     d.set_item("plug_faces", info.plug_faces)?;
     d.set_item("melt_layers_tried", info.melt_layers_tried)?;
     d.set_item("melt_layers_accepted", info.melt_layers_accepted)?;

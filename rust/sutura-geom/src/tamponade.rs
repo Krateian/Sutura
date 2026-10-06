@@ -52,6 +52,7 @@ impl Default for TamponadeConfig {
 pub struct TamponadeInfo {
     pub plugs: usize,
     pub plugs_rejected: usize,
+    pub plugs_inconclusive: usize,
     pub plug_faces: usize,
     pub melt_layers_tried: usize,
     pub melt_layers_accepted: usize,
@@ -242,14 +243,26 @@ fn crosses_wall(bvh: &MeshBvh, p1: [f64; 3], p2: [f64; 3]) -> bool {
 /// crossing an input triangle as impassable walls, and report whether a
 /// minimum s-t cut of finite, non-trivial value separates the two. The cut is
 /// used ONLY as this decision; no vertex is ever placed at the cut.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CutVerdict {
+    /// A finite, non-trivial cut separates the loop's interior from outside.
+    Separates,
+    /// No path connects the interior tag to the border (flow ~ 0).
+    NoSeparation,
+    /// The decision cannot be trusted (flow overflowed, the grid budget was
+    /// exceeded, or the clamp left too few cells across the throat); the
+    /// caller seals with the safe rim-only plug instead of rejecting.
+    Inconclusive,
+}
+
 fn throat_separates(
     verts: &[[f64; 3]],
     loop_v: &[u32],
-    h: f64,
-    model_diag: f64,
+    h_global: f64,
+    _model_diag: f64,
     bvh: &MeshBvh,
     config: &TamponadeConfig,
-) -> bool {
+) -> CutVerdict {
     const TERM: f64 = 1.0e12;
 
     let mut bbox = BBox::empty();
@@ -257,14 +270,33 @@ fn throat_separates(
         bbox.expand_point(verts[v as usize]);
     }
     if !bbox.min[0].is_finite() {
-        return false;
+        return CutVerdict::NoSeparation;
     }
-    let pad = (3.0 * h).max(0.15 * model_diag);
+
+    // Size the local window from the LOOP, not the model: resolve the loop
+    // diameter with ~24 cells and pad by 1.5 loop diameters on every side.
+    let loop_diag = bbox.diagonal().max(h_global);
+    let h_desired = (loop_diag / 24.0).max(1e-9);
+    let pad = (3.0 * h_desired).max(1.5 * loop_diag);
     bbox.pad(pad);
 
-    let dx = (bbox.max[0] - bbox.min[0]).max(h);
-    let dy = (bbox.max[1] - bbox.min[1]).max(h);
-    let dz = (bbox.max[2] - bbox.min[2]).max(h);
+    // Coarsen the voxel until no axis exceeds 64 cells (window <= 64^3).
+    let span = [
+        (bbox.max[0] - bbox.min[0]).max(h_desired),
+        (bbox.max[1] - bbox.min[1]).max(h_desired),
+        (bbox.max[2] - bbox.min[2]).max(h_desired),
+    ];
+    let mut h = h_desired;
+    for &s in &span {
+        h = h.max(s / 64.0);
+    }
+    // A clamp that leaves fewer than ~8 cells across the loop cannot resolve
+    // the throat, so the cut is treated as unknown.
+    let clamped = h > 1.0001 * h_desired && h > loop_diag / 8.0;
+
+    let dx = span[0];
+    let dy = span[1];
+    let dz = span[2];
 
     let nx = ((dx / h).ceil() as usize).clamp(2, 64);
     let ny = ((dy / h).ceil() as usize).clamp(2, 64);
@@ -273,7 +305,7 @@ fn throat_separates(
     let total = nx * ny * nz;
     let cap = config.max_nodes.unwrap_or(400_000);
     if total > cap {
-        return false;
+        return CutVerdict::Inconclusive;
     }
 
     let hx = dx / nx as f64;
@@ -291,6 +323,8 @@ fn throat_separates(
     };
 
     let mut g = BkGraph::new(total);
+    let mut n_src = 0usize;
+    let mut n_sink = 0usize;
 
     for iz in 0..nz {
         for iy in 0..ny {
@@ -302,11 +336,20 @@ fn throat_separates(
 
                 if w > 0.5 {
                     g.add_tweights(idx, TERM, 0.0);
+                    n_src += 1;
                 } else if is_border || w < 0.1 {
                     g.add_tweights(idx, 0.0, TERM);
+                    n_sink += 1;
                 }
             }
         }
+    }
+
+    // If the window cannot even see both an interior (source) and an exterior
+    // (sink) cell, the cut has nothing to decide; the loop is treated as
+    // unknown rather than "no hole".
+    if n_src == 0 || n_sink == 0 {
+        return CutVerdict::Inconclusive;
     }
 
     // Open-space connections only: an edge that crosses an input triangle is a
@@ -339,8 +382,17 @@ fn throat_separates(
         }
     }
 
+    if clamped {
+        return CutVerdict::Inconclusive;
+    }
     let flow = g.maxflow();
-    flow.is_finite() && flow > 1e-12 && flow < 1e11
+    if !flow.is_finite() || flow >= 1e11 {
+        CutVerdict::Inconclusive
+    } else if flow > 1e-12 {
+        CutVerdict::Separates
+    } else {
+        CutVerdict::NoSeparation
+    }
 }
 
 /// Cross product z/area helper: the area of triangle `(a, b, c)`.
@@ -691,6 +743,7 @@ pub fn tamponade_repair(
     let mut out_tris = tris.to_vec();
     let mut plug_count = 0usize;
     let mut plug_rejected_count = 0usize;
+    let mut plug_inconclusive_count = 0usize;
     let mut plug_face_count = 0usize;
 
     for loop_v in &loops {
@@ -712,9 +765,17 @@ pub fn tamponade_repair(
 
         // The min-cut decides only WHETHER this loop is a real hole (its
         // throat separates interior from exterior); it never places a vertex.
-        if !throat_separates(verts, &rim, h, model_diag, &bvh, config) {
-            plug_rejected_count += 1;
-            continue;
+        // An inconclusive cut is treated as a hole (seal with the safe rim
+        // plug) rather than rejected, matching R1 usefulness.
+        match throat_separates(verts, &rim, h, model_diag, &bvh, config) {
+            CutVerdict::NoSeparation => {
+                plug_rejected_count += 1;
+                continue;
+            }
+            CutVerdict::Inconclusive => {
+                plug_inconclusive_count += 1;
+            }
+            CutVerdict::Separates => {}
         }
 
         match triangulate_rim_loop(&rim, verts, &directed_set) {
@@ -731,6 +792,7 @@ pub fn tamponade_repair(
 
     info.plugs = plug_count;
     info.plugs_rejected = plug_rejected_count;
+    info.plugs_inconclusive = plug_inconclusive_count;
     info.plug_faces = plug_face_count;
     if info.reason.is_empty() {
         info.reason = "ok".to_string();
