@@ -779,7 +779,7 @@ pub fn tamponade_repair(
     }
     let model_diag = model_box.diagonal().max(h);
 
-    let out_verts = verts.to_vec();
+    let mut out_verts = verts.to_vec();
     let mut out_tris = tris.to_vec();
     let mut plug_count = 0usize;
     let mut plug_rejected_count = 0usize;
@@ -869,6 +869,32 @@ pub fn tamponade_repair(
     info.plugs_rejected = plug_rejected_count;
     info.plugs_inconclusive = plug_inconclusive_count;
     info.plug_faces = plug_face_count;
+
+    // L2b: melt residual self-intersection folds, inside-out, after the hole
+    // plugs are in place.  All logic lives in `melt.rs`; this hook only carries
+    // the counters back.  A no-op when melting is disabled or there is no SI.
+    if config.melt_si {
+        let melt_params = crate::melt::MeltParams::default();
+        let m = crate::melt::melt_si(
+            &out_verts,
+            &out_tris,
+            h,
+            model_diag,
+            config.time_budget_s,
+            &melt_params,
+        );
+        out_verts = m.verts;
+        out_tris = m.tris;
+        info.melt_layers_tried = m.layers_tried;
+        info.melt_layers_accepted = m.layers_accepted;
+        info.melt_layers_rolled_back = m.layers_rolled_back;
+        info.micro_welds_ok = m.micro_welds_ok;
+        info.micro_welds_failed = m.micro_welds_failed;
+        if !m.reason.is_empty() {
+            info.reason = m.reason;
+        }
+    }
+
     if info.reason.is_empty() {
         info.reason = "ok".to_string();
     }
