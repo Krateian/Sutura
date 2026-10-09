@@ -870,7 +870,7 @@ fn self_intersecting_faces<'py>(
 }
 
 /// Core self-intersection scan (no Python): `(mask, count, skipped)`.
-pub(crate) fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
+fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
     let f = tris.len();
     if f == 0 {
         return (Vec::new(), 0, false);
