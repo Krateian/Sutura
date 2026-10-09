@@ -98,6 +98,7 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
               'melt_layers_tried': None, 'melt_layers_accepted': None,
               'melt_layers_rolled_back': None,
               'micro_welds_ok': None, 'micro_welds_failed': None,
+              'excised_faces': None,
               'healthy_faces_kept': None}
     try:
         v = np.asarray(verts, dtype=np.float64)
@@ -127,7 +128,7 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
         for key in ('plugs', 'plug_faces', 'melt_layers_tried',
                     'melt_layers_accepted', 'melt_layers_rolled_back',
                     'micro_welds_ok', 'micro_welds_failed',
-                    'healthy_faces_kept'):
+                    'excised_faces', 'healthy_faces_kept'):
             report[key] = info.get(key)
         if info.get('reason'):
             report['reason'] = info['reason']

@@ -3869,6 +3869,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'plugs': None, 'plug_faces': None, 'melt_layers_tried': None,
            'melt_layers_accepted': None, 'melt_layers_rolled_back': None,
            'micro_welds_ok': None, 'micro_welds_failed': None,
+           'excised_faces': None,
            'healthy_faces_kept': None, 'healthy_fraction': None,
            'input_self_intersections': None,
            'candidate_self_intersections': None, 'si_fall': None,
@@ -3908,7 +3909,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         for key in ('budget_s', 'h_min', 'seconds', 'plugs', 'plug_faces',
                     'melt_layers_tried', 'melt_layers_accepted',
                     'melt_layers_rolled_back', 'micro_welds_ok',
-                    'micro_welds_failed', 'healthy_faces_kept'):
+                    'micro_welds_failed', 'excised_faces',
+                    'healthy_faces_kept'):
             rec[key] = trec.get(key)
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):

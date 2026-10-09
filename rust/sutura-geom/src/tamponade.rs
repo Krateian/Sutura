@@ -65,6 +65,8 @@ pub struct TamponadeInfo {
     pub melt_layers_rolled_back: usize,
     pub micro_welds_ok: usize,
     pub micro_welds_failed: usize,
+    /// Input faces the melt pass excised (accepted layers only).
+    pub excised_faces: usize,
     pub healthy_faces_kept: usize,
     pub seconds: f64,
     pub reason: String,
@@ -892,6 +894,7 @@ pub fn tamponade_repair(
         info.melt_layers_rolled_back = m.layers_rolled_back;
         info.micro_welds_ok = m.micro_welds_ok;
         info.micro_welds_failed = m.micro_welds_failed;
+        info.excised_faces = m.excised_faces;
         info.healthy_faces_kept = info.healthy_faces_kept.saturating_sub(m.excised_faces);
         if !m.reason.is_empty() {
             info.reason = m.reason;
