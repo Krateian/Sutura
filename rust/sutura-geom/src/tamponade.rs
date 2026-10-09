@@ -19,7 +19,7 @@
 use crate::flap::dp::min_area_triangulation;
 use crate::mincut::BkGraph;
 use crate::winding::MeshBvh;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Boundary loops up to this size are triangulated by the exact O(n^3)
@@ -291,6 +291,46 @@ fn deadline_passed(deadline: Option<Instant>) -> bool {
     matches!(deadline, Some(d) if Instant::now() >= d)
 }
 
+/// Path-halving union-find over the occupancy-grid cells, used to group the
+/// non-wall cells into wall-bounded free-space components.
+struct UnionFind {
+    parent: Vec<u32>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        Self { parent: (0..n as u32).collect() }
+    }
+
+    fn find(&mut self, x: usize) -> usize {
+        let mut root = x;
+        while self.parent[root] as usize != root {
+            root = self.parent[root] as usize;
+        }
+        let mut cur = x;
+        while self.parent[cur] as usize != root {
+            let next = self.parent[cur] as usize;
+            self.parent[cur] = root as u32;
+            cur = next;
+        }
+        root
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            // Attach the larger root under the smaller: deterministic and
+            // shallow for the row-major scan order.
+            if ra < rb {
+                self.parent[rb] = ra as u32;
+            } else {
+                self.parent[ra] = rb as u32;
+            }
+        }
+    }
+}
+
 /// Occupancy-grid cell count `throat_separates` would build for a rim (used
 /// only by the profiling instrumentation).
 fn throat_cells(loop_v: &[u32], verts: &[[f64; 3]], h_global: f64) -> usize {
@@ -327,6 +367,7 @@ fn throat_separates(
     _model_diag: f64,
     bvh: &MeshBvh,
     config: &TamponadeConfig,
+    percell: bool,
     deadline: Option<Instant>,
 ) -> CutVerdict {
     const TERM: f64 = 1.0e12;
@@ -389,62 +430,44 @@ fn throat_separates(
     };
 
     let mut g = BkGraph::new(total);
-    let mut n_src = 0usize;
-    let mut n_sink = 0usize;
-
     let prof = std::env::var("SUTURA_TAMP_PROFILE").is_ok();
-    let tw0 = Instant::now();
-    // Winding is the dominant cost: evaluate it a z-slab at a time and fan each
-    // slab out across cores (`winding_points_par`). The per-point result is
-    // independent of the evaluation order, so this is byte-identical to the
-    // former scalar triple loop; the slab granularity lets the deadline abort
-    // mid-grid.
-    for iz in 0..nz {
-        if deadline_passed(deadline) {
-            return CutVerdict::Timeout;
-        }
-        let mut pts: Vec<[f64; 3]> = Vec::with_capacity(nx * ny);
-        for iy in 0..ny {
-            for ix in 0..nx {
-                pts.push(cell_center(ix, iy, iz));
-            }
-        }
-        let ws = bvh.winding_points_par(&pts);
-        let mut k = 0usize;
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let idx = cell_idx(ix, iy, iz);
-                let is_border = ix == 0
-                    || ix == nx - 1
-                    || iy == 0
-                    || iy == ny - 1
-                    || iz == 0
-                    || iz == nz - 1;
-                let w = ws[k];
-                k += 1;
-                if w > 0.5 {
-                    g.add_tweights(idx, TERM, 0.0);
-                    n_src += 1;
-                } else if is_border || w < 0.1 {
-                    g.add_tweights(idx, 0.0, TERM);
-                    n_sink += 1;
-                }
-            }
-        }
-    }
 
-    // If the window cannot even see both an interior (source) and an exterior
-    // (sink) cell, the cut has nothing to decide; the loop is treated as
-    // unknown rather than "no hole".
-    if n_src == 0 || n_sink == 0 {
-        return CutVerdict::Inconclusive;
-    }
+    let center_of = |idx: usize| -> [f64; 3] {
+        let iz = idx / (nx * ny);
+        let rem = idx % (nx * ny);
+        let iy = rem / nx;
+        let ix = rem % nx;
+        cell_center(ix, iy, iz)
+    };
+    let border_of = |idx: usize| -> bool {
+        let iz = idx / (nx * ny);
+        let rem = idx % (nx * ny);
+        let iy = rem / nx;
+        let ix = rem % nx;
+        ix == 0 || ix == nx - 1 || iy == 0 || iy == ny - 1 || iz == 0 || iz == nz - 1
+    };
+    let tag = |w: f64, border: bool| -> i8 {
+        if w > 0.5 {
+            1
+        } else if border || w < 0.1 {
+            2
+        } else {
+            0
+        }
+    };
 
     // Open-space connections only: an edge that crosses an input triangle is a
     // wall and is not traversable, so the cut can only pass through the hole.
-    let winding_s = tw0.elapsed().as_secs_f64();
+    // Union-finding the traversable edges yields the wall-bounded free-space
+    // components in the same pass that builds the graph.
     let te0 = Instant::now();
     let face_cap = h_eff * h_eff;
+    let mut uf = UnionFind::new(total);
+    // `wall_bits` records the blocked forward neighbours of each cell (bit 0
+    // +x, bit 1 +y, bit 2 +z); `near_surface` marks both endpoints of every
+    // blocked edge, the seeds of the distance-to-surface flood fill.
+    let mut wall_bits: Vec<u8> = vec![0u8; total];
+    let mut near_surface: Vec<bool> = vec![false; total];
     for iz in 0..nz {
         if deadline_passed(deadline) {
             return CutVerdict::Timeout;
@@ -455,30 +478,281 @@ fn throat_separates(
                 let c = cell_center(ix, iy, iz);
                 if ix + 1 < nx {
                     let c2 = cell_center(ix + 1, iy, iz);
-                    if !crosses_wall(bvh, c, c2) {
-                        g.add_edge(idx, cell_idx(ix + 1, iy, iz), face_cap, face_cap);
+                    let j = cell_idx(ix + 1, iy, iz);
+                    if crosses_wall(bvh, c, c2) {
+                        wall_bits[idx] |= 1;
+                        near_surface[idx] = true;
+                        near_surface[j] = true;
+                    } else {
+                        g.add_edge(idx, j, face_cap, face_cap);
+                        uf.union(idx, j);
                     }
                 }
                 if iy + 1 < ny {
                     let c2 = cell_center(ix, iy + 1, iz);
-                    if !crosses_wall(bvh, c, c2) {
-                        g.add_edge(idx, cell_idx(ix, iy + 1, iz), face_cap, face_cap);
+                    let j = cell_idx(ix, iy + 1, iz);
+                    if crosses_wall(bvh, c, c2) {
+                        wall_bits[idx] |= 2;
+                        near_surface[idx] = true;
+                        near_surface[j] = true;
+                    } else {
+                        g.add_edge(idx, j, face_cap, face_cap);
+                        uf.union(idx, j);
                     }
                 }
                 if iz + 1 < nz {
                     let c2 = cell_center(ix, iy, iz + 1);
-                    if !crosses_wall(bvh, c, c2) {
-                        g.add_edge(idx, cell_idx(ix, iy, iz + 1), face_cap, face_cap);
+                    let j = cell_idx(ix, iy, iz + 1);
+                    if crosses_wall(bvh, c, c2) {
+                        wall_bits[idx] |= 4;
+                        near_surface[idx] = true;
+                        near_surface[j] = true;
+                    } else {
+                        g.add_edge(idx, j, face_cap, face_cap);
+                        uf.union(idx, j);
                     }
                 }
             }
         }
     }
+    let edges_s = te0.elapsed().as_secs_f64();
+
+    // Distance to the nearest surface, flooded over free space (6-connected
+    // through non-wall edges). The deepest cell of a free-space component is
+    // the most surface-independent sample, so its winding decides the whole
+    // component.
+    let mut dist = vec![u32::MAX; total];
+    {
+        let mut q: VecDeque<usize> = VecDeque::new();
+        for idx in 0..total {
+            if near_surface[idx] {
+                dist[idx] = 0;
+                q.push_back(idx);
+            }
+        }
+        while let Some(idx) = q.pop_front() {
+            let d = dist[idx];
+            let iz = idx / (nx * ny);
+            let rem = idx % (nx * ny);
+            let iy = rem / nx;
+            let ix = rem % nx;
+            let bits = wall_bits[idx];
+            if ix + 1 < nx && bits & 1 == 0 {
+                let j = idx + 1;
+                if dist[j] == u32::MAX {
+                    dist[j] = d + 1;
+                    q.push_back(j);
+                }
+            }
+            if ix > 0 && wall_bits[idx - 1] & 1 == 0 {
+                let j = idx - 1;
+                if dist[j] == u32::MAX {
+                    dist[j] = d + 1;
+                    q.push_back(j);
+                }
+            }
+            if iy + 1 < ny && bits & 2 == 0 {
+                let j = idx + nx;
+                if dist[j] == u32::MAX {
+                    dist[j] = d + 1;
+                    q.push_back(j);
+                }
+            }
+            if iy > 0 && wall_bits[idx - nx] & 2 == 0 {
+                let j = idx - nx;
+                if dist[j] == u32::MAX {
+                    dist[j] = d + 1;
+                    q.push_back(j);
+                }
+            }
+            if iz + 1 < nz && bits & 4 == 0 {
+                let j = idx + nx * ny;
+                if dist[j] == u32::MAX {
+                    dist[j] = d + 1;
+                    q.push_back(j);
+                }
+            }
+            if iz > 0 && wall_bits[idx - nx * ny] & 4 == 0 {
+                let j = idx - nx * ny;
+                if dist[j] == u32::MAX {
+                    dist[j] = d + 1;
+                    q.push_back(j);
+                }
+            }
+        }
+    }
+
+    // Winding only tags each cell. A wall-bounded free-space component is
+    // inside/outside-homogeneous, so the winding is sampled coarsely per
+    // component instead of once per cell; a component whose samples are
+    // inconclusive falls back to the exact per-cell path, which stays
+    // available under SUTURA_TAMP_PERCELL.
+    let tw0 = Instant::now();
+    let mut cls = vec![0i8; total]; // 0 neutral, 1 source, 2 sink
+    if percell {
+        for iz in 0..nz {
+            if deadline_passed(deadline) {
+                return CutVerdict::Timeout;
+            }
+            let mut pts: Vec<[f64; 3]> = Vec::with_capacity(nx * ny);
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    pts.push(cell_center(ix, iy, iz));
+                }
+            }
+            let ws = bvh.winding_points_par(&pts);
+            let mut k = 0usize;
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let idx = cell_idx(ix, iy, iz);
+                    cls[idx] = tag(ws[k], border_of(idx));
+                    k += 1;
+                }
+            }
+        }
+    } else {
+        // A wall-bounded free-space component is inside/outside-homogeneous,
+        // so the winding is evaluated on a deterministic coarse lattice (a few
+        // thousand samples) rather than per cell, plus each component's
+        // deepest-from-surface cell. A component is tagged only when its
+        // in-band (neutral) samples are ignored and every remaining sample
+        // agrees; a component that spans the surface (a real throat), or whose
+        // samples disagree, is re-evaluated per cell exactly as before, so the
+        // occupancy grid is unchanged.
+        const LAT_SAMPLES: usize = 4096;
+        let mut stride = 1usize;
+        while stride < 16
+            && nx.div_ceil(stride) * ny.div_ceil(stride) * nz.div_ceil(stride) > LAT_SAMPLES
+        {
+            stride += 1;
+        }
+        let mut deepest: HashMap<usize, (u32, usize)> = HashMap::new();
+        let mut sample_idx: Vec<usize> = Vec::new();
+        let mut owner: Vec<usize> = Vec::new();
+        for iz in 0..nz {
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let idx = cell_idx(ix, iy, iz);
+                    if dist[idx] == u32::MAX {
+                        continue;
+                    }
+                    let r = uf.find(idx);
+                    let e = deepest.entry(r).or_insert((0, idx));
+                    if dist[idx] > e.0 {
+                        *e = (dist[idx], idx);
+                    }
+                    if ix % stride == 0 && iy % stride == 0 && iz % stride == 0 {
+                        sample_idx.push(idx);
+                        owner.push(r);
+                    }
+                }
+            }
+        }
+        let mut roots: Vec<usize> = deepest.keys().copied().collect();
+        roots.sort_unstable();
+        for &r in &roots {
+            sample_idx.push(deepest.get(&r).unwrap().1);
+            owner.push(r);
+        }
+        let sample_pts: Vec<[f64; 3]> = sample_idx.iter().map(|&c| center_of(c)).collect();
+        if deadline_passed(deadline) {
+            return CutVerdict::Timeout;
+        }
+        let ws = bvh.winding_points_par(&sample_pts);
+        let mut comp_tag: HashMap<usize, i8> = HashMap::new();
+        let mut comp_bad: HashSet<usize> = HashSet::new();
+        for k in 0..sample_idx.len() {
+            let r = owner[k];
+            let t = tag(ws[k], border_of(sample_idx[k]));
+            if t == 0 {
+                // A cell inside the winding band carries no verdict and must
+                // not by itself block the component, or else every component
+                // that merely touches the surface would fall back.
+                continue;
+            }
+            match comp_tag.get(&r) {
+                None => {
+                    comp_tag.insert(r, t);
+                }
+                Some(&prev) => {
+                    if prev != t {
+                        comp_bad.insert(r);
+                    }
+                }
+            }
+        }
+        for r in &comp_bad {
+            comp_tag.remove(r);
+        }
+        if prof {
+            eprintln!(
+                "[tamp]     components roots={} resolved={} samples={}",
+                roots.len(),
+                comp_tag.len(),
+                sample_idx.len()
+            );
+        }
+        // Resolved components: every cell shares the component tag.
+        for idx in 0..total {
+            if let Some(&t) = comp_tag.get(&uf.find(idx)) {
+                cls[idx] = t;
+            }
+        }
+        // Unresolved components: exact per-cell evaluation, one z-slab at a
+        // time so the intra-cut deadline also bounds the fallback.
+        for iz in 0..nz {
+            if deadline_passed(deadline) {
+                return CutVerdict::Timeout;
+            }
+            let mut pts: Vec<[f64; 3]> = Vec::new();
+            let mut idxs: Vec<usize> = Vec::new();
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    let idx = cell_idx(ix, iy, iz);
+                    if comp_tag.contains_key(&uf.find(idx)) {
+                        continue;
+                    }
+                    pts.push(center_of(idx));
+                    idxs.push(idx);
+                }
+            }
+            if pts.is_empty() {
+                continue;
+            }
+            let ws2 = bvh.winding_points_par(&pts);
+            for (k, &idx) in idxs.iter().enumerate() {
+                cls[idx] = tag(ws2[k], border_of(idx));
+            }
+        }
+    }
+    let winding_s = tw0.elapsed().as_secs_f64();
+
+    let mut n_src = 0usize;
+    let mut n_sink = 0usize;
+    for idx in 0..total {
+        match cls[idx] {
+            1 => {
+                g.add_tweights(idx, TERM, 0.0);
+                n_src += 1;
+            }
+            2 => {
+                g.add_tweights(idx, 0.0, TERM);
+                n_sink += 1;
+            }
+            _ => {}
+        }
+    }
+
+    // If the window cannot even see both an interior (source) and an exterior
+    // (sink) cell, the cut has nothing to decide; the loop is treated as
+    // unknown rather than "no hole".
+    if n_src == 0 || n_sink == 0 {
+        return CutVerdict::Inconclusive;
+    }
 
     if clamped {
         return CutVerdict::Inconclusive;
     }
-    let edges_s = te0.elapsed().as_secs_f64();
     let tm0 = Instant::now();
     let flow = g.maxflow();
     let flow_s = tm0.elapsed().as_secs_f64();
@@ -949,6 +1223,9 @@ pub fn tamponade_repair(
     let deadline = config
         .time_budget_s
         .map(|b| t0 + Duration::from_secs_f64(b.max(0.0)));
+    // Debug switch that restores the per-cell winding evaluation, for
+    // byte-identical regression comparison against the per-component path.
+    let percell = std::env::var("SUTURA_TAMP_PERCELL").is_ok();
 
     for loop_v in &loops {
         if deadline_passed(deadline) {
@@ -998,7 +1275,7 @@ pub fn tamponade_repair(
         if !tiny {
             let tc0 = Instant::now();
             let verdict =
-                throat_separates(verts, &rim, h, model_diag, &bvh, config, deadline);
+                throat_separates(verts, &rim, h, model_diag, &bvh, config, percell, deadline);
             let dt = tc0.elapsed().as_secs_f64();
             cut_s += dt;
             if profile {
@@ -1442,5 +1719,37 @@ mod tests {
         // Triangle whose centroid is 5 h off the plane -> rejected.
         let proud: Vec<[u32; 3]> = vec![[0, 1, 3]];
         assert!(!plug_within_plane(&proud, &verts, c0, n, PLUG_MAX_DEV_FACTOR * h));
+    }
+
+    #[test]
+    fn test_component_winding_matches_per_cell() {
+        // The per-component winding classification must equal the per-cell
+        // evaluation: same cut verdict for several fixtures and rims. Runs both
+        // paths explicitly (no env) so it is immune to test-suite ordering.
+        let (cube_v, cube_t) = unit_cube_open_top();
+        let (solid_v, solid_t) = unit_solid_cube();
+        let (sphere_v, sphere_t) = unit_sphere();
+        let fixtures: Vec<(Vec<[f64; 3]>, Vec<[u32; 3]>, Vec<u32>)> = vec![
+            (cube_v, cube_t, vec![4, 5, 6, 7]),
+            (solid_v, solid_t, vec![4, 5, 6, 7]),
+            (sphere_v, sphere_t, vec![0, 1, 2, 3, 4, 5]),
+        ];
+        let config = TamponadeConfig::default();
+        for (verts, tris, rim) in fixtures {
+            let idx: Vec<[usize; 3]> = tris
+                .iter()
+                .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+                .collect();
+            let bvh = MeshBvh::from_arrays(&verts, &idx);
+            for &h in &[0.05_f64, 0.2_f64] {
+                let comp = throat_separates(&verts, &rim, h, 1.0, &bvh, &config, false, None);
+                let percell = throat_separates(&verts, &rim, h, 1.0, &bvh, &config, true, None);
+                assert_eq!(
+                    comp, percell,
+                    "component vs per-cell verdict differ (h={}, rim={:?})",
+                    h, rim
+                );
+            }
+        }
     }
 }
