@@ -1161,7 +1161,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # For inputs with multiple overlapping/nested closed components (e.g. Rubik-style
     # assemblies), dissolves internal interfaces via slight dilation
     # (dilation = 5e-4 * bbox_diagonal, ~0.05 mm for 100 mm object) and boolean union.
-    if mode == 'auto' and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
+    if mode == 'auto' and not tamponade and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
         try:
             import repeat_repair as _rr
             _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
@@ -1343,7 +1343,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # Gated to deep_repair == 'full' (Quick is 'off'; the library default None
     # is untouched) and skipped for mode == 'extreme', which keeps its legacy
     # extreme_extra_passes. A no-op on meshes with no self-intersections.
-    if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled():
+    if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled() and not tamponade:
         ms, _si_rec = si_excise_recap(
             ms, ml, maxholesize=_p['maxholesize'],
             time_budget=_si_excise_budget(triage_spec))
