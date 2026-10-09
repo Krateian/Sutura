@@ -26,6 +26,10 @@ use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleInters
 use crate::winding::MeshBvh;
 use std::collections::{HashMap, HashSet};
 
+/// Hard wall-clock ceiling for the whole melt pass, regardless of the tier
+/// budget.  The per-layer exact SI re-scan dominates on scattered-SI meshes.
+const MELT_MAX_SECONDS: f64 = 8.0;
+
 /// A self-intersection proper-face scan: the face mask, the proper crossing
 /// face pairs (used to cluster folds spatially) and the flagged-face count.
 #[derive(Clone, Debug, Default)]
@@ -702,9 +706,18 @@ pub fn melt_si(
     let mut cur_t = out.tris.clone();
     let mut bvh = bvh;
     let mut si_cur = scan.count;
+    // The melt pass gets a bounded slice of the tier budget: on a mesh with
+    // hundreds of small scattered sectors the per-layer exact SI re-scan is the
+    // dominant cost, and the local gains do not justify spending the whole
+    // Tamponade budget.
+    let budget = Some(
+        time_budget_s
+            .map(|b| b.min(MELT_MAX_SECONDS))
+            .unwrap_or(MELT_MAX_SECONDS),
+    );
 
     for (si, _depth) in ordered.iter().take(params.max_layers) {
-        if let Some(b) = time_budget_s {
+        if let Some(b) = budget {
             if t0.elapsed().as_secs_f64() > b {
                 out.reason = "melt: timeout exceeded".to_string();
                 break;

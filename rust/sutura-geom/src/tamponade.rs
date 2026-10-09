@@ -748,19 +748,21 @@ pub fn tamponade_repair(
     }
 
     let directed = directed_boundary_edges(tris);
-    if directed.is_empty() {
+    let loops = if directed.is_empty() {
+        Vec::new()
+    } else {
+        build_boundary_loops(&directed)
+    };
+    // A closed, boundary-free input has no holes to plug.  It can still carry
+    // residual self-intersections, so the melt pass below must still run;
+    // only skip entirely when melting is disabled too.
+    if loops.is_empty() && !config.melt_si {
         info.reason = "no_holes".to_string();
         info.seconds = t0.elapsed().as_secs_f64();
         return (verts.to_vec(), tris.to_vec(), info);
     }
 
     let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
-    let loops = build_boundary_loops(&directed);
-    if loops.is_empty() {
-        info.reason = "no_holes".to_string();
-        info.seconds = t0.elapsed().as_secs_f64();
-        return (verts.to_vec(), tris.to_vec(), info);
-    }
 
     let h = match config.h_min {
         Some(val) if val > 1e-6 => val,
@@ -897,7 +899,11 @@ pub fn tamponade_repair(
     }
 
     if info.reason.is_empty() {
-        info.reason = "ok".to_string();
+        info.reason = if loops.is_empty() {
+            "no_holes".to_string()
+        } else {
+            "ok".to_string()
+        };
     }
     info.seconds = t0.elapsed().as_secs_f64();
     (out_verts, out_tris, info)
