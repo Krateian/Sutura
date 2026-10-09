@@ -268,6 +268,42 @@ def test_tier_rejects_when_healthy_low():
     print('ok  tier rejects a candidate below the 99% healthy-face floor')
 
 
+def test_tier_adopts_si_only_improvement():
+    # Review C2: a closed mesh whose holes/non-manifold are already 0 but whose
+    # exact self-intersections fall must still be adopted (melt-only win).
+    calls = {'n': 0}
+    real = repair._exact_si_face_count
+
+    def fake_si(verts, tris):
+        calls['n'] += 1
+        return 10 if calls['n'] == 1 else 4
+
+    repair._exact_si_face_count = fake_si
+    try:
+        rec = _tier(_CUBE_F, healthy=len(_CUBE_F))
+    finally:
+        repair._exact_si_face_count = real
+    assert rec['ran'] is True and rec['adopted'] is True, rec
+    assert rec['input_holes'] == 0 and rec['input_non_manifold'] == 0, rec
+    assert rec['input_self_intersections'] == 10, rec
+    assert rec['candidate_self_intersections'] == 4, rec
+    assert rec['si_fall'] is True, rec
+    assert 'SI 10 -> 4' in (rec['reason'] or ''), rec
+    print('ok  tier adopts an SI-only improvement (C2)')
+
+
+def test_tier_skips_closed_si_free_mesh():
+    # A closed mesh with no measured self-intersections must still skip.
+    real = repair._exact_si_face_count
+    repair._exact_si_face_count = lambda v, t: 0
+    try:
+        rec = _tier(_CUBE_F, healthy=len(_CUBE_F))
+    finally:
+        repair._exact_si_face_count = real
+    assert rec['ran'] is False, rec
+    print('ok  tier skips a closed SI-free mesh')
+
+
 # --- 3. flag / env / constant resolution ------------------------------------
 
 def test_resolve_tamponade():
