@@ -20,7 +20,7 @@ use crate::flap::dp::min_area_triangulation;
 use crate::mincut::BkGraph;
 use crate::winding::MeshBvh;
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Boundary loops up to this size are triangulated by the exact O(n^3)
 /// minimum-area DP; larger loops use the O(n^2) ear-clipping fallback.
@@ -34,6 +34,15 @@ const PLUG_MIN_AREA: f64 = 1e-12;
 /// real tiny holes (e.g. artec_copper-key's four 3-vertex rims) as
 /// `NoSeparation`.
 const TINY_LOOP_MAX: usize = 8;
+/// "Invisible plug" gate (a): a rim whose diameter exceeds this multiple of the
+/// median edge length is too large to be a plug a rim-only triangulation can
+/// close invisibly, and is left for the surface-based tiers (Flap/Graft). The
+/// check runs BEFORE the expensive min-cut so an oversized rim costs nothing.
+const PLUG_MAX_LOOP_DIAM_FACTOR: f64 = 120.0;
+/// "Invisible plug" gate (b): a plug whose interior deviates from the best-fit
+/// plane of its rim neighbourhood by more than this multiple of the median edge
+/// length is rejected - it would visibly bridge away from the local surface.
+const PLUG_MAX_DEV_FACTOR: f64 = 1.0;
 
 #[derive(Clone, Debug)]
 pub struct TamponadeConfig {
@@ -59,6 +68,8 @@ pub struct TamponadeInfo {
     pub plugs: usize,
     pub plugs_rejected: usize,
     pub plugs_inconclusive: usize,
+    pub plugs_rejected_size: usize,
+    pub plugs_rejected_dev: usize,
     pub plug_faces: usize,
     pub melt_layers_tried: usize,
     pub melt_layers_accepted: usize,
@@ -270,6 +281,43 @@ enum CutVerdict {
     /// exceeded, or the clamp left too few cells across the throat); the
     /// caller seals with the safe rim-only plug instead of rejecting.
     Inconclusive,
+    /// The per-loop deadline passed while evaluating the cut; the caller stops
+    /// (this loop and all later loops are left open).
+    Timeout,
+}
+
+#[inline]
+fn deadline_passed(deadline: Option<Instant>) -> bool {
+    matches!(deadline, Some(d) if Instant::now() >= d)
+}
+
+/// Occupancy-grid cell count `throat_separates` would build for a rim (used
+/// only by the profiling instrumentation).
+fn throat_cells(loop_v: &[u32], verts: &[[f64; 3]], h_global: f64) -> usize {
+    let mut bbox = BBox::empty();
+    for &v in loop_v {
+        bbox.expand_point(verts[v as usize]);
+    }
+    if !bbox.min[0].is_finite() {
+        return 0;
+    }
+    let loop_diag = bbox.diagonal().max(h_global);
+    let h_desired = (loop_diag / 24.0).max(1e-9);
+    let pad = (3.0 * h_desired).max(1.5 * loop_diag);
+    bbox.pad(pad);
+    let span = [
+        (bbox.max[0] - bbox.min[0]).max(h_desired),
+        (bbox.max[1] - bbox.min[1]).max(h_desired),
+        (bbox.max[2] - bbox.min[2]).max(h_desired),
+    ];
+    let mut h = h_desired;
+    for &s in &span {
+        h = h.max(s / 64.0);
+    }
+    let nx = ((span[0] / h).ceil() as usize).clamp(2, 64);
+    let ny = ((span[1] / h).ceil() as usize).clamp(2, 64);
+    let nz = ((span[2] / h).ceil() as usize).clamp(2, 64);
+    nx * ny * nz
 }
 
 fn throat_separates(
@@ -279,6 +327,7 @@ fn throat_separates(
     _model_diag: f64,
     bvh: &MeshBvh,
     config: &TamponadeConfig,
+    deadline: Option<Instant>,
 ) -> CutVerdict {
     const TERM: f64 = 1.0e12;
 
@@ -343,14 +392,36 @@ fn throat_separates(
     let mut n_src = 0usize;
     let mut n_sink = 0usize;
 
+    let prof = std::env::var("SUTURA_TAMP_PROFILE").is_ok();
+    let tw0 = Instant::now();
+    // Winding is the dominant cost: evaluate it a z-slab at a time and fan each
+    // slab out across cores (`winding_points_par`). The per-point result is
+    // independent of the evaluation order, so this is byte-identical to the
+    // former scalar triple loop; the slab granularity lets the deadline abort
+    // mid-grid.
     for iz in 0..nz {
+        if deadline_passed(deadline) {
+            return CutVerdict::Timeout;
+        }
+        let mut pts: Vec<[f64; 3]> = Vec::with_capacity(nx * ny);
+        for iy in 0..ny {
+            for ix in 0..nx {
+                pts.push(cell_center(ix, iy, iz));
+            }
+        }
+        let ws = bvh.winding_points_par(&pts);
+        let mut k = 0usize;
         for iy in 0..ny {
             for ix in 0..nx {
                 let idx = cell_idx(ix, iy, iz);
-                let c = cell_center(ix, iy, iz);
-                let is_border = ix == 0 || ix == nx - 1 || iy == 0 || iy == ny - 1 || iz == 0 || iz == nz - 1;
-                let w = bvh.winding_at(c);
-
+                let is_border = ix == 0
+                    || ix == nx - 1
+                    || iy == 0
+                    || iy == ny - 1
+                    || iz == 0
+                    || iz == nz - 1;
+                let w = ws[k];
+                k += 1;
                 if w > 0.5 {
                     g.add_tweights(idx, TERM, 0.0);
                     n_src += 1;
@@ -371,8 +442,13 @@ fn throat_separates(
 
     // Open-space connections only: an edge that crosses an input triangle is a
     // wall and is not traversable, so the cut can only pass through the hole.
+    let winding_s = tw0.elapsed().as_secs_f64();
+    let te0 = Instant::now();
     let face_cap = h_eff * h_eff;
     for iz in 0..nz {
+        if deadline_passed(deadline) {
+            return CutVerdict::Timeout;
+        }
         for iy in 0..ny {
             for ix in 0..nx {
                 let idx = cell_idx(ix, iy, iz);
@@ -402,7 +478,16 @@ fn throat_separates(
     if clamped {
         return CutVerdict::Inconclusive;
     }
+    let edges_s = te0.elapsed().as_secs_f64();
+    let tm0 = Instant::now();
     let flow = g.maxflow();
+    let flow_s = tm0.elapsed().as_secs_f64();
+    if prof {
+        eprintln!(
+            "[tamp]     cut grid {}x{}x{}={} winding_s={:.3} edges_s={:.3} flow_s={:.3} flow={:.3e}",
+            nx, ny, nz, total, winding_s, edges_s, flow_s, flow
+        );
+    }
     if !flow.is_finite() || flow >= 1e11 {
         CutVerdict::Inconclusive
     } else if flow > 1e-12 {
@@ -731,6 +816,60 @@ fn triangulate_rim_loop(
     Ok(if cf > cb { flipped } else { base })
 }
 
+/// Invisible-plug deviation gate. The local surface plane is the best-fit plane
+/// of the rim itself (Newell normal anchored at the rim centroid); a plug is
+/// accepted when every triangle centroid lies within `PLUG_MAX_DEV_FACTOR`
+/// median edge lengths of that plane. This is what rejects a membrane that
+/// bulges off a strongly non-planar (curved-surface) rim. A degenerate rim
+/// normal cannot be judged and is accepted.
+fn plug_deviation_ok(cand: &[[u32; 3]], rim: &[u32], verts: &[[f64; 3]], h: f64) -> bool {
+    let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    let n0 = newell_normal(&pts);
+    let nl = norm3(n0);
+    if nl < 1e-20 {
+        return true;
+    }
+    let n = [n0[0] / nl, n0[1] / nl, n0[2] / nl];
+
+    let mut c0 = [0.0f64; 3];
+    for p in &pts {
+        c0[0] += p[0];
+        c0[1] += p[1];
+        c0[2] += p[2];
+    }
+    let inv = 1.0 / pts.len() as f64;
+    c0 = [c0[0] * inv, c0[1] * inv, c0[2] * inv];
+
+    let limit = PLUG_MAX_DEV_FACTOR * h;
+    plug_within_plane(cand, verts, c0, n, limit)
+}
+
+/// True when every candidate triangle centroid is within `limit` of the plane
+/// through `c0` with unit normal `n`.
+fn plug_within_plane(
+    cand: &[[u32; 3]],
+    verts: &[[f64; 3]],
+    c0: [f64; 3],
+    n: [f64; 3],
+    limit: f64,
+) -> bool {
+    for t in cand {
+        let a = verts[t[0] as usize];
+        let b = verts[t[1] as usize];
+        let c = verts[t[2] as usize];
+        let cen = [
+            (a[0] + b[0] + c[0]) / 3.0,
+            (a[1] + b[1] + c[1]) / 3.0,
+            (a[2] + b[2] + c[2]) / 3.0,
+        ];
+        let d = (cen[0] - c0[0]) * n[0] + (cen[1] - c0[1]) * n[1] + (cen[2] - c0[2]) * n[2];
+        if d.abs() > limit {
+            return false;
+        }
+    }
+    true
+}
+
 /// Main entry point for the L2a Tamponade repair.
 pub fn tamponade_repair(
     verts: &[[f64; 3]],
@@ -771,7 +910,21 @@ pub fn tamponade_repair(
         .iter()
         .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
         .collect();
+    let t_bvh0 = Instant::now();
     let bvh = MeshBvh::from_arrays(verts, &tris_usize);
+    let bvh_s = t_bvh0.elapsed().as_secs_f64();
+    let profile = std::env::var("SUTURA_TAMP_PROFILE").is_ok();
+    let mut cut_s = 0.0f64;
+    let mut plug_s = 0.0f64;
+    let mut cut_cells_total = 0usize;
+    if profile {
+        eprintln!(
+            "[tamp] faces={} loops={} bvh_s={:.3}",
+            tris.len(),
+            loops.len(),
+            bvh_s
+        );
+    }
 
     let mut model_box = BBox::empty();
     for v in verts {
@@ -784,6 +937,8 @@ pub fn tamponade_repair(
     let mut plug_count = 0usize;
     let mut plug_rejected_count = 0usize;
     let mut plug_inconclusive_count = 0usize;
+    let mut plug_rejected_size_count = 0usize;
+    let mut plug_rejected_dev_count = 0usize;
     let mut plug_face_count = 0usize;
 
     // Running undirected edge multiplicities, so a plug can be rejected before
@@ -791,12 +946,14 @@ pub fn tamponade_repair(
     // edge). Pre-existing non-manifold edges of the input are preserved.
     let mut edge_count = edge_use_counts(&out_tris);
 
+    let deadline = config
+        .time_budget_s
+        .map(|b| t0 + Duration::from_secs_f64(b.max(0.0)));
+
     for loop_v in &loops {
-        if let Some(budget) = config.time_budget_s {
-            if t0.elapsed().as_secs_f64() > budget {
-                info.reason = "timeout exceeded".to_string();
-                break;
-            }
+        if deadline_passed(deadline) {
+            info.reason = "timeout exceeded".to_string();
+            break;
         }
 
         let mut rim: Vec<u32> = loop_v.clone();
@@ -808,6 +965,29 @@ pub fn tamponade_repair(
             continue;
         }
 
+        // Invisible-plug gate (a): a rim larger than `PLUG_MAX_LOOP_DIAM_FACTOR`
+        // median edges cannot be closed without a visible membrane, so it is
+        // left for the surface-based tiers. Checked before the min-cut so an
+        // oversized rim costs nothing.
+        let mut rim_box = BBox::empty();
+        for &v in &rim {
+            rim_box.expand_point(verts[v as usize]);
+        }
+        let rim_diag = rim_box.diagonal();
+        if profile {
+            eprintln!(
+                "[tamp]   loop m={} rim_diag_h={:.1}",
+                rim.len(),
+                rim_diag / h.max(1e-12)
+            );
+        }
+        if rim_diag > PLUG_MAX_LOOP_DIAM_FACTOR * h {
+            info.loop_diag
+                .push(format!("m={} rejected:too_large", rim.len()));
+            plug_rejected_size_count += 1;
+            continue;
+        }
+
         // The min-cut decides only WHETHER this loop is a real hole (its
         // throat separates interior from exterior); it never places a vertex.
         // A loop small enough that the coarse cut grid cannot resolve it is
@@ -816,12 +996,30 @@ pub fn tamponade_repair(
         // matching R1 usefulness.
         let tiny = rim.len() <= TINY_LOOP_MAX;
         if !tiny {
-            match throat_separates(verts, &rim, h, model_diag, &bvh, config) {
+            let tc0 = Instant::now();
+            let verdict =
+                throat_separates(verts, &rim, h, model_diag, &bvh, config, deadline);
+            let dt = tc0.elapsed().as_secs_f64();
+            cut_s += dt;
+            if profile {
+                cut_cells_total += throat_cells(&rim, verts, h);
+                eprintln!(
+                    "[tamp]   loop m={} cut {:?} cut_s={:.3}",
+                    rim.len(),
+                    verdict,
+                    dt
+                );
+            }
+            match verdict {
                 CutVerdict::NoSeparation => {
                     info.loop_diag
                         .push(format!("m={} rejected:no_separation", rim.len()));
                     plug_rejected_count += 1;
                     continue;
+                }
+                CutVerdict::Timeout => {
+                    info.reason = "timeout exceeded".to_string();
+                    break;
                 }
                 CutVerdict::Inconclusive => {
                     plug_inconclusive_count += 1;
@@ -830,8 +1028,26 @@ pub fn tamponade_repair(
             }
         }
 
-        match triangulate_rim_loop(&rim, verts, &directed_set, tiny) {
+        let tp0 = Instant::now();
+        let tri = triangulate_rim_loop(&rim, verts, &directed_set, tiny);
+        let plug_dt = tp0.elapsed().as_secs_f64();
+        plug_s += plug_dt;
+        if profile {
+            eprintln!("[tamp]   loop m={} plug_s={:.3}", rim.len(), plug_dt);
+        }
+        match tri {
             Ok(cand) => {
+                // Invisible-plug gate (b): reject a plug whose triangles bulge
+                // away from the local surface plane (fit over the rim and its
+                // one-ring input neighbourhood) by more than
+                // `PLUG_MAX_DEV_FACTOR` median edges - such a membrane would be
+                // visibly proud of the repaired surface.
+                if !plug_deviation_ok(&cand, &rim, verts, h) {
+                    info.loop_diag
+                        .push(format!("m={} rejected:deviation", rim.len()));
+                    plug_rejected_dev_count += 1;
+                    continue;
+                }
                 // Structural safety: never raise an edge above two faces. This
                 // is what keeps a shared-vertex / non-manifold rim from turning
                 // a well-formed cap into a new non-manifold edge.
@@ -868,11 +1084,26 @@ pub fn tamponade_repair(
     info.plugs = plug_count;
     info.plugs_rejected = plug_rejected_count;
     info.plugs_inconclusive = plug_inconclusive_count;
+    info.plugs_rejected_size = plug_rejected_size_count;
+    info.plugs_rejected_dev = plug_rejected_dev_count;
     info.plug_faces = plug_face_count;
     if info.reason.is_empty() {
         info.reason = "ok".to_string();
     }
     info.seconds = t0.elapsed().as_secs_f64();
+    if profile {
+        eprintln!(
+            "[tamp] total_s={:.3} bvh_s={:.3} cut_s={:.3} ({} cells) plug_s={:.3} plugs={} plug_faces={} merged_s={:.3}",
+            info.seconds,
+            bvh_s,
+            cut_s,
+            cut_cells_total,
+            plug_s,
+            plug_count,
+            plug_face_count,
+            info.seconds - bvh_s - cut_s - plug_s
+        );
+    }
     (out_verts, out_tris, info)
 }
 
@@ -1178,5 +1409,38 @@ mod tests {
         assert_eq!(info.plugs_rejected, 0);
         assert_eq!(boundary_edge_count(&out_tris), 0);
         assert_eq!(out_verts.len(), verts.len());
+    }
+
+    #[test]
+    fn test_oversized_loop_rejected_by_size_gate() {
+        // The open-top cube's rim is ~1.4 across; with h_min = 0.001 the
+        // size limit (120 h = 0.12) is far below the rim, so the loop is left
+        // for the surface-based tiers without ever building the min-cut.
+        let (verts, tris) = unit_cube_open_top();
+        let config = TamponadeConfig { h_min: Some(0.001), ..Default::default() };
+        let (_out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        assert_eq!(info.plugs, 0);
+        assert_eq!(info.plugs_rejected_size, 1);
+        assert_eq!(info.plug_faces, 0);
+        assert_eq!(out_tris, tris);
+    }
+
+    #[test]
+    fn test_deviation_gate_rejects_proud_plug() {
+        let h = 1.0;
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [0.0, 0.0, 15.0],
+        ];
+        let c0 = [0.0, 0.0, 0.0];
+        let n = [0.0, 0.0, 1.0];
+        // Coplanar triangle -> accepted.
+        let flat: Vec<[u32; 3]> = vec![[0, 1, 2]];
+        assert!(plug_within_plane(&flat, &verts, c0, n, PLUG_MAX_DEV_FACTOR * h));
+        // Triangle whose centroid is 5 h off the plane -> rejected.
+        let proud: Vec<[u32; 3]> = vec![[0, 1, 3]];
+        assert!(!plug_within_plane(&proud, &verts, c0, n, PLUG_MAX_DEV_FACTOR * h));
     }
 }
