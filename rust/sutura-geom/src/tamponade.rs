@@ -747,40 +747,58 @@ pub fn tamponade_repair(
         return (verts.to_vec(), tris.to_vec(), info);
     }
 
-    let directed = directed_boundary_edges(tris);
+    // Shell analysis pre-pass (A1: Idea A)
+    let shell_cfg = crate::shell::ShellConfig::default();
+    let (active_verts, active_tris, shell_res) =
+        crate::shell::shell_analyze_and_filter(verts, tris, &shell_cfg);
+    let shells_modified = shell_res.buried_count > 0
+        || shell_res.coincident_opp_count > 0
+        || shell_res.coincident_same_count > 0;
+
+    let directed = directed_boundary_edges(&active_tris);
     if directed.is_empty() {
-        info.reason = "no_holes".to_string();
+        info.reason = if shells_modified {
+            "ok".to_string()
+        } else {
+            "no_holes".to_string()
+        };
+        info.healthy_faces_kept = active_tris.len();
         info.seconds = t0.elapsed().as_secs_f64();
-        return (verts.to_vec(), tris.to_vec(), info);
+        return (active_verts, active_tris, info);
     }
 
     let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
     let loops = build_boundary_loops(&directed);
     if loops.is_empty() {
-        info.reason = "no_holes".to_string();
+        info.reason = if shells_modified {
+            "ok".to_string()
+        } else {
+            "no_holes".to_string()
+        };
+        info.healthy_faces_kept = active_tris.len();
         info.seconds = t0.elapsed().as_secs_f64();
-        return (verts.to_vec(), tris.to_vec(), info);
+        return (active_verts, active_tris, info);
     }
 
     let h = match config.h_min {
         Some(val) if val > 1e-6 => val,
-        _ => median_edge_length(verts, tris),
+        _ => median_edge_length(&active_verts, &active_tris),
     };
 
-    let tris_usize: Vec<[usize; 3]> = tris
+    let tris_usize: Vec<[usize; 3]> = active_tris
         .iter()
         .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
         .collect();
-    let bvh = MeshBvh::from_arrays(verts, &tris_usize);
+    let bvh = MeshBvh::from_arrays(&active_verts, &tris_usize);
 
     let mut model_box = BBox::empty();
-    for v in verts {
+    for v in &active_verts {
         model_box.expand_point(*v);
     }
     let model_diag = model_box.diagonal().max(h);
 
-    let out_verts = verts.to_vec();
-    let mut out_tris = tris.to_vec();
+    let out_verts = active_verts;
+    let mut out_tris = active_tris;
     let mut plug_count = 0usize;
     let mut plug_rejected_count = 0usize;
     let mut plug_inconclusive_count = 0usize;
@@ -909,8 +927,8 @@ mod tests {
     fn unit_solid_cube() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
         let (verts, mut tris) = unit_cube_open_top();
         // Add the missing top face (z=1) as two triangles, outward +z.
-        tris.push([4, 6, 5]);
-        tris.push([4, 7, 6]);
+        tris.push([4, 5, 6]);
+        tris.push([4, 6, 7]);
         (verts, tris)
     }
 
@@ -1178,5 +1196,27 @@ mod tests {
         assert_eq!(info.plugs_rejected, 0);
         assert_eq!(boundary_edge_count(&out_tris), 0);
         assert_eq!(out_verts.len(), verts.len());
+    }
+
+    #[test]
+    fn test_concentric_nested_cubes_dissolves_inner() {
+        let (mut verts, mut tris) = unit_solid_cube();
+        // Inner cube: scaled down to 0.25 and centered at [0.5, 0.5, 0.5]
+        let offset = verts.len() as u32;
+        for i in 0..8 {
+            let v = verts[i];
+            verts.push([v[0] * 0.25 + 0.375, v[1] * 0.25 + 0.375, v[2] * 0.25 + 0.375]);
+        }
+        for i in 0..12 {
+            let t = tris[i];
+            tris.push([t[0] + offset, t[1] + offset, t[2] + offset]);
+        }
+        assert_eq!(tris.len(), 24);
+        let config = TamponadeConfig { h_min: Some(0.5), ..Default::default() };
+        let (_out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        assert_eq!(info.reason, "ok");
+        assert_eq!(out_tris.len(), 12);
+        assert_eq!(boundary_edge_count(&out_tris), 0);
+        assert_eq!(info.healthy_faces_kept, 12);
     }
 }
