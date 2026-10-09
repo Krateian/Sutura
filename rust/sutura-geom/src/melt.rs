@@ -130,10 +130,10 @@ impl Default for MeltParams {
             buried_w_out: 0.5,
             buried_w_in: 1.5,
             max_sector_faces: 5000,
-            max_face_fraction: 0.02,
+            max_face_fraction: 0.01,
             micro_weld_max_edges: 8,
             micro_weld_max_rel: 0.005,
-            grid_max_cells: 8_000_000,
+            grid_max_cells: 2_000_000,
             max_layers: 64,
             cap_max_loop: 300,
         }
@@ -215,18 +215,12 @@ impl DepthField {
         }
 
         let mut occ = vec![0u8; total];
-        for k in 0..dims[2] {
-            for j in 0..dims[1] {
-                for i in 0..dims[0] {
-                    let c = [
-                        origin[0] + (i as f64 + 0.5) * vx,
-                        origin[1] + (j as f64 + 0.5) * vx,
-                        origin[2] + (k as f64 + 0.5) * vx,
-                    ];
-                    if bvh.winding_at(c) > 0.5 {
-                        occ[i + dims[0] * (j + dims[1] * k)] = 1;
-                    }
-                }
+        // Parallel winding grid (C order `[i + nx*(j + ny*k)]`, same order as
+        // the depth field) instead of a serial per-cell traversal.
+        let w = bvh.winding_grid(origin, vx, dims);
+        for (idx, &wi) in w.iter().enumerate() {
+            if wi > 0.5 {
+                occ[idx] = 1;
             }
         }
         let sdf = crate::morph::signed_distance_from_occupancy(&occ, dims);
@@ -385,9 +379,34 @@ fn si_sectors(mask: &[bool], pairs: &[(usize, usize)], tris: &[[u32; 3]]) -> Vec
     out
 }
 
+/// Interior-side depth of one face's centroid: the deeper of the two offset
+/// samples (so a reversed normal cannot invert the order).
+fn face_depth(
+    f: usize,
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    df: &DepthField,
+    eps: f64,
+) -> f64 {
+    let t = tris[f];
+    let (p0, p1, p2) = (
+        verts[t[0] as usize],
+        verts[t[1] as usize],
+        verts[t[2] as usize],
+    );
+    let c = [
+        (p0[0] + p1[0] + p2[0]) / 3.0,
+        (p0[1] + p1[1] + p2[1]) / 3.0,
+        (p0[2] + p1[2] + p2[2]) / 3.0,
+    ];
+    let n = face_normal(p0, p1, p2);
+    let plus = df.sample([c[0] + n[0] * eps, c[1] + n[1] * eps, c[2] + n[2] * eps]);
+    let minus = df.sample([c[0] - n[0] * eps, c[1] - n[1] * eps, c[2] - n[2] * eps]);
+    plus.max(minus)
+}
+
 /// Depth of one sector: the **median** interior-side depth over the sector's
-/// own face centroids (C1).  The interior side is the offset sample with the
-/// larger depth, so a reversed normal cannot invert the order.
+/// own face centroids (C1).
 fn sector_depth(
     sector: &[usize],
     verts: &[[f64; 3]],
@@ -395,24 +414,10 @@ fn sector_depth(
     df: &DepthField,
     eps: f64,
 ) -> f64 {
-    let mut samples: Vec<f64> = Vec::with_capacity(sector.len());
-    for &f in sector {
-        let t = tris[f];
-        let (p0, p1, p2) = (
-            verts[t[0] as usize],
-            verts[t[1] as usize],
-            verts[t[2] as usize],
-        );
-        let c = [
-            (p0[0] + p1[0] + p2[0]) / 3.0,
-            (p0[1] + p1[1] + p2[1]) / 3.0,
-            (p0[2] + p1[2] + p2[2]) / 3.0,
-        ];
-        let n = face_normal(p0, p1, p2);
-        let plus = df.sample([c[0] + n[0] * eps, c[1] + n[1] * eps, c[2] + n[2] * eps]);
-        let minus = df.sample([c[0] - n[0] * eps, c[1] - n[1] * eps, c[2] - n[2] * eps]);
-        samples.push(plus.max(minus));
-    }
+    let mut samples: Vec<f64> = sector
+        .iter()
+        .map(|&f| face_depth(f, verts, tris, df, eps))
+        .collect();
     if samples.is_empty() {
         return 0.0;
     }
@@ -709,29 +714,51 @@ pub fn melt_si(
         let sector_set: HashSet<usize> = sector.iter().copied().collect();
         // The whole buried lobe of the fold: the SI faces plus one vertex ring.
         let region = dilate_ring(sector, &cur_t, 1);
-        let mut delete = vec![false; cur_t.len()];
-        let mut cand = 0usize;
+        // Deletion is capped to the healthy-fraction brake, so the layer can
+        // never take more than `max_face_fraction` of the mesh; within the cap
+        // the deepest faces go first (the lava direction).
+        let budget = ((params.max_face_fraction * cur_t.len() as f64).floor() as usize)
+            .min(params.max_sector_faces)
+            .max(1);
+        let mut qual: Vec<(f64, usize)> = Vec::new();
         for &f in &region {
             if f >= cur_t.len() {
                 continue;
             }
             let is_si = sector_set.contains(&f);
-            // Review C4: an SI face is always a candidate (it is the crossing
-            // that must go); a ring neighbour must be strongly buried so a face
-            // merely sitting on a thin wall is never excised.
-            if is_si {
-                delete[f] = true;
-                cand += 1;
-            } else if is_buried_face(f, false, &cur_v, &cur_t, &bvh, eps, params) {
+            let buried = !is_si && is_buried_face(f, false, &cur_v, &cur_t, &bvh, eps, params);
+            if is_si || buried {
+                qual.push((face_depth(f, &cur_v, &cur_t, &df, eps), f));
+            }
+        }
+        qual.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.1.cmp(&a.1))
+        });
+        let take = qual.len().min(budget);
+        let mut delete = vec![false; cur_t.len()];
+        let mut cand = 0usize;
+        for &(_, f) in qual.iter().take(take) {
+            if !delete[f] {
                 delete[f] = true;
                 cand += 1;
             }
         }
         out.layers_tried += 1;
-        if cand == 0
-            || cand > params.max_sector_faces
-            || (cand as f64) > params.max_face_fraction * (cur_t.len() as f64)
-        {
+        if std::env::var("SUTURA_MELT_DBG").is_ok() {
+            eprintln!(
+                "MELT_DBG sector={} sector_faces={} region={} qual={} take={} cand={} nt={}",
+                si,
+                sector.len(),
+                region.len(),
+                qual.len(),
+                take,
+                cand,
+                cur_t.len()
+            );
+        }
+        if cand == 0 {
             out.layers_rolled_back += 1;
             continue;
         }
@@ -742,6 +769,12 @@ pub fn melt_si(
         let (bh, bnm) = reload_holes_nm(&cur_v, &cur_t);
         let (mut h, mut nm) = reload_holes_nm(&nv, &nt);
         let mut scan_after = scan_si(&nv, &nt);
+        if std::env::var("SUTURA_MELT_DBG").is_ok() {
+            eprintln!(
+                "MELT_DBG sector={} cand={} removed={} si {} -> {} holes {} -> {} nm {} -> {}",
+                si, cand, removed, si_cur, scan_after.count, bh, h, bnm, nm
+            );
+        }
         let mut accepted = !scan_after.skipped
             && scan_after.count >= 0
             && scan_after.count < si_cur
@@ -865,15 +898,6 @@ mod tests {
         let out = melt_si(&verts, &tris, 0.5, 1.7, None, &MeltParams::default());
         assert_eq!(out.layers_tried, 0);
         assert_eq!(out.layers_accepted, 0);
-        assert_eq!(out.verts, verts);
-        assert_eq!(out.tris, tris);
-    }
-
-    #[test]
-    fn scaffold_is_byte_identical_on_si_mesh() {
-        // P0 is a guarded no-op, so an SI mesh is currently returned unchanged.
-        let (verts, tris) = crossing_pair();
-        let out = melt_si(&verts, &tris, 0.5, 3.0, None, &MeltParams::default());
         assert_eq!(out.verts, verts);
         assert_eq!(out.tris, tris);
     }
