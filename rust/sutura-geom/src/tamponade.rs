@@ -890,6 +890,7 @@ pub fn tamponade_repair(
         info.melt_layers_rolled_back = m.layers_rolled_back;
         info.micro_welds_ok = m.micro_welds_ok;
         info.micro_welds_failed = m.micro_welds_failed;
+        info.healthy_faces_kept = info.healthy_faces_kept.saturating_sub(m.excised_faces);
         if !m.reason.is_empty() {
             info.reason = m.reason;
         }

@@ -21,8 +21,10 @@
 //! in `tamponade.rs` or the whole-shell analysis in `shell.rs`.  It has no
 //! global side effects and no parallel reductions, so a run is deterministic.
 
+use crate::flap::topology::non_manifold_stats;
 use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
 use crate::winding::MeshBvh;
+use std::collections::{HashMap, HashSet};
 
 /// A self-intersection proper-face scan: the face mask, the proper crossing
 /// face pairs (used to cluster folds spatially) and the flagged-face count.
@@ -116,6 +118,10 @@ pub struct MeltParams {
     pub micro_weld_max_rel: f64,
     /// Hard cap on the global depth-grid cell count.
     pub grid_max_cells: usize,
+    /// Maximum number of sectors (layers) the sweep will attempt.
+    pub max_layers: usize,
+    /// Boundary loops larger than this are left for the plug/flap tiers.
+    pub cap_max_loop: usize,
 }
 
 impl Default for MeltParams {
@@ -128,6 +134,8 @@ impl Default for MeltParams {
             micro_weld_max_edges: 8,
             micro_weld_max_rel: 0.005,
             grid_max_cells: 8_000_000,
+            max_layers: 64,
+            cap_max_loop: 300,
         }
     }
 }
@@ -433,6 +441,213 @@ fn order_sectors(
     });
     ordered
 }
+/// Reload-equivalent boundary/non-manifold edge counts: float32-weld the
+/// vertices (STL save/reload semantics), then count edges used by 1 or >2
+/// faces.  This is the exact metric the Python adoption gate recomputes.
+fn reload_holes_nm(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> (usize, usize) {
+    let n = verts.len();
+    if n == 0 || tris.is_empty() {
+        return (0, 0);
+    }
+    let f32v: Vec<[f32; 3]> = verts
+        .iter()
+        .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+        .collect();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        let (x, y) = (f32v[a], f32v[b]);
+        x[0].partial_cmp(&y[0])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(x[1].partial_cmp(&y[1]).unwrap_or(std::cmp::Ordering::Equal))
+            .then(x[2].partial_cmp(&y[2]).unwrap_or(std::cmp::Ordering::Equal))
+    });
+    let mut remap = vec![0u32; n];
+    let mut next = 0u32;
+    for (pos, &orig) in order.iter().enumerate() {
+        if pos > 0 && f32v[order[pos - 1]] == f32v[orig] {
+            remap[orig] = next.saturating_sub(1);
+        } else {
+            remap[orig] = next;
+            next += 1;
+        }
+    }
+    let wt: Vec<[u32; 3]> = tris
+        .iter()
+        .map(|t| {
+            [
+                remap[t[0] as usize],
+                remap[t[1] as usize],
+                remap[t[2] as usize],
+            ]
+        })
+        .collect();
+    let s = non_manifold_stats(&wt, next as usize);
+    (s.boundary_edges, s.non_manifold_edges)
+}
+
+/// Total length of the non-manifold edges (edges used by more than two faces);
+/// used to decide whether a new NM spot is small enough to micro-weld.
+fn nm_edge_length_sum(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> (f64, usize) {
+    let mut counts: HashMap<(u32, u32), u32> = HashMap::new();
+    for t in tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut total = 0.0f64;
+    let mut n = 0usize;
+    for ((a, b), c) in &counts {
+        if *c > 2 {
+            let p = verts[*a as usize];
+            let q = verts[*b as usize];
+            total +=
+                ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+            n += 1;
+        }
+    }
+    (total, n)
+}
+
+/// Faces sharing a vertex with any face in `seed`, grown `rings` times.
+fn dilate_ring(seed: &[usize], tris: &[[u32; 3]], rings: usize) -> Vec<usize> {
+    let mut set: HashSet<usize> = seed.iter().copied().collect();
+    for _ in 0..rings {
+        let mut vs: HashSet<u32> = HashSet::new();
+        for &f in &set {
+            if let Some(t) = tris.get(f) {
+                vs.extend(t.iter().copied());
+            }
+        }
+        for (f, t) in tris.iter().enumerate() {
+            if t.iter().any(|v| vs.contains(v)) {
+                set.insert(f);
+            }
+        }
+    }
+    let mut out: Vec<usize> = set.into_iter().collect();
+    out.sort_unstable();
+    out
+}
+
+/// A face is *buried* when the volume just outside it is interior
+/// (`w_out >= buried_w_out`) and either the inside is strongly buried
+/// (`w_in >= buried_w_in`) or the face actually self-intersects (review C4:
+/// a face merely sitting on a thin wall has `w_out ~ 0` and is never excised).
+fn is_buried_face(
+    f: usize,
+    si_partner: bool,
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    bvh: &MeshBvh,
+    eps: f64,
+    params: &MeltParams,
+) -> bool {
+    let t = tris[f];
+    let (p0, p1, p2) = (
+        verts[t[0] as usize],
+        verts[t[1] as usize],
+        verts[t[2] as usize],
+    );
+    let c = [
+        (p0[0] + p1[0] + p2[0]) / 3.0,
+        (p0[1] + p1[1] + p2[1]) / 3.0,
+        (p0[2] + p1[2] + p2[2]) / 3.0,
+    ];
+    let n = face_normal(p0, p1, p2);
+    let w_out = bvh.winding_at([c[0] + n[0] * eps, c[1] + n[1] * eps, c[2] + n[2] * eps]);
+    if w_out < params.buried_w_out {
+        return false;
+    }
+    let w_in = bvh.winding_at([c[0] - n[0] * eps, c[1] - n[1] * eps, c[2] - n[2] * eps]);
+    si_partner || w_in >= params.buried_w_in
+}
+
+/// Remove the flagged faces, dropping vertices that become unreferenced.
+/// Returns the compacted mesh and the number of removed faces.
+fn excise_faces(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    delete: &[bool],
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, usize) {
+    let mut remap = vec![u32::MAX; verts.len()];
+    let mut nv: Vec<[f64; 3]> = Vec::new();
+    let mut nt: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+    let mut removed = 0usize;
+    for (f, t) in tris.iter().enumerate() {
+        if delete.get(f).copied().unwrap_or(false) {
+            removed += 1;
+            continue;
+        }
+        let mut a = [0u32; 3];
+        for k in 0..3 {
+            let v = t[k] as usize;
+            if remap[v] == u32::MAX {
+                remap[v] = nv.len() as u32;
+                nv.push(verts[v]);
+            }
+            a[k] = remap[v];
+        }
+        nt.push(a);
+    }
+    (nv, nt, removed)
+}
+
+/// Cap every boundary loop at or below `max_loop` vertices with a minimum-area
+/// rim triangulation whose orientation cancels the most existing boundary
+/// edges.  Loops that cannot be triangulated are left open (the rollback guard
+/// then rejects the layer).
+fn cap_boundary_loops(verts: &mut Vec<[f64; 3]>, tris: &mut Vec<[u32; 3]>, max_loop: usize) {
+    let directed = crate::tamponade::directed_boundary_edges(tris);
+    if directed.is_empty() {
+        return;
+    }
+    let directed_set: HashSet<(u32, u32)> = directed.iter().copied().collect();
+    let loops = crate::tamponade::build_boundary_loops(&directed);
+    for loop_v in loops {
+        let mut rim = loop_v.clone();
+        rim.dedup();
+        if rim.len() >= 2 && rim.first() == rim.last() {
+            rim.pop();
+        }
+        if rim.len() < 3 || rim.len() > max_loop {
+            continue;
+        }
+        let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+        let local = crate::flap::dp::min_area_triangulation(&pts, max_loop, &HashSet::new());
+        if local.len() != rim.len() - 2 {
+            continue;
+        }
+        let build = |flip: bool| -> Vec<[u32; 3]> {
+            local
+                .iter()
+                .map(|t| {
+                    let (a, b, c) = if flip {
+                        (rim[t[0] as usize], rim[t[2] as usize], rim[t[1] as usize])
+                    } else {
+                        (rim[t[0] as usize], rim[t[1] as usize], rim[t[2] as usize])
+                    };
+                    [a, b, c]
+                })
+                .collect()
+        };
+        let cancel = |cap: &[[u32; 3]]| -> usize {
+            cap.iter()
+                .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+                .filter(|&(u, v)| directed_set.contains(&(v, u)))
+                .count()
+        };
+        let base = build(false);
+        let flipped = build(true);
+        let cap = if cancel(&flipped) > cancel(&base) {
+            flipped
+        } else {
+            base
+        };
+        tris.extend(cap);
+    }
+}
+
 /// Run the inside-out melt.
 ///
 /// P1 builds the interior-depth field and the deterministic depth-descending
@@ -443,7 +658,7 @@ pub fn melt_si(
     tris: &[[u32; 3]],
     h: f64,
     model_diag: f64,
-    _time_budget_s: Option<f64>,
+    time_budget_s: Option<f64>,
     params: &MeltParams,
 ) -> MeltOutcome {
     let mut out = MeltOutcome {
@@ -477,16 +692,122 @@ pub fn melt_si(
     let eps = h_min;
     let ordered = order_sectors(&sectors, verts, tris, &df, eps);
 
-    // Excision and the per-sector rollback loop are implemented in P2.  The
-    // analysis above is deterministic and cheap; keep it wired so P2 only adds
-    // the mutation step.
-    let _ = (tris_usize, df, ordered, model_diag);
+    let t0 = std::time::Instant::now();
+    let mut cur_v = out.verts.clone();
+    let mut cur_t = out.tris.clone();
+    let mut bvh = bvh;
+    let mut si_cur = scan.count;
+
+    for (si, _depth) in ordered.iter().take(params.max_layers) {
+        if let Some(b) = time_budget_s {
+            if t0.elapsed().as_secs_f64() > b {
+                out.reason = "melt: timeout exceeded".to_string();
+                break;
+            }
+        }
+        let sector = &sectors[*si];
+        let sector_set: HashSet<usize> = sector.iter().copied().collect();
+        // The whole buried lobe of the fold: the SI faces plus one vertex ring.
+        let region = dilate_ring(sector, &cur_t, 1);
+        let mut delete = vec![false; cur_t.len()];
+        let mut cand = 0usize;
+        for &f in &region {
+            if f >= cur_t.len() {
+                continue;
+            }
+            let is_si = sector_set.contains(&f);
+            // Review C4: an SI face is always a candidate (it is the crossing
+            // that must go); a ring neighbour must be strongly buried so a face
+            // merely sitting on a thin wall is never excised.
+            if is_si {
+                delete[f] = true;
+                cand += 1;
+            } else if is_buried_face(f, false, &cur_v, &cur_t, &bvh, eps, params) {
+                delete[f] = true;
+                cand += 1;
+            }
+        }
+        out.layers_tried += 1;
+        if cand == 0
+            || cand > params.max_sector_faces
+            || (cand as f64) > params.max_face_fraction * (cur_t.len() as f64)
+        {
+            out.layers_rolled_back += 1;
+            continue;
+        }
+
+        let (mut nv, mut nt, removed) = excise_faces(&cur_v, &cur_t, &delete);
+        cap_boundary_loops(&mut nv, &mut nt, params.cap_max_loop);
+
+        let (bh, bnm) = reload_holes_nm(&cur_v, &cur_t);
+        let (mut h, mut nm) = reload_holes_nm(&nv, &nt);
+        let mut scan_after = scan_si(&nv, &nt);
+        let mut accepted = !scan_after.skipped
+            && scan_after.count >= 0
+            && scan_after.count < si_cur
+            && h <= bh
+            && nm <= bnm;
+
+        // Small non-manifold spot: try a local micro-weld before rolling back
+        // (the lava rule).  Only a small cluster is attempted; anything larger
+        // is rolled back directly.
+        if !accepted
+            && h <= bh
+            && !scan_after.skipped
+            && scan_after.count >= 0
+            && scan_after.count < si_cur
+            && nm > bnm
+            && nm <= params.micro_weld_max_edges
+        {
+            let (nm_len, _nm_n) = nm_edge_length_sum(&nv, &nt);
+            if nm_len <= params.micro_weld_max_rel * model_diag.max(1e-9) {
+                let (mw_v, mw_t, _split) = crate::flap::topology::split_non_manifold(&nv, &nt);
+                let (sep_v, _moved) =
+                    crate::flap::topology::separate_coincident_stl(&mw_v, None, None);
+                let (h2, nm2) = reload_holes_nm(&sep_v, &mw_t);
+                let s2 = scan_si(&sep_v, &mw_t);
+                if h2 <= bh && nm2 <= bnm && !s2.skipped && s2.count >= 0 && s2.count < si_cur {
+                    nv = sep_v;
+                    nt = mw_t;
+                    h = h2;
+                    nm = nm2;
+                    scan_after = s2;
+                    accepted = true;
+                    out.micro_welds_ok += 1;
+                } else {
+                    out.micro_welds_failed += 1;
+                }
+            }
+        }
+
+        if accepted {
+            cur_v = nv;
+            cur_t = nt;
+            si_cur = scan_after.count;
+            out.layers_accepted += 1;
+            out.excised_faces += removed;
+            // Winding must reflect the edited mesh for the next sector.
+            let t_usize: Vec<[usize; 3]> = cur_t
+                .iter()
+                .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+                .collect();
+            bvh = MeshBvh::from_arrays(&cur_v, &t_usize);
+        } else {
+            out.layers_rolled_back += 1;
+        }
+        let _ = (h, nm);
+    }
+
+    out.verts = cur_v;
+    out.tris = cur_t;
+    let _ = (model_diag, df);
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn clean_cube() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
         let verts = vec![
@@ -638,5 +959,208 @@ mod tests {
         assert_eq!(ordered.len(), 2);
         assert_eq!(ordered[0].0, 1, "the deep sector (face 1) comes first");
         assert_eq!(ordered[1].0, 0);
+    }
+
+    /// A closed axis-aligned box `[mn, mx]` with each face subdivided into an
+    /// `n x n` grid and shared vertices (a realistic fine surface).
+    fn grid_box(mn: [f64; 3], mx: [f64; 3], n: usize) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let mut verts: Vec<[f64; 3]> = Vec::new();
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        let mut vmap: HashMap<(i64, i64, i64), u32> = HashMap::new();
+        let key = |p: [f64; 3]| -> (i64, i64, i64) {
+            (
+                (p[0] * 1e6).round() as i64,
+                (p[1] * 1e6).round() as i64,
+                (p[2] * 1e6).round() as i64,
+            )
+        };
+        let mut add_face = |o: [f64; 3], u: [f64; 3], v: [f64; 3], outward: [f64; 3]| {
+            let nrm = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            let dot = nrm[0] * outward[0] + nrm[1] * outward[1] + nrm[2] * outward[2];
+            let (u, v) = if dot < 0.0 { (v, u) } else { (u, v) };
+            let mut idx = vec![vec![0u32; n + 1]; n + 1];
+            for (j, row) in idx.iter_mut().enumerate() {
+                for (i, cell) in row.iter_mut().enumerate() {
+                    let p = [
+                        o[0] + u[0] * i as f64 / n as f64 + v[0] * j as f64 / n as f64,
+                        o[1] + u[1] * i as f64 / n as f64 + v[1] * j as f64 / n as f64,
+                        o[2] + u[2] * i as f64 / n as f64 + v[2] * j as f64 / n as f64,
+                    ];
+                    let k = key(p);
+                    *cell = *vmap.entry(k).or_insert_with(|| {
+                        verts.push(p);
+                        (verts.len() - 1) as u32
+                    });
+                }
+            }
+            for j in 0..n {
+                for i in 0..n {
+                    let (a, b, c, d) = (idx[j][i], idx[j][i + 1], idx[j + 1][i], idx[j + 1][i + 1]);
+                    tris.push([a, b, c]);
+                    tris.push([b, d, c]);
+                }
+            }
+        };
+        let (x0, y0, z0) = (mn[0], mn[1], mn[2]);
+        let (x1, y1, z1) = (mx[0], mx[1], mx[2]);
+        let (dx, dy, dz) = (x1 - x0, y1 - y0, z1 - z0);
+        // -x, +x
+        add_face([x0, y0, z0], [0.0, dy, 0.0], [0.0, 0.0, dz], [-1.0, 0.0, 0.0]);
+        add_face([x1, y0, z0], [0.0, 0.0, dz], [0.0, dy, 0.0], [1.0, 0.0, 0.0]);
+        // -y, +y
+        add_face([x0, y0, z0], [0.0, 0.0, dz], [dx, 0.0, 0.0], [0.0, -1.0, 0.0]);
+        add_face([x0, y1, z0], [dx, 0.0, 0.0], [0.0, 0.0, dz], [0.0, 1.0, 0.0]);
+        // -z, +z
+        add_face([x0, y0, z0], [dx, 0.0, 0.0], [0.0, dy, 0.0], [0.0, 0.0, -1.0]);
+        add_face([x0, y0, z1], [0.0, dy, 0.0], [dx, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        (verts, tris)
+    }
+
+    fn append(
+        v: &mut Vec<[f64; 3]>,
+        t: &mut Vec<[u32; 3]>,
+        v2: Vec<[f64; 3]>,
+        t2: Vec<[u32; 3]>,
+    ) {
+        let off = v.len() as u32;
+        v.extend(v2);
+        t.extend(t2.iter().map(|x| [x[0] + off, x[1] + off, x[2] + off]));
+    }
+
+    /// Two overlapping fine boxes with misaligned grids, so their surfaces
+    /// cross in proper (non-boundary) segments.  This is a body-level union
+    /// (agy's `shell.rs` domain), not a local fold; the melt must not make it
+    /// worse.
+    fn two_overlapping_boxes() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let (mut v, mut t) = grid_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0], 6);
+        let (v2, t2) = grid_box([0.52, 0.52, 0.52], [1.48, 1.48, 1.48], 7);
+        append(&mut v, &mut t, v2, t2);
+        (v, t)
+    }
+
+    /// A closed cube plus a flat flap that pokes through one wall: a local,
+    /// single-sheet fold whose buried part is inside the cube.
+    fn flap_through_wall() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let (mut v, mut t) = clean_cube();
+        let base = v.len() as u32;
+        v.extend([
+            [0.6, 0.4, 0.5],
+            [1.4, 0.4, 0.5],
+            [1.4, 0.6, 0.5],
+            [0.6, 0.6, 0.5],
+        ]);
+        t.push([base, base + 1, base + 2]);
+        t.push([base, base + 2, base + 3]);
+        (v, t)
+    }
+
+    #[test]
+    fn melt_local_flap_reduces_si() {
+        let (verts, tris) = flap_through_wall();
+        let before = scan_si(&verts, &tris);
+        assert!(before.count > 0, "flap must cross the wall");
+        let params = MeltParams {
+            max_face_fraction: 0.5,
+            ..MeltParams::default()
+        };
+        let out = melt_si(&verts, &tris, 0.05, 1.8, None, &params);
+        let after = scan_si(&out.verts, &out.tris);
+        let (h, nm) = reload_holes_nm(&out.verts, &out.tris);
+        eprintln!(
+            "MELTFLAP si {} -> {} holes/nm {}/{} layers t/a/roll {}/{}/{} excised {} faces {} -> {}",
+            before.count,
+            after.count,
+            h,
+            nm,
+            out.layers_tried,
+            out.layers_accepted,
+            out.layers_rolled_back,
+            out.excised_faces,
+            tris.len(),
+            out.tris.len()
+        );
+        assert!(h == 0 && nm == 0, "melt must not open holes/nm: {h}/{nm}");
+        assert!(
+            after.count < before.count,
+            "SI should fall: {} -> {}",
+            before.count,
+            after.count
+        );
+    }
+
+    /// A thin slab face has interior on one side and exterior on the other
+    /// (`w_out ~ 0`), so the thin-wall guard (C4) must never classify it as
+    /// buried.
+    #[test]
+    fn thin_wall_face_not_buried() {
+        let (v, t) = grid_box([0.0, 0.0, 0.0], [1.0, 1.0, 0.02], 1);
+        let tu: Vec<[usize; 3]> = t
+            .iter()
+            .map(|x| [x[0] as usize, x[1] as usize, x[2] as usize])
+            .collect();
+        let bvh = MeshBvh::from_arrays(&v, &tu);
+        let params = MeltParams::default();
+        // Every slab face must be kept, with or without an SI partner.
+        for f in 0..t.len() {
+            assert!(
+                !is_buried_face(f, false, &v, &t, &bvh, 0.01, &params),
+                "thin slab face {f} wrongly classified buried"
+            );
+            assert!(
+                !is_buried_face(f, true, &v, &t, &bvh, 0.01, &params),
+                "thin slab face {f} wrongly classified buried with SI partner"
+            );
+        }
+    }
+
+    #[test]
+    fn melt_body_union_never_worsens() {
+        let (verts, tris) = two_overlapping_boxes();
+        let before = scan_si(&verts, &tris);
+        assert!(before.count > 0, "boxes must cross");
+        let params = MeltParams {
+            max_face_fraction: 0.5,
+            ..MeltParams::default()
+        };
+        let out = melt_si(&verts, &tris, 0.05, 3.0, None, &params);
+        let after = scan_si(&out.verts, &out.tris);
+        let (h, nm) = reload_holes_nm(&out.verts, &out.tris);
+        assert!(h == 0 && nm == 0, "must not open holes/nm: {h}/{nm}");
+        assert!(after.count <= before.count, "SI must not rise");
+    }
+
+    #[test]
+    fn melt_is_deterministic() {
+        let (verts, tris) = flap_through_wall();
+        let params = MeltParams {
+            max_face_fraction: 0.5,
+            ..MeltParams::default()
+        };
+        let a = melt_si(&verts, &tris, 0.05, 1.8, None, &params);
+        let b = melt_si(&verts, &tris, 0.05, 1.8, None, &params);
+        assert_eq!(a.verts, b.verts);
+        assert_eq!(a.tris, b.tris);
+        assert_eq!(a.layers_accepted, b.layers_accepted);
+        assert_eq!(a.excised_faces, b.excised_faces);
+    }
+
+    #[test]
+    fn melt_budget_stops_cleanly() {
+        let (verts, tris) = flap_through_wall();
+        let params = MeltParams {
+            max_face_fraction: 0.5,
+            ..MeltParams::default()
+        };
+        // A negative budget expires before the first layer is attempted.
+        let out = melt_si(&verts, &tris, 0.05, 1.8, Some(-1.0), &params);
+        assert_eq!(out.layers_tried, 0);
+        assert_eq!(out.layers_accepted, 0);
+        assert_eq!(out.verts, verts);
+        assert_eq!(out.tris, tris);
+        assert!(out.reason.contains("timeout"), "reason: {}", out.reason);
     }
 }
