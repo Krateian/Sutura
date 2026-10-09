@@ -29,6 +29,7 @@ pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
 pub mod raycast;
+pub mod shell;
 pub mod tamponade;
 pub mod topology;
 pub mod triangle_intersection;
