@@ -58,6 +58,9 @@ _RUST_FNS = (
     'remove_null_faces',
     'remove_duplicate_vertices',
     'remove_unreferenced_vertices',
+    'remove_connected_components',
+    'invert_face_orientation',
+    'mesh_topology',
 )
 
 
@@ -164,14 +167,216 @@ def _remove_duplicate_vertices_numpy(verts, tris):
 def _remove_unreferenced_vertices_numpy(verts, tris):
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int64)
-    if len(v) == 0 or len(t) == 0:
+    if len(v) == 0:
         return v, t
+    if len(t) == 0:
+        return v[:0], t
     used = np.unique(t)
     if len(used) == len(v) and np.array_equal(used, np.arange(len(v))):
         return v, t
     remap = np.full(len(v), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
     return v[used], remap[t]
+
+
+def _remove_connected_components_numpy(verts, tris, min_faces=25, remove_unref=True):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) == 0 or min_faces <= 1:
+        return v, t
+    F = len(t)
+    _edges, _counts, inv = _edge_table_numpy(t)
+    face_of_h = np.tile(np.arange(F, dtype=np.int64), 3)
+
+    order = np.argsort(inv, kind='stable')
+    sorted_inv = inv[order]
+    sorted_face = face_of_h[order]
+
+    parent = list(range(F))
+    def find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            nxt = parent[x]
+            parent[x] = root
+            x = nxt
+        return root
+
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    starts = np.flatnonzero(np.r_[True, sorted_inv[1:] != sorted_inv[:-1]])
+    ends = np.r_[starts[1:], len(sorted_inv)]
+    for s, e in zip(starts, ends):
+        if e - s > 1:
+            f0 = int(sorted_face[s])
+            for k in range(s + 1, e):
+                union(f0, int(sorted_face[k]))
+
+    roots = np.fromiter((find(i) for i in range(F)), dtype=np.int64, count=F)
+    uniq_roots, root_inv, comp_sizes = np.unique(roots, return_inverse=True, return_counts=True)
+    face_comp_sizes = comp_sizes[root_inv]
+
+    keep_mask = (face_comp_sizes >= min_faces)
+    if keep_mask.all():
+        return v, t
+    surv_t = t[keep_mask]
+    if remove_unref:
+        return _remove_unreferenced_vertices_numpy(v, surv_t)
+    return v, surv_t
+
+
+def _invert_face_orientation_numpy(tris):
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) == 0:
+        return t
+    return t[:, [1, 0, 2]]
+
+
+def _mesh_topology_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    F = len(t)
+    V = len(v)
+    if F == 0:
+        return {
+            'boundary_edges': 0,
+            'connected_components_number': 0,
+            'edges_number': 0,
+            'faces_number': 0,
+            'genus': 0,
+            'incident_faces_on_non_two_manifold_edges': 0,
+            'incident_faces_on_non_two_manifold_vertices': 0,
+            'is_mesh_two_manifold': True,
+            'non_two_manifold_edges': 0,
+            'non_two_manifold_vertices': 0,
+            'number_holes': 0,
+            'unreferenced_vertices': V,
+            'vertices_number': V,
+        }
+    edges, counts, inv = _edge_table_numpy(t)
+    E = len(edges)
+    boundary_edges = int(np.sum(counts == 1))
+    nm_edges = int(np.sum(counts > 2))
+
+    face_of_h = np.tile(np.arange(F, dtype=np.int64), 3)
+    nm_edge_faces = int(len(np.unique(face_of_h[counts[inv] > 2]))) if nm_edges > 0 else 0
+
+    order = np.argsort(inv, kind='stable')
+    sorted_inv = inv[order]
+    sorted_face = face_of_h[order]
+    parent = list(range(F))
+    def find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            nxt = parent[x]
+            parent[x] = root
+            x = nxt
+        return root
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+    starts = np.flatnonzero(np.r_[True, sorted_inv[1:] != sorted_inv[:-1]])
+    ends = np.r_[starts[1:], len(sorted_inv)]
+    boundary_directed = {}
+    for s, e in zip(starts, ends):
+        deg = e - s
+        if deg > 1:
+            f0 = int(sorted_face[s])
+            for k in range(s + 1, e):
+                union(f0, int(sorted_face[k]))
+        elif deg == 1:
+            orig_h = order[s]
+            block = orig_h // F
+            f_id = orig_h % F
+            tri = t[f_id]
+            u, w = tri[block], tri[(block + 1) % 3]
+            boundary_directed[int(u)] = int(w)
+
+    n_components = len(set(find(i) for i in range(F)))
+
+    from collections import defaultdict
+    v_faces = defaultdict(list)
+    for f_idx, tri in enumerate(t):
+        for vi in set(tri):
+            if 0 <= vi < V:
+                v_faces[vi].append(f_idx)
+
+    nmv_count = 0
+    nmv_incident_faces = set()
+    for v_idx, inc_faces in v_faces.items():
+        if len(inc_faces) <= 1:
+            continue
+        f_pos = {f: i for i, f in enumerate(inc_faces)}
+        p_star = list(range(len(inc_faces)))
+        def find_star(x):
+            while p_star[x] != x:
+                p_star[x] = p_star[p_star[x]]
+                x = p_star[x]
+            return x
+        def union_star(x, y):
+            rx, ry = find_star(x), find_star(y)
+            if rx != ry:
+                p_star[rx] = ry
+        edge_map = defaultdict(list)
+        for f in inc_faces:
+            tri = t[f]
+            for w in set(tri):
+                if w != v_idx and 0 <= w < V:
+                    edge_map[w].append(f_pos[f])
+        for w, flist in edge_map.items():
+            if len(flist) > 1:
+                f0 = flist[0]
+                for other in flist[1:]:
+                    union_star(f0, other)
+        if len(set(find_star(i) for i in range(len(inc_faces)))) > 1:
+            nmv_count += 1
+            nmv_incident_faces.update(inc_faces)
+
+    is_two_manifold = (nm_edges == 0 and nmv_count == 0)
+    unref_verts = V - len(v_faces)
+
+    if is_two_manifold:
+        visited = set()
+        holes = 0
+        for start in list(boundary_directed.keys()):
+            if start in visited:
+                continue
+            curr = start
+            while curr in boundary_directed and curr not in visited:
+                visited.add(curr)
+                curr = boundary_directed[curr]
+                if curr == start:
+                    holes += 1
+                    break
+        v_ref = V - unref_verts
+        chi = v_ref - E + F
+        genus = int(n_components - (holes + chi) / 2)
+    else:
+        genus = -1
+        holes = -1
+
+    return {
+        'boundary_edges': boundary_edges,
+        'connected_components_number': n_components,
+        'edges_number': E,
+        'faces_number': F,
+        'genus': genus,
+        'incident_faces_on_non_two_manifold_edges': nm_edge_faces,
+        'incident_faces_on_non_two_manifold_vertices': len(nmv_incident_faces),
+        'is_mesh_two_manifold': is_two_manifold,
+        'non_two_manifold_edges': nm_edges,
+        'non_two_manifold_vertices': nmv_count,
+        'number_holes': holes,
+        'unreferenced_vertices': unref_verts,
+        'vertices_number': V,
+    }
 
 
 # --- public API ----------------------------------------------------------- #
@@ -296,14 +501,71 @@ def remove_unreferenced_vertices(verts, tris):
         raise ValueError("verts must be Nx3")
     if t.ndim != 2 or t.shape[1] != 3:
         raise ValueError("tris must be Mx3")
-    if len(v) == 0 or len(t) == 0:
+    if len(v) == 0:
         return v, t
+    if len(t) == 0:
+        return v[:0], t
     if _has_rust('remove_unreferenced_vertices'):
         try:
             return _geom.remove_unreferenced_vertices(v, t)
         except Exception:
             pass
     return _remove_unreferenced_vertices_numpy(v, t)
+
+
+def remove_connected_components(verts, tris, min_faces=25, remove_unref=True):
+    """Remove connected components with fewer than min_faces triangles.
+
+    Matching VCGLib meshing_remove_connected_component_by_face_number.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) == 0 or min_faces <= 1:
+        return v, t
+    if _has_rust('remove_connected_components'):
+        try:
+            return _geom.remove_connected_components(v, t, int(min_faces), bool(remove_unref))
+        except Exception:
+            pass
+    return _remove_connected_components_numpy(v, t, min_faces=min_faces, remove_unref=remove_unref)
+
+
+def invert_face_orientation(tris):
+    """Invert face winding (matching VCGLib meshing_invert_face_orientation).
+
+    Swaps vertices 0 and 1 of each triangle.
+    """
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) == 0:
+        return t
+    if _has_rust('invert_face_orientation'):
+        try:
+            return _geom.invert_face_orientation(t)
+        except Exception:
+            pass
+    return _invert_face_orientation_numpy(t)
+
+
+def mesh_topology(verts, tris):
+    """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures)."""
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if _has_rust('mesh_topology'):
+        try:
+            return _geom.mesh_topology(v, t)
+        except Exception:
+            pass
+    return _mesh_topology_numpy(v, t)
 
 
 def connected_components(graph=None, *, directed=False, connection='weak',
@@ -398,6 +660,13 @@ __all__ = [
     'edge_table',
     'weld_vertices',
     'weld_reload_equivalent',
+    'remove_duplicate_faces',
+    'remove_null_faces',
+    'remove_duplicate_vertices',
+    'remove_unreferenced_vertices',
+    'remove_connected_components',
+    'invert_face_orientation',
+    'mesh_topology',
     'connected_components',
     'engine',
     'set_engine',
