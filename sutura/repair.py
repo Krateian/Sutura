@@ -1177,16 +1177,116 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # assemblies), dissolves internal interfaces via slight dilation
     # (dilation = 5e-4 * bbox_diagonal, ~0.05 mm for 100 mm object) and boolean union.
     if mode == 'auto' and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
-        try:
-            import repeat_repair as _rr
-            _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
-            if len(_shell_t) > 0:
-                verts = np.asarray(_shell_v, dtype=np.float32)
-                tris = np.asarray(_shell_t, dtype=np.int32)
-                v, t = verts, tris
-                stats['outer_shell_extracted'] = True
-        except Exception:
-            pass
+        _shell_adopted = False
+        _shell_phase = None
+        _shell_reason = None
+        _sinfo = None
+        if tamponade:
+            _t_shell_start = time.time()
+            _t_analyze_s = 0.0
+            _t_topo_s = 0.0
+            try:
+                import sutura_geom
+                import defects as _defects
+                _t0 = time.time()
+                _cand_v, _cand_t, _sinfo = sutura_geom.shell_analyze(
+                    np.asarray(verts, dtype=np.float64),
+                    np.asarray(tris, dtype=np.int32),
+                )
+                _t_analyze_s = time.time() - _t0
+                _t0 = time.time()
+                _in_holes = boundary_loop_stats(verts, tris)[0]
+                _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
+                _in_parts = _count_vertex_components(len(verts), tris)
+                _t_topo_s = time.time() - _t0
+
+                # Phase P-a: DISJOINT parts (60916-type):
+                # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
+                # no buried faces, no coincident opposite walls, no internal walls.
+                _is_p_a = _sinfo.get('is_disjoint', False)
+
+                if _is_p_a:
+                    _shell_adopted = True
+                    _shell_phase = 'P-a_disjoint'
+                    _shell_reason = 'disjoint_parts_no_overlap'
+
+                # Phase P-b: exactly coincident opposite walls -> dissolve both (C2)
+                elif (_sinfo['coincident_opp_count'] > 0
+                        and not _sinfo['has_internal_walls']
+                        and _sinfo['internal_walls_count'] == 0
+                        and _sinfo['unresolved_coincident_count'] == 0
+                        and _sinfo['reason'] == 'ok'):
+                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                        _shell_adopted = True
+                        _shell_phase = 'P-b_coincident'
+                        _shell_reason = 'coincident_opposite_dissolved'
+                        verts = np.asarray(_cand_v, dtype=np.float32)
+                        tris = np.asarray(_cand_t, dtype=np.int32)
+                        v, t = verts, tris
+                    else:
+                        _shell_phase = 'P-b_coincident'
+                        _shell_reason = 'rejected_holes_or_parts_rose'
+
+                # Phase P-c: penetrating bodies (100045-type) -> exact clip + stitch (C1)
+                elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok':
+                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                        _shell_adopted = True
+                        _shell_phase = 'P-c_penetrating'
+                        _shell_reason = 'penetrating_bodies_clipped_and_stitched'
+                        verts = np.asarray(_cand_v, dtype=np.float32)
+                        tris = np.asarray(_cand_t, dtype=np.int32)
+                        v, t = verts, tris
+                    else:
+                        _shell_phase = 'P-c_penetrating'
+                        _shell_reason = 'rejected_holes_or_parts_rose'
+                else:
+                    _shell_phase = 'P-c_penetrating' if _sinfo['reason'] == 'unresolved_coplanar_overlapping' else 'fallback'
+                    _shell_reason = _sinfo['reason']
+            except Exception as _e:
+                _shell_adopted = False
+                _shell_phase = 'error'
+                _shell_reason = str(_e)
+
+            _t_shell_total = time.time() - _t_shell_start
+            stats['tamponade_shell_prepass'] = {
+                'shell_adopted': _shell_adopted,
+                'shell_phase': _shell_phase,
+                'shell_reason': _shell_reason,
+                'time_s': round(_t_shell_total, 4),
+                'shell_analyze_s': round(_t_analyze_s, 4),
+                'topo_stats_s': round(_t_topo_s, 4),
+                'outer_count': (_sinfo or {}).get('outer_count', 0),
+                'buried_count': (_sinfo or {}).get('buried_count', 0),
+                'cavity_count': (_sinfo or {}).get('cavity_count', 0),
+                'coincident_opp_count': (_sinfo or {}).get('coincident_opp_count', 0),
+                'coincident_same_count': (_sinfo or {}).get('coincident_same_count', 0),
+                'internal_walls_count': (_sinfo or {}).get('internal_walls_count', 0),
+                'unresolved_coincident_count': (_sinfo or {}).get('unresolved_coincident_count', 0),
+                'has_internal_walls': (_sinfo or {}).get('has_internal_walls', False),
+                'is_disjoint': (_sinfo or {}).get('is_disjoint', False),
+            }
+            stats['shell_adopted'] = _shell_adopted
+            stats['shell_phase'] = _shell_phase
+            stats['shell_reason'] = _shell_reason
+
+        # Any phase that is not adopted -> today's path unchanged
+        if not _shell_adopted:
+            try:
+                import repeat_repair as _rr
+                _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
+                if len(_shell_t) > 0:
+                    verts = np.asarray(_shell_v, dtype=np.float32)
+                    tris = np.asarray(_shell_t, dtype=np.int32)
+                    v, t = verts, tris
+                    stats['outer_shell_extracted'] = True
+            except Exception:
+                pass
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -1384,8 +1484,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # Stage-1 chain (+ delete-fallback + join), before the deep-repair ladder.
     # Gated to deep_repair == 'full' (Quick is 'off'; the library default None
     # is untouched) and skipped for mode == 'extreme', which keeps its legacy
-    # extreme_extra_passes. A no-op on meshes with no self-intersections.
-    if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled():
+    _shell_adopted_for_si = (stats.get('tamponade_shell_prepass') or {}).get('shell_adopted', False)
+    if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled() and not _shell_adopted_for_si:
         ms, _si_rec = si_excise_recap(
             ms, ml, maxholesize=_p['maxholesize'],
             time_budget=_si_excise_budget(triage_spec))
@@ -1476,7 +1576,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # uses), but still record the ladder's own report.
     _tamp_watertight = bool(
         (stats.get('tamponade') or {}).get('adopted')
-        and (stats.get('tamponade') or {}).get('reload_watertight'))
+        and (stats.get('tamponade') or {}).get('reload_watertight')
+        and (stats.get('tamponade') or {}).get('candidate_parts', 1) <= 1)
 
     # Registry method 13 (Graft / shell wrap): the morphology last-resort tier,
     # run on the ORIGINAL input arrays before the fTetWild ladder. Adopts only a
@@ -3983,6 +4084,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'candidate_self_intersections': None, 'si_fall': None,
            'si_ok': None, 'melt_enabled': None, 'si_method': None,
            'prepass_seconds': None}
+    if 'tamponade_shell_prepass' in stats:
+        rec['shell_prepass'] = stats['tamponade_shell_prepass']
     try:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
         cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
@@ -4086,6 +4189,28 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         if healthy is not None and len(cur_t):
             rec['healthy_fraction'] = float(healthy) / float(len(cur_t))
 
+        cand_iw = 0
+        try:
+            from sutura_geom import PyMeshBvh
+            _bvh = PyMeshBvh(cand_v.astype(np.float64), cand_t.astype(np.int32))
+            _p0 = cand_v[cand_t[:, 0]].astype(np.float64)
+            _p1 = cand_v[cand_t[:, 1]].astype(np.float64)
+            _p2 = cand_v[cand_t[:, 2]].astype(np.float64)
+            _c = (_p0 + _p1 + _p2) / 3.0
+            _n = np.cross(_p1 - _p0, _p2 - _p0)
+            _ln = np.linalg.norm(_n, axis=1, keepdims=True)
+            _ln[_ln == 0] = 1.0
+            _n = _n / _ln
+            _diag = float(np.linalg.norm(cand_v.max(0) - cand_v.min(0)))
+            _eps = max(_diag * 1e-4, 1e-6)
+            _wp = _bvh.winding_points(_c + _n * _eps)
+            _wm = _bvh.winding_points(_c - _n * _eps)
+            cand_iw = int(((_wp >= 1.5) & (_wm >= 1.5)).sum())
+        except Exception:
+            cand_iw = 0
+        rec['candidate_internal_walls'] = cand_iw
+        iw_ok = (cand_iw == 0)
+
         no_rise = cand_holes <= base_holes and cand_nm <= base_nm
         strict_fall = (cand_holes + cand_nm) < (base_holes + base_nm)
         parts_ok = cand_parts <= base_parts
@@ -4182,6 +4307,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 reasons.append('component count rose')
             if not healthy_ok:
                 reasons.append('healthy faces below 99%')
+            if not iw_ok:
+                reasons.append(f'internal walls present ({cand_iw})')
             if not len(cand_t):
                 reasons.append('no geometry')
             rec['reason'] = 'not adopted (%s)' % '; '.join(reasons or ['?'])
@@ -4189,7 +4316,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
     except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
         if isinstance(e, (KeyboardInterrupt, SystemExit)):
             raise
-        rec['reason'] = 'error: %s: %s' % (type(e).__name__, e)
+    if 'tamponade_shell_prepass' in stats:
+        rec['shell_prepass'] = stats['tamponade_shell_prepass']
     stats['tamponade'] = rec
     return ms, after
 

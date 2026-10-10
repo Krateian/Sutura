@@ -233,6 +233,235 @@ fn touch_segment_source(
     }
 }
 
+fn clip_polygon_simplex(
+    poly: &[crate::cdt2d::Point2D],
+) -> Vec<crate::cdt2d::Point2D> {
+    use num_traits::{One, Signed, Zero};
+    let zero = BigRational::zero();
+    let one = BigRational::one();
+
+    // H0: s >= 0
+    let mut p0 = Vec::new();
+    if poly.is_empty() {
+        return p0;
+    }
+    for i in 0..poly.len() {
+        let cur = &poly[i];
+        let nxt = &poly[(i + 1) % poly.len()];
+        let in_c = !cur.s.is_negative();
+        let in_n = !nxt.s.is_negative();
+        if in_c && in_n {
+            p0.push(nxt.clone());
+        } else if in_c && !in_n {
+            let lam = -&cur.s / (&nxt.s - &cur.s);
+            let t = &cur.t + &lam * (&nxt.t - &cur.t);
+            p0.push(crate::cdt2d::Point2D { s: zero.clone(), t });
+        } else if !in_c && in_n {
+            let lam = -&cur.s / (&nxt.s - &cur.s);
+            let t = &cur.t + &lam * (&nxt.t - &cur.t);
+            p0.push(crate::cdt2d::Point2D { s: zero.clone(), t });
+            p0.push(nxt.clone());
+        }
+    }
+
+    // H1: t >= 0
+    let mut p1 = Vec::new();
+    if p0.is_empty() {
+        return p1;
+    }
+    for i in 0..p0.len() {
+        let cur = &p0[i];
+        let nxt = &p0[(i + 1) % p0.len()];
+        let in_c = !cur.t.is_negative();
+        let in_n = !nxt.t.is_negative();
+        if in_c && in_n {
+            p1.push(nxt.clone());
+        } else if in_c && !in_n {
+            let lam = -&cur.t / (&nxt.t - &cur.t);
+            let s = &cur.s + &lam * (&nxt.s - &cur.s);
+            p1.push(crate::cdt2d::Point2D { s, t: zero.clone() });
+        } else if !in_c && in_n {
+            let lam = -&cur.t / (&nxt.t - &cur.t);
+            let s = &cur.s + &lam * (&nxt.s - &cur.s);
+            p1.push(crate::cdt2d::Point2D { s, t: zero.clone() });
+            p1.push(nxt.clone());
+        }
+    }
+
+    // H2: 1 - s - t >= 0
+    let mut p2 = Vec::new();
+    if p1.is_empty() {
+        return p2;
+    }
+    for i in 0..p1.len() {
+        let cur = &p1[i];
+        let nxt = &p1[(i + 1) % p1.len()];
+        let rem_c = &one - &cur.s - &cur.t;
+        let rem_n = &one - &nxt.s - &nxt.t;
+        let in_c = !rem_c.is_negative();
+        let in_n = !rem_n.is_negative();
+        if in_c && in_n {
+            p2.push(nxt.clone());
+        } else if in_c && !in_n {
+            let denom = (&nxt.s - &cur.s) + (&nxt.t - &cur.t);
+            let lam = &rem_c / &denom;
+            let s = &cur.s + &lam * (&nxt.s - &cur.s);
+            let t = &cur.t + &lam * (&nxt.t - &cur.t);
+            p2.push(crate::cdt2d::Point2D { s, t });
+        } else if !in_c && in_n {
+            let denom = (&nxt.s - &cur.s) + (&nxt.t - &cur.t);
+            let lam = &rem_c / &denom;
+            let s = &cur.s + &lam * (&nxt.s - &cur.s);
+            let t = &cur.t + &lam * (&nxt.t - &cur.t);
+            p2.push(crate::cdt2d::Point2D { s, t });
+            p2.push(nxt.clone());
+        }
+    }
+
+    p2
+}
+
+fn add_coplanar_overlap_segments(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    i: usize,
+    j: usize,
+    segments: &mut [Vec<HostSegment>],
+    frames: &mut HashMap<usize, HostFrame>,
+) {
+    let host_i = tris[i];
+    let host_j = tris[j];
+
+    let frame_i = frames
+        .entry(i)
+        .or_insert_with(|| {
+            HostFrame::from_points(
+                &Point3::Explicit(verts[host_i[0]]),
+                &Point3::Explicit(verts[host_i[1]]),
+                &Point3::Explicit(verts[host_i[2]]),
+            )
+            .expect("host triangle i must be non-degenerate")
+        })
+        .clone();
+
+    // Project triangle j vertices into frame i
+    let q0 = match frame_i.project(&Point3::Explicit(verts[host_j[0]])) {
+        Some(q) => q,
+        None => return,
+    };
+    let q1 = match frame_i.project(&Point3::Explicit(verts[host_j[1]])) {
+        Some(q) => q,
+        None => return,
+    };
+    let q2 = match frame_i.project(&Point3::Explicit(verts[host_j[2]])) {
+        Some(q) => q,
+        None => return,
+    };
+
+    let poly_st = clip_polygon_simplex(&[q0, q1, q2]);
+    if poly_st.len() < 3 {
+        return;
+    }
+
+    // Convert polygon vertices to 3D and deduplicate
+    let mut poly_pts = Vec::new();
+    for st in &poly_st {
+        let pt3d = frame_i.point3d(&st.s, &st.t);
+        let q = rat3_to_f64(&pt3d);
+        if poly_pts.is_empty() || poly_pts.last() != Some(&q) {
+            poly_pts.push(q);
+        }
+    }
+    if poly_pts.len() > 1 && poly_pts.first() == poly_pts.last() {
+        poly_pts.pop();
+    }
+    let k = poly_pts.len();
+    if k < 3 {
+        return;
+    }
+
+    // Find canonical anchor: lexicographically smallest 3D coordinate
+    let mut min_idx = 0;
+    for idx in 1..k {
+        let p_min = poly_pts[min_idx];
+        let p_cur = poly_pts[idx];
+        let ord = p_cur[0]
+            .partial_cmp(&p_min[0])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                p_cur[1]
+                    .partial_cmp(&p_min[1])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .then_with(|| {
+                p_cur[2]
+                    .partial_cmp(&p_min[2])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if ord == std::cmp::Ordering::Less {
+            min_idx = idx;
+        }
+    }
+
+    // Rotate so min_idx is at index 0
+    let mut rot_pts = Vec::with_capacity(k);
+    for idx in 0..k {
+        rot_pts.push(poly_pts[(min_idx + idx) % k]);
+    }
+
+    // Boundary edges
+    for idx in 0..k {
+        let p0 = rot_pts[idx];
+        let p1 = rot_pts[(idx + 1) % k];
+        if p0 != p1 {
+            segments[i].push(HostSegment {
+                p: Point3::Explicit(p0),
+                q: Point3::Explicit(p1),
+                source: SegmentSource::CoplanarEdge { endpoints: (p0, p1) },
+            });
+            segments[j].push(HostSegment {
+                p: Point3::Explicit(p0),
+                q: Point3::Explicit(p1),
+                source: SegmentSource::CoplanarEdge { endpoints: (p0, p1) },
+            });
+        }
+    }
+
+    if k == 4 {
+        let p0 = rot_pts[1];
+        let p1 = rot_pts[3];
+        if p0 != p1 {
+            segments[i].push(HostSegment {
+                p: Point3::Explicit(p0),
+                q: Point3::Explicit(p1),
+                source: SegmentSource::CoplanarEdge { endpoints: (p0, p1) },
+            });
+            segments[j].push(HostSegment {
+                p: Point3::Explicit(p0),
+                q: Point3::Explicit(p1),
+                source: SegmentSource::CoplanarEdge { endpoints: (p0, p1) },
+            });
+        }
+    } else if k > 4 {
+        for m in 2..k - 1 {
+            let p0 = rot_pts[0];
+            let p1 = rot_pts[m];
+            if p0 != p1 {
+                segments[i].push(HostSegment {
+                    p: Point3::Explicit(p0),
+                    q: Point3::Explicit(p1),
+                    source: SegmentSource::CoplanarEdge { endpoints: (p0, p1) },
+                });
+                segments[j].push(HostSegment {
+                    p: Point3::Explicit(p0),
+                    q: Point3::Explicit(p1),
+                    source: SegmentSource::CoplanarEdge { endpoints: (p0, p1) },
+                });
+            }
+        }
+    }
+}
+
 fn weld_point(
     pool: &mut Vec<[BigRational; 3]>,
     map: &mut HashMap<[RatKey; 3], usize>,
@@ -293,9 +522,23 @@ fn collect_edge_points(
                     Some(st) => st,
                     None => continue,
                 };
-                let on_ab = st.t == zero;
-                let on_ac = st.s == zero;
-                let on_bc = &st.s + &st.t == one;
+                use num_traits::Signed;
+                let eps = BigRational::new(num_bigint::BigInt::from(1), num_bigint::BigInt::from(1_000_000_000));
+                let mut s = st.s;
+                let mut t_coord = st.t;
+                if s.abs() < eps {
+                    s = zero.clone();
+                }
+                if t_coord.abs() < eps {
+                    t_coord = zero.clone();
+                }
+                if (&one - &s - &t_coord).abs() < eps {
+                    let diff = &one - &s - &t_coord;
+                    t_coord = t_coord + diff;
+                }
+                let on_ab = t_coord == zero;
+                let on_ac = s == zero;
+                let on_bc = &s + &t_coord == one;
                 let edge = match (on_ab, on_ac, on_bc) {
                     (true, false, false) => (t[0], t[1]),
                     (false, true, false) => (t[0], t[2]),
@@ -393,11 +636,11 @@ pub fn arrangement_lite_core(
                 *degenerate
                     .entry("coplanar_overlap".to_string())
                     .or_insert(0) += 1;
-                // NOTE: emitting the overlapping edges as CoplanarEdge
-                // constraints is deliberately deferred. Clipping them to the
-                // host boundary is required for a conforming result, and
-                // partial overlaps would otherwise create inconsistent
-                // constraint sets between the two host triangles.
+                if crate::cdt2d::experimental::enabled(
+                    crate::cdt2d::experimental::SPLIT_COPLANAR_OVERLAPS,
+                ) {
+                    add_coplanar_overlap_segments(verts, tris, i, j, &mut segments, &mut frames);
+                }
             }
             TriangleIntersection::Disjoint => {}
         }
@@ -650,8 +893,23 @@ mod tests {
         assert!(odd_use_edges(&reference) > 0, "reference output has T-junctions");
 
         experimental::set_options(experimental::PROPAGATE_EDGE_POINTS);
-        let (_, propagated, _) = arrangement_lite_core(&verts, &tris).unwrap();
+        let (pool, propagated, rep) = arrangement_lite_core(&verts, &tris).unwrap();
         experimental::set_options(0);
+        println!("rep: {:?}", rep);
+        let mut count: HashMap<(usize, usize), usize> = HashMap::new();
+        for t in &propagated {
+            for k in 0..3 {
+                let (u, v) = (t[k], t[(k + 1) % 3]);
+                *count.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+            }
+        }
+        let odd_edges: Vec<((usize, usize), usize)> = count.into_iter().filter(|&(_, c)| c % 2 == 1).collect();
+        println!("ODD EDGES COUNT: {}", odd_edges.len());
+        for &((u, v), cnt) in &odd_edges[..10.min(odd_edges.len())] {
+            let pu = rat3_to_f64(&pool[u]);
+            let pv = rat3_to_f64(&pool[v]);
+            println!("  odd edge cnt={}: {:?} (u={}) -> {:?} (v={})", cnt, pu, u, pv, v);
+        }
         assert_eq!(odd_use_edges(&propagated), 0, "T-junctions left after propagation");
     }
 

@@ -4432,8 +4432,8 @@ mod tests {
     fn unit_solid_cube() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
         let (verts, mut tris) = unit_cube_open_top();
         // Add the missing top face (z=1) as two triangles, outward +z.
-        tris.push([4, 6, 5]);
-        tris.push([4, 7, 6]);
+        tris.push([4, 5, 6]);
+        tris.push([4, 6, 7]);
         (verts, tris)
     }
 
@@ -5452,5 +5452,29 @@ mod tests {
             !cap_shape_ok(&folded, &verts, verts.len() as u32, &[], &rim, rim_diag, None),
             "flipped cap face accepted"
         );
+    }
+
+    #[test]
+    fn test_concentric_nested_cubes_dissolves_inner() {
+        let (mut verts, mut tris) = unit_solid_cube();
+        // Inner cube: scaled down to 0.25 and centered at [0.5, 0.5, 0.5]
+        let offset = verts.len() as u32;
+        for i in 0..8 {
+            let v = verts[i];
+            verts.push([v[0] * 0.25 + 0.375, v[1] * 0.25 + 0.375, v[2] * 0.25 + 0.375]);
+        }
+        for i in 0..12 {
+            let t = tris[i];
+            tris.push([t[0] + offset, t[1] + offset, t[2] + offset]);
+        }
+        assert_eq!(tris.len(), 24);
+        let (_out_verts, out_tris, info) = crate::shell::shell_analyze_and_filter(
+            &verts,
+            &tris,
+            &crate::shell::ShellConfig::default(),
+        );
+        assert_eq!(info.reason, "ok");
+        assert_eq!(out_tris.len(), 12);
+        assert_eq!(boundary_edge_count(&out_tris), 0);
     }
 }

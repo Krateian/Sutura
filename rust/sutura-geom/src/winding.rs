@@ -473,6 +473,82 @@ impl MeshBvh {
         (best.0, best.1.sqrt(), best.2)
     }
 
+    /// Closest point on the triangle soup excluding triangles belonging to `excluded_shell`:
+    /// `(point, distance, triangle index)`, or `(p, inf, usize::MAX)` if no other triangles exist.
+    pub fn closest_point_excluding(
+        &self,
+        p: [f64; 3],
+        excluded_shell: usize,
+        shell_map: &[usize],
+    ) -> ([f64; 3], f64, usize) {
+        if self.nodes.is_empty() {
+            return (p, f64::INFINITY, usize::MAX);
+        }
+        let mut best = (p, f64::INFINITY, usize::MAX);
+        self.closest_node_excluding(0, p, excluded_shell, shell_map, &mut best);
+        (best.0, best.1.sqrt(), best.2)
+    }
+
+    /// Closest point on the triangle soup excluding triangles belonging to `excluded_shell`,
+    /// restricted to a search radius `max_dist`:
+    /// `(point, distance, triangle index)`, or `(p, inf, usize::MAX)` if no other triangles within `max_dist` exist.
+    pub fn closest_point_excluding_within(
+        &self,
+        p: [f64; 3],
+        excluded_shell: usize,
+        shell_map: &[usize],
+        max_dist: f64,
+    ) -> ([f64; 3], f64, usize) {
+        if self.nodes.is_empty() || max_dist <= 0.0 {
+            return (p, f64::INFINITY, usize::MAX);
+        }
+        let mut best = (p, max_dist * max_dist, usize::MAX);
+        self.closest_node_excluding(0, p, excluded_shell, shell_map, &mut best);
+        if best.2 == usize::MAX {
+            (p, f64::INFINITY, usize::MAX)
+        } else {
+            (best.0, best.1.sqrt(), best.2)
+        }
+    }
+
+    fn closest_node_excluding(
+        &self,
+        idx: usize,
+        p: [f64; 3],
+        excluded_shell: usize,
+        shell_map: &[usize],
+        best: &mut ([f64; 3], f64, usize),
+    ) {
+        let n = &self.nodes[idx];
+        if n.bbox.dist2(p) >= best.1 {
+            return;
+        }
+        if n.left < 0 {
+            for i in n.start..n.start + n.count {
+                let tri = self.order[i as usize] as usize;
+                if tri < shell_map.len() && shell_map[tri] == excluded_shell {
+                    continue;
+                }
+                let (q, d2) = point_tri_closest(p, &self.tris[tri]);
+                if d2 < best.1 {
+                    best.0 = q;
+                    best.1 = d2;
+                    best.2 = tri;
+                }
+            }
+            return;
+        }
+        let dl = self.nodes[n.left as usize].bbox.dist2(p);
+        let dr = self.nodes[n.right as usize].bbox.dist2(p);
+        if dl <= dr {
+            self.closest_node_excluding(n.left as usize, p, excluded_shell, shell_map, best);
+            self.closest_node_excluding(n.right as usize, p, excluded_shell, shell_map, best);
+        } else {
+            self.closest_node_excluding(n.right as usize, p, excluded_shell, shell_map, best);
+            self.closest_node_excluding(n.left as usize, p, excluded_shell, shell_map, best);
+        }
+    }
+
     /// Outward unit normal of triangle at index `tri_idx`.
     pub fn tri_normal(&self, tri_idx: usize) -> [f64; 3] {
         if tri_idx < self.tris.len() {

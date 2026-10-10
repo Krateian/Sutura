@@ -31,6 +31,7 @@ pub mod predicates3d;
 pub mod profile;
 pub mod rbf;
 pub mod raycast;
+pub mod shell;
 pub mod tamponade;
 pub mod topology;
 pub mod triangle_intersection;
@@ -817,6 +818,69 @@ fn tamponade_py<'py>(
     Ok((verts_np, tris_np, d))
 }
 
+/// Complete shell analysis & filter pre-pass for Tamponade.
+/// Returns (candidate_verts, candidate_tris, info_dict).
+#[pyfunction]
+#[pyo3(name = "shell_analyze")]
+#[pyo3(signature = (verts, tris, delta=0.1, keep_cavities=true, split_intersections=true))]
+fn shell_analyze_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    delta: f64,
+    keep_cavities: bool,
+    split_intersections: bool,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt_usize) = parse_mesh(&verts, &tris)?;
+    let rt: Vec<[u32; 3]> = rt_usize
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let config = shell::ShellConfig {
+        delta,
+        keep_cavities,
+        split_intersections,
+        ..Default::default()
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        shell::shell_analyze_and_filter(&rv, &rt, &config)
+    }));
+    let (ov, ot, res) = match outcome {
+        Ok(v) => v,
+        Err(_) => {
+            let mut res = shell::ShellAnalysisResult::default();
+            res.reason = "panic".to_string();
+            res.has_internal_walls = true;
+            (rv.clone(), rt.clone(), res)
+        }
+    };
+
+    let out_verts: Vec<Vec<f64>> = ov.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = ot
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let verts_np = PyArray2::from_vec2(py, &out_verts)?;
+    let tris_np = PyArray2::from_vec2(py, &out_tris)?;
+
+    let d = PyDict::new(py);
+    d.set_item("outer_count", res.outer_count)?;
+    d.set_item("buried_count", res.buried_count)?;
+    d.set_item("cavity_count", res.cavity_count)?;
+    d.set_item("coincident_opp_count", res.coincident_opp_count)?;
+    d.set_item("coincident_same_count", res.coincident_same_count)?;
+    d.set_item("internal_walls_count", res.internal_walls_count)?;
+    d.set_item("unresolved_coincident_count", res.unresolved_coincident_count)?;
+    d.set_item("has_internal_walls", res.has_internal_walls)?;
+    d.set_item("is_disjoint", res.is_disjoint)?;
+    d.set_item("reason", res.reason.clone())?;
+    Ok((verts_np, tris_np, d))
+}
+
 /// Closest point on the triangle soup for every query point.
 ///
 /// Returns `(xyz, distance, face_index)`; each query gives the closest point
@@ -902,7 +966,8 @@ fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool
             continue;
         }
         match triangle_intersection::intersect_triangles(&triangles[i], &triangles[j]) {
-            triangle_intersection::TriangleIntersection::ProperSegment { .. } => {
+            triangle_intersection::TriangleIntersection::ProperSegment { .. }
+            | triangle_intersection::TriangleIntersection::CoplanarOverlap => {
                 mask[i] = true;
                 mask[j] = true;
             }
@@ -1159,6 +1224,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
+    m.add_function(wrap_pyfunction!(shell_analyze_py, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
