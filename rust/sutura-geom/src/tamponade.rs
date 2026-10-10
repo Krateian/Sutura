@@ -167,6 +167,8 @@ pub struct TamponadeInfo {
     pub trimmed_vertices: usize,
     /// Interior patch vertices placed on the reference surface.
     pub patch_vertices: usize,
+    /// Plugs rolled back by the final reload-honest "never worse" safety net.
+    pub plugs_rolled_back: usize,
     pub seconds: f64,
     pub reason: String,
     /// One entry per boundary loop: its vertex count and the decision taken
@@ -2232,6 +2234,289 @@ fn count_shell_components(nverts: usize, tris: &[[u32; 3]]) -> usize {
     roots.len()
 }
 
+/// Reload-honest topological verdict of an STL save/reload round-trip.
+///
+/// Mirrors what `repair.weld_reload_equivalent` / `defects.detect` observe on
+/// the saved file: float32-quantised positions, exactly-coincident vertices
+/// welded, then boundary loops, non-manifold edges, non-manifold (pinched)
+/// vertices and degenerate faces counted. This is the engine's final
+/// "never worse" metric -- a repaired mesh must not raise any of the four
+/// damage counts over the input's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReloadVerdict {
+    pub boundary_loops: usize,
+    pub boundary_edges: usize,
+    pub nm_edges: usize,
+    pub nm_vertices: usize,
+    pub degenerate_faces: usize,
+}
+
+impl ReloadVerdict {
+    /// True when `self` carries more structural damage than `base`.
+    fn worse_than(&self, base: &ReloadVerdict) -> bool {
+        self.nm_edges > base.nm_edges
+            || self.nm_vertices > base.nm_vertices
+            || self.degenerate_faces > base.degenerate_faces
+    }
+}
+
+/// Canonical undirected edge key.
+#[inline]
+fn reload_edge_key(a: u32, b: u32) -> (u32, u32) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Quantised float32 position key used for the exact-weld hash. `-0.0` is
+/// folded onto `+0.0` so the two share a bucket, matching the numpy/STL
+/// round-trip semantics.
+#[inline]
+fn f32_position_key(p: [f64; 3]) -> [u32; 3] {
+    let q = |x: f64| {
+        let f = x as f32;
+        let f = if f == 0.0 { 0.0 } else { f };
+        f.to_bits()
+    };
+    [q(p[0]), q(p[1]), q(p[2])]
+}
+
+/// Mimic an STL save + reload and count the resulting structure. Hash based
+/// and O(V + F). Input positions are float32-quantised and welded on exact
+/// coincidence; faces that collapse to a repeated index are dropped and
+/// counted as degenerate (float32 rounding can create them).
+pub fn reload_verdict(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> ReloadVerdict {
+    let mut verdict = ReloadVerdict::default();
+    if verts.is_empty() || tris.is_empty() {
+        return verdict;
+    }
+
+    let nv = verts.len();
+    let mut weld: HashMap<[u32; 3], u32> = HashMap::with_capacity(nv);
+    let mut remap: Vec<u32> = Vec::with_capacity(nv);
+    for p in verts {
+        let next = weld.len() as u32;
+        let id = *weld.entry(f32_position_key(*p)).or_insert(next);
+        remap.push(id);
+    }
+
+    let mut wtris: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        if a >= nv || b >= nv || c >= nv {
+            continue;
+        }
+        let (wa, wb, wc) = (remap[a], remap[b], remap[c]);
+        if wa == wb || wb == wc || wa == wc {
+            verdict.degenerate_faces += 1;
+            continue;
+        }
+        wtris.push([wa, wb, wc]);
+    }
+
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::with_capacity(wtris.len() * 3);
+    for t in &wtris {
+        for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *edges.entry(reload_edge_key(x, y)).or_insert(0) += 1;
+        }
+    }
+    let mut boundary_adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&(a, b), &count) in &edges {
+        if count == 1 {
+            verdict.boundary_edges += 1;
+            boundary_adj.entry(a).or_default().push(b);
+            boundary_adj.entry(b).or_default().push(a);
+        } else if count > 2 {
+            verdict.nm_edges += 1;
+        }
+    }
+    verdict.boundary_loops = reload_count_boundary_loops(&boundary_adj);
+
+    let mut vfaces: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (fi, t) in wtris.iter().enumerate() {
+        for &v in t {
+            vfaces.entry(v).or_default().push(fi as u32);
+        }
+    }
+    for (&v, faces) in &vfaces {
+        if faces.len() >= 2 && !reload_faces_single_fan(v, faces, &wtris) {
+            verdict.nm_vertices += 1;
+        }
+    }
+
+    verdict
+}
+
+/// Count the boundary loops of a boundary-adjacency graph by walking every
+/// undirected boundary edge once.
+fn reload_count_boundary_loops(adj: &HashMap<u32, Vec<u32>>) -> usize {
+    let mut used: HashSet<(u32, u32)> = HashSet::new();
+    let mut loops = 0usize;
+    for (&start, nbrs) in adj {
+        for &nb in nbrs {
+            if !used.insert(reload_edge_key(start, nb)) {
+                continue;
+            }
+            loops += 1;
+            let mut prev = start;
+            let mut cur = nb;
+            while cur != start {
+                let mut next: Option<u32> = None;
+                if let Some(cn) = adj.get(&cur) {
+                    for &m in cn {
+                        if m == prev {
+                            continue;
+                        }
+                        if !used.contains(&reload_edge_key(cur, m)) {
+                            next = Some(m);
+                            break;
+                        }
+                    }
+                }
+                match next {
+                    Some(m) => {
+                        used.insert(reload_edge_key(cur, m));
+                        prev = cur;
+                        cur = m;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    loops
+}
+
+/// Whether the faces incident to vertex `v` form one connected fan: two
+/// incident faces connect when they share the edge `(v, w)`. Two or more
+/// fans mean a pinched (non-manifold) vertex.
+fn reload_faces_single_fan(v: u32, faces: &[u32], wtris: &[[u32; 3]]) -> bool {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let n = faces.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut edge_faces: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, &fi) in faces.iter().enumerate() {
+        for &w in &wtris[fi as usize] {
+            if w != v {
+                edge_faces.entry(w).or_default().push(i);
+            }
+        }
+    }
+    for fl in edge_faces.values() {
+        for k in 1..fl.len() {
+            let a = find(&mut parent, fl[0]);
+            let b = find(&mut parent, fl[k]);
+            if a != b {
+                parent[b] = a;
+            }
+        }
+    }
+    (0..n).filter(|&i| find(&mut parent, i) == i).count() == 1
+}
+
+/// One accepted plug's triangle range in the output triangle array, used to
+/// attribute a reload regression to individual plugs (per-plug rollback).
+#[derive(Clone, Copy, Debug)]
+struct PlugRegion {
+    tri_start: usize,
+    tri_end: usize,
+    reference: bool,
+    steiner: bool,
+}
+
+/// Reload verdict of the output with one plug region removed (vertices kept,
+/// so a trim is not undone). Used only to attribute a regression.
+fn reload_verdict_without(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    region: &PlugRegion,
+) -> ReloadVerdict {
+    let mut filtered: Vec<[u32; 3]> =
+        Vec::with_capacity(tris.len() - (region.tri_end - region.tri_start));
+    filtered.extend_from_slice(&tris[..region.tri_start]);
+    filtered.extend_from_slice(&tris[region.tri_end..]);
+    reload_verdict(verts, &filtered)
+}
+
+/// Reload verdict of the output with the flagged regions removed. Used to
+/// project the fixed point of a multi-region rollback before applying it.
+fn reload_verdict_dropping(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    drop: &[bool],
+) -> ReloadVerdict {
+    let mut mask = vec![true; tris.len()];
+    for (r, &d) in regions.iter().zip(drop) {
+        if d {
+            for slot in mask.iter_mut().take(r.tri_end).skip(r.tri_start) {
+                *slot = false;
+            }
+        }
+    }
+    let filtered: Vec<[u32; 3]> = tris
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mask[*i])
+        .map(|(_, t)| *t)
+        .collect();
+    reload_verdict(verts, &filtered)
+}
+
+/// Drop the flagged regions from the output and compact the vertex array to
+/// the referenced vertices.
+fn apply_region_rollback(
+    out_verts: &mut Vec<[f64; 3]>,
+    out_tris: &mut Vec<[u32; 3]>,
+    regions: &[PlugRegion],
+    drop: &[bool],
+) {
+    let nv = out_verts.len();
+    let mut keep = vec![true; out_tris.len()];
+    for (r, &d) in regions.iter().zip(drop) {
+        if d {
+            for slot in keep.iter_mut().take(r.tri_end).skip(r.tri_start) {
+                *slot = false;
+            }
+        }
+    }
+    let mut remap: Vec<Option<u32>> = vec![None; nv];
+    let mut new_verts: Vec<[f64; 3]> = Vec::new();
+    let mut new_tris: Vec<[u32; 3]> = Vec::with_capacity(out_tris.len());
+    for (i, t) in out_tris.iter().enumerate() {
+        if !keep[i] {
+            continue;
+        }
+        if t.iter().any(|&v| v as usize >= nv) {
+            continue;
+        }
+        let mut nt = [0u32; 3];
+        for k in 0..3 {
+            let vi = t[k] as usize;
+            nt[k] = match remap[vi] {
+                Some(id) => id,
+                None => {
+                    let id = new_verts.len() as u32;
+                    remap[vi] = Some(id);
+                    new_verts.push(out_verts[vi]);
+                    id
+                }
+            };
+        }
+        new_tris.push(nt);
+    }
+    *out_verts = new_verts;
+    *out_tris = new_tris;
+}
+
 /// Main entry point for the L2a Tamponade repair.
 pub fn tamponade_repair(
     verts: &[[f64; 3]],
@@ -2353,6 +2638,8 @@ pub fn tamponade_repair(
     let mut plug_rejected_size_count = 0usize;
     let mut plug_rejected_dev_count = 0usize;
     let mut plug_face_count = 0usize;
+    // One entry per accepted plug, for the final reload-honest safety net.
+    let mut plug_regions: Vec<PlugRegion> = Vec::new();
 
     // Input adjacency for the T3 reference-surface fit (vertex/edge -> faces).
     let adj = if loops.is_empty() { None } else { Some(build_adjacency(verts.len(), tris)) };
@@ -2589,7 +2876,14 @@ pub fn tamponade_repair(
                     out_verts.extend_from_slice(&added);
                     info.patch_vertices += n_added;
                     plug_face_count += cand.len();
+                    let tri_start = out_tris.len();
                     out_tris.extend(cand);
+                    plug_regions.push(PlugRegion {
+                        tri_start,
+                        tri_end: out_tris.len(),
+                        reference: true,
+                        steiner: n_added > 0,
+                    });
                     plug_count += 1;
                     info.reference_used += 1;
                     sealed = true;
@@ -2657,7 +2951,14 @@ pub fn tamponade_repair(
                                 info.patch_vertices += 1;
                             }
                             plug_face_count += cand.len();
+                            let tri_start = out_tris.len();
                             out_tris.extend(cand);
+                            plug_regions.push(PlugRegion {
+                                tri_start,
+                                tri_end: out_tris.len(),
+                                reference: false,
+                                steiner: centre.is_some(),
+                            });
                             plug_count += 1;
                             info.loop_diag.push(format!(
                                 "m={} sealed{}{}",
@@ -2692,6 +2993,76 @@ pub fn tamponade_repair(
             eprintln!("[tamp]   loop m={} plug_s={:.3}", rim.len(), plug_dt);
         }
     }
+
+    // Final reload-honest "never worse" safety net. Mimic an STL save/reload
+    // (float32 round + exact position weld) on the sealed output; if a plug
+    // raised the non-manifold edge / non-manifold vertex / degenerate face
+    // count over the input's, roll it back per plug. A plug that accounts for
+    // the regression is dropped; a good plug survives a bad one. When the
+    // regression is not attributable to any single plug (or survives the
+    // per-plug fix), every plug is rolled back -- restoring the input
+    // byte-for-byte, so the output can never be worse than the input. Runs
+    // only when the verdict actually regressed, keeping the default path
+    // byte-identical.
+    let mut plugs_rolled_back = 0usize;
+    if !plug_regions.is_empty() {
+        let base = reload_verdict(verts, tris);
+        let full = reload_verdict(&out_verts, &out_tris);
+        if full.worse_than(&base) {
+            let mut drop = vec![false; plug_regions.len()];
+            for (ri, region) in plug_regions.iter().enumerate() {
+                let without = reload_verdict_without(&out_verts, &out_tris, region);
+                if (without.nm_edges < full.nm_edges
+                    || without.nm_vertices < full.nm_vertices
+                    || without.degenerate_faces < full.degenerate_faces)
+                    && !without.worse_than(&base)
+                {
+                    drop[ri] = true;
+                }
+            }
+            let any = drop.iter().any(|&d| d);
+            let give_up = if any {
+                // A per-plug fix whose fixed point still regresses is treated
+                // as un-attributeable and falls back to a full rollback.
+                reload_verdict_dropping(&out_verts, &out_tris, &plug_regions, &drop)
+                    .worse_than(&base)
+            } else {
+                true
+            };
+            for (ri, region) in plug_regions.iter().enumerate() {
+                let rolled = give_up || drop[ri];
+                if !rolled {
+                    continue;
+                }
+                plug_face_count -= region.tri_end - region.tri_start;
+                plug_count -= 1;
+                if region.reference {
+                    info.reference_used = info.reference_used.saturating_sub(1);
+                }
+                if region.steiner {
+                    info.patch_vertices = info.patch_vertices.saturating_sub(1);
+                }
+                plugs_rolled_back += 1;
+            }
+            if give_up {
+                // Restore the exact input topology and vertices (also undoes
+                // any overshoot trim), guaranteeing no regression.
+                out_verts = verts.to_vec();
+                out_tris = tris.to_vec();
+                plug_count = 0;
+                plug_face_count = 0;
+                info.reference_used = 0;
+                info.patch_vertices = 0;
+                info.trimmed_vertices = 0;
+                plugs_rolled_back = plug_regions.len();
+            } else {
+                apply_region_rollback(&mut out_verts, &mut out_tris, &plug_regions, &drop);
+            }
+            info.loop_diag
+                .push(format!("rolled_back {} plug(s)", plugs_rolled_back));
+        }
+    }
+    info.plugs_rolled_back = plugs_rolled_back;
 
     info.plugs = plug_count;
     info.plugs_rejected = plug_rejected_count;
@@ -3389,5 +3760,79 @@ mod tests {
         // Rim-only: no Steiner vertex was appended.
         assert_eq!(out_verts.len(), verts.len());
         assert!(info.patch_vertices == 0, "{info:?}");
+    }
+
+    // ---- T8 reload-honest "never worse" safety net -----------------------
+
+    #[test]
+    fn reload_verdict_flags_float32_coincident_vertex_nm() {
+        // Three triangles share the edge (0,1) and their third vertex is
+        // three near-identical positions that all round to the SAME float32
+        // coordinate: after the reload weld the edge (0,1) carries three
+        // faces, i.e. a non-manifold edge. This is exactly the damage the
+        // safety net must catch (float32 rounding manufacturing a weld).
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0 + 1e-8, 0.0],
+            [0.0, 1.0 - 1e-8, 0.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 1, 3], [0, 1, 4]];
+        let base = reload_verdict(&verts, &tris[..2]);
+        let full = reload_verdict(&verts, &tris);
+        assert!(full.worse_than(&base), "NM not detected: {full:?} vs {base:?}");
+        assert!(full.nm_edges > 0, "{full:?}");
+    }
+
+    #[test]
+    fn reload_safety_net_rolls_back_coincident_vertex_nm() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0 + 1e-8, 0.0],
+            [0.0, 1.0 - 1e-8, 0.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 1, 3], [0, 1, 4]];
+        let base = reload_verdict(&verts, &tris[..2]);
+        let full = reload_verdict(&verts, &tris);
+        // The third triangle is the "plug" region.
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false };
+        let without = reload_verdict_without(&verts, &tris, &region);
+        assert!(
+            without.nm_edges < full.nm_edges && !without.worse_than(&base),
+            "removing the bad plug must clear the regression: {without:?}"
+        );
+        // Applying the rollback drops the region and compacts the vertices.
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &[region], &[true]);
+        assert_eq!(ot.len(), 2);
+        assert!(!reload_verdict(&ov, &ot).worse_than(&base));
+    }
+
+    #[test]
+    fn reload_safety_net_leaves_a_clean_seal_alone() {
+        // A correct rim-only cap must not regress the reload verdict, so the
+        // full engine leaves it in place and reports zero rollbacks.
+        let (verts, tris) = unit_cube_open_top();
+        let mut out_t = tris.clone();
+        out_t.push([4, 6, 5]);
+        out_t.push([4, 7, 6]);
+        let base = reload_verdict(&verts, &tris);
+        let full = reload_verdict(&verts, &out_t);
+        assert!(!full.worse_than(&base), "clean cap regressed: {full:?} vs {base:?}");
+        assert_eq!(full.nm_edges, 0);
+        assert_eq!(full.nm_vertices, 0);
+        assert_eq!(full.degenerate_faces, 0);
+        assert_eq!(full.boundary_edges, 0);
+
+        let config = TamponadeConfig { h_min: Some(0.25), ..Default::default() };
+        let (_ov, _ot, info) = tamponade_repair(&verts, &tris, &config);
+        assert_eq!(info.plugs, 1, "{info:?}");
+        assert_eq!(info.plugs_rolled_back, 0, "{info:?}");
     }
 }

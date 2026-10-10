@@ -807,6 +807,7 @@ fn tamponade_py<'py>(
     d.set_item("reference_fallback", info.reference_fallback)?;
     d.set_item("trimmed_vertices", info.trimmed_vertices)?;
     d.set_item("patch_vertices", info.patch_vertices)?;
+    d.set_item("plugs_rolled_back", info.plugs_rolled_back)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;
