@@ -107,6 +107,16 @@ fn norm3(a: [f64; 3]) -> f64 {
 }
 
 #[inline]
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+#[inline]
+fn norm3_sq(a: [f64; 3]) -> f64 {
+    a[0] * a[0] + a[1] * a[1] + a[2] * a[2]
+}
+
+#[inline]
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
@@ -914,6 +924,140 @@ fn check_is_disjoint(
     true
 }
 
+/// Weld bit-identical f64 vertices (normalizing -0.0) and drop degenerate triangles.
+fn weld_points_f64(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let mut coord_map: HashMap<[u64; 3], u32> = HashMap::with_capacity(verts.len());
+    let mut remap: Vec<u32> = Vec::with_capacity(verts.len());
+    let mut uniq_verts: Vec<[f64; 3]> = Vec::new();
+
+    for v in verts {
+        let x = if v[0] == 0.0 { 0.0 } else { v[0] };
+        let y = if v[1] == 0.0 { 0.0 } else { v[1] };
+        let z = if v[2] == 0.0 { 0.0 } else { v[2] };
+        let key = [x.to_bits(), y.to_bits(), z.to_bits()];
+        let next_id = uniq_verts.len() as u32;
+        let id = *coord_map.entry(key).or_insert_with(|| {
+            uniq_verts.push([x, y, z]);
+            next_id
+        });
+        remap.push(id);
+    }
+
+    let mut out_tris = Vec::with_capacity(tris.len());
+    for t in tris {
+        let u = remap[t[0] as usize];
+        let v = remap[t[1] as usize];
+        let w = remap[t[2] as usize];
+        if u != v && v != w && w != u {
+            out_tris.push([u, v, w]);
+        }
+    }
+
+    (uniq_verts, out_tris)
+}
+
+/// Subdivide triangles along edges where intermediate vertices lie strictly
+/// on the edge interior, preventing T-junctions along intersection seams.
+fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]> {
+    let tol = 1e-5;
+    let mut all_edges: HashMap<(u32, u32), Vec<(f64, u32)>> = HashMap::new();
+
+    for t in tris {
+        for k in 0..3 {
+            let u = t[k];
+            let v = t[(k + 1) % 3];
+            let key = (u.min(v), u.max(v));
+            all_edges.entry(key).or_default();
+        }
+    }
+
+    for (&(u, v), splits) in all_edges.iter_mut() {
+        let pu = verts[u as usize];
+        let pv = verts[v as usize];
+        let edge_vec = sub3(pv, pu);
+        let lsq = norm3_sq(edge_vec);
+        if lsq < 1e-12 {
+            continue;
+        }
+
+        let min_x = pu[0].min(pv[0]) - tol;
+        let max_x = pu[0].max(pv[0]) + tol;
+        let min_y = pu[1].min(pv[1]) - tol;
+        let max_y = pu[1].max(pv[1]) + tol;
+        let min_z = pu[2].min(pv[2]) - tol;
+        let max_z = pu[2].max(pv[2]) + tol;
+
+        for (w_idx, pw) in verts.iter().enumerate() {
+            let w = w_idx as u32;
+            if w == u || w == v {
+                continue;
+            }
+            if pw[0] < min_x || pw[0] > max_x
+                || pw[1] < min_y || pw[1] > max_y
+                || pw[2] < min_z || pw[2] > max_z
+            {
+                continue;
+            }
+
+            let diff = sub3(*pw, pu);
+            let t_val = dot3(diff, edge_vec) / lsq;
+            if t_val > 1e-4 && t_val < 1.0 - 1e-4 {
+                let proj = add3(pu, scale3(edge_vec, t_val));
+                let dist_sq = norm3_sq(sub3(*pw, proj));
+                if dist_sq < tol * tol {
+                    splits.push((t_val, w));
+                }
+            }
+        }
+    }
+
+    let has_any_splits = all_edges.values().any(|s| !s.is_empty());
+    if !has_any_splits {
+        return tris.to_vec();
+    }
+
+    let mut edge_splits: HashMap<(u32, u32), Vec<u32>> = HashMap::new();
+    for ((u, v), mut splits) in all_edges {
+        if !splits.is_empty() {
+            splits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            edge_splits.insert((u, v), splits.into_iter().map(|(_, w)| w).collect());
+        }
+    }
+
+    let mut out_tris = Vec::with_capacity(tris.len());
+    for t in tris {
+        let mut poly: Vec<u32> = Vec::with_capacity(6);
+        for k in 0..3 {
+            let u = t[k];
+            let v = t[(k + 1) % 3];
+            poly.push(u);
+            let key = (u.min(v), u.max(v));
+            if let Some(splits) = edge_splits.get(&key) {
+                if u < v {
+                    poly.extend_from_slice(splits);
+                } else {
+                    for &w in splits.iter().rev() {
+                        poly.push(w);
+                    }
+                }
+            }
+        }
+
+        if poly.len() == 3 {
+            out_tris.push(*t);
+        } else {
+            let p0 = poly[0];
+            for i in 1..poly.len() - 1 {
+                if p0 != poly[i] && poly[i] != poly[i + 1] && poly[i + 1] != p0 {
+                    out_tris.push([p0, poly[i], poly[i + 1]]);
+                }
+            }
+        }
+    }
+
+    out_tris
+}
+
 /// Complete shell analysis & filter pre-pass for Tamponade (Idea A).
 pub fn shell_analyze_and_filter(
     verts: &[[f64; 3]],
@@ -945,19 +1089,26 @@ pub fn shell_analyze_and_filter(
             .collect();
         let (_si_mask, si_count, _) = crate::self_intersections_core(verts, &tris_usize);
         if si_count > 0 {
-            if let Ok((pool, out_tris, rep)) = crate::arrangement::arrangement_lite_core(verts, &tris_usize) {
+            let prev_opts = crate::cdt2d::experimental::options();
+            crate::cdt2d::experimental::set_options(prev_opts | crate::cdt2d::experimental::PROPAGATE_EDGE_POINTS);
+            let arr_res = crate::arrangement::arrangement_lite_core(verts, &tris_usize);
+            crate::cdt2d::experimental::set_options(prev_opts);
+
+            if let Ok((pool, out_tris, rep)) = arr_res {
                 if rep.si_pairs_detected > 0 {
-                    let split_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
-                    let split_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
+                    let raw_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
+                    let raw_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
+                    let (welded_verts, welded_tris) = weld_points_f64(&raw_verts, &raw_tris);
+                    let conforming_tris = conforming_edge_split(&welded_verts, &welded_tris);
                     let mut split_cfg = config.clone();
                     split_cfg.split_intersections = false;
-                    let split_res = analyze_shells(&split_verts, &split_tris, &split_cfg);
+                    let split_res = analyze_shells(&welded_verts, &conforming_tris, &split_cfg);
                     if !split_res.has_internal_walls && split_res.reason == "ok" {
                         let mut final_tris = Vec::with_capacity(split_res.surviving_indices.len());
                         for &idx in &split_res.surviving_indices {
-                            final_tris.push(split_tris[idx]);
+                            final_tris.push(conforming_tris[idx]);
                         }
-                        return (split_verts, final_tris, split_res);
+                        return (welded_verts, final_tris, split_res);
                     }
                 }
             }
@@ -1484,5 +1635,141 @@ mod tests {
             res.is_disjoint,
             "Two separated boxes must qualify as P-a disjoint"
         );
+    }
+
+    fn check_mesh_closed_manifold_single_part(tris: &[[u32; 3]]) -> (usize, usize, usize) {
+        let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+        let mut undirected: HashMap<(u32, u32), usize> = HashMap::new();
+        for t in tris {
+            for k in 0..3 {
+                let (u, v) = (t[k], t[(k + 1) % 3]);
+                *directed.entry((u, v)).or_insert(0) += 1;
+                *undirected.entry((u.min(v), u.max(v))).or_insert(0) += 1;
+            }
+        }
+        let boundary_edges = undirected.values().filter(|&&c| c == 1).count();
+        let nm_edges = undirected.values().filter(|&&c| c > 2).count()
+            + directed.values().filter(|&&c| c > 1).count();
+        let (_, parts) = compute_shell_components(tris);
+        (boundary_edges, nm_edges, parts)
+    }
+
+    fn quant_pt(p: [f64; 3]) -> (i64, i64, i64) {
+        ((p[0] * 1e6).round() as i64, (p[1] * 1e6).round() as i64, (p[2] * 1e6).round() as i64)
+    }
+
+    #[test]
+    fn test_two_interpenetrating_boxes_pc() {
+        // Two interpenetrating boxes: [0, 1]^3 and [0.4, 1.4]^3
+        let b1 = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let b2 = unit_box([0.4, 0.4, 0.4], [1.0, 1.0, 1.0]);
+        let (verts, tris) = combine_meshes(b1, b2);
+
+        let tris_usize: Vec<[usize; 3]> = tris.iter().map(|t| [t[0] as usize, t[1] as usize, t[2] as usize]).collect();
+        let (si_mask, si_count, _) = crate::self_intersections_core(&verts, &tris_usize);
+        assert!(si_count > 0, "Boxes must penetrate");
+
+        let mut config = ShellConfig::default();
+        config.split_intersections = true;
+        let (out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.reason, "ok");
+        assert!(!res.has_internal_walls);
+
+        let (holes, nm, parts) = check_mesh_closed_manifold_single_part(&out_t);
+        assert_eq!(holes, 0, "Must have 0 holes, found {}", holes);
+        assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
+        assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
+
+        // Check non-SI outer faces are preserved verbatim
+        let mut out_faces = std::collections::HashSet::new();
+        for t in &out_t {
+            let p0 = quant_pt(out_v[t[0] as usize]);
+            let p1 = quant_pt(out_v[t[1] as usize]);
+            let p2 = quant_pt(out_v[t[2] as usize]);
+            out_faces.insert((p0, p1, p2));
+            out_faces.insert((p1, p2, p0));
+            out_faces.insert((p2, p0, p1));
+        }
+
+        let mut non_si_outer_verbatim = 0;
+        for (i, &is_si) in si_mask.iter().enumerate() {
+            if !is_si {
+                let t = tris[i];
+                let q0 = quant_pt(verts[t[0] as usize]);
+                let q1 = quant_pt(verts[t[1] as usize]);
+                let q2 = quant_pt(verts[t[2] as usize]);
+                if out_faces.contains(&(q0, q1, q2)) {
+                    non_si_outer_verbatim += 1;
+                }
+            }
+        }
+        assert_eq!(non_si_outer_verbatim, 12, "All 12 outer non-SI faces must be verbatim in output");
+    }
+
+    #[test]
+    fn test_box_through_sphere_pc() {
+        // Octahedron sphere penetrated by an elongated box
+        let sphere_v = vec![
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+        ];
+        let sphere_t = vec![
+            [0, 2, 4],
+            [2, 1, 4],
+            [1, 3, 4],
+            [3, 0, 4],
+            [2, 0, 5],
+            [1, 2, 5],
+            [3, 1, 5],
+            [0, 3, 5],
+        ];
+        let (box_v, box_t) = unit_box([-0.3, -0.3, -1.2], [0.6, 0.6, 2.4]);
+        let (verts, tris) = combine_meshes((sphere_v, sphere_t), (box_v, box_t));
+
+        let tris_usize: Vec<[usize; 3]> = tris.iter().map(|t| [t[0] as usize, t[1] as usize, t[2] as usize]).collect();
+        let (si_mask, si_count, _) = crate::self_intersections_core(&verts, &tris_usize);
+        assert!(si_count > 0, "Box and sphere must penetrate");
+
+        let mut config = ShellConfig::default();
+        config.split_intersections = true;
+        let (out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.reason, "ok");
+        assert!(!res.has_internal_walls);
+
+        let (holes, nm, parts) = check_mesh_closed_manifold_single_part(&out_t);
+        assert_eq!(holes, 0, "Must have 0 holes, found {}", holes);
+        assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
+        assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
+
+        // Check non-SI outer faces are preserved verbatim
+        let mut out_faces = std::collections::HashSet::new();
+        for t in &out_t {
+            let p0 = quant_pt(out_v[t[0] as usize]);
+            let p1 = quant_pt(out_v[t[1] as usize]);
+            let p2 = quant_pt(out_v[t[2] as usize]);
+            out_faces.insert((p0, p1, p2));
+            out_faces.insert((p1, p2, p0));
+            out_faces.insert((p2, p0, p1));
+        }
+
+        let mut non_si_outer_verbatim = 0;
+        for (i, &is_si) in si_mask.iter().enumerate() {
+            if !is_si {
+                let t = tris[i];
+                let q0 = quant_pt(verts[t[0] as usize]);
+                let q1 = quant_pt(verts[t[1] as usize]);
+                let q2 = quant_pt(verts[t[2] as usize]);
+                if out_faces.contains(&(q0, q1, q2)) {
+                    non_si_outer_verbatim += 1;
+                }
+            }
+        }
+        assert!(non_si_outer_verbatim >= 2, "Non-SI outer end faces of the box must be verbatim");
     }
 }

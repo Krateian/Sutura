@@ -1216,7 +1216,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                         _shell_reason = 'rejected_holes_or_parts_rose'
 
                 # Phase P-c: penetrating bodies (100045-type) -> exact clip + stitch (C1)
-                elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok' and len(_cand_t) < len(tris):
+                elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok':
                     _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
                     _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
                     _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
