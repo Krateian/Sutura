@@ -954,7 +954,8 @@ fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool
             continue;
         }
         match triangle_intersection::intersect_triangles(&triangles[i], &triangles[j]) {
-            triangle_intersection::TriangleIntersection::ProperSegment { .. } => {
+            triangle_intersection::TriangleIntersection::ProperSegment { .. }
+            | triangle_intersection::TriangleIntersection::CoplanarOverlap => {
                 mask[i] = true;
                 mask[j] = true;
             }

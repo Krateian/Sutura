@@ -466,42 +466,65 @@ pub fn analyze_shells(
         if group.len() <= 1 {
             continue;
         }
-        if group.len() == 2 {
-            let i1 = group[0];
-            let i2 = group[1];
-            let parity1 = cyclic_parity(tris[i1]);
-            let parity2 = cyclic_parity(tris[i2]);
-            if parity1 != parity2 {
-                let t = tris[i1];
-                let v0 = verts[t[0] as usize];
-                let v1 = verts[t[1] as usize];
-                let v2 = verts[t[2] as usize];
-                let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
-                let normal = cross3(sub3(v1, v0), sub3(v2, v0));
-                let area = norm3(normal) * 0.5;
-                if area > 1e-14 {
-                    let unorm = scale3(normal, 0.5 / area);
-                    let eps = (h_med * 0.05).min(0.01);
-                    let p_front = add3(c, scale3(unorm, eps));
-                    let p_back = sub3(c, scale3(unorm, eps));
-                    let w_front = bvh.winding_at(p_front);
-                    let w_back = bvh.winding_at(p_back);
-                    let w_min = w_front.min(w_back);
-                    if w_min >= 1.0 - config.delta {
-                        res.classes[i1] = FaceClass::CoincidentOpposite;
-                        res.classes[i2] = FaceClass::CoincidentOpposite;
-                        res.coincident_opp_count += 2;
-                        continue;
-                    }
-                }
+        let ref_idx = group[0];
+        let t = tris[ref_idx];
+        let v0 = verts[t[0] as usize];
+        let v1 = verts[t[1] as usize];
+        let v2 = verts[t[2] as usize];
+        let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
+        let normal = cross3(sub3(v1, v0), sub3(v2, v0));
+        let area = norm3(normal) * 0.5;
+        if area <= 1e-14 {
+            for &fi in group {
+                res.classes[fi] = FaceClass::Degenerate;
+            }
+            continue;
+        }
+        let unorm = scale3(normal, 0.5 / area);
+        let eps = (h_med * 0.05).min(0.01);
+        let p_front = add3(c, scale3(unorm, eps));
+        let p_back = sub3(c, scale3(unorm, eps));
+        let w_front = bvh.winding_at(p_front);
+        let w_back = bvh.winding_at(p_back);
+        let w_min = w_front.min(w_back);
+        let w_max = w_front.max(w_back);
+
+        if w_min >= 1.0 - config.delta {
+            // Interior wall embedded inside solid volume: dissolve ALL copies!
+            for &fi in group {
+                res.classes[fi] = FaceClass::CoincidentOpposite;
+            }
+            res.coincident_opp_count += group.len();
+        } else if w_min < config.delta && w_max >= 1.0 - config.delta {
+            // Outer boundary separating void from solid:
+            // Outward normal must point toward void (w < delta).
+            let outward_parity = if w_front < config.delta {
+                cyclic_parity(t)
             } else {
-                res.classes[i1] = FaceClass::Outer;
-                res.classes[i2] = FaceClass::CoincidentSame;
-                res.coincident_same_count += 1;
-                continue;
+                !cyclic_parity(t)
+            };
+            let mut kept = false;
+            for &fi in group {
+                if !kept && cyclic_parity(tris[fi]) == outward_parity {
+                    res.classes[fi] = FaceClass::Outer;
+                    kept = true;
+                } else {
+                    res.classes[fi] = FaceClass::CoincidentSame;
+                    res.coincident_same_count += 1;
+                }
+            }
+            if !kept {
+                res.classes[group[0]] = FaceClass::Outer;
+                for &fi in &group[1..] {
+                    res.classes[fi] = FaceClass::CoincidentSame;
+                    res.coincident_same_count += 1;
+                }
             }
         } else {
-            res.unresolved_coincident_count += group.len();
+            for &fi in group {
+                res.classes[fi] = FaceClass::CoincidentOpposite;
+            }
+            res.coincident_opp_count += group.len();
         }
     }
 
@@ -973,6 +996,61 @@ fn weld_points_f64(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> (Vec<[f64; 3]>, Vec
     (uniq_verts, out_tris)
 }
 
+/// Weld f64 vertices within a spatial tolerance and drop degenerate triangles.
+fn weld_points_tol(verts: &[[f64; 3]], tris: &[[u32; 3]], tol: f64) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let inv_tol = 1.0 / tol;
+    let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+    let mut uniq_verts: Vec<[f64; 3]> = Vec::new();
+    let mut remap: Vec<u32> = Vec::with_capacity(verts.len());
+
+    for &v in verts {
+        let gx = (v[0] * inv_tol).round() as i64;
+        let gy = (v[1] * inv_tol).round() as i64;
+        let gz = (v[2] * inv_tol).round() as i64;
+
+        let mut matched = None;
+        'search: for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(candidates) = grid.get(&(gx + dx, gy + dy, gz + dz)) {
+                        for &cand in candidates {
+                            let vc = uniq_verts[cand as usize];
+                            let dist_sq = (v[0] - vc[0]).powi(2) + (v[1] - vc[1]).powi(2) + (v[2] - vc[2]).powi(2);
+                            if dist_sq < tol * tol {
+                                matched = Some(cand);
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let id = match matched {
+            Some(cand) => cand,
+            None => {
+                let new_id = uniq_verts.len() as u32;
+                uniq_verts.push(v);
+                grid.entry((gx, gy, gz)).or_default().push(new_id);
+                new_id
+            }
+        };
+        remap.push(id);
+    }
+
+    let mut out_tris = Vec::with_capacity(tris.len());
+    for t in tris {
+        let u = remap[t[0] as usize];
+        let v = remap[t[1] as usize];
+        let w = remap[t[2] as usize];
+        if u != v && v != w && w != u {
+            out_tris.push([u, v, w]);
+        }
+    }
+
+    (uniq_verts, out_tris)
+}
+
 /// Subdivide triangles along edges where intermediate vertices lie strictly
 /// on the edge interior, preventing T-junctions along intersection seams.
 fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]> {
@@ -1111,10 +1189,21 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
                     }
                 }
             }
-            let p0 = poly[0];
-            for i in 1..poly.len() - 1 {
-                if p0 != poly[i] && poly[i] != poly[i + 1] && poly[i + 1] != p0 {
-                    out_tris.push([p0, poly[i], poly[i + 1]]);
+            let mut min_idx = 0;
+            for (idx, &v_idx) in poly.iter().enumerate().skip(1) {
+                let p_min = verts[poly[min_idx] as usize];
+                let p_cur = verts[v_idx as usize];
+                if p_cur < p_min {
+                    min_idx = idx;
+                }
+            }
+            let p0 = poly[min_idx];
+            let n_poly = poly.len();
+            for i in 1..n_poly - 1 {
+                let u = poly[(min_idx + i) % n_poly];
+                let v = poly[(min_idx + i + 1) % n_poly];
+                if p0 != u && u != v && v != p0 {
+                    out_tris.push([p0, u, v]);
                 }
             }
         }
@@ -1537,6 +1626,151 @@ pub fn resolve_coplanar_contacts(
     (final_verts, final_tris, true)
 }
 
+fn deduplicate_coplanar_outer_clusters(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]> {
+    use std::collections::{HashMap, HashSet};
+
+    // 1. Build edge usage
+    let mut edge_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (fi, tri) in tris.iter().enumerate() {
+        for k in 0..3 {
+            let u = tri[k];
+            let v = tri[(k + 1) % 3];
+            let edge = if u < v { (u, v) } else { (v, u) };
+            edge_faces.entry(edge).or_default().push(fi);
+        }
+    }
+
+    let nm_edges: HashSet<(u32, u32)> = edge_faces
+        .iter()
+        .filter(|&(_, flist)| flist.len() > 2)
+        .map(|(&e, _)| e)
+        .collect();
+
+    if nm_edges.is_empty() {
+        return tris.to_vec();
+    }
+
+    // 2. Candidate faces touching NM edges
+    let mut cand_fi = HashSet::new();
+    for &e in &nm_edges {
+        if let Some(flist) = edge_faces.get(&e) {
+            cand_fi.extend(flist.iter().copied());
+        }
+    }
+
+    // 3. Group by plane
+    let mut planes: HashMap<(i64, i64, i64, i64), Vec<usize>> = HashMap::new();
+    for &fi in &cand_fi {
+        let tri = tris[fi];
+        let v0 = verts[tri[0] as usize];
+        let v1 = verts[tri[1] as usize];
+        let v2 = verts[tri[2] as usize];
+        let normal = cross3(sub3(v1, v0), sub3(v2, v0));
+        let norm = norm3(normal);
+        if norm < 1e-9 {
+            continue;
+        }
+        let unorm = scale3(normal, 1.0 / norm);
+        let d = dot3(unorm, v0);
+        let key = (
+            (unorm[0] * 1000.0).round() as i64,
+            (unorm[1] * 1000.0).round() as i64,
+            (unorm[2] * 1000.0).round() as i64,
+            (d * 1000.0).round() as i64,
+        );
+        planes.entry(key).or_default().push(fi);
+    }
+
+    let mut to_drop = HashSet::new();
+
+    for (_plane_key, flist) in planes {
+        if flist.len() <= 1 {
+            continue;
+        }
+        let flist_set: HashSet<usize> = flist.iter().copied().collect();
+
+        // Build clusters connected by internal count-2 edges
+        let mut visited = HashSet::new();
+        let mut clusters: Vec<Vec<usize>> = Vec::new();
+
+        for &fi in &flist {
+            if visited.contains(&fi) {
+                continue;
+            }
+            let mut cluster = Vec::new();
+            let mut queue = vec![fi];
+            visited.insert(fi);
+
+            while let Some(curr) = queue.pop() {
+                cluster.push(curr);
+                let tri = tris[curr];
+                for k in 0..3 {
+                    let u = tri[k];
+                    let v = tri[(k + 1) % 3];
+                    let edge = if u < v { (u, v) } else { (v, u) };
+                    if let Some(neighbors) = edge_faces.get(&edge) {
+                        if neighbors.len() == 2 && neighbors.iter().all(|f| flist_set.contains(f)) {
+                            for &neighbor in neighbors {
+                                if visited.insert(neighbor) {
+                                    queue.push(neighbor);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            clusters.push(cluster);
+        }
+
+        // For each cluster, find boundary edges
+        let mut cluster_boundaries: Vec<HashSet<(u32, u32)>> = Vec::new();
+        for c in &clusters {
+            let mut b_edges = HashSet::new();
+            for &fi in c {
+                let tri = tris[fi];
+                for k in 0..3 {
+                    let u = tri[k];
+                    let v = tri[(k + 1) % 3];
+                    let edge = if u < v { (u, v) } else { (v, u) };
+                    if !b_edges.remove(&edge) {
+                        b_edges.insert(edge);
+                    }
+                }
+            }
+            cluster_boundaries.push(b_edges);
+        }
+
+        // Check pairs of clusters with identical boundary edges where all boundary edges are NM edges
+        for i in 0..clusters.len() {
+            if to_drop.iter().any(|f| clusters[i].contains(f)) {
+                continue;
+            }
+            for j in (i + 1)..clusters.len() {
+                if to_drop.iter().any(|f| clusters[j].contains(f)) {
+                    continue;
+                }
+                if !cluster_boundaries[i].is_empty()
+                    && cluster_boundaries[i] == cluster_boundaries[j]
+                    && cluster_boundaries[i].iter().all(|e| nm_edges.contains(e))
+                {
+                    // Drop cluster j
+                    to_drop.extend(clusters[j].iter().copied());
+                }
+            }
+        }
+    }
+
+    if to_drop.is_empty() {
+        return tris.to_vec();
+    }
+
+    tris.iter()
+        .enumerate()
+        .filter(|(fi, _)| !to_drop.contains(fi))
+        .map(|(_, &tri)| tri)
+        .collect()
+}
+
 /// Complete shell analysis & filter pre-pass for Tamponade (Idea A).
 pub fn shell_analyze_and_filter(
     verts: &[[f64; 3]],
@@ -1547,7 +1781,56 @@ pub fn shell_analyze_and_filter(
         return (verts.to_vec(), tris.to_vec(), ShellAnalysisResult::default());
     }
 
-    // Step 0: Resolve coplanar contacts between different shells if any exist
+    // 1. Try unified exact arrangement pass for self-intersecting or penetrating bodies
+    if config.split_intersections {
+        let tris_usize: Vec<[usize; 3]> = tris
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let (_si_mask, si_count, _) = crate::self_intersections_core(verts, &tris_usize);
+        if si_count > 0 {
+            let prev_opts = crate::cdt2d::experimental::options();
+            crate::cdt2d::experimental::set_options(
+                prev_opts
+                    | crate::cdt2d::experimental::PROPAGATE_EDGE_POINTS
+                    | crate::cdt2d::experimental::SPLIT_COPLANAR_OVERLAPS,
+            );
+            let arr_res = crate::arrangement::arrangement_lite_core(verts, &tris_usize);
+            crate::cdt2d::experimental::set_options(prev_opts);
+
+            if let Ok((pool, out_tris, rep)) = arr_res {
+                if rep.si_pairs_detected > 0 {
+                    let raw_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
+                    let raw_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
+                    let (mut stitched_verts, mut stitched_tris) = weld_points_tol(&raw_verts, &raw_tris, 1e-6);
+                    for _ in 0..5 {
+                        let next_tris = conforming_edge_split(&stitched_verts, &stitched_tris);
+                        let (w_v, w_t) = weld_points_tol(&stitched_verts, &next_tris, 1e-6);
+                        if w_t.len() == stitched_tris.len() {
+                            stitched_verts = w_v;
+                            stitched_tris = w_t;
+                            break;
+                        }
+                        stitched_verts = w_v;
+                        stitched_tris = w_t;
+                    }
+                    let mut split_cfg = config.clone();
+                    split_cfg.split_intersections = false;
+                    let split_res = analyze_shells(&stitched_verts, &stitched_tris, &split_cfg);
+                    if !split_res.has_internal_walls && split_res.reason == "ok" {
+                        let mut final_tris = Vec::with_capacity(split_res.surviving_indices.len());
+                        for &idx in &split_res.surviving_indices {
+                            final_tris.push(stitched_tris[idx]);
+                        }
+                        let final_tris = deduplicate_coplanar_outer_clusters(&stitched_verts, &final_tris);
+                        return (stitched_verts, final_tris, split_res);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Pure coplanar contact fallback (e.g. adjacent stacked boxes without transversal penetration)
     let (cop_verts, cop_tris, cop_changed) = resolve_coplanar_contacts(verts, tris);
     let cur_verts = if cop_changed { &cop_verts } else { verts };
     let cur_tris = if cop_changed { &cop_tris } else { tris };
@@ -1565,46 +1848,12 @@ pub fn shell_analyze_and_filter(
         return (cur_verts.to_vec(), cur_tris.to_vec(), analysis);
     }
 
-    // Flower / C1: If proper self-intersections exist, split along exact intersection curves first
-    if config.split_intersections {
-        let tris_usize: Vec<[usize; 3]> = cur_tris
-            .iter()
-            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
-            .collect();
-        let (_si_mask, si_count, _) = crate::self_intersections_core(cur_verts, &tris_usize);
-        if si_count > 0 {
-            let prev_opts = crate::cdt2d::experimental::options();
-            crate::cdt2d::experimental::set_options(prev_opts | crate::cdt2d::experimental::PROPAGATE_EDGE_POINTS);
-            let arr_res = crate::arrangement::arrangement_lite_core(cur_verts, &tris_usize);
-            crate::cdt2d::experimental::set_options(prev_opts);
-
-            if let Ok((pool, out_tris, rep)) = arr_res {
-                if rep.si_pairs_detected > 0 {
-                    let raw_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
-                    let raw_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
-                    let (welded_verts, welded_tris) = weld_points_f64(&raw_verts, &raw_tris);
-                    let conforming_tris = conforming_edge_split(&welded_verts, &welded_tris);
-                    let (post_cop_verts, post_cop_tris, _) = resolve_coplanar_contacts(&welded_verts, &conforming_tris);
-                    let mut split_cfg = config.clone();
-                    split_cfg.split_intersections = false;
-                    let split_res = analyze_shells(&post_cop_verts, &post_cop_tris, &split_cfg);
-                    if !split_res.has_internal_walls && split_res.reason == "ok" {
-                        let mut final_tris = Vec::with_capacity(split_res.surviving_indices.len());
-                        for &idx in &split_res.surviving_indices {
-                            final_tris.push(post_cop_tris[idx]);
-                        }
-                        return (post_cop_verts, final_tris, split_res);
-                    }
-                }
-            }
-        }
-    }
 
     let mut out_tris = Vec::with_capacity(analysis.surviving_indices.len());
     for &idx in &analysis.surviving_indices {
         out_tris.push(cur_tris[idx]);
     }
-
+    let out_tris = deduplicate_coplanar_outer_clusters(cur_verts, &out_tris);
     (cur_verts.to_vec(), out_tris, analysis)
 }
 
@@ -2361,6 +2610,45 @@ mod tests {
         let (verts, tris) = combine_meshes(b1, b2);
 
         let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.reason, "ok");
+        assert!(!res.has_internal_walls);
+
+        let (holes, nm, parts) = check_mesh_closed_manifold_single_part(&out_t);
+        assert_eq!(holes, 0, "Must have 0 holes, found {}", holes);
+        assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
+        assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
+    }
+
+    #[test]
+    fn test_two_crossing_boxes_with_coplanar_and_transversal() {
+        let b1 = unit_box([2.5, 0.0, 0.0], [1.0, 0.3, 6.0]);
+        let b2 = unit_box([0.0, 0.0, 2.5], [6.0, 0.3, 1.0]);
+        let (verts, tris) = combine_meshes(b1, b2);
+
+        let mut config = ShellConfig::default();
+        config.split_intersections = true;
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.reason, "ok");
+        assert!(!res.has_internal_walls);
+
+        let (holes, nm, parts) = check_mesh_closed_manifold_single_part(&out_t);
+        assert_eq!(holes, 0, "Must have 0 holes, found {}", holes);
+        assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
+        assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
+    }
+
+    #[test]
+    fn test_100045_unified_arrangement_shell_filter() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/real-world-samples/thingi10k_100045.stl"
+        );
+        let (verts, tris) = read_stl_welded(path);
+        let mut config = ShellConfig::default();
+        config.split_intersections = true;
         let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
 
         assert_eq!(res.reason, "ok");
