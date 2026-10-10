@@ -64,9 +64,29 @@ def _repair_welded_topology(ml: Any, verts: np.ndarray, tris: np.ndarray) -> Tup
                          ('meshing_repair_non_manifold_vertices', {}),
                          ('meshing_remove_unreferenced_vertices', {})):
         try:
-            ms.apply_filter(name, **params)
+            if name == 'meshing_remove_duplicate_faces':
+                m = ms.current_mesh()
+                t = m.face_matrix()
+                t_new = topology.remove_duplicate_faces(t)
+                if len(t_new) < len(t):
+                    v = m.vertex_matrix()
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+            elif name == 'meshing_remove_unreferenced_vertices':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_unreferenced_vertices(v, t)
+                if len(v_new) < len(v):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+            else:
+                ms.apply_filter(name, **params)
         except Exception:
-            pass
+            try:
+                ms.apply_filter(name, **params)
+            except Exception:
+                pass
     return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
             np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
 
@@ -81,7 +101,16 @@ def _close_small_holes(ml: Any, verts: np.ndarray, tris: np.ndarray) -> Tuple[np
                             face_matrix=np.asarray(tris, np.int32)))
         ms.apply_filter('meshing_repair_non_manifold_vertices')
         ms.apply_filter('meshing_close_holes', maxholesize=P_WELD_MAX_HOLE)
-        ms.apply_filter('meshing_remove_unreferenced_vertices')
+        try:
+            m = ms.current_mesh()
+            v = m.vertex_matrix()
+            t = m.face_matrix()
+            v_new, t_new = topology.remove_unreferenced_vertices(v, t)
+            if len(v_new) < len(v):
+                ms.clear()
+                ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+        except Exception:
+            ms.apply_filter('meshing_remove_unreferenced_vertices')
         m = ms.current_mesh()
         return (np.asarray(m.vertex_matrix(), dtype=np.float32),
                 np.asarray(m.face_matrix(), dtype=np.int32))
