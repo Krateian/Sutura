@@ -133,11 +133,14 @@ const RBF_RIM_WEIGHT: f64 = 0.15;
 /// admitted only when dropping each ring sample in turn and predicting it from
 /// the rest stays within this band: a genuine saddle's surface is predictable
 /// from its own neighbourhood, an over-extrapolated or noisy fit is not. The
-/// band is the sampling scale (`0.25 h`: a dropped sample must be predictable
-/// from neighbours one edge away) with a floor of twice the fit residual, so a
-/// numerically clean ring (`rms ~ 0`) does not collapse the band to zero.
+/// band is the sampling scale (`0.25 h`): a dropped sample is one edge from its
+/// neighbours, so a fit that cannot reproduce it there is not trustworthy over
+/// the hole. The band is deliberately expressed against `h`, NOT the quadric fit
+/// residual: on a curved hole fragment the quadric `rms` is a measure of the
+/// fragment's curvature, not of the sampling budget, and using `2 * rms` as the
+/// band let the gate drift to ~1.0 on exactly the curved group rims this test
+/// exists to reject (measured on plate_c_dent_large).
 const RBF_LOO_H_FRAC: f64 = 0.25;
-const RBF_LOO_RMS_K: f64 = 2.0;
 /// Maximum number of ring samples held out in the LOO gate (deterministic
 /// stride); bounds the repeated `O(M^3)` refits of a large ring.
 const RBF_LOO_MAX: usize = 24;
@@ -2161,7 +2164,7 @@ fn build_reference(
         if !saddle_rbf_enabled {
             return None;
         }
-        let loo_band = (RBF_LOO_H_FRAC * h).max(RBF_LOO_RMS_K * rms);
+        let loo_band = RBF_LOO_H_FRAC * h;
         return build_rbf_reference(
             &samples,
             &point_normals,
@@ -2435,9 +2438,25 @@ fn rbf_loo_ok(
     if m < 4 {
         return false;
     }
+    // The caller's sample order comes from a HashMap walk, so sort the held-out
+    // indices by (u, v) first: the LOO outcome must not depend on hash order.
+    let mut order: Vec<usize> = (0..m).collect();
+    order.sort_by(|&a, &b| {
+        samples[a]
+            .0
+            .partial_cmp(&samples[b].0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                samples[a]
+                    .1
+                    .partial_cmp(&samples[b].1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
     let stride = ((m + RBF_LOO_MAX - 1) / RBF_LOO_MAX).max(1);
-    let mut i = 0usize;
-    while i < m {
+    let mut oi = 0usize;
+    while oi < m {
+        let i = order[oi];
         let held = samples[i];
         let fit = if use_rim {
             let mut pts: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(m + rim_pts.len());
@@ -2479,9 +2498,17 @@ fn rbf_loo_ok(
         };
         let pred = fit.eval(held.0, held.1);
         if !pred.is_finite() || (pred - held.2).abs() > band {
+            if std::env::var("SUTURA_REF_DBG").is_ok() {
+                eprintln!(
+                    "[rbf] loo_fail err={:.4} band={:.4} n={}",
+                    (pred - held.2).abs(),
+                    band,
+                    m
+                );
+            }
             return false;
         }
-        i += stride;
+        oi += stride;
     }
     true
 }
