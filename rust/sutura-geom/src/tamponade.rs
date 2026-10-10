@@ -49,15 +49,28 @@ const PLUG_MAX_DEV_FACTOR: f64 = 1.0;
 /// surface is fitted through. Ring 0 is the rim-adjacent (damaged) band and is
 /// always skipped; rings 2..=3 are intact surrounding tissue.
 const REF_RING_MIN: usize = 2;
+/// Minimum ring width (small rims keep the historical 3-ring band).
 const REF_RING_MAX: usize = 3;
+/// The ring width grows with the rim diameter: `rings ~= diameter / (DIV * h)`
+/// (one face hop is ~ one median edge `h`), clamped to `[REF_RING_MAX,
+/// REF_RING_MAX_CAP]`. A large hole needs a wider band of intact tissue for a
+/// stable fit; the cap bounds the scan.
+const REF_RING_DIAM_DIV: f64 = 4.0;
+const REF_RING_MAX_CAP: usize = 12;
 /// Minimum number of distinct intact ring points needed to fit the quadric.
 const REF_MIN_POINTS: usize = 8;
 /// Ring-face sliver brake: a face whose area is below this fraction of `h^2`
 /// is a sliver and does not contribute to the reference.
 const REF_SLIVER_AREA_FRAC: f64 = 0.01;
 /// A ring whose face normals spread more than this from the mean is too noisy
-/// (sharp edge, saddle) and yields `no reference`.
+/// (sharp edge, saddle) and yields `no reference` -- UNLESS the quadric fit is
+/// itself smooth (`rms` below `REF_NORMAL_SPREAD_RMS_FRAC * h`), which is the
+/// signature of a smooth curved surface (sphere cap, rounded bump) rather than
+/// noise.
 const REF_NORMAL_SPREAD_DEG: f64 = 60.0;
+/// A wide normal spread is tolerated while the fit roughness stays below this
+/// fraction of `h`; above it the spread is treated as genuine noise.
+const REF_NORMAL_SPREAD_RMS_FRAC: f64 = 0.5;
 /// The quadric fit residual (rms over the ring points) must not exceed this
 /// multiple of `h`, else the surrounding surface is not locally smooth.
 const REF_RMS_FACTOR: f64 = 1.0;
@@ -1384,6 +1397,18 @@ fn build_reference(
     let inv = 1.0 / rim_pts.len().max(1) as f64;
     c = [c[0] * inv, c[1] * inv, c[2] * inv];
 
+    // Ring width grows with the rim diameter (one face hop ~ one median edge
+    // `h`): a large hole needs a wider intact band for a stable quadratic fit.
+    // Small rims keep the historical 3-ring band; the width is capped so a huge
+    // loop cannot scan an unbounded region.
+    let mut rim_box = BBox::empty();
+    for p in &rim_pts {
+        rim_box.expand_point(*p);
+    }
+    let ring_max = ((rim_box.diagonal() / (REF_RING_DIAM_DIV * h.max(1e-9))).round()
+        as usize)
+        .clamp(REF_RING_MAX, REF_RING_MAX_CAP);
+
     let rim_set: HashSet<u32> = rim.iter().copied().collect();
     let mut dist: HashMap<u32, usize> = HashMap::new();
     let mut queue: VecDeque<u32> = VecDeque::new();
@@ -1396,7 +1421,7 @@ fn build_reference(
     }
     while let Some(f) = queue.pop_front() {
         let d = dist[&f];
-        if d >= REF_RING_MAX {
+        if d >= ring_max {
             continue;
         }
         let t = tris[f as usize];
@@ -1468,7 +1493,10 @@ fn build_reference(
             point_normals[slot][2] += fnrm[2];
         }
     }
-    if points.len() < REF_MIN_POINTS || w_sum <= 0.0 {
+    // A large rim needs a proportionally larger sample; a tiny rim keeps the
+    // historical floor.
+    let min_points = REF_MIN_POINTS.max(rim.len() / 8);
+    if points.len() < min_points || w_sum <= 0.0 {
         return None;
     }
 
@@ -1492,7 +1520,20 @@ fn build_reference(
             max_dev = ang;
         }
     }
-    if max_dev > REF_NORMAL_SPREAD_DEG {
+
+    // Fit the quadric first: the normal-spread veto is gated on the fit
+    // roughness, so a smooth curved surface (a sphere cap, a rounded bump) with
+    // a wide normal spread is accepted while a genuinely noisy ring is not.
+    let mut samples: Vec<(f64, f64, f64)> = Vec::with_capacity(points.len());
+    for p in &points {
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        samples.push((dot3(d, u), dot3(d, v), dot3(d, n)));
+    }
+    let (coeffs, rms) = fit_quadric(&samples)?;
+    if rms > REF_RMS_FACTOR * h {
+        return None;
+    }
+    if max_dev > REF_NORMAL_SPREAD_DEG && rms > REF_NORMAL_SPREAD_RMS_FRAC * h {
         return None;
     }
 
@@ -1538,18 +1579,6 @@ fn build_reference(
         return None;
     }
     rays.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Fit the quadric over the ring points; the fit predicts the hole-centre
-    // height from the surrounding curvature.
-    let mut samples: Vec<(f64, f64, f64)> = Vec::with_capacity(points.len());
-    for p in &points {
-        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
-        samples.push((dot3(d, u), dot3(d, v), dot3(d, n)));
-    }
-    let (coeffs, rms) = fit_quadric(&samples)?;
-    if rms > REF_RMS_FACTOR * h {
-        return None;
-    }
 
     // Laser consistency veto: each "laser" ray extends the tangent plane at a
     // ring point to the hole axis. For a bowl/dome/cylinder they all agree in
@@ -2687,5 +2716,25 @@ mod tests {
         let (_v, _t, info) = tamponade_repair(&verts, &tris, &config);
         assert_eq!(info.reference_used, 0, "saddle must fall back: {info:?}");
         assert!(info.reference_fallback >= 1);
+    }
+
+    #[test]
+    fn test_curved_big_hole_gets_reference() {
+        // R2: a big hole on a curved surface needs a wider intact ring, and the
+        // ring's normals spread widely. The ring must grow with the rim and the
+        // normal-spread veto must be gated on the quadric rms, so the smooth
+        // curved surface keeps its reference instead of being rejected as
+        // "noisy". A paraboloid is locally an exact quadric (rms ~ 0) but its
+        // normals tilt strongly over a wide ring.
+        let (verts, tris) = grid_with_central_hole(32, 1.0);
+        let adj = build_adjacency(verts.len(), &tris);
+        let loops = build_boundary_loops(&directed_boundary_edges(&tris));
+        let rim = loops
+            .iter()
+            .filter(|l| l.len() < 60)
+            .max_by_key(|l| l.len())
+            .expect("central hole rim");
+        let refs = build_reference(&verts, &tris, rim, 0.02, &adj);
+        assert!(refs.is_some(), "curved big hole must keep a reference");
     }
 }
