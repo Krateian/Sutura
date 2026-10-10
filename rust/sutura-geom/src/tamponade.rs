@@ -72,6 +72,16 @@ const REF_RIDGE: f64 = 1e-6;
 const TRIM_EPS_FACTOR: f64 = 0.02;
 /// Per-loop cap on lifted tail vertices (a healthy mesh is never touched).
 const TRIM_MAX_VERTICES: usize = 64;
+
+// --- per-loop wall-clock allowance ----------------------------------------
+/// When a budget is set, each boundary loop gets its own allowance (seconds):
+/// a flat base plus a term proportional to the rim vertex count, so a single
+/// genuine hole is not cut short by the mesh size. plate_a_dent's 29-vertex rim
+/// needs ~2.7 s and the removed mesh-scaled cap gave it only 0.44 s. The whole
+/// run is still capped by `TamponadeConfig::time_budget_s` (the intensity
+/// preset), so the loop allowance only ever loosens an under-sized preset.
+const LOOP_BUDGET_BASE_S: f64 = 0.30;
+const LOOP_BUDGET_PER_VERTEX_S: f64 = 0.10;
 /// Deviation gate against the reference surface (allows the curved patch).
 const REF_DEV_FACTOR: f64 = 3.0;
 
@@ -1638,6 +1648,44 @@ fn fan_patch(
     Some((if cf > cb { flip } else { base }, centre))
 }
 
+/// Count the vertex-connected components of a triangle mesh (union-find over
+/// the three vertices of every face). Used to detect a "single closed-intended
+/// shell": exactly one boundary loop on exactly one component is a genuine hole
+/// in an otherwise-closed body, so the min-cut test -- whose only job is to
+/// distinguish a hole from an intentional opening -- has nothing to decide and
+/// can be skipped when a reference surface is available.
+fn count_shell_components(nverts: usize, tris: &[[u32; 3]]) -> usize {
+    fn find(parent: &mut [u32], mut x: u32) -> u32 {
+        while parent[x as usize] != x {
+            let gp = parent[parent[x as usize] as usize];
+            parent[x as usize] = gp;
+            x = gp;
+        }
+        x
+    }
+    let mut parent: Vec<u32> = (0..nverts as u32).collect();
+    let mut used = vec![false; nverts];
+    for t in tris {
+        for &v in t {
+            used[v as usize] = true;
+        }
+        let a = find(&mut parent, t[0]);
+        for &v in &t[1..] {
+            let b = find(&mut parent, v);
+            if a != b {
+                parent[b as usize] = a;
+            }
+        }
+    }
+    let mut roots: HashSet<u32> = HashSet::new();
+    for v in 0..nverts {
+        if used[v] {
+            roots.insert(find(&mut parent, v as u32));
+        }
+    }
+    roots.len()
+}
+
 /// Main entry point for the L2a Tamponade repair.
 pub fn tamponade_repair(
     verts: &[[f64; 3]],
@@ -1670,6 +1718,13 @@ pub fn tamponade_repair(
     }
 
     let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
+
+    // A single boundary loop on a single connected component is a genuine hole
+    // in an otherwise-closed shell: no other loop/component could be an
+    // intentional opening, so the min-cut can be skipped when a reference
+    // surface is available (lead decision, 10 Oct).
+    let single_shell =
+        loops.len() == 1 && count_shell_components(verts.len(), tris) == 1;
 
     let h = match config.h_min {
         Some(val) if val > 1e-6 => val,
@@ -1771,10 +1826,37 @@ pub fn tamponade_repair(
         // treated as a hole (seal with the safe rim plug) rather than rejected,
         // matching R1 usefulness.
         let tiny = rim.len() <= TINY_LOOP_MAX;
-        if !tiny {
+
+        // Single-shell fast path: build the reference first; when a single
+        // boundary loop sits on a single connected component it is a genuine
+        // hole, so a fitted reference surface decides the seal and the expensive
+        // min-cut is skipped entirely. Multi-loop / multi-component inputs keep
+        // the cut (another loop could be an intentional opening).
+        let mut reference = if single_shell {
+            adj.as_ref()
+                .and_then(|a| build_reference(verts, tris, &rim, h, a))
+        } else {
+            None
+        };
+        let mincut_skipped = !tiny && single_shell && reference.is_some();
+
+        // Per-loop allowance, clamped by the global preset deadline. Only
+        // applied when a budget is set (`None` = unlimited, e.g. direct library
+        // calls) so the engine default is unchanged.
+        let loop_deadline = match deadline {
+            Some(global) => {
+                let allow =
+                    LOOP_BUDGET_BASE_S + LOOP_BUDGET_PER_VERTEX_S * rim.len() as f64;
+                let local = Instant::now() + Duration::from_secs_f64(allow);
+                Some(if local < global { local } else { global })
+            }
+            None => None,
+        };
+
+        if !tiny && !mincut_skipped {
             let tc0 = Instant::now();
             let verdict =
-                throat_separates(verts, &rim, h, model_diag, &bvh, config, percell, deadline);
+                throat_separates(verts, &rim, h, model_diag, &bvh, config, percell, loop_deadline);
             let dt = tc0.elapsed().as_secs_f64();
             cut_s += dt;
             if profile {
@@ -1794,14 +1876,27 @@ pub fn tamponade_repair(
                     continue;
                 }
                 CutVerdict::Timeout => {
-                    info.reason = "timeout exceeded".to_string();
-                    break;
+                    // The loop's own allowance expired. If the global preset
+                    // deadline is also gone, stop; otherwise leave this loop
+                    // open and try the next one.
+                    if deadline_passed(deadline) {
+                        info.reason = "timeout exceeded".to_string();
+                        break;
+                    }
+                    info.loop_diag
+                        .push(format!("m={} rejected:loop_timeout", rim.len()));
+                    continue;
                 }
                 CutVerdict::Inconclusive => {
                     plug_inconclusive_count += 1;
                 }
                 CutVerdict::Separates => {}
             }
+        } else if mincut_skipped && profile {
+            eprintln!(
+                "[tamp]   loop m={} mincut skipped (single shell + reference)",
+                rim.len()
+            );
         }
 
         let tp0 = Instant::now();
@@ -1809,10 +1904,12 @@ pub fn tamponade_repair(
         // ring 2..=3 tissue. When it is available, seal at the reference level —
         // a concave dent and a convex bump alike; only a saddle / noisy ring
         // yields no reference (`build_reference` -> None) and keeps the rim-only
-        // plug.
-        let reference = adj
-            .as_ref()
-            .and_then(|a| build_reference(verts, tris, &rim, h, a));
+        // plug. Already built above on the single-shell fast path.
+        if reference.is_none() && !single_shell {
+            reference = adj
+                .as_ref()
+                .and_then(|a| build_reference(verts, tris, &rim, h, a));
+        }
         let mut sealed = false;
         if let Some(ref refs) = reference {
             // Overshoot trim: lift tail rim vertices that sit clearly below
