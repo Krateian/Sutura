@@ -441,6 +441,94 @@ pub fn boundary_loops_manifold(tris: &[[u32; 3]]) -> Vec<Vec<u32>> {
     loops
 }
 
+/// Duplicate non-manifold ("pinched") vertices, one copy per face-fan, so a
+/// boundary rim pinched at a single vertex separates into independent loops
+/// that can each be sealed. Mirrors the full pipeline's
+/// `_split_pinched_vertices`: vertices are only duplicated and keep their
+/// position (no shape change). This is a preprocessing step for boundary-loop
+/// extraction and is opt-in behind `SUTURA_TAMP_MANIFOLD`. Deterministic:
+/// vertices are visited in index order and the fan holding the lowest face
+/// index keeps the original vertex id.
+fn fan_split_pinched_vertices(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let nv = verts.len();
+    let mut vf: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for (fi, t) in tris.iter().enumerate() {
+        for &v in t {
+            vf[v as usize].push(fi);
+        }
+    }
+    let mut out_verts: Vec<[f64; 3]> = verts.to_vec();
+    let mut out_tris: Vec<[u32; 3]> = tris.to_vec();
+    let mut edge_faces: HashMap<u32, Vec<usize>> = HashMap::new();
+    for v in 0..nv {
+        if vf[v].len() < 2 {
+            continue;
+        }
+        // Faces sharing an edge incident to `v` are connected around `v`.
+        edge_faces.clear();
+        for &f in &vf[v] {
+            let t = tris[f];
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                if a as usize == v {
+                    edge_faces.entry(b).or_default().push(f);
+                } else if b as usize == v {
+                    edge_faces.entry(a).or_default().push(f);
+                }
+            }
+        }
+        // Union-find over the incident faces.
+        let mut root: HashMap<usize, usize> = vf[v].iter().map(|&f| (f, f)).collect();
+        fn find(root: &mut HashMap<usize, usize>, x: usize) -> usize {
+            let mut r = x;
+            while root[&r] != r {
+                r = root[&r];
+            }
+            let mut c = x;
+            while root[&c] != r {
+                let n = root[&c];
+                root.insert(c, r);
+                c = n;
+            }
+            r
+        }
+        for fl in edge_faces.values() {
+            for i in 1..fl.len() {
+                let ra = find(&mut root, fl[0]);
+                let rb = find(&mut root, fl[i]);
+                if ra != rb {
+                    root.insert(rb, ra);
+                }
+            }
+        }
+        let mut fans: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &f in &vf[v] {
+            let r = find(&mut root, f);
+            fans.entry(r).or_default().push(f);
+        }
+        if fans.len() < 2 {
+            continue;
+        }
+        // Order fans by their lowest face index so the first one keeps `v`.
+        let mut keys: Vec<usize> = fans.keys().cloned().collect();
+        keys.sort_by_key(|k| *fans[k].iter().min().unwrap());
+        for k in &keys[1..] {
+            let nvi = out_verts.len() as u32;
+            out_verts.push(verts[v]);
+            for &f in &fans[k] {
+                for x in out_tris[f].iter_mut() {
+                    if *x == v as u32 {
+                        *x = nvi;
+                    }
+                }
+            }
+        }
+    }
+    (out_verts, out_tris)
+}
+
 /// Group boundary loops that belong to one geometric hole: loops sharing a
 /// boundary vertex, or whose vertices fall in the same `h`-sized grid cell
 /// (i.e. come within ~h of each other). For each group the index of the outer
@@ -2083,12 +2171,23 @@ pub fn tamponade_repair(
         return (verts.to_vec(), tris.to_vec(), info);
     }
 
-    let directed = directed_boundary_edges(tris);
     // Loop-extraction experiments (half-edge decomposition, loop grouping,
     // piecewise split, pinched-vertex fan split) are opt-in behind
     // `SUTURA_TAMP_MANIFOLD`; the default is the historical greedy walker, so
     // the tier output stays byte-identical unless the flag is set.
     let manifold_mode = std::env::var("SUTURA_TAMP_MANIFOLD").is_ok();
+    // Pinched-vertex fan split: separate boundary rims that meet at one vertex
+    // before loop extraction (loop-extraction preprocessing only).
+    let split_pair = if manifold_mode {
+        Some(fan_split_pinched_vertices(verts, tris))
+    } else {
+        None
+    };
+    let (verts, tris): (&[[f64; 3]], &[[u32; 3]]) = match &split_pair {
+        Some((v, t)) => (v.as_slice(), t.as_slice()),
+        None => (verts, tris),
+    };
+    let directed = directed_boundary_edges(tris);
     let mut loops = if directed.is_empty() {
         Vec::new()
     } else if manifold_mode {
