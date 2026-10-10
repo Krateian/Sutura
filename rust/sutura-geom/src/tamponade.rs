@@ -131,6 +131,7 @@ pub struct TamponadeConfig {
     pub melt_si: bool,
     pub max_nodes: Option<usize>,
     pub time_budget_s: Option<f64>,
+    pub openings_gate: Option<bool>,
 }
 
 impl Default for TamponadeConfig {
@@ -140,6 +141,7 @@ impl Default for TamponadeConfig {
             melt_si: true,
             max_nodes: None,
             time_budget_s: None,
+            openings_gate: None,
         }
     }
 }
@@ -2711,6 +2713,217 @@ fn si_rollback_mask(
         .collect()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LoopVerdict {
+    IntentionalOpening { score: f64, reason: &'static str },
+    Uncertain,
+    DamageHole,
+}
+
+fn classify_boundary_loop(
+    verts: &[[f64; 3]],
+    rim: &[u32],
+    edge_normals: &HashMap<(u32, u32), [f64; 3]>,
+    h: f64,
+    model_diag: f64,
+    bvh: &MeshBvh,
+) -> LoopVerdict {
+    let m = rim.len();
+    if m <= TINY_LOOP_MAX {
+        return LoopVerdict::DamageHole;
+    }
+
+    // 1. Centroid
+    let mut c = [0.0, 0.0, 0.0];
+    for &v in rim {
+        let p = verts[v as usize];
+        c[0] += p[0];
+        c[1] += p[1];
+        c[2] += p[2];
+    }
+    let inv_m = 1.0 / m as f64;
+    c = [c[0] * inv_m, c[1] * inv_m, c[2] * inv_m];
+
+    // 2. Loop diameter & edge length stats
+    let mut loop_diam: f64 = 0.0;
+    let mut edge_lens = Vec::with_capacity(m);
+    for i in 0..m {
+        let p0 = verts[rim[i] as usize];
+        let p1 = verts[rim[(i + 1) % m] as usize];
+        let d = ((p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2) + (p1[2] - p0[2]).powi(2)).sqrt();
+        edge_lens.push(d);
+        for j in (i + 1)..m {
+            let pj = verts[rim[j] as usize];
+            let dist = ((pj[0] - p0[0]).powi(2) + (pj[1] - p0[1]).powi(2) + (pj[2] - p0[2]).powi(2)).sqrt();
+            if dist > loop_diam {
+                loop_diam = dist;
+            }
+        }
+    }
+    let sum_l: f64 = edge_lens.iter().sum();
+    let mean_l = sum_l / m as f64;
+    let var_l: f64 = edge_lens.iter().map(|&l| (l - mean_l).powi(2)).sum::<f64>() / m as f64;
+    let std_l = var_l.sqrt();
+    let cv_l = std_l / mean_l.max(1e-12);
+
+    // 3. Best-fit plane via Newell normal
+    let mut newell = [0.0, 0.0, 0.0];
+    for i in 0..m {
+        let p0 = verts[rim[i] as usize];
+        let p1 = verts[rim[(i + 1) % m] as usize];
+        newell[0] += (p0[1] - p1[1]) * (p0[2] + p1[2]);
+        newell[1] += (p0[2] - p1[2]) * (p0[0] + p1[0]);
+        newell[2] += (p0[0] - p1[0]) * (p0[1] + p1[1]);
+    }
+    let newell_len = (newell[0].powi(2) + newell[1].powi(2) + newell[2].powi(2)).sqrt();
+    let plane_norm = if newell_len > 1e-12 {
+        [newell[0] / newell_len, newell[1] / newell_len, newell[2] / newell_len]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+
+    // Planar residual
+    let mut max_dev_plane: f64 = 0.0;
+    for &v in rim {
+        let p = verts[v as usize];
+        let dev = ((p[0] - c[0]) * plane_norm[0] + (p[1] - c[1]) * plane_norm[1] + (p[2] - c[2]) * plane_norm[2]).abs();
+        if dev > max_dev_plane {
+            max_dev_plane = dev;
+        }
+    }
+    let delta_plane = max_dev_plane / loop_diam.max(1e-12);
+
+    // Check whether adjacent faces lie in the rim plane:
+    // A hole cut into a continuous surface (flat plate, curved wall, sphere) has adjacent faces
+    // whose normals align with the rim normal (mean dot >= 0.65).
+    // An intentional opening terminating a wall (cup mouth, pipe end) has adjacent wall faces
+    // that are orthogonal to the rim plane (mean dot ~ 0).
+    let mut dot_sum = 0.0;
+    let mut dot_count = 0;
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        let key = if a < b { (a, b) } else { (b, a) };
+        if let Some(&fnorm) = edge_normals.get(&key) {
+            let dot = (fnorm[0] * plane_norm[0] + fnorm[1] * plane_norm[1] + fnorm[2] * plane_norm[2]).abs();
+            dot_sum += dot;
+            dot_count += 1;
+        }
+    }
+    let mean_face_dot = if dot_count > 0 { dot_sum / dot_count as f64 } else { 0.0 };
+    if mean_face_dot >= 0.45 {
+        return LoopVerdict::DamageHole;
+    }
+
+    // 4. Maximum turning angle along loop vertices
+    let mut max_turn_rad: f64 = 0.0;
+    for i in 0..m {
+        let p_prev = verts[rim[(i + m - 1) % m] as usize];
+        let p_curr = verts[rim[i] as usize];
+        let p_next = verts[rim[(i + 1) % m] as usize];
+        let e_in = [p_curr[0] - p_prev[0], p_curr[1] - p_prev[1], p_curr[2] - p_prev[2]];
+        let e_out = [p_next[0] - p_curr[0], p_next[1] - p_curr[1], p_next[2] - p_curr[2]];
+        let l_in = (e_in[0].powi(2) + e_in[1].powi(2) + e_in[2].powi(2)).sqrt();
+        let l_out = (e_out[0].powi(2) + e_out[1].powi(2) + e_out[2].powi(2)).sqrt();
+        if l_in > 1e-12 && l_out > 1e-12 {
+            let cos_th = (e_in[0] * e_out[0] + e_in[1] * e_out[1] + e_in[2] * e_out[2]) / (l_in * l_out);
+            let th = cos_th.clamp(-1.0, 1.0).acos();
+            if th > max_turn_rad {
+                max_turn_rad = th;
+            }
+        }
+    }
+
+    // 5. Ray casting along rim-plane normal for local wall clearance & open bore detection
+    let t_max = model_diag * 2.0;
+    let merge_eps = 1e-4;
+    let ray_pos = bvh.intersect_ray(c, plane_norm, t_max, merge_eps);
+    let ray_neg = bvh.intersect_ray(
+        c,
+        [-plane_norm[0], -plane_norm[1], -plane_norm[2]],
+        t_max,
+        merge_eps,
+    );
+    let dist_pos = if ray_pos.crossings > 0 { ray_pos.nearest_t } else { f64::INFINITY };
+    let dist_neg = if ray_neg.crossings > 0 { ray_neg.nearest_t } else { f64::INFINITY };
+
+    // Adaptive probe placement: along rim-plane normal at +/- 1.5 wall thickness (or 2h)
+    let delta_pos = (1.5 * h)
+        .min(0.4 * dist_pos)
+        .min(0.3 * loop_diam)
+        .max(1e-4);
+    let delta_neg = (1.5 * h)
+        .min(0.4 * dist_neg)
+        .min(0.3 * loop_diam)
+        .max(1e-4);
+
+    let p_plus = [
+        c[0] + delta_pos * plane_norm[0],
+        c[1] + delta_pos * plane_norm[1],
+        c[2] + delta_pos * plane_norm[2],
+    ];
+    let p_minus = [
+        c[0] - delta_neg * plane_norm[0],
+        c[1] - delta_neg * plane_norm[1],
+        c[2] - delta_neg * plane_norm[2],
+    ];
+
+    let w_plus = bvh.winding_at(p_plus).abs();
+    let w_minus = bvh.winding_at(p_minus).abs();
+    let delta_w = (w_plus - w_minus).abs();
+    let w_max = w_plus.max(w_minus);
+    let rho_scale = loop_diam / model_diag.max(1e-12);
+
+    // 6. Decision & Veto Logic
+    // Veto 1: Pure exterior void (both probes in exterior void, regular rim, major structural feature)
+    if w_plus < 0.25 && w_minus < 0.25 && cv_l <= 0.45 && rho_scale >= 0.10 {
+        return LoopVerdict::IntentionalOpening {
+            score: 1.0,
+            reason: "both_exterior_void",
+        };
+    }
+
+    // Veto 3: Definite damage hole on vessel (high winding jump + non-planar or ragged)
+    if delta_w >= 0.50 && (delta_plane >= 0.04 || cv_l >= 0.45) {
+        return LoopVerdict::DamageHole;
+    }
+
+    // Missing face on solid polyhedron (box with deleted face, prism missing end):
+    // Small vertex count or sharp polygon corners with solid interior transition
+    if delta_w >= 0.50 && (m <= 5 || max_turn_rad >= 60.0_f64.to_radians()) {
+        return LoopVerdict::DamageHole;
+    }
+
+    // Veto 2 Check: Smooth circular/curved CAD mouth
+    let is_geometric_cad_rim = rho_scale >= 0.10
+        && delta_plane <= 0.03
+        && cv_l <= 0.35
+        && m >= 8
+        && max_turn_rad <= 45.0_f64.to_radians();
+
+    if is_geometric_cad_rim {
+        if delta_w < 0.35 || w_max < 0.35 {
+            return LoopVerdict::IntentionalOpening {
+                score: 0.95,
+                reason: "planar_cad_mouth",
+            };
+        } else if ray_pos.crossings == 0 && ray_neg.crossings == 0 {
+            return LoopVerdict::IntentionalOpening {
+                score: 0.95,
+                reason: "open_through_bore",
+            };
+        } else {
+            // Ambiguous conflict between CAD mouth geometry and cavity winding:
+            // e.g. Thin-shell cup whose hollow bowl has high winding, but rim is smooth CAD circle.
+            // Never-worse principle: do not seal.
+            return LoopVerdict::Uncertain;
+        }
+    }
+
+    // Default: damage hole to seal
+    LoopVerdict::DamageHole
+}
+
 /// Main entry point for the L2a Tamponade repair.
 pub fn tamponade_repair(
     verts: &[[f64; 3]],
@@ -2897,6 +3110,29 @@ pub fn tamponade_repair(
     // appended (per-region best-of, T10). A region that already sealed is never
     // re-tried with the greedy decomposition, so the two decompositions are
     // never mixed on one region.
+    let mut bnd_edge_normals: HashMap<(u32, u32), [f64; 3]> =
+        HashMap::with_capacity(directed.len());
+    for t in tris {
+        let v0 = verts[t[0] as usize];
+        let v1 = verts[t[1] as usize];
+        let v2 = verts[t[2] as usize];
+        let e1 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+        let e2 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+        let n = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let n_len = (n[0].powi(2) + n[1].powi(2) + n[2].powi(2)).sqrt();
+        if n_len > 1e-12 {
+            let un = [n[0] / n_len, n[1] / n_len, n[2] / n_len];
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                bnd_edge_normals.entry(key).or_insert(un);
+            }
+        }
+    }
+
     let mut queue: VecDeque<(Vec<u32>, Option<Vec<u32>>, usize)> = VecDeque::new();
     if manifold_mode {
         for (li, loop_v) in loops.iter().enumerate() {
@@ -2957,6 +3193,30 @@ pub fn tamponade_repair(
                 .push(format!("m={} rejected:too_large", rim.len()));
             plug_rejected_size_count += 1;
             continue;
+        }
+
+        let openings_gate_enabled = config.openings_gate.unwrap_or_else(|| {
+            std::env::var("SUTURA_TAMP_OPENINGS")
+                .map(|v| v == "1")
+                .unwrap_or(false)
+        });
+        if openings_gate_enabled {
+            match classify_boundary_loop(verts, &rim, &bnd_edge_normals, h, model_diag, &bvh) {
+                LoopVerdict::IntentionalOpening { score, reason } => {
+                    info.loop_diag.push(format!(
+                        "m={} rejected:intentional_opening(S={:.2},{})",
+                        rim.len(), score, reason
+                    ));
+                    plug_rejected_count += 1;
+                    continue;
+                }
+                LoopVerdict::Uncertain => {
+                    info.loop_diag.push(format!("m={} kept_open:uncertain", rim.len()));
+                    plug_rejected_count += 1;
+                    continue;
+                }
+                LoopVerdict::DamageHole => {}
+            }
         }
 
         // The min-cut decides only WHETHER this loop is a real hole (its
@@ -4205,5 +4465,116 @@ mod tests {
             ov.iter().any(|v| v[2] >= 2.0),
             "clean plug was dropped: {ov:?}"
         );
+    }
+
+    fn read_stl_u32(path: &str) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let data = std::fs::read(path).expect("read STL");
+        let n = u32::from_le_bytes(data[80..84].try_into().unwrap()) as usize;
+        let mut index: HashMap<[u32; 3], u32> = HashMap::new();
+        let mut verts = Vec::new();
+        let mut tris = Vec::new();
+        for f in 0..n {
+            let base = 84 + 50 * f + 12;
+            let mut tri = [0u32; 3];
+            for (k, slot) in tri.iter_mut().enumerate() {
+                let o = base + 12 * k;
+                let c: [u32; 3] = std::array::from_fn(|j| {
+                    u32::from_le_bytes(data[o + 4 * j..o + 4 * j + 4].try_into().unwrap())
+                });
+                *slot = *index.entry(c).or_insert_with(|| {
+                    verts.push(c.map(|b| f32::from_bits(b) as f64));
+                    (verts.len() - 1) as u32
+                });
+            }
+            tris.push(tri);
+        }
+        (verts, tris)
+    }
+
+    #[test]
+    fn test_a6_case1_open_cup_stays_open() {
+        let path = "/tmp/v074/agy/a6-fixtures/case1_open_cup.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            openings_gate: Some(true),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert_eq!(info.plugs, 0, "Open cup mouth loops must not be plugged");
+        assert_eq!(info.plugs_rejected, 2, "Both mouth loops must be rejected");
+        assert!(info.loop_diag.iter().all(|d| d.contains("rejected:intentional_opening")));
+    }
+
+    #[test]
+    fn test_a6_case2_pipe_stays_open() {
+        let path = "/tmp/v074/agy/a6-fixtures/case2_pipe.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            openings_gate: Some(true),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert_eq!(info.plugs, 0, "Pipe ends must not be plugged");
+        assert_eq!(info.plugs_rejected, 2, "Both pipe ends must be rejected");
+        assert!(info.loop_diag.iter().all(|d| d.contains("rejected:intentional_opening") || d.contains("kept_open:uncertain")));
+    }
+
+    #[test]
+    fn test_a6_case3_broken_cup_seals_puncture_only() {
+        let path = "/tmp/v074/agy/a6-fixtures/case3_broken_cup.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            openings_gate: Some(true),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert_eq!(info.plugs, 1, "Puncture must be plugged while mouth stays open");
+        assert_eq!(info.plugs_rejected, 2, "Both mouth loops must be rejected");
+        assert!(info.loop_diag.iter().any(|d| d.contains("sealed")));
+    }
+
+    #[test]
+    fn test_a6_case4_cracked_sphere_seals() {
+        let path = "/tmp/v074/agy/a6-fixtures/case4_cracked_sphere.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            openings_gate: Some(true),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert_eq!(info.plugs, 1, "Cracked sphere must be sealed");
+    }
+
+    #[test]
+    fn test_a6_case5_box_missing_face_seals() {
+        let path = "/tmp/v074/agy/a6-fixtures/case5_box_missing_face.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            openings_gate: Some(true),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert_eq!(info.plugs, 1, "Box missing face must be sealed (not treated as intentional opening)");
+    }
+
+    #[test]
+    fn test_a6_case6_thin_cup_stays_open() {
+        let path = "/tmp/v074/agy/a6-fixtures/case6_thin_cup.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            openings_gate: Some(true),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert_eq!(info.plugs, 0, "Thin cup mouth must stay open with gate ON");
+        assert_eq!(info.plugs_rejected, 1, "Mouth loop must be rejected");
+
+        // Baseline verification: with gate OFF, thin cup mouth gets sealed as before
+        let config_off = TamponadeConfig {
+            openings_gate: Some(false),
+            ..Default::default()
+        };
+        let (_ov2, _ot2, info2) = tamponade_repair(&v, &t, &config_off);
+        assert_eq!(info2.plugs, 1, "Thin cup mouth must seal with gate OFF (default unchanged)");
     }
 }

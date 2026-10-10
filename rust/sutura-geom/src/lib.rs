@@ -767,6 +767,7 @@ fn tamponade_py<'py>(
         melt_si,
         max_nodes,
         time_budget_s,
+        openings_gate: None,
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tamponade::tamponade_repair(&rv, &rt, &config)
