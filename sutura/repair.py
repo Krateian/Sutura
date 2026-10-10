@@ -3873,7 +3873,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'healthy_faces_kept': None, 'healthy_fraction': None,
            'input_self_intersections': None,
            'candidate_self_intersections': None, 'si_fall': None,
-           'si_ok': None}
+           'si_ok': None, 'melt_enabled': None}
     try:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
         cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
@@ -3881,31 +3881,45 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         base_holes = boundary_loop_stats(cur_v, cur_t)[0]
         base_nm = int(after.get('non_two_manifold_edges', 0) or 0)
         base_parts = _count_vertex_components(len(cur_v), cur_t)
-        base_si = _count_si(ml, ms) if si_mode == 'repair' else 0
         rec['input_holes'] = base_holes
         rec['input_non_manifold'] = base_nm
         rec['input_parts'] = base_parts
-        # A closed mesh can still carry residual self-intersections: measure
-        # them exactly so the melt can run (and be adopted) on an SI-only
-        # improvement, which the holes+non-manifold gate alone would reject.
-        base_si_exact = _exact_si_face_count(cur_v, cur_t)
+
+        try:
+            from sutura_engine import tamponade as _tamp
+        except Exception:  # noqa: BLE001
+            import tamponade as _tamp
+        intensity_val = (intensity
+                         or getattr(spec, 'base', None)
+                         or getattr(spec, 'name', None))
+        # The SI melt is opt-in by intensity (thorough/extreme, or forced by
+        # SUTURA_TAMPONADE_MELT=1); at quick/balanced only the hole plug runs.
+        melt_on = bool(_tamp.resolve_melt_si(intensity_val))
+        rec['melt_enabled'] = melt_on
+
+        # One exact SI scan of the pre-tier mesh, reused for the melt gate, the
+        # skip decision and the adoption guard.  It is skipped when si_mode is
+        # 'off', and on a closed mesh at quick/balanced (nothing to plug, melt
+        # off) no scan is needed at all.
+        base_si_exact = None
+        if si_mode != 'off' and (melt_on or base_holes > 0 or base_nm > 0):
+            base_si_exact = _exact_si_face_count(cur_v, cur_t)
+        base_si = base_si_exact if base_si_exact is not None else 0
         rec['input_self_intersections'] = base_si_exact
+
+        if base_holes == 0 and base_nm == 0 and not melt_on:
+            rec['reason'] = ('no holes/non-manifold to plug; melt disabled at '
+                             'this intensity; tier skipped')
+            stats['tamponade'] = rec
+            return ms, after
         if base_holes == 0 and base_nm == 0 and base_si == 0 and not base_si_exact:
             rec['reason'] = ('no holes/non-manifold/self-intersections to plug; '
                              'tier skipped')
             stats['tamponade'] = rec
             return ms, after
 
-        try:
-            from sutura_engine import tamponade as _tamp
-        except Exception:  # noqa: BLE001
-            import tamponade as _tamp
         out_v, out_t, trec = _tamp.run_tamponade(
-            cur_v, cur_t,
-            intensity=(intensity
-                       or getattr(spec, 'base', None)
-                       or getattr(spec, 'name', None)),
-            ml=ml)
+            cur_v, cur_t, intensity=intensity_val, ml=ml)
         for key in ('budget_s', 'h_min', 'seconds', 'plugs', 'plug_faces',
                     'melt_layers_tried', 'melt_layers_accepted',
                     'melt_layers_rolled_back', 'micro_welds_ok',
