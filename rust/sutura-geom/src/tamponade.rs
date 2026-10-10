@@ -2732,6 +2732,9 @@ pub fn tamponade_repair(
     // `SUTURA_TAMP_MANIFOLD`; the default is the historical greedy walker, so
     // the tier output stays byte-identical unless the flag is set.
     let manifold_mode = std::env::var("SUTURA_TAMP_MANIFOLD").is_ok();
+    // Keep the pre-fan-split arrays for the per-region greedy fallback below.
+    let orig_verts: &[[f64; 3]] = verts;
+    let orig_tris: &[[u32; 3]] = tris;
     // Pinched-vertex fan split: separate boundary rims that meet at one vertex
     // before loop extraction (loop-extraction preprocessing only).
     let split_pair = if manifold_mode {
@@ -2790,6 +2793,9 @@ pub fn tamponade_repair(
     // rim so a single reference surface spans the whole hole rather than the
     // fragment.
     let mut loop_outer: Vec<usize> = (0..loops.len()).collect();
+    // Greedy sub-loops per manifold region (outer-loop index), populated only
+    // in manifold mode for the per-region fallback.
+    let mut greedy_by_region: HashMap<usize, Vec<Vec<u32>>> = HashMap::new();
     if manifold_mode {
         if loops.iter().any(|l| l.len() > SPLIT_MAX_VERTS) {
             loops = split_long_loops(loops, verts, &bvh);
@@ -2803,6 +2809,41 @@ pub fn tamponade_repair(
         }
         single_shell =
             loop_groups.len() == 1 && count_shell_components(verts.len(), tris) == 1;
+        // Per-region greedy fallback (T10). The manifold walker can present a
+        // whole damaged region as ONE long rim (e.g. plate_c_dent_large: a
+        // single m=86 rim) while the historical greedy walker -- run on the
+        // ORIGINAL input, before the pinched-vertex fan split -- splits the
+        // same region into sub-loops, some of which seal. If EVERY manifold
+        // loop of a region fails its candidates, the region is retried with
+        // its greedy sub-loops, sharing the region's parent reference. A region
+        // that already sealed is never mixed with the greedy decomposition.
+        let region_positions: HashMap<usize, HashSet<[u32; 3]>> = {
+            let mut m: HashMap<usize, HashSet<[u32; 3]>> = HashMap::new();
+            for (li, l) in loops.iter().enumerate() {
+                let e = m.entry(loop_outer[li]).or_default();
+                for &v in l {
+                    e.insert(f32_position_key(verts[v as usize]));
+                }
+            }
+            m
+        };
+        let d_orig = directed_boundary_edges(orig_tris);
+        for gl in build_boundary_loops(&d_orig) {
+            let gl_pos: HashSet<[u32; 3]> = gl
+                .iter()
+                .map(|&v| f32_position_key(orig_verts[v as usize]))
+                .collect();
+            let mut best: Option<(usize, usize)> = None;
+            for (&region, pos) in &region_positions {
+                let ov = gl_pos.iter().filter(|p| pos.contains(*p)).count();
+                if ov > 0 && best.map_or(true, |(b, _)| ov > b) {
+                    best = Some((ov, region));
+                }
+            }
+            if let Some((_, region)) = best {
+                greedy_by_region.entry(region).or_default().push(gl);
+            }
+        }
     }
 
     let profile = std::env::var("SUTURA_TAMP_PROFILE").is_ok();
@@ -2850,7 +2891,27 @@ pub fn tamponade_repair(
     // byte-identical regression comparison against the per-component path.
     let percell = std::env::var("SUTURA_TAMP_PERCELL").is_ok();
 
-    for (li, loop_v) in loops.iter().enumerate() {
+    // Work queue: one entry per rim to try, `(rim, parent-reference hint,
+    // region key)`. In manifold mode the manifold loops are queued first; once
+    // they drain, the greedy sub-loops of any region that sealed nothing are
+    // appended (per-region best-of, T10). A region that already sealed is never
+    // re-tried with the greedy decomposition, so the two decompositions are
+    // never mixed on one region.
+    let mut queue: VecDeque<(Vec<u32>, Option<Vec<u32>>, usize)> = VecDeque::new();
+    if manifold_mode {
+        for (li, loop_v) in loops.iter().enumerate() {
+            let outer = loop_outer[li];
+            queue.push_back((loop_v.clone(), Some(loops[outer].clone()), outer));
+        }
+    } else {
+        for (li, loop_v) in loops.iter().enumerate() {
+            queue.push_back((loop_v.clone(), None, li));
+        }
+    }
+    let mut region_sealed: HashSet<usize> = HashSet::new();
+    let mut greedy_injected: HashSet<usize> = HashSet::new();
+
+    while let Some((loop_v, group_hint, region_key)) = queue.pop_front() {
         if deadline_passed(deadline) {
             info.reason = "timeout exceeded".to_string();
             break;
@@ -2867,11 +2928,12 @@ pub fn tamponade_repair(
 
         // The group's outer rim drives the reference fit so a fragment of a
         // pinched hole seals at the level of the whole hole. In the default
-        // (greedy) path the group is the loop itself, so this is `rim`.
-        let group_rim: Vec<u32> = if manifold_mode {
-            loops[loop_outer[li]].clone()
-        } else {
-            rim.clone()
+        // (greedy) path the group is the loop itself, so this is `rim`. In
+        // manifold mode `group_hint` carries the region's outer rim; the
+        // per-region greedy fallback shares that same parent reference.
+        let group_rim: Vec<u32> = match group_hint {
+            Some(g) => g,
+            None => rim.clone(),
         };
 
         // Invisible-plug gate (a): a rim larger than `PLUG_MAX_LOOP_DIAM_FACTOR`
@@ -3181,10 +3243,26 @@ pub fn tamponade_repair(
                 out_verts = snap;
             }
         }
+        if sealed {
+            region_sealed.insert(region_key);
+        }
         let plug_dt = tp0.elapsed().as_secs_f64();
         plug_s += plug_dt;
         if profile {
             eprintln!("[tamp]   loop m={} plug_s={:.3}", rim.len(), plug_dt);
+        }
+
+        // Once the manifold queue drains, retry every region that sealed
+        // nothing with its greedy sub-loops (shared parent reference). Each
+        // region is injected at most once; a region that sealed is skipped.
+        if queue.is_empty() {
+            for (region, gls) in &greedy_by_region {
+                if !region_sealed.contains(region) && greedy_injected.insert(*region) {
+                    for gl in gls {
+                        queue.push_back((gl.clone(), Some(loops[*region].clone()), *region));
+                    }
+                }
+            }
         }
     }
 
