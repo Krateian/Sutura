@@ -577,7 +577,13 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             }
         }
 
+        // Snapshot the refined, pre-fair patch. The thin-plate fairing overshoots
+        // on a curved rim and can fold the patch over itself; the coplanar guard
+        // below then falls back to this unfaired patch (still refine-only Flap)
+        // instead of discarding the whole loop.
+        let mut p_prefair: Option<Vec<V3>> = None;
         if prm.fair && p_pts.len() > m {
+            p_prefair = Some(p_pts.clone());
             let centroid = [
                 pts.iter().map(|q| q[0]).sum::<f64>() / m as f64,
                 pts.iter().map(|q| q[1]).sum::<f64>() / m as f64,
@@ -708,10 +714,33 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 prm.coplanar_cos,
             )
         {
-            report.loops_skipped_coplanar += 1;
-            log.action = Some("coplanar".to_string());
-            report.loop_log.push(log);
-            continue;
+            // The patch overlaps. When the fairing introduced the overlap (the
+            // unfaired refined patch is clean), drop the fairing and keep the
+            // refined patch instead of discarding the loop; skip only when the
+            // unfaired patch also overlaps (the genuinely protected case: a
+            // double surface / a patch that folds without fairing).
+            let fair_fallback = std::env::var("SUTURA_FLAP_FAIR_FALLBACK")
+                .map(|v| v != "0" && !v.is_empty())
+                .unwrap_or(false);
+            let pre_clean = fair_fallback
+                && p_prefair.as_ref().is_some_and(|pp| {
+                    !guard::coplanar_collides(
+                        pp,
+                        &faces,
+                        &[],
+                        &extra_ref,
+                        prm.coplanar_frac,
+                        prm.coplanar_cos,
+                    )
+                });
+            if pre_clean {
+                p_pts = p_prefair.take().unwrap();
+            } else {
+                report.loops_skipped_coplanar += 1;
+                log.action = Some("coplanar".to_string());
+                report.loop_log.push(log);
+                continue;
+            }
         }
 
         // commit

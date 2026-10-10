@@ -1614,6 +1614,11 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
                             faces = [(a, c, b) for (a, b, c) in faces]
                         break
 
+        # Snapshot the refined, pre-fair patch. The thin-plate fairing overshoots
+        # on a curved rim and can fold the patch over itself; the coplanar guard
+        # below then falls back to this unfaired patch (still refine-only Flap)
+        # instead of discarding the whole loop.
+        P_prefair = P.copy() if (fair and len(P) > m) else None
         if fair and len(P) > m:
             loop_set = set(int(x) for x in loop_arr)
             centroid = pts.mean(axis=0)
@@ -1710,9 +1715,23 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
         if avoid_coplanar and _coplanar_collides(
                 P, faces, [], extra_ref,
                 overlap_frac=coplanar_frac, cos_tol=coplanar_cos):
-            report["loops_skipped_coplanar"] += 1
-            log["action"] = "coplanar"
-            continue
+            # The patch overlaps. When the fairing introduced the overlap (the
+            # unfaired refined patch is clean), drop the fairing and keep the
+            # refined patch instead of discarding the loop; skip only when the
+            # unfaired patch also overlaps (the genuinely protected case: a
+            # double surface / a patch that folds without fairing).
+            _ff = __import__('os').environ.get('SUTURA_FLAP_FAIR_FALLBACK')
+            fair_fallback = _ff is not None and _ff != '' and _ff != '0'
+            pre_clean = (fair_fallback and P_prefair is not None and
+                         not _coplanar_collides(
+                             P_prefair, faces, [], extra_ref,
+                             overlap_frac=coplanar_frac, cos_tol=coplanar_cos))
+            if pre_clean:
+                P = P_prefair
+            else:
+                report["loops_skipped_coplanar"] += 1
+                log["action"] = "coplanar"
+                continue
 
         for j in range(m, len(P)):
             out_v.append(P[j])
