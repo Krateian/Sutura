@@ -2946,6 +2946,69 @@ fn count_shell_components(nverts: usize, tris: &[[u32; 3]]) -> usize {
     roots.len()
 }
 
+/// Reload-safe plug gate. STL drops vertex sharing and the reload welds every
+/// vertex that rounds to the same float32 position, so a plug whose vertices
+/// coincide (with each other, or with an existing output vertex) can create a
+/// non-manifold edge even though its in-memory id topology is clean -- e.g. a
+/// skirt that projects a dense / degenerate rim onto nearly the same point.
+/// Weld the candidate's positions together with every existing face incident to
+/// one of them and reject the plug only when it turns an edge that was used by
+/// at most two faces into one used by more than two. Pre-existing weld-NM (a
+/// damaged input) is preserved, never charged to the plug.
+fn plug_reload_ok(
+    out_verts: &[[f64; 3]],
+    out_tris: &[[u32; 3]],
+    new_base: u32,
+    added: &[[f64; 3]],
+    cand: &[[u32; 3]],
+) -> bool {
+    let pos = |id: u32| -> [f64; 3] {
+        if id < new_base {
+            out_verts[id as usize]
+        } else {
+            added[(id - new_base) as usize]
+        }
+    };
+    let key = |p: [f64; 3]| -> [u32; 3] {
+        [
+            (p[0] as f32).to_bits(),
+            (p[1] as f32).to_bits(),
+            (p[2] as f32).to_bits(),
+        ]
+    };
+    let mut keyset: HashSet<[u32; 3]> = HashSet::new();
+    for t in cand {
+        for &id in t {
+            keyset.insert(key(pos(id)));
+        }
+    }
+    let mut base: HashMap<([u32; 3], [u32; 3]), i32> = HashMap::new();
+    let mut add_tri = |t: &[u32; 3], edges: &mut HashMap<([u32; 3], [u32; 3]), i32>| {
+        let a = key(pos(t[0]));
+        let b = key(pos(t[1]));
+        let c = key(pos(t[2]));
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            let e = if x <= y { (x, y) } else { (y, x) };
+            *edges.entry(e).or_insert(0) += 1;
+        }
+    };
+    for t in out_tris {
+        if t.iter().any(|&id| keyset.contains(&key(pos(id)))) {
+            add_tri(t, &mut base);
+        }
+    }
+    let mut with_cand = base.clone();
+    for t in cand {
+        add_tri(t, &mut with_cand);
+    }
+    for (e, c) in &with_cand {
+        if *c > 2 && base.get(e).copied().unwrap_or(0) <= 2 {
+            return false;
+        }
+    }
+    true
+}
+
 /// Main entry point for the L2a Tamponade repair.
 pub fn tamponade_repair(
     verts: &[[f64; 3]],
@@ -3352,6 +3415,20 @@ pub fn tamponade_repair(
                         .push(format!("m={} rejected:edge_collision", rim.len()));
                     plug_rejected_count += 1;
                     info.reference_fallback += 1;
+                } else if !plug_reload_ok(
+                    &out_verts,
+                    &out_tris,
+                    out_verts.len() as u32,
+                    &added,
+                    &cand,
+                ) {
+                    // The plug is clean by id but its vertices coincide by
+                    // float32 position, so the STL reload would weld it into a
+                    // non-manifold edge. Leave the hole for a later tier.
+                    info.loop_diag
+                        .push(format!("m={} rejected:reload_nm", rim.len()));
+                    plug_rejected_count += 1;
+                    info.reference_fallback += 1;
                 } else {
                     for (e, &d) in &cand_counts {
                         *edge_count.entry(*e).or_insert(0) += d;
@@ -3431,6 +3508,8 @@ pub fn tamponade_repair(
                             .push(format!("m={} rejected:deviation", rim.len()));
                         plug_rejected_dev_count += 1;
                     } else {
+                        let added_local: Vec<[f64; 3]> =
+                            centre.map(|c| vec![c]).unwrap_or_default();
                         let cand_counts = edge_use_counts(&cand);
                         let collides = cand_counts
                             .iter()
@@ -3438,6 +3517,16 @@ pub fn tamponade_repair(
                         if collides {
                             info.loop_diag
                                 .push(format!("m={} rejected:edge_collision", rim.len()));
+                            plug_rejected_count += 1;
+                        } else if !plug_reload_ok(
+                            &out_verts,
+                            &out_tris,
+                            out_verts.len() as u32,
+                            &added_local,
+                            &cand,
+                        ) {
+                            info.loop_diag
+                                .push(format!("m={} rejected:reload_nm", rim.len()));
                             plug_rejected_count += 1;
                         } else {
                             for (e, &d) in &cand_counts {
@@ -4046,6 +4135,34 @@ mod tests {
             .map(|p| p[2])
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(peak > -0.05, "hole capped below the bump (peak z={peak})");
+    }
+
+    #[test]
+    fn test_plug_reload_gate_rejects_weld_non_manifold() {
+        // A candidate that is clean by vertex id but adds a vertex coincident
+        // (float32) with an existing one can weld a shared edge to three faces.
+        // Square 0-1-2-3 (diagonal 0-2): edge 0-2 is already used twice; a
+        // candidate triangle (1, new, 2) with `new` at vertex 0's position welds
+        // edge 0-2 a third time.
+        let out_verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let out_tris = vec![[0u32, 1, 2], [0, 2, 3]];
+        let coincident = vec![[0.0, 0.0, 0.0]];
+        let cand = vec![[1u32, 4, 2]];
+        assert!(
+            !plug_reload_ok(&out_verts, &out_tris, 4, &coincident, &cand),
+            "a weld-coincident candidate must be rejected"
+        );
+        // The same candidate with a distinct new position is reload-clean.
+        let distinct = vec![[0.5, 0.5, 1.0]];
+        assert!(
+            plug_reload_ok(&out_verts, &out_tris, 4, &distinct, &cand),
+            "a distinct candidate must pass"
+        );
     }
 
     #[test]
