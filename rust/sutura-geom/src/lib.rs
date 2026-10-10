@@ -29,6 +29,7 @@ pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
+pub mod rbf;
 pub mod raycast;
 pub mod tamponade;
 pub mod topology;
@@ -805,6 +806,7 @@ fn tamponade_py<'py>(
     d.set_item("healthy_faces_kept", info.healthy_faces_kept)?;
     d.set_item("reference_used", info.reference_used)?;
     d.set_item("reference_fallback", info.reference_fallback)?;
+    d.set_item("reference_rbf", info.reference_rbf)?;
     d.set_item("trimmed_vertices", info.trimmed_vertices)?;
     d.set_item("patch_vertices", info.patch_vertices)?;
     d.set_item("seconds", info.seconds)?;

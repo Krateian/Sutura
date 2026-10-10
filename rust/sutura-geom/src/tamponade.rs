@@ -18,6 +18,7 @@
 
 use crate::flap::dp::min_area_triangulation;
 use crate::mincut::BkGraph;
+use crate::rbf;
 use crate::winding::MeshBvh;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -93,6 +94,27 @@ const REF_RAY_SPREAD_FACTOR: f64 = 1.5;
 const REF_RAY_MIN_SIDE_FRAC: f64 = 0.15;
 /// Ridge regularisation of the quadric normal equations (relative to the trace).
 const REF_RIDGE: f64 = 1e-6;
+// --- RBF fallback (large / curved holes the single quadric cannot represent) --
+/// Tikhonov ridge of the thin-plate RBF normal equations (relative to the mean
+/// kernel magnitude; `phi(0) = 0` makes the kernel matrix singular without it).
+const RBF_RIDGE: f64 = 1e-4;
+/// RBF solve size cap: above this many centres the sample set is sub-sampled
+/// deterministically (the hand-rolled dense solve is `O(M^3)`).
+const RBF_MAX_CENTRES: usize = 600;
+/// RBF self-consistency band (no truth): over the hole disk the fitted height
+/// may not leave the ring points' own height band by more than this multiple of
+/// `(relief + h)`.
+const RBF_BAND_K: f64 = 1.0;
+/// RBF slope brake (no truth): the max `|grad F|` over the hole disk may not
+/// exceed this multiple of the ring's own max height-field slope.
+const RBF_GRAD_K: f64 = 2.0;
+/// Disk sample resolution of the RBF self-consistency gate (radii x angles).
+const RBF_GATE_NR: usize = 4;
+const RBF_GATE_NA: usize = 24;
+/// The RBF fallback is for LARGE holes only (the brief): below this hole
+/// diameter / median-edge ratio the single quadric is kept even when its fit is
+/// rejected, so a small flat opening's rim-only plug is unchanged.
+const RBF_MIN_HOLE_FACTOR: f64 = 6.0;
 /// A rim/tail vertex deeper than this fraction of `h` below the reference is
 /// part of the overshoot tail and is lifted onto the reference surface.
 const TRIM_EPS_FACTOR: f64 = 0.02;
@@ -150,6 +172,9 @@ pub struct TamponadeInfo {
     pub reference_used: usize,
     /// Holes whose reference surface was rejected -> rim-only fallback.
     pub reference_fallback: usize,
+    /// Holes sealed using the thin-plate RBF fallback reference (subset of
+    /// `reference_used`).
+    pub reference_rbf: usize,
     /// Rim/tail vertices lifted onto the reference surface (overshoot trim).
     pub trimmed_vertices: usize,
     /// Interior patch vertices placed on the reference surface.
@@ -1225,6 +1250,18 @@ fn plug_within_plane(
 // T3 reference surface ("laser"), overshoot trim and reference-following plug
 // ==========================================================================
 
+/// The fitted height-field model of a [`ReferenceSurface`]: a single quadric
+/// (the default, cheap and exact for a small hole) or a thin-plate RBF height
+/// field (the fallback for a large / curved hole the quadric extrapolates
+/// badly). Both evaluate `h(u, v)` along the surface normal `n`.
+#[derive(Clone, Debug)]
+enum RefModel {
+    /// `h(u,v) = c0 + c1 u + c2 v + c3 u^2 + c4 u v + c5 v^2`.
+    Quadric([f64; 6]),
+    /// `h(u,v) = a0 + a1 u + a2 v + sum_j w_j phi(|x - c_j|)`.
+    Rbf(rbf::TpsFit),
+}
+
 /// A fitted smooth "laser" reference surface over a hole, used to seal at the
 /// level of the intact surrounding tissue (Arif's "line 2") instead of the rim
 /// point closest to the centre ("line 1").
@@ -1235,8 +1272,7 @@ struct ReferenceSurface {
     u: [f64; 3],
     v: [f64; 3],
     n: [f64; 3],
-    /// Height `h(u,v) = c0 + c1 u + c2 v + c3 u^2 + c4 u v + c5 v^2` along `n`.
-    coeffs: [f64; 6],
+    model: RefModel,
     rms: f64,
     /// Sign of the mean curvature at the centre (concave < 0).
     concave: bool,
@@ -1244,8 +1280,12 @@ struct ReferenceSurface {
 
 impl ReferenceSurface {
     fn eval(&self, u: f64, v: f64) -> f64 {
-        let c = &self.coeffs;
-        c[0] + c[1] * u + c[2] * v + c[3] * u * u + c[4] * u * v + c[5] * v * v
+        match &self.model {
+            RefModel::Quadric(c) => {
+                c[0] + c[1] * u + c[2] * v + c[3] * u * u + c[4] * u * v + c[5] * v * v
+            }
+            RefModel::Rbf(f) => f.eval(u, v),
+        }
     }
 
     /// Signed distance of `p` along `n` from the reference surface.
@@ -1537,12 +1577,6 @@ fn build_reference(
         samples.push((dot3(d, u), dot3(d, v), dot3(d, n)));
     }
     let (coeffs, rms) = fit_quadric(&samples)?;
-    if rms > REF_RMS_FACTOR * h {
-        return None;
-    }
-    if max_dev > REF_NORMAL_SPREAD_DEG && rms > REF_NORMAL_SPREAD_RMS_FRAC * h {
-        return None;
-    }
 
     // Self-consistency brake (no ground truth): the quadric must not extrapolate
     // a sag across the hole radius far larger than the ring's own height relief.
@@ -1563,9 +1597,6 @@ fn build_reference(
     let r_med = radii[radii.len() / 2];
     let band = (h_hi - h_lo) + h;
     let sag = (coeffs[3].abs() + coeffs[4].abs() + coeffs[5].abs()) * r_med * r_med;
-    if sag > REF_SAG_FACTOR * band {
-        return None;
-    }
 
     let mut rays: Vec<f64> = Vec::new();
     for (i, p) in points.iter().enumerate() {
@@ -1636,8 +1667,173 @@ fn build_reference(
         return None;
     }
 
+    // Quadric acceptance. The single quadric is the default: cheap and exact for
+    // a small hole. It is rejected by the rms / normal-spread / sag gates when
+    // the surrounding tissue is smooth but not a single quadric (a large curved
+    // crater whose rim fragments extrapolate badly). In that case fit the
+    // thin-plate RBF through the ring points and the laser meeting point, and
+    // accept it only if it stays self-consistent over the hole disk.
+    let rms_ok = rms <= REF_RMS_FACTOR * h;
+    let spread_ok = !(max_dev > REF_NORMAL_SPREAD_DEG && rms > REF_NORMAL_SPREAD_RMS_FRAC * h);
+    let sag_ok = sag <= REF_SAG_FACTOR * band;
     let concave = (coeffs[3] + coeffs[5]) < 0.0;
-    Some(ReferenceSurface { origin: c, u, v, n, coeffs, rms, concave })
+    if rms_ok && spread_ok && sag_ok {
+        return Some(ReferenceSurface {
+            origin: c,
+            u,
+            v,
+            n,
+            model: RefModel::Quadric(coeffs),
+            rms,
+            concave,
+        });
+    }
+    let rbf_enabled =
+        !matches!(std::env::var("SUTURA_RBF").as_deref(), Ok("0") | Ok("false"));
+    let rbf = if rbf_enabled {
+        build_rbf_reference(
+            &samples,
+            &point_normals,
+            &rim_pts,
+            c,
+            u,
+            v,
+            n,
+            h_lo,
+            h_hi,
+            band,
+            h,
+            &rays,
+        )
+    } else {
+        None
+    };
+    rbf.map(|(fit, rbf_rms)| ReferenceSurface {
+        origin: c,
+        u,
+        v,
+        n,
+        model: RefModel::Rbf(fit),
+        rms: rbf_rms,
+        concave,
+    })
+}
+/// Fit the thin-plate RBF reference fallback and run the no-truth
+/// self-consistency gate. Returns `(fit, ring_rms)` or `None` (-> no reference,
+/// the caller keeps the rim-only plug).
+///
+/// Centres are the intact-ring height samples plus the **laser meeting point**
+/// at the hole axis `(u,v) = (0,0)`: the median of the tangent-ray meetings
+/// computed above. Anchoring the hole centre to that extrapolated height is what
+/// stops a partial rim from sagging, which is the failure the quadric cannot
+/// avoid. The gate then bounds the fitted field over the hole disk by the ring's
+/// own height band and slope, so an over-extrapolated fit is rejected.
+#[allow(clippy::too_many_arguments)]
+fn build_rbf_reference(
+    samples: &[(f64, f64, f64)],
+    point_normals: &[[f64; 3]],
+    rim_pts: &[[f64; 3]],
+    c: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    n: [f64; 3],
+    h_lo: f64,
+    h_hi: f64,
+    band: f64,
+    h: f64,
+    rays: &[f64],
+) -> Option<(rbf::TpsFit, f64)> {
+    if samples.len() < REF_MIN_POINTS || rays.is_empty() {
+        return None;
+    }
+
+    // Hole radius = mean in-plane distance of the rim points from the centre.
+    let mut r_sum = 0.0;
+    for p in rim_pts {
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        r_sum += dot3(d, u).hypot(dot3(d, v));
+    }
+    let r_hole = r_sum / rim_pts.len().max(1) as f64;
+    if !(r_hole > 1e-9) {
+        return None;
+    }
+    // The RBF fallback is for large holes only; a small opening (below the
+    // diameter / `h` ratio) keeps the quadric-or-rim-only behaviour unchanged.
+    if 2.0 * r_hole < RBF_MIN_HOLE_FACTOR * h {
+        return None;
+    }
+
+    // The ring's own height band (no truth) and the laser meeting point. On a
+    // strongly curved ring the raw tangent-ray extrapolation can sit far outside
+    // the observed tissue, so the anchor is clamped into the band the gate allows
+    // anyway -- an unclamped anchor would just drag the centre out and be
+    // rejected.
+    let lo = h_lo - RBF_BAND_K * band;
+    let hi = h_hi + RBF_BAND_K * band;
+    let ray_median = rays[rays.len() / 2];
+    if !ray_median.is_finite() {
+        return None;
+    }
+    let anchor = ray_median.clamp(h_lo - 0.5 * band, h_hi + 0.5 * band);
+
+    let mut pts = samples.to_vec();
+    pts.push((0.0, 0.0, anchor));
+    let fit = rbf::TpsFit::fit(&pts, RBF_RIDGE, RBF_MAX_CENTRES)?;
+
+    // The ring's own max height-field slope, from its point normals:
+    // `slope = tan(angle from n) = sqrt(1 - cos^2) / cos`.
+    let mut ring_slope = 0.0f64;
+    for pn in point_normals {
+        let pl = norm3(*pn);
+        if pl < 1e-20 {
+            continue;
+        }
+        let cc = (dot3([pn[0] / pl, pn[1] / pl, pn[2] / pl], n)).abs().clamp(0.0, 1.0);
+        if cc > 0.05 {
+            let s = (1.0 - cc * cc).sqrt() / cc;
+            if s > ring_slope {
+                ring_slope = s;
+            }
+        }
+    }
+    let grad_limit = RBF_GRAD_K * ring_slope.max(1e-9);
+
+    let dtheta = std::f64::consts::TAU / RBF_GATE_NA as f64;
+    let dr = r_hole / RBF_GATE_NR as f64;
+    let mut max_grad = 0.0f64;
+    for ir in 0..=RBF_GATE_NR {
+        let r = dr * ir as f64;
+        for ia in 0..RBF_GATE_NA {
+            let th = ia as f64 * dtheta;
+            let value = fit.eval(r * th.cos(), r * th.sin());
+            if !value.is_finite() || value < lo || value > hi {
+                return None;
+            }
+            if r > 1e-9 {
+                let th2 = (ia as f64 + 1.0) * dtheta;
+                let v2 = fit.eval(r * th2.cos(), r * th2.sin());
+                max_grad = max_grad.max((v2 - value).abs() / (r * dtheta));
+            }
+            if ir < RBF_GATE_NR {
+                let r2 = dr * (ir as f64 + 1.0);
+                let v2r = fit.eval(r2 * th.cos(), r2 * th.sin());
+                if (r2 - r).abs() > 1e-9 {
+                    max_grad = max_grad.max((v2r - value).abs() / (r2 - r).abs());
+                }
+            }
+        }
+    }
+    if max_grad > grad_limit {
+        return None;
+    }
+
+    let mut ss = 0.0;
+    for &(su, sv, d) in samples {
+        let r = d - fit.eval(su, sv);
+        ss += r * r;
+    }
+    let rbf_rms = (ss / samples.len().max(1) as f64).sqrt();
+    Some((fit, rbf_rms))
 }
 
 /// Deviation gate against the reference surface.
@@ -2065,11 +2261,21 @@ pub fn tamponade_repair(
                     out_tris.extend(cand);
                     plug_count += 1;
                     info.reference_used += 1;
+                    let is_rbf = matches!(refs.model, RefModel::Rbf(_));
+                    if is_rbf {
+                        info.reference_rbf += 1;
+                    }
                     sealed = true;
                     info.loop_diag.push(format!(
-                        "m={} sealed:ref{}",
+                        "m={} sealed:{}",
                         rim.len(),
-                        if n_added > 0 { ":fan" } else { "" }
+                        if is_rbf {
+                            if n_added > 0 { "rbf:fan" } else { "rbf" }
+                        } else if n_added > 0 {
+                            "ref:fan"
+                        } else {
+                            "ref"
+                        }
                     ));
                 }
             } else {
@@ -2602,13 +2808,22 @@ mod tests {
     /// A curved (or flat) `n x n` grid over [-1,1]^2 with a circular central
     /// hole, `z = a (x^2 + y^2)` (`a > 0` concave bowl, `a = 0` flat).
     fn grid_with_central_hole(n: usize, a: f64) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        grid_with_central_hole_fn(n, 0.32, move |x, y| a * (x * x + y * y))
+    }
+
+    /// The same grid with an arbitrary height function and hole radius.
+    fn grid_with_central_hole_fn(
+        n: usize,
+        hole_r: f64,
+        f: impl Fn(f64, f64) -> f64,
+    ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
         let step = 2.0 / n as f64;
         let mut verts = Vec::new();
         for j in 0..=n {
             for i in 0..=n {
                 let x = -1.0 + i as f64 * step;
                 let y = -1.0 + j as f64 * step;
-                verts.push([x, y, a * (x * x + y * y)]);
+                verts.push([x, y, f(x, y)]);
             }
         }
         let idx = |i: usize, j: usize| (j * (n + 1) + i) as u32;
@@ -2617,7 +2832,7 @@ mod tests {
             for i in 0..n {
                 let cx = -1.0 + (i as f64 + 0.5) * step;
                 let cy = -1.0 + (j as f64 + 0.5) * step;
-                if (cx * cx + cy * cy).sqrt() < 0.32 {
+                if (cx * cx + cy * cy).sqrt() < hole_r {
                     continue;
                 }
                 let a0 = idx(i, j);
@@ -2780,5 +2995,47 @@ mod tests {
             .expect("central hole rim");
         let refs = build_reference(&verts, &tris, rim, 0.02, &adj);
         assert!(refs.is_some(), "curved big hole must keep a reference");
+    }
+
+    #[test]
+    fn test_rbf_big_curved_hole_gets_reference() {
+        // R4: on a strongly curved surface that is NOT a single quadric, the
+        // quadric fit is rejected by the rms gate (it would over-extrapolate a
+        // large hole). The thin-plate RBF fallback must still produce a
+        // reference, and its centre must stay inside the observed rim band
+        // instead of spiking. Before R4 this loop returned `None`.
+        let (verts, tris) = grid_with_central_hole_fn(40, 0.5, |x, y| {
+            let r2 = x * x + y * y;
+            2.0 * r2 + 3.0 * r2 * r2
+        });
+        let adj = build_adjacency(verts.len(), &tris);
+        let loops = build_boundary_loops(&directed_boundary_edges(&tris));
+        let rim = loops
+            .iter()
+            .filter(|l| l.len() < 120)
+            .max_by_key(|l| l.len())
+            .expect("central hole rim");
+        let h = 0.05;
+        let refs = build_reference(&verts, &tris, rim, h, &adj)
+            .expect("RBF fallback must keep a reference on a large curved hole");
+        let mut h_lo = f64::INFINITY;
+        let mut h_hi = f64::NEG_INFINITY;
+        for &v in rim {
+            let z = verts[v as usize][2];
+            h_lo = h_lo.min(z);
+            h_hi = h_hi.max(z);
+        }
+        let centre = refs.place(refs.origin);
+        // The centre may be genuinely below the rim (a curved crater continues
+        // downward), so allow the local relief plus a margin -- but a wild
+        // over-extrapolation (the failure R4 exists to prevent) is far larger.
+        let slack = 2.0 * (h_hi - h_lo) + 1.0;
+        assert!(
+            centre[2] <= h_hi + slack && centre[2] >= h_lo - slack,
+            "RBF centre z={:.3} far outside the rim band [{:.3}, {:.3}]",
+            centre[2],
+            h_lo,
+            h_hi
+        );
     }
 }
