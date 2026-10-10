@@ -368,14 +368,40 @@ def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8, join_compone
 
 
 def apply_chain(ms, chain):
+    import pymeshlab as ml
     applied = 0
     skipped = {}
     for name, params in chain:
         try:
-            ms.apply_filter(name, **params)
+            handled = False
+            if name == 'meshing_remove_duplicate_faces':
+                m = ms.current_mesh()
+                t = m.face_matrix()
+                t_new = topology.remove_duplicate_faces(t)
+                if len(t_new) < len(t):
+                    v = m.vertex_matrix()
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_remove_null_faces':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                t_new = topology.remove_null_faces(v, t)
+                if len(t_new) < len(t):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                handled = True
+
+            if not handled:
+                ms.apply_filter(name, **params)
             applied += 1
         except Exception as e:
-            skipped[name] = str(e)
+            try:
+                ms.apply_filter(name, **params)
+                applied += 1
+            except Exception as e2:
+                skipped[name] = str(e2)
     return applied, skipped
 
 

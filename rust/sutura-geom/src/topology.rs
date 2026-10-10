@@ -67,6 +67,28 @@ fn unique_rows_i64_first(rows: &[[i64; 3]]) -> (Vec<[i64; 3]>, Vec<usize>) {
     (uniq, first)
 }
 
+fn unique_rows_i64_last(rows: &[[i64; 3]]) -> Vec<usize> {
+    let n = rows.len();
+    if n <= 1 {
+        return (0..n).collect();
+    }
+    let mut order: Vec<usize> = (0..n).rev().collect();
+    order.sort_by(|&x, &y| rows[x].cmp(&rows[y]));
+    let mut kept: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+    while i < n {
+        kept.push(order[i]);
+        let k = rows[order[i]];
+        let mut j = i + 1;
+        while j < n && rows[order[j]] == k {
+            j += 1;
+        }
+        i = j;
+    }
+    kept.sort_unstable();
+    kept
+}
+
 /// Unique float32 rows, sorted lexicographically, with the row -> group-id
 /// inverse map.  The representative of an equal group is its first occurrence
 /// in the input (matching numpy's observed `np.unique(..., axis=0)` choice).
@@ -208,6 +230,71 @@ pub fn edge_table<'py>(
         PyArray1::from_vec(py, counts),
         PyArray1::from_vec(py, inv),
     ))
+}
+
+/// Remove duplicate faces (matching VCGLib / PyMeshLab meshing_remove_duplicate_faces).
+#[pyfunction]
+#[pyo3(signature = (tris))]
+pub fn remove_duplicate_faces<'py>(
+    py: Python<'py>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let trows = read_i64_rows(&tris)?;
+    let nf = trows.len();
+    if nf <= 1 {
+        return Ok(rows_to_array2_i64(py, &trows));
+    }
+    let keys: Vec<[i64; 3]> = trows
+        .iter()
+        .map(|r| {
+            let mut k = *r;
+            k.sort_unstable();
+            k
+        })
+        .collect();
+    let kept_indices = unique_rows_i64_last(&keys);
+    if kept_indices.len() == nf {
+        return Ok(rows_to_array2_i64(py, &trows));
+    }
+    let out: Vec<[i64; 3]> = kept_indices.iter().map(|&i| trows[i]).collect();
+    Ok(rows_to_array2_i64(py, &out))
+}
+
+/// Remove null / degenerate faces (matching VCGLib / PyMeshLab meshing_remove_null_faces).
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn remove_null_faces<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let nv = vrows.len();
+    let mut out: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
+    for r in trows {
+        if r[0] == r[1] || r[1] == r[2] || r[0] == r[2] {
+            continue;
+        }
+        let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
+        if i0 >= nv || i1 >= nv || i2 >= nv {
+            continue;
+        }
+        let p0 = vrows[i0];
+        let p1 = vrows[i1];
+        let p2 = vrows[i2];
+        let d1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let d2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let cx = d1[1] * d2[2] - d1[2] * d2[1];
+        let cy = d1[2] * d2[0] - d1[0] * d2[2];
+        let cz = d1[0] * d2[1] - d1[1] * d2[0];
+        let norm2 = cx * cx + cy * cy + cz * cz;
+        if norm2 == 0.0 || !norm2.is_finite() {
+            continue;
+        }
+        out.push(r);
+    }
+    Ok(rows_to_array2_i64(py, &out))
 }
 
 /// `np.unique(v, axis=0, return_inverse=True)` for a float32 `(N, 3)` array.

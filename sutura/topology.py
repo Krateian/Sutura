@@ -66,6 +66,10 @@ def _use_rust():
     return _rust_kernel_available() and engine() == 'rust'
 
 
+def _has_rust(name):
+    return _geom is not None and hasattr(_geom, name) and engine() == 'rust'
+
+
 # --- numpy oracle --------------------------------------------------------- #
 def _edge_table_numpy(t):
     he = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]], axis=0)
@@ -100,6 +104,38 @@ def _weld_reload_equivalent_numpy(verts, tris):
     remap = np.full(len(unique), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
     return unique[used], remap[t]
+
+
+def _remove_duplicate_faces_numpy(tris):
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) <= 1:
+        return t
+    keys = np.sort(t, axis=1)
+    keys_rev = keys[::-1]
+    _, first_rev = np.unique(keys_rev, axis=0, return_index=True)
+    last_idx = len(keys) - 1 - first_rev
+    last_idx.sort()
+    return t[last_idx]
+
+
+def _remove_null_faces_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) == 0:
+        return t
+    nonrep = (t[:, 0] != t[:, 1]) & (t[:, 1] != t[:, 2]) & (t[:, 0] != t[:, 2])
+    t_cand = t[nonrep]
+    if len(t_cand) == 0:
+        return t_cand
+    p0 = v[t_cand[:, 0]]
+    p1 = v[t_cand[:, 1]]
+    p2 = v[t_cand[:, 2]]
+    d1 = p1 - p0
+    d2 = p2 - p0
+    cross = np.cross(d1, d2)
+    norm2 = np.sum(cross**2, axis=1)
+    valid = (norm2 > 0.0) & np.isfinite(norm2)
+    return t_cand[valid]
 
 
 # --- public API ----------------------------------------------------------- #
@@ -150,6 +186,45 @@ def weld_reload_equivalent(verts, tris):
         except Exception:
             pass
     return _weld_reload_equivalent_numpy(v, t)
+
+
+def remove_duplicate_faces(tris):
+    """Remove duplicate faces matching VCGLib meshing_remove_duplicate_faces.
+
+    Preserves the last occurrence of duplicate triplets in original order.
+    """
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) <= 1:
+        return t
+    if _has_rust('remove_duplicate_faces'):
+        try:
+            return _geom.remove_duplicate_faces(t)
+        except Exception:
+            pass
+    return _remove_duplicate_faces_numpy(t)
+
+
+def remove_null_faces(verts, tris):
+    """Remove null / degenerate faces matching VCGLib meshing_remove_null_faces.
+
+    Removes repeated vertices (a==b, b==c, c==a) and zero-area / collinear faces.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) == 0:
+        return t
+    if _has_rust('remove_null_faces') and (v.size == 0 or bool(np.isfinite(v).all())):
+        try:
+            return _geom.remove_null_faces(v, t)
+        except Exception:
+            pass
+    return _remove_null_faces_numpy(v, t)
 
 
 def connected_components(graph=None, *, directed=False, connection='weak',
