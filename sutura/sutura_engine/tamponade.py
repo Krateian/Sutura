@@ -43,6 +43,28 @@ TAMPONADE_BUDGET_BY_INTENSITY = {
 }
 # Budget used when no intensity preset is supplied (library/balanced default).
 TAMPONADE_DEFAULT_BUDGET = 60.0
+# Wall-clock cap (seconds) for the Tamponade PREPASS block as a whole (the
+# hygiene chain + the seal + the local self-intersection guard).  The Rust tier
+# otherwise spends its full per-intensity budget (60 s at balanced) even when
+# its output is rejected downstream, which dominated the ornate-frame prepass;
+# this bounds the whole block so a large scan cannot stall the pipeline.  A
+# candidate not verified within the cap is dropped (the caller falls back to the
+# OFF path).  ``quick`` skips the prepass entirely.
+TAMPONADE_PREPASS_BUDGET_BY_INTENSITY = {
+    'quick': 0.0,
+    'balanced': 15.0,
+    'thorough': 40.0,
+    'extreme': 60.0,
+}
+TAMPONADE_PREPASS_DEFAULT_BUDGET = 15.0
+# Seconds held back from the prepass cap for the local self-intersection guard
+# and the weld/reload measurement that run after the Rust tier.  Measured on
+# ornate-frame (396k faces): the subset guard costs ~6 s, weld+reload ~0.3 s, so
+# the reserve leaves enough room for both while the seal still gets the bulk of
+# the cap.
+TAMPONADE_PREPASS_SI_RESERVE_S = 8.0
+# Below this many seconds left, the prepass is skipped rather than started.
+TAMPONADE_PREPASS_MIN_S = 1.0
 # The per-loop wall-clock allowance lives in the Rust core: each boundary loop
 # gets `base + per-vertex * rim_size` seconds, and the whole run is capped by the
 # Triage preset budget above. The allowance scales with the HOLES, not the face
@@ -72,6 +94,26 @@ def resolve_melt_si(intensity, environ=None):
     if env is not None:
         return str(env).strip() == '1'
     return intensity in MELT_INTENSITIES
+
+
+def resolve_tamponade_prepass_budget(intensity, environ=None):
+    """Wall-clock cap (seconds) for the whole Tamponade PREPASS block.
+
+    ``SUTURA_TAMPONADE_PREPASS_BUDGET`` (float seconds) overrides the per-
+    intensity preset; an unparseable value is ignored.  A value <= 0 makes the
+    prepass skip itself; ``quick`` is 0 by preset.  The cap covers the seal plus
+    the local self-intersection guard, so a large scan cannot stall the pipeline
+    waiting on a candidate that will be rejected anyway.
+    """
+    env = (environ if environ is not None else os.environ).get(
+        'SUTURA_TAMPONADE_PREPASS_BUDGET')
+    if env is not None:
+        try:
+            return float(env)
+        except (TypeError, ValueError):
+            pass
+    return TAMPONADE_PREPASS_BUDGET_BY_INTENSITY.get(
+        intensity, TAMPONADE_PREPASS_DEFAULT_BUDGET)
 
 
 def _tamponade_module():
@@ -107,8 +149,11 @@ def _median_edge_length(verts, tris):
     return float(np.median(edges)) if len(edges) else 0.0
 
 
-def run_tamponade(verts, tris, *, intensity=None, ml=None):
+def run_tamponade(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
     """Run the Rust Tamponade tier on ``verts``/``tris``.
+
+    ``time_budget_s`` overrides the per-intensity budget (the prepass passes
+    the seconds left in its own cap so the seal cannot overrun it).
 
     Returns ``(verts_out, tris_out, report)``.  The function never raises: on
     any failure (extension absent, a Rust panic surfaced as a ``BaseException``
@@ -149,6 +194,8 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
 
         budget = TAMPONADE_BUDGET_BY_INTENSITY.get(
             intensity, TAMPONADE_DEFAULT_BUDGET)
+        if time_budget_s is not None:
+            budget = float(time_budget_s)
         report['budget_s'] = budget
         if budget is not None and budget <= 0:
             report['reason'] = ('intensity %r skips Tamponade (budget 0 s)'

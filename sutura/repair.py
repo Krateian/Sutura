@@ -1118,6 +1118,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
     stats = {'stage1': {}}
+    stats['timings'] = {}
+    _t_start = time.perf_counter()
     if triage_spec is None:
         triage_spec = triage.resolve_intensity(None)
     stats.update(triage.triage_report_fields(triage_spec))
@@ -1209,6 +1211,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # tamponade_tier call below is skipped once this prepass has sealed the
     # mesh, so its stats record is preserved.
     if tamponade is True:
+        _t_pre = time.perf_counter()
         _tms = ml.MeshSet()
         _tms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         apply_chain(_tms, stage1_cleanup_chain(ml))
@@ -1222,6 +1225,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             v = np.asarray(_tms.current_mesh().vertex_matrix(), dtype=np.float32)
             t = np.asarray(_tms.current_mesh().face_matrix(), dtype=np.int32)
             verts, tris = v, t
+        stats['timings']['prepass'] = round(time.perf_counter() - _t_pre, 3)
 
     # Flap: surface-based hole fill (on by default in the CLI). It is the FIRST Stage-1
     # step, a pre-pass on the input as it stands here (normally the original
@@ -1449,6 +1453,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # modules. They run on the ORIGINAL input arrays, before the deep-repair
     # ladder, and adopt only a strict-watertight, no-worse candidate (see
     # ``closing_ladder``).
+    stats['timings']['stage1'] = round(time.perf_counter() - _t_start, 3)
+    _t_tiers = time.perf_counter()
     ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                closing=closing, proxy_template=proxy_template)
 
@@ -1511,6 +1517,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if wall_thicken:
         ms, after = wall_thicken_tier(ml, ms, after, stats, v, t,
                                       min_thickness=wall_min_thickness)
+    stats['timings']['deep_repair'] = round(time.perf_counter() - _t_tiers, 3)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -3051,6 +3058,64 @@ def _exact_si_face_count(verts, tris):
         return None
 
 
+def _canonical_face_keys(verts, tris):
+    """Order-independent ``V36`` key per face (its 3 vertex coords, sorted).
+
+    Coordinates are rounded to ``float32`` (the on-disk STL precision) and the
+    three vertices of each face are sorted lexicographically, so two faces are
+    equal iff they share the same three points regardless of winding or vertex
+    numbering.  Used to find the faces a Tamponade candidate changed.
+    """
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) == 0 or len(v) == 0:
+        return np.zeros(0, dtype='V36')
+    q = v[t]
+    order = np.lexsort((q[:, :, 2], q[:, :, 1], q[:, :, 0]), axis=1)
+    qs = np.take_along_axis(q, order[:, :, None], axis=1)
+    qs = np.ascontiguousarray(qs, dtype='<f4')
+    return qs.view(np.uint8).reshape(len(qs), 36).view('V36').ravel()
+
+
+def _local_si_rise(base_v, base_t, cand_v, cand_t):
+    """Exact self-intersection rise restricted to the faces the candidate changed.
+
+    The candidate keeps the base's healthy faces verbatim, so any SI difference
+    is attributable to the faces that differ between the two meshes.  This
+    counts the proper-crossing pairs that involve a changed candidate face and
+    the same count for the changed base faces, and reports a rise when the
+    candidate's count is higher.  Far cheaper than rescanning both meshes on a
+    large input.  Returns ``(base_local, cand_local, si_rise, used)`` where
+    ``used`` is False when the extension or its subset API is unavailable (the
+    caller then falls back to the full scans).
+    """
+    try:
+        import sutura_geom
+    except Exception:  # noqa: BLE001 - no extension is a normal case
+        return None, None, None, False
+    fn = getattr(sutura_geom, 'self_intersections_subset', None)
+    if fn is None:
+        return None, None, None, False
+    try:
+        bk = _canonical_face_keys(base_v, base_t)
+        ck = _canonical_face_keys(cand_v, cand_t)
+        cand_changed = (~np.isin(ck, bk)) if len(ck) else np.zeros(0, bool)
+        base_changed = (~np.isin(bk, ck)) if len(bk) else np.zeros(0, bool)
+        base_local = 0
+        if base_changed.any():
+            base_local = int(fn(np.asarray(base_v, dtype=np.float64),
+                                np.asarray(base_t, dtype=np.int32),
+                                base_changed))
+        cand_local = 0
+        if cand_changed.any():
+            cand_local = int(fn(np.asarray(cand_v, dtype=np.float64),
+                                np.asarray(cand_t, dtype=np.int32),
+                                cand_changed))
+        return base_local, cand_local, bool(cand_local > base_local), True
+    except Exception:  # noqa: BLE001 - a classifier failure is not fatal
+        return None, None, None, False
+
+
 def _umbrella_fair(verts, tris, first_free, steps):
     """Umbrella-operator smoothing (each vertex moves to the mean of its
     1-ring neighbours) of the vertices with index >= ``first_free``; all
@@ -3926,7 +3991,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'healthy_faces_kept': None, 'healthy_fraction': None,
            'input_self_intersections': None,
            'candidate_self_intersections': None, 'si_fall': None,
-           'si_ok': None, 'melt_enabled': None}
+           'si_ok': None, 'melt_enabled': None, 'si_method': None,
+           'prepass_seconds': None}
     try:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
         cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
@@ -3950,12 +4016,27 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         melt_on = bool(_tamp.resolve_melt_si(intensity_val))
         rec['melt_enabled'] = melt_on
 
+        # Prepass budget: the whole prepass block (seal + local SI guard) is
+        # capped so a large scan cannot stall the pipeline on a candidate that is
+        # likely rejected anyway. A cap <= 0 skips the prepass outright.
+        _tier_start = time.perf_counter()
+        prepass_budget = None
+        if prepass:
+            prepass_budget = _tamp.resolve_tamponade_prepass_budget(intensity_val)
+            if prepass_budget is not None and prepass_budget <= 0:
+                rec['reason'] = ('prepass budget 0 s at intensity %r; tier '
+                                 'skipped' % (intensity_val,))
+                stats['tamponade'] = rec
+                return ms, after
+
         # One exact SI scan of the pre-tier mesh, reused for the melt gate, the
         # skip decision and the adoption guard.  It is skipped when si_mode is
         # 'off', and on a closed mesh at quick/balanced (nothing to plug, melt
-        # off) no scan is needed at all.
+        # off) no scan is needed at all.  The prepass uses the cheap LOCAL SI
+        # guard instead (see below), so it never pays for this full scan.
         base_si_exact = None
-        if si_mode != 'off' and (melt_on or base_holes > 0 or base_nm > 0):
+        if (not prepass and si_mode != 'off'
+                and (melt_on or base_holes > 0 or base_nm > 0)):
             base_si_exact = _exact_si_face_count(cur_v, cur_t)
         base_si = base_si_exact if base_si_exact is not None else 0
         rec['input_self_intersections'] = base_si_exact
@@ -3965,14 +4046,26 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                              'this intensity; tier skipped')
             stats['tamponade'] = rec
             return ms, after
-        if base_holes == 0 and base_nm == 0 and base_si == 0 and not base_si_exact:
+        if (not prepass and base_holes == 0 and base_nm == 0
+                and base_si == 0 and not base_si_exact):
             rec['reason'] = ('no holes/non-manifold/self-intersections to plug; '
                              'tier skipped')
             stats['tamponade'] = rec
             return ms, after
 
+        seal_budget = None
+        if prepass and prepass_budget is not None:
+            remaining = (prepass_budget - _tamp.TAMPONADE_PREPASS_SI_RESERVE_S
+                         - (time.perf_counter() - _tier_start))
+            if remaining < _tamp.TAMPONADE_PREPASS_MIN_S:
+                rec['reason'] = ('prepass budget exhausted before the seal '
+                                 '(%.2f s left)' % max(remaining, 0.0))
+                stats['tamponade'] = rec
+                return ms, after
+            seal_budget = remaining
         out_v, out_t, trec = _tamp.run_tamponade(
-            cur_v, cur_t, intensity=intensity_val, ml=ml)
+            cur_v, cur_t, intensity=intensity_val, ml=ml,
+            time_budget_s=seal_budget)
         for key in ('budget_s', 'h_min', 'seconds', 'plugs', 'plug_faces',
                     'plugs_rejected', 'plugs_inconclusive',
                     'plugs_rejected_size', 'plugs_rejected_dev',
@@ -4009,17 +4102,40 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                       or float(healthy) >= 0.99 * float(len(cur_t)))
         # Exact self-intersection fall (review C2): a melt-only improvement on a
         # mesh whose holes/non-manifold are already 0 must still be adoptable.
+        # The prepass only compares the faces the candidate changed (cheap on a
+        # large scan); post-chain keeps the full scan of both meshes.
         cand_si_exact = None
-        if base_si_exact is not None:
-            cand_si_exact = _exact_si_face_count(wv, wt)
-            rec['candidate_self_intersections'] = cand_si_exact
-        si_fall = (base_si_exact is not None and cand_si_exact is not None
-                   and cand_si_exact < base_si_exact)
+        base_local = cand_local = None
+        if prepass:
+            base_local, cand_local, si_rise, local_used = _local_si_rise(
+                cur_v, cur_t, wv, wt)
+            if local_used:
+                rec['si_method'] = 'local'
+                rec['base_local_si'] = base_local
+                rec['cand_local_si'] = cand_local
+                si_fall = bool(cand_local < base_local)
+                si_ok = bool(not si_rise)
+            else:
+                base_si_exact = _exact_si_face_count(cur_v, cur_t)
+                rec['input_self_intersections'] = base_si_exact
+                cand_si_exact = (_exact_si_face_count(wv, wt)
+                                 if base_si_exact is not None else None)
+                rec['candidate_self_intersections'] = cand_si_exact
+                si_fall = (base_si_exact is not None
+                           and cand_si_exact is not None
+                           and cand_si_exact < base_si_exact)
+                si_ok = (base_si_exact is None or cand_si_exact is None
+                         or cand_si_exact <= base_si_exact)
+                rec['si_method'] = 'full'
+        else:
+            if base_si_exact is not None:
+                cand_si_exact = _exact_si_face_count(wv, wt)
+                rec['candidate_self_intersections'] = cand_si_exact
+            si_fall = (base_si_exact is not None and cand_si_exact is not None
+                       and cand_si_exact < base_si_exact)
+            si_ok = (base_si_exact is None or cand_si_exact is None
+                     or cand_si_exact <= base_si_exact)
         rec['si_fall'] = si_fall
-        # Never adopt a candidate whose exact self-intersection count rose
-        # versus the pre-tier mesh: the melt may only improve or leave it.
-        si_ok = (base_si_exact is None or cand_si_exact is None
-                 or cand_si_exact <= base_si_exact)
         rec['si_ok'] = si_ok
         # Prepass placement: the Stage-1 chain still runs after the seal and
         # repairs the non-manifold edge the reference plug can leave behind
@@ -4030,11 +4146,18 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         if prepass:
             geometry_fall = (cand_holes < base_holes) or si_fall
             no_rise = cand_holes <= base_holes
-            # The reference plug can graze nearby crater geometry and report a
-            # transient self-intersection count; the Stage-1 chain (nm repair +
-            # si_excise_recap) reconciles it after the seal, so the prepass does
-            # not reject on SI -- the final pipeline result is what is judged.
-            si_ok = True
+            # The prepass must not raise the exact self-intersection count of the
+            # mesh it seals. The reference plug can graze nearby crater geometry
+            # and add self-intersections the downstream Stage-1 chain does not
+            # fully reconcile (measured: ornate-frame 66584 -> 66749, 1038441
+            # 2350 -> 2436), so `si_ok` is kept as the strict non-rise guard
+            # computed above rather than forced True.
+            if prepass_budget is not None:
+                _elapsed = time.perf_counter() - _tier_start
+                if _elapsed > prepass_budget:
+                    si_ok = False
+                    rec['reject_reason'] = 'prepass budget exceeded'
+                    rec['prepass_seconds'] = _elapsed
         else:
             geometry_fall = strict_fall or si_fall
         if no_rise and geometry_fall and parts_ok and healthy_ok and si_ok and len(cand_t):
@@ -4045,10 +4168,14 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
             wet = bool(cand_holes == 0 and cand_nm == 0)
             rec['watertight'] = wet
             rec['reload_watertight'] = wet
+            if rec.get('si_method') == 'local':
+                si_desc = '%s -> %s (local)' % (base_local, cand_local)
+            else:
+                si_desc = '%s -> %s' % (base_si_exact, cand_si_exact)
             rec['reason'] = ('adopted (holes %d -> %d, non-manifold %d -> %d, '
-                             'SI %s -> %s)'
+                             'SI %s)'
                              % (base_holes, cand_holes, base_nm, cand_nm,
-                                base_si_exact, cand_si_exact))
+                                si_desc))
         else:
             reasons = []
             if not no_rise:
@@ -4056,7 +4183,10 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
             if not geometry_fall:
                 reasons.append('holes+non-manifold/SI did not strictly fall')
             if not si_ok:
-                reasons.append('self-intersections rose')
+                if rec.get('reject_reason') == 'prepass budget exceeded':
+                    reasons.append('prepass budget exceeded')
+                else:
+                    reasons.append('self-intersections rose')
             if not parts_ok:
                 reasons.append('component count rose')
             if not healthy_ok:
@@ -4969,7 +5099,10 @@ def maybe_run_stage2(report, verts, tris, tmpdir):
         inter = os.path.join(tmpdir, 'stage1.obj')
         out_obj = os.path.join(tmpdir, 'stage2.obj')
         write_obj(inter, verts, tris)
+        _t_s2 = time.perf_counter()
         mrep, _ = run_stage2(inter, out_obj)
+        report.setdefault('timings', {})['stage2'] = round(
+            time.perf_counter() - _t_s2, 3)
         if mrep is not None:
             report['stage2'] = mrep
             if 'error' not in mrep and os.path.exists(out_obj):
@@ -5308,6 +5441,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         enforce_reload_verdict(report, new_v, new_t)
         return report, new_v, new_t
 
+    _t_file = time.perf_counter()
     report, new_v, new_t = _run(flap)
 
     # HIGH-1 safety net: the Flap adoption gate is topological-only and decided
@@ -5354,6 +5488,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             else:
                 report['flap']['final_fallback'] = fallback
 
+    report.setdefault('timings', {})
+    report['timings']['file_total'] = round(time.perf_counter() - _t_file, 3)
+    report['timings']['flap_off_rerun'] = bool(
+        (report.get('flap') or {}).get('final_fallback', {}).get('ran'))
     save_mesh(out, new_v, new_t)
     return report
 

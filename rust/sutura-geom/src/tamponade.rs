@@ -35,6 +35,14 @@ const PLUG_MIN_AREA: f64 = 1e-12;
 /// real tiny holes (e.g. artec_copper-key's four 3-vertex rims) as
 /// `NoSeparation`.
 const TINY_LOOP_MAX: usize = 8;
+/// A rim longer than this is split into sub-rims by [`split_long_loops`] before
+/// sealing, so a long / curved hole becomes simple enough for the DP cap.
+const SPLIT_MAX_VERTS: usize = 64;
+/// Minimum vertices each side of a bridge must carry (so a split cannot create
+/// a degenerate sub-rim).
+const SPLIT_MIN_ARC: usize = 3;
+/// Recursion cap for the piecewise split.
+const SPLIT_MAX_DEPTH: usize = 16;
 /// "Invisible plug" gate (a): a rim whose diameter exceeds this multiple of the
 /// median edge length is too large to be a plug a rim-only triangulation can
 /// close invisibly, and is left for the surface-based tiers (Flap/Graft). The
@@ -379,6 +387,387 @@ pub fn build_boundary_loops(directed: &[(u32, u32)]) -> Vec<Vec<u32>> {
         }
     }
     loops
+}
+
+/// Manifold boundary decomposition: half-edge (face-fan) traversal.
+///
+/// Unlike [`build_boundary_loops`] -- a greedy vertex-marking walker that, at a
+/// rim vertex pinched by an attached flap, marks the vertex used and then
+/// diverts into the flap, orphaning the rest of the rim -- this pairs each
+/// incoming boundary half-edge with its successor across the incident triangle
+/// fan. A rim pinched by the dangling tail therefore still yields the true
+/// outer rim (e.g. the whole plate rim) plus the tail's own loop, and the outer
+/// rim's reference plug covers the whole hole instead of leaving an annulus.
+///
+/// The walker is deterministic (starts are sorted) and each boundary half-edge
+/// belongs to exactly one loop.
+pub fn boundary_loops_manifold(tris: &[[u32; 3]]) -> Vec<Vec<u32>> {
+    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
+    let mut count: HashMap<(u32, u32), u32> = HashMap::with_capacity(tris.len() * 2);
+    let mut faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = key(a, b);
+            *count.entry(k).or_insert(0) += 1;
+            faces.entry(k).or_insert_with(Vec::new).push(fi);
+        }
+    }
+    // Directed boundary half-edge -> its single incident face.
+    let mut bface: HashMap<(u32, u32), usize> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if count.get(&key(a, b)) == Some(&1) {
+                bface.insert((a, b), fi);
+            }
+        }
+    }
+    let third = |fi: usize, b: u32, exclude: u32| -> u32 {
+        for &v in &tris[fi] {
+            if v != b && v != exclude {
+                return v;
+            }
+        }
+        b
+    };
+
+    let mut used: HashSet<(u32, u32)> = HashSet::new();
+    let mut loops: Vec<Vec<u32>> = Vec::new();
+    let mut starts: Vec<(u32, u32)> = bface.keys().cloned().collect();
+    starts.sort();
+    // Work guard: on a non-manifold / degenerate output the face-fan walk can
+    // cycle without ever reaching a boundary half-edge (e.g. a face carrying the
+    // same edge twice), which would loop forever. Abandon such a start.
+    let limit = tris.len().saturating_mul(8) + 64;
+    let mut steps = 0usize;
+    for h in starts {
+        if used.contains(&h) {
+            continue;
+        }
+        let mut loop_v: Vec<u32> = Vec::new();
+        let mut cur = h;
+        loop {
+            if used.contains(&cur) {
+                break;
+            }
+            used.insert(cur);
+            loop_v.push(cur.0);
+            // Rotate around the target vertex `b` through the face fan until the
+            // next boundary half-edge is found.
+            let (a, b) = cur;
+            let mut f = bface[&(a, b)];
+            let mut c = third(f, b, a);
+            let mut nxt: Option<(u32, u32)> = None;
+            loop {
+                steps += 1;
+                if steps > limit {
+                    break;
+                }
+                let k = key(b, c);
+                if count.get(&k) == Some(&1) {
+                    nxt = Some(if bface.contains_key(&(b, c)) { (b, c) } else { (c, b) });
+                    break;
+                }
+                let fs = &faces[&k];
+                if fs.len() < 2 {
+                    break;
+                }
+                let f2 = if fs[0] == f { fs[1] } else { fs[0] };
+                if f2 == f {
+                    break;
+                }
+                c = third(f2, b, c);
+                f = f2;
+            }
+            let Some(n) = nxt else { break };
+            cur = n;
+            if cur == h {
+                break;
+            }
+        }
+        if loop_v.len() >= 3 {
+            loops.push(loop_v);
+        }
+    }
+    loops
+}
+
+/// Duplicate non-manifold ("pinched") vertices, one copy per face-fan, so a
+/// boundary rim pinched at a single vertex separates into independent loops
+/// that can each be sealed. Mirrors the full pipeline's
+/// `_split_pinched_vertices`: vertices are only duplicated and keep their
+/// position (no shape change). This is a preprocessing step for boundary-loop
+/// extraction and is opt-in behind `SUTURA_TAMP_MANIFOLD`. Deterministic:
+/// vertices are visited in index order and the fan holding the lowest face
+/// index keeps the original vertex id.
+fn fan_split_pinched_vertices(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let nv = verts.len();
+    let mut vf: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for (fi, t) in tris.iter().enumerate() {
+        for &v in t {
+            vf[v as usize].push(fi);
+        }
+    }
+    let mut out_verts: Vec<[f64; 3]> = verts.to_vec();
+    let mut out_tris: Vec<[u32; 3]> = tris.to_vec();
+    let mut edge_faces: HashMap<u32, Vec<usize>> = HashMap::new();
+    for v in 0..nv {
+        if vf[v].len() < 2 {
+            continue;
+        }
+        // Faces sharing an edge incident to `v` are connected around `v`.
+        edge_faces.clear();
+        for &f in &vf[v] {
+            let t = tris[f];
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                if a as usize == v {
+                    edge_faces.entry(b).or_default().push(f);
+                } else if b as usize == v {
+                    edge_faces.entry(a).or_default().push(f);
+                }
+            }
+        }
+        // Union-find over the incident faces.
+        let mut root: HashMap<usize, usize> = vf[v].iter().map(|&f| (f, f)).collect();
+        fn find(root: &mut HashMap<usize, usize>, x: usize) -> usize {
+            let mut r = x;
+            while root[&r] != r {
+                r = root[&r];
+            }
+            let mut c = x;
+            while root[&c] != r {
+                let n = root[&c];
+                root.insert(c, r);
+                c = n;
+            }
+            r
+        }
+        for fl in edge_faces.values() {
+            for i in 1..fl.len() {
+                let ra = find(&mut root, fl[0]);
+                let rb = find(&mut root, fl[i]);
+                if ra != rb {
+                    root.insert(rb, ra);
+                }
+            }
+        }
+        let mut fans: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &f in &vf[v] {
+            let r = find(&mut root, f);
+            fans.entry(r).or_default().push(f);
+        }
+        if fans.len() < 2 {
+            continue;
+        }
+        // Order fans by their lowest face index so the first one keeps `v`.
+        let mut keys: Vec<usize> = fans.keys().cloned().collect();
+        keys.sort_by_key(|k| *fans[k].iter().min().unwrap());
+        for k in &keys[1..] {
+            let nvi = out_verts.len() as u32;
+            out_verts.push(verts[v]);
+            for &f in &fans[k] {
+                for x in out_tris[f].iter_mut() {
+                    if *x == v as u32 {
+                        *x = nvi;
+                    }
+                }
+            }
+        }
+    }
+    (out_verts, out_tris)
+}
+
+/// Group boundary loops that belong to one geometric hole: loops sharing a
+/// boundary vertex, or whose vertices fall in the same `h`-sized grid cell
+/// (i.e. come within ~h of each other). For each group the index of the outer
+/// rim -- the loop with the largest bounding-box diagonal -- is returned so a
+/// single reference surface can be fitted to it. Deterministic: groups are
+/// ordered by their lowest loop index.
+fn group_boundary_loops(
+    loops: &[Vec<u32>],
+    verts: &[[f64; 3]],
+    h: f64,
+) -> Vec<(Vec<usize>, usize)> {
+    let n = loops.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            let gp = parent[parent[x]];
+            parent[x] = gp;
+            x = gp;
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut vloop: HashMap<u32, usize> = HashMap::new();
+    for (li, l) in loops.iter().enumerate() {
+        for &v in l {
+            match vloop.get(&v) {
+                Some(&lj) => {
+                    let a = find(&mut parent, li);
+                    let b = find(&mut parent, lj);
+                    if a != b {
+                        parent[b] = a;
+                    }
+                }
+                None => {
+                    vloop.insert(v, li);
+                }
+            }
+        }
+    }
+    let cell = h.max(1e-12);
+    let mut cloop: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    for (li, l) in loops.iter().enumerate() {
+        let mut cells: HashSet<(i64, i64, i64)> = HashSet::new();
+        for &v in l {
+            let p = verts[v as usize];
+            cells.insert((
+                (p[0] / cell).floor() as i64,
+                (p[1] / cell).floor() as i64,
+                (p[2] / cell).floor() as i64,
+            ));
+        }
+        for c in cells {
+            match cloop.get(&c) {
+                Some(&lj) => {
+                    let a = find(&mut parent, li);
+                    let b = find(&mut parent, lj);
+                    if a != b {
+                        parent[b] = a;
+                    }
+                }
+                None => {
+                    cloop.insert(c, li);
+                }
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for li in 0..n {
+        let r = find(&mut parent, li);
+        groups.entry(r).or_default().push(li);
+    }
+    let mut out: Vec<(Vec<usize>, usize)> = groups
+        .into_values()
+        .map(|members| {
+            let mut best = members[0];
+            let mut best_d = -1.0f64;
+            for &li in &members {
+                let mut bb = BBox::empty();
+                for &v in &loops[li] {
+                    bb.expand_point(verts[v as usize]);
+                }
+                let d = bb.diagonal();
+                if d > best_d {
+                    best_d = d;
+                    best = li;
+                }
+            }
+            (members, best)
+        })
+        .collect();
+    out.sort_by_key(|(m, _)| m[0]);
+    out
+}
+
+/// Piecewise hole filling (Jun 2005): a long / complex rim is split at a
+/// "bridge" -- a pair of rim vertices close in space but far apart along the
+/// rim whose connecting segment is clear of the existing surface -- into two
+/// simpler sub-rims, recursively, until each is short enough for the
+/// DP / reference cap. The bridge edge is shared by the two caps with opposite
+/// direction, so the seam stays two-manifold. This also removes the collinear
+/// runs that make one large rim triangulate to zero-area faces.
+fn split_long_loops(
+    loops: Vec<Vec<u32>>,
+    verts: &[[f64; 3]],
+    bvh: &MeshBvh,
+) -> Vec<Vec<u32>> {
+    let mut out: Vec<Vec<u32>> = Vec::new();
+    for l in loops {
+        split_one(l, verts, bvh, 0, &mut out);
+    }
+    out
+}
+
+fn split_one(
+    rim: Vec<u32>,
+    verts: &[[f64; 3]],
+    bvh: &MeshBvh,
+    depth: usize,
+    out: &mut Vec<Vec<u32>>,
+) {
+    let m = rim.len();
+    if m <= SPLIT_MAX_VERTS || depth >= SPLIT_MAX_DEPTH {
+        out.push(rim);
+        return;
+    }
+    // Candidate bridges: a pair far enough apart along the rim on both sides.
+    // Jun 2005 selects the pair closest in space relative to the boundary arc
+    // between them -- for a round rim that is a near-diameter (a balanced cut),
+    // and for a spike/tail it is the short chord across the spike's base. The
+    // ratio `arc / dist` is maximised; the expensive surface-clearance test
+    // runs on the candidates in descending order until one is clear.
+    let mut arc_len: Vec<f64> = vec![0.0; m + 1];
+    for i in 0..m {
+        let a = verts[rim[i] as usize];
+        let b = verts[rim[(i + 1) % m] as usize];
+        arc_len[i + 1] =
+            arc_len[i] + ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    }
+    let perimeter = arc_len[m];
+    let mut cands: Vec<(f64, usize, usize)> = Vec::new();
+    for i in 0..m {
+        for j in (i + SPLIT_MIN_ARC)..m {
+            if m - (j - i) < SPLIT_MIN_ARC {
+                continue;
+            }
+            let a = verts[rim[i] as usize];
+            let b = verts[rim[j] as usize];
+            let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            if d < 1e-12 {
+                continue;
+            }
+            let arc = arc_len[j] - arc_len[i];
+            let short_arc = arc.min(perimeter - arc);
+            cands.push((short_arc / d, i, j));
+        }
+    }
+    cands.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut bridge: Option<(usize, usize)> = None;
+    for &(_, i, j) in &cands {
+        if segment_clear(bvh, verts[rim[i] as usize], verts[rim[j] as usize]) {
+            bridge = Some((i, j));
+            break;
+        }
+    }
+    let Some((i, j)) = bridge else {
+        out.push(rim);
+        return;
+    };
+    let mut a: Vec<u32> = rim[i..=j].to_vec();
+    a.dedup();
+    let mut b: Vec<u32> = rim[j..].to_vec();
+    b.extend_from_slice(&rim[..=i]);
+    b.dedup();
+    split_one(a, verts, bvh, depth + 1, out);
+    split_one(b, verts, bvh, depth + 1, out);
+}
+
+/// True when the open segment `a`->`b` does not cross the existing surface.
+fn segment_clear(bvh: &MeshBvh, a: [f64; 3], b: [f64; 3]) -> bool {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = norm3(d);
+    if len < 1e-12 {
+        return false;
+    }
+    let dir = [d[0] / len, d[1] / len, d[2] / len];
+    let q = bvh.intersect_ray(a, dir, len * (1.0 - 1e-6), 1e-9);
+    q.crossings == 0
 }
 
 fn crosses_wall(bvh: &MeshBvh, p1: [f64; 3], p2: [f64; 3]) -> bool {
@@ -1179,8 +1568,18 @@ fn triangulate_rim_loop(
         return Err("too_small");
     }
     let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    // DP is preferred (min-area, symmetric), but it can fail on a non-convex or
+    // collinear rim; under `SUTURA_TAMP_MANIFOLD`, ear clipping is the
+    // structural fallback (brief step 2). The default path keeps the historical
+    // DP-only behaviour byte-identical.
+    let manifold_mode = std::env::var("SUTURA_TAMP_MANIFOLD").is_ok();
     let local = if m <= PLUG_DP_CAP {
-        min_area_triangulation(&pts, PLUG_DP_CAP, &HashSet::new())
+        let dp = min_area_triangulation(&pts, PLUG_DP_CAP, &HashSet::new());
+        if manifold_mode && dp.len() != m - 2 {
+            ear_clip(&pts)
+        } else {
+            dp
+        }
     } else {
         ear_clip(&pts)
     };
@@ -2447,9 +2846,27 @@ pub fn tamponade_repair(
         return (verts.to_vec(), tris.to_vec(), info);
     }
 
+    // Loop-extraction experiments (half-edge decomposition, loop grouping,
+    // piecewise split, pinched-vertex fan split) are opt-in behind
+    // `SUTURA_TAMP_MANIFOLD`; the default is the historical greedy walker, so
+    // the tier output stays byte-identical unless the flag is set.
+    let manifold_mode = std::env::var("SUTURA_TAMP_MANIFOLD").is_ok();
+    // Pinched-vertex fan split: separate boundary rims that meet at one vertex
+    // before loop extraction (loop-extraction preprocessing only).
+    let split_pair = if manifold_mode {
+        Some(fan_split_pinched_vertices(verts, tris))
+    } else {
+        None
+    };
+    let (verts, tris): (&[[f64; 3]], &[[u32; 3]]) = match &split_pair {
+        Some((v, t)) => (v.as_slice(), t.as_slice()),
+        None => (verts, tris),
+    };
     let directed = directed_boundary_edges(tris);
-    let loops = if directed.is_empty() {
+    let mut loops = if directed.is_empty() {
         Vec::new()
+    } else if manifold_mode {
+        boundary_loops_manifold(tris)
     } else {
         build_boundary_loops(&directed)
     };
@@ -2467,9 +2884,10 @@ pub fn tamponade_repair(
     // A single boundary loop on a single connected component is a genuine hole
     // in an otherwise-closed shell: no other loop/component could be an
     // intentional opening, so the min-cut can be skipped when a reference
-    // surface is available (lead decision, 10 Oct).
-    let single_shell =
-        loops.len() == 1 && count_shell_components(verts.len(), tris) == 1;
+    // surface is available (lead decision, 10 Oct). The manifold path
+    // re-derives this after splitting/grouping (below).
+    let mut single_shell =
+        !manifold_mode && loops.len() == 1 && count_shell_components(verts.len(), tris) == 1;
 
     let h = match config.h_min {
         Some(val) if val > 1e-6 => val,
@@ -2483,6 +2901,29 @@ pub fn tamponade_repair(
     let t_bvh0 = Instant::now();
     let bvh = MeshBvh::from_arrays(verts, &tris_usize);
     let bvh_s = t_bvh0.elapsed().as_secs_f64();
+
+    // Per-loop group-outer rim (default: the loop itself). In the manifold path
+    // a long / complex rim is first split into simple sub-rims (piecewise hole
+    // filling, Jun 2005), then fragmented loops that belong to one geometric
+    // hole are grouped; every loop of a group seals against the group's OUTER
+    // rim so a single reference surface spans the whole hole rather than the
+    // fragment.
+    let mut loop_outer: Vec<usize> = (0..loops.len()).collect();
+    if manifold_mode {
+        if loops.iter().any(|l| l.len() > SPLIT_MAX_VERTS) {
+            loops = split_long_loops(loops, verts, &bvh);
+            loop_outer = (0..loops.len()).collect();
+        }
+        let loop_groups = group_boundary_loops(&loops, verts, h);
+        for (members, outer) in &loop_groups {
+            for &li in members {
+                loop_outer[li] = *outer;
+            }
+        }
+        single_shell =
+            loop_groups.len() == 1 && count_shell_components(verts.len(), tris) == 1;
+    }
+
     let profile = std::env::var("SUTURA_TAMP_PROFILE").is_ok();
     let mut cut_s = 0.0f64;
     let mut plug_s = 0.0f64;
@@ -2526,7 +2967,7 @@ pub fn tamponade_repair(
     // byte-identical regression comparison against the per-component path.
     let percell = std::env::var("SUTURA_TAMP_PERCELL").is_ok();
 
-    for loop_v in &loops {
+    for (li, loop_v) in loops.iter().enumerate() {
         if deadline_passed(deadline) {
             info.reason = "timeout exceeded".to_string();
             break;
@@ -2540,6 +2981,15 @@ pub fn tamponade_repair(
         if rim.len() < 3 {
             continue;
         }
+
+        // The group's outer rim drives the reference fit so a fragment of a
+        // pinched hole seals at the level of the whole hole. In the default
+        // (greedy) path the group is the loop itself, so this is `rim`.
+        let group_rim: Vec<u32> = if manifold_mode {
+            loops[loop_outer[li]].clone()
+        } else {
+            rim.clone()
+        };
 
         // Invisible-plug gate (a): a rim larger than `PLUG_MAX_LOOP_DIAM_FACTOR`
         // median edges cannot be closed without a visible membrane, so it is
@@ -2579,7 +3029,7 @@ pub fn tamponade_repair(
         // the cut (another loop could be an intentional opening).
         let mut reference = if single_shell {
             adj.as_ref()
-                .and_then(|a| build_reference(verts, tris, &rim, h, a))
+                .and_then(|a| build_reference(verts, tris, &group_rim, h, a))
         } else {
             None
         };
@@ -2653,7 +3103,7 @@ pub fn tamponade_repair(
         if reference.is_none() && !single_shell {
             reference = adj
                 .as_ref()
-                .and_then(|a| build_reference(verts, tris, &rim, h, a));
+                .and_then(|a| build_reference(verts, tris, &group_rim, h, a));
         }
         // The overshoot trim below mutates `out_verts` in place. Snapshot it so
         // a loop whose plug is ultimately rejected leaves the input vertices
