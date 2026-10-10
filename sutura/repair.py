@@ -3989,6 +3989,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'micro_welds_ok': None, 'micro_welds_failed': None,
            'excised_faces': None,
            'healthy_faces_kept': None, 'healthy_fraction': None,
+           'plugs_rolled_back': None,
            'input_self_intersections': None,
            'candidate_self_intersections': None, 'si_fall': None,
            'si_ok': None, 'melt_enabled': None, 'si_method': None,
@@ -4074,7 +4075,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                     'micro_welds_failed', 'excised_faces',
                     'healthy_faces_kept',
                     'reference_used', 'reference_fallback',
-                    'trimmed_vertices', 'patch_vertices'):
+                    'trimmed_vertices', 'patch_vertices',
+                    'plugs_rolled_back'):
             rec[key] = trec.get(key)
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):
@@ -6135,12 +6137,15 @@ def human_report(r, show_defects=False, show_diff=False):
         else:
             state = ' NOT adopted (%s)' % (tp_r.get('reason') or '?')
         lines.append('  Tamponade (plug)        : %s plugs, %s plug faces, '
-                     'holes=%s nm=%s, healthy kept %s in %.2fs%s'
+                     'holes=%s nm=%s, healthy kept %s in %.2fs%s%s'
                      % (tp_r.get('plugs'), tp_r.get('plug_faces'),
                         tp_r.get('candidate_holes'),
                         tp_r.get('candidate_non_manifold'),
                         tp_r.get('healthy_faces_kept'),
-                        tp_r.get('seconds') or 0, state))
+                        tp_r.get('seconds') or 0, state,
+                        '' if not tp_r.get('plugs_rolled_back')
+                        else ', rolled back %s'
+                        % tp_r.get('plugs_rolled_back')))
     gr = r.get('graft')
     if gr and gr.get('ran'):
         if gr.get('adopted'):

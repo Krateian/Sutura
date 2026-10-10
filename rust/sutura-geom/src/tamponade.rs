@@ -19,6 +19,7 @@
 use crate::flap::dp::min_area_triangulation_filtered;
 use crate::mincut::BkGraph;
 use crate::rbf;
+use crate::triangle_intersection;
 use crate::winding::MeshBvh;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -220,6 +221,8 @@ pub struct TamponadeInfo {
     pub trimmed_vertices: usize,
     /// Interior patch vertices placed on the reference surface.
     pub patch_vertices: usize,
+    /// Plugs rolled back by the final reload-honest "never worse" safety net.
+    pub plugs_rolled_back: usize,
     pub seconds: f64,
     pub reason: String,
     /// One entry per boundary loop: its vertex count and the decision taken
@@ -2983,7 +2986,7 @@ fn plug_reload_ok(
         }
     }
     let mut base: HashMap<([u32; 3], [u32; 3]), i32> = HashMap::new();
-    let mut add_tri = |t: &[u32; 3], edges: &mut HashMap<([u32; 3], [u32; 3]), i32>| {
+    let add_tri = |t: &[u32; 3], edges: &mut HashMap<([u32; 3], [u32; 3]), i32>| {
         let a = key(pos(t[0]));
         let b = key(pos(t[1]));
         let c = key(pos(t[2]));
@@ -3007,6 +3010,482 @@ fn plug_reload_ok(
         }
     }
     true
+}
+
+/// Reload-honest topological verdict of an STL save/reload round-trip.
+///
+/// Mirrors what `repair.weld_reload_equivalent` / `defects.detect` observe on
+/// the saved file: float32-quantised positions, exactly-coincident vertices
+/// welded, then boundary loops, non-manifold edges, non-manifold (pinched)
+/// vertices and degenerate faces counted. This is the engine's final
+/// "never worse" metric -- a repaired mesh must not raise any of the four
+/// damage counts over the input's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReloadVerdict {
+    pub boundary_loops: usize,
+    pub boundary_edges: usize,
+    pub nm_edges: usize,
+    pub nm_vertices: usize,
+    pub degenerate_faces: usize,
+}
+
+impl ReloadVerdict {
+    /// True when `self` carries more structural damage than `base`.
+    fn worse_than(&self, base: &ReloadVerdict) -> bool {
+        self.nm_edges > base.nm_edges
+            || self.nm_vertices > base.nm_vertices
+            || self.degenerate_faces > base.degenerate_faces
+    }
+}
+
+/// Canonical undirected edge key.
+#[inline]
+fn reload_edge_key(a: u32, b: u32) -> (u32, u32) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Quantised float32 position key used for the exact-weld hash. `-0.0` is
+/// folded onto `+0.0` so the two share a bucket, matching the numpy/STL
+/// round-trip semantics.
+#[inline]
+fn f32_position_key(p: [f64; 3]) -> [u32; 3] {
+    let q = |x: f64| {
+        let f = x as f32;
+        let f = if f == 0.0 { 0.0 } else { f };
+        f.to_bits()
+    };
+    [q(p[0]), q(p[1]), q(p[2])]
+}
+
+/// Mimic an STL save + reload and count the resulting structure. Hash based
+/// and O(V + F). Input positions are float32-quantised and welded on exact
+/// coincidence; faces that collapse to a repeated index are dropped and
+/// counted as degenerate (float32 rounding can create them).
+pub fn reload_verdict(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> ReloadVerdict {
+    let mut verdict = ReloadVerdict::default();
+    if verts.is_empty() || tris.is_empty() {
+        return verdict;
+    }
+
+    let nv = verts.len();
+    let mut weld: HashMap<[u32; 3], u32> = HashMap::with_capacity(nv);
+    let mut remap: Vec<u32> = Vec::with_capacity(nv);
+    for p in verts {
+        let next = weld.len() as u32;
+        let id = *weld.entry(f32_position_key(*p)).or_insert(next);
+        remap.push(id);
+    }
+
+    let mut wtris: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        if a >= nv || b >= nv || c >= nv {
+            continue;
+        }
+        let (wa, wb, wc) = (remap[a], remap[b], remap[c]);
+        if wa == wb || wb == wc || wa == wc {
+            verdict.degenerate_faces += 1;
+            continue;
+        }
+        wtris.push([wa, wb, wc]);
+    }
+
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::with_capacity(wtris.len() * 3);
+    for t in &wtris {
+        for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *edges.entry(reload_edge_key(x, y)).or_insert(0) += 1;
+        }
+    }
+    let mut boundary_adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&(a, b), &count) in &edges {
+        if count == 1 {
+            verdict.boundary_edges += 1;
+            boundary_adj.entry(a).or_default().push(b);
+            boundary_adj.entry(b).or_default().push(a);
+        } else if count > 2 {
+            verdict.nm_edges += 1;
+        }
+    }
+    verdict.boundary_loops = reload_count_boundary_loops(&boundary_adj);
+
+    let mut vfaces: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (fi, t) in wtris.iter().enumerate() {
+        for &v in t {
+            vfaces.entry(v).or_default().push(fi as u32);
+        }
+    }
+    for (&v, faces) in &vfaces {
+        if faces.len() >= 2 && !reload_faces_single_fan(v, faces, &wtris) {
+            verdict.nm_vertices += 1;
+        }
+    }
+
+    verdict
+}
+
+/// Count the boundary loops of a boundary-adjacency graph by walking every
+/// undirected boundary edge once.
+fn reload_count_boundary_loops(adj: &HashMap<u32, Vec<u32>>) -> usize {
+    let mut used: HashSet<(u32, u32)> = HashSet::new();
+    let mut loops = 0usize;
+    for (&start, nbrs) in adj {
+        for &nb in nbrs {
+            if !used.insert(reload_edge_key(start, nb)) {
+                continue;
+            }
+            loops += 1;
+            let mut prev = start;
+            let mut cur = nb;
+            while cur != start {
+                let mut next: Option<u32> = None;
+                if let Some(cn) = adj.get(&cur) {
+                    for &m in cn {
+                        if m == prev {
+                            continue;
+                        }
+                        if !used.contains(&reload_edge_key(cur, m)) {
+                            next = Some(m);
+                            break;
+                        }
+                    }
+                }
+                match next {
+                    Some(m) => {
+                        used.insert(reload_edge_key(cur, m));
+                        prev = cur;
+                        cur = m;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    loops
+}
+
+/// Whether the faces incident to vertex `v` form one connected fan: two
+/// incident faces connect when they share the edge `(v, w)`. Two or more
+/// fans mean a pinched (non-manifold) vertex.
+fn reload_faces_single_fan(v: u32, faces: &[u32], wtris: &[[u32; 3]]) -> bool {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let n = faces.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut edge_faces: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, &fi) in faces.iter().enumerate() {
+        for &w in &wtris[fi as usize] {
+            if w != v {
+                edge_faces.entry(w).or_default().push(i);
+            }
+        }
+    }
+    for fl in edge_faces.values() {
+        for k in 1..fl.len() {
+            let a = find(&mut parent, fl[0]);
+            let b = find(&mut parent, fl[k]);
+            if a != b {
+                parent[b] = a;
+            }
+        }
+    }
+    (0..n).filter(|&i| find(&mut parent, i) == i).count() == 1
+}
+
+/// One accepted plug's triangle range in the output triangle array, used to
+/// attribute a reload regression to individual plugs (per-plug rollback).
+#[derive(Clone, Copy, Debug)]
+struct PlugRegion {
+    tri_start: usize,
+    tri_end: usize,
+    reference: bool,
+    steiner: bool,
+}
+
+/// Reload verdict of the output with one plug region removed (vertices kept,
+/// so a trim is not undone). Used only to attribute a regression.
+fn reload_verdict_without(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    region: &PlugRegion,
+) -> ReloadVerdict {
+    let mut filtered: Vec<[u32; 3]> =
+        Vec::with_capacity(tris.len() - (region.tri_end - region.tri_start));
+    filtered.extend_from_slice(&tris[..region.tri_start]);
+    filtered.extend_from_slice(&tris[region.tri_end..]);
+    reload_verdict(verts, &filtered)
+}
+
+/// Reload verdict of the output with the flagged regions removed. Used to
+/// project the fixed point of a multi-region rollback before applying it.
+fn reload_verdict_dropping(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    drop: &[bool],
+) -> ReloadVerdict {
+    let mut mask = vec![true; tris.len()];
+    for (r, &d) in regions.iter().zip(drop) {
+        if d {
+            for slot in mask.iter_mut().take(r.tri_end).skip(r.tri_start) {
+                *slot = false;
+            }
+        }
+    }
+    let filtered: Vec<[u32; 3]> = tris
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mask[*i])
+        .map(|(_, t)| *t)
+        .collect();
+    reload_verdict(verts, &filtered)
+}
+
+/// Drop the flagged regions from the output and compact the vertex array to
+/// the referenced vertices.
+fn apply_region_rollback(
+    out_verts: &mut Vec<[f64; 3]>,
+    out_tris: &mut Vec<[u32; 3]>,
+    regions: &[PlugRegion],
+    drop: &[bool],
+) {
+    let nv = out_verts.len();
+    let mut keep = vec![true; out_tris.len()];
+    for (r, &d) in regions.iter().zip(drop) {
+        if d {
+            for slot in keep.iter_mut().take(r.tri_end).skip(r.tri_start) {
+                *slot = false;
+            }
+        }
+    }
+    let mut remap: Vec<Option<u32>> = vec![None; nv];
+    let mut new_verts: Vec<[f64; 3]> = Vec::new();
+    let mut new_tris: Vec<[u32; 3]> = Vec::with_capacity(out_tris.len());
+    for (i, t) in out_tris.iter().enumerate() {
+        if !keep[i] {
+            continue;
+        }
+        if t.iter().any(|&v| v as usize >= nv) {
+            continue;
+        }
+        let mut nt = [0u32; 3];
+        for k in 0..3 {
+            let vi = t[k] as usize;
+            nt[k] = match remap[vi] {
+                Some(id) => id,
+                None => {
+                    let id = new_verts.len() as u32;
+                    remap[vi] = Some(id);
+                    new_verts.push(out_verts[vi]);
+                    id
+                }
+            };
+        }
+        new_tris.push(nt);
+    }
+    *out_verts = new_verts;
+    *out_tris = new_tris;
+}
+
+/// AABB of one triangle in `verts`.
+fn tri_bbox(verts: &[[f64; 3]], t: &[u32; 3]) -> BBox {
+    let mut b = BBox::empty();
+    for &v in t {
+        b.expand_point(verts[v as usize]);
+    }
+    b
+}
+
+/// Uniform-grid AABB index over a face array. Built once per safety-net pass so
+/// the per-plug local self-intersection scan touches only the faces near that
+/// plug (O(local)) instead of rescanning the whole mesh for every plug. Mirrors
+/// the cell choice of `arrangement::broad_phase_candidates`.
+struct FaceGrid {
+    cell: f64,
+    map: HashMap<(i64, i64, i64), Vec<u32>>,
+}
+
+impl FaceGrid {
+    fn build(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Self {
+        let boxes: Vec<BBox> = tris.iter().map(|t| tri_bbox(verts, t)).collect();
+        let mut diags: Vec<f64> = boxes
+            .iter()
+            .map(|b| {
+                let dx = b.max[0] - b.min[0];
+                let dy = b.max[1] - b.min[1];
+                let dz = b.max[2] - b.min[2];
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            })
+            .collect();
+        let mut cell = 1.0f64;
+        if !diags.is_empty() {
+            diags.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            cell = diags[diags.len() / 2] * 1.5;
+        }
+        if !(cell > 1e-9) {
+            cell = 1e-9;
+        }
+        let mut map: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        for (i, b) in boxes.iter().enumerate() {
+            let c0 = [
+                (b.min[0] / cell).floor() as i64,
+                (b.min[1] / cell).floor() as i64,
+                (b.min[2] / cell).floor() as i64,
+            ];
+            let c1 = [
+                (b.max[0] / cell).floor() as i64,
+                (b.max[1] / cell).floor() as i64,
+                (b.max[2] / cell).floor() as i64,
+            ];
+            for x in c0[0]..=c1[0] {
+                for y in c0[1]..=c1[1] {
+                    for z in c0[2]..=c1[2] {
+                        map.entry((x, y, z)).or_default().push(i as u32);
+                    }
+                }
+            }
+        }
+        Self { cell, map }
+    }
+
+    /// Every face whose AABB overlaps `query`, sorted and deduplicated.
+    fn query(&self, query: &BBox) -> Vec<u32> {
+        let c0 = [
+            (query.min[0] / self.cell).floor() as i64,
+            (query.min[1] / self.cell).floor() as i64,
+            (query.min[2] / self.cell).floor() as i64,
+        ];
+        let c1 = [
+            (query.max[0] / self.cell).floor() as i64,
+            (query.max[1] / self.cell).floor() as i64,
+            (query.max[2] / self.cell).floor() as i64,
+        ];
+        let mut out: Vec<u32> = Vec::new();
+        for x in c0[0]..=c1[0] {
+            for y in c0[1]..=c1[1] {
+                for z in c0[2]..=c1[2] {
+                    if let Some(v) = self.map.get(&(x, y, z)) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// Proper, non-adjacent triangle crossings among a local candidate face set
+/// where at least one face belongs to `subset`. Mirrors
+/// `self_intersections_subset_core` (pairs sharing a vertex index are
+/// adjacent and ignored; only a proper interior segment counts) but restricted
+/// to the faces near one plug.
+fn local_si_subset(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    cand: &[u32],
+    subset: &HashSet<u32>,
+) -> i64 {
+    let n = cand.len();
+    if n < 2 {
+        return 0;
+    }
+    let tri: Vec<triangle_intersection::Triangle> = cand
+        .iter()
+        .map(|&f| {
+            let t = tris[f as usize];
+            triangle_intersection::Triangle::explicit(
+                verts[t[0] as usize],
+                verts[t[1] as usize],
+                verts[t[2] as usize],
+            )
+        })
+        .collect();
+    let mut count = 0i64;
+    for i in 0..n {
+        let fi = cand[i];
+        let si = subset.contains(&fi);
+        for j in (i + 1)..n {
+            let fj = cand[j];
+            if !si && !subset.contains(&fj) {
+                continue;
+            }
+            let a = tris[fi as usize];
+            let b = tris[fj as usize];
+            if a.iter().any(|x| b.contains(x)) {
+                continue;
+            }
+            if let triangle_intersection::TriangleIntersection::ProperSegment { .. } =
+                triangle_intersection::intersect_triangles(&tri[i], &tri[j])
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Local self-intersection delta of one plug: how many proper crossings the
+/// plug's new faces make with any face within its AABB expanded by `2h`. The
+/// plug's faces did not exist in the base mesh, so any positive value is a rise
+/// the reload verdict cannot see (a plug poking through a nearby sheet) and the
+/// plug is rolled back.
+fn plug_local_si(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    grid: &FaceGrid,
+    region: &PlugRegion,
+    h: f64,
+) -> i64 {
+    let mut b = BBox::empty();
+    let mut subset: HashSet<u32> = HashSet::new();
+    for f in region.tri_start..region.tri_end {
+        if f >= tris.len() {
+            return 0;
+        }
+        let t = tris[f];
+        for &v in &t {
+            if (v as usize) >= verts.len() {
+                return 0;
+            }
+            b.expand_point(verts[v as usize]);
+        }
+        subset.insert(f as u32);
+    }
+    if subset.is_empty() {
+        return 0;
+    }
+    b.pad(2.0 * h);
+    let cand = grid.query(&b);
+    local_si_subset(verts, tris, &cand, &subset)
+}
+
+/// Per-plug local self-intersection rollback mask: `true` for every plug whose
+/// new faces create a proper crossing with nearby tissue. One AABB grid is
+/// built for all plugs, so the scan is O(faces) once plus O(local) per plug.
+fn si_rollback_mask(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    h: f64,
+) -> Vec<bool> {
+    if regions.is_empty() {
+        return Vec::new();
+    }
+    let grid = FaceGrid::build(verts, tris);
+    regions
+        .iter()
+        .map(|region| plug_local_si(verts, tris, &grid, region, h) > 0)
+        .collect()
 }
 
 /// Main entry point for the L2a Tamponade repair.
@@ -3137,6 +3616,8 @@ pub fn tamponade_repair(
     let mut plug_rejected_size_count = 0usize;
     let mut plug_rejected_dev_count = 0usize;
     let mut plug_face_count = 0usize;
+    // One entry per accepted plug, for the final reload-honest safety net.
+    let mut plug_regions: Vec<PlugRegion> = Vec::new();
 
     // Input adjacency for the T3 reference-surface fit (vertex/edge -> faces).
     let adj = if loops.is_empty() { None } else { Some(build_adjacency(verts.len(), tris)) };
@@ -3437,7 +3918,14 @@ pub fn tamponade_repair(
                     out_verts.extend_from_slice(&added);
                     info.patch_vertices += n_added;
                     plug_face_count += cand.len();
+                    let tri_start = out_tris.len();
                     out_tris.extend(cand);
+                    plug_regions.push(PlugRegion {
+                        tri_start,
+                        tri_end: out_tris.len(),
+                        reference: true,
+                        steiner: n_added > 0,
+                    });
                     plug_count += 1;
                     info.reference_used += 1;
                     let is_rbf = matches!(refs.model, RefModel::Rbf(_));
@@ -3537,7 +4025,14 @@ pub fn tamponade_repair(
                                 info.patch_vertices += 1;
                             }
                             plug_face_count += cand.len();
+                            let tri_start = out_tris.len();
                             out_tris.extend(cand);
+                            plug_regions.push(PlugRegion {
+                                tri_start,
+                                tri_end: out_tris.len(),
+                                reference: false,
+                                steiner: centre.is_some(),
+                            });
                             plug_count += 1;
                             info.loop_diag.push(format!(
                                 "m={} sealed{}{}",
@@ -3572,6 +4067,94 @@ pub fn tamponade_repair(
             eprintln!("[tamp]   loop m={} plug_s={:.3}", rim.len(), plug_dt);
         }
     }
+
+    // Final reload-honest "never worse" safety net. Mimic an STL save/reload
+    // (float32 round + exact position weld) on the sealed output; if a plug
+    // raised the non-manifold edge / non-manifold vertex / degenerate face
+    // count over the input's, roll it back per plug. A plug that accounts for
+    // the regression is dropped; a good plug survives a bad one. When the
+    // regression is not attributable to any single plug (or survives the
+    // per-plug fix), every plug is rolled back -- restoring the input
+    // byte-for-byte, so the output can never be worse than the input.
+    //
+    // A reload regression is not the only way a plug can damage the mesh: a
+    // plug can poke through a nearby sheet and create a proper self
+    // intersection that leaves the topology unchanged, so the reload verdict
+    // cannot see it. For every plug the local self-intersection delta is also
+    // computed (`plug_local_si`: the new faces against the surrounding tissue
+    // within the plug AABB expanded by 2h); a plug that raises it is rolled
+    // back with the same machinery. The scan is O(local) per plug and the pass
+    // only writes when one of the checks fires, keeping the default path
+    // byte-identical.
+    let mut plugs_rolled_back = 0usize;
+    if !plug_regions.is_empty() {
+        let base = reload_verdict(verts, tris);
+        let full = reload_verdict(&out_verts, &out_tris);
+        let reload_regressed = full.worse_than(&base);
+        let si_drop = si_rollback_mask(&out_verts, &out_tris, &plug_regions, h);
+        if reload_regressed || si_drop.iter().any(|&d| d) {
+            let mut drop = vec![false; plug_regions.len()];
+            if reload_regressed {
+                for (ri, region) in plug_regions.iter().enumerate() {
+                    let without = reload_verdict_without(&out_verts, &out_tris, region);
+                    if (without.nm_edges < full.nm_edges
+                        || without.nm_vertices < full.nm_vertices
+                        || without.degenerate_faces < full.degenerate_faces)
+                        && !without.worse_than(&base)
+                    {
+                        drop[ri] = true;
+                    }
+                }
+            }
+            for ri in 0..plug_regions.len() {
+                drop[ri] |= si_drop[ri];
+            }
+            let any = drop.iter().any(|&d| d);
+            let give_up = if any {
+                // A per-plug fix whose fixed point still regresses is treated
+                // as un-attributeable and falls back to a full rollback.
+                reload_verdict_dropping(&out_verts, &out_tris, &plug_regions, &drop)
+                    .worse_than(&base)
+            } else {
+                true
+            };
+            for (ri, region) in plug_regions.iter().enumerate() {
+                let rolled = give_up || drop[ri];
+                if !rolled {
+                    continue;
+                }
+                plug_face_count -= region.tri_end - region.tri_start;
+                plug_count -= 1;
+                if region.reference {
+                    info.reference_used = info.reference_used.saturating_sub(1);
+                }
+                if region.steiner {
+                    info.patch_vertices = info.patch_vertices.saturating_sub(1);
+                }
+                plugs_rolled_back += 1;
+            }
+            if give_up {
+                // Restore the exact input topology and vertices (also undoes
+                // any overshoot trim), guaranteeing no regression.
+                out_verts = verts.to_vec();
+                out_tris = tris.to_vec();
+                plug_count = 0;
+                plug_face_count = 0;
+                info.reference_used = 0;
+                info.patch_vertices = 0;
+                info.trimmed_vertices = 0;
+                plugs_rolled_back = plug_regions.len();
+            } else {
+                apply_region_rollback(&mut out_verts, &mut out_tris, &plug_regions, &drop);
+            }
+            let si_fired = si_drop.iter().filter(|&&d| d).count();
+            info.loop_diag.push(format!(
+                "rolled_back {} plug(s) ({} on self-intersection)",
+                plugs_rolled_back, si_fired
+            ));
+        }
+    }
+    info.plugs_rolled_back = plugs_rolled_back;
 
     info.plugs = plug_count;
     info.plugs_rejected = plug_rejected_count;
@@ -4441,5 +5024,160 @@ mod tests {
         // Rim-only: no Steiner vertex was appended.
         assert_eq!(out_verts.len(), verts.len());
         assert!(info.patch_vertices == 0, "{info:?}");
-}
+    }
+
+    // ---- T8 reload-honest "never worse" safety net -----------------------
+
+    #[test]
+    fn reload_verdict_flags_float32_coincident_vertex_nm() {
+        // Three triangles share the edge (0,1) and their third vertex is
+        // three near-identical positions that all round to the SAME float32
+        // coordinate: after the reload weld the edge (0,1) carries three
+        // faces, i.e. a non-manifold edge. This is exactly the damage the
+        // safety net must catch (float32 rounding manufacturing a weld).
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0 + 1e-8, 0.0],
+            [0.0, 1.0 - 1e-8, 0.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 1, 3], [0, 1, 4]];
+        let base = reload_verdict(&verts, &tris[..2]);
+        let full = reload_verdict(&verts, &tris);
+        assert!(full.worse_than(&base), "NM not detected: {full:?} vs {base:?}");
+        assert!(full.nm_edges > 0, "{full:?}");
+    }
+
+    #[test]
+    fn reload_safety_net_rolls_back_coincident_vertex_nm() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0 + 1e-8, 0.0],
+            [0.0, 1.0 - 1e-8, 0.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 1, 3], [0, 1, 4]];
+        let base = reload_verdict(&verts, &tris[..2]);
+        let full = reload_verdict(&verts, &tris);
+        // The third triangle is the "plug" region.
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false };
+        let without = reload_verdict_without(&verts, &tris, &region);
+        assert!(
+            without.nm_edges < full.nm_edges && !without.worse_than(&base),
+            "removing the bad plug must clear the regression: {without:?}"
+        );
+        // Applying the rollback drops the region and compacts the vertices.
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &[region], &[true]);
+        assert_eq!(ot.len(), 2);
+        assert!(!reload_verdict(&ov, &ot).worse_than(&base));
+    }
+
+    #[test]
+    fn reload_safety_net_leaves_a_clean_seal_alone() {
+        // A correct rim-only cap must not regress the reload verdict, so the
+        // full engine leaves it in place and reports zero rollbacks.
+        let (verts, tris) = unit_cube_open_top();
+        let mut out_t = tris.clone();
+        out_t.push([4, 6, 5]);
+        out_t.push([4, 7, 6]);
+        let base = reload_verdict(&verts, &tris);
+        let full = reload_verdict(&verts, &out_t);
+        assert!(!full.worse_than(&base), "clean cap regressed: {full:?} vs {base:?}");
+        assert_eq!(full.nm_edges, 0);
+        assert_eq!(full.nm_vertices, 0);
+        assert_eq!(full.degenerate_faces, 0);
+        assert_eq!(full.boundary_edges, 0);
+
+        let config = TamponadeConfig { h_min: Some(0.25), ..Default::default() };
+        let (_ov, _ot, info) = tamponade_repair(&verts, &tris, &config);
+        assert_eq!(info.plugs, 1, "{info:?}");
+        assert_eq!(info.plugs_rolled_back, 0, "{info:?}");
+    }
+
+    // ---- T9 local self-intersection per-plug rollback --------------------
+
+    /// A horizontal sheet (z = 0, two triangles) plus one plug face. The plug
+    /// either pokes straight through the sheet or floats well above it.
+    fn sheet_with_plug(poking: bool) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, PlugRegion) {
+        let mut verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [2.0, 2.0, 0.0],
+        ];
+        let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 3, 2]];
+        if poking {
+            // Spans z in [-1, 1] at y = 0.5: it crosses the sheet interior.
+            verts.push([0.5, 0.5, -1.0]);
+            verts.push([1.5, 0.5, -1.0]);
+            verts.push([1.0, 0.5, 1.0]);
+        } else {
+            // Floats at z in [2, 3], far above the sheet.
+            verts.push([0.5, 0.5, 2.0]);
+            verts.push([1.5, 0.5, 2.0]);
+            verts.push([1.0, 0.5, 3.0]);
+        }
+        let tri_start = tris.len();
+        tris.push([4, 5, 6]);
+        let region = PlugRegion { tri_start, tri_end: tris.len(), reference: false, steiner: false };
+        (verts, tris, region)
+    }
+
+    #[test]
+    fn local_si_flags_a_plug_that_pokes_through_a_sheet() {
+        let h = 0.1;
+        let (pv, pt, pregion) = sheet_with_plug(true);
+        let mask = si_rollback_mask(&pv, &pt, &[pregion], h);
+        assert_eq!(mask, vec![true], "poking plug not flagged");
+
+        let (cv, ct, cregion) = sheet_with_plug(false);
+        let mask = si_rollback_mask(&cv, &ct, &[cregion], h);
+        assert_eq!(mask, vec![false], "clean plug wrongly flagged");
+    }
+
+    #[test]
+    fn local_si_rollback_drops_only_the_poking_plug() {
+        // One poking and one clean plug in the same output; only the poking one
+        // may be rolled back, leaving the clean plug and the sheet intact.
+        let h = 0.1;
+        let (mut verts, mut tris, poking) = sheet_with_plug(true);
+        verts.push([0.5, 0.5, 2.0]);
+        verts.push([1.5, 0.5, 2.0]);
+        verts.push([1.0, 0.5, 3.0]);
+        let clean_start = tris.len();
+        tris.push([7, 8, 9]);
+        let clean = PlugRegion {
+            tri_start: clean_start,
+            tri_end: tris.len(),
+            reference: false,
+            steiner: false,
+        };
+
+        let regions = [poking, clean];
+        let mask = si_rollback_mask(&verts, &tris, &regions, h);
+        assert_eq!(mask, vec![true, false], "wrong plug attributed");
+
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &regions, &mask);
+        // The sheet (2) plus the clean plug (1) survive, the poking face is gone.
+        assert_eq!(ot.len(), 3, "rollback removed the wrong faces");
+        // The poking plug reached z = -1; after the rollback no vertex is below
+        // the sheet plane, i.e. the poking geometry was dropped while the clean
+        // plug above the sheet stayed.
+        assert!(
+            ov.iter().all(|v| v[2] >= -1e-9),
+            "poking plug survived: {ov:?}"
+        );
+        assert!(
+            ov.iter().any(|v| v[2] >= 2.0),
+            "clean plug was dropped: {ov:?}"
+        );
+    }
 }
