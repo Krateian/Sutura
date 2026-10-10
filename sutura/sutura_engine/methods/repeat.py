@@ -20,10 +20,10 @@ import shutil
 import tempfile
 import subprocess
 import numpy as np
-import scipy.sparse as sp
-from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 import trimesh
+
+import topology
 
 # Threshold constants
 DEFAULT_FEATURE_ANGLE_DEG = 30.0
@@ -164,11 +164,8 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
                 fi_list.extend([f1, f2])
                 fj_list.extend([f2, f1])
 
-    adj = sp.coo_matrix(
-        (np.ones(len(fi_list), dtype=bool), (fi_list, fj_list)),
-        shape=(n_faces, n_faces),
-    )
-    n_comp, labels = connected_components(adj, directed=False)
+    edges = np.column_stack((fi_list, fj_list)) if fi_list else np.zeros((0, 2), dtype=np.int64)
+    n_comp, labels = topology.connected_components((n_faces, edges))
     comp_areas = np.array([np.sum(areas[labels == i]) for i in range(n_comp)])
     total_area = float(np.sum(areas))
 
@@ -187,11 +184,8 @@ def segment_elements(verts, tris, angle_deg=DEFAULT_FEATURE_ANGLE_DEG):
             nb_fi.extend([fl[0], fl[1]])
             nb_fj.extend([fl[1], fl[0]])
 
-    adj_nb = sp.coo_matrix(
-        (np.ones(len(nb_fi), dtype=bool), (nb_fi, nb_fj)),
-        shape=(n_faces, n_faces),
-    )
-    n_elements, elem_labels = connected_components(adj_nb, directed=False)
+    edges_nb = np.column_stack((nb_fi, nb_fj)) if nb_fi else np.zeros((0, 2), dtype=np.int64)
+    n_elements, elem_labels = topology.connected_components((n_faces, edges_nb))
     unique_elems = np.unique(elem_labels[non_base_faces])
 
     patches = []
@@ -805,12 +799,8 @@ def _detect_repetition_patches(verts, tris):
     if not sim_pairs:
         return 0.0, {'reason': 'No similar patch pairs found'}
 
-    fi, fj = zip(*sim_pairs)
-    adj = sp.coo_matrix(
-        (np.ones(len(fi) * 2, dtype=bool), (fi + fj, fj + fi)),
-        shape=(n_p, n_p),
-    )
-    n_clusters, cluster_labels = connected_components(adj, directed=False)
+    edges = np.asarray(sim_pairs, dtype=np.int64)
+    n_clusters, cluster_labels = topology.connected_components((n_p, edges))
     cluster_counts = np.bincount(cluster_labels, minlength=n_clusters)
     best_c = int(np.argmax(cluster_counts))
 

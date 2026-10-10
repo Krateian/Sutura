@@ -152,10 +152,99 @@ def weld_reload_equivalent(verts, tris):
     return _weld_reload_equivalent_numpy(v, t)
 
 
+def connected_components(graph=None, *, directed=False, connection='weak',
+                         return_labels=True, n_nodes=None, edges=None):
+    """Connected components of an undirected graph.
+
+    Drop-in replacement for ``scipy.sparse.csgraph.connected_components`` (with
+    ``directed=False``). Supports:
+      * A sparse matrix (e.g. ``scipy.sparse.coo_matrix`` or ``csr_matrix``)
+      * A tuple ``(n_nodes, edges)`` where ``edges`` is an ``(E, 2)`` array
+        or a tuple of 1D coordinate arrays ``(row, col)``
+      * Explicit ``n_nodes`` and ``edges`` keyword arguments
+
+    Uses disjoint-set union-find with path compression and canonical min-root
+    ordering, producing components numbered ``0 .. n_components-1`` matching
+    SciPy's convention (component 0 contains node 0, component 1 contains the
+    lowest-indexed node not in component 0, etc.).
+
+    Returns ``(n_components, labels)`` if ``return_labels`` is True, else
+    ``n_components``.
+    """
+    if graph is not None:
+        if isinstance(graph, tuple) and len(graph) == 2:
+            n_nodes = int(graph[0])
+            e = graph[1]
+            if isinstance(e, tuple) and len(e) == 2:
+                edges = np.column_stack((e[0], e[1]))
+            else:
+                edges = e
+        elif hasattr(graph, 'tocoo'):
+            coo = graph.tocoo()
+            n_nodes = int(coo.shape[0])
+            edges = np.column_stack((coo.row, coo.col))
+        elif hasattr(graph, 'row') and hasattr(graph, 'col'):
+            n_nodes = int(graph.shape[0])
+            edges = np.column_stack((graph.row, graph.col))
+        elif isinstance(graph, np.ndarray) and graph.ndim == 2:
+            if graph.shape[1] == 2 and n_nodes is not None:
+                edges = graph
+            else:
+                r, c = np.nonzero(graph)
+                n_nodes = int(graph.shape[0])
+                edges = np.column_stack((r, c))
+
+    if n_nodes is None:
+        raise ValueError("Could not determine n_nodes for connected_components")
+    if edges is None:
+        edges = np.zeros((0, 2), dtype=np.int64)
+
+    if n_nodes == 0:
+        return (0, np.zeros(0, dtype=np.int64)) if return_labels else 0
+
+    edges = np.asarray(edges, dtype=np.int64)
+    if len(edges) == 0:
+        return (n_nodes, np.arange(n_nodes, dtype=np.int64)) if return_labels else n_nodes
+
+    u_col = edges[:, 0]
+    v_col = edges[:, 1]
+    u_ord = np.minimum(u_col, v_col)
+    v_ord = np.maximum(u_col, v_col)
+    m = (u_ord != v_ord) & (u_ord >= 0) & (v_ord < n_nodes)
+    us = u_ord[m].tolist()
+    vs = v_ord[m].tolist()
+
+    parent = list(range(n_nodes))
+
+    def find(x):
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            nxt = parent[x]
+            parent[x] = root
+            x = nxt
+        return root
+
+    for iu, iv in zip(us, vs):
+        ru, rv = find(iu), find(iv)
+        if ru < rv:
+            parent[rv] = ru
+        elif rv < ru:
+            parent[ru] = rv
+
+    roots = np.fromiter((find(i) for i in range(n_nodes)), dtype=np.int64, count=n_nodes)
+    uniq_roots, labels = np.unique(roots, return_inverse=True)
+    n_comp = int(len(uniq_roots))
+
+    return (n_comp, labels) if return_labels else n_comp
+
+
 __all__ = [
     'edge_table',
     'weld_vertices',
     'weld_reload_equivalent',
+    'connected_components',
     'engine',
     'set_engine',
 ]

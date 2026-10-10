@@ -466,10 +466,10 @@ def _install_macos(src_dir, req_files):
         subprocess.run(['conda', 'install', '-y', '-n', env_name, '-c', 'conda-forge',
                         'pymeshlab'], check=True)
         # pip-only deps inside the conda env. Must match install-macos.sh
-        # (scipy powers the closing/proxy tiers' connected components;
-        # pyrobust-predicates powers the autorefine predicates).
+        # (scipy powers sparse linear algebra and KD-trees; sutura_geom
+        # powers the autorefine exact predicates).
         subprocess.run(['conda', 'run', '-n', env_name, 'pip', 'install',
-                        'manifold3d', 'trimesh', 'scipy', 'pyrobust-predicates',
+                        'manifold3d', 'trimesh', 'scipy',
                         'PySide6-Essentials'], check=True)
     _install_macos_geom(src_dir)
 
