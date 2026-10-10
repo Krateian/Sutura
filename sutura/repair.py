@@ -1167,16 +1167,23 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _shell_reason = None
         _sinfo = None
         if tamponade:
+            _t_shell_start = time.time()
+            _t_analyze_s = 0.0
+            _t_topo_s = 0.0
             try:
                 import sutura_geom
                 import defects as _defects
+                _t0 = time.time()
                 _cand_v, _cand_t, _sinfo = sutura_geom.shell_analyze(
                     np.asarray(verts, dtype=np.float64),
                     np.asarray(tris, dtype=np.int32),
                 )
+                _t_analyze_s = time.time() - _t0
+                _t0 = time.time()
                 _in_holes = boundary_loop_stats(verts, tris)[0]
                 _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
                 _in_parts = _count_vertex_components(len(verts), tris)
+                _t_topo_s = time.time() - _t0
 
                 # Phase P-a: DISJOINT parts (60916-type):
                 # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
@@ -1231,10 +1238,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 _shell_phase = 'error'
                 _shell_reason = str(_e)
 
+            _t_shell_total = time.time() - _t_shell_start
             stats['tamponade_shell_prepass'] = {
                 'shell_adopted': _shell_adopted,
                 'shell_phase': _shell_phase,
                 'shell_reason': _shell_reason,
+                'time_s': round(_t_shell_total, 4),
+                'shell_analyze_s': round(_t_analyze_s, 4),
+                'topo_stats_s': round(_t_topo_s, 4),
                 'outer_count': (_sinfo or {}).get('outer_count', 0),
                 'buried_count': (_sinfo or {}).get('buried_count', 0),
                 'cavity_count': (_sinfo or {}).get('cavity_count', 0),
@@ -1243,6 +1254,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 'internal_walls_count': (_sinfo or {}).get('internal_walls_count', 0),
                 'unresolved_coincident_count': (_sinfo or {}).get('unresolved_coincident_count', 0),
                 'has_internal_walls': (_sinfo or {}).get('has_internal_walls', False),
+                'is_disjoint': (_sinfo or {}).get('is_disjoint', False),
             }
             stats['shell_adopted'] = _shell_adopted
             stats['shell_phase'] = _shell_phase

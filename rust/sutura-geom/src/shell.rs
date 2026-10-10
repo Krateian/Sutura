@@ -567,6 +567,53 @@ pub fn analyze_shells(
         }
     }
 
+    // Precompute signed volume of each shell (divergence theorem) to check outward normal orientation
+    let mut shell_signed_vol = vec![0.0f64; num_shells];
+    for (i, t) in tris.iter().enumerate() {
+        let sid = shell_map[i];
+        let v0 = verts[t[0] as usize];
+        let v1 = verts[t[1] as usize];
+        let v2 = verts[t[2] as usize];
+        let c = [
+            v1[1] * v2[2] - v1[2] * v2[1],
+            v2[0] * v1[2] - v2[2] * v1[0],
+            v1[0] * v2[1] - v1[1] * v2[0],
+        ];
+        shell_signed_vol[sid] += v0[0] * c[0] + v0[1] * c[1] + v0[2] * c[2];
+    }
+    for sid in 0..num_shells {
+        shell_signed_vol[sid] /= 6.0;
+    }
+
+    // Precompute which faces overlap any OTHER shell's AABB
+    let mut face_overlaps_other_shell = vec![false; m];
+    if num_shells > 1 {
+        for (i, _) in tris.iter().enumerate() {
+            let sid = shell_map[i];
+            if !shell_has_neighbor[sid] {
+                continue;
+            }
+            if shell_enclosed[sid] {
+                face_overlaps_other_shell[i] = true;
+                continue;
+            }
+            let b = &tri_aabbs[i];
+            for other_s in 0..num_shells {
+                if other_s == sid {
+                    continue;
+                }
+                let ob = &shell_bboxes[other_s];
+                if b.min[0] <= ob.max[0] && b.max[0] >= ob.min[0]
+                    && b.min[1] <= ob.max[1] && b.max[1] >= ob.min[1]
+                    && b.min[2] <= ob.max[2] && b.max[2] >= ob.min[2]
+                {
+                    face_overlaps_other_shell[i] = true;
+                    break;
+                }
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // 2. Dual-sided generalized winding number query
     // -------------------------------------------------------------------------
@@ -580,6 +627,16 @@ pub fn analyze_shells(
                 || res.classes[i] == FaceClass::CoincidentSame
             {
                 return (res.classes[i], 0.0, 0.0, 0.0, false);
+            }
+
+            let sid = shell_map[i];
+            // Fast path: if this shell is outward-oriented and face i does not overlap any other shell,
+            // it is guaranteed to be an outer boundary face separating void (w=0) from solid (w=1).
+            if num_shells > 1
+                && !face_overlaps_other_shell[i]
+                && shell_signed_vol[sid] > 0.0
+            {
+                return (FaceClass::Outer, 0.0, 0.0, 1.0, false);
             }
 
             let t = tris[i];
@@ -867,42 +924,44 @@ pub fn shell_analyze_and_filter(
         return (verts.to_vec(), tris.to_vec(), ShellAnalysisResult::default());
     }
 
-    let tris_usize: Vec<[usize; 3]> = tris
-        .iter()
-        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
-        .collect();
+    let analysis = analyze_shells(verts, tris, config);
+
+    // Fast path: if the mesh is disjoint (Phase P-a) or has no faces needing deletion,
+    // return original mesh verbatim without running expensive arrangement splitting!
+    if analysis.is_disjoint
+        || (analysis.buried_count == 0
+            && analysis.coincident_opp_count == 0
+            && analysis.coincident_same_count == 0
+            && !analysis.has_internal_walls)
+    {
+        return (verts.to_vec(), tris.to_vec(), analysis);
+    }
 
     // Flower / C1: If proper self-intersections exist, split along exact intersection curves first
     if config.split_intersections {
+        let tris_usize: Vec<[usize; 3]> = tris
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
         let (_si_mask, si_count, _) = crate::self_intersections_core(verts, &tris_usize);
         if si_count > 0 {
             if let Ok((pool, out_tris, rep)) = crate::arrangement::arrangement_lite_core(verts, &tris_usize) {
-            if rep.si_pairs_detected > 0 {
-                let split_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
-                let split_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
-                let mut split_cfg = config.clone();
-                split_cfg.split_intersections = false;
-                let split_res = analyze_shells(&split_verts, &split_tris, &split_cfg);
-                if !split_res.has_internal_walls && split_res.reason == "ok" {
-                    let mut final_tris = Vec::with_capacity(split_res.surviving_indices.len());
-                    for &idx in &split_res.surviving_indices {
-                        final_tris.push(split_tris[idx]);
+                if rep.si_pairs_detected > 0 {
+                    let split_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
+                    let split_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
+                    let mut split_cfg = config.clone();
+                    split_cfg.split_intersections = false;
+                    let split_res = analyze_shells(&split_verts, &split_tris, &split_cfg);
+                    if !split_res.has_internal_walls && split_res.reason == "ok" {
+                        let mut final_tris = Vec::with_capacity(split_res.surviving_indices.len());
+                        for &idx in &split_res.surviving_indices {
+                            final_tris.push(split_tris[idx]);
+                        }
+                        return (split_verts, final_tris, split_res);
                     }
-                    return (split_verts, final_tris, split_res);
                 }
             }
         }
-    }
-}
-
-    let analysis = analyze_shells(verts, tris, config);
-
-    // Fast path: if no faces need deletion, return original mesh verbatim
-    if analysis.buried_count == 0
-        && analysis.coincident_opp_count == 0
-        && analysis.coincident_same_count == 0
-    {
-        return (verts.to_vec(), tris.to_vec(), analysis);
     }
 
     let mut out_tris = Vec::with_capacity(analysis.surviving_indices.len());
