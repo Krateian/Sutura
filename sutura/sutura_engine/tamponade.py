@@ -137,6 +137,7 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
               'excised_faces': None,
               'healthy_faces_kept': None,
               'reference_used': None, 'reference_fallback': None,
+              'reference_skirt': None,
               'trimmed_vertices': None, 'patch_vertices': None}
     try:
         v = np.asarray(verts, dtype=np.float64)
@@ -172,6 +173,7 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
                     'micro_welds_ok', 'micro_welds_failed',
                     'excised_faces', 'healthy_faces_kept',
                     'reference_used', 'reference_fallback',
+                    'reference_skirt',
                     'trimmed_vertices', 'patch_vertices'):
             report[key] = info.get(key)
         if info.get('reason'):

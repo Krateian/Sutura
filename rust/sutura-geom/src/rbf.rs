@@ -105,10 +105,94 @@ impl TpsFit {
             affine,
         })
     }
+
+    /// Weighted variant of [`TpsFit::fit`]: each sample `(u, v, d, w)` carries a
+    /// trust weight `w` in `(0, 1]`. The kernel diagonal of a sample is scaled
+    /// by `1 / w`, so a low-weight sample (the hole rim) is honoured only
+    /// loosely and the fit leans on the high-weight samples (the intact ring),
+    /// while still being pulled toward the rim. `w == 1` reproduces
+    /// [`TpsFit::fit`].
+    pub fn fit_weighted(
+        samples: &[(f64, f64, f64, f64)],
+        ridge: f64,
+        max_centres: usize,
+    ) -> Option<TpsFit> {
+        if samples.len() < 3 || max_centres < 3 {
+            return None;
+        }
+        let pts = subsample4(samples, max_centres);
+        let m = pts.len();
+        let n = m + 3;
+        let mut a = vec![vec![0.0f64; n]; n];
+        let mut b = vec![0.0f64; n];
+
+        let mut k_abs = 0.0f64;
+        let mut k_cnt = 0usize;
+        for i in 0..m {
+            let (ui, vi, di, _) = pts[i];
+            for j in 0..m {
+                let (uj, vj, _, _) = pts[j];
+                let du = ui - uj;
+                let dv = vi - vj;
+                let k = tps(du * du + dv * dv);
+                a[i][j] = k;
+                if i != j {
+                    k_abs += k.abs();
+                    k_cnt += 1;
+                }
+            }
+            a[i][m] = 1.0;
+            a[i][m + 1] = ui;
+            a[i][m + 2] = vi;
+            a[m][i] = 1.0;
+            a[m + 1][i] = ui;
+            a[m + 2][i] = vi;
+            b[i] = di;
+        }
+        let scale = if k_cnt > 0 { k_abs / k_cnt as f64 } else { 1.0 };
+        for i in 0..m {
+            let w = pts[i].3.max(1e-3);
+            let lam = ridge * scale + (1.0 / w - 1.0) * scale;
+            a[i][i] += lam;
+        }
+
+        let sol = solve_dense(a, b)?;
+        if sol.iter().any(|x| !x.is_finite()) {
+            return None;
+        }
+        let weights = sol[..m].to_vec();
+        let affine = [sol[m], sol[m + 1], sol[m + 2]];
+        Some(TpsFit {
+            centres: pts.iter().map(|p| (p.0, p.1)).collect(),
+            weights,
+            affine,
+        })
+    }
 }
 
 /// Deterministic sub-sample: fixed stride, first and last kept.
 fn subsample(samples: &[(f64, f64, f64)], max_centres: usize) -> Vec<(f64, f64, f64)> {
+    if samples.len() <= max_centres {
+        return samples.to_vec();
+    }
+    let stride = (samples.len() as f64 / max_centres as f64).ceil() as usize;
+    let stride = stride.max(1);
+    let mut out = Vec::with_capacity(max_centres + 1);
+    let mut i = 0usize;
+    while i < samples.len() {
+        out.push(samples[i]);
+        i += stride;
+    }
+    if let Some(last) = samples.last() {
+        if out.last().map(|p| (p.0, p.1, p.2)) != Some((last.0, last.1, last.2)) {
+            out.push(*last);
+        }
+    }
+    out
+}
+
+/// Deterministic sub-sample of weighted `(u, v, d, w)` samples.
+fn subsample4(samples: &[(f64, f64, f64, f64)], max_centres: usize) -> Vec<(f64, f64, f64, f64)> {
     if samples.len() <= max_centres {
         return samples.to_vec();
     }
@@ -226,5 +310,28 @@ mod tests {
         assert_eq!(out.first().unwrap().0, 0.0);
         assert_eq!(out.last().unwrap().0, 999.0);
         assert!(out.len() <= 101);
+    }
+
+    #[test]
+    fn weighted_fit_honours_high_weight_plane_and_pulls_low_weight() {
+        // A dense ring on the plane z = 0 (weight 1) plus one rim point at
+        // z = 1 with a low weight: the ring must stay exact and the rim point
+        // must be pulled toward it only partially.
+        let mut s: Vec<(f64, f64, f64, f64)> = Vec::new();
+        for i in 0..10 {
+            for j in 0..10 {
+                let u = i as f64 * 0.25;
+                let v = j as f64 * 0.25;
+                s.push((u, v, 0.0, 1.0));
+            }
+        }
+        let fit = TpsFit::fit_weighted(&s, 1e-6, 600).expect("fit");
+        for &(u, v, d, _) in &s {
+            assert!((fit.eval(u, v) - d).abs() < 1e-6, "plane not recovered");
+        }
+        s.push((0.13, 0.07, 1.0, 0.05));
+        let fit2 = TpsFit::fit_weighted(&s, 1e-6, 600).expect("fit");
+        let at = fit2.eval(0.13, 0.07);
+        assert!(at > 0.0 && at < 1.0, "low-weight point influence out of range: {at}");
     }
 }

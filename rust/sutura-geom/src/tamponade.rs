@@ -115,11 +115,19 @@ const RBF_GATE_NA: usize = 24;
 /// diameter / median-edge ratio the single quadric is kept even when its fit is
 /// rejected, so a small flat opening's rim-only plug is unchanged.
 const RBF_MIN_HOLE_FACTOR: f64 = 6.0;
+/// Trust weight of the hole-rim samples in the ring+rim weighted RBF fallback
+/// (the intact-ring samples carry weight 1). A low weight lets the rim pull the
+/// extrapolation toward the actual opening without overriding the intact ring.
+const RBF_RIM_WEIGHT: f64 = 0.15;
 /// A rim/tail vertex deeper than this fraction of `h` below the reference is
 /// part of the overshoot tail and is lifted onto the reference surface.
 const TRIM_EPS_FACTOR: f64 = 0.02;
 /// Per-loop cap on lifted tail vertices (a healthy mesh is never touched).
 const TRIM_MAX_VERTICES: usize = 64;
+/// Above this many patch triangles the local self-intersection check of the
+/// skirt strip is skipped (returns "clean") for speed; the patch is a thin
+/// collar around one rim, so a large loop is still bounded.
+const PATCH_SI_MAX_TRIS: usize = 400;
 
 // --- per-loop wall-clock allowance ----------------------------------------
 /// When a budget is set, each boundary loop gets its own allowance (seconds):
@@ -175,6 +183,9 @@ pub struct TamponadeInfo {
     /// Holes sealed using the thin-plate RBF fallback reference (subset of
     /// `reference_used`).
     pub reference_rbf: usize,
+    /// Holes sealed by a skirt plug (cap on the reference + zipper strip to the
+    /// projected rim; subset of `reference_used`).
+    pub reference_skirt: usize,
     /// Rim/tail vertices lifted onto the reference surface (overshoot trim).
     pub trimmed_vertices: usize,
     /// Interior patch vertices placed on the reference surface.
@@ -1429,6 +1440,10 @@ fn build_reference(
     h: f64,
     adj: &Adjacency,
 ) -> Option<ReferenceSurface> {
+    let dbg = std::env::var("SUTURA_REF_DBG").is_ok();
+    if dbg {
+        eprintln!("[ref] start m={}", rim.len());
+    }
     let rim_pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
     let n0 = newell_normal(&rim_pts);
     let nl = norm3(n0);
@@ -1512,6 +1527,7 @@ fn build_reference(
         ring_faces.push((f, fnrm, area));
     }
     if ring_faces.is_empty() {
+        if dbg { eprintln!("[ref] m={} no_ring_faces", rim.len()); }
         return None;
     }
 
@@ -1544,6 +1560,7 @@ fn build_reference(
     // historical floor.
     let min_points = REF_MIN_POINTS.max(rim.len() / 8);
     if points.len() < min_points || w_sum <= 0.0 {
+        if dbg { eprintln!("[ref] m={} few_points {} < {}", rim.len(), points.len(), min_points); }
         return None;
     }
 
@@ -1576,7 +1593,10 @@ fn build_reference(
         let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
         samples.push((dot3(d, u), dot3(d, v), dot3(d, n)));
     }
-    let (coeffs, rms) = fit_quadric(&samples)?;
+    let (coeffs, rms) = match fit_quadric(&samples) {
+        Some(q) => q,
+        None => { if dbg { eprintln!("[ref] m={} quadric_fit_none", rim.len()); } return None; }
+    };
 
     // Self-consistency brake (no ground truth): the quadric must not extrapolate
     // a sag across the hole radius far larger than the ring's own height relief.
@@ -1664,6 +1684,14 @@ fn build_reference(
         }
     }
     if below >= min_side && above >= min_side {
+        if dbg {
+            eprintln!(
+                "[ref] m={} saddle_veto below={} above={}",
+                rim.len(),
+                below,
+                above
+            );
+        }
         return None;
     }
 
@@ -1677,6 +1705,19 @@ fn build_reference(
     let spread_ok = !(max_dev > REF_NORMAL_SPREAD_DEG && rms > REF_NORMAL_SPREAD_RMS_FRAC * h);
     let sag_ok = sag <= REF_SAG_FACTOR * band;
     let concave = (coeffs[3] + coeffs[5]) < 0.0;
+    if std::env::var("SUTURA_REF_DBG").is_ok() {
+        eprintln!(
+            "[ref] m={} rms={:.4} maxdev={:.1} sag={:.4} band={:.4} rms_ok={} spread_ok={} sag_ok={}",
+            rim.len(),
+            rms,
+            max_dev,
+            sag,
+            band,
+            rms_ok,
+            spread_ok,
+            sag_ok
+        );
+    }
     if rms_ok && spread_ok && sag_ok {
         return Some(ReferenceSurface {
             origin: c,
@@ -1690,25 +1731,54 @@ fn build_reference(
     }
     let rbf_enabled =
         !matches!(std::env::var("SUTURA_RBF").as_deref(), Ok("0") | Ok("false"));
-    let rbf = if rbf_enabled {
-        build_rbf_reference(
-            &samples,
-            &point_normals,
-            &rim_pts,
-            c,
+    if !rbf_enabled {
+        return None;
+    }
+    // Ring-only thin-plate RBF (ring samples + the laser meeting-point anchor).
+    if let Some((fit, rbf_rms)) = build_rbf_reference(
+        &samples,
+        &point_normals,
+        &rim_pts,
+        c,
+        u,
+        v,
+        n,
+        h_lo,
+        h_hi,
+        band,
+        h,
+        &rays,
+        false,
+    ) {
+        return Some(ReferenceSurface {
+            origin: c,
             u,
             v,
             n,
-            h_lo,
-            h_hi,
-            band,
-            h,
-            &rays,
-        )
-    } else {
-        None
-    };
-    rbf.map(|(fit, rbf_rms)| ReferenceSurface {
+            model: RefModel::Rbf(fit),
+            rms: rbf_rms,
+            concave,
+        });
+    }
+    // Ring+rim weighted thin-plate RBF: the rim is included with a low trust
+    // weight so the fit is anchored to the real opening as well as the intact
+    // ring; a last-resort reference when the ring-only fit is rejected.
+    build_rbf_reference(
+        &samples,
+        &point_normals,
+        &rim_pts,
+        c,
+        u,
+        v,
+        n,
+        h_lo,
+        h_hi,
+        band,
+        h,
+        &rays,
+        true,
+    )
+    .map(|(fit, rbf_rms)| ReferenceSurface {
         origin: c,
         u,
         v,
@@ -1742,8 +1812,13 @@ fn build_rbf_reference(
     band: f64,
     h: f64,
     rays: &[f64],
+    use_rim: bool,
 ) -> Option<(rbf::TpsFit, f64)> {
-    if samples.len() < REF_MIN_POINTS || rays.is_empty() {
+    let dbg = std::env::var("SUTURA_REF_DBG").is_ok();
+    if samples.len() < REF_MIN_POINTS || (!use_rim && rays.is_empty()) {
+        if dbg {
+            eprintln!("[rbf] m={} few_samples", rim_pts.len());
+        }
         return None;
     }
 
@@ -1760,6 +1835,14 @@ fn build_rbf_reference(
     // The RBF fallback is for large holes only; a small opening (below the
     // diameter / `h` ratio) keeps the quadric-or-rim-only behaviour unchanged.
     if 2.0 * r_hole < RBF_MIN_HOLE_FACTOR * h {
+        if dbg {
+            eprintln!(
+                "[rbf] m={} small_hole 2r={:.3} < {:.3}",
+                rim_pts.len(),
+                2.0 * r_hole,
+                RBF_MIN_HOLE_FACTOR * h
+            );
+        }
         return None;
     }
 
@@ -1770,15 +1853,31 @@ fn build_rbf_reference(
     // rejected.
     let lo = h_lo - RBF_BAND_K * band;
     let hi = h_hi + RBF_BAND_K * band;
-    let ray_median = rays[rays.len() / 2];
-    if !ray_median.is_finite() {
-        return None;
-    }
-    let anchor = ray_median.clamp(h_lo - 0.5 * band, h_hi + 0.5 * band);
-
-    let mut pts = samples.to_vec();
-    pts.push((0.0, 0.0, anchor));
-    let fit = rbf::TpsFit::fit(&pts, RBF_RIDGE, RBF_MAX_CENTRES)?;
+    let fit = if use_rim {
+        // Ring samples (weight 1) plus the rim samples (low trust weight), so
+        // the fit is anchored to the real opening without overriding the ring.
+        let mut pts4: Vec<(f64, f64, f64, f64)> =
+            samples.iter().map(|&(su, sv, d)| (su, sv, d, 1.0)).collect();
+        for p in rim_pts {
+            let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+            let hh = dot3(d, n);
+            if hh.is_finite() {
+                pts4.push((dot3(d, u), dot3(d, v), hh, RBF_RIM_WEIGHT));
+            }
+        }
+        rbf::TpsFit::fit_weighted(&pts4, RBF_RIDGE, RBF_MAX_CENTRES)?
+    } else {
+        // Ring samples plus the laser meeting point at the hole axis (the
+        // median tangent-ray height, clamped to the ring band).
+        let ray_median = rays[rays.len() / 2];
+        if !ray_median.is_finite() {
+            return None;
+        }
+        let anchor = ray_median.clamp(h_lo - 0.5 * band, h_hi + 0.5 * band);
+        let mut pts = samples.to_vec();
+        pts.push((0.0, 0.0, anchor));
+        rbf::TpsFit::fit(&pts, RBF_RIDGE, RBF_MAX_CENTRES)?
+    };
 
     // The ring's own max height-field slope, from its point normals:
     // `slope = tan(angle from n) = sqrt(1 - cos^2) / cos`.
@@ -1807,6 +1906,9 @@ fn build_rbf_reference(
             let th = ia as f64 * dtheta;
             let value = fit.eval(r * th.cos(), r * th.sin());
             if !value.is_finite() || value < lo || value > hi {
+                if dbg {
+                    eprintln!("[rbf] m={} band_fail value={:.4} lo={:.4} hi={:.4}", rim_pts.len(), value, lo, hi);
+                }
                 return None;
             }
             if r > 1e-9 {
@@ -1824,6 +1926,9 @@ fn build_rbf_reference(
         }
     }
     if max_grad > grad_limit {
+        if dbg {
+            eprintln!("[rbf] m={} grad_fail {:.4} > {:.4}", rim_pts.len(), max_grad, grad_limit);
+        }
         return None;
     }
 
@@ -1912,6 +2017,234 @@ fn fan_patch(
         return None;
     }
     Some((if cf > cb { flip } else { base }, centre))
+}
+
+/// Resolve a skirt-patch vertex index: indices below `new_base` are the real
+/// rim/input vertices, the rest index into `added`.
+#[inline]
+fn skirt_pos(idx: u32, verts: &[[f64; 3]], new_base: u32, added: &[[f64; 3]]) -> [f64; 3] {
+    if idx < new_base {
+        verts[idx as usize]
+    } else {
+        added[(idx - new_base) as usize]
+    }
+}
+
+/// Local self-intersection check over a patch: a proper crossing or a coplanar
+/// overlap between two patch triangles that share no vertex is a failure.
+/// Triangles that share a vertex are skipped (a seam touch is not a crossing).
+/// Above `PATCH_SI_MAX_TRIS` the check is skipped for speed (returns `false`).
+fn patch_self_intersects(
+    verts: &[[f64; 3]],
+    new_base: u32,
+    added: &[[f64; 3]],
+    patch: &[[u32; 3]],
+) -> bool {
+    use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
+    let n = patch.len();
+    if n > PATCH_SI_MAX_TRIS {
+        return false;
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if patch[i].iter().any(|x| patch[j].contains(x)) {
+                continue;
+            }
+            let a = patch[i];
+            let b = patch[j];
+            let ta = Triangle::explicit(
+                skirt_pos(a[0], verts, new_base, added),
+                skirt_pos(a[1], verts, new_base, added),
+                skirt_pos(a[2], verts, new_base, added),
+            );
+            let tb = Triangle::explicit(
+                skirt_pos(b[0], verts, new_base, added),
+                skirt_pos(b[1], verts, new_base, added),
+                skirt_pos(b[2], verts, new_base, added),
+            );
+            match intersect_triangles(&ta, &tb) {
+                TriangleIntersection::ProperSegment { .. }
+                | TriangleIntersection::CoplanarOverlap => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Skirt plug (R5): the cap lies ON the reference surface, bounded by the rim
+/// projected onto the reference along `n`; the real rim is joined to that
+/// projected boundary by a one-triangle-wide zipper strip, so the rim itself
+/// never has to lie on the reference. A rim vertex already clamped onto the
+/// reference (`clamp[i]`, by the overshoot trim) contributes no strip quad at
+/// its edges and is used directly as a cap-boundary vertex. Only the cap is
+/// held to the reference deviation gate; the strip is free to stand off it.
+///
+/// Returns `(triangles, added_vertices)` with patch triangles in terms of the
+/// global input indices and `new_base + k` for the added cap/collar vertices.
+/// `None` when the cap cannot be triangulated, the cap offends the deviation
+/// gate, the structure is not a clean disk bounded by the rim, or the strip
+/// self-intersects locally.
+fn skirt_patch(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    refs: &ReferenceSurface,
+    directed_set: &HashSet<(u32, u32)>,
+    clamp: &[bool],
+    new_base: u32,
+    h: f64,
+) -> Option<(Vec<[u32; 3]>, Vec<[f64; 3]>)> {
+    let m = rim.len();
+    if m < 4 {
+        return None;
+    }
+    let dbg = std::env::var("SUTURA_SKIRT_DBG").is_ok();
+    let mut added: Vec<[f64; 3]> = Vec::with_capacity(m);
+    let mut ring: Vec<u32> = Vec::with_capacity(m);
+    for i in 0..m {
+        if clamp.get(i).copied().unwrap_or(false) {
+            ring.push(rim[i]);
+        } else {
+            let q = refs.place(verts[rim[i] as usize]);
+            ring.push(new_base + added.len() as u32);
+            added.push(q);
+        }
+    }
+
+    let cap_pts: Vec<[f64; 3]> = (0..m)
+        .map(|i| skirt_pos(ring[i], verts, new_base, &added))
+        .collect();
+    let local = if m <= PLUG_DP_CAP {
+        min_area_triangulation(&cap_pts, PLUG_DP_CAP, &HashSet::new())
+    } else {
+        ear_clip(&cap_pts)
+    };
+    if local.len() != m - 2 {
+        if dbg {
+            eprintln!("[skirt] m={} cap_dp_fail local={}", m, local.len());
+        }
+        return None;
+    }
+
+    // Cap deviation gate (the strip may stand off the reference; the cap must
+    // not). Cheap per-triangle check because the patch mixes input and added
+    // vertices, so a single combined slice is avoided.
+    let limit = REF_DEV_FACTOR * h;
+    for t in &local {
+        let a = cap_pts[t[0] as usize];
+        let b = cap_pts[t[1] as usize];
+        let c = cap_pts[t[2] as usize];
+        let cen = [
+            (a[0] + b[0] + c[0]) / 3.0,
+            (a[1] + b[1] + c[1]) / 3.0,
+            (a[2] + b[2] + c[2]) / 3.0,
+        ];
+        if refs.signed_height(cen).abs() > limit {
+            if dbg {
+                eprintln!(
+                    "[skirt] m={} cap_dev_fail {:.4} > {:.4}",
+                    m,
+                    refs.signed_height(cen).abs(),
+                    limit
+                );
+            }
+            return None;
+        }
+    }
+
+    // Strip: for edge (rim_i, rim_{i+1}) the two triangles are T1 = [a, c, b]
+    // (outer edge (b, a), which cancels the input boundary) and T2 = [b, c, d]
+    // (inner edge (c, d)); either is dropped when it would be degenerate
+    // (a == c or b == d, i.e. a clamped/on-reference vertex).
+    let mut tris: Vec<[u32; 3]> = Vec::with_capacity(3 * m);
+    for i in 0..m {
+        let j = (i + 1) % m;
+        let (a, b) = (rim[i], rim[j]);
+        let (c, d) = (ring[i], ring[j]);
+        if c != a {
+            tris.push([a, c, b]);
+        }
+        if d != b {
+            tris.push([b, c, d]);
+        }
+    }
+    // Cap, reversed so its boundary (c_{i+1}, c_i) cancels the strip's inner
+    // edges (c_i, c_{i+1}).
+    for t in &local {
+        tris.push([
+            ring[t[0] as usize],
+            ring[t[2] as usize],
+            ring[t[1] as usize],
+        ]);
+    }
+
+    // Structure: every triangle non-degenerate; the patch boundary (edges used
+    // an odd number of times) must be exactly the rim edge set.
+    let mut count: HashMap<(u32, u32), i32> = HashMap::with_capacity(tris.len() * 3);
+    for t in &tris {
+        let a = skirt_pos(t[0], verts, new_base, &added);
+        let b = skirt_pos(t[1], verts, new_base, &added);
+        let c = skirt_pos(t[2], verts, new_base, &added);
+        if a == b || b == c || a == c || tri_area(a, b, c) <= PLUG_MIN_AREA {
+            return None;
+        }
+        for &(x, y) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *count.entry(ekey2(x, y)).or_insert(0) += 1;
+        }
+    }
+    let mut boundary: HashSet<(u32, u32)> = HashSet::new();
+    for (&e, &c) in &count {
+        if c % 2 == 1 {
+            boundary.insert(e);
+        }
+    }
+    let mut rim_edges: HashSet<(u32, u32)> = HashSet::new();
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        if a != b {
+            rim_edges.insert(ekey2(a, b));
+        }
+    }
+    if boundary != rim_edges {
+        if dbg {
+            eprintln!(
+                "[skirt] m={} structure_fail boundary={} rim={}",
+                m,
+                boundary.len(),
+                rim_edges.len()
+            );
+        }
+        return None;
+    }
+
+    // Orientation: cancel the most input boundary edges. The construction
+    // already reverses the rim; flip the whole patch only if it does not.
+    let mut cancels = 0usize;
+    let dir: HashSet<(u32, u32)> = tris
+        .iter()
+        .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+        .collect();
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        if a != b && directed_set.contains(&(a, b)) && dir.contains(&(b, a)) {
+            cancels += 1;
+        }
+    }
+    if cancels * 2 <= m {
+        for t in tris.iter_mut() {
+            t.swap(1, 2);
+        }
+    }
+
+    if patch_self_intersects(verts, new_base, &added, &tris) {
+        if dbg {
+            eprintln!("[skirt] m={} self_intersects", m);
+        }
+        return None;
+    }
+    Some((tris, added))
 }
 
 /// Count the vertex-connected components of a triangle mesh (union-find over
@@ -2206,11 +2539,17 @@ pub fn tamponade_repair(
             info.trimmed_vertices += trimmed;
 
             // Candidate 1: rim-only DP on the (possibly trimmed) rim.
-            let mut cand: Option<Vec<[u32; 3]>> = None;
             let mut added: Vec<[f64; 3]> = Vec::new();
+            let mut is_skirt = false;
+            let mut cand: Option<Vec<[u32; 3]>> = None;
+            // A candidate was produced but failed the reference deviation gate
+            // (reported only when no later candidate seals the loop).
+            let mut rejected_dev = false;
             if let Ok(dp) = triangulate_rim_loop(&rim, &out_verts, &directed_set, tiny) {
                 if reference_dev_ok(&dp, refs, &out_verts, h) {
                     cand = Some(dp);
+                } else {
+                    rejected_dev = true;
                 }
             }
             // Candidate 2: a fan to a single interior vertex ON the reference
@@ -2227,25 +2566,40 @@ pub fn tamponade_repair(
                             [f(t[0]), f(t[1]), f(t[2])]
                         })
                         .collect();
-                    added.push(centre);
-                    cand = Some(fan);
+                    let mut verts_ext = out_verts.clone();
+                    verts_ext.push(centre);
+                    if reference_dev_ok(&fan, refs, &verts_ext, h) {
+                        added.push(centre);
+                        cand = Some(fan);
+                    } else {
+                        rejected_dev = true;
+                    }
+                }
+            }
+            // Candidate 3: skirt plug - a cap ON the reference bounded by the
+            // projected rim, joined to the real rim by a one-triangle-wide
+            // zipper strip, so the rim need not lie on the reference. The
+            // clamped tail vertices were already lifted above; they carry no
+            // strip quad. The cap deviation gate runs inside `skirt_patch`.
+            if cand.is_none() {
+                let clamp_mask: Vec<bool> =
+                    rim.iter().map(|v| moved.contains(v)).collect();
+                let new_base = out_verts.len() as u32;
+                if let Some((patch, add)) =
+                    skirt_patch(&rim, &out_verts, refs, &directed_set, &clamp_mask, new_base, h)
+                {
+                    added = add;
+                    cand = Some(patch);
+                    is_skirt = true;
                 }
             }
 
             if let Some(cand) = cand {
-                let mut verts_ext = out_verts.clone();
-                verts_ext.extend_from_slice(&added);
-                let dev_ok = reference_dev_ok(&cand, refs, &verts_ext, h);
                 let cand_counts = edge_use_counts(&cand);
                 let collides = cand_counts
                     .iter()
                     .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
-                if !dev_ok {
-                    info.loop_diag
-                        .push(format!("m={} rejected:deviation", rim.len()));
-                    plug_rejected_dev_count += 1;
-                    info.reference_fallback += 1;
-                } else if collides {
+                if collides {
                     info.loop_diag
                         .push(format!("m={} rejected:edge_collision", rim.len()));
                     plug_rejected_count += 1;
@@ -2266,10 +2620,15 @@ pub fn tamponade_repair(
                         info.reference_rbf += 1;
                     }
                     sealed = true;
+                    if is_skirt {
+                        info.reference_skirt += 1;
+                    }
                     info.loop_diag.push(format!(
                         "m={} sealed:{}",
                         rim.len(),
-                        if is_rbf {
+                        if is_skirt {
+                            "skirt"
+                        } else if is_rbf {
                             if n_added > 0 { "rbf:fan" } else { "rbf" }
                         } else if n_added > 0 {
                             "ref:fan"
@@ -2278,6 +2637,11 @@ pub fn tamponade_repair(
                         }
                     ));
                 }
+            } else if rejected_dev {
+                info.loop_diag
+                    .push(format!("m={} rejected:deviation", rim.len()));
+                plug_rejected_dev_count += 1;
+                info.reference_fallback += 1;
             } else {
                 info.reference_fallback += 1;
             }
@@ -3037,5 +3401,81 @@ mod tests {
             h_lo,
             h_hi
         );
+    }
+
+    fn flat_reference() -> ReferenceSurface {
+        ReferenceSurface {
+            origin: [0.0, 0.0, 0.0],
+            u: [1.0, 0.0, 0.0],
+            v: [0.0, 1.0, 0.0],
+            n: [0.0, 0.0, 1.0],
+            model: RefModel::Quadric([0.0; 6]),
+            rms: 0.0,
+            concave: false,
+        }
+    }
+
+    #[test]
+    fn test_skirt_seals_rim_below_reference() {
+        // A flat reference at z = 0 and a square rim lowered to z = -0.3: the
+        // skirt must build a cap ON the reference (new vertices at z = 0) and a
+        // strip down to the real rim, leaving the rim in place.
+        let s = 0.5;
+        let verts = vec![
+            [-s, -s, -0.3],
+            [s, -s, -0.3],
+            [s, s, -0.3],
+            [-s, s, -0.3],
+        ];
+        let rim: Vec<u32> = (0..4).collect();
+        let directed: HashSet<(u32, u32)> =
+            [(0u32, 1u32), (1, 2), (2, 3), (3, 0)].into_iter().collect();
+        let clamp = vec![false; 4];
+        let (tris, added) =
+            skirt_patch(&rim, &verts, &flat_reference(), &directed, &clamp, 4, 0.1)
+                .expect("skirt must build");
+        assert_eq!(added.len(), 4, "one projected vertex per rim vertex");
+        for q in &added {
+            assert!(q[2].abs() < 1e-9, "projected vertex not on the reference");
+        }
+        // The rim itself is untouched.
+        for i in 0..4 {
+            assert!((verts[i][2] + 0.3).abs() < 1e-12);
+        }
+        // The patch boundary is exactly the rim edge set.
+        let counts = edge_use_counts(&tris);
+        let boundary: HashSet<(u32, u32)> = counts
+            .iter()
+            .filter(|(_, &c)| c % 2 == 1)
+            .map(|(e, _)| *e)
+            .collect();
+        let rim_edges: HashSet<(u32, u32)> =
+            [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+                .into_iter()
+                .map(|(a, b)| ekey2(a, b))
+                .collect();
+        assert_eq!(boundary, rim_edges);
+    }
+
+    #[test]
+    fn test_skirt_clamped_rim_omits_strip() {
+        // Every rim vertex already clamped onto the reference: no strip, just
+        // the cap over the rim (the "clamped instead of stitched" case).
+        let s = 0.5;
+        let verts = vec![
+            [-s, -s, 0.0],
+            [s, -s, 0.0],
+            [s, s, 0.0],
+            [-s, s, 0.0],
+        ];
+        let rim: Vec<u32> = (0..4).collect();
+        let directed: HashSet<(u32, u32)> =
+            [(0u32, 1u32), (1, 2), (2, 3), (3, 0)].into_iter().collect();
+        let clamp = vec![true; 4];
+        let (tris, added) =
+            skirt_patch(&rim, &verts, &flat_reference(), &directed, &clamp, 4, 0.1)
+                .expect("skirt must build");
+        assert!(added.is_empty(), "a fully clamped rim adds no vertices");
+        assert_eq!(tris.len(), 2, "cap only, no strip quads");
     }
 }
