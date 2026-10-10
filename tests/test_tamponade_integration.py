@@ -149,7 +149,9 @@ def test_wrapper_maps_info():
             'micro_welds_ok': 4, 'micro_welds_failed': 0,
             'plugs_rejected': 1, 'plugs_inconclusive': 0,
             'plugs_rejected_size': 1, 'plugs_rejected_dev': 0,
-            'healthy_faces_kept': 11, 'seconds': 0.25}
+            'healthy_faces_kept': 11, 'seconds': 0.25,
+            'reference_used': 2, 'reference_fallback': 1,
+            'trimmed_vertices': 3, 'patch_vertices': 1}
     geom = _FakeGeom(_CUBE_V.copy(), _CUBE_F.copy(), info)
     real = tamp._tamponade_module
     tamp._tamponade_module = lambda: geom
@@ -161,6 +163,8 @@ def test_wrapper_maps_info():
     assert rep['ran'] is True, rep
     assert rep['plugs'] == 2 and rep['plug_faces'] == 8, rep
     assert rep['healthy_faces_kept'] == 11, rep
+    assert rep['reference_used'] == 2 and rep['reference_fallback'] == 1, rep
+    assert rep['trimmed_vertices'] == 3 and rep['patch_vertices'] == 1, rep
     assert rep['seconds'] == 0.25, rep
     assert rep['plugs_rejected_size'] == 1 and rep['plugs_rejected_dev'] == 0, rep
     # h_min defaults to the input median edge and the budget is the smaller of

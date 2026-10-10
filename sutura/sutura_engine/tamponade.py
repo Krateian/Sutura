@@ -2,12 +2,17 @@
 """Tamponade (#17) - interior hole plugging and self-intersection melting.
 
 Tamponade closes open boundaries from the inside: the Rust core
-(``sutura_geom.tamponade``) walks each boundary loop, builds a plug surface
-that bridges the opening without touching the surrounding healthy triangles,
-optionally melts residual self-intersections in thin layers (each layer is
-rolled back when it does not reduce the crossing count) and micro-welds the
-seam. Unlike the surface-based tiers it never deletes an input triangle: the
-report's ``healthy_faces_kept`` counts the input faces carried through verbatim.
+(``sutura_geom.tamponade``) walks each boundary loop, fits a smooth reference
+surface (Arif's "line 2") through the intact ring around it, trims any
+rim/tail vertex that overshoots past that level, and builds a plug that follows
+the reference -- a concave dent and a convex bump alike (a saddle / noisy ring
+has no reference and falls back to the rim-only bridge). It optionally melts
+residual self-intersections in thin layers (each layer is rolled back when it
+does not reduce the crossing count) and micro-welds the seam. Unlike the
+surface-based tiers it never deletes an input triangle: the report's
+``healthy_faces_kept`` counts the input faces carried through verbatim, and
+``reference_used`` / ``reference_fallback`` / ``trimmed_vertices`` /
+``patch_vertices`` describe the reference-surface path.
 
 The tier is opt-in.  ``run_tamponade`` is a thin, never-raising wrapper around
 the extension: an install without ``sutura_geom.tamponade`` (or with
@@ -131,7 +136,9 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
               'melt_layers_rolled_back': None,
               'micro_welds_ok': None, 'micro_welds_failed': None,
               'excised_faces': None,
-              'healthy_faces_kept': None}
+              'healthy_faces_kept': None,
+              'reference_used': None, 'reference_fallback': None,
+              'trimmed_vertices': None, 'patch_vertices': None}
     try:
         v = np.asarray(verts, dtype=np.float64)
         t = np.asarray(tris, dtype=np.int64)
@@ -171,7 +178,9 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
                     'plugs_rejected_dev', 'melt_layers_tried',
                     'melt_layers_accepted', 'melt_layers_rolled_back',
                     'micro_welds_ok', 'micro_welds_failed',
-                    'excised_faces', 'healthy_faces_kept'):
+                    'excised_faces', 'healthy_faces_kept',
+                    'reference_used', 'reference_fallback',
+                    'trimmed_vertices', 'patch_vertices'):
             report[key] = info.get(key)
         if info.get('reason'):
             report['reason'] = info['reason']

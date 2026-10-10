@@ -803,6 +803,10 @@ fn tamponade_py<'py>(
     d.set_item("micro_welds_failed", info.micro_welds_failed)?;
     d.set_item("excised_faces", info.excised_faces)?;
     d.set_item("healthy_faces_kept", info.healthy_faces_kept)?;
+    d.set_item("reference_used", info.reference_used)?;
+    d.set_item("reference_fallback", info.reference_fallback)?;
+    d.set_item("trimmed_vertices", info.trimmed_vertices)?;
+    d.set_item("patch_vertices", info.patch_vertices)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;
