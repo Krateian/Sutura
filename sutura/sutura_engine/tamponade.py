@@ -24,6 +24,8 @@ presets; ``quick`` disables the tier.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 # Wall-clock budget (seconds) per Triage intensity preset. ``quick`` is 0 and
@@ -46,7 +48,26 @@ TAMPONADE_DEFAULT_BUDGET = 60.0
 TAMPONADE_BASE_BUDGET_S = 0.30
 TAMPONADE_PER_FACE_BUDGET_S = 0.00001
 
+# The inside-out SI melt is opt-in by intensity: it runs only at the two
+# heavier presets (or when explicitly forced with SUTURA_TAMPONADE_MELT=1),
+# because slicers ignore self-intersections and the melt is not worth its
+# per-layer cost at quick/balanced.
+MELT_INTENSITIES = ('thorough', 'extreme')
+
 _UNAVAILABLE_REASON = 'sutura_geom.tamponade unavailable'
+
+
+def resolve_melt_si(intensity, environ=None):
+    """Whether the SI melt should run for ``intensity``.
+
+    Precedence: ``SUTURA_TAMPONADE_MELT`` (``1`` forces on, anything else
+    forces off) > the intensity preset (melt only at ``thorough``/``extreme``).
+    """
+    env = (environ if environ is not None else os.environ).get(
+        'SUTURA_TAMPONADE_MELT')
+    if env is not None:
+        return str(env).strip() == '1'
+    return intensity in MELT_INTENSITIES
 
 
 def _tamponade_module():
@@ -109,6 +130,7 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
               'melt_layers_tried': None, 'melt_layers_accepted': None,
               'melt_layers_rolled_back': None,
               'micro_welds_ok': None, 'micro_welds_failed': None,
+              'excised_faces': None,
               'healthy_faces_kept': None}
     try:
         v = np.asarray(verts, dtype=np.float64)
@@ -135,8 +157,10 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
 
         h_min = _median_edge_length(v, t)
         report['h_min'] = h_min
+        melt_si = resolve_melt_si(intensity)
+        report['melt_enabled'] = melt_si
         out_v, out_t, info = module.tamponade(
-            v, t, h_min=h_min, melt_si=True, max_nodes=None,
+            v, t, h_min=h_min, melt_si=melt_si, max_nodes=None,
             time_budget_s=budget)
         info = dict(info or {})
         report['ran'] = True
@@ -147,7 +171,7 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
                     'plugs_rejected_dev', 'melt_layers_tried',
                     'melt_layers_accepted', 'melt_layers_rolled_back',
                     'micro_welds_ok', 'micro_welds_failed',
-                    'healthy_faces_kept'):
+                    'excised_faces', 'healthy_faces_kept'):
             report[key] = info.get(key)
         if info.get('reason'):
             report['reason'] = info['reason']

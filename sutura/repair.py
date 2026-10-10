@@ -2986,6 +2986,29 @@ def _count_si(ml, ms):
     return n
 
 
+def _exact_si_face_count(verts, tris):
+    """Exact proper-crossing self-intersection face count via the Rust core.
+
+    Returns ``None`` when the classifier is unavailable or skipped (mesh above
+    the classifier's face cap); the same metric the independent verifier uses.
+    """
+    try:
+        import sutura_geom
+    except Exception:  # noqa: BLE001 - no extension is a normal case
+        return None
+    if not hasattr(sutura_geom, 'self_intersecting_faces'):
+        return None
+    try:
+        t = np.asarray(tris, dtype=np.int32)
+        if len(t) == 0:
+            return 0
+        _mask, count = sutura_geom.self_intersecting_faces(
+            np.asarray(verts, dtype=np.float64), t)
+        return None if count < 0 else int(count)
+    except Exception:  # noqa: BLE001 - a classifier failure is not fatal
+        return None
+
+
 def _umbrella_fair(verts, tris, first_free, steps):
     """Umbrella-operator smoothing (each vertex moves to the mean of its
     1-ring neighbours) of the vertices with index >= ``first_free``; all
@@ -3848,7 +3871,11 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'plugs_rejected_dev': None, 'melt_layers_tried': None,
            'melt_layers_accepted': None, 'melt_layers_rolled_back': None,
            'micro_welds_ok': None, 'micro_welds_failed': None,
-           'healthy_faces_kept': None, 'healthy_fraction': None}
+           'excised_faces': None,
+           'healthy_faces_kept': None, 'healthy_fraction': None,
+           'input_self_intersections': None,
+           'candidate_self_intersections': None, 'si_fall': None,
+           'si_ok': None, 'melt_enabled': None}
     try:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
         cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
@@ -3856,32 +3883,52 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         base_holes = boundary_loop_stats(cur_v, cur_t)[0]
         base_nm = int(after.get('non_two_manifold_edges', 0) or 0)
         base_parts = _count_vertex_components(len(cur_v), cur_t)
-        base_si = _count_si(ml, ms) if si_mode == 'repair' else 0
         rec['input_holes'] = base_holes
         rec['input_non_manifold'] = base_nm
         rec['input_parts'] = base_parts
-        if base_holes == 0 and base_nm == 0 and base_si == 0:
-            rec['reason'] = ('no holes/non-manifold/self-intersections to plug; '
-                             'tier skipped')
-            stats['tamponade'] = rec
-            return ms, after
 
         try:
             from sutura_engine import tamponade as _tamp
         except Exception:  # noqa: BLE001
             import tamponade as _tamp
+        intensity_val = (intensity
+                         or getattr(spec, 'base', None)
+                         or getattr(spec, 'name', None))
+        # The SI melt is opt-in by intensity (thorough/extreme, or forced by
+        # SUTURA_TAMPONADE_MELT=1); at quick/balanced only the hole plug runs.
+        melt_on = bool(_tamp.resolve_melt_si(intensity_val))
+        rec['melt_enabled'] = melt_on
+
+        # One exact SI scan of the pre-tier mesh, reused for the melt gate, the
+        # skip decision and the adoption guard.  It is skipped when si_mode is
+        # 'off', and on a closed mesh at quick/balanced (nothing to plug, melt
+        # off) no scan is needed at all.
+        base_si_exact = None
+        if si_mode != 'off' and (melt_on or base_holes > 0 or base_nm > 0):
+            base_si_exact = _exact_si_face_count(cur_v, cur_t)
+        base_si = base_si_exact if base_si_exact is not None else 0
+        rec['input_self_intersections'] = base_si_exact
+
+        if base_holes == 0 and base_nm == 0 and not melt_on:
+            rec['reason'] = ('no holes/non-manifold to plug; melt disabled at '
+                             'this intensity; tier skipped')
+            stats['tamponade'] = rec
+            return ms, after
+        if base_holes == 0 and base_nm == 0 and base_si == 0 and not base_si_exact:
+            rec['reason'] = ('no holes/non-manifold/self-intersections to plug; '
+                             'tier skipped')
+            stats['tamponade'] = rec
+            return ms, after
+
         out_v, out_t, trec = _tamp.run_tamponade(
-            cur_v, cur_t,
-            intensity=(intensity
-                       or getattr(spec, 'base', None)
-                       or getattr(spec, 'name', None)),
-            ml=ml)
+            cur_v, cur_t, intensity=intensity_val, ml=ml)
         for key in ('budget_s', 'h_min', 'seconds', 'plugs', 'plug_faces',
                     'plugs_rejected', 'plugs_inconclusive',
                     'plugs_rejected_size', 'plugs_rejected_dev',
                     'melt_layers_tried', 'melt_layers_accepted',
                     'melt_layers_rolled_back', 'micro_welds_ok',
-                    'micro_welds_failed', 'healthy_faces_kept'):
+                    'micro_welds_failed', 'excised_faces',
+                    'healthy_faces_kept'):
             rec[key] = trec.get(key)
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):
@@ -3907,7 +3954,22 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         parts_ok = cand_parts <= base_parts
         healthy_ok = (healthy is None or len(cur_t) == 0
                       or float(healthy) >= 0.99 * float(len(cur_t)))
-        if no_rise and strict_fall and parts_ok and healthy_ok and len(cand_t):
+        # Exact self-intersection fall (review C2): a melt-only improvement on a
+        # mesh whose holes/non-manifold are already 0 must still be adoptable.
+        cand_si_exact = None
+        if base_si_exact is not None:
+            cand_si_exact = _exact_si_face_count(wv, wt)
+            rec['candidate_self_intersections'] = cand_si_exact
+        si_fall = (base_si_exact is not None and cand_si_exact is not None
+                   and cand_si_exact < base_si_exact)
+        rec['si_fall'] = si_fall
+        # Never adopt a candidate whose exact self-intersection count rose
+        # versus the pre-tier mesh: the melt may only improve or leave it.
+        si_ok = (base_si_exact is None or cand_si_exact is None
+                 or cand_si_exact <= base_si_exact)
+        rec['si_ok'] = si_ok
+        geometry_fall = strict_fall or si_fall
+        if no_rise and geometry_fall and parts_ok and healthy_ok and si_ok and len(cand_t):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
             after = ms.apply_filter('get_topological_measures')
@@ -3915,14 +3977,18 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
             wet = bool(cand_holes == 0 and cand_nm == 0)
             rec['watertight'] = wet
             rec['reload_watertight'] = wet
-            rec['reason'] = ('adopted (holes %d -> %d, non-manifold %d -> %d)'
-                             % (base_holes, cand_holes, base_nm, cand_nm))
+            rec['reason'] = ('adopted (holes %d -> %d, non-manifold %d -> %d, '
+                             'SI %s -> %s)'
+                             % (base_holes, cand_holes, base_nm, cand_nm,
+                                base_si_exact, cand_si_exact))
         else:
             reasons = []
             if not no_rise:
                 reasons.append('holes/non-manifold rose')
-            if not strict_fall:
-                reasons.append('holes+non-manifold did not strictly fall')
+            if not geometry_fall:
+                reasons.append('holes+non-manifold/SI did not strictly fall')
+            if not si_ok:
+                reasons.append('self-intersections rose')
             if not parts_ok:
                 reasons.append('component count rose')
             if not healthy_ok:

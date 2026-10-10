@@ -21,6 +21,7 @@ pub mod dual_contour;
 pub mod flap;
 pub mod interval;
 pub mod lava;
+pub mod melt;
 pub mod mincut;
 pub mod morph;
 pub mod octree;
@@ -800,6 +801,7 @@ fn tamponade_py<'py>(
     d.set_item("melt_layers_rolled_back", info.melt_layers_rolled_back)?;
     d.set_item("micro_welds_ok", info.micro_welds_ok)?;
     d.set_item("micro_welds_failed", info.micro_welds_failed)?;
+    d.set_item("excised_faces", info.excised_faces)?;
     d.set_item("healthy_faces_kept", info.healthy_faces_kept)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;

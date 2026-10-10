@@ -76,6 +76,8 @@ pub struct TamponadeInfo {
     pub melt_layers_rolled_back: usize,
     pub micro_welds_ok: usize,
     pub micro_welds_failed: usize,
+    /// Input faces the melt pass excised (accepted layers only).
+    pub excised_faces: usize,
     pub healthy_faces_kept: usize,
     pub seconds: f64,
     pub reason: String,
@@ -1161,19 +1163,21 @@ pub fn tamponade_repair(
     }
 
     let directed = directed_boundary_edges(tris);
-    if directed.is_empty() {
+    let loops = if directed.is_empty() {
+        Vec::new()
+    } else {
+        build_boundary_loops(&directed)
+    };
+    // A closed, boundary-free input has no holes to plug.  It can still carry
+    // residual self-intersections, so the melt pass below must still run;
+    // only skip entirely when melting is disabled too.
+    if loops.is_empty() && !config.melt_si {
         info.reason = "no_holes".to_string();
         info.seconds = t0.elapsed().as_secs_f64();
         return (verts.to_vec(), tris.to_vec(), info);
     }
 
     let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
-    let loops = build_boundary_loops(&directed);
-    if loops.is_empty() {
-        info.reason = "no_holes".to_string();
-        info.seconds = t0.elapsed().as_secs_f64();
-        return (verts.to_vec(), tris.to_vec(), info);
-    }
 
     let h = match config.h_min {
         Some(val) if val > 1e-6 => val,
@@ -1206,7 +1210,7 @@ pub fn tamponade_repair(
     }
     let model_diag = model_box.diagonal().max(h);
 
-    let out_verts = verts.to_vec();
+    let mut out_verts = verts.to_vec();
     let mut out_tris = tris.to_vec();
     let mut plug_count = 0usize;
     let mut plug_rejected_count = 0usize;
@@ -1364,8 +1368,40 @@ pub fn tamponade_repair(
     info.plugs_rejected_size = plug_rejected_size_count;
     info.plugs_rejected_dev = plug_rejected_dev_count;
     info.plug_faces = plug_face_count;
+
+    // L2b: melt residual self-intersection folds, inside-out, after the hole
+    // plugs are in place.  All logic lives in `melt.rs`; this hook only carries
+    // the counters back.  A no-op when melting is disabled or there is no SI.
+    if config.melt_si {
+        let melt_params = crate::melt::MeltParams::default();
+        let m = crate::melt::melt_si(
+            &out_verts,
+            &out_tris,
+            h,
+            model_diag,
+            config.time_budget_s,
+            &melt_params,
+        );
+        out_verts = m.verts;
+        out_tris = m.tris;
+        info.melt_layers_tried = m.layers_tried;
+        info.melt_layers_accepted = m.layers_accepted;
+        info.melt_layers_rolled_back = m.layers_rolled_back;
+        info.micro_welds_ok = m.micro_welds_ok;
+        info.micro_welds_failed = m.micro_welds_failed;
+        info.excised_faces = m.excised_faces;
+        info.healthy_faces_kept = info.healthy_faces_kept.saturating_sub(m.excised_faces);
+        if !m.reason.is_empty() {
+            info.reason = m.reason;
+        }
+    }
+
     if info.reason.is_empty() {
-        info.reason = "ok".to_string();
+        info.reason = if loops.is_empty() {
+            "no_holes".to_string()
+        } else {
+            "ok".to_string()
+        };
     }
     info.seconds = t0.elapsed().as_secs_f64();
     if profile {

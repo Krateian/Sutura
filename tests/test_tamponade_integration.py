@@ -189,7 +189,8 @@ def test_wrapper_never_raises():
 
 # --- 2. adoption guard ------------------------------------------------------
 
-def _tier(in_f, after=None, out_v=None, out_t=None, healthy=None, si_mode='report'):
+def _tier(in_f, after=None, out_v=None, out_t=None, healthy=None, si_mode='report',
+          intensity='balanced'):
     ml = _FakeML()
     ms = _FakeMeshSet(_CUBE_V, in_f)
     stats = {}
@@ -199,7 +200,7 @@ def _tier(in_f, after=None, out_v=None, out_t=None, healthy=None, si_mode='repor
     try:
         repair.tamponade_tier(ml, ms, after or {'non_two_manifold_edges': 0},
                               stats, '/tmp', tamponade=True,
-                              intensity='balanced', si_mode=si_mode)
+                              intensity=intensity, si_mode=si_mode)
     finally:
         tamp.run_tamponade = _REAL_RUN_TAMPONADE
     return stats['tamponade']
@@ -271,6 +272,73 @@ def test_tier_rejects_when_healthy_low():
     assert rec['healthy_fraction'] < 0.99, rec
     assert 'healthy faces below 99%' in (rec['reject_reason'] or ''), rec
     print('ok  tier rejects a candidate below the 99% healthy-face floor')
+
+
+def test_tier_adopts_si_only_improvement():
+    # Review C2: a closed mesh whose holes/non-manifold are already 0 but whose
+    # exact self-intersections fall must still be adopted (melt-only win).
+    calls = {'n': 0}
+    real = repair._exact_si_face_count
+
+    def fake_si(verts, tris):
+        calls['n'] += 1
+        return 10 if calls['n'] == 1 else 4
+
+    repair._exact_si_face_count = fake_si
+    try:
+        rec = _tier(_CUBE_F, healthy=len(_CUBE_F), intensity='thorough')
+    finally:
+        repair._exact_si_face_count = real
+    assert rec['ran'] is True and rec['adopted'] is True, rec
+    assert rec['input_holes'] == 0 and rec['input_non_manifold'] == 0, rec
+    assert rec['input_self_intersections'] == 10, rec
+    assert rec['candidate_self_intersections'] == 4, rec
+    assert rec['si_fall'] is True, rec
+    assert 'SI 10 -> 4' in (rec['reason'] or ''), rec
+    print('ok  tier adopts an SI-only improvement (C2)')
+
+
+def test_tier_skips_closed_si_free_mesh():
+    # A closed mesh with no measured self-intersections must still skip.
+    real = repair._exact_si_face_count
+    repair._exact_si_face_count = lambda v, t: 0
+    try:
+        rec = _tier(_CUBE_F, healthy=len(_CUBE_F))
+    finally:
+        repair._exact_si_face_count = real
+    assert rec['ran'] is False, rec
+    print('ok  tier skips a closed SI-free mesh')
+
+
+def test_resolve_melt_si():
+    assert tamp.resolve_melt_si('quick') is False
+    assert tamp.resolve_melt_si('balanced') is False
+    assert tamp.resolve_melt_si('thorough') is True
+    assert tamp.resolve_melt_si('extreme') is True
+    assert tamp.resolve_melt_si(None) is False
+    assert tamp.resolve_melt_si('balanced',
+                                environ={'SUTURA_TAMPONADE_MELT': '1'}) is True
+    assert tamp.resolve_melt_si('extreme',
+                                environ={'SUTURA_TAMPONADE_MELT': '0'}) is False
+    print('ok  melt is gated to thorough/extreme (env override)')
+
+
+def test_tier_closed_balanced_skips_without_scan():
+    calls = {'n': 0}
+    real = repair._exact_si_face_count
+
+    def fake(verts, tris):
+        calls['n'] += 1
+        return 5
+
+    repair._exact_si_face_count = fake
+    try:
+        rec = _tier(_CUBE_F, healthy=len(_CUBE_F), intensity='balanced')
+    finally:
+        repair._exact_si_face_count = real
+    assert rec['ran'] is False and rec['melt_enabled'] is False, rec
+    assert calls['n'] == 0, calls
+    print('ok  closed mesh at balanced skips without an SI scan')
 
 
 # --- 3. flag / env / constant resolution ------------------------------------
