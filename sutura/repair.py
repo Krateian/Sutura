@@ -1118,6 +1118,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
     stats = {'stage1': {}}
+    stats['timings'] = {}
+    _t_start = time.perf_counter()
     if triage_spec is None:
         triage_spec = triage.resolve_intensity(None)
     stats.update(triage.triage_report_fields(triage_spec))
@@ -1209,6 +1211,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # tamponade_tier call below is skipped once this prepass has sealed the
     # mesh, so its stats record is preserved.
     if tamponade is True:
+        _t_pre = time.perf_counter()
         _tms = ml.MeshSet()
         _tms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         apply_chain(_tms, stage1_cleanup_chain(ml))
@@ -1222,6 +1225,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             v = np.asarray(_tms.current_mesh().vertex_matrix(), dtype=np.float32)
             t = np.asarray(_tms.current_mesh().face_matrix(), dtype=np.int32)
             verts, tris = v, t
+        stats['timings']['prepass'] = round(time.perf_counter() - _t_pre, 3)
 
     # Flap: surface-based hole fill (on by default in the CLI). It is the FIRST Stage-1
     # step, a pre-pass on the input as it stands here (normally the original
@@ -1449,6 +1453,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # modules. They run on the ORIGINAL input arrays, before the deep-repair
     # ladder, and adopt only a strict-watertight, no-worse candidate (see
     # ``closing_ladder``).
+    stats['timings']['stage1'] = round(time.perf_counter() - _t_start, 3)
+    _t_tiers = time.perf_counter()
     ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                closing=closing, proxy_template=proxy_template)
 
@@ -1511,6 +1517,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if wall_thicken:
         ms, after = wall_thicken_tier(ml, ms, after, stats, v, t,
                                       min_thickness=wall_min_thickness)
+    stats['timings']['deep_repair'] = round(time.perf_counter() - _t_tiers, 3)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -4030,11 +4037,12 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         if prepass:
             geometry_fall = (cand_holes < base_holes) or si_fall
             no_rise = cand_holes <= base_holes
-            # The reference plug can graze nearby crater geometry and report a
-            # transient self-intersection count; the Stage-1 chain (nm repair +
-            # si_excise_recap) reconciles it after the seal, so the prepass does
-            # not reject on SI -- the final pipeline result is what is judged.
-            si_ok = True
+            # The prepass must not raise the exact self-intersection count of the
+            # mesh it seals. The reference plug can graze nearby crater geometry
+            # and add self-intersections the downstream Stage-1 chain does not
+            # fully reconcile (measured: ornate-frame 66584 -> 66749, 1038441
+            # 2350 -> 2436), so `si_ok` is kept as the strict non-rise guard
+            # computed above rather than forced True.
         else:
             geometry_fall = strict_fall or si_fall
         if no_rise and geometry_fall and parts_ok and healthy_ok and si_ok and len(cand_t):
@@ -4969,7 +4977,10 @@ def maybe_run_stage2(report, verts, tris, tmpdir):
         inter = os.path.join(tmpdir, 'stage1.obj')
         out_obj = os.path.join(tmpdir, 'stage2.obj')
         write_obj(inter, verts, tris)
+        _t_s2 = time.perf_counter()
         mrep, _ = run_stage2(inter, out_obj)
+        report.setdefault('timings', {})['stage2'] = round(
+            time.perf_counter() - _t_s2, 3)
         if mrep is not None:
             report['stage2'] = mrep
             if 'error' not in mrep and os.path.exists(out_obj):
@@ -5308,6 +5319,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         enforce_reload_verdict(report, new_v, new_t)
         return report, new_v, new_t
 
+    _t_file = time.perf_counter()
     report, new_v, new_t = _run(flap)
 
     # HIGH-1 safety net: the Flap adoption gate is topological-only and decided
@@ -5354,6 +5366,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             else:
                 report['flap']['final_fallback'] = fallback
 
+    report.setdefault('timings', {})
+    report['timings']['file_total'] = round(time.perf_counter() - _t_file, 3)
+    report['timings']['flap_off_rerun'] = bool(
+        (report.get('flap') or {}).get('final_fallback', {}).get('ran'))
     save_mesh(out, new_v, new_t)
     return report
 
