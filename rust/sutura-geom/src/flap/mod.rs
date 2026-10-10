@@ -503,6 +503,16 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
     let membrane = std::env::var("SUTURA_FLAP_MEMBRANE")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
+    // Wider reference-surface data term (Tamponade's ReferenceSurface, fitted on
+    // the intact ring beyond the damage), opt-in; default OFF.
+    let ref_on = std::env::var("SUTURA_FLAP_REF")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false);
+    let adj_ref = if ref_on {
+        Some(crate::tamponade::build_adjacency(v2.len(), &t2))
+    } else {
+        None
+    };
 
     for loop_v in &loops {
         let loop_arr = loop_v;
@@ -711,7 +721,25 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             // no longer makes the dense interior overshoot and fold the patch
             // over itself (the thin-plate order-2 solve, the default, can).
             // Gated by SUTURA_FLAP_MEMBRANE so the default path is byte-identical.
-            if membrane {
+            if ref_on {
+                let built = adj_ref.as_ref().and_then(|adj| {
+                    crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
+                });
+                match built {
+                    Some(refs) => {
+                        for _ in 0..3 {
+                            let data: Vec<V3> =
+                                p_pts[m..].iter().map(|&q| refs.place(q)).collect();
+                            fair::fair_patch_energy(
+                                &mut p_pts, &faces, m, &ghost, 1, Some(&data), 2.0,
+                            );
+                        }
+                    }
+                    None => {
+                        fair::fair_patch_energy(&mut p_pts, &faces, m, &ghost, 1, None, 0.0);
+                    }
+                }
+            } else if membrane {
                 fair::fair_patch_energy(&mut p_pts, &faces, m, &ghost, 1, None, 0.0);
             } else {
                 fair::fair_patch(&mut p_pts, &faces, m, &ghost);
@@ -851,7 +879,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         // Per-loop safety check (membrane path): never commit a patch that
         // self-intersects or leaves a reload-non-manifold seam; drop it and
         // leave the hole for a later tier instead.
-        if membrane {
+        if membrane || ref_on {
             let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces);
             if !safe {
                 report.loops_skipped_safety += 1;

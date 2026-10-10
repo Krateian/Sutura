@@ -1732,9 +1732,13 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
             # over itself.  `fair_patch_energy` can additionally take a
             # reference-surface data term when a caller supplies one.  Opt-in
             # (SUTURA_FLAP_MEMBRANE) so the default thin-plate path is
-            # byte-identical.
+            # byte-identical.  SUTURA_FLAP_REF (the wider Tamponade
+            # ReferenceSurface data term) is Rust-only: this numpy oracle has no
+            # ReferenceSurface, so it degrades to the membrane path.
             _mem = __import__('os').environ.get('SUTURA_FLAP_MEMBRANE')
-            if _mem is not None and _mem not in ('', '0'):
+            _ref = __import__('os').environ.get('SUTURA_FLAP_REF')
+            if ((_mem is not None and _mem not in ('', '0'))
+                    or (_ref is not None and _ref not in ('', '0'))):
                 P = fair_patch_energy(P, faces, m, ghost_pos, 1, None, 0.0)
             else:
                 P = fair_patch(P, faces, m, ghost_pos)
@@ -1838,7 +1842,9 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
         # later tier instead (the coplanar guard already covers folds).  Opt-in
         # with the membrane fairing so the default path is byte-identical.
         _mem = __import__('os').environ.get('SUTURA_FLAP_MEMBRANE')
-        if _mem is not None and _mem not in ('', '0'):
+        _ref = __import__('os').environ.get('SUTURA_FLAP_REF')
+        if ((_mem is not None and _mem not in ('', '0'))
+                or (_ref is not None and _ref not in ('', '0'))):
             _safe, _why = patch_safety(out_v, out_t, P[m:], gfaces)
             if not _safe:
                 report["loops_skipped_safety"] = \
