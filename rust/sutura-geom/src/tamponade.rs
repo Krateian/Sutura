@@ -18,6 +18,7 @@
 
 use crate::flap::dp::min_area_triangulation_filtered;
 use crate::mincut::BkGraph;
+use crate::triangle_intersection;
 use crate::winding::MeshBvh;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -2517,6 +2518,199 @@ fn apply_region_rollback(
     *out_tris = new_tris;
 }
 
+/// AABB of one triangle in `verts`.
+fn tri_bbox(verts: &[[f64; 3]], t: &[u32; 3]) -> BBox {
+    let mut b = BBox::empty();
+    for &v in t {
+        b.expand_point(verts[v as usize]);
+    }
+    b
+}
+
+/// Uniform-grid AABB index over a face array. Built once per safety-net pass so
+/// the per-plug local self-intersection scan touches only the faces near that
+/// plug (O(local)) instead of rescanning the whole mesh for every plug. Mirrors
+/// the cell choice of `arrangement::broad_phase_candidates`.
+struct FaceGrid {
+    cell: f64,
+    map: HashMap<(i64, i64, i64), Vec<u32>>,
+}
+
+impl FaceGrid {
+    fn build(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Self {
+        let boxes: Vec<BBox> = tris.iter().map(|t| tri_bbox(verts, t)).collect();
+        let mut diags: Vec<f64> = boxes
+            .iter()
+            .map(|b| {
+                let dx = b.max[0] - b.min[0];
+                let dy = b.max[1] - b.min[1];
+                let dz = b.max[2] - b.min[2];
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            })
+            .collect();
+        let mut cell = 1.0f64;
+        if !diags.is_empty() {
+            diags.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            cell = diags[diags.len() / 2] * 1.5;
+        }
+        if !(cell > 1e-9) {
+            cell = 1e-9;
+        }
+        let mut map: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        for (i, b) in boxes.iter().enumerate() {
+            let c0 = [
+                (b.min[0] / cell).floor() as i64,
+                (b.min[1] / cell).floor() as i64,
+                (b.min[2] / cell).floor() as i64,
+            ];
+            let c1 = [
+                (b.max[0] / cell).floor() as i64,
+                (b.max[1] / cell).floor() as i64,
+                (b.max[2] / cell).floor() as i64,
+            ];
+            for x in c0[0]..=c1[0] {
+                for y in c0[1]..=c1[1] {
+                    for z in c0[2]..=c1[2] {
+                        map.entry((x, y, z)).or_default().push(i as u32);
+                    }
+                }
+            }
+        }
+        Self { cell, map }
+    }
+
+    /// Every face whose AABB overlaps `query`, sorted and deduplicated.
+    fn query(&self, query: &BBox) -> Vec<u32> {
+        let c0 = [
+            (query.min[0] / self.cell).floor() as i64,
+            (query.min[1] / self.cell).floor() as i64,
+            (query.min[2] / self.cell).floor() as i64,
+        ];
+        let c1 = [
+            (query.max[0] / self.cell).floor() as i64,
+            (query.max[1] / self.cell).floor() as i64,
+            (query.max[2] / self.cell).floor() as i64,
+        ];
+        let mut out: Vec<u32> = Vec::new();
+        for x in c0[0]..=c1[0] {
+            for y in c0[1]..=c1[1] {
+                for z in c0[2]..=c1[2] {
+                    if let Some(v) = self.map.get(&(x, y, z)) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// Proper, non-adjacent triangle crossings among a local candidate face set
+/// where at least one face belongs to `subset`. Mirrors
+/// `self_intersections_subset_core` (pairs sharing a vertex index are
+/// adjacent and ignored; only a proper interior segment counts) but restricted
+/// to the faces near one plug.
+fn local_si_subset(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    cand: &[u32],
+    subset: &HashSet<u32>,
+) -> i64 {
+    let n = cand.len();
+    if n < 2 {
+        return 0;
+    }
+    let tri: Vec<triangle_intersection::Triangle> = cand
+        .iter()
+        .map(|&f| {
+            let t = tris[f as usize];
+            triangle_intersection::Triangle::explicit(
+                verts[t[0] as usize],
+                verts[t[1] as usize],
+                verts[t[2] as usize],
+            )
+        })
+        .collect();
+    let mut count = 0i64;
+    for i in 0..n {
+        let fi = cand[i];
+        let si = subset.contains(&fi);
+        for j in (i + 1)..n {
+            let fj = cand[j];
+            if !si && !subset.contains(&fj) {
+                continue;
+            }
+            let a = tris[fi as usize];
+            let b = tris[fj as usize];
+            if a.iter().any(|x| b.contains(x)) {
+                continue;
+            }
+            if let triangle_intersection::TriangleIntersection::ProperSegment { .. } =
+                triangle_intersection::intersect_triangles(&tri[i], &tri[j])
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Local self-intersection delta of one plug: how many proper crossings the
+/// plug's new faces make with any face within its AABB expanded by `2h`. The
+/// plug's faces did not exist in the base mesh, so any positive value is a rise
+/// the reload verdict cannot see (a plug poking through a nearby sheet) and the
+/// plug is rolled back.
+fn plug_local_si(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    grid: &FaceGrid,
+    region: &PlugRegion,
+    h: f64,
+) -> i64 {
+    let mut b = BBox::empty();
+    let mut subset: HashSet<u32> = HashSet::new();
+    for f in region.tri_start..region.tri_end {
+        if f >= tris.len() {
+            return 0;
+        }
+        let t = tris[f];
+        for &v in &t {
+            if (v as usize) >= verts.len() {
+                return 0;
+            }
+            b.expand_point(verts[v as usize]);
+        }
+        subset.insert(f as u32);
+    }
+    if subset.is_empty() {
+        return 0;
+    }
+    b.pad(2.0 * h);
+    let cand = grid.query(&b);
+    local_si_subset(verts, tris, &cand, &subset)
+}
+
+/// Per-plug local self-intersection rollback mask: `true` for every plug whose
+/// new faces create a proper crossing with nearby tissue. One AABB grid is
+/// built for all plugs, so the scan is O(faces) once plus O(local) per plug.
+fn si_rollback_mask(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    h: f64,
+) -> Vec<bool> {
+    if regions.is_empty() {
+        return Vec::new();
+    }
+    let grid = FaceGrid::build(verts, tris);
+    regions
+        .iter()
+        .map(|region| plug_local_si(verts, tris, &grid, region, h) > 0)
+        .collect()
+}
+
 /// Main entry point for the L2a Tamponade repair.
 pub fn tamponade_repair(
     verts: &[[f64; 3]],
@@ -3001,24 +3195,39 @@ pub fn tamponade_repair(
     // the regression is dropped; a good plug survives a bad one. When the
     // regression is not attributable to any single plug (or survives the
     // per-plug fix), every plug is rolled back -- restoring the input
-    // byte-for-byte, so the output can never be worse than the input. Runs
-    // only when the verdict actually regressed, keeping the default path
+    // byte-for-byte, so the output can never be worse than the input.
+    //
+    // A reload regression is not the only way a plug can damage the mesh: a
+    // plug can poke through a nearby sheet and create a proper self
+    // intersection that leaves the topology unchanged, so the reload verdict
+    // cannot see it. For every plug the local self-intersection delta is also
+    // computed (`plug_local_si`: the new faces against the surrounding tissue
+    // within the plug AABB expanded by 2h); a plug that raises it is rolled
+    // back with the same machinery. The scan is O(local) per plug and the pass
+    // only writes when one of the checks fires, keeping the default path
     // byte-identical.
     let mut plugs_rolled_back = 0usize;
     if !plug_regions.is_empty() {
         let base = reload_verdict(verts, tris);
         let full = reload_verdict(&out_verts, &out_tris);
-        if full.worse_than(&base) {
+        let reload_regressed = full.worse_than(&base);
+        let si_drop = si_rollback_mask(&out_verts, &out_tris, &plug_regions, h);
+        if reload_regressed || si_drop.iter().any(|&d| d) {
             let mut drop = vec![false; plug_regions.len()];
-            for (ri, region) in plug_regions.iter().enumerate() {
-                let without = reload_verdict_without(&out_verts, &out_tris, region);
-                if (without.nm_edges < full.nm_edges
-                    || without.nm_vertices < full.nm_vertices
-                    || without.degenerate_faces < full.degenerate_faces)
-                    && !without.worse_than(&base)
-                {
-                    drop[ri] = true;
+            if reload_regressed {
+                for (ri, region) in plug_regions.iter().enumerate() {
+                    let without = reload_verdict_without(&out_verts, &out_tris, region);
+                    if (without.nm_edges < full.nm_edges
+                        || without.nm_vertices < full.nm_vertices
+                        || without.degenerate_faces < full.degenerate_faces)
+                        && !without.worse_than(&base)
+                    {
+                        drop[ri] = true;
+                    }
                 }
+            }
+            for ri in 0..plug_regions.len() {
+                drop[ri] |= si_drop[ri];
             }
             let any = drop.iter().any(|&d| d);
             let give_up = if any {
@@ -3058,8 +3267,11 @@ pub fn tamponade_repair(
             } else {
                 apply_region_rollback(&mut out_verts, &mut out_tris, &plug_regions, &drop);
             }
-            info.loop_diag
-                .push(format!("rolled_back {} plug(s)", plugs_rolled_back));
+            let si_fired = si_drop.iter().filter(|&&d| d).count();
+            info.loop_diag.push(format!(
+                "rolled_back {} plug(s) ({} on self-intersection)",
+                plugs_rolled_back, si_fired
+            ));
         }
     }
     info.plugs_rolled_back = plugs_rolled_back;
@@ -3834,5 +4046,86 @@ mod tests {
         let (_ov, _ot, info) = tamponade_repair(&verts, &tris, &config);
         assert_eq!(info.plugs, 1, "{info:?}");
         assert_eq!(info.plugs_rolled_back, 0, "{info:?}");
+    }
+
+    // ---- T9 local self-intersection per-plug rollback --------------------
+
+    /// A horizontal sheet (z = 0, two triangles) plus one plug face. The plug
+    /// either pokes straight through the sheet or floats well above it.
+    fn sheet_with_plug(poking: bool) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, PlugRegion) {
+        let mut verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [2.0, 2.0, 0.0],
+        ];
+        let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 3, 2]];
+        if poking {
+            // Spans z in [-1, 1] at y = 0.5: it crosses the sheet interior.
+            verts.push([0.5, 0.5, -1.0]);
+            verts.push([1.5, 0.5, -1.0]);
+            verts.push([1.0, 0.5, 1.0]);
+        } else {
+            // Floats at z in [2, 3], far above the sheet.
+            verts.push([0.5, 0.5, 2.0]);
+            verts.push([1.5, 0.5, 2.0]);
+            verts.push([1.0, 0.5, 3.0]);
+        }
+        let tri_start = tris.len();
+        tris.push([4, 5, 6]);
+        let region = PlugRegion { tri_start, tri_end: tris.len(), reference: false, steiner: false };
+        (verts, tris, region)
+    }
+
+    #[test]
+    fn local_si_flags_a_plug_that_pokes_through_a_sheet() {
+        let h = 0.1;
+        let (pv, pt, pregion) = sheet_with_plug(true);
+        let mask = si_rollback_mask(&pv, &pt, &[pregion], h);
+        assert_eq!(mask, vec![true], "poking plug not flagged");
+
+        let (cv, ct, cregion) = sheet_with_plug(false);
+        let mask = si_rollback_mask(&cv, &ct, &[cregion], h);
+        assert_eq!(mask, vec![false], "clean plug wrongly flagged");
+    }
+
+    #[test]
+    fn local_si_rollback_drops_only_the_poking_plug() {
+        // One poking and one clean plug in the same output; only the poking one
+        // may be rolled back, leaving the clean plug and the sheet intact.
+        let h = 0.1;
+        let (mut verts, mut tris, poking) = sheet_with_plug(true);
+        verts.push([0.5, 0.5, 2.0]);
+        verts.push([1.5, 0.5, 2.0]);
+        verts.push([1.0, 0.5, 3.0]);
+        let clean_start = tris.len();
+        tris.push([7, 8, 9]);
+        let clean = PlugRegion {
+            tri_start: clean_start,
+            tri_end: tris.len(),
+            reference: false,
+            steiner: false,
+        };
+
+        let regions = [poking, clean];
+        let mask = si_rollback_mask(&verts, &tris, &regions, h);
+        assert_eq!(mask, vec![true, false], "wrong plug attributed");
+
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &regions, &mask);
+        // The sheet (2) plus the clean plug (1) survive, the poking face is gone.
+        assert_eq!(ot.len(), 3, "rollback removed the wrong faces");
+        // The poking plug reached z = -1; after the rollback no vertex is below
+        // the sheet plane, i.e. the poking geometry was dropped while the clean
+        // plug above the sheet stayed.
+        assert!(
+            ov.iter().all(|v| v[2] >= -1e-9),
+            "poking plug survived: {ov:?}"
+        );
+        assert!(
+            ov.iter().any(|v| v[2] >= 2.0),
+            "clean plug was dropped: {ov:?}"
+        );
     }
 }
