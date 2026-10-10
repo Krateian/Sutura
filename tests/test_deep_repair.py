@@ -60,6 +60,7 @@ def _same_output(a, b):
     rb = {k: x for k, x in rep_b.items() if k != 'deep_repair'}
     for d in (ra, rb):   # wall-clock fields differ between runs
         d.get('experimental_ftetwild') and d['experimental_ftetwild'].pop('time', None)
+        d.pop('timings', None)
     assert json.dumps(ra, sort_keys=True, default=str) == \
         json.dumps(rb, sort_keys=True, default=str)
 
