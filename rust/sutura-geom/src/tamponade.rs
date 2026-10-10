@@ -74,6 +74,13 @@ const REF_NORMAL_SPREAD_RMS_FRAC: f64 = 0.5;
 /// The quadric fit residual (rms over the ring points) must not exceed this
 /// multiple of `h`, else the surrounding surface is not locally smooth.
 const REF_RMS_FACTOR: f64 = 1.0;
+/// Self-consistency brake (no ground truth): the fitted quadric may not
+/// extrapolate a sag across the hole radius larger than this multiple of the
+/// ring's own height relief plus `h`. A partial rim fragment or a wide ring can
+/// otherwise produce a reference whose centre sits well outside the observed
+/// tissue, and the plug (which lies ON that reference) becomes a spike that
+/// `reference_dev_ok` cannot catch.
+const REF_SAG_FACTOR: f64 = 1.25;
 /// Laser-ray divergence brake: a tangent ray whose meeting height deviates from
 /// the fitted centre by more than this multiple of the ring's own fit roughness
 /// (`rms`) counts as being on one side. A saddle sends a *material share* of the
@@ -1537,6 +1544,29 @@ fn build_reference(
         return None;
     }
 
+    // Self-consistency brake (no ground truth): the quadric must not extrapolate
+    // a sag across the hole radius far larger than the ring's own height relief.
+    // A partial rim fragment or a very wide ring can otherwise yield a reference
+    // whose centre sits well outside the observed tissue; the plug then lies ON
+    // that reference (so `reference_dev_ok` cannot flag it) and becomes a spike.
+    let mut h_lo = f64::INFINITY;
+    let mut h_hi = f64::NEG_INFINITY;
+    let mut radii: Vec<f64> = Vec::with_capacity(points.len());
+    for p in &points {
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        let hh = dot3(d, n);
+        h_lo = h_lo.min(hh);
+        h_hi = h_hi.max(hh);
+        radii.push(dot3(d, u).hypot(dot3(d, v)));
+    }
+    radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let r_med = radii[radii.len() / 2];
+    let band = (h_hi - h_lo) + h;
+    let sag = (coeffs[3].abs() + coeffs[4].abs() + coeffs[5].abs()) * r_med * r_med;
+    if sag > REF_SAG_FACTOR * band {
+        return None;
+    }
+
     let mut rays: Vec<f64> = Vec::new();
     for (i, p) in points.iter().enumerate() {
         let pn = point_normals[i];
@@ -1950,6 +1980,15 @@ pub fn tamponade_repair(
                 .as_ref()
                 .and_then(|a| build_reference(verts, tris, &rim, h, a));
         }
+        // The overshoot trim below mutates `out_verts` in place. Snapshot it so
+        // a loop whose plug is ultimately rejected leaves the input vertices
+        // byte-identical -- otherwise a rejected reference still lifts rim
+        // vertices onto an implausible surface and spikes the output.
+        let trim_snapshot = if reference.is_some() {
+            Some(out_verts.clone())
+        } else {
+            None
+        };
         let mut sealed = false;
         if let Some(ref refs) = reference {
             // Overshoot trim: lift tail rim vertices that sit clearly below
@@ -2117,6 +2156,11 @@ pub fn tamponade_repair(
                         .push(format!("m={} rejected:{}", rim.len(), why));
                     plug_rejected_count += 1;
                 }
+            }
+        }
+        if !sealed {
+            if let Some(snap) = trim_snapshot {
+                out_verts = snap;
             }
         }
         let plug_dt = tp0.elapsed().as_secs_f64();
