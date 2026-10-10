@@ -30,6 +30,17 @@ PROJECTION_MIN_NORMAL_DOT = 0.0  # alignment threshold for projection
 SI_FACE_CAP = 200_000  # cap self-intersection checks above 200k faces
 MIN_FACE_BUDGET = 20_000  # output faces <= max(2x input, 20k)
 
+# Wall-clock bound (seconds) for a single out-of-process uniform resampling.
+# The VCG resampler behind generate_resampled_uniform_mesh builds a face
+# KD-tree whose construction degenerates on meshes containing long, skinny
+# triangle fans (a coarse star/fan triangulation): memory grows super-linearly
+# to several GB and the filter runs for minutes, until the OS OOM-kills it. No
+# parameter avoids it (it blows up at every cellsize), so the only safe bound is
+# to run the filter in a child process and abort it past this timeout, then fall
+# through to the alpha-wrap fallback. A healthy resample is sub-second even on
+# dense meshes, so this is never reached in normal use.
+RESAMPLE_SUBPROC_TIMEOUT = 60.0
+
 
 def _referenced_only(verts, tris):
     """Drop unreferenced vertices and remap triangle indices."""
@@ -146,6 +157,109 @@ def _keep_largest_component(verts, tris):
     return verts[used_verts], remap[keep_faces]
 
 
+# Child program for _resample_uniform_isolated: imports pymeshlab, runs the one
+# filter and dumps the result to an NPZ. Kept as a string so the parent never
+# imports pymeshlab to drive it (the engine forbids a top-level pymeshlab
+# import) and needs no extra module on disk.
+_RESAMPLE_CHILD = r'''
+import sys
+import numpy as np
+import pymeshlab as ml
+
+in_path, out_path = sys.argv[1], sys.argv[2]
+cellsize = float(sys.argv[3])
+offset = float(sys.argv[4])
+absdist = sys.argv[5] == "1"
+
+d = np.load(in_path)
+ms = ml.MeshSet()
+ms.add_mesh(ml.Mesh(vertex_matrix=d["v"], face_matrix=d["f"].astype(np.int32)))
+ms.apply_filter("generate_resampled_uniform_mesh",
+                cellsize=ml.PureValue(cellsize),
+                offset=ml.PureValue(offset),
+                absdist=absdist)
+om = ms.current_mesh()
+np.savez(out_path,
+         v=np.asarray(om.vertex_matrix(), dtype=np.float64),
+         f=np.asarray(om.face_matrix(), dtype=np.int64))
+'''
+
+
+def _resample_uniform_isolated(verts, tris, voxel, absdist, offset,
+                               timeout=RESAMPLE_SUBPROC_TIMEOUT):
+    """Run PyMeshLab ``generate_resampled_uniform_mesh`` under a timeout.
+
+    See ``RESAMPLE_SUBPROC_TIMEOUT`` for why the call is isolated: the VCG
+    resampler's KD-tree build degenerates (tens of GB, minutes) on meshes with
+    long skinny triangle fans, and a healthy call is sub-second.
+
+    Returns ``(pv, pt, timed_out)``. On success ``pv``/``pt`` hold the resampled
+    arrays and ``timed_out`` is False; on a non-timeout failure both arrays are
+    ``None`` and ``timed_out`` is False; on timeout both arrays are ``None`` and
+    ``timed_out`` is True (so the caller can skip a second, equally doomed
+    resample and go straight to the alpha-wrap fallback).
+
+    Byte-identical to the previous in-process call for every input that
+    completes within ``timeout``: same filter, same parameters and the same
+    float64/int32 arrays (round-tripped through temp NPZ files). The child's
+    stdout/stderr are discarded so it can never corrupt the parent's JSON
+    report.
+    """
+    import os
+    import subprocess
+    import sys
+    import tempfile
+
+    exe = sys.executable
+    if not exe:
+        return None, None, False
+
+    workdir = tempfile.mkdtemp(prefix="sutura_resample_")
+    in_path = os.path.join(workdir, "in.npz")
+    out_path = os.path.join(workdir, "out.npz")
+
+    def _cleanup():
+        try:
+            for name in ("in.npz", "out.npz"):
+                p = os.path.join(workdir, name)
+                if os.path.exists(p):
+                    os.remove(p)
+            os.rmdir(workdir)
+        except OSError:
+            pass
+
+    try:
+        np.savez(in_path,
+                 v=np.asarray(verts, dtype=np.float64),
+                 f=np.asarray(tris, dtype=np.int64))
+        proc = subprocess.run(
+            [exe, "-c", _RESAMPLE_CHILD, in_path, out_path,
+             repr(float(voxel)), repr(float(offset)), "1" if absdist else "0"],
+            timeout=timeout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        _cleanup()
+        return None, None, True
+    except (OSError, ValueError):
+        _cleanup()
+        return None, None, False
+
+    if proc.returncode != 0 or not os.path.exists(out_path):
+        _cleanup()
+        return None, None, False
+    try:
+        with np.load(out_path) as z:
+            pv = np.asarray(z["v"], dtype=np.float64)
+            pt = np.asarray(z["f"], dtype=np.int64)
+    except (OSError, ValueError, KeyError):
+        _cleanup()
+        return None, None, False
+    _cleanup()
+    return pv, pt, False
+
+
 def build_proxy(verts, tris, voxel=None):
     """Construct a watertight, coarse proxy surface for the input mesh.
 
@@ -183,55 +297,51 @@ def build_proxy(verts, tris, voxel=None):
 
     import pymeshlab as ml
 
-    # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
-    try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        ms.apply_filter(
-            'generate_resampled_uniform_mesh',
-            cellsize=ml.PureValue(voxel),
-            offset=ml.PureValue(0.0),
-            absdist=False,
-        )
-        ms.apply_filter('meshing_close_holes', maxholesize=10000)
-        ms.apply_filter('meshing_close_holes', maxholesize=10000)
-        out = ms.current_mesh()
-        pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
-        pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
-        is_wt, _ = _check_validity(pv, pt)
-        if is_wt and len(pt) >= 4:
-            return pv, pt, {
-                'method': 'uniform_resampled_signed',
-                'voxel': voxel,
-                'faces': len(pt),
-            }
-    except Exception:
-        pass
+    # Strategy 1: Signed resampling with hole closure (produces a single watertight shell).
+    # The resample itself runs out-of-process under a timeout (see
+    # RESAMPLE_SUBPROC_TIMEOUT); only the (fast) hole closing and checks run here.
+    res = _resample_uniform_isolated(in_v, in_t, voxel, absdist=False, offset=0.0)
+    if res[0] is not None:
+        try:
+            ms = ml.MeshSet()
+            ms.add_mesh(ml.Mesh(vertex_matrix=res[0],
+                                face_matrix=np.asarray(res[1], np.int32)))
+            ms.apply_filter('meshing_close_holes', maxholesize=10000)
+            ms.apply_filter('meshing_close_holes', maxholesize=10000)
+            out = ms.current_mesh()
+            pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
+            pt = np.asarray(out.face_matrix(), dtype=np.int32)
+            pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+            is_wt, _ = _check_validity(pv, pt)
+            if is_wt and len(pt) >= 4:
+                return pv, pt, {
+                    'method': 'uniform_resampled_signed',
+                    'voxel': voxel,
+                    'faces': len(pt),
+                }
+        except Exception:
+            pass
 
-    # Strategy 2: Unsigned distance offset resampling (absdist=True, offset=voxel)
-    try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        ms.apply_filter(
-            'generate_resampled_uniform_mesh',
-            cellsize=ml.PureValue(voxel),
-            offset=ml.PureValue(voxel),
-            absdist=True,
-        )
-        out = ms.current_mesh()
-        pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
-        pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
-        is_wt, _ = _check_validity(pv, pt)
-        if is_wt and len(pt) >= 4:
-            return pv, pt, {
-                'method': 'uniform_resampled_unsigned',
-                'voxel': voxel,
-                'faces': len(pt),
-            }
-    except Exception:
-        pass
+    # Strategy 2: Unsigned distance offset resampling (absdist=True, offset=voxel).
+    # Skipped when strategy 1 timed out: the same mesh drives the same
+    # degenerate KD-tree build, so a second bounded resample would waste another
+    # full timeout for the same result. Go straight to the alpha-wrap fallback.
+    if not res[2]:
+        res = _resample_uniform_isolated(in_v, in_t, voxel, absdist=True, offset=voxel)
+        if res[0] is not None:
+            try:
+                pv = np.asarray(res[0], dtype=np.float64)
+                pt = np.asarray(res[1], dtype=np.int32)
+                pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+                is_wt, _ = _check_validity(pv, pt)
+                if is_wt and len(pt) >= 4:
+                    return pv, pt, {
+                        'method': 'uniform_resampled_unsigned',
+                        'voxel': voxel,
+                        'faces': len(pt),
+                    }
+            except Exception:
+                pass
 
     # Strategy 3: Alpha wrap fallback (guaranteed watertight 2-manifold)
     try:
