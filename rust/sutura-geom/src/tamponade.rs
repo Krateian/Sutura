@@ -2552,6 +2552,91 @@ fn reference_dev_ok(cand: &[[u32; 3]], refs: &ReferenceSurface, verts: &[[f64; 3
     true
 }
 
+/// Shape sanity gate for a candidate cap (T12, second safeguard). Rejects a cap
+/// whose vertices stray more than half the rim diameter from the parent
+/// reference surface (or, with no reference, from the rim's own best-fit plane),
+/// and a cap carrying a face whose normal flips more than 90 deg against the
+/// ring. The runaway fin is normally prevented by the exact rollback restore;
+/// this gate stops such a plug from being committed at all.
+fn cap_shape_ok(
+    cand: &[[u32; 3]],
+    verts: &[[f64; 3]],
+    new_base: u32,
+    added: &[[f64; 3]],
+    rim: &[u32],
+    rim_diag: f64,
+    refs: Option<&ReferenceSurface>,
+) -> bool {
+    if cand.is_empty() || rim.len() < 3 {
+        return true;
+    }
+    let limit = 0.5 * rim_diag;
+    let ring_pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    let rn = newell_normal(&ring_pts);
+    let rnl = norm3(rn);
+    if rnl <= 1e-20 {
+        return true; // degenerate ring: no reliable plane, let other gates decide
+    }
+    let rim_normal = [rn[0] / rnl, rn[1] / rnl, rn[2] / rnl];
+    let mut centroid = [0.0f64; 3];
+    for p in &ring_pts {
+        centroid[0] += p[0];
+        centroid[1] += p[1];
+        centroid[2] += p[2];
+    }
+    let inv = 1.0 / ring_pts.len() as f64;
+    centroid = [centroid[0] * inv, centroid[1] * inv, centroid[2] * inv];
+
+    // Mean cap normal (area-weighted), used to sign-align the ring normal so a
+    // consistently-wound but reversed cap is not read as a per-face flip.
+    let mut cap_n = [0.0f64; 3];
+    for t in cand {
+        let a = skirt_pos(t[0], verts, new_base, added);
+        let b = skirt_pos(t[1], verts, new_base, added);
+        let c = skirt_pos(t[2], verts, new_base, added);
+        let n = cross3(
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        cap_n[0] += n[0];
+        cap_n[1] += n[1];
+        cap_n[2] += n[2];
+    }
+    let ref_dir = if dot3(cap_n, rim_normal) < 0.0 {
+        [-rim_normal[0], -rim_normal[1], -rim_normal[2]]
+    } else {
+        rim_normal
+    };
+
+    for t in cand {
+        let a = skirt_pos(t[0], verts, new_base, added);
+        let b = skirt_pos(t[1], verts, new_base, added);
+        let c = skirt_pos(t[2], verts, new_base, added);
+        let nf = cross3(
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        if norm3(nf) > 1e-20 && dot3(nf, ref_dir) < 0.0 {
+            return false;
+        }
+        for p in [a, b, c] {
+            let d = if let Some(r) = refs {
+                r.signed_height(p).abs()
+            } else {
+                dot3(
+                    [p[0] - centroid[0], p[1] - centroid[1], p[2] - centroid[2]],
+                    rim_normal,
+                )
+                .abs()
+            };
+            if d > limit {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Cancellation-count variant over a local triangulation whose extra interior
 /// vertex index is beyond the rim; rim edges are matched by position in `rim`.
 fn cancellation_count_local(
@@ -3200,14 +3285,26 @@ fn reload_faces_single_fan(v: u32, faces: &[u32], wtris: &[[u32; 3]]) -> bool {
     (0..n).filter(|&i| find(&mut parent, i) == i).count() == 1
 }
 
-/// One accepted plug's triangle range in the output triangle array, used to
-/// attribute a reload regression to individual plugs (per-plug rollback).
-#[derive(Clone, Copy, Debug)]
+/// One accepted plug's full footprint in the output arrays, used to attribute a
+/// reload regression to individual plugs (per-plug rollback) AND to restore the
+/// touched region EXACTLY on rollback.
+///
+/// A plug is not only the triangles it appends: committing it may also have
+/// moved existing (original) vertices in place (the overshoot trim lifts a tail
+/// rim vertex onto the reference). Rolling back only the appended triangles
+/// therefore left the moved rim ring behind -- a jagged strip / a runaway fin
+/// bulging out of the surface. The footprint records every moved vertex with
+/// its pre-move position so a rollback restores the region to the input state.
+#[derive(Clone, Debug, Default)]
 struct PlugRegion {
+    /// Added triangles live in `out_tris[tri_start..tri_end]`.
     tri_start: usize,
     tri_end: usize,
     reference: bool,
     steiner: bool,
+    /// Vertices this plug moved in place, each with its original position
+    /// (captured before the move). Restored on rollback.
+    moved: Vec<(u32, [f64; 3])>,
 }
 
 /// Reload verdict of the output with one plug region removed (vertices kept,
@@ -3249,8 +3346,12 @@ fn reload_verdict_dropping(
     reload_verdict(verts, &filtered)
 }
 
-/// Drop the flagged regions from the output and compact the vertex array to
-/// the referenced vertices.
+/// Drop the flagged regions from the output, restore every vertex move they
+/// made, and compact the vertex array to the referenced vertices. Restoring the
+/// moved vertices is what makes a rolled-back plug leave the region EXACTLY as
+/// the input (the append-only triangle range alone left the trim/snap ring
+/// behind). Regions are walked in reverse so that, if two loops ever touched the
+/// same vertex, the earliest region's recorded original position wins.
 fn apply_region_rollback(
     out_verts: &mut Vec<[f64; 3]>,
     out_tris: &mut Vec<[u32; 3]>,
@@ -3258,6 +3359,15 @@ fn apply_region_rollback(
     drop: &[bool],
 ) {
     let nv = out_verts.len();
+    for (r, &d) in regions.iter().zip(drop).rev() {
+        if d {
+            for &(v, orig) in &r.moved {
+                if (v as usize) < nv {
+                    out_verts[v as usize] = orig;
+                }
+            }
+        }
+    }
     let mut keep = vec![true; out_tris.len()];
     for (r, &d) in regions.iter().zip(drop) {
         if d {
@@ -3811,6 +3921,10 @@ pub fn tamponade_repair(
             None
         };
         let mut sealed = false;
+        // Every in-place vertex move this loop makes (the overshoot trim), with
+        // the position each vertex held before the move. Carried into whichever
+        // plug commits, so a later rollback can restore the region exactly.
+        let mut loop_moved: Vec<(u32, [f64; 3])> = Vec::new();
         if let Some(ref refs) = reference {
             // Overshoot trim: lift tail rim vertices that sit clearly below
             // the reference (the extruded spike that overhangs the hole).
@@ -3822,10 +3936,11 @@ pub fn tamponade_repair(
                 }
                 let p = out_verts[v as usize];
                 if refs.signed_height(p) < -TRIM_EPS_FACTOR * h {
-                    out_verts[v as usize] = refs.place(p);
                     if moved.insert(v) {
+                        loop_moved.push((v, p));
                         trimmed += 1;
                     }
+                    out_verts[v as usize] = refs.place(p);
                 }
             }
             info.trimmed_vertices += trimmed;
@@ -3887,11 +4002,24 @@ pub fn tamponade_repair(
             }
 
             if let Some(cand) = cand {
-                let cand_counts = edge_use_counts(&cand);
-                let collides = cand_counts
+                let cap_counts = edge_use_counts(&cand);
+                let collides = cap_counts
                     .iter()
                     .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
-                if collides {
+                if !cap_shape_ok(
+                    &cand,
+                    &out_verts,
+                    out_verts.len() as u32,
+                    &added,
+                    &rim,
+                    rim_diag,
+                    Some(refs),
+                ) {
+                    info.loop_diag
+                        .push(format!("m={} rejected:shape", rim.len()));
+                    plug_rejected_count += 1;
+                    info.reference_fallback += 1;
+                } else if collides {
                     info.loop_diag
                         .push(format!("m={} rejected:edge_collision", rim.len()));
                     plug_rejected_count += 1;
@@ -3911,7 +4039,7 @@ pub fn tamponade_repair(
                     plug_rejected_count += 1;
                     info.reference_fallback += 1;
                 } else {
-                    for (e, &d) in &cand_counts {
+                    for (e, &d) in &cap_counts {
                         *edge_count.entry(*e).or_insert(0) += d;
                     }
                     let n_added = added.len();
@@ -3925,6 +4053,7 @@ pub fn tamponade_repair(
                         tri_end: out_tris.len(),
                         reference: true,
                         steiner: n_added > 0,
+                        moved: loop_moved.clone(),
                     });
                     plug_count += 1;
                     info.reference_used += 1;
@@ -4002,7 +4131,19 @@ pub fn tamponade_repair(
                         let collides = cand_counts
                             .iter()
                             .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
-                        if collides {
+                        if !cap_shape_ok(
+                            &cand,
+                            &out_verts,
+                            out_verts.len() as u32,
+                            &added_local,
+                            &rim,
+                            rim_diag,
+                            reference.as_ref(),
+                        ) {
+                            info.loop_diag
+                                .push(format!("m={} rejected:shape", rim.len()));
+                            plug_rejected_count += 1;
+                        } else if collides {
                             info.loop_diag
                                 .push(format!("m={} rejected:edge_collision", rim.len()));
                             plug_rejected_count += 1;
@@ -4032,6 +4173,7 @@ pub fn tamponade_repair(
                                 tri_end: out_tris.len(),
                                 reference: false,
                                 steiner: centre.is_some(),
+                                moved: loop_moved.clone(),
                             });
                             plug_count += 1;
                             info.loop_diag.push(format!(
@@ -5064,7 +5206,7 @@ mod tests {
         let base = reload_verdict(&verts, &tris[..2]);
         let full = reload_verdict(&verts, &tris);
         // The third triangle is the "plug" region.
-        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false };
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new() };
         let without = reload_verdict_without(&verts, &tris, &region);
         assert!(
             without.nm_edges < full.nm_edges && !without.worse_than(&base),
@@ -5125,7 +5267,13 @@ mod tests {
         }
         let tri_start = tris.len();
         tris.push([4, 5, 6]);
-        let region = PlugRegion { tri_start, tri_end: tris.len(), reference: false, steiner: false };
+        let region = PlugRegion {
+            tri_start,
+            tri_end: tris.len(),
+            reference: false,
+            steiner: false,
+            moved: Vec::new(),
+        };
         (verts, tris, region)
     }
 
@@ -5157,6 +5305,7 @@ mod tests {
             tri_end: tris.len(),
             reference: false,
             steiner: false,
+            moved: Vec::new(),
         };
 
         let regions = [poking, clean];
@@ -5178,6 +5327,87 @@ mod tests {
         assert!(
             ov.iter().any(|v| v[2] >= 2.0),
             "clean plug was dropped: {ov:?}"
+        );
+    }
+
+    // ---- T12 exact footprint restore + cap shape gate --------------------
+
+    #[test]
+    fn rollback_restores_a_moved_original_vertex() {
+        // A plug that moved an ORIGINAL vertex in place (the overshoot trim)
+        // must restore that vertex's pre-move position on rollback, not only
+        // drop its appended faces. Face 0 stays and references vertex 3, so the
+        // restored position survives the compaction and is observable.
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 5.0], // original vertex, moved to z = 5
+            [1.0, 1.0, 1.0], // added plug vertex
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 3, 2], [0, 1, 4]];
+        let region = PlugRegion {
+            tri_start: 1,
+            tri_end: 2,
+            reference: true,
+            steiner: true,
+            moved: vec![(3, [0.5, 0.5, 0.05])],
+        };
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &[region], &[true]);
+        assert_eq!(ot.len(), 1, "the plug face must be dropped");
+        assert!(
+            ov.iter().all(|v| (v[2] - 5.0).abs() > 1e-9),
+            "the moved vertex still carries its displaced position: {ov:?}"
+        );
+        assert!(
+            ov.iter().any(|v| (v[2] - 0.05).abs() < 1e-9),
+            "restored position missing: {ov:?}"
+        );
+    }
+
+    #[test]
+    fn cap_shape_gate_rejects_a_runaway_fin() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 10.0], // apex poking 10 above a rim_diag of ~1.41
+        ];
+        let rim = vec![0u32, 1, 2, 3];
+        let rim_diag = 2.0f64.sqrt();
+        // Flat fan: acceptable.
+        let flat: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3]];
+        assert!(
+            cap_shape_ok(&flat, &verts, verts.len() as u32, &[], &rim, rim_diag, None),
+            "flat cap wrongly rejected"
+        );
+        // Fan to a far apex: the fin. Must be rejected.
+        let fin: Vec<[u32; 3]> = vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]];
+        assert!(
+            !cap_shape_ok(&fin, &verts, verts.len() as u32, &[], &rim, rim_diag, None),
+            "runaway fin accepted"
+        );
+    }
+
+    #[test]
+    fn cap_shape_gate_rejects_a_flipped_face() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let rim = vec![0u32, 1, 2, 3];
+        let rim_diag = 2.0f64.sqrt();
+        // A flat cap plus one face wound backwards: mean normal still +z, so the
+        // reversed face reads as a >90 deg flip against the ring.
+        let folded: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3], [0, 2, 1]];
+        assert!(
+            !cap_shape_ok(&folded, &verts, verts.len() as u32, &[], &rim, rim_diag, None),
+            "flipped cap face accepted"
         );
     }
 }
