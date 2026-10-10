@@ -508,6 +508,11 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
     let ref_on = std::env::var("SUTURA_FLAP_REF")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
+    // Per-loop candidate selection: try thin-plate, then membrane, REF and the
+    // unfaired refined patch, committing the first that passes the guards.
+    let select = std::env::var("SUTURA_FLAP_SELECT")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false);
     let adj_ref = if ref_on {
         Some(crate::tamponade::build_adjacency(v2.len(), &t2))
     } else {
@@ -689,6 +694,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         // below then falls back to this unfaired patch (still refine-only Flap)
         // instead of discarding the whole loop.
         let mut p_prefair: Option<Vec<V3>> = None;
+        let mut ghost: Vec<V3> = Vec::new();
         if prm.fair && p_pts.len() > m {
             p_prefair = Some(p_pts.clone());
             let centroid = [
@@ -696,7 +702,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 pts.iter().map(|q| q[1]).sum::<f64>() / m as f64,
                 pts.iter().map(|q| q[2]).sum::<f64>() / m as f64,
             ];
-            let mut ghost = vec![[0.0f64; 3]; m];
+            ghost = vec![[0.0f64; 3]; m];
             let ell = target.max(1e-12) * fair_fraction(m);
             for i in 0..m {
                 let gv = loop_arr[i];
@@ -793,6 +799,101 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             .map(|f| [gmap(f[0] as usize), gmap(f[1] as usize), gmap(f[2] as usize)])
             .collect();
 
+        // Per-loop candidate selection (SUTURA_FLAP_SELECT): try thin-plate,
+        // then membrane, REF and the unfaired refined patch, committing the
+        // first that passes the zero-volume / coplanar / safety / normal-
+        // deviation guards, so a loop the thin-plate fold guard rejects can
+        // still be filled cleanly instead of falling to Stage-1.
+        if select && p_prefair.is_some() {
+            let base = p_prefair.as_ref().unwrap();
+            // `primary` = the thin-plate patch, accepted exactly like the
+            // default path (no safety), so SELECT is never worse than default;
+            // the alternatives additionally need the per-loop safety.
+            let ok = |p: &[V3], primary: bool| -> bool {
+                if let Some(fi) = fi_opt {
+                    let comp = stats.lab[fi as usize] as usize;
+                    if nloops_c[comp] == 1 {
+                        let mut vp = 0.0f64;
+                        let mut ap = 0.0f64;
+                        for f in &faces {
+                            let (a, b, c) =
+                                (p[f[0] as usize], p[f[1] as usize], p[f[2] as usize]);
+                            vp += dot(a, cross(b, c)) / 6.0;
+                            ap += 0.5 * norm(cross(sub(b, a), sub(c, a)));
+                        }
+                        let tot = (stats.vol_c[comp] + vp).abs();
+                        let area = stats.area_c[comp] + ap;
+                        if area > 0.0 && tot <= ZERO_VOL_FRAC * area.powf(1.5) {
+                            return false;
+                        }
+                    }
+                }
+                if prm.avoid_coplanar
+                    && guard::coplanar_collides(
+                        p,
+                        &faces,
+                        &[],
+                        &extra_ref,
+                        prm.coplanar_frac,
+                        prm.coplanar_cos,
+                    )
+                {
+                    return false;
+                }
+                if !primary {
+                    let (safe, _why) = patch_safety(&out_v, &out_t, &p[m..], &gfaces);
+                    if !safe {
+                        return false;
+                    }
+                }
+                true
+            };
+            // Candidate 0 is the current (thin-plate) patch, accepted like the
+            // default; then membrane, REF and the unfaired refined patch.
+            let mut cands: Vec<(Vec<V3>, bool)> = vec![(p_pts.clone(), true)];
+            {
+                let mut c = base.clone();
+                fair::fair_patch_energy(&mut c, &faces, m, &ghost, 1, None, 0.0);
+                cands.push((c, false));
+            }
+            if ref_on {
+                if let Some(adj) = adj_ref.as_ref() {
+                    if let Some(refs) =
+                        crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
+                    {
+                        let mut c = base.clone();
+                        for _ in 0..3 {
+                            let data: Vec<V3> =
+                                c[m..].iter().map(|&q| refs.place(q)).collect();
+                            fair::fair_patch_energy(
+                                &mut c, &faces, m, &ghost, 1, Some(&data), 2.0,
+                            );
+                        }
+                        cands.push((c, false));
+                    }
+                }
+            }
+            cands.push((base.clone(), false));
+            let mut chosen: Option<Vec<V3>> = None;
+            for (c, primary) in cands {
+                if ok(&c, primary) {
+                    chosen = Some(c);
+                    break;
+                }
+            }
+            match chosen {
+                Some(c) => {
+                    p_pts = c;
+                }
+                None => {
+                    report.loops_skipped_coplanar += 1;
+                    log.action = Some("coplanar".to_string());
+                    report.loop_log.push(log);
+                    continue;
+                }
+            }
+        }
+
         // lone single-sided triangle guard
         if m == 3 {
             let mut adjs: HashSet<u32> = HashSet::new();
@@ -879,7 +980,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         // Per-loop safety check (membrane path): never commit a patch that
         // self-intersects or leaves a reload-non-manifold seam; drop it and
         // leave the hole for a later tier instead.
-        if membrane || ref_on {
+        if (membrane || ref_on) && !select {
             let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces);
             if !safe {
                 report.loops_skipped_safety += 1;
