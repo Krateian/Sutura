@@ -16,7 +16,7 @@
 //! plug that would introduce a boundary edge, a zero-area triangle or a
 //! winding inconsistent with the rim.
 
-use crate::flap::dp::min_area_triangulation;
+use crate::flap::dp::min_area_triangulation_filtered;
 use crate::mincut::BkGraph;
 use crate::winding::MeshBvh;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,6 +28,11 @@ const PLUG_DP_CAP: usize = 300;
 /// Plug triangles with an area at or below this (in the mesh's units, squared)
 /// are treated as degenerate and cause the loop's plug to be rejected.
 const PLUG_MIN_AREA: f64 = 1e-12;
+/// A plug triangle whose largest interior angle lies within this many degrees
+/// of 180 is a near-collinear sliver and is rejected by the min-area DP. Small
+/// enough to leave legitimate fan triangles (whose apex angle is far from 180)
+/// untouched, large enough to route the DP around a flat cap's collinear ears.
+const PLUG_COLLINEAR_MARGIN_DEG: f64 = 1.0;
 /// Boundary loops at or below this vertex count are treated as genuine holes
 /// without the min-cut test. A tiny rim cannot separate a meaningful interior
 /// from the exterior, and the coarse occupancy grid used by the cut rejects
@@ -1524,7 +1529,13 @@ fn triangulate_rim_loop(
     // DP-only behaviour byte-identical.
     let manifold_mode = std::env::var("SUTURA_TAMP_MANIFOLD").is_ok();
     let local = if m <= PLUG_DP_CAP {
-        let dp = min_area_triangulation(&pts, PLUG_DP_CAP, &HashSet::new());
+        let dp = min_area_triangulation_filtered(
+            &pts,
+            PLUG_DP_CAP,
+            &HashSet::new(),
+            PLUG_MIN_AREA,
+            PLUG_COLLINEAR_MARGIN_DEG,
+        );
         if manifold_mode && dp.len() != m - 2 {
             ear_clip(&pts)
         } else {
@@ -2092,18 +2103,18 @@ fn cancellation_count_local(
     cancels
 }
 
-/// Fan patch from a single interior vertex placed ON the reference surface.
-/// Returns `(triangles, centre)` where the centre index is `rim.len()`.
-fn fan_patch(
+/// Fan patch from a single interior vertex at `centre` (local index
+/// `rim.len()`). Returns `(triangles, centre)`; the orientation that cancels
+/// the most rim edges wins. No reference surface is required.
+fn fan_from_centre(
     rim: &[u32],
-    refs: &ReferenceSurface,
+    centre: [f64; 3],
     directed_set: &HashSet<(u32, u32)>,
 ) -> Option<(Vec<[u32; 3]>, [f64; 3])> {
     let m = rim.len();
     if m < 4 {
         return None;
     }
-    let centre = refs.place(refs.origin);
     let cm = m as u32;
     let base: Vec<[u32; 3]> = (0..m).map(|i| [i as u32, ((i + 1) % m) as u32, cm]).collect();
     let flip: Vec<[u32; 3]> = base.iter().map(|t| [t[0], t[2], t[1]]).collect();
@@ -2115,6 +2126,72 @@ fn fan_patch(
         return None;
     }
     Some((if cf > cb { flip } else { base }, centre))
+}
+
+/// Fan patch from a single interior vertex placed ON the reference surface.
+/// Returns `(triangles, centre)` where the centre index is `rim.len()`.
+fn fan_patch(
+    rim: &[u32],
+    refs: &ReferenceSurface,
+    directed_set: &HashSet<(u32, u32)>,
+) -> Option<(Vec<[u32; 3]>, [f64; 3])> {
+    fan_from_centre(rim, refs.place(refs.origin), directed_set)
+}
+
+/// Fan patch from the rim centroid. The centroid lies on the rim's
+/// least-squares plane by construction, so a fan to it is flat over the rim
+/// and passes the deviation gate whenever the rim is reasonably planar. It is
+/// the fallback for a rim with no non-degenerate rim-only triangulation; a
+/// fully collinear rim still yields only degenerate triangles, which the
+/// caller's structure gate then rejects.
+fn centroid_fan(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    directed_set: &HashSet<(u32, u32)>,
+) -> Option<(Vec<[u32; 3]>, [f64; 3])> {
+    let m = rim.len();
+    if m < 4 {
+        return None;
+    }
+    let mut c = [0.0f64; 3];
+    for &v in rim {
+        let p = verts[v as usize];
+        c[0] += p[0];
+        c[1] += p[1];
+        c[2] += p[2];
+    }
+    let inv = 1.0 / m as f64;
+    c = [c[0] * inv, c[1] * inv, c[2] * inv];
+    fan_from_centre(rim, c, directed_set)
+}
+
+/// Rim-only plug, and when that has no non-degenerate triangulation, a fan to
+/// a single interior Steiner vertex at the rim centroid. `new_idx` is the
+/// global index the Steiner vertex will receive (the caller appends it only
+/// once the plug is accepted). Returns global triangles plus the centre
+/// coordinate when the Steiner fallback supplied one.
+fn rim_plug_or_steiner(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    directed_set: &HashSet<(u32, u32)>,
+    allow_tie: bool,
+    new_idx: u32,
+) -> Result<(Vec<[u32; 3]>, Option<[f64; 3]>), &'static str> {
+    match triangulate_rim_loop(rim, verts, directed_set, allow_tie) {
+        Ok(tris) => Ok((tris, None)),
+        Err(why) => {
+            let (fan_local, centre) = centroid_fan(rim, verts, directed_set).ok_or(why)?;
+            let m = rim.len() as u32;
+            let fan: Vec<[u32; 3]> = fan_local
+                .iter()
+                .map(|t| {
+                    let f = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+                    [f(t[0]), f(t[1]), f(t[2])]
+                })
+                .collect();
+            Ok((fan, Some(centre)))
+        }
+    }
 }
 
 /// Count the vertex-connected components of a triangle mesh (union-find over
@@ -2529,12 +2606,36 @@ pub fn tamponade_repair(
             info.reference_fallback += 1;
         }
 
-        // Fallback: rim-only plug (byte-identical to the pre-T3 path).
-        if !sealed && reference.is_none() {
-            let tri = triangulate_rim_loop(&rim, verts, &directed_set, tiny);
+        // Fallback: rim-only plug (byte-identical to the pre-T3 path), and when
+        // the rim has no non-degenerate triangulation, a fan to a single
+        // interior Steiner vertex placed at the rim centroid.
+        if !sealed {
+            let new_idx = out_verts.len() as u32;
+            let tri = rim_plug_or_steiner(&rim, verts, &directed_set, tiny, new_idx);
             match tri {
-                Ok(cand) => {
-                    if !plug_deviation_ok(&cand, &rim, verts, h) {
+                Ok((cand, centre)) => {
+                    // The rim-only plug is judged against the original input
+                    // positions (unchanged). The Steiner fan is judged against
+                    // the output positions plus its own appended centre, since
+                    // the reference trim may have moved rim vertices.
+                    let (struct_ok, dev_ok) = if let Some(c) = centre {
+                        let mut vy = out_verts.clone();
+                        vy.push(c);
+                        (
+                            plug_structure_ok(&cand, &rim, &vy),
+                            plug_deviation_ok(&cand, &rim, &vy, h),
+                        )
+                    } else {
+                        (
+                            plug_structure_ok(&cand, &rim, verts),
+                            plug_deviation_ok(&cand, &rim, verts, h),
+                        )
+                    };
+                    if !struct_ok {
+                        info.loop_diag
+                            .push(format!("m={} rejected:degenerate", rim.len()));
+                        plug_rejected_count += 1;
+                    } else if !dev_ok {
                         info.loop_diag
                             .push(format!("m={} rejected:deviation", rim.len()));
                         plug_rejected_dev_count += 1;
@@ -2551,52 +2652,24 @@ pub fn tamponade_repair(
                             for (e, &d) in &cand_counts {
                                 *edge_count.entry(*e).or_insert(0) += d;
                             }
+                            if let Some(c) = centre {
+                                out_verts.push(c);
+                                info.patch_vertices += 1;
+                            }
                             plug_face_count += cand.len();
                             out_tris.extend(cand);
                             plug_count += 1;
                             info.loop_diag.push(format!(
-                                "m={} sealed{}",
+                                "m={} sealed{}{}",
                                 rim.len(),
-                                if tiny { ":tiny" } else { "" }
-                            ));
-                        }
-                    }
-                }
-                Err(why) => {
-                    info.loop_diag
-                        .push(format!("m={} rejected:{}", rim.len(), why));
-                    plug_rejected_count += 1;
-                }
-            }
-        } else if !sealed && reference.is_some() {
-            // A reference existed but neither candidate was acceptable; fall
-            // back to the rim-only plug so a legitimate hole is still sealed.
-            let tri = triangulate_rim_loop(&rim, verts, &directed_set, tiny);
-            match tri {
-                Ok(cand) => {
-                    if !plug_deviation_ok(&cand, &rim, verts, h) {
-                        info.loop_diag
-                            .push(format!("m={} rejected:deviation", rim.len()));
-                        plug_rejected_dev_count += 1;
-                    } else {
-                        let cand_counts = edge_use_counts(&cand);
-                        let collides = cand_counts
-                            .iter()
-                            .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
-                        if collides {
-                            info.loop_diag
-                                .push(format!("m={} rejected:edge_collision", rim.len()));
-                            plug_rejected_count += 1;
-                        } else {
-                            for (e, &d) in &cand_counts {
-                                *edge_count.entry(*e).or_insert(0) += d;
-                            }
-                            plug_face_count += cand.len();
-                            out_tris.extend(cand);
-                            plug_count += 1;
-                            info.loop_diag.push(format!(
-                                "m={} sealed:fallback",
-                                rim.len()
+                                if reference.is_some() {
+                                    ":fallback"
+                                } else if tiny {
+                                    ":tiny"
+                                } else {
+                                    ""
+                                },
+                                if centre.is_some() { ":steiner" } else { "" }
                             ));
                         }
                     }
@@ -3230,5 +3303,91 @@ mod tests {
             .expect("central hole rim");
         let refs = build_reference(&verts, &tris, rim, 0.02, &adj);
         assert!(refs.is_some(), "curved big hole must keep a reference");
+    }
+
+    fn planar_hexagon() -> (Vec<u32>, Vec<[f64; 3]>, HashSet<(u32, u32)>) {
+        let rim: Vec<u32> = (0..6).collect();
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let directed: HashSet<(u32, u32)> = rim
+            .iter()
+            .enumerate()
+            .map(|(i, _)| (i as u32, ((i + 1) % rim.len()) as u32))
+            .collect();
+        (rim, verts, directed)
+    }
+
+    #[test]
+    fn centroid_fan_is_valid_for_a_planar_rim() {
+        let (rim, verts, directed) = planar_hexagon();
+        let (fan_local, centre) = centroid_fan(&rim, &verts, &directed).expect("fan");
+        let m = rim.len() as u32;
+        let new_idx = verts.len() as u32;
+        let remap = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+        let fan: Vec<[u32; 3]> = fan_local
+            .iter()
+            .map(|t| [remap(t[0]), remap(t[1]), remap(t[2])])
+            .collect();
+        let mut vy = verts.clone();
+        vy.push(centre);
+        assert_eq!(fan.len(), rim.len());
+        assert!(plug_structure_ok(&fan, &rim, &vy));
+        assert!(cancellation_count_local(&fan_local, &rim, &directed) * 2 > rim.len());
+    }
+
+    #[test]
+    fn centroid_fan_of_a_collinear_rim_is_still_degenerate() {
+        let rim: Vec<u32> = (0..5).collect();
+        let verts: Vec<[f64; 3]> = (0..5).map(|i| [i as f64, 0.0, 0.0]).collect();
+        let directed: HashSet<(u32, u32)> =
+            (0..5).map(|i| (i as u32, ((i + 1) % 5) as u32)).collect();
+        let (fan_local, centre) = centroid_fan(&rim, &verts, &directed).expect("fan built");
+        let m = 5u32;
+        let new_idx = 5u32;
+        let remap = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+        let fan: Vec<[u32; 3]> = fan_local
+            .iter()
+            .map(|t| [remap(t[0]), remap(t[1]), remap(t[2])])
+            .collect();
+        let mut vy = verts.clone();
+        vy.push(centre);
+        assert!(!plug_structure_ok(&fan, &rim, &vy));
+    }
+
+    #[test]
+    fn rim_plug_or_steiner_prefers_the_rim_only_plug() {
+        let (rim, verts, directed) = planar_hexagon();
+        let (tris, centre) =
+            rim_plug_or_steiner(&rim, &verts, &directed, false, verts.len() as u32).expect("plug");
+        assert!(centre.is_none());
+        assert_eq!(tris.len(), rim.len() - 2);
+        assert!(plug_structure_ok(&tris, &rim, &verts));
+    }
+
+    #[test]
+    fn open_cube_with_a_collinear_rim_vertex_still_seals_rim_only() {
+        // A rectangle-with-midpoint rim: the unfiltered min-area DP would pick
+        // the zero-area ear and reject the plug as degenerate. The filtered DP
+        // must find the non-degenerate triangulation and seal with no Steiner
+        // vertex.
+        let (mut verts, mut tris) = unit_cube_open_top();
+        verts.push([0.5, 0.0, 1.0]); // v8: midpoint of top edge 4-5
+        let split = [0u32, 5, 4];
+        let pos = tris.iter().position(|t| *t == split).expect("triangle 0,5,4");
+        tris.splice(pos..pos + 1, [[0, 5, 8], [0, 8, 4]]);
+        let config = TamponadeConfig { h_min: Some(0.5), ..Default::default() };
+        let (out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        assert_eq!(info.reason, "ok", "{info:?}");
+        assert_eq!(info.plugs, 1);
+        assert_eq!(boundary_edge_count(&out_tris), 0);
+        // Rim-only: no Steiner vertex was appended.
+        assert_eq!(out_verts.len(), verts.len());
+        assert!(info.patch_vertices == 0, "{info:?}");
     }
 }
