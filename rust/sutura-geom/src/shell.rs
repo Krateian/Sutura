@@ -14,10 +14,14 @@
 //! - Seams on penetrating SI bodies are split exactly along intersection curves
 //!   (reusing triangle_intersection / cdt2d); no rim-loop plugs on penetration seams.
 
+use crate::arrangement::rat3_to_f64;
+use crate::cdt2d::{ConstrainedSegment, HostFrame, Point2D, SegmentSource, Triangulation, orient2d};
+use crate::point::Point3;
 use crate::raycast::{Stabber, DEFAULT_DIRS};
 use crate::winding::MeshBvh;
+use num_rational::BigRational;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Classification of an individual face in the mesh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -302,6 +306,19 @@ fn segments_properly_cross_2d(p1: [f64; 2], p2: [f64; 2], q1: [f64; 2], q2: [f64
 }
 
 fn triangles_proper_overlap_2d(a: &[[f64; 2]; 3], b: &[[f64; 2]; 3]) -> bool {
+    let c_a = [
+        (a[0][0] + a[1][0] + a[2][0]) / 3.0,
+        (a[0][1] + a[1][1] + a[2][1]) / 3.0,
+    ];
+    let c_b = [
+        (b[0][0] + b[1][0] + b[2][0]) / 3.0,
+        (b[0][1] + b[1][1] + b[2][1]) / 3.0,
+    ];
+    if point_strictly_in_triangle_2d(c_a, b[0], b[1], b[2])
+        || point_strictly_in_triangle_2d(c_b, a[0], a[1], a[2])
+    {
+        return true;
+    }
     for i in 0..3 {
         if point_strictly_in_triangle_2d(a[i], b[0], b[1], b[2]) {
             return true;
@@ -1026,26 +1043,74 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
 
     let mut out_tris = Vec::with_capacity(tris.len());
     for t in tris {
-        let mut poly: Vec<u32> = Vec::with_capacity(6);
-        for k in 0..3 {
-            let u = t[k];
-            let v = t[(k + 1) % 3];
-            poly.push(u);
-            let key = (u.min(v), u.max(v));
-            if let Some(splits) = edge_splits.get(&key) {
-                if u < v {
-                    poly.extend_from_slice(splits);
+        let e0_key = (t[0].min(t[1]), t[0].max(t[1]));
+        let e1_key = (t[1].min(t[2]), t[1].max(t[2]));
+        let e2_key = (t[2].min(t[0]), t[2].max(t[0]));
+        let s0 = edge_splits.get(&e0_key);
+        let s1 = edge_splits.get(&e1_key);
+        let s2 = edge_splits.get(&e2_key);
+
+        let split_count = s0.is_some() as usize + s1.is_some() as usize + s2.is_some() as usize;
+        if split_count == 0 {
+            out_tris.push(*t);
+        } else if split_count == 1 {
+            if let Some(splits) = s0 {
+                let mut w = vec![t[0]];
+                if t[0] < t[1] {
+                    w.extend_from_slice(splits);
                 } else {
-                    for &w in splits.iter().rev() {
-                        poly.push(w);
+                    for &x in splits.iter().rev() {
+                        w.push(x);
+                    }
+                }
+                w.push(t[1]);
+                for j in 0..w.len() - 1 {
+                    out_tris.push([w[j], w[j + 1], t[2]]);
+                }
+            } else if let Some(splits) = s1 {
+                let mut w = vec![t[1]];
+                if t[1] < t[2] {
+                    w.extend_from_slice(splits);
+                } else {
+                    for &x in splits.iter().rev() {
+                        w.push(x);
+                    }
+                }
+                w.push(t[2]);
+                for j in 0..w.len() - 1 {
+                    out_tris.push([t[0], w[j], w[j + 1]]);
+                }
+            } else if let Some(splits) = s2 {
+                let mut w = vec![t[2]];
+                if t[2] < t[0] {
+                    w.extend_from_slice(splits);
+                } else {
+                    for &x in splits.iter().rev() {
+                        w.push(x);
+                    }
+                }
+                w.push(t[0]);
+                for j in 0..w.len() - 1 {
+                    out_tris.push([w[j], w[j + 1], t[1]]);
+                }
+            }
+        } else {
+            let mut poly: Vec<u32> = Vec::with_capacity(9);
+            for k in 0..3 {
+                let u = t[k];
+                let v = t[(k + 1) % 3];
+                poly.push(u);
+                let key = (u.min(v), u.max(v));
+                if let Some(splits) = edge_splits.get(&key) {
+                    if u < v {
+                        poly.extend_from_slice(splits);
+                    } else {
+                        for &w in splits.iter().rev() {
+                            poly.push(w);
+                        }
                     }
                 }
             }
-        }
-
-        if poly.len() == 3 {
-            out_tris.push(*t);
-        } else {
             let p0 = poly[0];
             for i in 1..poly.len() - 1 {
                 if p0 != poly[i] && poly[i] != poly[i + 1] && poly[i + 1] != p0 {
@@ -1058,6 +1123,420 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
     out_tris
 }
 
+fn project_tri_uv(
+    verts: &[[f64; 3]],
+    t: [u32; 3],
+    origin: [f64; 3],
+    plane_u: [f64; 3],
+    plane_v: [f64; 3],
+) -> [[f64; 2]; 3] {
+    let p0 = verts[t[0] as usize];
+    let p1 = verts[t[1] as usize];
+    let p2 = verts[t[2] as usize];
+    [
+        [dot3(sub3(p0, origin), plane_u), dot3(sub3(p0, origin), plane_v)],
+        [dot3(sub3(p1, origin), plane_u), dot3(sub3(p1, origin), plane_v)],
+        [dot3(sub3(p2, origin), plane_u), dot3(sub3(p2, origin), plane_v)],
+    ]
+}
+
+/// Resolve coplanar contacts between different bodies/shells using exact 2D overlay.
+pub fn resolve_coplanar_contacts(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, bool) {
+    if tris.is_empty() || verts.len() < 3 {
+        return (verts.to_vec(), tris.to_vec(), false);
+    }
+
+    let (shell_map, num_shells) = compute_shell_components(tris);
+    if num_shells <= 1 {
+        return (verts.to_vec(), tris.to_vec(), false);
+    }
+
+    let h_med = median_edge_length(verts, tris);
+
+    // Group triangles by plane key
+    let mut plane_map: HashMap<(i64, i64, i64, i64), Vec<usize>> = HashMap::new();
+    for (i, &t) in tris.iter().enumerate() {
+        let v0 = verts[t[0] as usize];
+        let v1 = verts[t[1] as usize];
+        let v2 = verts[t[2] as usize];
+        let norm = cross3(sub3(v1, v0), sub3(v2, v0));
+        if norm3_sq(norm) < 1e-16 {
+            continue;
+        }
+        let pkey = plane_key(norm, v0, h_med);
+        plane_map.entry(pkey).or_default().push(i);
+    }
+
+    let mut any_modified = false;
+    let mut replaced_tris: HashSet<usize> = HashSet::new();
+    let mut new_verts: Vec<[f64; 3]> = Vec::new();
+    let mut new_tris: Vec<[u32; 3]> = Vec::new();
+
+    for (_pkey, plane_tris) in plane_map {
+        if plane_tris.len() <= 1 {
+            continue;
+        }
+        let first_shell = shell_map[plane_tris[0]];
+        if !plane_tris.iter().any(|&i| shell_map[i] != first_shell) {
+            continue;
+        }
+
+        // Find best reference normal for this plane
+        let mut max_asq = 0.0;
+        let mut best_norm = [0.0, 0.0, 0.0];
+        let mut origin = [0.0, 0.0, 0.0];
+        for &idx in &plane_tris {
+            let t = tris[idx];
+            let v0 = verts[t[0] as usize];
+            let v1 = verts[t[1] as usize];
+            let v2 = verts[t[2] as usize];
+            let n = cross3(sub3(v1, v0), sub3(v2, v0));
+            let asq = norm3_sq(n);
+            if asq > max_asq {
+                max_asq = asq;
+                best_norm = n;
+                origin = v0;
+            }
+        }
+        if max_asq < 1e-16 {
+            continue;
+        }
+        let plane_n = scale3(best_norm, 1.0 / norm3(best_norm));
+
+        let mut a = [1.0, 0.0, 0.0];
+        if plane_n[0].abs() > 0.8 {
+            a = [0.0, 1.0, 0.0];
+        }
+        let u_raw = sub3(a, scale3(plane_n, dot3(a, plane_n)));
+        let u_len = norm3(u_raw);
+        if u_len < 1e-12 {
+            continue;
+        }
+        let plane_u = scale3(u_raw, 1.0 / u_len);
+        let plane_v = cross3(plane_n, plane_u);
+
+        // Compute 2D projected triangles and AABBs in this plane
+        let projected: Vec<[[f64; 2]; 3]> = plane_tris
+            .iter()
+            .map(|&idx| project_tri_uv(verts, tris[idx], origin, plane_u, plane_v))
+            .collect();
+        let bboxes: Vec<[f64; 4]> = projected
+            .iter()
+            .map(|p| {
+                let umin = p[0][0].min(p[1][0]).min(p[2][0]);
+                let umax = p[0][0].max(p[1][0]).max(p[2][0]);
+                let vmin = p[0][1].min(p[1][1]).min(p[2][1]);
+                let vmax = p[0][1].max(p[1][1]).max(p[2][1]);
+                [umin, umax, vmin, vmax]
+            })
+            .collect();
+
+        // Build adjacency graph for triangles on this plane
+        let mut adj = vec![Vec::new(); plane_tris.len()];
+        for j in 0..plane_tris.len() {
+            let tj = tris[plane_tris[j]];
+            let bj = &bboxes[j];
+            for k in (j + 1)..plane_tris.len() {
+                let tk = tris[plane_tris[k]];
+                let bk = &bboxes[k];
+                if bj[0] > bk[1] + 1e-5
+                    || bj[1] < bk[0] - 1e-5
+                    || bj[2] > bk[3] + 1e-5
+                    || bj[3] < bk[2] - 1e-5
+                {
+                    continue;
+                }
+                let share_vert = tj.iter().any(|&v| tk.contains(&v));
+                let area_overlap = triangles_proper_overlap_2d(&projected[j], &projected[k])
+                    || triangle_canonical_key(tj) == triangle_canonical_key(tk);
+                if share_vert || area_overlap {
+                    adj[j].push(k);
+                    adj[k].push(j);
+                }
+            }
+        }
+
+        // Find connected clusters of triangles
+        let mut visited = vec![false; plane_tris.len()];
+        for start in 0..plane_tris.len() {
+            if visited[start] {
+                continue;
+            }
+            let mut cluster_indices = Vec::new();
+            let mut q = vec![start];
+            visited[start] = true;
+            while let Some(curr) = q.pop() {
+                cluster_indices.push(curr);
+                for &nbr in &adj[curr] {
+                    if !visited[nbr] {
+                        visited[nbr] = true;
+                        q.push(nbr);
+                    }
+                }
+            }
+
+            // Check if this cluster contains faces from multiple shells that actually overlap
+            let mut has_cross_shell_overlap = false;
+            let cluster_shells: HashSet<usize> = cluster_indices
+                .iter()
+                .map(|&ci| shell_map[plane_tris[ci]])
+                .collect();
+            if cluster_shells.len() > 1 {
+                for a_idx in 0..cluster_indices.len() {
+                    let ci1 = cluster_indices[a_idx];
+                    let s1 = shell_map[plane_tris[ci1]];
+                    let p1 = &projected[ci1];
+                    let t1 = tris[plane_tris[ci1]];
+                    for b_idx in (a_idx + 1)..cluster_indices.len() {
+                        let ci2 = cluster_indices[b_idx];
+                        let s2 = shell_map[plane_tris[ci2]];
+                        if s1 == s2 {
+                            continue;
+                        }
+                        let p2 = &projected[ci2];
+                        let t2 = tris[plane_tris[ci2]];
+                        if triangles_proper_overlap_2d(p1, p2)
+                            || triangle_canonical_key(t1) == triangle_canonical_key(t2)
+                        {
+                            has_cross_shell_overlap = true;
+                            break;
+                        }
+                    }
+                    if has_cross_shell_overlap {
+                        break;
+                    }
+                }
+            }
+
+            if !has_cross_shell_overlap {
+                continue; // no cross-shell contact in this cluster; keep verbatim!
+            }
+
+            // Compute local bounding box of this cluster in (u, v)
+            let mut umin = f64::INFINITY;
+            let mut umax = f64::NEG_INFINITY;
+            let mut vmin = f64::INFINITY;
+            let mut vmax = f64::NEG_INFINITY;
+            for &ci in &cluster_indices {
+                let bb = &bboxes[ci];
+                umin = umin.min(bb[0]);
+                umax = umax.max(bb[1]);
+                vmin = vmin.min(bb[2]);
+                vmax = vmax.max(bb[3]);
+            }
+
+            let l = (umax - umin).max(vmax - vmin).max(1e-3);
+            let cu = (umin + umax) * 0.5;
+            let cv = (vmin + vmax) * 0.5;
+            let m_pad = 20.0 * l;
+
+            let h0 = add3(origin, add3(scale3(plane_u, cu - m_pad), scale3(plane_v, cv - m_pad)));
+            let h1 = add3(origin, add3(scale3(plane_u, cu + 3.0 * m_pad), scale3(plane_v, cv - m_pad)));
+            let h2 = add3(origin, add3(scale3(plane_u, cu - m_pad), scale3(plane_v, cv + 3.0 * m_pad)));
+
+            let p0 = Point3::Explicit(h0);
+            let p1 = Point3::Explicit(h1);
+            let p2 = Point3::Explicit(h2);
+
+            let host_frame = match HostFrame::from_points(&p0, &p1, &p2) {
+                Some(f) => f,
+                None => continue,
+            };
+            let mut cdt = match Triangulation::from_host(&p0, &p1, &p2) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            let mut orig_tris_info = Vec::with_capacity(cluster_indices.len());
+            let mut constraint_set: HashSet<(usize, usize)> = HashSet::new();
+            let mut constraints: Vec<ConstrainedSegment> = Vec::new();
+
+            for &ci in &cluster_indices {
+                let tri_idx = plane_tris[ci];
+                let t = tris[tri_idx];
+                let v0 = verts[t[0] as usize];
+                let v1 = verts[t[1] as usize];
+                let v2 = verts[t[2] as usize];
+
+                let i0 = match cdt.insert_vertex(&Point3::Explicit(v0)) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let i1 = match cdt.insert_vertex(&Point3::Explicit(v1)) {
+                    Some(i) => i,
+                    None => continue,
+                };
+                let i2 = match cdt.insert_vertex(&Point3::Explicit(v2)) {
+                    Some(i) => i,
+                    None => continue,
+                };
+
+                orig_tris_info.push((tri_idx, [i0, i1, i2]));
+
+                let edges = [(i0, i1, v0, v1), (i1, i2, v1, v2), (i2, i0, v2, v0)];
+                for (ea, eb, eva, evb) in edges {
+                    if ea == eb {
+                        continue;
+                    }
+                    let key = (ea.min(eb), ea.max(eb));
+                    if constraint_set.insert(key) {
+                        constraints.push(ConstrainedSegment {
+                            endpoints: (ea, eb),
+                            source: SegmentSource::CoplanarEdge {
+                                endpoints: (eva, evb),
+                            },
+                        });
+                    }
+                }
+            }
+
+            cdt.add_constraints_batch(&constraints);
+
+            let sub_tris = cdt.triangles();
+            let cdt_verts = cdt.vertices();
+
+            let mut orig_with_sigma = Vec::with_capacity(orig_tris_info.len());
+            for (idx, [i0, i1, i2]) in orig_tris_info {
+                let p0 = &cdt_verts[i0].st;
+                let p1 = &cdt_verts[i1].st;
+                let p2 = &cdt_verts[i2].st;
+                let s_orig = orient2d(p0, p1, p2);
+                let sigma = if s_orig.is_positive() {
+                    1
+                } else if s_orig.is_negative() {
+                    -1
+                } else {
+                    0
+                };
+                orig_with_sigma.push((idx, [i0, i1, i2], sigma));
+            }
+
+            let three = BigRational::from_integer(3.into());
+            let mut emitted_sub_tris: Vec<[usize; 3]> = Vec::new();
+
+            for tri in sub_tris {
+                let (u, v, w) = (tri[0], tri[1], tri[2]);
+                if u <= 2 || v <= 2 || w <= 2 {
+                    continue; // touches host boundary
+                }
+
+                let v_u = &cdt_verts[u].st;
+                let v_v = &cdt_verts[v].st;
+                let v_w = &cdt_verts[w].st;
+                let ct = Point2D {
+                    s: (&v_u.s + &v_v.s + &v_w.s) / &three,
+                    t: (&v_u.t + &v_v.t + &v_w.t) / &three,
+                };
+
+                let mut c_pos = 0;
+                let mut c_neg = 0;
+                for &(_, [i0, i1, i2], sigma) in &orig_with_sigma {
+                    if sigma == 0 {
+                        continue;
+                    }
+                    let p0 = &cdt_verts[i0].st;
+                    let p1 = &cdt_verts[i1].st;
+                    let p2 = &cdt_verts[i2].st;
+                    let s1 = orient2d(p0, p1, &ct);
+                    let s2 = orient2d(p1, p2, &ct);
+                    let s3 = orient2d(p2, p0, &ct);
+                    let inside = if sigma > 0 {
+                        s1.is_positive() && s2.is_positive() && s3.is_positive()
+                    } else {
+                        s1.is_negative() && s2.is_negative() && s3.is_negative()
+                    };
+                    if inside {
+                        if sigma > 0 {
+                            c_pos += 1;
+                        } else {
+                            c_neg += 1;
+                        }
+                    }
+                }
+
+                let desired_sign = if c_pos > 0 && c_neg == 0 {
+                    1
+                } else if c_pos == 0 && c_neg > 0 {
+                    -1
+                } else {
+                    0
+                };
+
+                if desired_sign != 0 {
+                    let s_sub = orient2d(v_u, v_v, v_w);
+                    if desired_sign == 1 {
+                        if s_sub.is_positive() {
+                            emitted_sub_tris.push([u, v, w]);
+                        } else if s_sub.is_negative() {
+                            emitted_sub_tris.push([u, w, v]);
+                        }
+                    } else if desired_sign == -1 {
+                        if s_sub.is_negative() {
+                            emitted_sub_tris.push([u, v, w]);
+                        } else if s_sub.is_positive() {
+                            emitted_sub_tris.push([u, w, v]);
+                        }
+                    }
+                }
+            }
+
+            // Map emitted CDT vertices to output mesh vertices
+            let mut cdt_to_mesh: HashMap<usize, u32> = HashMap::new();
+            for t in &emitted_sub_tris {
+                for &k in t {
+                    cdt_to_mesh.entry(k).or_insert_with(|| {
+                        let pt = match &cdt_verts[k].provenance {
+                            Some(Point3::Explicit(p)) => *p,
+                            _ => rat3_to_f64(&host_frame.point3d(&cdt_verts[k].st.s, &cdt_verts[k].st.t)),
+                        };
+                        let next_idx = (verts.len() + new_verts.len()) as u32;
+                        new_verts.push(pt);
+                        next_idx
+                    });
+                }
+            }
+
+            for t in emitted_sub_tris {
+                let ma = cdt_to_mesh[&t[0]];
+                let mb = cdt_to_mesh[&t[1]];
+                let mc = cdt_to_mesh[&t[2]];
+                if ma != mb && mb != mc && mc != ma {
+                    new_tris.push([ma, mb, mc]);
+                }
+            }
+
+            for &ci in &cluster_indices {
+                replaced_tris.insert(plane_tris[ci]);
+            }
+            any_modified = true;
+        }
+    }
+
+    if !any_modified {
+        return (verts.to_vec(), tris.to_vec(), false);
+    }
+
+    let mut all_verts = verts.to_vec();
+    all_verts.extend(new_verts);
+
+    let mut all_tris = Vec::with_capacity(tris.len() - replaced_tris.len() + new_tris.len());
+    for i in 0..tris.len() {
+        if !replaced_tris.contains(&i) {
+            all_tris.push(tris[i]);
+        }
+    }
+    all_tris.extend(new_tris);
+
+    let (welded_verts, welded_tris) = weld_points_f64(&all_verts, &all_tris);
+    let conformed_tris = conforming_edge_split(&welded_verts, &welded_tris);
+    let (final_verts, final_tris) = weld_points_f64(&welded_verts, &conformed_tris);
+
+    (final_verts, final_tris, true)
+}
+
 /// Complete shell analysis & filter pre-pass for Tamponade (Idea A).
 pub fn shell_analyze_and_filter(
     verts: &[[f64; 3]],
@@ -1068,30 +1547,35 @@ pub fn shell_analyze_and_filter(
         return (verts.to_vec(), tris.to_vec(), ShellAnalysisResult::default());
     }
 
-    let analysis = analyze_shells(verts, tris, config);
+    // Step 0: Resolve coplanar contacts between different shells if any exist
+    let (cop_verts, cop_tris, cop_changed) = resolve_coplanar_contacts(verts, tris);
+    let cur_verts = if cop_changed { &cop_verts } else { verts };
+    let cur_tris = if cop_changed { &cop_tris } else { tris };
+
+    let analysis = analyze_shells(cur_verts, cur_tris, config);
 
     // Fast path: if the mesh is disjoint (Phase P-a) or has no faces needing deletion,
-    // return original mesh verbatim without running expensive arrangement splitting!
+    // return mesh verbatim without running expensive arrangement splitting!
     if analysis.is_disjoint
         || (analysis.buried_count == 0
             && analysis.coincident_opp_count == 0
             && analysis.coincident_same_count == 0
             && !analysis.has_internal_walls)
     {
-        return (verts.to_vec(), tris.to_vec(), analysis);
+        return (cur_verts.to_vec(), cur_tris.to_vec(), analysis);
     }
 
     // Flower / C1: If proper self-intersections exist, split along exact intersection curves first
     if config.split_intersections {
-        let tris_usize: Vec<[usize; 3]> = tris
+        let tris_usize: Vec<[usize; 3]> = cur_tris
             .iter()
             .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
             .collect();
-        let (_si_mask, si_count, _) = crate::self_intersections_core(verts, &tris_usize);
+        let (_si_mask, si_count, _) = crate::self_intersections_core(cur_verts, &tris_usize);
         if si_count > 0 {
             let prev_opts = crate::cdt2d::experimental::options();
             crate::cdt2d::experimental::set_options(prev_opts | crate::cdt2d::experimental::PROPAGATE_EDGE_POINTS);
-            let arr_res = crate::arrangement::arrangement_lite_core(verts, &tris_usize);
+            let arr_res = crate::arrangement::arrangement_lite_core(cur_verts, &tris_usize);
             crate::cdt2d::experimental::set_options(prev_opts);
 
             if let Ok((pool, out_tris, rep)) = arr_res {
@@ -1100,15 +1584,16 @@ pub fn shell_analyze_and_filter(
                     let raw_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
                     let (welded_verts, welded_tris) = weld_points_f64(&raw_verts, &raw_tris);
                     let conforming_tris = conforming_edge_split(&welded_verts, &welded_tris);
+                    let (post_cop_verts, post_cop_tris, _) = resolve_coplanar_contacts(&welded_verts, &conforming_tris);
                     let mut split_cfg = config.clone();
                     split_cfg.split_intersections = false;
-                    let split_res = analyze_shells(&welded_verts, &conforming_tris, &split_cfg);
+                    let split_res = analyze_shells(&post_cop_verts, &post_cop_tris, &split_cfg);
                     if !split_res.has_internal_walls && split_res.reason == "ok" {
                         let mut final_tris = Vec::with_capacity(split_res.surviving_indices.len());
                         for &idx in &split_res.surviving_indices {
-                            final_tris.push(conforming_tris[idx]);
+                            final_tris.push(post_cop_tris[idx]);
                         }
-                        return (welded_verts, final_tris, split_res);
+                        return (post_cop_verts, final_tris, split_res);
                     }
                 }
             }
@@ -1117,10 +1602,10 @@ pub fn shell_analyze_and_filter(
 
     let mut out_tris = Vec::with_capacity(analysis.surviving_indices.len());
     for &idx in &analysis.surviving_indices {
-        out_tris.push(tris[idx]);
+        out_tris.push(cur_tris[idx]);
     }
 
-    (verts.to_vec(), out_tris, analysis)
+    (cur_verts.to_vec(), out_tris, analysis)
 }
 
 /// Filter input triangles to keep only surviving outer and cavity faces (alias).
@@ -1525,9 +2010,8 @@ mod tests {
     }
 
     #[test]
-    fn test_half_cut_onion_fallback() {
-        // Addendum item 3: nested solids cut by one plane (z = 0), so cut faces of all layers
-        // are coplanar and overlapping. Coplanar overlapping faces -> unresolved -> fallback.
+    fn test_half_cut_onion_resolved() {
+        // Addendum item 3: nested solids cut by one plane (z = 0), resolved via coplanar 2D overlay.
         let outer = unit_box([-2.0, -2.0, 0.0], [4.0, 4.0, 2.0]);
         let inner = unit_box([-1.0, -1.0, 0.0], [2.0, 2.0, 1.0]);
         let (verts, tris) = combine_meshes(outer, inner);
@@ -1535,10 +2019,12 @@ mod tests {
         let config = ShellConfig::default();
         let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
 
-        assert!(res.has_internal_walls);
-        assert_eq!(res.reason, "unresolved_coplanar_overlapping");
-        // Must fallback, never emit half-union:
-        assert_eq!(out_t.len(), tris.len());
+        assert!(!res.has_internal_walls);
+        assert_eq!(res.reason, "ok");
+        let (holes, nm, parts) = check_mesh_closed_manifold_single_part(&out_t);
+        assert_eq!(holes, 0, "Must have 0 holes, found {}", holes);
+        assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
+        assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
     }
 
     #[test]
@@ -1771,5 +2257,118 @@ mod tests {
             }
         }
         assert!(non_si_outer_verbatim >= 2, "Non-SI outer end faces of the box must be verbatim");
+    }
+
+    #[test]
+    fn test_two_boxes_coplanar_contact_diff_tri() {
+        // Box 1: [0, 1]^3. Top face at z = 1.0 has 2 triangles.
+        let b1 = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+
+        // Box 2: [0, 1] x [0, 1] x [1, 2].
+        // Bottom face at z = 1.0 has 4 triangles meeting at center (0.5, 0.5, 1.0).
+        let b2_v = vec![
+            [0.0, 0.0, 1.0], // 0
+            [1.0, 0.0, 1.0], // 1
+            [1.0, 1.0, 1.0], // 2
+            [0.0, 1.0, 1.0], // 3
+            [0.0, 0.0, 2.0], // 4
+            [1.0, 0.0, 2.0], // 5
+            [1.0, 1.0, 2.0], // 6
+            [0.0, 1.0, 2.0], // 7
+            [0.5, 0.5, 1.0], // 8 center vertex on bottom face
+        ];
+        let b2_t = vec![
+            // bottom face (z = 1.0) with 4 triangles
+            [8, 1, 0],
+            [8, 2, 1],
+            [8, 3, 2],
+            [8, 0, 3],
+            // top (z = 2.0)
+            [4, 5, 6],
+            [4, 6, 7],
+            // front (y = 0.0)
+            [0, 1, 5],
+            [0, 5, 4],
+            // back (y = 1.0)
+            [2, 3, 7],
+            [2, 7, 6],
+            // left (x = 0.0)
+            [0, 4, 7],
+            [0, 7, 3],
+            // right (x = 1.0)
+            [1, 2, 6],
+            [1, 6, 5],
+        ];
+
+        let (verts, tris) = combine_meshes(b1, (b2_v, b2_t));
+
+        let mut expected_non_contact = std::collections::HashSet::new();
+        // b1 non-contact faces: bottom(0, 1), front(4, 5), back(6, 7), left(8, 9), right(10, 11)
+        for i in [0, 1, 4, 5, 6, 7, 8, 9, 10, 11] {
+            let t = tris[i];
+            let q0 = quant_pt(verts[t[0] as usize]);
+            let q1 = quant_pt(verts[t[1] as usize]);
+            let q2 = quant_pt(verts[t[2] as usize]);
+            expected_non_contact.insert((q0, q1, q2));
+        }
+        // b2 non-contact faces: top(16, 17), front(18, 19), back(20, 21), left(22, 23), right(24, 25)
+        for i in [16, 17, 18, 19, 20, 21, 22, 23, 24, 25] {
+            let t = tris[i];
+            let q0 = quant_pt(verts[t[0] as usize]);
+            let q1 = quant_pt(verts[t[1] as usize]);
+            let q2 = quant_pt(verts[t[2] as usize]);
+            expected_non_contact.insert((q0, q1, q2));
+        }
+        assert_eq!(expected_non_contact.len(), 20);
+
+        let config = ShellConfig::default();
+        let (out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.reason, "ok");
+        assert!(!res.has_internal_walls);
+
+        let (holes, nm, parts) = check_mesh_closed_manifold_single_part(&out_t);
+        assert_eq!(holes, 0, "Must have 0 holes, found {}", holes);
+        assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
+        assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
+
+        let mut out_faces = std::collections::HashSet::new();
+        for t in &out_t {
+            let p0 = quant_pt(out_v[t[0] as usize]);
+            let p1 = quant_pt(out_v[t[1] as usize]);
+            let p2 = quant_pt(out_v[t[2] as usize]);
+            out_faces.insert((p0, p1, p2));
+            out_faces.insert((p1, p2, p0));
+            out_faces.insert((p2, p0, p1));
+        }
+
+        let mut verbatim_count = 0;
+        for &(q0, q1, q2) in &expected_non_contact {
+            if out_faces.contains(&(q0, q1, q2)) {
+                verbatim_count += 1;
+            }
+        }
+        assert_eq!(verbatim_count, 20, "All 20 non-contact faces must be verbatim in output");
+    }
+
+    #[test]
+    fn test_half_overlapping_stacked_boxes() {
+        // Box 1: [0, 1]^3
+        let b1 = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        // Box 2: [0.5, 1.5] x [0, 1] x [1, 2]
+        let b2 = unit_box([0.5, 0.0, 1.0], [1.0, 1.0, 1.0]);
+
+        let (verts, tris) = combine_meshes(b1, b2);
+
+        let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.reason, "ok");
+        assert!(!res.has_internal_walls);
+
+        let (holes, nm, parts) = check_mesh_closed_manifold_single_part(&out_t);
+        assert_eq!(holes, 0, "Must have 0 holes, found {}", holes);
+        assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
+        assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
     }
 }
