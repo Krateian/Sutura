@@ -86,6 +86,8 @@ pub struct ShellAnalysisResult {
     pub internal_walls_count: usize,
     /// Number of unresolved coincident opposite-normal faces in surviving mesh.
     pub unresolved_coincident_count: usize,
+    /// Whether all shells are disjoint (Phase P-a qualified: no cross-part SI, volume overlap < 0.1%, no buried faces).
+    pub is_disjoint: bool,
     /// Diagnostic / status reason ("ok", "no_change", or abort reason).
     pub reason: String,
 }
@@ -359,8 +361,25 @@ pub fn analyze_shells(
         shell_bboxes[sid].expand_point(verts[t[2] as usize]);
     }
 
+    let mut shell_has_neighbor = vec![false; num_shells];
     let mut shell_enclosed = vec![false; num_shells];
     if num_shells > 1 {
+        for s1 in 0..num_shells {
+            let b1 = &shell_bboxes[s1];
+            for s2 in (s1 + 1)..num_shells {
+                let b2 = &shell_bboxes[s2];
+                let near = b1.min[0] <= b2.max[0] + h_med
+                    && b1.max[0] >= b2.min[0] - h_med
+                    && b1.min[1] <= b2.max[1] + h_med
+                    && b1.max[1] >= b2.min[1] - h_med
+                    && b1.min[2] <= b2.max[2] + h_med
+                    && b1.max[2] >= b2.min[2] - h_med;
+                if near {
+                    shell_has_neighbor[s1] = true;
+                    shell_has_neighbor[s2] = true;
+                }
+            }
+        }
         for s1 in 0..num_shells {
             let b1 = &shell_bboxes[s1];
             for s2 in 0..num_shells {
@@ -460,8 +479,23 @@ pub fn analyze_shells(
     }
 
     // Coplanar overlapping faces check (Addendum item 3)
+    let tri_aabbs: Vec<crate::winding::Aabb> = tris
+        .iter()
+        .map(|t| {
+            let mut b = crate::winding::Aabb::empty();
+            b.expand_point(verts[t[0] as usize]);
+            b.expand_point(verts[t[1] as usize]);
+            b.expand_point(verts[t[2] as usize]);
+            b
+        })
+        .collect();
+
     let mut plane_map: HashMap<(i64, i64, i64, i64), Vec<usize>> = HashMap::with_capacity(m);
     for (i, &t) in tris.iter().enumerate() {
+        let sid = shell_map[i];
+        if num_shells > 1 && !shell_has_neighbor[sid] {
+            continue;
+        }
         let v0 = verts[t[0] as usize];
         let v1 = verts[t[1] as usize];
         let v2 = verts[t[2] as usize];
@@ -477,9 +511,22 @@ pub fn analyze_shells(
         }
         for j in 0..group.len() {
             let i1 = group[j];
+            let s1 = shell_map[i1];
+            let b1 = &tri_aabbs[i1];
             for k in (j + 1)..group.len() {
                 let i2 = group[k];
-                if shell_map[i1] == shell_map[i2] {
+                let s2 = shell_map[i2];
+                if s1 == s2 {
+                    continue;
+                }
+                let b2 = &tri_aabbs[i2];
+                if b1.min[0] > b2.max[0]
+                    || b1.max[0] < b2.min[0]
+                    || b1.min[1] > b2.max[1]
+                    || b1.max[1] < b2.min[1]
+                    || b1.min[2] > b2.max[2]
+                    || b1.max[2] < b2.min[2]
+                {
                     continue;
                 }
                 if triangle_canonical_key(tris[i1]) == triangle_canonical_key(tris[i2]) {
@@ -566,8 +613,14 @@ pub fn analyze_shells(
             let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
 
             // Thin gaps clamping (Addendum item 5)
-            if num_shells > 1 {
-                let (_, dist, _) = bvh.closest_point_excluding(c, shell_map[i], &shell_map);
+            if num_shells > 1 && shell_has_neighbor[shell_map[i]] {
+                let max_search_dist = eps / 0.45;
+                let (_, dist, _) = bvh.closest_point_excluding_within(
+                    c,
+                    shell_map[i],
+                    &shell_map,
+                    max_search_dist,
+                );
                 if dist.is_finite() && dist > 0.0 {
                     eps = eps.min(0.45 * dist);
                 }
@@ -674,7 +727,134 @@ pub fn analyze_shells(
     if res.has_internal_walls {
         res.surviving_indices = (0..m).collect();
     }
+    res.is_disjoint = check_is_disjoint(verts, tris, &shell_map, num_shells, &shell_bboxes, &res);
     res
+}
+
+/// Check whether a multi-part mesh qualifies as Phase P-a (disjoint parts).
+///
+/// Parts are disjoint only if:
+/// 1. No internal walls, no buried faces, no coincident interface walls, no unresolved faces.
+/// 2. No cross-part proper self-intersections (exact triangle intersection).
+/// 3. Volume overlap between overlapping part pairs is < 0.1% (computed via divergence theorem).
+fn check_is_disjoint(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    shell_map: &[usize],
+    num_shells: usize,
+    shell_bboxes: &[crate::winding::Aabb],
+    res: &ShellAnalysisResult,
+) -> bool {
+    if res.has_internal_walls
+        || res.internal_walls_count > 0
+        || res.buried_count > 0
+        || res.coincident_opp_count > 0
+        || res.coincident_same_count > 0
+        || res.unresolved_coincident_count > 0
+        || res.reason != "ok"
+    {
+        return false;
+    }
+
+    if num_shells <= 1 {
+        return true;
+    }
+
+    // Step 1: Check if any pair of shells has overlapping AABBs
+    let mut overlapping_pairs = Vec::new();
+    for s1 in 0..num_shells {
+        let b1 = &shell_bboxes[s1];
+        for s2 in (s1 + 1)..num_shells {
+            let b2 = &shell_bboxes[s2];
+            let overlap = b1.min[0] <= b2.max[0] && b1.max[0] >= b2.min[0]
+                && b1.min[1] <= b2.max[1] && b1.max[1] >= b2.min[1]
+                && b1.min[2] <= b2.max[2] && b1.max[2] >= b2.min[2];
+            if overlap {
+                overlapping_pairs.push((s1, s2));
+            }
+        }
+    }
+
+    if overlapping_pairs.is_empty() {
+        return true;
+    }
+
+    // Step 2: For overlapping shells, check for cross-part proper self-intersections (exact)
+    let triangles: Vec<crate::triangle_intersection::Triangle> = tris
+        .iter()
+        .map(|t| {
+            crate::triangle_intersection::Triangle::explicit(
+                verts[t[0] as usize],
+                verts[t[1] as usize],
+                verts[t[2] as usize],
+            )
+        })
+        .collect();
+    let tris_usize: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+    let pairs = crate::arrangement::broad_phase_candidates(verts, &tris_usize);
+    for (i, j) in pairs {
+        let s1 = shell_map[i];
+        let s2 = shell_map[j];
+        if s1 == s2 {
+            continue;
+        }
+        let pair = if s1 < s2 { (s1, s2) } else { (s2, s1) };
+        if !overlapping_pairs.contains(&pair) {
+            continue;
+        }
+        if let crate::triangle_intersection::TriangleIntersection::ProperSegment { .. } =
+            crate::triangle_intersection::intersect_triangles(&triangles[i], &triangles[j])
+        {
+            return false;
+        }
+    }
+
+    // Step 3: Volume overlap < 0.1% via divergence theorem
+    let mut shell_vols = vec![0.0f64; num_shells];
+    for (i, t) in tris.iter().enumerate() {
+        let sid = shell_map[i];
+        let v0 = verts[t[0] as usize];
+        let v1 = verts[t[1] as usize];
+        let v2 = verts[t[2] as usize];
+        let c = [
+            v1[1] * v2[2] - v1[2] * v2[1],
+            v2[0] * v1[2] - v2[2] * v1[0],
+            v1[0] * v2[1] - v1[1] * v2[0],
+        ];
+        shell_vols[sid] += v0[0] * c[0] + v0[1] * c[1] + v0[2] * c[2];
+    }
+    for sid in 0..num_shells {
+        shell_vols[sid] = (shell_vols[sid] / 6.0).abs();
+    }
+
+    for &(s1, s2) in &overlapping_pairs {
+        let b1 = &shell_bboxes[s1];
+        let b2 = &shell_bboxes[s2];
+        let s1_in_b2 = b1.min[0] >= b2.min[0] - 1e-6
+            && b1.min[1] >= b2.min[1] - 1e-6
+            && b1.min[2] >= b2.min[2] - 1e-6
+            && b1.max[0] <= b2.max[0] + 1e-6
+            && b1.max[1] <= b2.max[1] + 1e-6
+            && b1.max[2] <= b2.max[2] + 1e-6;
+        let s2_in_b1 = b2.min[0] >= b1.min[0] - 1e-6
+            && b2.min[1] >= b1.min[1] - 1e-6
+            && b2.min[2] >= b1.min[2] - 1e-6
+            && b2.max[0] <= b1.max[0] + 1e-6
+            && b2.max[1] <= b1.max[1] + 1e-6
+            && b2.max[2] <= b1.max[2] + 1e-6;
+        if s1_in_b2 || s2_in_b1 {
+            let min_vol = shell_vols[s1].min(shell_vols[s2]);
+            let total_vol = shell_vols[s1] + shell_vols[s2];
+            if total_vol > 0.0 && (min_vol / total_vol) >= 0.001 {
+                return false;
+            }
+        }
+    }
+
+    true
 }
 
 /// Complete shell analysis & filter pre-pass for Tamponade (Idea A).
@@ -694,7 +874,9 @@ pub fn shell_analyze_and_filter(
 
     // Flower / C1: If proper self-intersections exist, split along exact intersection curves first
     if config.split_intersections {
-        if let Ok((pool, out_tris, rep)) = crate::arrangement::arrangement_lite_core(verts, &tris_usize) {
+        let (_si_mask, si_count, _) = crate::self_intersections_core(verts, &tris_usize);
+        if si_count > 0 {
+            if let Ok((pool, out_tris, rep)) = crate::arrangement::arrangement_lite_core(verts, &tris_usize) {
             if rep.si_pairs_detected > 0 {
                 let split_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
                 let split_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
@@ -711,6 +893,7 @@ pub fn shell_analyze_and_filter(
             }
         }
     }
+}
 
     let analysis = analyze_shells(verts, tris, config);
 
@@ -1209,5 +1392,38 @@ mod tests {
         assert!(res.has_internal_walls);
         assert_eq!(res.reason, "inconsistent_orientation");
         assert_eq!(out_t.len(), tris.len()); // never delete inner shell
+    }
+
+    #[test]
+    fn test_two_boxes_overlapping_thin_slab_not_pa() {
+        // Review #2 item 1: two boxes that overlap by a thin slab -> NOT P-a disjoint
+        let b1 = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        // Box 2 at [0.9, 0.0, 0.0] overlaps Box 1 by a thin slab x in [0.9, 1.0]
+        let b2 = unit_box([0.9, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let (verts, tris) = combine_meshes(b1, b2);
+
+        let config = ShellConfig::default();
+        let (_out_v, _out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert!(
+            !res.is_disjoint,
+            "Two boxes overlapping by a thin slab must NOT qualify as P-a disjoint"
+        );
+    }
+
+    #[test]
+    fn test_two_boxes_separated_is_pa() {
+        // Two disjoint boxes separated by space -> IS P-a disjoint
+        let b1 = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let b2 = unit_box([2.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let (verts, tris) = combine_meshes(b1, b2);
+
+        let config = ShellConfig::default();
+        let (_out_v, _out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert!(
+            res.is_disjoint,
+            "Two separated boxes must qualify as P-a disjoint"
+        );
     }
 }

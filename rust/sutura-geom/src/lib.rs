@@ -864,6 +864,7 @@ fn shell_analyze_py<'py>(
     d.set_item("internal_walls_count", res.internal_walls_count)?;
     d.set_item("unresolved_coincident_count", res.unresolved_coincident_count)?;
     d.set_item("has_internal_walls", res.has_internal_walls)?;
+    d.set_item("is_disjoint", res.is_disjoint)?;
     d.set_item("reason", res.reason.clone())?;
     Ok((verts_np, tris_np, d))
 }

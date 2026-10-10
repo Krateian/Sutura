@@ -1178,33 +1178,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
                 _in_parts = _count_vertex_components(len(verts), tris)
 
-                # Phase P-a: DISJOINT / TOUCHING parts (60916-type, 248395-type):
-                # parts only touch, no volume overlap, no coincident opposite walls, no internal walls
-                _is_p_a = False
-                if (not _sinfo['has_internal_walls']
-                        and _sinfo['internal_walls_count'] == 0
-                        and _sinfo['unresolved_coincident_count'] == 0
-                        and _sinfo['coincident_opp_count'] == 0
-                        and _sinfo['reason'] == 'ok'):
-                    if _sinfo['buried_count'] == 0:
-                        _is_p_a = True
-                    else:
-                        # Touching parts: check whether they penetrate (cross-part proper SI)
-                        try:
-                            _w_v, _w_t = _rr_weld(verts, tris) if '_rr_weld' in locals() else (verts, tris)
-                            _cross_mask, _cross_cnt = sutura_geom.self_intersecting_faces(
-                                np.asarray(_w_v, dtype=np.float64),
-                                np.asarray(_w_t, dtype=np.int32),
-                            )
-                            if _cross_cnt == 0:
-                                _is_p_a = True
-                        except Exception:
-                            _is_p_a = False
+                # Phase P-a: DISJOINT parts (60916-type):
+                # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
+                # no buried faces, no coincident opposite walls, no internal walls.
+                _is_p_a = _sinfo.get('is_disjoint', False)
 
                 if _is_p_a:
                     _shell_adopted = True
                     _shell_phase = 'P-a_disjoint'
-                    _shell_reason = 'disjoint_or_touching_parts_no_overlap'
+                    _shell_reason = 'disjoint_parts_no_overlap'
 
                 # Phase P-b: exactly coincident opposite walls -> dissolve both (C2)
                 elif (_sinfo['coincident_opp_count'] > 0

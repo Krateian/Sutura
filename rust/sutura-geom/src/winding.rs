@@ -489,6 +489,28 @@ impl MeshBvh {
         (best.0, best.1.sqrt(), best.2)
     }
 
+    /// Closest point on the triangle soup excluding triangles belonging to `excluded_shell`,
+    /// restricted to a search radius `max_dist`:
+    /// `(point, distance, triangle index)`, or `(p, inf, usize::MAX)` if no other triangles within `max_dist` exist.
+    pub fn closest_point_excluding_within(
+        &self,
+        p: [f64; 3],
+        excluded_shell: usize,
+        shell_map: &[usize],
+        max_dist: f64,
+    ) -> ([f64; 3], f64, usize) {
+        if self.nodes.is_empty() || max_dist <= 0.0 {
+            return (p, f64::INFINITY, usize::MAX);
+        }
+        let mut best = (p, max_dist * max_dist, usize::MAX);
+        self.closest_node_excluding(0, p, excluded_shell, shell_map, &mut best);
+        if best.2 == usize::MAX {
+            (p, f64::INFINITY, usize::MAX)
+        } else {
+            (best.0, best.1.sqrt(), best.2)
+        }
+    }
+
     fn closest_node_excluding(
         &self,
         idx: usize,
