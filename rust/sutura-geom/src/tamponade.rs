@@ -446,16 +446,20 @@ pub fn boundary_loops_manifold(tris: &[[u32; 3]]) -> Vec<Vec<u32>> {
     let mut starts: Vec<(u32, u32)> = bface.keys().cloned().collect();
     starts.sort();
     // Work guard: on a non-manifold / degenerate output the face-fan walk can
-    // cycle without ever reaching a boundary half-edge (e.g. a face carrying the
-    // same edge twice), which would loop forever. Abandon such a start.
+    // cycle without ever reaching a boundary half-edge (e.g. a non-manifold edge
+    // where >2 faces share an edge, or a face carrying the same edge twice).
+    // The budget is PER START: one cycling walk must not consume the budget of
+    // every later start (that global budget made the walker return zero loops --
+    // `reason="no_holes"` -- on any mesh whose boundaries touch a non-manifold
+    // edge). A repeat of the (face, vertex) rotation state bails immediately.
     let limit = tris.len().saturating_mul(8) + 64;
-    let mut steps = 0usize;
     for h in starts {
         if used.contains(&h) {
             continue;
         }
         let mut loop_v: Vec<u32> = Vec::new();
         let mut cur = h;
+        let mut steps = 0usize;
         loop {
             if used.contains(&cur) {
                 break;
@@ -468,9 +472,12 @@ pub fn boundary_loops_manifold(tris: &[[u32; 3]]) -> Vec<Vec<u32>> {
             let mut f = bface[&(a, b)];
             let mut c = third(f, b, a);
             let mut nxt: Option<(u32, u32)> = None;
+            // A proper fan rotation visits each face once; a repeated
+            // (face, current-vertex) state means the walk is cycling.
+            let mut fan_seen: HashSet<(usize, u32)> = HashSet::new();
             loop {
                 steps += 1;
-                if steps > limit {
+                if steps > limit || !fan_seen.insert((f, c)) {
                     break;
                 }
                 let k = key(b, c);
