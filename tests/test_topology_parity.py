@@ -91,6 +91,10 @@ def _run_all(topo_engine):
         rwv, rwt = repair.weld_reload_equivalent(v, t)
         sv, st = repair._separate_weld_collisions(v, t)
         d = defects.detect(v, t, with_indices=True)
+        df = topology.remove_duplicate_faces(t)
+        nf = topology.remove_null_faces(v, t)
+        dv_v, dv_t = topology.remove_duplicate_vertices(v, t)
+        unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
         results.append({
             'edge_table': (e.tobytes(), c.tobytes(), inv.tobytes()),
             'weld_vertices': (uv.tobytes(), uinv.tobytes()),
@@ -100,6 +104,10 @@ def _run_all(topo_engine):
             'repair_weld': (rwv.tobytes(), rwt.tobytes()),
             'separate': (sv.tobytes(), st.tobytes()),
             'detect': json.dumps(d, sort_keys=True),
+            'remove_duplicate_faces': df.tobytes(),
+            'remove_null_faces': nf.tobytes(),
+            'remove_duplicate_vertices': (dv_v.tobytes(), dv_t.tobytes()),
+            'remove_unreferenced_vertices': (unv_v.tobytes(), unv_t.tobytes()),
         })
     return results
 
@@ -138,6 +146,16 @@ def test_fallback_when_kernel_missing():
             assert not topology._use_rust()
             wv, wt = topology.weld_reload_equivalent(v, t)
             assert wv.tobytes() == topology._weld_reload_equivalent_numpy(v, t)[0].tobytes()
+            df = topology.remove_duplicate_faces(t)
+            assert df.tobytes() == topology._remove_duplicate_faces_numpy(t).tobytes()
+            nf = topology.remove_null_faces(v, t)
+            assert nf.tobytes() == topology._remove_null_faces_numpy(v, t).tobytes()
+            dv_v, dv_t = topology.remove_duplicate_vertices(v, t)
+            exp_dv_v, exp_dv_t = topology._remove_duplicate_vertices_numpy(v, t)
+            assert dv_v.tobytes() == exp_dv_v.tobytes() and dv_t.tobytes() == exp_dv_t.tobytes()
+            unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
+            exp_unv_v, exp_unv_t = topology._remove_unreferenced_vertices_numpy(v, t)
+            assert unv_v.tobytes() == exp_unv_v.tobytes() and unv_t.tobytes() == exp_unv_t.tobytes()
     finally:
         topology._geom = saved
         topology.set_engine('auto')

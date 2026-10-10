@@ -342,7 +342,22 @@ pub fn remove_duplicate_vertices<'py>(
         }
     }
 
-    if new_verts.len() == nv {
+    let has_duplicates = new_verts.len() < nv;
+    let mut has_degenerate = false;
+    for r in &trows {
+        let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
+        if i0 >= nv || i1 >= nv || i2 >= nv {
+            has_degenerate = true;
+            break;
+        }
+        let (n0, n1, n2) = (old_to_new[i0], old_to_new[i1], old_to_new[i2]);
+        if n0 == n1 || n1 == n2 || n0 == n2 {
+            has_degenerate = true;
+            break;
+        }
+    }
+
+    if !has_duplicates && !has_degenerate {
         return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
     }
 
