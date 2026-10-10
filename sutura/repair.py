@@ -5153,8 +5153,17 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         if units:
             declared_unit = next(iter(units.values()))
 
-    def _run(flap_value):
-        """Repair the loaded mesh with Flap on/off, through P-HONEST."""
+    def _run(flap_value, run_tamponade=None):
+        """Repair the loaded mesh with Flap on/off, through P-HONEST.
+
+        ``run_tamponade`` defaults to the outer flag; the Flap-OFF safety-net
+        re-run passes False so the opt-in Tamponade tier is not evaluated a
+        second time for a fallback candidate that is usually discarded (the
+        net keeps Flap-ON unless OFF is strictly better, and skipping the tier
+        can only make OFF look no better, so the chosen result never worsens).
+        """
+        if run_tamponade is None:
+            run_tamponade = tamponade
         report, new_v, new_t = repair_mesh_from_arrays(
             verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
             declared_unit=declared_unit, join_components=join_components,
@@ -5170,7 +5179,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             dressing_defects=dressing_defects,
             dressing_rmax_scale=dressing_rmax_scale,
             dressing_sigma_scale=dressing_sigma_scale,
-            tamponade=tamponade,
+            tamponade=run_tamponade,
             si_mode=si_mode,
             dressing_force_adopt=dressing_force_adopt)
         report['_fp'] = history.mesh_fingerprint(verts, tris)
@@ -5252,11 +5261,12 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                         'on': on_metrics}
             use_off = False
             try:
-                off_report, off_v, off_t = _run(False)
+                off_report, off_v, off_t = _run(False, run_tamponade=False)
                 _, off_metrics = _flap_final_needs_off(
                     verts, tris, off_v, off_t)
                 fallback['ran'] = True
                 fallback['off'] = off_metrics
+                fallback['tamponade_skipped'] = bool(tamponade)
                 use_off = _flap_off_preferred(
                     (on_reason, on_metrics), (None, off_metrics))
             except Exception as e:  # noqa: BLE001 - the net never crashes
@@ -5266,6 +5276,12 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 on_flap['adopted_final'] = False
                 on_flap['final_fallback'] = fallback
                 off_report['flap'] = on_flap
+                # Carry the primary run's tier verdict when it did not change
+                # the geometry (a no-op record); an adopted tier changed the
+                # flap-ON mesh, which is not the mesh now being reported.
+                _on_tamp = report.get('tamponade')
+                if tamponade and _on_tamp and not _on_tamp.get('adopted'):
+                    off_report['tamponade'] = _on_tamp
                 report, new_v, new_t = off_report, off_v, off_t
             else:
                 report['flap']['final_fallback'] = fallback
