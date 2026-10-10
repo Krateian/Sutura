@@ -36,6 +36,15 @@ TAMPONADE_BUDGET_BY_INTENSITY = {
 }
 # Budget used when no intensity preset is supplied (library/balanced default).
 TAMPONADE_DEFAULT_BUDGET = 60.0
+# Per-mesh wall-clock cap: a local min-cut that has not separated by
+# ``TAMPONADE_BASE_BUDGET_S + TAMPONADE_PER_FACE_BUDGET_S * faces`` seconds is
+# not worth waiting for (measured: an unrejectable loop on a 11175-face mesh
+# spent 9.3 s in the generalized-winding grid and was rejected anyway), so the
+# tier stops and leaves the remaining loops open. Kept above the ~0.27 s a
+# small non-trivial hole needs so genuine small-mesh plugs are unaffected; the
+# cap only bites on dense meshes whose cut is both expensive and futile.
+TAMPONADE_BASE_BUDGET_S = 0.30
+TAMPONADE_PER_FACE_BUDGET_S = 0.00001
 
 _UNAVAILABLE_REASON = 'sutura_geom.tamponade unavailable'
 
@@ -95,6 +104,8 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
               'intensity': intensity, 'budget_s': None, 'h_min': None,
               'input_faces': None, 'output_faces': None, 'seconds': None,
               'plugs': None, 'plug_faces': None,
+              'plugs_rejected': None, 'plugs_inconclusive': None,
+              'plugs_rejected_size': None, 'plugs_rejected_dev': None,
               'melt_layers_tried': None, 'melt_layers_accepted': None,
               'melt_layers_rolled_back': None,
               'micro_welds_ok': None, 'micro_welds_failed': None,
@@ -109,6 +120,13 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
 
         budget = TAMPONADE_BUDGET_BY_INTENSITY.get(
             intensity, TAMPONADE_DEFAULT_BUDGET)
+        if budget is not None and budget > 0:
+            # Mesh-scaled cap: keep the smaller of the preset budget and the
+            # per-mesh cap so a futile dense-mesh cut aborts after ~0.3 s
+            # instead of running to the preset's tens of seconds.
+            mesh_cap = (TAMPONADE_BASE_BUDGET_S
+                        + TAMPONADE_PER_FACE_BUDGET_S * len(t))
+            budget = min(budget, mesh_cap)
         report['budget_s'] = budget
         if budget is not None and budget <= 0:
             report['reason'] = ('intensity %r skips Tamponade (budget 0 s)'
@@ -124,7 +142,9 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
         report['ran'] = True
         report['output_faces'] = int(len(out_t))
         report['seconds'] = info.get('seconds')
-        for key in ('plugs', 'plug_faces', 'melt_layers_tried',
+        for key in ('plugs', 'plug_faces', 'plugs_rejected',
+                    'plugs_inconclusive', 'plugs_rejected_size',
+                    'plugs_rejected_dev', 'melt_layers_tried',
                     'melt_layers_accepted', 'melt_layers_rolled_back',
                     'micro_welds_ok', 'micro_welds_failed',
                     'healthy_faces_kept'):

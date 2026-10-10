@@ -147,6 +147,8 @@ def test_wrapper_maps_info():
     info = {'plugs': 2, 'plug_faces': 8, 'melt_layers_tried': 1,
             'melt_layers_accepted': 1, 'melt_layers_rolled_back': 0,
             'micro_welds_ok': 4, 'micro_welds_failed': 0,
+            'plugs_rejected': 1, 'plugs_inconclusive': 0,
+            'plugs_rejected_size': 1, 'plugs_rejected_dev': 0,
             'healthy_faces_kept': 11, 'seconds': 0.25}
     geom = _FakeGeom(_CUBE_V.copy(), _CUBE_F.copy(), info)
     real = tamp._tamponade_module
@@ -160,11 +162,14 @@ def test_wrapper_maps_info():
     assert rep['plugs'] == 2 and rep['plug_faces'] == 8, rep
     assert rep['healthy_faces_kept'] == 11, rep
     assert rep['seconds'] == 0.25, rep
-    # h_min defaults to the input median edge and the budget comes from the
-    # intensity preset.
+    assert rep['plugs_rejected_size'] == 1 and rep['plugs_rejected_dev'] == 0, rep
+    # h_min defaults to the input median edge and the budget is the smaller of
+    # the intensity preset and the per-mesh cap.
     assert geom.calls[0]['h_min'] > 0, geom.calls
-    assert geom.calls[0]['time_budget_s'] == 60.0, geom.calls
-    print('ok  wrapper maps the Rust info keys and the intensity budget')
+    expected = min(60.0, tamp.TAMPONADE_BASE_BUDGET_S
+                   + tamp.TAMPONADE_PER_FACE_BUDGET_S * len(_CUBE_F))
+    assert abs(geom.calls[0]['time_budget_s'] - expected) < 1e-9, geom.calls
+    print('ok  wrapper maps the Rust info keys and the mesh-scaled budget')
 
 
 def test_wrapper_never_raises():
