@@ -88,6 +88,24 @@ def apply_stage1_filters(verts: np.ndarray, tris: np.ndarray,
                     ms.clear()
                     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
                 handled = True
+            elif name == 'meshing_remove_duplicate_vertices':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_duplicate_vertices(v, t)
+                if len(v_new) < len(v):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_remove_unreferenced_vertices':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_unreferenced_vertices(v, t)
+                if len(v_new) < len(v):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                handled = True
 
             if not handled:
                 ms.apply_filter(name, **fparams)

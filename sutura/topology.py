@@ -138,6 +138,34 @@ def _remove_null_faces_numpy(verts, tris):
     return t_cand[valid]
 
 
+def _remove_duplicate_vertices_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(v) == 0:
+        return v, t
+    _, first_idx, inverse = np.unique(v, axis=0, return_index=True, return_inverse=True)
+    order = np.argsort(first_idx)
+    unique_verts = v[first_idx[order]]
+    order_remap = np.empty_like(order)
+    order_remap[order] = np.arange(len(order))
+    new_t = order_remap[inverse[t]]
+    valid = (new_t[:, 0] != new_t[:, 1]) & (new_t[:, 1] != new_t[:, 2]) & (new_t[:, 0] != new_t[:, 2])
+    return unique_verts, new_t[valid]
+
+
+def _remove_unreferenced_vertices_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(v) == 0 or len(t) == 0:
+        return v, t
+    used = np.unique(t)
+    if len(used) == len(v) and np.array_equal(used, np.arange(len(v))):
+        return v, t
+    remap = np.full(len(v), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return v[used], remap[t]
+
+
 # --- public API ----------------------------------------------------------- #
 def edge_table(tris):
     """Unique undirected edges, per-edge use counts and half-edge inverse.
@@ -225,6 +253,49 @@ def remove_null_faces(verts, tris):
         except Exception:
             pass
     return _remove_null_faces_numpy(v, t)
+
+
+def remove_duplicate_vertices(verts, tris):
+    """Remove duplicate vertices matching VCGLib meshing_remove_duplicate_vertices.
+
+    Welds coincident vertices keeping first-occurrence order, drops degenerate faces,
+    and remaps surviving faces.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(v) == 0:
+        return v, t
+    if _has_rust('remove_duplicate_vertices') and bool(np.isfinite(v).all()):
+        try:
+            return _geom.remove_duplicate_vertices(v, t)
+        except Exception:
+            pass
+    return _remove_duplicate_vertices_numpy(v, t)
+
+
+def remove_unreferenced_vertices(verts, tris):
+    """Remove unreferenced vertices matching VCGLib meshing_remove_unreferenced_vertices.
+
+    Compacts vertex array preserving original relative order of referenced vertices.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(v) == 0 or len(t) == 0:
+        return v, t
+    if _has_rust('remove_unreferenced_vertices'):
+        try:
+            return _geom.remove_unreferenced_vertices(v, t)
+        except Exception:
+            pass
+    return _remove_unreferenced_vertices_numpy(v, t)
 
 
 def connected_components(graph=None, *, directed=False, connection='weak',

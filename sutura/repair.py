@@ -392,6 +392,18 @@ def apply_chain(ms, chain):
                     ms.clear()
                     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
                 handled = True
+            elif name == 'meshing_remove_duplicate_vertices':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_duplicate_vertices(v, t)
+                if len(v_new) < len(v):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_remove_unreferenced_vertices':
+                _remove_unref_vertices_ms(ms, ml)
+                handled = True
 
             if not handled:
                 ms.apply_filter(name, **params)
@@ -403,6 +415,20 @@ def apply_chain(ms, chain):
             except Exception as e2:
                 skipped[name] = str(e2)
     return applied, skipped
+
+
+def _remove_unref_vertices_ms(ms, ml):
+    """Remove unreferenced vertices from a MeshSet in-place with native topology fallback."""
+    try:
+        m = ms.current_mesh()
+        v = m.vertex_matrix()
+        t = m.face_matrix()
+        v_new, t_new = topology.remove_unreferenced_vertices(v, t)
+        if len(v_new) < len(v):
+            ms.clear()
+            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+    except Exception:
+        ms.apply_filter('meshing_remove_unreferenced_vertices')
 
 
 def extreme_extra_passes(ms, ml, params):
@@ -430,7 +456,7 @@ def extreme_extra_passes(ms, ml, params):
     before_removal = ms.current_mesh().face_number()
     ms.apply_filter('meshing_remove_selected_faces')
     removed = max(before_removal - ms.current_mesh().face_number(), 0)
-    ms.apply_filter('meshing_remove_unreferenced_vertices')
+    _remove_unref_vertices_ms(ms, ml)
     applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
     return True, found, removed, applied2, skipped2
 
@@ -600,7 +626,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 report['reason'] = 'scope'
                 break
             ms.apply_filter('meshing_remove_selected_faces')
-            ms.apply_filter('meshing_remove_unreferenced_vertices')
+            _remove_unref_vertices_ms(ms, ml)
             ms.apply_filter('meshing_repair_non_manifold_edges')
             ms.apply_filter('meshing_repair_non_manifold_vertices')
             close_kwargs = {'maxholesize': maxholesize,
@@ -611,7 +637,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 close_kwargs['refineholeedgelen'] = ml.PercentageValue(
                     SI_EXCISE_REFINE_EDGE_PCT)
             ms.apply_filter('meshing_close_holes', **close_kwargs)
-            ms.apply_filter('meshing_remove_unreferenced_vertices')
+            _remove_unref_vertices_ms(ms, ml)
             topo_after = ms.apply_filter('get_topological_measures')
             holes_after = int(topo_after.get('boundary_edges', 0) or 0)
             nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)

@@ -20,6 +20,7 @@ use numpy::{AllowTypeChange, PyArray1, PyArray2, PyArrayLike2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 #[inline]
 fn canon(a: i64, b: i64) -> (i64, i64) {
@@ -295,6 +296,119 @@ pub fn remove_null_faces<'py>(
         out.push(r);
     }
     Ok(rows_to_array2_i64(py, &out))
+}
+
+#[inline]
+fn f32_canonical_bits(x: f32) -> u32 {
+    let canonical = if x == 0.0 { 0.0 } else { x };
+    canonical.to_bits()
+}
+
+/// Remove duplicate vertices (matching VCGLib / PyMeshLab meshing_remove_duplicate_vertices).
+/// Welds coincident vertices keeping first-occurrence order, drops degenerate faces
+/// with repeated vertex indices, and remaps surviving faces.
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn remove_duplicate_vertices<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let nv = vrows.len();
+    if nv == 0 {
+        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+    }
+
+    let mut map: HashMap<[u32; 3], usize> = HashMap::with_capacity(nv);
+    let mut new_verts: Vec<[f32; 3]> = Vec::with_capacity(nv);
+    let mut old_to_new: Vec<usize> = Vec::with_capacity(nv);
+
+    for p in &vrows {
+        let key = [
+            f32_canonical_bits(p[0]),
+            f32_canonical_bits(p[1]),
+            f32_canonical_bits(p[2]),
+        ];
+        match map.get(&key) {
+            Some(&idx) => old_to_new.push(idx),
+            None => {
+                let idx = new_verts.len();
+                map.insert(key, idx);
+                new_verts.push(*p);
+                old_to_new.push(idx);
+            }
+        }
+    }
+
+    if new_verts.len() == nv {
+        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+    }
+
+    let mut new_tris: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
+    for r in &trows {
+        let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
+        if i0 >= nv || i1 >= nv || i2 >= nv {
+            continue;
+        }
+        let (n0, n1, n2) = (old_to_new[i0] as i64, old_to_new[i1] as i64, old_to_new[i2] as i64);
+        if n0 == n1 || n1 == n2 || n0 == n2 {
+            continue;
+        }
+        new_tris.push([n0, n1, n2]);
+    }
+
+    Ok((rows_to_array2_f32(py, &new_verts), rows_to_array2_i64(py, &new_tris)))
+}
+
+/// Remove unreferenced vertices (matching VCGLib / PyMeshLab meshing_remove_unreferenced_vertices).
+/// Compacts vertex array preserving original relative order of referenced vertices.
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn remove_unreferenced_vertices<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let nv = vrows.len();
+    if nv == 0 {
+        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+    }
+
+    let mut used = vec![false; nv];
+    for r in &trows {
+        let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
+        if i0 < nv { used[i0] = true; }
+        if i1 < nv { used[i1] = true; }
+        if i2 < nv { used[i2] = true; }
+    }
+
+    let mut remap = vec![i64::MAX; nv];
+    let mut new_verts: Vec<[f32; 3]> = Vec::with_capacity(nv);
+    for i in 0..nv {
+        if used[i] {
+            remap[i] = new_verts.len() as i64;
+            new_verts.push(vrows[i]);
+        }
+    }
+
+    if new_verts.len() == nv {
+        return Ok((rows_to_array2_f32(py, &vrows), rows_to_array2_i64(py, &trows)));
+    }
+
+    let mut new_tris: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
+    for r in &trows {
+        let (i0, i1, i2) = (r[0] as usize, r[1] as usize, r[2] as usize);
+        if i0 >= nv || i1 >= nv || i2 >= nv {
+            continue;
+        }
+        new_tris.push([remap[i0], remap[i1], remap[i2]]);
+    }
+
+    Ok((rows_to_array2_f32(py, &new_verts), rows_to_array2_i64(py, &new_tris)))
 }
 
 /// `np.unique(v, axis=0, return_inverse=True)` for a float32 `(N, 3)` array.

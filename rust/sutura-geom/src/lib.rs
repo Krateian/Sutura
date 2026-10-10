@@ -1089,6 +1089,8 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::weld_reload_equivalent, m)?)?;
     m.add_function(wrap_pyfunction!(topology::remove_duplicate_faces, m)?)?;
     m.add_function(wrap_pyfunction!(topology::remove_null_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::remove_duplicate_vertices, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::remove_unreferenced_vertices, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
