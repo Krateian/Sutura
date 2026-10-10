@@ -123,7 +123,7 @@ def _install_tier(out_v, out_t, info):
     rec = {'ran': True, 'adopted': False, 'reason': None}
     rec.update(info)
 
-    def fake(verts, tris, *, intensity=None, ml=None):
+    def fake(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
         return out_v, out_t, rec
     tamp.run_tamponade = fake
     return rec
@@ -300,6 +300,55 @@ def test_tier_adopts_si_only_improvement():
     print('ok  tier adopts an SI-only improvement (C2)')
 
 
+def test_prepass_uses_local_si_guard_not_full_scan():
+    # The prepass must not pay for a full exact-SI scan on the pre-tier mesh or
+    # on the candidate: it compares only the faces the seal changed (the Rust
+    # subset counter) and reports si_method='local'.
+    calls = {'n': 0}
+    real = repair._exact_si_face_count
+    repair._exact_si_face_count = lambda v, t: calls.__setitem__(
+        'n', calls['n'] + 1) or 7
+    ml = _FakeML()
+    ms = _FakeMeshSet(_CUBE_V, _OPEN1_F)   # one boundary loop -> the prepass runs
+    stats = {}
+    _install_tier(_CUBE_V, _CUBE_F, {'healthy_faces_kept': len(_CUBE_F)})
+    try:
+        repair.tamponade_tier(ml, ms, {'non_two_manifold_edges': 0}, stats,
+                              '/tmp', tamponade=True, intensity='balanced',
+                              prepass=True)
+        rec = stats['tamponade']
+    finally:
+        tamp.run_tamponade = _REAL_RUN_TAMPONADE
+        repair._exact_si_face_count = real
+    assert rec['ran'] is True, rec
+    assert rec['si_method'] == 'local', rec
+    assert rec['base_local_si'] is not None and rec['cand_local_si'] is not None, rec
+    assert calls['n'] == 0, calls
+    print('ok  prepass uses the local SI guard (no full exact-SI scan)')
+
+
+def test_prepass_budget_zero_skips():
+    import os
+    ml = _FakeML()
+    ms = _FakeMeshSet(_CUBE_V, _OPEN1_F)
+    stats = {}
+    old = os.environ.get('SUTURA_TAMPONADE_PREPASS_BUDGET')
+    os.environ['SUTURA_TAMPONADE_PREPASS_BUDGET'] = '0'
+    try:
+        repair.tamponade_tier(ml, ms, {'non_two_manifold_edges': 0}, stats,
+                              '/tmp', tamponade=True, intensity='balanced',
+                              prepass=True)
+        rec = stats['tamponade']
+    finally:
+        if old is None:
+            os.environ.pop('SUTURA_TAMPONADE_PREPASS_BUDGET', None)
+        else:
+            os.environ['SUTURA_TAMPONADE_PREPASS_BUDGET'] = old
+    assert rec['ran'] is False, rec
+    assert 'budget 0' in (rec['reason'] or ''), rec
+    print('ok  prepass budget 0 skips the tier')
+
+
 def test_tier_skips_closed_si_free_mesh():
     # A closed mesh with no measured self-intersections must still skip.
     real = repair._exact_si_face_count
@@ -323,6 +372,19 @@ def test_resolve_melt_si():
     assert tamp.resolve_melt_si('extreme',
                                 environ={'SUTURA_TAMPONADE_MELT': '0'}) is False
     print('ok  melt is gated to thorough/extreme (env override)')
+
+
+def test_resolve_prepass_budget():
+    assert tamp.resolve_tamponade_prepass_budget('quick') == 0.0
+    assert tamp.resolve_tamponade_prepass_budget('balanced') == 15.0
+    assert tamp.resolve_tamponade_prepass_budget('thorough') == 40.0
+    assert tamp.resolve_tamponade_prepass_budget('extreme') == 60.0
+    assert tamp.resolve_tamponade_prepass_budget(None) == 15.0
+    assert tamp.resolve_tamponade_prepass_budget(
+        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': '3.5'}) == 3.5
+    assert tamp.resolve_tamponade_prepass_budget(
+        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': 'x'}) == 15.0
+    print('ok  prepass budget resolution (preset + env override)')
 
 
 def test_tier_closed_balanced_skips_without_scan():
