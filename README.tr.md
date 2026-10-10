@@ -6,10 +6,16 @@
 
 <p align="center">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI">
-  <img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage build">
+  <img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage derlemesi">
+  <img src="https://github.com/Krateian/Sutura/actions/workflows/build-macos.yml/badge.svg" alt="macOS derlemesi">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL">
   <img src="https://img.shields.io/github/v/release/Krateian/Sutura" alt="Son sürüm">
-  <img src="https://img.shields.io/github/license/Krateian/Sutura" alt="Lisans">
+  <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue" alt="Lisans">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational" alt="Platformlar">
+  <img src="https://img.shields.io/badge/Rust-core-dea584?logo=rust&logoColor=white" alt="Rust çekirdeği">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/github/stars/Krateian/Sutura" alt="GitHub yıldızları">
+  <img src="https://img.shields.io/github/last-commit/Krateian/Sutura" alt="Son commit">
   <img src="https://img.shields.io/github/downloads/Krateian/Sutura/total" alt="İndirmeler">
   <img src="https://img.shields.io/github/contributors/Krateian/Sutura" alt="Katkıda bulunanlar">
   <img src="https://img.shields.io/github/languages/top/Krateian/Sutura" alt="Ana dil">
@@ -1933,7 +1939,7 @@ güvenilir şekilde algılayabilir.
 | trimesh | aşama 2 G/Ç + yöntem kayıt defteri | manifold venv'inde OBJ/mesh yükleme, ayrıca kapama, vekil ve yinelenen öge katmanlarında en yakın-nokta izdüşümü / mesh G/Ç ve Graft/Dressing katmanlarında G/Ç (kurulumda ~4,6 MB) |
 | scipy | yöntem kayıt defteri + Flap/Dressing | kapama, vekil, yinelenen öge, Flap ve Dressing katmanları için seyrek doğrusal cebir ve KD-tree'ler (`scipy.spatial`) (kurulumda ~99 MB; daha önce `scipy.sparse.csgraph` kullanan bağlı-bileşen etiketleme stdlib/numpy `topology.connected_components` ile değiştirildi; Faz 1 bağımlılık azaltımı `pyrobust-predicates` ve `psutil` kaldırılarak kurulumda ~2,1 MB tasarruf sağladı ve Faz 3 SciPy kaldırma yolunu açtı) |
 | pytetwild + pyvista | fTetWild yedek katmanı (isteğe bağlı ek) | fTetWild tetrahedralizasyonu (MPL-2.0); pyvista VTK'yı getirir, kurulu ~1,1 GB, bu yüzden `SUTURA_WITH_FTETWILD=1` ile isteğe bağlıdır |
-| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `pyo3`, `numpy`) | exact arrangement, morfoloji, Flap, Dressing ve Tamponad hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı ve `tamponade` iç-tıkaç modülü; `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
+| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `pyo3`, `numpy`) | exact arrangement, morfoloji, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
 
 `requirements.txt`, `requirements-311.txt` ve (isteğe bağlı)
 `requirements-ftetwild.txt` içinde sabitlenmiştir; Rust crate'leri

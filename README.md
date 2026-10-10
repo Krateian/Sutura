@@ -7,9 +7,15 @@
 <p align="center">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/ci.yml/badge.svg" alt="CI">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/build-appimage.yml/badge.svg" alt="AppImage build">
+  <img src="https://github.com/Krateian/Sutura/actions/workflows/build-macos.yml/badge.svg" alt="macOS build">
   <img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL">
   <img src="https://img.shields.io/github/v/release/Krateian/Sutura" alt="Latest release">
-  <img src="https://img.shields.io/github/license/Krateian/Sutura" alt="License">
+  <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue" alt="License">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational" alt="Platforms">
+  <img src="https://img.shields.io/badge/Rust-core-dea584?logo=rust&logoColor=white" alt="Rust core">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/github/stars/Krateian/Sutura" alt="GitHub stars">
+  <img src="https://img.shields.io/github/last-commit/Krateian/Sutura" alt="Last commit">
   <img src="https://img.shields.io/github/downloads/Krateian/Sutura/total?cacheSeconds=3600" alt="Downloads">
   <img src="https://img.shields.io/github/contributors/Krateian/Sutura" alt="Contributors">
   <img src="https://img.shields.io/github/languages/top/Krateian/Sutura" alt="Top language">
@@ -1931,7 +1937,7 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 | trimesh | stage 2 IO + method registry | OBJ/mesh loading in the manifold venv, closest-point projection / mesh IO in the closing, proxy and repeated-element tiers, and IO in the Graft/Dressing tiers (~4.6 MB installed) |
 | scipy | method registry + Flap/Dressing | sparse linear algebra and KD-trees (`scipy.spatial`) for the closing, proxy, repeated-element, Flap and Dressing tiers (~99 MB installed; connected-component labelling previously using `scipy.sparse.csgraph` has been replaced by stdlib/numpy `topology.connected_components`; Phase 1 dependency reduction saves ~2.1 MB installed by dropping `pyrobust-predicates` and `psutil`, preparing the path for Phase 3 SciPy removal) |
 | pytetwild + pyvista | fTetWild fallback tier (optional extra) | fTetWild tetrahedralization (MPL-2.0); pyvista brings VTK, ~1.1 GB installed, so it is opt-in via `SUTURA_WITH_FTETWILD=1` |
-| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `pyo3`, `numpy`) | exact arrangement, morphology, Flap, Dressing and Tamponade acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor and the `tamponade` interior-plug module; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
+| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `pyo3`, `numpy`) | exact arrangement, morphology, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
 
 Pinned in `requirements.txt`, `requirements-311.txt` and (optional)
 `requirements-ftetwild.txt`; Rust crates in `rust/sutura-geom/Cargo.lock`.

@@ -31,6 +31,38 @@ All notable changes to this project are documented here.
   `micro_welds_ok`/`_failed`, `healthy_faces_kept`, `input_faces`,
   `output_faces`, `seconds`). The tier stays opt-in until it is measured on the
   real-world corpus. Covered by `tests/test_tamponade_integration.py`.
+- **Tamponade reference-surface refinement, thin-plate RBF fallback, shell
+  plug and intentional-openings gate.** On top of the method-#17 baseline, the
+  interior-plug tier gains a fitted reference surface for large and curved
+  boundary loops (a merged reference ring, plus a thin-plate RBF fallback when
+  the quadric sag is rejected), a skirt plug (a cap on the reference joined to
+  the mesh by a zipper strip) for large holes, exact per-plug rollback
+  footprints with a cap shape gate, and an exact coplanar-overlap overlay for
+  penetrating bodies. Intentional openings (a scan or a modelled aperture) are
+  detected and preserved behind the `SUTURA_TAMP_OPENINGS` gate. The tier
+  remains **opt-in** (`TAMPONADE_DEFAULT_ENABLED = False`; `--tamponade` /
+  `SUTURA_TAMPONADE` / the GUI Options checkbox), and the library default stays
+  off and byte-identical.
+- **Proxy resample timeout guard (`Scaffold`, method #10).** The uniform
+  resample filter builds a VCG face KD-tree whose construction degenerates
+  (several GB, minutes) on meshes with long skinny triangle fans; this
+  OOM-killed the whole repair during method-#10 escalation. The filter now runs
+  in a child process under a wall-clock timeout (`RESAMPLE_SUBPROC_TIMEOUT`,
+  60 s) and falls through to the existing alpha-wrap fallback on timeout, with
+  the child driven through temp NPZ files so the parent JSON report is never
+  corrupted. Output is byte-identical whenever the resample completes in time.
+- **Dependency reduction Phase 1 and native Rust cleanup filters.** Phase 1
+  removes `psutil` (replaced by stdlib `os.sysconf` / macOS `sysctl
+  hw.memsize`) and `pyrobust-predicates` (replaced by the Rust
+  `sutura_geom.orient3d`), and replaces every `scipy.sparse.csgraph`
+  connected-component call with a pure Python/NumPy union-find in
+  `sutura.topology`, saving ~2.1 MB installed. Phase 2a routes the Stage-1
+  mesh-cleaning filters to the Rust kernel (`sutura_geom.remove_duplicate_faces`,
+  `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding)
+  with a transparent pure-numpy fallback and bit-for-bit parity tests.
+
+Flap hole-filling refinement is inspired by Liepa (2003), Filling Holes in
+Meshes; no third-party code is used.
 
 ### Fixed
 
