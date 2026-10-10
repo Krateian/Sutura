@@ -694,24 +694,29 @@ fn split_long_loops(
     loops: Vec<Vec<u32>>,
     verts: &[[f64; 3]],
     bvh: &MeshBvh,
-) -> Vec<Vec<u32>> {
+) -> (Vec<Vec<u32>>, Vec<usize>) {
     let mut out: Vec<Vec<u32>> = Vec::new();
-    for l in loops {
-        split_one(l, verts, bvh, 0, &mut out);
+    let mut parents: Vec<usize> = Vec::new();
+    for (pi, l) in loops.into_iter().enumerate() {
+        split_one(l, verts, bvh, 0, pi, &mut out, &mut parents);
     }
-    out
+    (out, parents)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn split_one(
     rim: Vec<u32>,
     verts: &[[f64; 3]],
     bvh: &MeshBvh,
     depth: usize,
+    parent: usize,
     out: &mut Vec<Vec<u32>>,
+    parents: &mut Vec<usize>,
 ) {
     let m = rim.len();
     if m <= SPLIT_MAX_VERTS || depth >= SPLIT_MAX_DEPTH {
         out.push(rim);
+        parents.push(parent);
         return;
     }
     // Candidate bridges: a pair far enough apart along the rim on both sides.
@@ -755,6 +760,7 @@ fn split_one(
     }
     let Some((i, j)) = bridge else {
         out.push(rim);
+        parents.push(parent);
         return;
     };
     let mut a: Vec<u32> = rim[i..=j].to_vec();
@@ -762,8 +768,8 @@ fn split_one(
     let mut b: Vec<u32> = rim[j..].to_vec();
     b.extend_from_slice(&rim[..=i]);
     b.dedup();
-    split_one(a, verts, bvh, depth + 1, out);
-    split_one(b, verts, bvh, depth + 1, out);
+    split_one(a, verts, bvh, depth + 1, parent, out, parents);
+    split_one(b, verts, bvh, depth + 1, parent, out, parents);
 }
 
 /// True when the open segment `a`->`b` does not cross the existing surface.
@@ -3019,9 +3025,16 @@ pub fn tamponade_repair(
     // rim so a single reference surface spans the whole hole rather than the
     // fragment.
     let mut loop_outer: Vec<usize> = (0..loops.len()).collect();
+    // The loops as they are BEFORE the piecewise split (one entry per "parent
+    // hole"); every sub-rim carries the index of its parent so all of them can
+    // share ONE reference fitted on the intact ring of the unsplit hole.
+    let orig_loops: Vec<Vec<u32>> = if manifold_mode { loops.clone() } else { Vec::new() };
+    let mut loop_parent: Vec<usize> = (0..loops.len()).collect();
     if manifold_mode {
         if loops.iter().any(|l| l.len() > SPLIT_MAX_VERTS) {
-            loops = split_long_loops(loops, verts, &bvh);
+            let (split, parents) = split_long_loops(loops, verts, &bvh);
+            loops = split;
+            loop_parent = parents;
             loop_outer = (0..loops.len()).collect();
         }
         let loop_groups = group_boundary_loops(&loops, verts, h);
@@ -3064,6 +3077,30 @@ pub fn tamponade_repair(
 
     // Input adjacency for the T3 reference-surface fit (vertex/edge -> faces).
     let adj = if loops.is_empty() { None } else { Some(build_adjacency(verts.len(), tris)) };
+
+    // One reference per parent hole (manifold path): fit ONCE on the intact ring
+    // of the ORIGINAL unsplit loop and share it with every sub-rim of that hole.
+    // A sub-rim never fits its own reference -- its ring is cut by the split, so
+    // the fit would extrapolate from a fragment.
+    let parent_refs: Vec<Option<ReferenceSurface>> = if manifold_mode {
+        orig_loops
+            .iter()
+            .map(|l| {
+                let mut rim = l.clone();
+                rim.dedup();
+                if rim.len() >= 2 && rim.first() == rim.last() {
+                    rim.pop();
+                }
+                if rim.len() < 3 {
+                    return None;
+                }
+                adj.as_ref()
+                    .and_then(|a| build_reference(verts, tris, &rim, h, a))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Running undirected edge multiplicities, so a plug can be rejected before
     // it pushes any edge past two faces (i.e. manufactures a non-manifold
@@ -3137,7 +3174,11 @@ pub fn tamponade_repair(
         // hole, so a fitted reference surface decides the seal and the expensive
         // min-cut is skipped entirely. Multi-loop / multi-component inputs keep
         // the cut (another loop could be an intentional opening).
-        let mut reference = if single_shell {
+        let mut reference = if manifold_mode {
+            loop_parent
+                .get(li)
+                .and_then(|&p| parent_refs.get(p).cloned().flatten())
+        } else if single_shell {
             adj.as_ref()
                 .and_then(|a| build_reference(verts, tris, &group_rim, h, a))
         } else {
@@ -3209,8 +3250,9 @@ pub fn tamponade_repair(
         // ring 2..=3 tissue. When it is available, seal at the reference level —
         // a concave dent and a convex bump alike; only a saddle / noisy ring
         // yields no reference (`build_reference` -> None) and keeps the rim-only
-        // plug. Already built above on the single-shell fast path.
-        if reference.is_none() && !single_shell {
+        // plug. Already built above on the single-shell fast path, and on the
+        // manifold path it comes from the parent-hole cache (never re-fit).
+        if reference.is_none() && !single_shell && !manifold_mode {
             reference = adj
                 .as_ref()
                 .and_then(|a| build_reference(verts, tris, &group_rim, h, a));
@@ -4004,6 +4046,37 @@ mod tests {
             .map(|p| p[2])
             .fold(f64::NEG_INFINITY, f64::max);
         assert!(peak > -0.05, "hole capped below the bump (peak z={peak})");
+    }
+
+    #[test]
+    fn test_split_long_loops_carries_parent_ids() {
+        // "One reference per parent hole": every sub-rim produced by the
+        // piecewise split must carry the index of the original loop it came
+        // from, so all its pieces share one reference. A long circle rim splits;
+        // a short triangle loop is left whole.
+        let n = 80usize;
+        let mut verts: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                [a.cos(), a.sin(), 0.0]
+            })
+            .collect();
+        verts.push([10.0, 0.0, 0.0]);
+        verts.push([10.0, 1.0, 0.0]);
+        verts.push([10.0, 0.0, 1.0]);
+        let tris: Vec<[u32; 3]> = vec![[n as u32, n as u32 + 1, n as u32 + 2]];
+        let tris_usize: Vec<[usize; 3]> =
+            tris.iter().map(|t| [t[0] as usize, t[1] as usize, t[2] as usize]).collect();
+        let bvh = MeshBvh::from_arrays(&verts, &tris_usize);
+        let long: Vec<u32> = (0..n as u32).collect();
+        let short: Vec<u32> = vec![n as u32, n as u32 + 1, n as u32 + 2];
+        let (split, parents) = split_long_loops(vec![long, short], &verts, &bvh);
+        assert!(split.len() >= 3, "the long rim must split: {}", split.len());
+        assert_eq!(*parents.last().unwrap(), 1, "the short loop keeps parent 1");
+        assert!(
+            parents[..parents.len() - 1].iter().all(|&p| p == 0),
+            "all sub-rims of the long loop carry parent 0: {parents:?}"
+        );
     }
 
     #[test]
