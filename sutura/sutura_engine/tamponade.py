@@ -2,12 +2,17 @@
 """Tamponade (#17) - interior hole plugging and self-intersection melting.
 
 Tamponade closes open boundaries from the inside: the Rust core
-(``sutura_geom.tamponade``) walks each boundary loop, builds a plug surface
-that bridges the opening without touching the surrounding healthy triangles,
-optionally melts residual self-intersections in thin layers (each layer is
-rolled back when it does not reduce the crossing count) and micro-welds the
-seam. Unlike the surface-based tiers it never deletes an input triangle: the
-report's ``healthy_faces_kept`` counts the input faces carried through verbatim.
+(``sutura_geom.tamponade``) walks each boundary loop, fits a smooth reference
+surface (Arif's "line 2") through the intact ring around it, trims any
+rim/tail vertex that overshoots past that level, and builds a plug that follows
+the reference -- a concave dent and a convex bump alike (a saddle / noisy ring
+has no reference and falls back to the rim-only bridge). It optionally melts
+residual self-intersections in thin layers (each layer is rolled back when it
+does not reduce the crossing count) and micro-welds the seam. Unlike the
+surface-based tiers it never deletes an input triangle: the report's
+``healthy_faces_kept`` counts the input faces carried through verbatim, and
+``reference_used`` / ``reference_fallback`` / ``trimmed_vertices`` /
+``patch_vertices`` describe the reference-surface path.
 
 The tier is opt-in.  ``run_tamponade`` is a thin, never-raising wrapper around
 the extension: an install without ``sutura_geom.tamponade`` (or with
@@ -38,15 +43,36 @@ TAMPONADE_BUDGET_BY_INTENSITY = {
 }
 # Budget used when no intensity preset is supplied (library/balanced default).
 TAMPONADE_DEFAULT_BUDGET = 60.0
-# Per-mesh wall-clock cap: a local min-cut that has not separated by
-# ``TAMPONADE_BASE_BUDGET_S + TAMPONADE_PER_FACE_BUDGET_S * faces`` seconds is
-# not worth waiting for (measured: an unrejectable loop on a 11175-face mesh
-# spent 9.3 s in the generalized-winding grid and was rejected anyway), so the
-# tier stops and leaves the remaining loops open. Kept above the ~0.27 s a
-# small non-trivial hole needs so genuine small-mesh plugs are unaffected; the
-# cap only bites on dense meshes whose cut is both expensive and futile.
-TAMPONADE_BASE_BUDGET_S = 0.30
-TAMPONADE_PER_FACE_BUDGET_S = 0.00001
+# Wall-clock cap (seconds) for the Tamponade PREPASS block as a whole (the
+# hygiene chain + the seal + the local self-intersection guard).  The Rust tier
+# otherwise spends its full per-intensity budget (60 s at balanced) even when
+# its output is rejected downstream, which dominated the ornate-frame prepass;
+# this bounds the whole block so a large scan cannot stall the pipeline.  A
+# candidate not verified within the cap is dropped (the caller falls back to the
+# OFF path).  ``quick`` skips the prepass entirely.
+TAMPONADE_PREPASS_BUDGET_BY_INTENSITY = {
+    'quick': 0.0,
+    'balanced': 15.0,
+    'thorough': 40.0,
+    'extreme': 60.0,
+}
+TAMPONADE_PREPASS_DEFAULT_BUDGET = 15.0
+# Seconds held back from the prepass cap for the local self-intersection guard
+# and the weld/reload measurement that run after the Rust tier.  Measured on
+# ornate-frame (396k faces): the subset guard costs ~6 s, weld+reload ~0.3 s, so
+# the reserve leaves enough room for both while the seal still gets the bulk of
+# the cap.
+TAMPONADE_PREPASS_SI_RESERVE_S = 8.0
+# Below this many seconds left, the prepass is skipped rather than started.
+TAMPONADE_PREPASS_MIN_S = 1.0
+# The per-loop wall-clock allowance lives in the Rust core: each boundary loop
+# gets `base + per-vertex * rim_size` seconds, and the whole run is capped by the
+# Triage preset budget above. The allowance scales with the HOLES, not the face
+# count, so a single genuine hole on a large mesh is not cut short (a 30-vertex
+# rim gets ~3 s). An install without the per-loop allowance degrades gracefully:
+# the preset budget is still the hard cap.
+TAMPONADE_LOOP_BUDGET_BASE_S = 0.30
+TAMPONADE_LOOP_BUDGET_PER_VERTEX_S = 0.10
 
 # The inside-out SI melt is opt-in by intensity: it runs only at the two
 # heavier presets (or when explicitly forced with SUTURA_TAMPONADE_MELT=1),
@@ -68,6 +94,26 @@ def resolve_melt_si(intensity, environ=None):
     if env is not None:
         return str(env).strip() == '1'
     return intensity in MELT_INTENSITIES
+
+
+def resolve_tamponade_prepass_budget(intensity, environ=None):
+    """Wall-clock cap (seconds) for the whole Tamponade PREPASS block.
+
+    ``SUTURA_TAMPONADE_PREPASS_BUDGET`` (float seconds) overrides the per-
+    intensity preset; an unparseable value is ignored.  A value <= 0 makes the
+    prepass skip itself; ``quick`` is 0 by preset.  The cap covers the seal plus
+    the local self-intersection guard, so a large scan cannot stall the pipeline
+    waiting on a candidate that will be rejected anyway.
+    """
+    env = (environ if environ is not None else os.environ).get(
+        'SUTURA_TAMPONADE_PREPASS_BUDGET')
+    if env is not None:
+        try:
+            return float(env)
+        except (TypeError, ValueError):
+            pass
+    return TAMPONADE_PREPASS_BUDGET_BY_INTENSITY.get(
+        intensity, TAMPONADE_PREPASS_DEFAULT_BUDGET)
 
 
 def _tamponade_module():
@@ -103,8 +149,11 @@ def _median_edge_length(verts, tris):
     return float(np.median(edges)) if len(edges) else 0.0
 
 
-def run_tamponade(verts, tris, *, intensity=None, ml=None):
+def run_tamponade(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
     """Run the Rust Tamponade tier on ``verts``/``tris``.
+
+    ``time_budget_s`` overrides the per-intensity budget (the prepass passes
+    the seconds left in its own cap so the seal cannot overrun it).
 
     Returns ``(verts_out, tris_out, report)``.  The function never raises: on
     any failure (extension absent, a Rust panic surfaced as a ``BaseException``
@@ -131,7 +180,11 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
               'melt_layers_rolled_back': None,
               'micro_welds_ok': None, 'micro_welds_failed': None,
               'excised_faces': None,
-              'healthy_faces_kept': None}
+              'healthy_faces_kept': None,
+              'reference_used': None, 'reference_fallback': None,
+              'reference_skirt': None,
+              'trimmed_vertices': None, 'patch_vertices': None,
+              'plugs_rolled_back': None}
     try:
         v = np.asarray(verts, dtype=np.float64)
         t = np.asarray(tris, dtype=np.int64)
@@ -142,13 +195,8 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
 
         budget = TAMPONADE_BUDGET_BY_INTENSITY.get(
             intensity, TAMPONADE_DEFAULT_BUDGET)
-        if budget is not None and budget > 0:
-            # Mesh-scaled cap: keep the smaller of the preset budget and the
-            # per-mesh cap so a futile dense-mesh cut aborts after ~0.3 s
-            # instead of running to the preset's tens of seconds.
-            mesh_cap = (TAMPONADE_BASE_BUDGET_S
-                        + TAMPONADE_PER_FACE_BUDGET_S * len(t))
-            budget = min(budget, mesh_cap)
+        if time_budget_s is not None:
+            budget = float(time_budget_s)
         report['budget_s'] = budget
         if budget is not None and budget <= 0:
             report['reason'] = ('intensity %r skips Tamponade (budget 0 s)'
@@ -171,7 +219,11 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None):
                     'plugs_rejected_dev', 'melt_layers_tried',
                     'melt_layers_accepted', 'melt_layers_rolled_back',
                     'micro_welds_ok', 'micro_welds_failed',
-                    'excised_faces', 'healthy_faces_kept'):
+                    'excised_faces', 'healthy_faces_kept',
+                    'reference_used', 'reference_fallback',
+                    'reference_skirt',
+                    'trimmed_vertices', 'patch_vertices',
+                    'plugs_rolled_back'):
             report[key] = info.get(key)
         if info.get('reason'):
             report['reason'] = info['reason']

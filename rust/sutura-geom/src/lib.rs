@@ -29,6 +29,7 @@ pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
+pub mod rbf;
 pub mod raycast;
 pub mod tamponade;
 pub mod topology;
@@ -803,6 +804,13 @@ fn tamponade_py<'py>(
     d.set_item("micro_welds_failed", info.micro_welds_failed)?;
     d.set_item("excised_faces", info.excised_faces)?;
     d.set_item("healthy_faces_kept", info.healthy_faces_kept)?;
+    d.set_item("reference_used", info.reference_used)?;
+    d.set_item("reference_fallback", info.reference_fallback)?;
+    d.set_item("reference_rbf", info.reference_rbf)?;
+    d.set_item("reference_skirt", info.reference_skirt)?;
+    d.set_item("trimmed_vertices", info.trimmed_vertices)?;
+    d.set_item("patch_vertices", info.patch_vertices)?;
+    d.set_item("plugs_rolled_back", info.plugs_rolled_back)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;
@@ -903,6 +911,66 @@ fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool
     }
     let count = mask.iter().filter(|&&b| b).count() as i64;
     (mask, count, false)
+}
+
+/// Self-intersections counted only from a face SUBSET.
+///
+/// Returns the number of proper-crossing, non-adjacent face PAIRS `(i, j)` in
+/// which at least one of `i`, `j` is flagged in `subset`.  Used by the
+/// Tamponade prepass to compare only the faces it changed (plus whatever they
+/// cross) instead of rescanning the whole mesh after every candidate; the
+/// caller runs the same metric on the base mesh's changed faces and rejects
+/// when the candidate's count rises.  `0` when the mesh exceeds
+/// `SI_MAX_FACES` or the subset is empty.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, subset))]
+fn self_intersections_subset<'py>(
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    subset: PyArrayLike1<'py, bool, AllowTypeChange>,
+) -> PyResult<i64> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let s: Vec<bool> = subset.as_array().iter().copied().collect();
+    Ok(self_intersections_subset_core(&rv, &rt, &s))
+}
+
+/// Core subset self-intersection count (no Python); see
+/// `self_intersections_subset`.
+fn self_intersections_subset_core(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    subset: &[bool],
+) -> i64 {
+    let f = tris.len();
+    if f == 0 || f > SI_MAX_FACES {
+        return 0;
+    }
+    if !subset.iter().take(f).any(|&b| b) {
+        return 0;
+    }
+    let triangles: Vec<triangle_intersection::Triangle> = tris
+        .iter()
+        .map(|t| triangle_intersection::Triangle::explicit(verts[t[0]], verts[t[1]], verts[t[2]]))
+        .collect();
+    let pairs = arrangement::broad_phase_candidates(verts, tris);
+    let mut count = 0i64;
+    for (i, j) in pairs {
+        let si = subset.get(i).copied().unwrap_or(false);
+        let sj = subset.get(j).copied().unwrap_or(false);
+        if !(si || sj) {
+            continue;
+        }
+        let (a, b) = (tris[i], tris[j]);
+        if a.iter().any(|x| b.contains(x)) {
+            continue;
+        }
+        if let triangle_intersection::TriangleIntersection::ProperSegment { .. } =
+            triangle_intersection::intersect_triangles(&triangles[i], &triangles[j])
+        {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Ray-stabbing inside/outside for arbitrary query points.
@@ -1082,6 +1150,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dressing_coat, m)?)?;
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
     m.add_function(wrap_pyfunction!(topology::edge_table, m)?)?;
@@ -1103,7 +1172,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{insphere_coords, orient3d_coords};
+    use super::{insphere_coords, orient3d_coords, self_intersections_subset_core};
 
     const ORIGIN: [f64; 3] = [0.0, 0.0, 0.0];
     const X: [f64; 3] = [1.0, 0.0, 0.0];
@@ -1144,6 +1213,32 @@ mod tests {
         // inside the circumsphere -> positive.
         let c = [0.25, 0.25, -0.25];
         assert!(insphere_coords(ORIGIN, X, Y, NEG_Z, c) > 0.0);
+    }
+
+    #[test]
+    fn self_intersections_subset_counts_only_subset_pairs() {
+        // Triangle 0 lies in z=0; triangle 1 pierces it at (0.25, 0.25, 0).
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, -0.5, -1.0],
+            [0.5, 0.5, -1.0],
+            [0.5, 0.5, 1.0],
+        ];
+        let tris: Vec<[usize; 3]> = vec![[0, 1, 2], [3, 4, 5]];
+        assert_eq!(
+            self_intersections_subset_core(&verts, &tris, &[true, false]),
+            1
+        );
+        assert_eq!(
+            self_intersections_subset_core(&verts, &tris, &[false, true]),
+            1
+        );
+        assert_eq!(
+            self_intersections_subset_core(&verts, &tris, &[false, false]),
+            0
+        );
     }
 
     #[test]

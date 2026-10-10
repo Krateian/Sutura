@@ -16,9 +16,12 @@
 //! plug that would introduce a boundary edge, a zero-area triangle or a
 //! winding inconsistent with the rim.
 
-use crate::flap::dp::min_area_triangulation;
+use crate::flap::dp::min_area_triangulation_filtered;
 use crate::mincut::BkGraph;
+use crate::rbf;
+use crate::triangle_intersection;
 use crate::winding::MeshBvh;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -28,12 +31,25 @@ const PLUG_DP_CAP: usize = 300;
 /// Plug triangles with an area at or below this (in the mesh's units, squared)
 /// are treated as degenerate and cause the loop's plug to be rejected.
 const PLUG_MIN_AREA: f64 = 1e-12;
+/// A plug triangle whose largest interior angle lies within this many degrees
+/// of 180 is a near-collinear sliver and is rejected by the min-area DP. Small
+/// enough to leave legitimate fan triangles (whose apex angle is far from 180)
+/// untouched, large enough to route the DP around a flat cap's collinear ears.
+const PLUG_COLLINEAR_MARGIN_DEG: f64 = 1.0;
 /// Boundary loops at or below this vertex count are treated as genuine holes
 /// without the min-cut test. A tiny rim cannot separate a meaningful interior
 /// from the exterior, and the coarse occupancy grid used by the cut rejects
 /// real tiny holes (e.g. artec_copper-key's four 3-vertex rims) as
 /// `NoSeparation`.
 const TINY_LOOP_MAX: usize = 8;
+/// A rim longer than this is split into sub-rims by [`split_long_loops`] before
+/// sealing, so a long / curved hole becomes simple enough for the DP cap.
+const SPLIT_MAX_VERTS: usize = 64;
+/// Minimum vertices each side of a bridge must carry (so a split cannot create
+/// a degenerate sub-rim).
+const SPLIT_MIN_ARC: usize = 3;
+/// Recursion cap for the piecewise split.
+const SPLIT_MAX_DEPTH: usize = 16;
 /// "Invisible plug" gate (a): a rim whose diameter exceeds this multiple of the
 /// median edge length is too large to be a plug a rim-only triangulation can
 /// close invisibly, and is left for the surface-based tiers (Flap/Graft). The
@@ -43,6 +59,119 @@ const PLUG_MAX_LOOP_DIAM_FACTOR: f64 = 120.0;
 /// plane of its rim neighbourhood by more than this multiple of the median edge
 /// length is rejected - it would visibly bridge away from the local surface.
 const PLUG_MAX_DEV_FACTOR: f64 = 1.0;
+
+// --- T3 seal-level ("line 2") reference surface ---------------------------
+/// Ring band of intact faces (face-ring index from the rim) the reference
+/// surface is fitted through. Ring 0 is the rim-adjacent (damaged) band and is
+/// always skipped; rings 2..=3 are intact surrounding tissue.
+const REF_RING_MIN: usize = 2;
+/// Minimum ring width (small rims keep the historical 3-ring band).
+const REF_RING_MAX: usize = 3;
+/// The ring width grows with the rim diameter: `rings ~= diameter / (DIV * h)`
+/// (one face hop is ~ one median edge `h`), clamped to `[REF_RING_MAX,
+/// REF_RING_MAX_CAP]`. A large hole needs a wider band of intact tissue for a
+/// stable fit; the cap bounds the scan.
+const REF_RING_DIAM_DIV: f64 = 4.0;
+const REF_RING_MAX_CAP: usize = 12;
+/// Minimum number of distinct intact ring points needed to fit the quadric.
+const REF_MIN_POINTS: usize = 8;
+/// Ring-face sliver brake: a face whose area is below this fraction of `h^2`
+/// is a sliver and does not contribute to the reference.
+const REF_SLIVER_AREA_FRAC: f64 = 0.01;
+/// A ring whose face normals spread more than this from the mean is too noisy
+/// (sharp edge, saddle) and yields `no reference` -- UNLESS the quadric fit is
+/// itself smooth (`rms` below `REF_NORMAL_SPREAD_RMS_FRAC * h`), which is the
+/// signature of a smooth curved surface (sphere cap, rounded bump) rather than
+/// noise.
+const REF_NORMAL_SPREAD_DEG: f64 = 60.0;
+/// A wide normal spread is tolerated while the fit roughness stays below this
+/// fraction of `h`; above it the spread is treated as genuine noise.
+const REF_NORMAL_SPREAD_RMS_FRAC: f64 = 0.5;
+/// The quadric fit residual (rms over the ring points) must not exceed this
+/// multiple of `h`, else the surrounding surface is not locally smooth.
+const REF_RMS_FACTOR: f64 = 1.0;
+/// Self-consistency brake (no ground truth): the fitted quadric may not
+/// extrapolate a sag across the hole radius larger than this multiple of the
+/// ring's own height relief plus `h`. A partial rim fragment or a wide ring can
+/// otherwise produce a reference whose centre sits well outside the observed
+/// tissue, and the plug (which lies ON that reference) becomes a spike that
+/// `reference_dev_ok` cannot catch.
+const REF_SAG_FACTOR: f64 = 1.25;
+/// Laser-ray divergence brake: a tangent ray whose meeting height deviates from
+/// the fitted centre by more than this multiple of the ring's own fit roughness
+/// (`rms`) counts as being on one side. A saddle sends a *material share* of the
+/// rays to both sides and is rejected (`no reference`).
+const REF_RAY_SPREAD_FACTOR: f64 = 1.5;
+/// Minimum share of the tangent rays that must fall beyond the tolerance on
+/// BOTH sides before the reference is rejected as a saddle. A genuine bowl or
+/// dome can have one stray ray (a short or overshoot rim neighbour) on the
+/// opposite side; a single outlier must not veto a real seal.
+const REF_RAY_MIN_SIDE_FRAC: f64 = 0.15;
+/// Ridge regularisation of the quadric normal equations (relative to the trace).
+const REF_RIDGE: f64 = 1e-6;
+// --- RBF fallback (large / curved holes the single quadric cannot represent) --
+/// Tikhonov ridge of the thin-plate RBF normal equations (relative to the mean
+/// kernel magnitude; `phi(0) = 0` makes the kernel matrix singular without it).
+const RBF_RIDGE: f64 = 1e-4;
+/// RBF solve size cap: above this many centres the sample set is sub-sampled
+/// deterministically (the hand-rolled dense solve is `O(M^3)`).
+const RBF_MAX_CENTRES: usize = 600;
+/// RBF self-consistency band (no truth): over the hole disk the fitted height
+/// may not leave the ring points' own height band by more than this multiple of
+/// `(relief + h)`.
+const RBF_BAND_K: f64 = 1.0;
+/// RBF slope brake (no truth): the max `|grad F|` over the hole disk may not
+/// exceed this multiple of the ring's own max height-field slope.
+const RBF_GRAD_K: f64 = 2.0;
+/// Disk sample resolution of the RBF self-consistency gate (radii x angles).
+const RBF_GATE_NR: usize = 4;
+const RBF_GATE_NA: usize = 24;
+/// The RBF fallback is for LARGE holes only (the brief): below this hole
+/// diameter / median-edge ratio the single quadric is kept even when its fit is
+/// rejected, so a small flat opening's rim-only plug is unchanged.
+const RBF_MIN_HOLE_FACTOR: f64 = 6.0;
+/// Trust weight of the hole-rim samples in the ring+rim weighted RBF fallback
+/// (the intact-ring samples carry weight 1). A low weight lets the rim pull the
+/// extrapolation toward the actual opening without overriding the intact ring.
+const RBF_RIM_WEIGHT: f64 = 0.15;
+/// Leave-one-out self-consistency band of the saddle RBF fallback. The single
+/// quadric is rejected as a saddle when opposite tangent rays predict opposite
+/// heights, but a thin-plate RBF can bend both ways and represent it. The RBF is
+/// admitted only when dropping each ring sample in turn and predicting it from
+/// the rest stays within this band: a genuine saddle's surface is predictable
+/// from its own neighbourhood, an over-extrapolated or noisy fit is not. The
+/// band is the sampling scale (`0.25 h`): a dropped sample is one edge from its
+/// neighbours, so a fit that cannot reproduce it there is not trustworthy over
+/// the hole. The band is deliberately expressed against `h`, NOT the quadric fit
+/// residual: on a curved hole fragment the quadric `rms` is a measure of the
+/// fragment's curvature, not of the sampling budget, and using `2 * rms` as the
+/// band let the gate drift to ~1.0 on exactly the curved group rims this test
+/// exists to reject (measured on plate_c_dent_large).
+const RBF_LOO_H_FRAC: f64 = 0.25;
+/// Maximum number of ring samples held out in the LOO gate (deterministic
+/// stride); bounds the repeated `O(M^3)` refits of a large ring.
+const RBF_LOO_MAX: usize = 24;
+/// A rim/tail vertex deeper than this fraction of `h` below the reference is
+/// part of the overshoot tail and is lifted onto the reference surface.
+const TRIM_EPS_FACTOR: f64 = 0.02;
+/// Per-loop cap on lifted tail vertices (a healthy mesh is never touched).
+const TRIM_MAX_VERTICES: usize = 64;
+/// Above this many patch triangles the local self-intersection check of the
+/// skirt strip is skipped (returns "clean") for speed; the patch is a thin
+/// collar around one rim, so a large loop is still bounded.
+const PATCH_SI_MAX_TRIS: usize = 400;
+
+// --- per-loop wall-clock allowance ----------------------------------------
+/// When a budget is set, each boundary loop gets its own allowance (seconds):
+/// a flat base plus a term proportional to the rim vertex count, so a single
+/// genuine hole is not cut short by the mesh size. plate_a_dent's 29-vertex rim
+/// needs ~2.7 s and the removed mesh-scaled cap gave it only 0.44 s. The whole
+/// run is still capped by `TamponadeConfig::time_budget_s` (the intensity
+/// preset), so the loop allowance only ever loosens an under-sized preset.
+const LOOP_BUDGET_BASE_S: f64 = 0.30;
+const LOOP_BUDGET_PER_VERTEX_S: f64 = 0.10;
+/// Deviation gate against the reference surface (allows the curved patch).
+const REF_DEV_FACTOR: f64 = 3.0;
 
 #[derive(Clone, Debug)]
 pub struct TamponadeConfig {
@@ -79,6 +208,22 @@ pub struct TamponadeInfo {
     /// Input faces the melt pass excised (accepted layers only).
     pub excised_faces: usize,
     pub healthy_faces_kept: usize,
+    /// Holes sealed using a fitted reference ("laser") surface (line 2).
+    pub reference_used: usize,
+    /// Holes whose reference surface was rejected -> rim-only fallback.
+    pub reference_fallback: usize,
+    /// Holes sealed using the thin-plate RBF fallback reference (subset of
+    /// `reference_used`).
+    pub reference_rbf: usize,
+    /// Holes sealed by a skirt plug (cap on the reference + zipper strip to the
+    /// projected rim; subset of `reference_used`).
+    pub reference_skirt: usize,
+    /// Rim/tail vertices lifted onto the reference surface (overshoot trim).
+    pub trimmed_vertices: usize,
+    /// Interior patch vertices placed on the reference surface.
+    pub patch_vertices: usize,
+    /// Plugs rolled back by the final reload-honest "never worse" safety net.
+    pub plugs_rolled_back: usize,
     pub seconds: f64,
     pub reason: String,
     /// One entry per boundary loop: its vertex count and the decision taken
@@ -254,6 +399,400 @@ pub fn build_boundary_loops(directed: &[(u32, u32)]) -> Vec<Vec<u32>> {
         }
     }
     loops
+}
+
+/// Manifold boundary decomposition: half-edge (face-fan) traversal.
+///
+/// Unlike [`build_boundary_loops`] -- a greedy vertex-marking walker that, at a
+/// rim vertex pinched by an attached flap, marks the vertex used and then
+/// diverts into the flap, orphaning the rest of the rim -- this pairs each
+/// incoming boundary half-edge with its successor across the incident triangle
+/// fan. A rim pinched by the dangling tail therefore still yields the true
+/// outer rim (e.g. the whole plate rim) plus the tail's own loop, and the outer
+/// rim's reference plug covers the whole hole instead of leaving an annulus.
+///
+/// The walker is deterministic (starts are sorted) and each boundary half-edge
+/// belongs to exactly one loop.
+pub fn boundary_loops_manifold(tris: &[[u32; 3]]) -> Vec<Vec<u32>> {
+    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
+    let mut count: HashMap<(u32, u32), u32> = HashMap::with_capacity(tris.len() * 2);
+    let mut faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let k = key(a, b);
+            *count.entry(k).or_insert(0) += 1;
+            faces.entry(k).or_insert_with(Vec::new).push(fi);
+        }
+    }
+    // Directed boundary half-edge -> its single incident face.
+    let mut bface: HashMap<(u32, u32), usize> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if count.get(&key(a, b)) == Some(&1) {
+                bface.insert((a, b), fi);
+            }
+        }
+    }
+    let third = |fi: usize, b: u32, exclude: u32| -> u32 {
+        for &v in &tris[fi] {
+            if v != b && v != exclude {
+                return v;
+            }
+        }
+        b
+    };
+
+    let mut used: HashSet<(u32, u32)> = HashSet::new();
+    let mut loops: Vec<Vec<u32>> = Vec::new();
+    let mut starts: Vec<(u32, u32)> = bface.keys().cloned().collect();
+    starts.sort();
+    // Work guard: on a non-manifold / degenerate output the face-fan walk can
+    // cycle without ever reaching a boundary half-edge (e.g. a non-manifold edge
+    // where >2 faces share an edge, or a face carrying the same edge twice).
+    // The budget is PER START: one cycling walk must not consume the budget of
+    // every later start (that global budget made the walker return zero loops --
+    // `reason="no_holes"` -- on any mesh whose boundaries touch a non-manifold
+    // edge). A repeat of the (face, vertex) rotation state bails immediately.
+    let limit = tris.len().saturating_mul(8) + 64;
+    for h in starts {
+        if used.contains(&h) {
+            continue;
+        }
+        let mut loop_v: Vec<u32> = Vec::new();
+        let mut cur = h;
+        let mut steps = 0usize;
+        loop {
+            if used.contains(&cur) {
+                break;
+            }
+            used.insert(cur);
+            loop_v.push(cur.0);
+            // Rotate around the target vertex `b` through the face fan until the
+            // next boundary half-edge is found.
+            let (a, b) = cur;
+            let mut f = bface[&(a, b)];
+            let mut c = third(f, b, a);
+            let mut nxt: Option<(u32, u32)> = None;
+            // A proper fan rotation visits each face once; a repeated
+            // (face, current-vertex) state means the walk is cycling.
+            let mut fan_seen: HashSet<(usize, u32)> = HashSet::new();
+            loop {
+                steps += 1;
+                if steps > limit || !fan_seen.insert((f, c)) {
+                    break;
+                }
+                let k = key(b, c);
+                if count.get(&k) == Some(&1) {
+                    nxt = Some(if bface.contains_key(&(b, c)) { (b, c) } else { (c, b) });
+                    break;
+                }
+                let fs = &faces[&k];
+                if fs.len() < 2 {
+                    break;
+                }
+                let f2 = if fs[0] == f { fs[1] } else { fs[0] };
+                if f2 == f {
+                    break;
+                }
+                c = third(f2, b, c);
+                f = f2;
+            }
+            let Some(n) = nxt else { break };
+            cur = n;
+            if cur == h {
+                break;
+            }
+        }
+        if loop_v.len() >= 3 {
+            loops.push(loop_v);
+        }
+    }
+    loops
+}
+
+/// Duplicate non-manifold ("pinched") vertices, one copy per face-fan, so a
+/// boundary rim pinched at a single vertex separates into independent loops
+/// that can each be sealed. Mirrors the full pipeline's
+/// `_split_pinched_vertices`: vertices are only duplicated and keep their
+/// position (no shape change). This is a preprocessing step for boundary-loop
+/// extraction and is opt-in behind `SUTURA_TAMP_MANIFOLD`. Deterministic:
+/// vertices are visited in index order and the fan holding the lowest face
+/// index keeps the original vertex id.
+fn fan_split_pinched_vertices(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+    let nv = verts.len();
+    let mut vf: Vec<Vec<usize>> = vec![Vec::new(); nv];
+    for (fi, t) in tris.iter().enumerate() {
+        for &v in t {
+            vf[v as usize].push(fi);
+        }
+    }
+    let mut out_verts: Vec<[f64; 3]> = verts.to_vec();
+    let mut out_tris: Vec<[u32; 3]> = tris.to_vec();
+    let mut edge_faces: HashMap<u32, Vec<usize>> = HashMap::new();
+    for v in 0..nv {
+        if vf[v].len() < 2 {
+            continue;
+        }
+        // Faces sharing an edge incident to `v` are connected around `v`.
+        edge_faces.clear();
+        for &f in &vf[v] {
+            let t = tris[f];
+            for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                if a as usize == v {
+                    edge_faces.entry(b).or_default().push(f);
+                } else if b as usize == v {
+                    edge_faces.entry(a).or_default().push(f);
+                }
+            }
+        }
+        // Union-find over the incident faces.
+        let mut root: HashMap<usize, usize> = vf[v].iter().map(|&f| (f, f)).collect();
+        fn find(root: &mut HashMap<usize, usize>, x: usize) -> usize {
+            let mut r = x;
+            while root[&r] != r {
+                r = root[&r];
+            }
+            let mut c = x;
+            while root[&c] != r {
+                let n = root[&c];
+                root.insert(c, r);
+                c = n;
+            }
+            r
+        }
+        for fl in edge_faces.values() {
+            for i in 1..fl.len() {
+                let ra = find(&mut root, fl[0]);
+                let rb = find(&mut root, fl[i]);
+                if ra != rb {
+                    root.insert(rb, ra);
+                }
+            }
+        }
+        let mut fans: HashMap<usize, Vec<usize>> = HashMap::new();
+        for &f in &vf[v] {
+            let r = find(&mut root, f);
+            fans.entry(r).or_default().push(f);
+        }
+        if fans.len() < 2 {
+            continue;
+        }
+        // Order fans by their lowest face index so the first one keeps `v`.
+        let mut keys: Vec<usize> = fans.keys().cloned().collect();
+        keys.sort_by_key(|k| *fans[k].iter().min().unwrap());
+        for k in &keys[1..] {
+            let nvi = out_verts.len() as u32;
+            out_verts.push(verts[v]);
+            for &f in &fans[k] {
+                for x in out_tris[f].iter_mut() {
+                    if *x == v as u32 {
+                        *x = nvi;
+                    }
+                }
+            }
+        }
+    }
+    (out_verts, out_tris)
+}
+
+/// Group boundary loops that belong to one geometric hole: loops sharing a
+/// boundary vertex, or whose vertices fall in the same `h`-sized grid cell
+/// (i.e. come within ~h of each other). For each group the index of the outer
+/// rim -- the loop with the largest bounding-box diagonal -- is returned so a
+/// single reference surface can be fitted to it. Deterministic: groups are
+/// ordered by their lowest loop index.
+fn group_boundary_loops(
+    loops: &[Vec<u32>],
+    verts: &[[f64; 3]],
+    h: f64,
+) -> Vec<(Vec<usize>, usize)> {
+    let n = loops.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            let gp = parent[parent[x]];
+            parent[x] = gp;
+            x = gp;
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut vloop: HashMap<u32, usize> = HashMap::new();
+    for (li, l) in loops.iter().enumerate() {
+        for &v in l {
+            match vloop.get(&v) {
+                Some(&lj) => {
+                    let a = find(&mut parent, li);
+                    let b = find(&mut parent, lj);
+                    if a != b {
+                        parent[b] = a;
+                    }
+                }
+                None => {
+                    vloop.insert(v, li);
+                }
+            }
+        }
+    }
+    let cell = h.max(1e-12);
+    let mut cloop: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    for (li, l) in loops.iter().enumerate() {
+        let mut cells: HashSet<(i64, i64, i64)> = HashSet::new();
+        for &v in l {
+            let p = verts[v as usize];
+            cells.insert((
+                (p[0] / cell).floor() as i64,
+                (p[1] / cell).floor() as i64,
+                (p[2] / cell).floor() as i64,
+            ));
+        }
+        for c in cells {
+            match cloop.get(&c) {
+                Some(&lj) => {
+                    let a = find(&mut parent, li);
+                    let b = find(&mut parent, lj);
+                    if a != b {
+                        parent[b] = a;
+                    }
+                }
+                None => {
+                    cloop.insert(c, li);
+                }
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for li in 0..n {
+        let r = find(&mut parent, li);
+        groups.entry(r).or_default().push(li);
+    }
+    let mut out: Vec<(Vec<usize>, usize)> = groups
+        .into_values()
+        .map(|members| {
+            let mut best = members[0];
+            let mut best_d = -1.0f64;
+            for &li in &members {
+                let mut bb = BBox::empty();
+                for &v in &loops[li] {
+                    bb.expand_point(verts[v as usize]);
+                }
+                let d = bb.diagonal();
+                if d > best_d {
+                    best_d = d;
+                    best = li;
+                }
+            }
+            (members, best)
+        })
+        .collect();
+    out.sort_by_key(|(m, _)| m[0]);
+    out
+}
+
+/// Piecewise hole filling (Jun 2005): a long / complex rim is split at a
+/// "bridge" -- a pair of rim vertices close in space but far apart along the
+/// rim whose connecting segment is clear of the existing surface -- into two
+/// simpler sub-rims, recursively, until each is short enough for the
+/// DP / reference cap. The bridge edge is shared by the two caps with opposite
+/// direction, so the seam stays two-manifold. This also removes the collinear
+/// runs that make one large rim triangulate to zero-area faces.
+fn split_long_loops(
+    loops: Vec<Vec<u32>>,
+    verts: &[[f64; 3]],
+    bvh: &MeshBvh,
+) -> (Vec<Vec<u32>>, Vec<usize>) {
+    let mut out: Vec<Vec<u32>> = Vec::new();
+    let mut parents: Vec<usize> = Vec::new();
+    for (pi, l) in loops.into_iter().enumerate() {
+        split_one(l, verts, bvh, 0, pi, &mut out, &mut parents);
+    }
+    (out, parents)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn split_one(
+    rim: Vec<u32>,
+    verts: &[[f64; 3]],
+    bvh: &MeshBvh,
+    depth: usize,
+    parent: usize,
+    out: &mut Vec<Vec<u32>>,
+    parents: &mut Vec<usize>,
+) {
+    let m = rim.len();
+    if m <= SPLIT_MAX_VERTS || depth >= SPLIT_MAX_DEPTH {
+        out.push(rim);
+        parents.push(parent);
+        return;
+    }
+    // Candidate bridges: a pair far enough apart along the rim on both sides.
+    // Jun 2005 selects the pair closest in space relative to the boundary arc
+    // between them -- for a round rim that is a near-diameter (a balanced cut),
+    // and for a spike/tail it is the short chord across the spike's base. The
+    // ratio `arc / dist` is maximised; the expensive surface-clearance test
+    // runs on the candidates in descending order until one is clear.
+    let mut arc_len: Vec<f64> = vec![0.0; m + 1];
+    for i in 0..m {
+        let a = verts[rim[i] as usize];
+        let b = verts[rim[(i + 1) % m] as usize];
+        arc_len[i + 1] =
+            arc_len[i] + ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    }
+    let perimeter = arc_len[m];
+    let mut cands: Vec<(f64, usize, usize)> = Vec::new();
+    for i in 0..m {
+        for j in (i + SPLIT_MIN_ARC)..m {
+            if m - (j - i) < SPLIT_MIN_ARC {
+                continue;
+            }
+            let a = verts[rim[i] as usize];
+            let b = verts[rim[j] as usize];
+            let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            if d < 1e-12 {
+                continue;
+            }
+            let arc = arc_len[j] - arc_len[i];
+            let short_arc = arc.min(perimeter - arc);
+            cands.push((short_arc / d, i, j));
+        }
+    }
+    cands.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut bridge: Option<(usize, usize)> = None;
+    for &(_, i, j) in &cands {
+        if segment_clear(bvh, verts[rim[i] as usize], verts[rim[j] as usize]) {
+            bridge = Some((i, j));
+            break;
+        }
+    }
+    let Some((i, j)) = bridge else {
+        out.push(rim);
+        parents.push(parent);
+        return;
+    };
+    let mut a: Vec<u32> = rim[i..=j].to_vec();
+    a.dedup();
+    let mut b: Vec<u32> = rim[j..].to_vec();
+    b.extend_from_slice(&rim[..=i]);
+    b.dedup();
+    split_one(a, verts, bvh, depth + 1, parent, out, parents);
+    split_one(b, verts, bvh, depth + 1, parent, out, parents);
+}
+
+/// True when the open segment `a`->`b` does not cross the existing surface.
+fn segment_clear(bvh: &MeshBvh, a: [f64; 3], b: [f64; 3]) -> bool {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = norm3(d);
+    if len < 1e-12 {
+        return false;
+    }
+    let dir = [d[0] / len, d[1] / len, d[2] / len];
+    let q = bvh.intersect_ray(a, dir, len * (1.0 - 1e-6), 1e-9);
+    q.crossings == 0
 }
 
 fn crosses_wall(bvh: &MeshBvh, p1: [f64; 3], p2: [f64; 3]) -> bool {
@@ -467,8 +1006,34 @@ fn throat_separates(
     let mut uf = UnionFind::new(total);
     // `wall_bits` records the blocked forward neighbours of each cell (bit 0
     // +x, bit 1 +y, bit 2 +z); `near_surface` marks both endpoints of every
-    // blocked edge, the seeds of the distance-to-surface flood fill.
-    let mut wall_bits: Vec<u8> = vec![0u8; total];
+    // blocked edge, the seeds of the distance-to-surface flood fill. A cell's
+    // bits depend only on that cell and its forward neighbours, so the
+    // (BVH-ray) wall test for every edge is independent and runs in parallel;
+    // the graph edges and the union-find over the traversable edges then run
+    // serially in the original row-major order, so the components and the cut
+    // are unchanged.
+    let wall_bits: Vec<u8> = (0..total)
+        .into_par_iter()
+        .map(|idx| {
+            let iz = idx / (nx * ny);
+            let rem = idx % (nx * ny);
+            let iy = rem / nx;
+            let ix = rem % nx;
+            let c = cell_center(ix, iy, iz);
+            let mut bits = 0u8;
+            if ix + 1 < nx && crosses_wall(bvh, c, cell_center(ix + 1, iy, iz)) {
+                bits |= 1;
+            }
+            if iy + 1 < ny && crosses_wall(bvh, c, cell_center(ix, iy + 1, iz)) {
+                bits |= 2;
+            }
+            if iz + 1 < nz && crosses_wall(bvh, c, cell_center(ix, iy, iz + 1)) {
+                bits |= 4;
+            }
+            bits
+        })
+        .collect();
+
     let mut near_surface: Vec<bool> = vec![false; total];
     for iz in 0..nz {
         if deadline_passed(deadline) {
@@ -477,42 +1042,45 @@ fn throat_separates(
         for iy in 0..ny {
             for ix in 0..nx {
                 let idx = cell_idx(ix, iy, iz);
-                let c = cell_center(ix, iy, iz);
-                if ix + 1 < nx {
-                    let c2 = cell_center(ix + 1, iy, iz);
+                let bits = wall_bits[idx];
+                if bits & 7 != 0 {
+                    near_surface[idx] = true;
+                    if ix + 1 < nx && bits & 1 != 0 {
+                        near_surface[idx + 1] = true;
+                    }
+                    if iy + 1 < ny && bits & 2 != 0 {
+                        near_surface[idx + nx] = true;
+                    }
+                    if iz + 1 < nz && bits & 4 != 0 {
+                        near_surface[idx + nx * ny] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    for iz in 0..nz {
+        if deadline_passed(deadline) {
+            return CutVerdict::Timeout;
+        }
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let idx = cell_idx(ix, iy, iz);
+                let bits = wall_bits[idx];
+                if ix + 1 < nx && bits & 1 == 0 {
                     let j = cell_idx(ix + 1, iy, iz);
-                    if crosses_wall(bvh, c, c2) {
-                        wall_bits[idx] |= 1;
-                        near_surface[idx] = true;
-                        near_surface[j] = true;
-                    } else {
-                        g.add_edge(idx, j, face_cap, face_cap);
-                        uf.union(idx, j);
-                    }
+                    g.add_edge(idx, j, face_cap, face_cap);
+                    uf.union(idx, j);
                 }
-                if iy + 1 < ny {
-                    let c2 = cell_center(ix, iy + 1, iz);
+                if iy + 1 < ny && bits & 2 == 0 {
                     let j = cell_idx(ix, iy + 1, iz);
-                    if crosses_wall(bvh, c, c2) {
-                        wall_bits[idx] |= 2;
-                        near_surface[idx] = true;
-                        near_surface[j] = true;
-                    } else {
-                        g.add_edge(idx, j, face_cap, face_cap);
-                        uf.union(idx, j);
-                    }
+                    g.add_edge(idx, j, face_cap, face_cap);
+                    uf.union(idx, j);
                 }
-                if iz + 1 < nz {
-                    let c2 = cell_center(ix, iy, iz + 1);
+                if iz + 1 < nz && bits & 4 == 0 {
                     let j = cell_idx(ix, iy, iz + 1);
-                    if crosses_wall(bvh, c, c2) {
-                        wall_bits[idx] |= 4;
-                        near_surface[idx] = true;
-                        near_surface[j] = true;
-                    } else {
-                        g.add_edge(idx, j, face_cap, face_cap);
-                        uf.union(idx, j);
-                    }
+                    g.add_edge(idx, j, face_cap, face_cap);
+                    uf.union(idx, j);
                 }
             }
         }
@@ -712,6 +1280,12 @@ fn throat_separates(
                 for ix in 0..nx {
                     let idx = cell_idx(ix, iy, iz);
                     if comp_tag.contains_key(&uf.find(idx)) {
+                        continue;
+                    }
+                    // A border cell is forced to sink by `tag` regardless of
+                    // its winding, so its exact value need not be computed.
+                    if border_of(idx) {
+                        cls[idx] = 2;
                         continue;
                     }
                     pts.push(center_of(idx));
@@ -1054,8 +1628,24 @@ fn triangulate_rim_loop(
         return Err("too_small");
     }
     let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    // DP is preferred (min-area, symmetric), but it can fail on a non-convex or
+    // collinear rim; under `SUTURA_TAMP_MANIFOLD`, ear clipping is the
+    // structural fallback (brief step 2). The default path keeps the historical
+    // DP-only behaviour byte-identical.
+    let manifold_mode = std::env::var("SUTURA_TAMP_MANIFOLD").is_ok();
     let local = if m <= PLUG_DP_CAP {
-        min_area_triangulation(&pts, PLUG_DP_CAP, &HashSet::new())
+        let dp = min_area_triangulation_filtered(
+            &pts,
+            PLUG_DP_CAP,
+            &HashSet::new(),
+            PLUG_MIN_AREA,
+            PLUG_COLLINEAR_MARGIN_DEG,
+        );
+        if manifold_mode && dp.len() != m - 2 {
+            ear_clip(&pts)
+        } else {
+            dp
+        }
     } else {
         ear_clip(&pts)
     };
@@ -1146,6 +1736,1911 @@ fn plug_within_plane(
     true
 }
 
+// ==========================================================================
+// T3 reference surface ("laser"), overshoot trim and reference-following plug
+// ==========================================================================
+
+/// The fitted height-field model of a [`ReferenceSurface`]: a single quadric
+/// (the default, cheap and exact for a small hole) or a thin-plate RBF height
+/// field (the fallback for a large / curved hole the quadric extrapolates
+/// badly). Both evaluate `h(u, v)` along the surface normal `n`.
+#[derive(Clone, Debug)]
+enum RefModel {
+    /// `h(u,v) = c0 + c1 u + c2 v + c3 u^2 + c4 u v + c5 v^2`.
+    Quadric([f64; 6]),
+    /// `h(u,v) = a0 + a1 u + a2 v + sum_j w_j phi(|x - c_j|)`.
+    Rbf(rbf::TpsFit),
+}
+
+/// A fitted smooth "laser" reference surface over a hole, used to seal at the
+/// level of the intact surrounding tissue (Arif's "line 2") instead of the rim
+/// point closest to the centre ("line 1").
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct ReferenceSurface {
+    origin: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    n: [f64; 3],
+    model: RefModel,
+    rms: f64,
+    /// Sign of the mean curvature at the centre (concave < 0).
+    concave: bool,
+}
+
+impl ReferenceSurface {
+    fn eval(&self, u: f64, v: f64) -> f64 {
+        match &self.model {
+            RefModel::Quadric(c) => {
+                c[0] + c[1] * u + c[2] * v + c[3] * u * u + c[4] * u * v + c[5] * v * v
+            }
+            RefModel::Rbf(f) => f.eval(u, v),
+        }
+    }
+
+    /// Signed distance of `p` along `n` from the reference surface.
+    fn signed_height(&self, p: [f64; 3]) -> f64 {
+        let d = [p[0] - self.origin[0], p[1] - self.origin[1], p[2] - self.origin[2]];
+        dot3(d, self.n) - self.eval(dot3(d, self.u), dot3(d, self.v))
+    }
+
+    /// Project `p` onto the reference surface along `n` (an overshoot tail is
+    /// lifted onto line 2 without changing its in-plane position).
+    fn place(&self, p: [f64; 3]) -> [f64; 3] {
+        let d = [p[0] - self.origin[0], p[1] - self.origin[1], p[2] - self.origin[2]];
+        let su = dot3(d, self.u);
+        let sv = dot3(d, self.v);
+        let h = self.eval(su, sv);
+        [
+            self.origin[0] + su * self.u[0] + sv * self.v[0] + h * self.n[0],
+            self.origin[1] + su * self.u[1] + sv * self.v[1] + h * self.n[1],
+            self.origin[2] + su * self.u[2] + sv * self.v[2] + h * self.n[2],
+        ]
+    }
+}
+
+/// Vertex->face and edge->face adjacency of the input mesh, built once.
+struct Adjacency {
+    vert_faces: Vec<Vec<u32>>,
+    edge_faces: HashMap<(u32, u32), Vec<u32>>,
+    edge_mult: HashMap<(u32, u32), i32>,
+}
+
+fn build_adjacency(nverts: usize, tris: &[[u32; 3]]) -> Adjacency {
+    let mut vert_faces: Vec<Vec<u32>> = vec![Vec::new(); nverts];
+    let mut edge_faces: HashMap<(u32, u32), Vec<u32>> = HashMap::with_capacity(tris.len() * 3);
+    let mut edge_mult: HashMap<(u32, u32), i32> = HashMap::with_capacity(tris.len() * 3);
+    for (fi, t) in tris.iter().enumerate() {
+        for &v in t {
+            vert_faces[v as usize].push(fi as u32);
+        }
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if a == b {
+                continue;
+            }
+            let e = ekey2(a, b);
+            edge_faces.entry(e).or_default().push(fi as u32);
+            *edge_mult.entry(e).or_insert(0) += 1;
+        }
+    }
+    Adjacency { vert_faces, edge_faces, edge_mult }
+}
+
+/// Face normal (unnormalised) for a triangle.
+fn face_normal(verts: &[[f64; 3]], t: &[u32; 3]) -> [f64; 3] {
+    let a = verts[t[0] as usize];
+    let b = verts[t[1] as usize];
+    let c = verts[t[2] as usize];
+    cross3([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]])
+}
+
+/// Build an orthonormal frame around unit normal `n`.
+fn frame_from_normal(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let refv = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let u0 = cross3(refv, n);
+    let ul = norm3(u0).max(1e-20);
+    let u = [u0[0] / ul, u0[1] / ul, u0[2] / ul];
+    let v = cross3(n, u);
+    (u, v)
+}
+
+/// Solve a small dense system by Gaussian elimination with partial pivoting.
+fn solve6(mut a: [[f64; 6]; 6], mut b: [f64; 6]) -> Option<[f64; 6]> {
+    for col in 0..6 {
+        let mut piv = col;
+        let mut best = a[col][col].abs();
+        for r in (col + 1)..6 {
+            if a[r][col].abs() > best {
+                best = a[r][col].abs();
+                piv = r;
+            }
+        }
+        if best < 1e-18 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        let d = a[col][col];
+        for c in col..6 {
+            a[col][c] /= d;
+        }
+        b[col] /= d;
+        for r in 0..6 {
+            if r != col {
+                let f = a[r][col];
+                if f != 0.0 {
+                    for c in col..6 {
+                        a[r][c] -= f * a[col][c];
+                    }
+                    b[r] -= f * b[col];
+                }
+            }
+        }
+    }
+    Some(b)
+}
+
+/// Least-squares quadric fit over `(u,v,d)` samples with a ridge term.
+fn fit_quadric(samples: &[(f64, f64, f64)]) -> Option<([f64; 6], f64)> {
+    if samples.len() < REF_MIN_POINTS {
+        return None;
+    }
+    let mut ata = [[0.0f64; 6]; 6];
+    let mut atb = [0.0f64; 6];
+    for &(u, v, d) in samples {
+        let row = [1.0, u, v, u * u, u * v, v * v];
+        for i in 0..6 {
+            for j in 0..6 {
+                ata[i][j] += row[i] * row[j];
+            }
+            atb[i] += row[i] * d;
+        }
+    }
+    let tr: f64 = (0..6).map(|i| ata[i][i]).sum();
+    let lam = REF_RIDGE * tr / 6.0 + 1e-12;
+    for i in 0..6 {
+        ata[i][i] += lam;
+    }
+    let c = solve6(ata, atb)?;
+    let mut ss = 0.0;
+    for &(u, v, d) in samples {
+        let r = d - (c[0] + c[1] * u + c[2] * v + c[3] * u * u + c[4] * u * v + c[5] * v * v);
+        ss += r * r;
+    }
+    Some((c, (ss / samples.len() as f64).sqrt()))
+}
+
+/// Fit the "laser" reference surface for one rim. `None` -> `no reference`
+/// (the caller keeps the rim-only plug).
+fn build_reference(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    rim: &[u32],
+    h: f64,
+    adj: &Adjacency,
+) -> Option<ReferenceSurface> {
+    let dbg = std::env::var("SUTURA_REF_DBG").is_ok();
+    if dbg {
+        eprintln!("[ref] start m={}", rim.len());
+    }
+    let rim_pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    let n0 = newell_normal(&rim_pts);
+    let nl = norm3(n0);
+    if nl < 1e-20 {
+        return None;
+    }
+    let mut c = [0.0f64; 3];
+    for p in &rim_pts {
+        c[0] += p[0];
+        c[1] += p[1];
+        c[2] += p[2];
+    }
+    let inv = 1.0 / rim_pts.len().max(1) as f64;
+    c = [c[0] * inv, c[1] * inv, c[2] * inv];
+
+    // Ring width grows with the rim diameter (one face hop ~ one median edge
+    // `h`): a large hole needs a wider intact band for a stable quadratic fit.
+    // Small rims keep the historical 3-ring band; the width is capped so a huge
+    // loop cannot scan an unbounded region.
+    let mut rim_box = BBox::empty();
+    for p in &rim_pts {
+        rim_box.expand_point(*p);
+    }
+    let ring_max = ((rim_box.diagonal() / (REF_RING_DIAM_DIV * h.max(1e-9))).round()
+        as usize)
+        .clamp(REF_RING_MAX, REF_RING_MAX_CAP);
+
+    let rim_set: HashSet<u32> = rim.iter().copied().collect();
+    let mut dist: HashMap<u32, usize> = HashMap::new();
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    for &v in rim {
+        for &f in &adj.vert_faces[v as usize] {
+            if dist.insert(f, 0).is_none() {
+                queue.push_back(f);
+            }
+        }
+    }
+    while let Some(f) = queue.pop_front() {
+        let d = dist[&f];
+        if d >= ring_max {
+            continue;
+        }
+        let t = tris[f as usize];
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if let Some(fs) = adj.edge_faces.get(&ekey2(a, b)) {
+                for &nf in fs {
+                    if let std::collections::hash_map::Entry::Vacant(e) = dist.entry(nf) {
+                        e.insert(d + 1);
+                        queue.push_back(nf);
+                    }
+                }
+            }
+        }
+    }
+
+    // Pass 1: collect the intact ring faces (edge-manifold, non-sliver).
+    let mut ring_faces: Vec<(u32, [f64; 3], f64)> = Vec::new();
+    for (&f, &d) in &dist {
+        if d < REF_RING_MIN {
+            continue;
+        }
+        let t = tris[f as usize];
+        let mut bad = false;
+        for &(a, b) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            if adj.edge_mult.get(&ekey2(a, b)).copied().unwrap_or(0) != 2 {
+                bad = true;
+                break;
+            }
+        }
+        if bad {
+            continue;
+        }
+        let area = tri_area(verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize]);
+        if area <= REF_SLIVER_AREA_FRAC * h * h {
+            continue;
+        }
+        let fnrm = face_normal(verts, &t);
+        if norm3(fnrm) < 1e-20 {
+            continue;
+        }
+        ring_faces.push((f, fnrm, area));
+    }
+    if ring_faces.is_empty() {
+        if dbg { eprintln!("[ref] m={} no_ring_faces", rim.len()); }
+        return None;
+    }
+
+    let mut points: Vec<[f64; 3]> = Vec::new();
+    let mut point_normals: Vec<[f64; 3]> = Vec::new();
+    let mut point_key: HashMap<u32, usize> = HashMap::new();
+    let mut n_mean = [0.0f64; 3];
+    let mut w_sum = 0.0;
+    for &(f, fnrm, area) in &ring_faces {
+        n_mean[0] += fnrm[0];
+        n_mean[1] += fnrm[1];
+        n_mean[2] += fnrm[2];
+        w_sum += area;
+        let t = tris[f as usize];
+        for &v in &t {
+            if rim_set.contains(&v) {
+                continue;
+            }
+            let slot = *point_key.entry(v).or_insert_with(|| {
+                points.push(verts[v as usize]);
+                point_normals.push([0.0; 3]);
+                points.len() - 1
+            });
+            point_normals[slot][0] += fnrm[0];
+            point_normals[slot][1] += fnrm[1];
+            point_normals[slot][2] += fnrm[2];
+        }
+    }
+    // A large rim needs a proportionally larger sample; a tiny rim keeps the
+    // historical floor.
+    let min_points = REF_MIN_POINTS.max(rim.len() / 8);
+    if points.len() < min_points || w_sum <= 0.0 {
+        if dbg { eprintln!("[ref] m={} few_points {} < {}", rim.len(), points.len(), min_points); }
+        return None;
+    }
+
+    let nm = norm3(n_mean);
+    if nm < 1e-20 {
+        return None;
+    }
+    let n = [n_mean[0] / nm, n_mean[1] / nm, n_mean[2] / nm];
+    let (u, v) = frame_from_normal(n);
+
+    let mut max_dev = 0.0f64;
+    for pn in point_normals.iter() {
+        let pl = norm3(*pn);
+        if pl < 1e-20 {
+            continue;
+        }
+        let pu = [pn[0] / pl, pn[1] / pl, pn[2] / pl];
+        let cosang = dot3(pu, n).abs().clamp(-1.0, 1.0);
+        let ang = cosang.acos().to_degrees();
+        if ang > max_dev {
+            max_dev = ang;
+        }
+    }
+
+    // Fit the quadric first: the normal-spread veto is gated on the fit
+    // roughness, so a smooth curved surface (a sphere cap, a rounded bump) with
+    // a wide normal spread is accepted while a genuinely noisy ring is not.
+    let mut samples: Vec<(f64, f64, f64)> = Vec::with_capacity(points.len());
+    for p in &points {
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        samples.push((dot3(d, u), dot3(d, v), dot3(d, n)));
+    }
+    let (coeffs, rms) = match fit_quadric(&samples) {
+        Some(q) => q,
+        None => { if dbg { eprintln!("[ref] m={} quadric_fit_none", rim.len()); } return None; }
+    };
+
+    // Self-consistency brake (no ground truth): the quadric must not extrapolate
+    // a sag across the hole radius far larger than the ring's own height relief.
+    // A partial rim fragment or a very wide ring can otherwise yield a reference
+    // whose centre sits well outside the observed tissue; the plug then lies ON
+    // that reference (so `reference_dev_ok` cannot flag it) and becomes a spike.
+    let mut h_lo = f64::INFINITY;
+    let mut h_hi = f64::NEG_INFINITY;
+    let mut radii: Vec<f64> = Vec::with_capacity(points.len());
+    for p in &points {
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        let hh = dot3(d, n);
+        h_lo = h_lo.min(hh);
+        h_hi = h_hi.max(hh);
+        radii.push(dot3(d, u).hypot(dot3(d, v)));
+    }
+    radii.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let r_med = radii[radii.len() / 2];
+    let band = (h_hi - h_lo) + h;
+    let sag = (coeffs[3].abs() + coeffs[4].abs() + coeffs[5].abs()) * r_med * r_med;
+
+    let mut rays: Vec<f64> = Vec::new();
+    for (i, p) in points.iter().enumerate() {
+        let pn = point_normals[i];
+        let pl = norm3(pn);
+        if pl < 1e-20 {
+            continue;
+        }
+        let np = [pn[0] / pl, pn[1] / pl, pn[2] / pl];
+        let cp = [c[0] - p[0], c[1] - p[1], c[2] - p[2]];
+        let rin = [cp[0] - dot3(cp, n) * n[0], cp[1] - dot3(cp, n) * n[1], cp[2] - dot3(cp, n) * n[2]];
+        let rl = norm3(rin);
+        if rl < 1e-12 {
+            continue;
+        }
+        let rin = [rin[0] / rl, rin[1] / rl, rin[2] / rl];
+        let t = [rin[0] - dot3(rin, np) * np[0], rin[1] - dot3(rin, np) * np[1], rin[2] - dot3(rin, np) * np[2]];
+        let tl = norm3(t);
+        if tl < 0.2 {
+            continue;
+        }
+        let t = [t[0] / tl, t[1] / tl, t[2] / tl];
+        let b = dot3(t, n);
+        let denom = 1.0 - b * b;
+        if denom < 1e-6 {
+            continue;
+        }
+        let a0 = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        let dd = dot3(t, a0);
+        let ee = dot3(n, a0);
+        let s = -(dd + b * ee) / denom;
+        if s <= 0.0 {
+            continue;
+        }
+        let w = -ee + b * s;
+        if w.is_finite() {
+            rays.push(w);
+        }
+    }
+    if rays.len() < 3 {
+        return None;
+    }
+    rays.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Laser consistency veto: each "laser" ray extends the tangent plane at a
+    // ring point to the hole axis. For a bowl/dome/cylinder they all agree in
+    // sign (the surface continues one way); a saddle makes opposite sides
+    // predict opposite heights, so the sign of the residual to the fitted
+    // centre height flips -> `no reference`. A saddle is rejected only when a
+    // *material share* of the rays lies beyond the tolerance on BOTH sides; a
+    // single stray ray must not veto a genuine seal. The tolerance is scaled by
+    // the ring's own fit roughness (`rms`), not the global median edge `h`,
+    // which is the wrong scale for a rim spanning many `h`.
+    let c0 = coeffs[0];
+    let tol = REF_RAY_SPREAD_FACTOR * rms.max(1e-9);
+    let min_side = ((rays.len() as f64) * REF_RAY_MIN_SIDE_FRAC).ceil() as usize;
+    let mut below = 0usize;
+    let mut above = 0usize;
+    for &w in &rays {
+        let r = w - c0;
+        if r < -tol {
+            below += 1;
+        } else if r > tol {
+            above += 1;
+        }
+    }
+    let saddle_veto = below >= min_side && above >= min_side;
+    if saddle_veto && dbg {
+        eprintln!(
+            "[ref] m={} saddle_veto below={} above={}",
+            rim.len(),
+            below,
+            above
+        );
+    }
+
+    // Quadric acceptance. The single quadric is the default: cheap and exact for
+    // a small hole. It is rejected by the rms / normal-spread / sag gates when
+    // the surrounding tissue is smooth but not a single quadric (a large curved
+    // crater whose rim fragments extrapolate badly). In that case fit the
+    // thin-plate RBF through the ring points and the laser meeting point, and
+    // accept it only if it stays self-consistent over the hole disk.
+    let rms_ok = rms <= REF_RMS_FACTOR * h;
+    let spread_ok = !(max_dev > REF_NORMAL_SPREAD_DEG && rms > REF_NORMAL_SPREAD_RMS_FRAC * h);
+    let sag_ok = sag <= REF_SAG_FACTOR * band;
+    let concave = (coeffs[3] + coeffs[5]) < 0.0;
+    if std::env::var("SUTURA_REF_DBG").is_ok() {
+        eprintln!(
+            "[ref] m={} rms={:.4} maxdev={:.1} sag={:.4} band={:.4} rms_ok={} spread_ok={} sag_ok={}",
+            rim.len(),
+            rms,
+            max_dev,
+            sag,
+            band,
+            rms_ok,
+            spread_ok,
+            sag_ok
+        );
+    }
+    if !saddle_veto && rms_ok && spread_ok && sag_ok {
+        return Some(ReferenceSurface {
+            origin: c,
+            u,
+            v,
+            n,
+            model: RefModel::Quadric(coeffs),
+            rms,
+            concave,
+        });
+    }
+    let rbf_enabled =
+        !matches!(std::env::var("SUTURA_RBF").as_deref(), Ok("0") | Ok("false"));
+    // The saddle fallback has its own switch so the A/B can isolate it from the
+    // curved-hole RBF fallback below (SUTURA_RBF=0 still disables all of it).
+    let saddle_rbf_enabled = !matches!(
+        std::env::var("SUTURA_RBF_SADDLE").as_deref(),
+        Ok("0") | Ok("false")
+    );
+    if !rbf_enabled {
+        return None;
+    }
+    if saddle_veto {
+        // A saddle is not representable by the single quadric (opposite tangent
+        // rays predict opposite heights) but IS representable by the thin-plate
+        // RBF, whose field bends both ways. On a saddle the laser meeting-point
+        // anchor is meaningless -- that is exactly what this veto detected -- so
+        // use only the ring+rim weighted fit (anchored to the real opening) and
+        // gate it with the leave-one-out self-consistency test.
+        if !saddle_rbf_enabled {
+            return None;
+        }
+        let loo_band = RBF_LOO_H_FRAC * h;
+        return build_rbf_reference(
+            &samples,
+            &point_normals,
+            &rim_pts,
+            c,
+            u,
+            v,
+            n,
+            h_lo,
+            h_hi,
+            band,
+            h,
+            &rays,
+            true,
+            Some(loo_band),
+        )
+        .map(|(fit, rbf_rms)| ReferenceSurface {
+            origin: c,
+            u,
+            v,
+            n,
+            model: RefModel::Rbf(fit),
+            rms: rbf_rms,
+            concave,
+        });
+    }
+    // Ring-only thin-plate RBF (ring samples + the laser meeting-point anchor).
+    if let Some((fit, rbf_rms)) = build_rbf_reference(
+        &samples,
+        &point_normals,
+        &rim_pts,
+        c,
+        u,
+        v,
+        n,
+        h_lo,
+        h_hi,
+        band,
+        h,
+        &rays,
+        false,
+        None,
+    ) {
+        return Some(ReferenceSurface {
+            origin: c,
+            u,
+            v,
+            n,
+            model: RefModel::Rbf(fit),
+            rms: rbf_rms,
+            concave,
+        });
+    }
+    // Ring+rim weighted thin-plate RBF: the rim is included with a low trust
+    // weight so the fit is anchored to the real opening as well as the intact
+    // ring; a last-resort reference when the ring-only fit is rejected.
+    build_rbf_reference(
+        &samples,
+        &point_normals,
+        &rim_pts,
+        c,
+        u,
+        v,
+        n,
+        h_lo,
+        h_hi,
+        band,
+        h,
+        &rays,
+        true,
+        None,
+    )
+    .map(|(fit, rbf_rms)| ReferenceSurface {
+        origin: c,
+        u,
+        v,
+        n,
+        model: RefModel::Rbf(fit),
+        rms: rbf_rms,
+        concave,
+    })
+}
+/// Fit the thin-plate RBF reference fallback and run the no-truth
+/// self-consistency gate. Returns `(fit, ring_rms)` or `None` (-> no reference,
+/// the caller keeps the rim-only plug).
+///
+/// Centres are the intact-ring height samples plus the **laser meeting point**
+/// at the hole axis `(u,v) = (0,0)`: the median of the tangent-ray meetings
+/// computed above. Anchoring the hole centre to that extrapolated height is what
+/// stops a partial rim from sagging, which is the failure the quadric cannot
+/// avoid. The gate then bounds the fitted field over the hole disk by the ring's
+/// own height band and slope, so an over-extrapolated fit is rejected.
+///
+/// When `loo_band` is `Some`, the fit must additionally pass a leave-one-out
+/// self-consistency test over the ring samples (used by the saddle fallback,
+/// where the band/slope gate alone cannot tell a genuine saddle from a wild
+/// extrapolation).
+#[allow(clippy::too_many_arguments)]
+fn build_rbf_reference(
+    samples: &[(f64, f64, f64)],
+    point_normals: &[[f64; 3]],
+    rim_pts: &[[f64; 3]],
+    c: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    n: [f64; 3],
+    h_lo: f64,
+    h_hi: f64,
+    band: f64,
+    h: f64,
+    rays: &[f64],
+    use_rim: bool,
+    loo_band: Option<f64>,
+) -> Option<(rbf::TpsFit, f64)> {
+    let dbg = std::env::var("SUTURA_REF_DBG").is_ok();
+    if samples.len() < REF_MIN_POINTS || (!use_rim && rays.is_empty()) {
+        if dbg {
+            eprintln!("[rbf] m={} few_samples", rim_pts.len());
+        }
+        return None;
+    }
+
+    // Hole radius = mean in-plane distance of the rim points from the centre.
+    let mut r_sum = 0.0;
+    for p in rim_pts {
+        let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+        r_sum += dot3(d, u).hypot(dot3(d, v));
+    }
+    let r_hole = r_sum / rim_pts.len().max(1) as f64;
+    if !(r_hole > 1e-9) {
+        return None;
+    }
+    // The RBF fallback is for large holes only; a small opening (below the
+    // diameter / `h` ratio) keeps the quadric-or-rim-only behaviour unchanged.
+    if 2.0 * r_hole < RBF_MIN_HOLE_FACTOR * h {
+        if dbg {
+            eprintln!(
+                "[rbf] m={} small_hole 2r={:.3} < {:.3}",
+                rim_pts.len(),
+                2.0 * r_hole,
+                RBF_MIN_HOLE_FACTOR * h
+            );
+        }
+        return None;
+    }
+
+    // The ring's own height band (no truth) and the laser meeting point. On a
+    // strongly curved ring the raw tangent-ray extrapolation can sit far outside
+    // the observed tissue, so the anchor is clamped into the band the gate allows
+    // anyway -- an unclamped anchor would just drag the centre out and be
+    // rejected.
+    let lo = h_lo - RBF_BAND_K * band;
+    let hi = h_hi + RBF_BAND_K * band;
+    let fit = if use_rim {
+        // Ring samples (weight 1) plus the rim samples (low trust weight), so
+        // the fit is anchored to the real opening without overriding the ring.
+        let mut pts4: Vec<(f64, f64, f64, f64)> =
+            samples.iter().map(|&(su, sv, d)| (su, sv, d, 1.0)).collect();
+        for p in rim_pts {
+            let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+            let hh = dot3(d, n);
+            if hh.is_finite() {
+                pts4.push((dot3(d, u), dot3(d, v), hh, RBF_RIM_WEIGHT));
+            }
+        }
+        rbf::TpsFit::fit_weighted(&pts4, RBF_RIDGE, RBF_MAX_CENTRES)?
+    } else {
+        // Ring samples plus the laser meeting point at the hole axis (the
+        // median tangent-ray height, clamped to the ring band).
+        let ray_median = rays[rays.len() / 2];
+        if !ray_median.is_finite() {
+            return None;
+        }
+        let anchor = ray_median.clamp(h_lo - 0.5 * band, h_hi + 0.5 * band);
+        let mut pts = samples.to_vec();
+        pts.push((0.0, 0.0, anchor));
+        rbf::TpsFit::fit(&pts, RBF_RIDGE, RBF_MAX_CENTRES)?
+    };
+
+    // The ring's own max height-field slope, from its point normals:
+    // `slope = tan(angle from n) = sqrt(1 - cos^2) / cos`.
+    let mut ring_slope = 0.0f64;
+    for pn in point_normals {
+        let pl = norm3(*pn);
+        if pl < 1e-20 {
+            continue;
+        }
+        let cc = (dot3([pn[0] / pl, pn[1] / pl, pn[2] / pl], n)).abs().clamp(0.0, 1.0);
+        if cc > 0.05 {
+            let s = (1.0 - cc * cc).sqrt() / cc;
+            if s > ring_slope {
+                ring_slope = s;
+            }
+        }
+    }
+    let grad_limit = RBF_GRAD_K * ring_slope.max(1e-9);
+
+    let dtheta = std::f64::consts::TAU / RBF_GATE_NA as f64;
+    let dr = r_hole / RBF_GATE_NR as f64;
+    let mut max_grad = 0.0f64;
+    for ir in 0..=RBF_GATE_NR {
+        let r = dr * ir as f64;
+        for ia in 0..RBF_GATE_NA {
+            let th = ia as f64 * dtheta;
+            let value = fit.eval(r * th.cos(), r * th.sin());
+            if !value.is_finite() || value < lo || value > hi {
+                if dbg {
+                    eprintln!("[rbf] m={} band_fail value={:.4} lo={:.4} hi={:.4}", rim_pts.len(), value, lo, hi);
+                }
+                return None;
+            }
+            if r > 1e-9 {
+                let th2 = (ia as f64 + 1.0) * dtheta;
+                let v2 = fit.eval(r * th2.cos(), r * th2.sin());
+                max_grad = max_grad.max((v2 - value).abs() / (r * dtheta));
+            }
+            if ir < RBF_GATE_NR {
+                let r2 = dr * (ir as f64 + 1.0);
+                let v2r = fit.eval(r2 * th.cos(), r2 * th.sin());
+                if (r2 - r).abs() > 1e-9 {
+                    max_grad = max_grad.max((v2r - value).abs() / (r2 - r).abs());
+                }
+            }
+        }
+    }
+    if max_grad > grad_limit {
+        if dbg {
+            eprintln!("[rbf] m={} grad_fail {:.4} > {:.4}", rim_pts.len(), max_grad, grad_limit);
+        }
+        return None;
+    }
+
+    if let Some(loo) = loo_band {
+        if !rbf_loo_ok(samples, rim_pts, c, u, v, n, use_rim, rays, h_lo, h_hi, loo) {
+            if dbg {
+                eprintln!("[rbf] m={} loo_fail", rim_pts.len());
+            }
+            return None;
+        }
+    }
+
+    let mut ss = 0.0;
+    for &(su, sv, d) in samples {
+        let r = d - fit.eval(su, sv);
+        ss += r * r;
+    }
+    let rbf_rms = (ss / samples.len().max(1) as f64).sqrt();
+    Some((fit, rbf_rms))
+}
+
+/// Leave-one-out self-consistency of the RBF fallback: drop each ring sample in
+/// turn, refit without it, and require the prediction at the held-out sample to
+/// stay within `band`. Returns `false` on any refit failure or oversized error.
+/// At most `RBF_LOO_MAX` samples are held out (deterministic stride) so the
+/// repeated `O(M^3)` refits stay bounded.
+#[allow(clippy::too_many_arguments)]
+fn rbf_loo_ok(
+    samples: &[(f64, f64, f64)],
+    rim_pts: &[[f64; 3]],
+    c: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    n: [f64; 3],
+    use_rim: bool,
+    rays: &[f64],
+    h_lo: f64,
+    h_hi: f64,
+    band: f64,
+) -> bool {
+    let m = samples.len();
+    if m < 4 {
+        return false;
+    }
+    // The caller's sample order comes from a HashMap walk, so sort the held-out
+    // indices by (u, v) first: the LOO outcome must not depend on hash order.
+    let mut order: Vec<usize> = (0..m).collect();
+    order.sort_by(|&a, &b| {
+        samples[a]
+            .0
+            .partial_cmp(&samples[b].0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                samples[a]
+                    .1
+                    .partial_cmp(&samples[b].1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    let stride = ((m + RBF_LOO_MAX - 1) / RBF_LOO_MAX).max(1);
+    let mut oi = 0usize;
+    while oi < m {
+        let i = order[oi];
+        let held = samples[i];
+        let fit = if use_rim {
+            let mut pts: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(m + rim_pts.len());
+            for (j, &s) in samples.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                pts.push((s.0, s.1, s.2, 1.0));
+            }
+            for p in rim_pts {
+                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                let hh = dot3(d, n);
+                if hh.is_finite() {
+                    pts.push((dot3(d, u), dot3(d, v), hh, RBF_RIM_WEIGHT));
+                }
+            }
+            rbf::TpsFit::fit_weighted(&pts, RBF_RIDGE, RBF_MAX_CENTRES)
+        } else {
+            let mut pts: Vec<(f64, f64, f64)> = Vec::with_capacity(m + 1);
+            for (j, &s) in samples.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                pts.push(s);
+            }
+            if !rays.is_empty() {
+                let ray_median = rays[rays.len() / 2];
+                if !ray_median.is_finite() {
+                    return false;
+                }
+                let anchor = ray_median.clamp(h_lo - 0.5 * band, h_hi + 0.5 * band);
+                pts.push((0.0, 0.0, anchor));
+            }
+            rbf::TpsFit::fit(&pts, RBF_RIDGE, RBF_MAX_CENTRES)
+        };
+        let fit = match fit {
+            Some(f) => f,
+            None => return false,
+        };
+        let pred = fit.eval(held.0, held.1);
+        if !pred.is_finite() || (pred - held.2).abs() > band {
+            if std::env::var("SUTURA_REF_DBG").is_ok() {
+                eprintln!(
+                    "[rbf] loo_fail err={:.4} band={:.4} n={}",
+                    (pred - held.2).abs(),
+                    band,
+                    m
+                );
+            }
+            return false;
+        }
+        oi += stride;
+    }
+    true
+}
+
+/// Deviation gate against the reference surface.
+fn reference_dev_ok(cand: &[[u32; 3]], refs: &ReferenceSurface, verts: &[[f64; 3]], h: f64) -> bool {
+    let limit = REF_DEV_FACTOR * h;
+    for t in cand {
+        let a = verts[t[0] as usize];
+        let b = verts[t[1] as usize];
+        let cc = verts[t[2] as usize];
+        let cen = [
+            (a[0] + b[0] + cc[0]) / 3.0,
+            (a[1] + b[1] + cc[1]) / 3.0,
+            (a[2] + b[2] + cc[2]) / 3.0,
+        ];
+        if refs.signed_height(cen).abs() > limit {
+            return false;
+        }
+    }
+    true
+}
+
+/// Shape sanity gate for a candidate cap (T12, second safeguard). Rejects a cap
+/// whose vertices stray more than half the rim diameter from the parent
+/// reference surface (or, with no reference, from the rim's own best-fit plane),
+/// and a cap carrying a face whose normal flips more than 90 deg against the
+/// ring. The runaway fin is normally prevented by the exact rollback restore;
+/// this gate stops such a plug from being committed at all.
+fn cap_shape_ok(
+    cand: &[[u32; 3]],
+    verts: &[[f64; 3]],
+    new_base: u32,
+    added: &[[f64; 3]],
+    rim: &[u32],
+    rim_diag: f64,
+    refs: Option<&ReferenceSurface>,
+) -> bool {
+    if cand.is_empty() || rim.len() < 3 {
+        return true;
+    }
+    let limit = 0.5 * rim_diag;
+    let ring_pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    let rn = newell_normal(&ring_pts);
+    let rnl = norm3(rn);
+    if rnl <= 1e-20 {
+        return true; // degenerate ring: no reliable plane, let other gates decide
+    }
+    let rim_normal = [rn[0] / rnl, rn[1] / rnl, rn[2] / rnl];
+    let mut centroid = [0.0f64; 3];
+    for p in &ring_pts {
+        centroid[0] += p[0];
+        centroid[1] += p[1];
+        centroid[2] += p[2];
+    }
+    let inv = 1.0 / ring_pts.len() as f64;
+    centroid = [centroid[0] * inv, centroid[1] * inv, centroid[2] * inv];
+
+    // Mean cap normal (area-weighted), used to sign-align the ring normal so a
+    // consistently-wound but reversed cap is not read as a per-face flip.
+    let mut cap_n = [0.0f64; 3];
+    for t in cand {
+        let a = skirt_pos(t[0], verts, new_base, added);
+        let b = skirt_pos(t[1], verts, new_base, added);
+        let c = skirt_pos(t[2], verts, new_base, added);
+        let n = cross3(
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        cap_n[0] += n[0];
+        cap_n[1] += n[1];
+        cap_n[2] += n[2];
+    }
+    let ref_dir = if dot3(cap_n, rim_normal) < 0.0 {
+        [-rim_normal[0], -rim_normal[1], -rim_normal[2]]
+    } else {
+        rim_normal
+    };
+
+    for t in cand {
+        let a = skirt_pos(t[0], verts, new_base, added);
+        let b = skirt_pos(t[1], verts, new_base, added);
+        let c = skirt_pos(t[2], verts, new_base, added);
+        let nf = cross3(
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        if norm3(nf) > 1e-20 && dot3(nf, ref_dir) < 0.0 {
+            return false;
+        }
+        for p in [a, b, c] {
+            let d = if let Some(r) = refs {
+                r.signed_height(p).abs()
+            } else {
+                dot3(
+                    [p[0] - centroid[0], p[1] - centroid[1], p[2] - centroid[2]],
+                    rim_normal,
+                )
+                .abs()
+            };
+            if d > limit {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Cancellation-count variant over a local triangulation whose extra interior
+/// vertex index is beyond the rim; rim edges are matched by position in `rim`.
+fn cancellation_count_local(
+    tris: &[[u32; 3]],
+    rim: &[u32],
+    directed_set: &HashSet<(u32, u32)>,
+) -> usize {
+    let m = rim.len();
+    let mut dir: HashSet<(u32, u32)> = HashSet::with_capacity(tris.len() * 3);
+    for t in tris {
+        dir.insert((t[0], t[1]));
+        dir.insert((t[1], t[2]));
+        dir.insert((t[2], t[0]));
+    }
+    let mut cancels = 0usize;
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        if a == b {
+            continue;
+        }
+        let forward = i as u32;
+        let back = ((i + 1) % m) as u32;
+        if directed_set.contains(&(a, b)) {
+            if dir.contains(&(back, forward)) {
+                cancels += 1;
+            }
+        } else if directed_set.contains(&(b, a)) && dir.contains(&(forward, back)) {
+            cancels += 1;
+        }
+    }
+    cancels
+}
+
+/// Fan patch from a single interior vertex at `centre` (local index
+/// `rim.len()`). Returns `(triangles, centre)`; the orientation that cancels
+/// the most rim edges wins. No reference surface is required.
+fn fan_from_centre(
+    rim: &[u32],
+    centre: [f64; 3],
+    directed_set: &HashSet<(u32, u32)>,
+) -> Option<(Vec<[u32; 3]>, [f64; 3])> {
+    let m = rim.len();
+    if m < 4 {
+        return None;
+    }
+    let cm = m as u32;
+    let base: Vec<[u32; 3]> = (0..m).map(|i| [i as u32, ((i + 1) % m) as u32, cm]).collect();
+    let flip: Vec<[u32; 3]> = base.iter().map(|t| [t[0], t[2], t[1]]).collect();
+    let cb = cancellation_count_local(&base, rim, directed_set);
+    let cf = cancellation_count_local(&flip, rim, directed_set);
+    let majority = cb.max(cf) * 2 > m;
+    let tie_ok = cb == cf && cb > 0;
+    if !majority && !tie_ok {
+        return None;
+    }
+    Some((if cf > cb { flip } else { base }, centre))
+}
+
+/// Resolve a skirt-patch vertex index: indices below `new_base` are the real
+/// rim/input vertices, the rest index into `added`.
+#[inline]
+fn skirt_pos(idx: u32, verts: &[[f64; 3]], new_base: u32, added: &[[f64; 3]]) -> [f64; 3] {
+    if idx < new_base {
+        verts[idx as usize]
+    } else {
+        added[(idx - new_base) as usize]
+    }
+}
+
+/// Local self-intersection check over a patch: a proper crossing or a coplanar
+/// overlap between two patch triangles that share no vertex is a failure.
+/// Triangles that share a vertex are skipped (a seam touch is not a crossing).
+/// Above `PATCH_SI_MAX_TRIS` the check is skipped for speed (returns `false`).
+fn patch_self_intersects(
+    verts: &[[f64; 3]],
+    new_base: u32,
+    added: &[[f64; 3]],
+    patch: &[[u32; 3]],
+) -> bool {
+    use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
+    let n = patch.len();
+    if n > PATCH_SI_MAX_TRIS {
+        return false;
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if patch[i].iter().any(|x| patch[j].contains(x)) {
+                continue;
+            }
+            let a = patch[i];
+            let b = patch[j];
+            let ta = Triangle::explicit(
+                skirt_pos(a[0], verts, new_base, added),
+                skirt_pos(a[1], verts, new_base, added),
+                skirt_pos(a[2], verts, new_base, added),
+            );
+            let tb = Triangle::explicit(
+                skirt_pos(b[0], verts, new_base, added),
+                skirt_pos(b[1], verts, new_base, added),
+                skirt_pos(b[2], verts, new_base, added),
+            );
+            match intersect_triangles(&ta, &tb) {
+                TriangleIntersection::ProperSegment { .. }
+                | TriangleIntersection::CoplanarOverlap => return true,
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Skirt plug (R5): the cap lies ON the reference surface, bounded by the rim
+/// projected onto the reference along `n`; the real rim is joined to that
+/// projected boundary by a one-triangle-wide zipper strip, so the rim itself
+/// never has to lie on the reference. A rim vertex already clamped onto the
+/// reference (`clamp[i]`, by the overshoot trim) contributes no strip quad at
+/// its edges and is used directly as a cap-boundary vertex. Only the cap is
+/// held to the reference deviation gate; the strip is free to stand off it.
+///
+/// Returns `(triangles, added_vertices)` with patch triangles in terms of the
+/// global input indices and `new_base + k` for the added cap/collar vertices.
+/// `None` when the cap cannot be triangulated, the cap offends the deviation
+/// gate, the structure is not a clean disk bounded by the rim, or the strip
+/// self-intersects locally.
+fn skirt_patch(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    refs: &ReferenceSurface,
+    directed_set: &HashSet<(u32, u32)>,
+    clamp: &[bool],
+    new_base: u32,
+    h: f64,
+) -> Option<(Vec<[u32; 3]>, Vec<[f64; 3]>)> {
+    let m = rim.len();
+    if m < 4 {
+        return None;
+    }
+    let dbg = std::env::var("SUTURA_SKIRT_DBG").is_ok();
+    let mut added: Vec<[f64; 3]> = Vec::with_capacity(m);
+    let mut ring: Vec<u32> = Vec::with_capacity(m);
+    for i in 0..m {
+        if clamp.get(i).copied().unwrap_or(false) {
+            ring.push(rim[i]);
+        } else {
+            let q = refs.place(verts[rim[i] as usize]);
+            ring.push(new_base + added.len() as u32);
+            added.push(q);
+        }
+    }
+
+    let cap_pts: Vec<[f64; 3]> = (0..m)
+        .map(|i| skirt_pos(ring[i], verts, new_base, &added))
+        .collect();
+    let local = if m <= PLUG_DP_CAP {
+        min_area_triangulation_filtered(
+            &cap_pts,
+            PLUG_DP_CAP,
+            &HashSet::new(),
+            PLUG_MIN_AREA,
+            PLUG_COLLINEAR_MARGIN_DEG,
+        )
+    } else {
+        ear_clip(&cap_pts)
+    };
+    if local.len() != m - 2 {
+        if dbg {
+            eprintln!("[skirt] m={} cap_dp_fail local={}", m, local.len());
+        }
+        return None;
+    }
+
+    // Cap deviation gate (the strip may stand off the reference; the cap must
+    // not). Cheap per-triangle check because the patch mixes input and added
+    // vertices, so a single combined slice is avoided.
+    let limit = REF_DEV_FACTOR * h;
+    for t in &local {
+        let a = cap_pts[t[0] as usize];
+        let b = cap_pts[t[1] as usize];
+        let c = cap_pts[t[2] as usize];
+        let cen = [
+            (a[0] + b[0] + c[0]) / 3.0,
+            (a[1] + b[1] + c[1]) / 3.0,
+            (a[2] + b[2] + c[2]) / 3.0,
+        ];
+        if refs.signed_height(cen).abs() > limit {
+            if dbg {
+                eprintln!(
+                    "[skirt] m={} cap_dev_fail {:.4} > {:.4}",
+                    m,
+                    refs.signed_height(cen).abs(),
+                    limit
+                );
+            }
+            return None;
+        }
+    }
+
+    // Strip: for edge (rim_i, rim_{i+1}) the two triangles are T1 = [a, c, b]
+    // (outer edge (b, a), which cancels the input boundary) and T2 = [b, c, d]
+    // (inner edge (c, d)); either is dropped when it would be degenerate
+    // (a == c or b == d, i.e. a clamped/on-reference vertex).
+    let mut tris: Vec<[u32; 3]> = Vec::with_capacity(3 * m);
+    for i in 0..m {
+        let j = (i + 1) % m;
+        let (a, b) = (rim[i], rim[j]);
+        let (c, d) = (ring[i], ring[j]);
+        if c != a {
+            tris.push([a, c, b]);
+        }
+        if d != b {
+            tris.push([b, c, d]);
+        }
+    }
+    // Cap, reversed so its boundary (c_{i+1}, c_i) cancels the strip's inner
+    // edges (c_i, c_{i+1}).
+    for t in &local {
+        tris.push([
+            ring[t[0] as usize],
+            ring[t[2] as usize],
+            ring[t[1] as usize],
+        ]);
+    }
+
+    // Structure: every triangle non-degenerate; the patch boundary (edges used
+    // an odd number of times) must be exactly the rim edge set.
+    let mut count: HashMap<(u32, u32), i32> = HashMap::with_capacity(tris.len() * 3);
+    for t in &tris {
+        let a = skirt_pos(t[0], verts, new_base, &added);
+        let b = skirt_pos(t[1], verts, new_base, &added);
+        let c = skirt_pos(t[2], verts, new_base, &added);
+        if a == b || b == c || a == c || tri_area(a, b, c) <= PLUG_MIN_AREA {
+            return None;
+        }
+        for &(x, y) in &[(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *count.entry(ekey2(x, y)).or_insert(0) += 1;
+        }
+    }
+    let mut boundary: HashSet<(u32, u32)> = HashSet::new();
+    for (&e, &c) in &count {
+        if c % 2 == 1 {
+            boundary.insert(e);
+        }
+    }
+    let mut rim_edges: HashSet<(u32, u32)> = HashSet::new();
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        if a != b {
+            rim_edges.insert(ekey2(a, b));
+        }
+    }
+    if boundary != rim_edges {
+        if dbg {
+            eprintln!(
+                "[skirt] m={} structure_fail boundary={} rim={}",
+                m,
+                boundary.len(),
+                rim_edges.len()
+            );
+        }
+        return None;
+    }
+
+    // Orientation: cancel the most input boundary edges. The construction
+    // already reverses the rim; flip the whole patch only if it does not.
+    let mut cancels = 0usize;
+    let dir: HashSet<(u32, u32)> = tris
+        .iter()
+        .flat_map(|t| [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])])
+        .collect();
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        if a != b && directed_set.contains(&(a, b)) && dir.contains(&(b, a)) {
+            cancels += 1;
+        }
+    }
+    if cancels * 2 <= m {
+        for t in tris.iter_mut() {
+            t.swap(1, 2);
+        }
+    }
+
+    if patch_self_intersects(verts, new_base, &added, &tris) {
+        if dbg {
+            eprintln!("[skirt] m={} self_intersects", m);
+        }
+        return None;
+    }
+    Some((tris, added))
+}
+
+/// Fan patch from a single interior vertex placed ON the reference surface.
+/// Returns `(triangles, centre)` where the centre index is `rim.len()`.
+fn fan_patch(
+    rim: &[u32],
+    refs: &ReferenceSurface,
+    directed_set: &HashSet<(u32, u32)>,
+) -> Option<(Vec<[u32; 3]>, [f64; 3])> {
+    fan_from_centre(rim, refs.place(refs.origin), directed_set)
+}
+
+/// Fan patch from the rim centroid. The centroid lies on the rim's
+/// least-squares plane by construction, so a fan to it is flat over the rim
+/// and passes the deviation gate whenever the rim is reasonably planar. It is
+/// the fallback for a rim with no non-degenerate rim-only triangulation; a
+/// fully collinear rim still yields only degenerate triangles, which the
+/// caller's structure gate then rejects.
+fn centroid_fan(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    directed_set: &HashSet<(u32, u32)>,
+) -> Option<(Vec<[u32; 3]>, [f64; 3])> {
+    let m = rim.len();
+    if m < 4 {
+        return None;
+    }
+    let mut c = [0.0f64; 3];
+    for &v in rim {
+        let p = verts[v as usize];
+        c[0] += p[0];
+        c[1] += p[1];
+        c[2] += p[2];
+    }
+    let inv = 1.0 / m as f64;
+    c = [c[0] * inv, c[1] * inv, c[2] * inv];
+    fan_from_centre(rim, c, directed_set)
+}
+
+/// Rim-only plug, and when that has no non-degenerate triangulation, a fan to
+/// a single interior Steiner vertex at the rim centroid. `new_idx` is the
+/// global index the Steiner vertex will receive (the caller appends it only
+/// once the plug is accepted). Returns global triangles plus the centre
+/// coordinate when the Steiner fallback supplied one.
+fn rim_plug_or_steiner(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    directed_set: &HashSet<(u32, u32)>,
+    allow_tie: bool,
+    new_idx: u32,
+) -> Result<(Vec<[u32; 3]>, Option<[f64; 3]>), &'static str> {
+    match triangulate_rim_loop(rim, verts, directed_set, allow_tie) {
+        Ok(tris) => Ok((tris, None)),
+        Err(why) => {
+            let (fan_local, centre) = centroid_fan(rim, verts, directed_set).ok_or(why)?;
+            let m = rim.len() as u32;
+            let fan: Vec<[u32; 3]> = fan_local
+                .iter()
+                .map(|t| {
+                    let f = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+                    [f(t[0]), f(t[1]), f(t[2])]
+                })
+                .collect();
+            Ok((fan, Some(centre)))
+        }
+    }
+}
+
+/// Count the vertex-connected components of a triangle mesh (union-find over
+/// the three vertices of every face). Used to detect a "single closed-intended
+/// shell": exactly one boundary loop on exactly one component is a genuine hole
+/// in an otherwise-closed body, so the min-cut test -- whose only job is to
+/// distinguish a hole from an intentional opening -- has nothing to decide and
+/// can be skipped when a reference surface is available.
+fn count_shell_components(nverts: usize, tris: &[[u32; 3]]) -> usize {
+    fn find(parent: &mut [u32], mut x: u32) -> u32 {
+        while parent[x as usize] != x {
+            let gp = parent[parent[x as usize] as usize];
+            parent[x as usize] = gp;
+            x = gp;
+        }
+        x
+    }
+    let mut parent: Vec<u32> = (0..nverts as u32).collect();
+    let mut used = vec![false; nverts];
+    for t in tris {
+        for &v in t {
+            used[v as usize] = true;
+        }
+        let a = find(&mut parent, t[0]);
+        for &v in &t[1..] {
+            let b = find(&mut parent, v);
+            if a != b {
+                parent[b as usize] = a;
+            }
+        }
+    }
+    let mut roots: HashSet<u32> = HashSet::new();
+    for v in 0..nverts {
+        if used[v] {
+            roots.insert(find(&mut parent, v as u32));
+        }
+    }
+    roots.len()
+}
+
+/// Reload-safe plug gate. STL drops vertex sharing and the reload welds every
+/// vertex that rounds to the same float32 position, so a plug whose vertices
+/// coincide (with each other, or with an existing output vertex) can create a
+/// non-manifold edge even though its in-memory id topology is clean -- e.g. a
+/// skirt that projects a dense / degenerate rim onto nearly the same point.
+/// Weld the candidate's positions together with every existing face incident to
+/// one of them and reject the plug only when it turns an edge that was used by
+/// at most two faces into one used by more than two. Pre-existing weld-NM (a
+/// damaged input) is preserved, never charged to the plug.
+fn plug_reload_ok(
+    out_verts: &[[f64; 3]],
+    out_tris: &[[u32; 3]],
+    new_base: u32,
+    added: &[[f64; 3]],
+    cand: &[[u32; 3]],
+) -> bool {
+    let pos = |id: u32| -> [f64; 3] {
+        if id < new_base {
+            out_verts[id as usize]
+        } else {
+            added[(id - new_base) as usize]
+        }
+    };
+    let key = |p: [f64; 3]| -> [u32; 3] {
+        [
+            (p[0] as f32).to_bits(),
+            (p[1] as f32).to_bits(),
+            (p[2] as f32).to_bits(),
+        ]
+    };
+    let mut keyset: HashSet<[u32; 3]> = HashSet::new();
+    for t in cand {
+        for &id in t {
+            keyset.insert(key(pos(id)));
+        }
+    }
+    let mut base: HashMap<([u32; 3], [u32; 3]), i32> = HashMap::new();
+    let add_tri = |t: &[u32; 3], edges: &mut HashMap<([u32; 3], [u32; 3]), i32>| {
+        let a = key(pos(t[0]));
+        let b = key(pos(t[1]));
+        let c = key(pos(t[2]));
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            let e = if x <= y { (x, y) } else { (y, x) };
+            *edges.entry(e).or_insert(0) += 1;
+        }
+    };
+    for t in out_tris {
+        if t.iter().any(|&id| keyset.contains(&key(pos(id)))) {
+            add_tri(t, &mut base);
+        }
+    }
+    let mut with_cand = base.clone();
+    for t in cand {
+        add_tri(t, &mut with_cand);
+    }
+    for (e, c) in &with_cand {
+        if *c > 2 && base.get(e).copied().unwrap_or(0) <= 2 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reload-honest topological verdict of an STL save/reload round-trip.
+///
+/// Mirrors what `repair.weld_reload_equivalent` / `defects.detect` observe on
+/// the saved file: float32-quantised positions, exactly-coincident vertices
+/// welded, then boundary loops, non-manifold edges, non-manifold (pinched)
+/// vertices and degenerate faces counted. This is the engine's final
+/// "never worse" metric -- a repaired mesh must not raise any of the four
+/// damage counts over the input's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReloadVerdict {
+    pub boundary_loops: usize,
+    pub boundary_edges: usize,
+    pub nm_edges: usize,
+    pub nm_vertices: usize,
+    pub degenerate_faces: usize,
+}
+
+impl ReloadVerdict {
+    /// True when `self` carries more structural damage than `base`.
+    fn worse_than(&self, base: &ReloadVerdict) -> bool {
+        self.nm_edges > base.nm_edges
+            || self.nm_vertices > base.nm_vertices
+            || self.degenerate_faces > base.degenerate_faces
+    }
+}
+
+/// Canonical undirected edge key.
+#[inline]
+fn reload_edge_key(a: u32, b: u32) -> (u32, u32) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Quantised float32 position key used for the exact-weld hash. `-0.0` is
+/// folded onto `+0.0` so the two share a bucket, matching the numpy/STL
+/// round-trip semantics.
+#[inline]
+fn f32_position_key(p: [f64; 3]) -> [u32; 3] {
+    let q = |x: f64| {
+        let f = x as f32;
+        let f = if f == 0.0 { 0.0 } else { f };
+        f.to_bits()
+    };
+    [q(p[0]), q(p[1]), q(p[2])]
+}
+
+/// Mimic an STL save + reload and count the resulting structure. Hash based
+/// and O(V + F). Input positions are float32-quantised and welded on exact
+/// coincidence; faces that collapse to a repeated index are dropped and
+/// counted as degenerate (float32 rounding can create them).
+pub fn reload_verdict(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> ReloadVerdict {
+    let mut verdict = ReloadVerdict::default();
+    if verts.is_empty() || tris.is_empty() {
+        return verdict;
+    }
+
+    let nv = verts.len();
+    let mut weld: HashMap<[u32; 3], u32> = HashMap::with_capacity(nv);
+    let mut remap: Vec<u32> = Vec::with_capacity(nv);
+    for p in verts {
+        let next = weld.len() as u32;
+        let id = *weld.entry(f32_position_key(*p)).or_insert(next);
+        remap.push(id);
+    }
+
+    let mut wtris: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        if a >= nv || b >= nv || c >= nv {
+            continue;
+        }
+        let (wa, wb, wc) = (remap[a], remap[b], remap[c]);
+        if wa == wb || wb == wc || wa == wc {
+            verdict.degenerate_faces += 1;
+            continue;
+        }
+        wtris.push([wa, wb, wc]);
+    }
+
+    let mut edges: HashMap<(u32, u32), u32> = HashMap::with_capacity(wtris.len() * 3);
+    for t in &wtris {
+        for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *edges.entry(reload_edge_key(x, y)).or_insert(0) += 1;
+        }
+    }
+    let mut boundary_adj: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (&(a, b), &count) in &edges {
+        if count == 1 {
+            verdict.boundary_edges += 1;
+            boundary_adj.entry(a).or_default().push(b);
+            boundary_adj.entry(b).or_default().push(a);
+        } else if count > 2 {
+            verdict.nm_edges += 1;
+        }
+    }
+    verdict.boundary_loops = reload_count_boundary_loops(&boundary_adj);
+
+    let mut vfaces: HashMap<u32, Vec<u32>> = HashMap::new();
+    for (fi, t) in wtris.iter().enumerate() {
+        for &v in t {
+            vfaces.entry(v).or_default().push(fi as u32);
+        }
+    }
+    for (&v, faces) in &vfaces {
+        if faces.len() >= 2 && !reload_faces_single_fan(v, faces, &wtris) {
+            verdict.nm_vertices += 1;
+        }
+    }
+
+    verdict
+}
+
+/// Count the boundary loops of a boundary-adjacency graph by walking every
+/// undirected boundary edge once.
+fn reload_count_boundary_loops(adj: &HashMap<u32, Vec<u32>>) -> usize {
+    let mut used: HashSet<(u32, u32)> = HashSet::new();
+    let mut loops = 0usize;
+    for (&start, nbrs) in adj {
+        for &nb in nbrs {
+            if !used.insert(reload_edge_key(start, nb)) {
+                continue;
+            }
+            loops += 1;
+            let mut prev = start;
+            let mut cur = nb;
+            while cur != start {
+                let mut next: Option<u32> = None;
+                if let Some(cn) = adj.get(&cur) {
+                    for &m in cn {
+                        if m == prev {
+                            continue;
+                        }
+                        if !used.contains(&reload_edge_key(cur, m)) {
+                            next = Some(m);
+                            break;
+                        }
+                    }
+                }
+                match next {
+                    Some(m) => {
+                        used.insert(reload_edge_key(cur, m));
+                        prev = cur;
+                        cur = m;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    loops
+}
+
+/// Whether the faces incident to vertex `v` form one connected fan: two
+/// incident faces connect when they share the edge `(v, w)`. Two or more
+/// fans mean a pinched (non-manifold) vertex.
+fn reload_faces_single_fan(v: u32, faces: &[u32], wtris: &[[u32; 3]]) -> bool {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let n = faces.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let mut edge_faces: HashMap<u32, Vec<usize>> = HashMap::new();
+    for (i, &fi) in faces.iter().enumerate() {
+        for &w in &wtris[fi as usize] {
+            if w != v {
+                edge_faces.entry(w).or_default().push(i);
+            }
+        }
+    }
+    for fl in edge_faces.values() {
+        for k in 1..fl.len() {
+            let a = find(&mut parent, fl[0]);
+            let b = find(&mut parent, fl[k]);
+            if a != b {
+                parent[b] = a;
+            }
+        }
+    }
+    (0..n).filter(|&i| find(&mut parent, i) == i).count() == 1
+}
+
+/// One accepted plug's full footprint in the output arrays, used to attribute a
+/// reload regression to individual plugs (per-plug rollback) AND to restore the
+/// touched region EXACTLY on rollback.
+///
+/// A plug is not only the triangles it appends: committing it may also have
+/// moved existing (original) vertices in place (the overshoot trim lifts a tail
+/// rim vertex onto the reference). Rolling back only the appended triangles
+/// therefore left the moved rim ring behind -- a jagged strip / a runaway fin
+/// bulging out of the surface. The footprint records every moved vertex with
+/// its pre-move position so a rollback restores the region to the input state.
+#[derive(Clone, Debug, Default)]
+struct PlugRegion {
+    /// Added triangles live in `out_tris[tri_start..tri_end]`.
+    tri_start: usize,
+    tri_end: usize,
+    reference: bool,
+    steiner: bool,
+    /// Vertices this plug moved in place, each with its original position
+    /// (captured before the move). Restored on rollback.
+    moved: Vec<(u32, [f64; 3])>,
+}
+
+/// Reload verdict of the output with one plug region removed (vertices kept,
+/// so a trim is not undone). Used only to attribute a regression.
+fn reload_verdict_without(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    region: &PlugRegion,
+) -> ReloadVerdict {
+    let mut filtered: Vec<[u32; 3]> =
+        Vec::with_capacity(tris.len() - (region.tri_end - region.tri_start));
+    filtered.extend_from_slice(&tris[..region.tri_start]);
+    filtered.extend_from_slice(&tris[region.tri_end..]);
+    reload_verdict(verts, &filtered)
+}
+
+/// Reload verdict of the output with the flagged regions removed. Used to
+/// project the fixed point of a multi-region rollback before applying it.
+fn reload_verdict_dropping(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    drop: &[bool],
+) -> ReloadVerdict {
+    let mut mask = vec![true; tris.len()];
+    for (r, &d) in regions.iter().zip(drop) {
+        if d {
+            for slot in mask.iter_mut().take(r.tri_end).skip(r.tri_start) {
+                *slot = false;
+            }
+        }
+    }
+    let filtered: Vec<[u32; 3]> = tris
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| mask[*i])
+        .map(|(_, t)| *t)
+        .collect();
+    reload_verdict(verts, &filtered)
+}
+
+/// Drop the flagged regions from the output, restore every vertex move they
+/// made, and compact the vertex array to the referenced vertices. Restoring the
+/// moved vertices is what makes a rolled-back plug leave the region EXACTLY as
+/// the input (the append-only triangle range alone left the trim/snap ring
+/// behind). Regions are walked in reverse so that, if two loops ever touched the
+/// same vertex, the earliest region's recorded original position wins.
+fn apply_region_rollback(
+    out_verts: &mut Vec<[f64; 3]>,
+    out_tris: &mut Vec<[u32; 3]>,
+    regions: &[PlugRegion],
+    drop: &[bool],
+) {
+    let nv = out_verts.len();
+    for (r, &d) in regions.iter().zip(drop).rev() {
+        if d {
+            for &(v, orig) in &r.moved {
+                if (v as usize) < nv {
+                    out_verts[v as usize] = orig;
+                }
+            }
+        }
+    }
+    let mut keep = vec![true; out_tris.len()];
+    for (r, &d) in regions.iter().zip(drop) {
+        if d {
+            for slot in keep.iter_mut().take(r.tri_end).skip(r.tri_start) {
+                *slot = false;
+            }
+        }
+    }
+    let mut remap: Vec<Option<u32>> = vec![None; nv];
+    let mut new_verts: Vec<[f64; 3]> = Vec::new();
+    let mut new_tris: Vec<[u32; 3]> = Vec::with_capacity(out_tris.len());
+    for (i, t) in out_tris.iter().enumerate() {
+        if !keep[i] {
+            continue;
+        }
+        if t.iter().any(|&v| v as usize >= nv) {
+            continue;
+        }
+        let mut nt = [0u32; 3];
+        for k in 0..3 {
+            let vi = t[k] as usize;
+            nt[k] = match remap[vi] {
+                Some(id) => id,
+                None => {
+                    let id = new_verts.len() as u32;
+                    remap[vi] = Some(id);
+                    new_verts.push(out_verts[vi]);
+                    id
+                }
+            };
+        }
+        new_tris.push(nt);
+    }
+    *out_verts = new_verts;
+    *out_tris = new_tris;
+}
+
+/// AABB of one triangle in `verts`.
+fn tri_bbox(verts: &[[f64; 3]], t: &[u32; 3]) -> BBox {
+    let mut b = BBox::empty();
+    for &v in t {
+        b.expand_point(verts[v as usize]);
+    }
+    b
+}
+
+/// Uniform-grid AABB index over a face array. Built once per safety-net pass so
+/// the per-plug local self-intersection scan touches only the faces near that
+/// plug (O(local)) instead of rescanning the whole mesh for every plug. Mirrors
+/// the cell choice of `arrangement::broad_phase_candidates`.
+struct FaceGrid {
+    cell: f64,
+    map: HashMap<(i64, i64, i64), Vec<u32>>,
+}
+
+impl FaceGrid {
+    fn build(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Self {
+        let boxes: Vec<BBox> = tris.iter().map(|t| tri_bbox(verts, t)).collect();
+        let mut diags: Vec<f64> = boxes
+            .iter()
+            .map(|b| {
+                let dx = b.max[0] - b.min[0];
+                let dy = b.max[1] - b.min[1];
+                let dz = b.max[2] - b.min[2];
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            })
+            .collect();
+        let mut cell = 1.0f64;
+        if !diags.is_empty() {
+            diags.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            cell = diags[diags.len() / 2] * 1.5;
+        }
+        if !(cell > 1e-9) {
+            cell = 1e-9;
+        }
+        let mut map: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+        for (i, b) in boxes.iter().enumerate() {
+            let c0 = [
+                (b.min[0] / cell).floor() as i64,
+                (b.min[1] / cell).floor() as i64,
+                (b.min[2] / cell).floor() as i64,
+            ];
+            let c1 = [
+                (b.max[0] / cell).floor() as i64,
+                (b.max[1] / cell).floor() as i64,
+                (b.max[2] / cell).floor() as i64,
+            ];
+            for x in c0[0]..=c1[0] {
+                for y in c0[1]..=c1[1] {
+                    for z in c0[2]..=c1[2] {
+                        map.entry((x, y, z)).or_default().push(i as u32);
+                    }
+                }
+            }
+        }
+        Self { cell, map }
+    }
+
+    /// Every face whose AABB overlaps `query`, sorted and deduplicated.
+    fn query(&self, query: &BBox) -> Vec<u32> {
+        let c0 = [
+            (query.min[0] / self.cell).floor() as i64,
+            (query.min[1] / self.cell).floor() as i64,
+            (query.min[2] / self.cell).floor() as i64,
+        ];
+        let c1 = [
+            (query.max[0] / self.cell).floor() as i64,
+            (query.max[1] / self.cell).floor() as i64,
+            (query.max[2] / self.cell).floor() as i64,
+        ];
+        let mut out: Vec<u32> = Vec::new();
+        for x in c0[0]..=c1[0] {
+            for y in c0[1]..=c1[1] {
+                for z in c0[2]..=c1[2] {
+                    if let Some(v) = self.map.get(&(x, y, z)) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
+/// Proper, non-adjacent triangle crossings among a local candidate face set
+/// where at least one face belongs to `subset`. Mirrors
+/// `self_intersections_subset_core` (pairs sharing a vertex index are
+/// adjacent and ignored; only a proper interior segment counts) but restricted
+/// to the faces near one plug.
+fn local_si_subset(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    cand: &[u32],
+    subset: &HashSet<u32>,
+) -> i64 {
+    let n = cand.len();
+    if n < 2 {
+        return 0;
+    }
+    let tri: Vec<triangle_intersection::Triangle> = cand
+        .iter()
+        .map(|&f| {
+            let t = tris[f as usize];
+            triangle_intersection::Triangle::explicit(
+                verts[t[0] as usize],
+                verts[t[1] as usize],
+                verts[t[2] as usize],
+            )
+        })
+        .collect();
+    let mut count = 0i64;
+    for i in 0..n {
+        let fi = cand[i];
+        let si = subset.contains(&fi);
+        for j in (i + 1)..n {
+            let fj = cand[j];
+            if !si && !subset.contains(&fj) {
+                continue;
+            }
+            let a = tris[fi as usize];
+            let b = tris[fj as usize];
+            if a.iter().any(|x| b.contains(x)) {
+                continue;
+            }
+            if let triangle_intersection::TriangleIntersection::ProperSegment { .. } =
+                triangle_intersection::intersect_triangles(&tri[i], &tri[j])
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Local self-intersection delta of one plug: how many proper crossings the
+/// plug's new faces make with any face within its AABB expanded by `2h`. The
+/// plug's faces did not exist in the base mesh, so any positive value is a rise
+/// the reload verdict cannot see (a plug poking through a nearby sheet) and the
+/// plug is rolled back.
+fn plug_local_si(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    grid: &FaceGrid,
+    region: &PlugRegion,
+    h: f64,
+) -> i64 {
+    let mut b = BBox::empty();
+    let mut subset: HashSet<u32> = HashSet::new();
+    for f in region.tri_start..region.tri_end {
+        if f >= tris.len() {
+            return 0;
+        }
+        let t = tris[f];
+        for &v in &t {
+            if (v as usize) >= verts.len() {
+                return 0;
+            }
+            b.expand_point(verts[v as usize]);
+        }
+        subset.insert(f as u32);
+    }
+    if subset.is_empty() {
+        return 0;
+    }
+    b.pad(2.0 * h);
+    let cand = grid.query(&b);
+    local_si_subset(verts, tris, &cand, &subset)
+}
+
+/// Per-plug local self-intersection rollback mask: `true` for every plug whose
+/// new faces create a proper crossing with nearby tissue. One AABB grid is
+/// built for all plugs, so the scan is O(faces) once plus O(local) per plug.
+fn si_rollback_mask(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    h: f64,
+) -> Vec<bool> {
+    if regions.is_empty() {
+        return Vec::new();
+    }
+    let grid = FaceGrid::build(verts, tris);
+    regions
+        .iter()
+        .map(|region| plug_local_si(verts, tris, &grid, region, h) > 0)
+        .collect()
+}
+
 /// Main entry point for the L2a Tamponade repair.
 pub fn tamponade_repair(
     verts: &[[f64; 3]],
@@ -1162,9 +3657,27 @@ pub fn tamponade_repair(
         return (verts.to_vec(), tris.to_vec(), info);
     }
 
+    // Loop-extraction experiments (half-edge decomposition, loop grouping,
+    // piecewise split, pinched-vertex fan split) are opt-in behind
+    // `SUTURA_TAMP_MANIFOLD`; the default is the historical greedy walker, so
+    // the tier output stays byte-identical unless the flag is set.
+    let manifold_mode = std::env::var("SUTURA_TAMP_MANIFOLD").is_ok();
+    // Pinched-vertex fan split: separate boundary rims that meet at one vertex
+    // before loop extraction (loop-extraction preprocessing only).
+    let split_pair = if manifold_mode {
+        Some(fan_split_pinched_vertices(verts, tris))
+    } else {
+        None
+    };
+    let (verts, tris): (&[[f64; 3]], &[[u32; 3]]) = match &split_pair {
+        Some((v, t)) => (v.as_slice(), t.as_slice()),
+        None => (verts, tris),
+    };
     let directed = directed_boundary_edges(tris);
-    let loops = if directed.is_empty() {
+    let mut loops = if directed.is_empty() {
         Vec::new()
+    } else if manifold_mode {
+        boundary_loops_manifold(tris)
     } else {
         build_boundary_loops(&directed)
     };
@@ -1179,6 +3692,14 @@ pub fn tamponade_repair(
 
     let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
 
+    // A single boundary loop on a single connected component is a genuine hole
+    // in an otherwise-closed shell: no other loop/component could be an
+    // intentional opening, so the min-cut can be skipped when a reference
+    // surface is available (lead decision, 10 Oct). The manifold path
+    // re-derives this after splitting/grouping (below).
+    let mut single_shell =
+        !manifold_mode && loops.len() == 1 && count_shell_components(verts.len(), tris) == 1;
+
     let h = match config.h_min {
         Some(val) if val > 1e-6 => val,
         _ => median_edge_length(verts, tris),
@@ -1191,6 +3712,36 @@ pub fn tamponade_repair(
     let t_bvh0 = Instant::now();
     let bvh = MeshBvh::from_arrays(verts, &tris_usize);
     let bvh_s = t_bvh0.elapsed().as_secs_f64();
+
+    // Per-loop group-outer rim (default: the loop itself). In the manifold path
+    // a long / complex rim is first split into simple sub-rims (piecewise hole
+    // filling, Jun 2005), then fragmented loops that belong to one geometric
+    // hole are grouped; every loop of a group seals against the group's OUTER
+    // rim so a single reference surface spans the whole hole rather than the
+    // fragment.
+    let mut loop_outer: Vec<usize> = (0..loops.len()).collect();
+    // The loops as they are BEFORE the piecewise split (one entry per "parent
+    // hole"); every sub-rim carries the index of its parent so all of them can
+    // share ONE reference fitted on the intact ring of the unsplit hole.
+    let orig_loops: Vec<Vec<u32>> = if manifold_mode { loops.clone() } else { Vec::new() };
+    let mut loop_parent: Vec<usize> = (0..loops.len()).collect();
+    if manifold_mode {
+        if loops.iter().any(|l| l.len() > SPLIT_MAX_VERTS) {
+            let (split, parents) = split_long_loops(loops, verts, &bvh);
+            loops = split;
+            loop_parent = parents;
+            loop_outer = (0..loops.len()).collect();
+        }
+        let loop_groups = group_boundary_loops(&loops, verts, h);
+        for (members, outer) in &loop_groups {
+            for &li in members {
+                loop_outer[li] = *outer;
+            }
+        }
+        single_shell =
+            loop_groups.len() == 1 && count_shell_components(verts.len(), tris) == 1;
+    }
+
     let profile = std::env::var("SUTURA_TAMP_PROFILE").is_ok();
     let mut cut_s = 0.0f64;
     let mut plug_s = 0.0f64;
@@ -1218,6 +3769,35 @@ pub fn tamponade_repair(
     let mut plug_rejected_size_count = 0usize;
     let mut plug_rejected_dev_count = 0usize;
     let mut plug_face_count = 0usize;
+    // One entry per accepted plug, for the final reload-honest safety net.
+    let mut plug_regions: Vec<PlugRegion> = Vec::new();
+
+    // Input adjacency for the T3 reference-surface fit (vertex/edge -> faces).
+    let adj = if loops.is_empty() { None } else { Some(build_adjacency(verts.len(), tris)) };
+
+    // One reference per parent hole (manifold path): fit ONCE on the intact ring
+    // of the ORIGINAL unsplit loop and share it with every sub-rim of that hole.
+    // A sub-rim never fits its own reference -- its ring is cut by the split, so
+    // the fit would extrapolate from a fragment.
+    let parent_refs: Vec<Option<ReferenceSurface>> = if manifold_mode {
+        orig_loops
+            .iter()
+            .map(|l| {
+                let mut rim = l.clone();
+                rim.dedup();
+                if rim.len() >= 2 && rim.first() == rim.last() {
+                    rim.pop();
+                }
+                if rim.len() < 3 {
+                    return None;
+                }
+                adj.as_ref()
+                    .and_then(|a| build_reference(verts, tris, &rim, h, a))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Running undirected edge multiplicities, so a plug can be rejected before
     // it pushes any edge past two faces (i.e. manufactures a non-manifold
@@ -1231,7 +3811,7 @@ pub fn tamponade_repair(
     // byte-identical regression comparison against the per-component path.
     let percell = std::env::var("SUTURA_TAMP_PERCELL").is_ok();
 
-    for loop_v in &loops {
+    for (li, loop_v) in loops.iter().enumerate() {
         if deadline_passed(deadline) {
             info.reason = "timeout exceeded".to_string();
             break;
@@ -1245,6 +3825,15 @@ pub fn tamponade_repair(
         if rim.len() < 3 {
             continue;
         }
+
+        // The group's outer rim drives the reference fit so a fragment of a
+        // pinched hole seals at the level of the whole hole. In the default
+        // (greedy) path the group is the loop itself, so this is `rim`.
+        let group_rim: Vec<u32> = if manifold_mode {
+            loops[loop_outer[li]].clone()
+        } else {
+            rim.clone()
+        };
 
         // Invisible-plug gate (a): a rim larger than `PLUG_MAX_LOOP_DIAM_FACTOR`
         // median edges cannot be closed without a visible membrane, so it is
@@ -1276,10 +3865,41 @@ pub fn tamponade_repair(
         // treated as a hole (seal with the safe rim plug) rather than rejected,
         // matching R1 usefulness.
         let tiny = rim.len() <= TINY_LOOP_MAX;
-        if !tiny {
+
+        // Single-shell fast path: build the reference first; when a single
+        // boundary loop sits on a single connected component it is a genuine
+        // hole, so a fitted reference surface decides the seal and the expensive
+        // min-cut is skipped entirely. Multi-loop / multi-component inputs keep
+        // the cut (another loop could be an intentional opening).
+        let mut reference = if manifold_mode {
+            loop_parent
+                .get(li)
+                .and_then(|&p| parent_refs.get(p).cloned().flatten())
+        } else if single_shell {
+            adj.as_ref()
+                .and_then(|a| build_reference(verts, tris, &group_rim, h, a))
+        } else {
+            None
+        };
+        let mincut_skipped = !tiny && single_shell && reference.is_some();
+
+        // Per-loop allowance, clamped by the global preset deadline. Only
+        // applied when a budget is set (`None` = unlimited, e.g. direct library
+        // calls) so the engine default is unchanged.
+        let loop_deadline = match deadline {
+            Some(global) => {
+                let allow =
+                    LOOP_BUDGET_BASE_S + LOOP_BUDGET_PER_VERTEX_S * rim.len() as f64;
+                let local = Instant::now() + Duration::from_secs_f64(allow);
+                Some(if local < global { local } else { global })
+            }
+            None => None,
+        };
+
+        if !tiny && !mincut_skipped {
             let tc0 = Instant::now();
             let verdict =
-                throat_separates(verts, &rim, h, model_diag, &bvh, config, percell, deadline);
+                throat_separates(verts, &rim, h, model_diag, &bvh, config, percell, loop_deadline);
             let dt = tc0.elapsed().as_secs_f64();
             cut_s += dt;
             if profile {
@@ -1299,68 +3919,427 @@ pub fn tamponade_repair(
                     continue;
                 }
                 CutVerdict::Timeout => {
-                    info.reason = "timeout exceeded".to_string();
-                    break;
+                    // The loop's own allowance expired. If the global preset
+                    // deadline is also gone, stop; otherwise leave this loop
+                    // open and try the next one.
+                    if deadline_passed(deadline) {
+                        info.reason = "timeout exceeded".to_string();
+                        break;
+                    }
+                    info.loop_diag
+                        .push(format!("m={} rejected:loop_timeout", rim.len()));
+                    continue;
                 }
                 CutVerdict::Inconclusive => {
                     plug_inconclusive_count += 1;
                 }
                 CutVerdict::Separates => {}
             }
+        } else if mincut_skipped && profile {
+            eprintln!(
+                "[tamp]   loop m={} mincut skipped (single shell + reference)",
+                rim.len()
+            );
         }
 
         let tp0 = Instant::now();
-        let tri = triangulate_rim_loop(&rim, verts, &directed_set, tiny);
+        // T3: fit a smooth "laser" reference surface (line 2) through the intact
+        // ring 2..=3 tissue. When it is available, seal at the reference level —
+        // a concave dent and a convex bump alike; only a saddle / noisy ring
+        // yields no reference (`build_reference` -> None) and keeps the rim-only
+        // plug. Already built above on the single-shell fast path, and on the
+        // manifold path it comes from the parent-hole cache (never re-fit).
+        if reference.is_none() && !single_shell && !manifold_mode {
+            reference = adj
+                .as_ref()
+                .and_then(|a| build_reference(verts, tris, &group_rim, h, a));
+        }
+        // The overshoot trim below mutates `out_verts` in place. Snapshot it so
+        // a loop whose plug is ultimately rejected leaves the input vertices
+        // byte-identical -- otherwise a rejected reference still lifts rim
+        // vertices onto an implausible surface and spikes the output.
+        let trim_snapshot = if reference.is_some() {
+            Some(out_verts.clone())
+        } else {
+            None
+        };
+        let mut sealed = false;
+        // Every in-place vertex move this loop makes (the overshoot trim), with
+        // the position each vertex held before the move. Carried into whichever
+        // plug commits, so a later rollback can restore the region exactly.
+        let mut loop_moved: Vec<(u32, [f64; 3])> = Vec::new();
+        if let Some(ref refs) = reference {
+            // Overshoot trim: lift tail rim vertices that sit clearly below
+            // the reference (the extruded spike that overhangs the hole).
+            let mut trimmed = 0usize;
+            let mut moved: HashSet<u32> = HashSet::new();
+            for &v in &rim {
+                if trimmed >= TRIM_MAX_VERTICES {
+                    break;
+                }
+                let p = out_verts[v as usize];
+                if refs.signed_height(p) < -TRIM_EPS_FACTOR * h {
+                    if moved.insert(v) {
+                        loop_moved.push((v, p));
+                        trimmed += 1;
+                    }
+                    out_verts[v as usize] = refs.place(p);
+                }
+            }
+            info.trimmed_vertices += trimmed;
+
+            // Candidate 1: rim-only DP on the (possibly trimmed) rim.
+            let mut added: Vec<[f64; 3]> = Vec::new();
+            let mut is_skirt = false;
+            let mut cand: Option<Vec<[u32; 3]>> = None;
+            // A candidate was produced but failed the reference deviation gate
+            // (reported only when no later candidate seals the loop).
+            let mut rejected_dev = false;
+            if let Ok(dp) = triangulate_rim_loop(&rim, &out_verts, &directed_set, tiny) {
+                if reference_dev_ok(&dp, refs, &out_verts, h) {
+                    cand = Some(dp);
+                } else {
+                    rejected_dev = true;
+                }
+            }
+            // Candidate 2: a fan to a single interior vertex ON the reference
+            // surface (handles concave craters and convex bumps a rim DP cannot
+            // represent without bulging / flattening).
+            if cand.is_none() {
+                if let Some((fan_local, centre)) = fan_patch(&rim, refs, &directed_set) {
+                    let new_idx = out_verts.len() as u32;
+                    let m = rim.len() as u32;
+                    let fan: Vec<[u32; 3]> = fan_local
+                        .iter()
+                        .map(|t| {
+                            let f = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+                            [f(t[0]), f(t[1]), f(t[2])]
+                        })
+                        .collect();
+                    let mut verts_ext = out_verts.clone();
+                    verts_ext.push(centre);
+                    if reference_dev_ok(&fan, refs, &verts_ext, h) {
+                        added.push(centre);
+                        cand = Some(fan);
+                    } else {
+                        rejected_dev = true;
+                    }
+                }
+            }
+            // Candidate 3: skirt plug - a cap ON the reference bounded by the
+            // projected rim, joined to the real rim by a one-triangle-wide
+            // zipper strip, so the rim need not lie on the reference. The
+            // clamped tail vertices were already lifted above; they carry no
+            // strip quad. The cap deviation gate runs inside `skirt_patch`.
+            if cand.is_none() {
+                let clamp_mask: Vec<bool> =
+                    rim.iter().map(|v| moved.contains(v)).collect();
+                let new_base = out_verts.len() as u32;
+                if let Some((patch, add)) =
+                    skirt_patch(&rim, &out_verts, refs, &directed_set, &clamp_mask, new_base, h)
+                {
+                    added = add;
+                    cand = Some(patch);
+                    is_skirt = true;
+                }
+            }
+
+            if let Some(cand) = cand {
+                let cap_counts = edge_use_counts(&cand);
+                let collides = cap_counts
+                    .iter()
+                    .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
+                if !cap_shape_ok(
+                    &cand,
+                    &out_verts,
+                    out_verts.len() as u32,
+                    &added,
+                    &rim,
+                    rim_diag,
+                    Some(refs),
+                ) {
+                    info.loop_diag
+                        .push(format!("m={} rejected:shape", rim.len()));
+                    plug_rejected_count += 1;
+                    info.reference_fallback += 1;
+                } else if collides {
+                    info.loop_diag
+                        .push(format!("m={} rejected:edge_collision", rim.len()));
+                    plug_rejected_count += 1;
+                    info.reference_fallback += 1;
+                } else if !plug_reload_ok(
+                    &out_verts,
+                    &out_tris,
+                    out_verts.len() as u32,
+                    &added,
+                    &cand,
+                ) {
+                    // The plug is clean by id but its vertices coincide by
+                    // float32 position, so the STL reload would weld it into a
+                    // non-manifold edge. Leave the hole for a later tier.
+                    info.loop_diag
+                        .push(format!("m={} rejected:reload_nm", rim.len()));
+                    plug_rejected_count += 1;
+                    info.reference_fallback += 1;
+                } else {
+                    for (e, &d) in &cap_counts {
+                        *edge_count.entry(*e).or_insert(0) += d;
+                    }
+                    let n_added = added.len();
+                    out_verts.extend_from_slice(&added);
+                    info.patch_vertices += n_added;
+                    plug_face_count += cand.len();
+                    let tri_start = out_tris.len();
+                    out_tris.extend(cand);
+                    plug_regions.push(PlugRegion {
+                        tri_start,
+                        tri_end: out_tris.len(),
+                        reference: true,
+                        steiner: n_added > 0,
+                        moved: loop_moved.clone(),
+                    });
+                    plug_count += 1;
+                    info.reference_used += 1;
+                    let is_rbf = matches!(refs.model, RefModel::Rbf(_));
+                    if is_rbf {
+                        info.reference_rbf += 1;
+                    }
+                    sealed = true;
+                    if is_skirt {
+                        info.reference_skirt += 1;
+                    }
+                    info.loop_diag.push(format!(
+                        "m={} sealed:{}",
+                        rim.len(),
+                        if is_skirt {
+                            "skirt"
+                        } else if is_rbf {
+                            if n_added > 0 { "rbf:fan" } else { "rbf" }
+                        } else if n_added > 0 {
+                            "ref:fan"
+                        } else {
+                            "ref"
+                        }
+                    ));
+                }
+            } else if rejected_dev {
+                info.loop_diag
+                    .push(format!("m={} rejected:deviation", rim.len()));
+                plug_rejected_dev_count += 1;
+                info.reference_fallback += 1;
+            } else {
+                info.reference_fallback += 1;
+            }
+        } else {
+            info.reference_fallback += 1;
+        }
+
+        // Fallback: rim-only plug (byte-identical to the pre-T3 path), and when
+        // the rim has no non-degenerate triangulation, a fan to a single
+        // interior Steiner vertex placed at the rim centroid.
+        if !sealed {
+            let new_idx = out_verts.len() as u32;
+            let tri = rim_plug_or_steiner(&rim, verts, &directed_set, tiny, new_idx);
+            match tri {
+                Ok((cand, centre)) => {
+                    // The rim-only plug is judged against the original input
+                    // positions (unchanged). The Steiner fan is judged against
+                    // the output positions plus its own appended centre, since
+                    // the reference trim may have moved rim vertices.
+                    let (struct_ok, dev_ok) = if let Some(c) = centre {
+                        let mut vy = out_verts.clone();
+                        vy.push(c);
+                        (
+                            plug_structure_ok(&cand, &rim, &vy),
+                            plug_deviation_ok(&cand, &rim, &vy, h),
+                        )
+                    } else {
+                        (
+                            plug_structure_ok(&cand, &rim, verts),
+                            plug_deviation_ok(&cand, &rim, verts, h),
+                        )
+                    };
+                    if !struct_ok {
+                        info.loop_diag
+                            .push(format!("m={} rejected:degenerate", rim.len()));
+                        plug_rejected_count += 1;
+                    } else if !dev_ok {
+                        info.loop_diag
+                            .push(format!("m={} rejected:deviation", rim.len()));
+                        plug_rejected_dev_count += 1;
+                    } else {
+                        let added_local: Vec<[f64; 3]> =
+                            centre.map(|c| vec![c]).unwrap_or_default();
+                        let cand_counts = edge_use_counts(&cand);
+                        let collides = cand_counts
+                            .iter()
+                            .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
+                        if !cap_shape_ok(
+                            &cand,
+                            &out_verts,
+                            out_verts.len() as u32,
+                            &added_local,
+                            &rim,
+                            rim_diag,
+                            reference.as_ref(),
+                        ) {
+                            info.loop_diag
+                                .push(format!("m={} rejected:shape", rim.len()));
+                            plug_rejected_count += 1;
+                        } else if collides {
+                            info.loop_diag
+                                .push(format!("m={} rejected:edge_collision", rim.len()));
+                            plug_rejected_count += 1;
+                        } else if !plug_reload_ok(
+                            &out_verts,
+                            &out_tris,
+                            out_verts.len() as u32,
+                            &added_local,
+                            &cand,
+                        ) {
+                            info.loop_diag
+                                .push(format!("m={} rejected:reload_nm", rim.len()));
+                            plug_rejected_count += 1;
+                        } else {
+                            for (e, &d) in &cand_counts {
+                                *edge_count.entry(*e).or_insert(0) += d;
+                            }
+                            if let Some(c) = centre {
+                                out_verts.push(c);
+                                info.patch_vertices += 1;
+                            }
+                            plug_face_count += cand.len();
+                            let tri_start = out_tris.len();
+                            out_tris.extend(cand);
+                            plug_regions.push(PlugRegion {
+                                tri_start,
+                                tri_end: out_tris.len(),
+                                reference: false,
+                                steiner: centre.is_some(),
+                                moved: loop_moved.clone(),
+                            });
+                            plug_count += 1;
+                            info.loop_diag.push(format!(
+                                "m={} sealed{}{}",
+                                rim.len(),
+                                if reference.is_some() {
+                                    ":fallback"
+                                } else if tiny {
+                                    ":tiny"
+                                } else {
+                                    ""
+                                },
+                                if centre.is_some() { ":steiner" } else { "" }
+                            ));
+                        }
+                    }
+                }
+                Err(why) => {
+                    info.loop_diag
+                        .push(format!("m={} rejected:{}", rim.len(), why));
+                    plug_rejected_count += 1;
+                }
+            }
+        }
+        if !sealed {
+            if let Some(snap) = trim_snapshot {
+                out_verts = snap;
+            }
+        }
         let plug_dt = tp0.elapsed().as_secs_f64();
         plug_s += plug_dt;
         if profile {
             eprintln!("[tamp]   loop m={} plug_s={:.3}", rim.len(), plug_dt);
         }
-        match tri {
-            Ok(cand) => {
-                // Invisible-plug gate (b): reject a plug whose triangles bulge
-                // away from the local surface plane (fit over the rim and its
-                // one-ring input neighbourhood) by more than
-                // `PLUG_MAX_DEV_FACTOR` median edges - such a membrane would be
-                // visibly proud of the repaired surface.
-                if !plug_deviation_ok(&cand, &rim, verts, h) {
-                    info.loop_diag
-                        .push(format!("m={} rejected:deviation", rim.len()));
-                    plug_rejected_dev_count += 1;
+    }
+
+    // Final reload-honest "never worse" safety net. Mimic an STL save/reload
+    // (float32 round + exact position weld) on the sealed output; if a plug
+    // raised the non-manifold edge / non-manifold vertex / degenerate face
+    // count over the input's, roll it back per plug. A plug that accounts for
+    // the regression is dropped; a good plug survives a bad one. When the
+    // regression is not attributable to any single plug (or survives the
+    // per-plug fix), every plug is rolled back -- restoring the input
+    // byte-for-byte, so the output can never be worse than the input.
+    //
+    // A reload regression is not the only way a plug can damage the mesh: a
+    // plug can poke through a nearby sheet and create a proper self
+    // intersection that leaves the topology unchanged, so the reload verdict
+    // cannot see it. For every plug the local self-intersection delta is also
+    // computed (`plug_local_si`: the new faces against the surrounding tissue
+    // within the plug AABB expanded by 2h); a plug that raises it is rolled
+    // back with the same machinery. The scan is O(local) per plug and the pass
+    // only writes when one of the checks fires, keeping the default path
+    // byte-identical.
+    let mut plugs_rolled_back = 0usize;
+    if !plug_regions.is_empty() {
+        let base = reload_verdict(verts, tris);
+        let full = reload_verdict(&out_verts, &out_tris);
+        let reload_regressed = full.worse_than(&base);
+        let si_drop = si_rollback_mask(&out_verts, &out_tris, &plug_regions, h);
+        if reload_regressed || si_drop.iter().any(|&d| d) {
+            let mut drop = vec![false; plug_regions.len()];
+            if reload_regressed {
+                for (ri, region) in plug_regions.iter().enumerate() {
+                    let without = reload_verdict_without(&out_verts, &out_tris, region);
+                    if (without.nm_edges < full.nm_edges
+                        || without.nm_vertices < full.nm_vertices
+                        || without.degenerate_faces < full.degenerate_faces)
+                        && !without.worse_than(&base)
+                    {
+                        drop[ri] = true;
+                    }
+                }
+            }
+            for ri in 0..plug_regions.len() {
+                drop[ri] |= si_drop[ri];
+            }
+            let any = drop.iter().any(|&d| d);
+            let give_up = if any {
+                // A per-plug fix whose fixed point still regresses is treated
+                // as un-attributeable and falls back to a full rollback.
+                reload_verdict_dropping(&out_verts, &out_tris, &plug_regions, &drop)
+                    .worse_than(&base)
+            } else {
+                true
+            };
+            for (ri, region) in plug_regions.iter().enumerate() {
+                let rolled = give_up || drop[ri];
+                if !rolled {
                     continue;
                 }
-                // Structural safety: never raise an edge above two faces. This
-                // is what keeps a shared-vertex / non-manifold rim from turning
-                // a well-formed cap into a new non-manifold edge.
-                let cand_counts = edge_use_counts(&cand);
-                let collides = cand_counts.iter().any(|(e, &d)| {
-                    edge_count.get(e).copied().unwrap_or(0) + d > 2
-                });
-                if collides {
-                    info.loop_diag
-                        .push(format!("m={} rejected:edge_collision", rim.len()));
-                    plug_rejected_count += 1;
-                    continue;
+                plug_face_count -= region.tri_end - region.tri_start;
+                plug_count -= 1;
+                if region.reference {
+                    info.reference_used = info.reference_used.saturating_sub(1);
                 }
-                for (e, &d) in &cand_counts {
-                    *edge_count.entry(*e).or_insert(0) += d;
+                if region.steiner {
+                    info.patch_vertices = info.patch_vertices.saturating_sub(1);
                 }
-                plug_face_count += cand.len();
-                out_tris.extend(cand);
-                plug_count += 1;
-                info.loop_diag.push(format!(
-                    "m={} sealed{}",
-                    rim.len(),
-                    if tiny { ":tiny" } else { "" }
-                ));
+                plugs_rolled_back += 1;
             }
-            Err(why) => {
-                info.loop_diag
-                    .push(format!("m={} rejected:{}", rim.len(), why));
-                plug_rejected_count += 1;
+            if give_up {
+                // Restore the exact input topology and vertices (also undoes
+                // any overshoot trim), guaranteeing no regression.
+                out_verts = verts.to_vec();
+                out_tris = tris.to_vec();
+                plug_count = 0;
+                plug_face_count = 0;
+                info.reference_used = 0;
+                info.patch_vertices = 0;
+                info.trimmed_vertices = 0;
+                plugs_rolled_back = plug_regions.len();
+            } else {
+                apply_region_rollback(&mut out_verts, &mut out_tris, &plug_regions, &drop);
             }
+            let si_fired = si_drop.iter().filter(|&&d| d).count();
+            info.loop_diag.push(format!(
+                "rolled_back {} plug(s) ({} on self-intersection)",
+                plugs_rolled_back, si_fired
+            ));
         }
     }
+    info.plugs_rolled_back = plugs_rolled_back;
 
     info.plugs = plug_count;
     info.plugs_rejected = plug_rejected_count;
@@ -1787,5 +4766,691 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- T3 reference-surface ("laser") tests ----------------------------
+
+    /// A curved (or flat) `n x n` grid over [-1,1]^2 with a circular central
+    /// hole, `z = a (x^2 + y^2)` (`a > 0` concave bowl, `a = 0` flat).
+    fn grid_with_central_hole(n: usize, a: f64) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        grid_with_central_hole_fn(n, 0.32, move |x, y| a * (x * x + y * y))
+    }
+
+    /// The same grid with an arbitrary height function and hole radius.
+    fn grid_with_central_hole_fn(
+        n: usize,
+        hole_r: f64,
+        f: impl Fn(f64, f64) -> f64,
+    ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let step = 2.0 / n as f64;
+        let mut verts = Vec::new();
+        for j in 0..=n {
+            for i in 0..=n {
+                let x = -1.0 + i as f64 * step;
+                let y = -1.0 + j as f64 * step;
+                verts.push([x, y, f(x, y)]);
+            }
+        }
+        let idx = |i: usize, j: usize| (j * (n + 1) + i) as u32;
+        let mut tris = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let cx = -1.0 + (i as f64 + 0.5) * step;
+                let cy = -1.0 + (j as f64 + 0.5) * step;
+                if (cx * cx + cy * cy).sqrt() < hole_r {
+                    continue;
+                }
+                let a0 = idx(i, j);
+                let b = idx(i + 1, j);
+                let c = idx(i + 1, j + 1);
+                let d = idx(i, j + 1);
+                tris.push([a0, b, c]);
+                tris.push([a0, c, d]);
+            }
+        }
+        (verts, tris)
+    }
+
+    fn boundary_edge_count_near(tris: &[[u32; 3]], verts: &[[f64; 3]], r: f64) -> usize {
+        let c = [0.0, 0.0, 0.0];
+        directed_boundary_edges(tris)
+            .iter()
+            .filter(|(a, b)| {
+                let pa = verts[*a as usize];
+                let pb = verts[*b as usize];
+                let da = ((pa[0] - c[0]).powi(2) + (pa[1] - c[1]).powi(2)).sqrt();
+                let db = ((pb[0] - c[0]).powi(2) + (pb[1] - c[1]).powi(2)).sqrt();
+                da < r && db < r
+            })
+            .count()
+    }
+
+    #[test]
+    fn test_concave_crater_sealed_with_reference() {
+        let (verts, tris) = grid_with_central_hole(16, 1.0);
+        let before_hole = boundary_edge_count_near(&tris, &verts, 0.6);
+        assert!(before_hole > 0, "fixture must have a central hole boundary");
+        let config = TamponadeConfig { h_min: Some(0.02), ..Default::default() };
+        let (out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        // The fitted reference was used and the central hole is gone.
+        assert!(info.reference_used >= 1, "reference not used: {info:?}");
+        assert_eq!(boundary_edge_count_near(&out_tris, &out_verts, 0.6), 0);
+        assert_eq!(boundary_edge_count(&out_tris), boundary_edge_count(&tris) - before_hole);
+    }
+
+    #[test]
+    fn test_overshoot_tail_is_trimmed() {
+        let (mut verts, tris) = grid_with_central_hole(16, 1.0);
+        // Push one rim vertex far below the reference (an extruded tail).
+        // The central-hole rim vertices are those with an incident boundary
+        // edge; find the first and lower it by 0.5.
+        let bd = directed_boundary_edges(&tris);
+        let rim_v = {
+            let mut best: Option<u32> = None;
+            for (a, b) in &bd {
+                for v in [*a, *b] {
+                    let p = verts[v as usize];
+                    if p[0].abs() < 0.5 && p[1].abs() < 0.5 {
+                        best = Some(v);
+                    }
+                }
+            }
+            best.expect("central rim vertex")
+        };
+        verts[rim_v as usize][2] -= 0.5;
+        let config = TamponadeConfig { h_min: Some(0.02), ..Default::default() };
+        let (_out_v, _out_t, info) = tamponade_repair(&verts, &tris, &config);
+        assert!(info.reference_used >= 1, "reference not used: {info:?}");
+        assert!(info.trimmed_vertices >= 1, "tail not trimmed: {info:?}");
+    }
+
+    #[test]
+    fn test_convex_bump_sealed_with_reference() {
+        // Convex dome (`z = -r^2`) with the hole at its peak: the intact
+        // surrounding tissue rises toward the hole, so the reference surface
+        // (line 2) extrapolates to the peak. A convex hole must be sealed on
+        // that reference too -- exactly like a concave dent -- not bridged by a
+        // flat rim-only cap below the bump, and a lowered tail rim vertex is
+        // trimmed onto the reference (no fin left in the air).
+        let (mut verts, tris) = grid_with_central_hole(16, -1.0);
+        let bd = directed_boundary_edges(&tris);
+        let mut rim_vs: HashSet<u32> = HashSet::new();
+        for (a, b) in &bd {
+            for v in [*a, *b] {
+                let p = verts[v as usize];
+                if p[0].abs() < 0.6 && p[1].abs() < 0.6 {
+                    rim_vs.insert(v);
+                }
+            }
+        }
+        assert!(!rim_vs.is_empty(), "fixture must have a central hole rim");
+        // Overshoot tail: lower one rim vertex well below the reference.
+        let tail_v = *rim_vs.iter().min().unwrap();
+        verts[tail_v as usize][2] -= 0.5;
+
+        let config = TamponadeConfig { h_min: Some(0.02), ..Default::default() };
+        let (out_v, out_t, info) = tamponade_repair(&verts, &tris, &config);
+
+        assert!(info.reference_used >= 1, "convex bump must use the reference: {info:?}");
+        assert!(info.trimmed_vertices >= 1, "overshoot tail not trimmed: {info:?}");
+        assert_eq!(boundary_edge_count_near(&out_t, &out_v, 0.6), 0);
+
+        // No flat cap below the bump: a repaired vertex inside the former hole
+        // reaches the reference peak (z ~ 0), not just the rim-chord height.
+        let peak = out_v
+            .iter()
+            .filter(|p| p[0].abs() < 0.32 && p[1].abs() < 0.32)
+            .map(|p| p[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(peak > -0.05, "hole capped below the bump (peak z={peak})");
+    }
+
+    #[test]
+    fn test_plug_reload_gate_rejects_weld_non_manifold() {
+        // A candidate that is clean by vertex id but adds a vertex coincident
+        // (float32) with an existing one can weld a shared edge to three faces.
+        // Square 0-1-2-3 (diagonal 0-2): edge 0-2 is already used twice; a
+        // candidate triangle (1, new, 2) with `new` at vertex 0's position welds
+        // edge 0-2 a third time.
+        let out_verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let out_tris = vec![[0u32, 1, 2], [0, 2, 3]];
+        let coincident = vec![[0.0, 0.0, 0.0]];
+        let cand = vec![[1u32, 4, 2]];
+        assert!(
+            !plug_reload_ok(&out_verts, &out_tris, 4, &coincident, &cand),
+            "a weld-coincident candidate must be rejected"
+        );
+        // The same candidate with a distinct new position is reload-clean.
+        let distinct = vec![[0.5, 0.5, 1.0]];
+        assert!(
+            plug_reload_ok(&out_verts, &out_tris, 4, &distinct, &cand),
+            "a distinct candidate must pass"
+        );
+    }
+
+    #[test]
+    fn test_split_long_loops_carries_parent_ids() {
+        // "One reference per parent hole": every sub-rim produced by the
+        // piecewise split must carry the index of the original loop it came
+        // from, so all its pieces share one reference. A long circle rim splits;
+        // a short triangle loop is left whole.
+        let n = 80usize;
+        let mut verts: Vec<[f64; 3]> = (0..n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                [a.cos(), a.sin(), 0.0]
+            })
+            .collect();
+        verts.push([10.0, 0.0, 0.0]);
+        verts.push([10.0, 1.0, 0.0]);
+        verts.push([10.0, 0.0, 1.0]);
+        let tris: Vec<[u32; 3]> = vec![[n as u32, n as u32 + 1, n as u32 + 2]];
+        let tris_usize: Vec<[usize; 3]> =
+            tris.iter().map(|t| [t[0] as usize, t[1] as usize, t[2] as usize]).collect();
+        let bvh = MeshBvh::from_arrays(&verts, &tris_usize);
+        let long: Vec<u32> = (0..n as u32).collect();
+        let short: Vec<u32> = vec![n as u32, n as u32 + 1, n as u32 + 2];
+        let (split, parents) = split_long_loops(vec![long, short], &verts, &bvh);
+        assert!(split.len() >= 3, "the long rim must split: {}", split.len());
+        assert_eq!(*parents.last().unwrap(), 1, "the short loop keeps parent 1");
+        assert!(
+            parents[..parents.len() - 1].iter().all(|&p| p == 0),
+            "all sub-rims of the long loop carry parent 0: {parents:?}"
+        );
+    }
+
+    #[test]
+    fn test_curved_big_hole_gets_reference() {
+        // R2: a big hole on a curved surface needs a wider intact ring, and the
+        // ring's normals spread widely. The ring must grow with the rim and the
+        // normal-spread veto must be gated on the quadric rms, so the smooth
+        // curved surface keeps its reference instead of being rejected as
+        // "noisy". A paraboloid is locally an exact quadric (rms ~ 0) but its
+        // normals tilt strongly over a wide ring.
+        let (verts, tris) = grid_with_central_hole(32, 1.0);
+        let adj = build_adjacency(verts.len(), &tris);
+        let loops = build_boundary_loops(&directed_boundary_edges(&tris));
+        let rim = loops
+            .iter()
+            .filter(|l| l.len() < 60)
+            .max_by_key(|l| l.len())
+            .expect("central hole rim");
+        let refs = build_reference(&verts, &tris, rim, 0.02, &adj);
+        assert!(refs.is_some(), "curved big hole must keep a reference");
+    }
+
+    #[test]
+    fn test_saddle_rbf_reference_passes_loo() {
+        // A genuine saddle z = xy: the quadric fit is exact on the ring, but the
+        // tangent-ray split vetoes it. The R6 design routes the saddle veto into
+        // the thin-plate RBF fallback, gated by a leave-one-out self-consistency
+        // test, so a real smooth saddle keeps a reference (the RBF can bend both
+        // ways). h is the grid step, matching the sampling scale.
+        let (verts, tris) = grid_with_central_hole_fn(40, 0.5, |x, y| x * y);
+        let adj = build_adjacency(verts.len(), &tris);
+        let loops = build_boundary_loops(&directed_boundary_edges(&tris));
+        let rim = loops
+            .iter()
+            .filter(|l| l.len() < 120)
+            .max_by_key(|l| l.len())
+            .expect("central hole rim");
+        let refs = build_reference(&verts, &tris, rim, 0.05, &adj)
+            .expect("saddle must get an RBF reference");
+        assert!(
+            matches!(refs.model, RefModel::Rbf(_)),
+            "saddle reference must use the RBF model"
+        );
+    }
+
+    #[test]
+    fn test_rbf_big_curved_hole_gets_reference() {
+        // R4: on a strongly curved surface that is NOT a single quadric, the
+        // quadric fit is rejected by the rms gate (it would over-extrapolate a
+        // large hole). The thin-plate RBF fallback must still produce a
+        // reference, and its centre must stay inside the observed rim band
+        // instead of spiking. Before R4 this loop returned `None`.
+        let (verts, tris) = grid_with_central_hole_fn(40, 0.5, |x, y| {
+            let r2 = x * x + y * y;
+            2.0 * r2 + 3.0 * r2 * r2
+        });
+        let adj = build_adjacency(verts.len(), &tris);
+        let loops = build_boundary_loops(&directed_boundary_edges(&tris));
+        let rim = loops
+            .iter()
+            .filter(|l| l.len() < 120)
+            .max_by_key(|l| l.len())
+            .expect("central hole rim");
+        let h = 0.05;
+        let refs = build_reference(&verts, &tris, rim, h, &adj)
+            .expect("RBF fallback must keep a reference on a large curved hole");
+        let mut h_lo = f64::INFINITY;
+        let mut h_hi = f64::NEG_INFINITY;
+        for &v in rim {
+            let z = verts[v as usize][2];
+            h_lo = h_lo.min(z);
+            h_hi = h_hi.max(z);
+        }
+        let centre = refs.place(refs.origin);
+        // The centre may be genuinely below the rim (a curved crater continues
+        // downward), so allow the local relief plus a margin -- but a wild
+        // over-extrapolation (the failure R4 exists to prevent) is far larger.
+        let slack = 2.0 * (h_hi - h_lo) + 1.0;
+        assert!(
+            centre[2] <= h_hi + slack && centre[2] >= h_lo - slack,
+            "RBF centre z={:.3} far outside the rim band [{:.3}, {:.3}]",
+            centre[2],
+            h_lo,
+            h_hi
+        );
+    }
+
+    fn flat_reference() -> ReferenceSurface {
+        ReferenceSurface {
+            origin: [0.0, 0.0, 0.0],
+            u: [1.0, 0.0, 0.0],
+            v: [0.0, 1.0, 0.0],
+            n: [0.0, 0.0, 1.0],
+            model: RefModel::Quadric([0.0; 6]),
+            rms: 0.0,
+            concave: false,
+        }
+    }
+
+    #[test]
+    fn test_skirt_seals_rim_below_reference() {
+        // A flat reference at z = 0 and a square rim lowered to z = -0.3: the
+        // skirt must build a cap ON the reference (new vertices at z = 0) and a
+        // strip down to the real rim, leaving the rim in place.
+        let s = 0.5;
+        let verts = vec![
+            [-s, -s, -0.3],
+            [s, -s, -0.3],
+            [s, s, -0.3],
+            [-s, s, -0.3],
+        ];
+        let rim: Vec<u32> = (0..4).collect();
+        let directed: HashSet<(u32, u32)> =
+            [(0u32, 1u32), (1, 2), (2, 3), (3, 0)].into_iter().collect();
+        let clamp = vec![false; 4];
+        let (tris, added) =
+            skirt_patch(&rim, &verts, &flat_reference(), &directed, &clamp, 4, 0.1)
+                .expect("skirt must build");
+        assert_eq!(added.len(), 4, "one projected vertex per rim vertex");
+        for q in &added {
+            assert!(q[2].abs() < 1e-9, "projected vertex not on the reference");
+        }
+        // The rim itself is untouched.
+        for i in 0..4 {
+            assert!((verts[i][2] + 0.3).abs() < 1e-12);
+        }
+        // The patch boundary is exactly the rim edge set.
+        let counts = edge_use_counts(&tris);
+        let boundary: HashSet<(u32, u32)> = counts
+            .iter()
+            .filter(|(_, &c)| c % 2 == 1)
+            .map(|(e, _)| *e)
+            .collect();
+        let rim_edges: HashSet<(u32, u32)> =
+            [(0u32, 1u32), (1, 2), (2, 3), (3, 0)]
+                .into_iter()
+                .map(|(a, b)| ekey2(a, b))
+                .collect();
+        assert_eq!(boundary, rim_edges);
+    }
+
+    #[test]
+    fn test_skirt_clamped_rim_omits_strip() {
+        // Every rim vertex already clamped onto the reference: no strip, just
+        // the cap over the rim (the "clamped instead of stitched" case).
+        let s = 0.5;
+        let verts = vec![
+            [-s, -s, 0.0],
+            [s, -s, 0.0],
+            [s, s, 0.0],
+            [-s, s, 0.0],
+        ];
+        let rim: Vec<u32> = (0..4).collect();
+        let directed: HashSet<(u32, u32)> =
+            [(0u32, 1u32), (1, 2), (2, 3), (3, 0)].into_iter().collect();
+        let clamp = vec![true; 4];
+        let (tris, added) =
+            skirt_patch(&rim, &verts, &flat_reference(), &directed, &clamp, 4, 0.1)
+                .expect("skirt must build");
+        assert!(added.is_empty(), "a fully clamped rim adds no vertices");
+        assert_eq!(tris.len(), 2, "cap only, no strip quads");
+}
+
+    fn planar_hexagon() -> (Vec<u32>, Vec<[f64; 3]>, HashSet<(u32, u32)>) {
+        let rim: Vec<u32> = (0..6).collect();
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [2.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [-1.0, 1.0, 0.0],
+        ];
+        let directed: HashSet<(u32, u32)> = rim
+            .iter()
+            .enumerate()
+            .map(|(i, _)| (i as u32, ((i + 1) % rim.len()) as u32))
+            .collect();
+        (rim, verts, directed)
+    }
+
+    #[test]
+    fn centroid_fan_is_valid_for_a_planar_rim() {
+        let (rim, verts, directed) = planar_hexagon();
+        let (fan_local, centre) = centroid_fan(&rim, &verts, &directed).expect("fan");
+        let m = rim.len() as u32;
+        let new_idx = verts.len() as u32;
+        let remap = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+        let fan: Vec<[u32; 3]> = fan_local
+            .iter()
+            .map(|t| [remap(t[0]), remap(t[1]), remap(t[2])])
+            .collect();
+        let mut vy = verts.clone();
+        vy.push(centre);
+        assert_eq!(fan.len(), rim.len());
+        assert!(plug_structure_ok(&fan, &rim, &vy));
+        assert!(cancellation_count_local(&fan_local, &rim, &directed) * 2 > rim.len());
+    }
+
+    #[test]
+    fn centroid_fan_of_a_collinear_rim_is_still_degenerate() {
+        let rim: Vec<u32> = (0..5).collect();
+        let verts: Vec<[f64; 3]> = (0..5).map(|i| [i as f64, 0.0, 0.0]).collect();
+        let directed: HashSet<(u32, u32)> =
+            (0..5).map(|i| (i as u32, ((i + 1) % 5) as u32)).collect();
+        let (fan_local, centre) = centroid_fan(&rim, &verts, &directed).expect("fan built");
+        let m = 5u32;
+        let new_idx = 5u32;
+        let remap = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+        let fan: Vec<[u32; 3]> = fan_local
+            .iter()
+            .map(|t| [remap(t[0]), remap(t[1]), remap(t[2])])
+            .collect();
+        let mut vy = verts.clone();
+        vy.push(centre);
+        assert!(!plug_structure_ok(&fan, &rim, &vy));
+    }
+
+    #[test]
+    fn rim_plug_or_steiner_prefers_the_rim_only_plug() {
+        let (rim, verts, directed) = planar_hexagon();
+        let (tris, centre) =
+            rim_plug_or_steiner(&rim, &verts, &directed, false, verts.len() as u32).expect("plug");
+        assert!(centre.is_none());
+        assert_eq!(tris.len(), rim.len() - 2);
+        assert!(plug_structure_ok(&tris, &rim, &verts));
+    }
+
+    #[test]
+    fn open_cube_with_a_collinear_rim_vertex_still_seals_rim_only() {
+        // A rectangle-with-midpoint rim: the unfiltered min-area DP would pick
+        // the zero-area ear and reject the plug as degenerate. The filtered DP
+        // must find the non-degenerate triangulation and seal with no Steiner
+        // vertex.
+        let (mut verts, mut tris) = unit_cube_open_top();
+        verts.push([0.5, 0.0, 1.0]); // v8: midpoint of top edge 4-5
+        let split = [0u32, 5, 4];
+        let pos = tris.iter().position(|t| *t == split).expect("triangle 0,5,4");
+        tris.splice(pos..pos + 1, [[0, 5, 8], [0, 8, 4]]);
+        let config = TamponadeConfig { h_min: Some(0.5), ..Default::default() };
+        let (out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        assert_eq!(info.reason, "ok", "{info:?}");
+        assert_eq!(info.plugs, 1);
+        assert_eq!(boundary_edge_count(&out_tris), 0);
+        // Rim-only: no Steiner vertex was appended.
+        assert_eq!(out_verts.len(), verts.len());
+        assert!(info.patch_vertices == 0, "{info:?}");
+    }
+
+    // ---- T8 reload-honest "never worse" safety net -----------------------
+
+    #[test]
+    fn reload_verdict_flags_float32_coincident_vertex_nm() {
+        // Three triangles share the edge (0,1) and their third vertex is
+        // three near-identical positions that all round to the SAME float32
+        // coordinate: after the reload weld the edge (0,1) carries three
+        // faces, i.e. a non-manifold edge. This is exactly the damage the
+        // safety net must catch (float32 rounding manufacturing a weld).
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0 + 1e-8, 0.0],
+            [0.0, 1.0 - 1e-8, 0.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 1, 3], [0, 1, 4]];
+        let base = reload_verdict(&verts, &tris[..2]);
+        let full = reload_verdict(&verts, &tris);
+        assert!(full.worse_than(&base), "NM not detected: {full:?} vs {base:?}");
+        assert!(full.nm_edges > 0, "{full:?}");
+    }
+
+    #[test]
+    fn reload_safety_net_rolls_back_coincident_vertex_nm() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 1.0 + 1e-8, 0.0],
+            [0.0, 1.0 - 1e-8, 0.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 1, 3], [0, 1, 4]];
+        let base = reload_verdict(&verts, &tris[..2]);
+        let full = reload_verdict(&verts, &tris);
+        // The third triangle is the "plug" region.
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new() };
+        let without = reload_verdict_without(&verts, &tris, &region);
+        assert!(
+            without.nm_edges < full.nm_edges && !without.worse_than(&base),
+            "removing the bad plug must clear the regression: {without:?}"
+        );
+        // Applying the rollback drops the region and compacts the vertices.
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &[region], &[true]);
+        assert_eq!(ot.len(), 2);
+        assert!(!reload_verdict(&ov, &ot).worse_than(&base));
+    }
+
+    #[test]
+    fn reload_safety_net_leaves_a_clean_seal_alone() {
+        // A correct rim-only cap must not regress the reload verdict, so the
+        // full engine leaves it in place and reports zero rollbacks.
+        let (verts, tris) = unit_cube_open_top();
+        let mut out_t = tris.clone();
+        out_t.push([4, 6, 5]);
+        out_t.push([4, 7, 6]);
+        let base = reload_verdict(&verts, &tris);
+        let full = reload_verdict(&verts, &out_t);
+        assert!(!full.worse_than(&base), "clean cap regressed: {full:?} vs {base:?}");
+        assert_eq!(full.nm_edges, 0);
+        assert_eq!(full.nm_vertices, 0);
+        assert_eq!(full.degenerate_faces, 0);
+        assert_eq!(full.boundary_edges, 0);
+
+        let config = TamponadeConfig { h_min: Some(0.25), ..Default::default() };
+        let (_ov, _ot, info) = tamponade_repair(&verts, &tris, &config);
+        assert_eq!(info.plugs, 1, "{info:?}");
+        assert_eq!(info.plugs_rolled_back, 0, "{info:?}");
+    }
+
+    // ---- T9 local self-intersection per-plug rollback --------------------
+
+    /// A horizontal sheet (z = 0, two triangles) plus one plug face. The plug
+    /// either pokes straight through the sheet or floats well above it.
+    fn sheet_with_plug(poking: bool) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, PlugRegion) {
+        let mut verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [2.0, 2.0, 0.0],
+        ];
+        let mut tris: Vec<[u32; 3]> = vec![[0, 1, 2], [1, 3, 2]];
+        if poking {
+            // Spans z in [-1, 1] at y = 0.5: it crosses the sheet interior.
+            verts.push([0.5, 0.5, -1.0]);
+            verts.push([1.5, 0.5, -1.0]);
+            verts.push([1.0, 0.5, 1.0]);
+        } else {
+            // Floats at z in [2, 3], far above the sheet.
+            verts.push([0.5, 0.5, 2.0]);
+            verts.push([1.5, 0.5, 2.0]);
+            verts.push([1.0, 0.5, 3.0]);
+        }
+        let tri_start = tris.len();
+        tris.push([4, 5, 6]);
+        let region = PlugRegion {
+            tri_start,
+            tri_end: tris.len(),
+            reference: false,
+            steiner: false,
+            moved: Vec::new(),
+        };
+        (verts, tris, region)
+    }
+
+    #[test]
+    fn local_si_flags_a_plug_that_pokes_through_a_sheet() {
+        let h = 0.1;
+        let (pv, pt, pregion) = sheet_with_plug(true);
+        let mask = si_rollback_mask(&pv, &pt, &[pregion], h);
+        assert_eq!(mask, vec![true], "poking plug not flagged");
+
+        let (cv, ct, cregion) = sheet_with_plug(false);
+        let mask = si_rollback_mask(&cv, &ct, &[cregion], h);
+        assert_eq!(mask, vec![false], "clean plug wrongly flagged");
+    }
+
+    #[test]
+    fn local_si_rollback_drops_only_the_poking_plug() {
+        // One poking and one clean plug in the same output; only the poking one
+        // may be rolled back, leaving the clean plug and the sheet intact.
+        let h = 0.1;
+        let (mut verts, mut tris, poking) = sheet_with_plug(true);
+        verts.push([0.5, 0.5, 2.0]);
+        verts.push([1.5, 0.5, 2.0]);
+        verts.push([1.0, 0.5, 3.0]);
+        let clean_start = tris.len();
+        tris.push([7, 8, 9]);
+        let clean = PlugRegion {
+            tri_start: clean_start,
+            tri_end: tris.len(),
+            reference: false,
+            steiner: false,
+            moved: Vec::new(),
+        };
+
+        let regions = [poking, clean];
+        let mask = si_rollback_mask(&verts, &tris, &regions, h);
+        assert_eq!(mask, vec![true, false], "wrong plug attributed");
+
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &regions, &mask);
+        // The sheet (2) plus the clean plug (1) survive, the poking face is gone.
+        assert_eq!(ot.len(), 3, "rollback removed the wrong faces");
+        // The poking plug reached z = -1; after the rollback no vertex is below
+        // the sheet plane, i.e. the poking geometry was dropped while the clean
+        // plug above the sheet stayed.
+        assert!(
+            ov.iter().all(|v| v[2] >= -1e-9),
+            "poking plug survived: {ov:?}"
+        );
+        assert!(
+            ov.iter().any(|v| v[2] >= 2.0),
+            "clean plug was dropped: {ov:?}"
+        );
+    }
+
+    // ---- T12 exact footprint restore + cap shape gate --------------------
+
+    #[test]
+    fn rollback_restores_a_moved_original_vertex() {
+        // A plug that moved an ORIGINAL vertex in place (the overshoot trim)
+        // must restore that vertex's pre-move position on rollback, not only
+        // drop its appended faces. Face 0 stays and references vertex 3, so the
+        // restored position survives the compaction and is observable.
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 5.0], // original vertex, moved to z = 5
+            [1.0, 1.0, 1.0], // added plug vertex
+        ];
+        let tris: Vec<[u32; 3]> = vec![[0, 3, 2], [0, 1, 4]];
+        let region = PlugRegion {
+            tri_start: 1,
+            tri_end: 2,
+            reference: true,
+            steiner: true,
+            moved: vec![(3, [0.5, 0.5, 0.05])],
+        };
+        let mut ov = verts.clone();
+        let mut ot = tris.clone();
+        apply_region_rollback(&mut ov, &mut ot, &[region], &[true]);
+        assert_eq!(ot.len(), 1, "the plug face must be dropped");
+        assert!(
+            ov.iter().all(|v| (v[2] - 5.0).abs() > 1e-9),
+            "the moved vertex still carries its displaced position: {ov:?}"
+        );
+        assert!(
+            ov.iter().any(|v| (v[2] - 0.05).abs() < 1e-9),
+            "restored position missing: {ov:?}"
+        );
+    }
+
+    #[test]
+    fn cap_shape_gate_rejects_a_runaway_fin() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.5, 10.0], // apex poking 10 above a rim_diag of ~1.41
+        ];
+        let rim = vec![0u32, 1, 2, 3];
+        let rim_diag = 2.0f64.sqrt();
+        // Flat fan: acceptable.
+        let flat: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3]];
+        assert!(
+            cap_shape_ok(&flat, &verts, verts.len() as u32, &[], &rim, rim_diag, None),
+            "flat cap wrongly rejected"
+        );
+        // Fan to a far apex: the fin. Must be rejected.
+        let fin: Vec<[u32; 3]> = vec![[0, 1, 4], [1, 2, 4], [2, 3, 4], [3, 0, 4]];
+        assert!(
+            !cap_shape_ok(&fin, &verts, verts.len() as u32, &[], &rim, rim_diag, None),
+            "runaway fin accepted"
+        );
+    }
+
+    #[test]
+    fn cap_shape_gate_rejects_a_flipped_face() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let rim = vec![0u32, 1, 2, 3];
+        let rim_diag = 2.0f64.sqrt();
+        // A flat cap plus one face wound backwards: mean normal still +z, so the
+        // reversed face reads as a >90 deg flip against the ring.
+        let folded: Vec<[u32; 3]> = vec![[0, 1, 2], [0, 2, 3], [0, 2, 1]];
+        assert!(
+            !cap_shape_ok(&folded, &verts, verts.len() as u32, &[], &rim, rim_diag, None),
+            "flipped cap face accepted"
+        );
     }
 }
