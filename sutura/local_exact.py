@@ -671,8 +671,12 @@ def _si_after_count(ml, verts, tris):
 
 
 def _weld_reload(verts, tris):
-    """Minimal local copy of ``repair.weld_reload_equivalent`` (fallback when
-    ``repair`` cannot be imported)."""
+    """Delegate to ``topology.weld_reload_equivalent`` (Rust with numpy fallback)."""
+    try:
+        import topology
+        return topology.weld_reload_equivalent(verts, tris)
+    except Exception:
+        pass
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int64)
     if len(v) == 0 or len(t) == 0:

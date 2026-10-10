@@ -50,11 +50,19 @@ def engine():
     return 'rust' if _rust_kernel_available() else 'python'
 
 
-_RUST_FNS = ('edge_table', 'weld_vertices', 'weld_reload_equivalent')
+_RUST_FNS = (
+    'edge_table',
+    'weld_vertices',
+    'weld_reload_equivalent',
+    'remove_duplicate_faces',
+    'remove_null_faces',
+    'remove_duplicate_vertices',
+    'remove_unreferenced_vertices',
+)
 
 
 def _rust_kernel_available():
-    """True when the importable extension actually carries all three kernels.
+    """True when the importable extension carries all topology kernel functions.
 
     An older/pre-kernel wheel imports fine but lacks the functions; the
     fallback must be transparent, so this is checked rather than assuming the

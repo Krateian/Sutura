@@ -3227,9 +3227,23 @@ def _repair_welded_topology(ml, verts, tris):
                          ('meshing_repair_non_manifold_vertices', {}),
                          ('meshing_remove_unreferenced_vertices', {})):
         try:
-            ms.apply_filter(name, **params)
+            if name == 'meshing_remove_duplicate_faces':
+                m = ms.current_mesh()
+                t = m.face_matrix()
+                t_new = topology.remove_duplicate_faces(t)
+                if len(t_new) < len(t):
+                    v = m.vertex_matrix()
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+            elif name == 'meshing_remove_unreferenced_vertices':
+                _remove_unref_vertices_ms(ms, ml)
+            else:
+                ms.apply_filter(name, **params)
         except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
-            pass
+            try:
+                ms.apply_filter(name, **params)
+            except Exception:
+                pass
     return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
             np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
 
