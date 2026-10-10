@@ -47,6 +47,8 @@ pub struct ShellConfig {
     pub keep_cavities: bool,
     /// Whether to check ray escape to bounding box border for cavity detection (default true).
     pub check_ray_escape: bool,
+    /// Whether to attempt exact arrangement split on proper self-intersections (default true).
+    pub split_intersections: bool,
 }
 
 impl Default for ShellConfig {
@@ -56,6 +58,7 @@ impl Default for ShellConfig {
             eps_scale: 0.05,
             keep_cavities: true,
             check_ray_escape: true,
+            split_intersections: true,
         }
     }
 }
@@ -77,6 +80,12 @@ pub struct ShellAnalysisResult {
     pub coincident_same_count: usize,
     /// Indices of input triangles that survive.
     pub surviving_indices: Vec<usize>,
+    /// Whether any surviving face has winding >= 1.5 on both sides, or unresolved coincident opposite pairs.
+    pub has_internal_walls: bool,
+    /// Number of surviving faces that are internal walls.
+    pub internal_walls_count: usize,
+    /// Number of unresolved coincident opposite-normal faces in surviving mesh.
+    pub unresolved_coincident_count: usize,
     /// Diagnostic / status reason ("ok", "no_change", or abort reason).
     pub reason: String,
 }
@@ -157,6 +166,170 @@ fn cyclic_parity(t: [u32; 3]) -> bool {
     }
 }
 
+/// Compute connected components (shells) by manifold half-edge connectivity.
+pub fn compute_shell_components(tris: &[[u32; 3]]) -> (Vec<usize>, usize) {
+    let m = tris.len();
+    if m == 0 {
+        return (Vec::new(), 0);
+    }
+    let mut half_edges: HashMap<(u32, u32), Vec<usize>> = HashMap::with_capacity(m * 3);
+    for (i, t) in tris.iter().enumerate() {
+        half_edges.entry((t[0], t[1])).or_default().push(i);
+        half_edges.entry((t[1], t[2])).or_default().push(i);
+        half_edges.entry((t[2], t[0])).or_default().push(i);
+    }
+
+    let mut parent: Vec<usize> = (0..m).collect();
+    fn find(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    fn union(p: &mut [usize], a: usize, b: usize) {
+        let ra = find(p, a);
+        let rb = find(p, b);
+        if ra != rb {
+            p[ra] = rb;
+        }
+    }
+
+    for (&(u, v), f_list) in &half_edges {
+        if let Some(opp_list) = half_edges.get(&(v, u)) {
+            for &f1 in f_list {
+                for &f2 in opp_list {
+                    union(&mut parent, f1, f2);
+                }
+            }
+        }
+    }
+
+    let mut comp_map: HashMap<usize, usize> = HashMap::new();
+    let mut shell_ids = Vec::with_capacity(m);
+    for i in 0..m {
+        let root = find(&mut parent, i);
+        let next_id = comp_map.len();
+        let cid = *comp_map.entry(root).or_insert(next_id);
+        shell_ids.push(cid);
+    }
+    let num_shells = comp_map.len();
+    (shell_ids, num_shells)
+}
+
+fn plane_key(n: [f64; 3], p: [f64; 3], h_med: f64) -> (i64, i64, i64, i64) {
+    let mut un = n;
+    let l = norm3(un);
+    if l < 1e-12 {
+        return (0, 0, 0, 0);
+    }
+    un = scale3(un, 1.0 / l);
+    let flip = if un[0].abs() > 1e-4 {
+        un[0] < 0.0
+    } else if un[1].abs() > 1e-4 {
+        un[1] < 0.0
+    } else {
+        un[2] < 0.0
+    };
+    if flip {
+        un = scale3(un, -1.0);
+    }
+    let d = un[0] * p[0] + un[1] * p[1] + un[2] * p[2];
+    let quant_n = 1000.0;
+    let quant_d = (100.0 / h_med).max(1.0);
+    (
+        (un[0] * quant_n).round() as i64,
+        (un[1] * quant_n).round() as i64,
+        (un[2] * quant_n).round() as i64,
+        (d * quant_d).round() as i64,
+    )
+}
+
+fn point_strictly_in_triangle_2d(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
+    let s1 = crate::predicates2d::orient2d_sign(
+        &crate::predicates2d::Point2::Explicit(a),
+        &crate::predicates2d::Point2::Explicit(b),
+        &crate::predicates2d::Point2::Explicit(p),
+    );
+    let s2 = crate::predicates2d::orient2d_sign(
+        &crate::predicates2d::Point2::Explicit(b),
+        &crate::predicates2d::Point2::Explicit(c),
+        &crate::predicates2d::Point2::Explicit(p),
+    );
+    let s3 = crate::predicates2d::orient2d_sign(
+        &crate::predicates2d::Point2::Explicit(c),
+        &crate::predicates2d::Point2::Explicit(a),
+        &crate::predicates2d::Point2::Explicit(p),
+    );
+    (s1 > 1e-12 && s2 > 1e-12 && s3 > 1e-12) || (s1 < -1e-12 && s2 < -1e-12 && s3 < -1e-12)
+}
+
+fn segments_properly_cross_2d(p1: [f64; 2], p2: [f64; 2], q1: [f64; 2], q2: [f64; 2]) -> bool {
+    let s1 = crate::predicates2d::orient2d_sign(
+        &crate::predicates2d::Point2::Explicit(p1),
+        &crate::predicates2d::Point2::Explicit(p2),
+        &crate::predicates2d::Point2::Explicit(q1),
+    );
+    let s2 = crate::predicates2d::orient2d_sign(
+        &crate::predicates2d::Point2::Explicit(p1),
+        &crate::predicates2d::Point2::Explicit(p2),
+        &crate::predicates2d::Point2::Explicit(q2),
+    );
+    let s3 = crate::predicates2d::orient2d_sign(
+        &crate::predicates2d::Point2::Explicit(q1),
+        &crate::predicates2d::Point2::Explicit(q2),
+        &crate::predicates2d::Point2::Explicit(p1),
+    );
+    let s4 = crate::predicates2d::orient2d_sign(
+        &crate::predicates2d::Point2::Explicit(q1),
+        &crate::predicates2d::Point2::Explicit(q2),
+        &crate::predicates2d::Point2::Explicit(p2),
+    );
+    ((s1 > 1e-12 && s2 < -1e-12) || (s1 < -1e-12 && s2 > 1e-12))
+        && ((s3 > 1e-12 && s4 < -1e-12) || (s3 < -1e-12 && s4 > 1e-12))
+}
+
+fn triangles_proper_overlap_2d(a: &[[f64; 2]; 3], b: &[[f64; 2]; 3]) -> bool {
+    for i in 0..3 {
+        if point_strictly_in_triangle_2d(a[i], b[0], b[1], b[2]) {
+            return true;
+        }
+        if point_strictly_in_triangle_2d(b[i], a[0], a[1], a[2]) {
+            return true;
+        }
+    }
+    let edges_a = [(0, 1), (1, 2), (2, 0)];
+    let edges_b = [(0, 1), (1, 2), (2, 0)];
+    for &(i1, j1) in &edges_a {
+        for &(i2, j2) in &edges_b {
+            if segments_properly_cross_2d(a[i1], a[j1], b[i2], b[j2]) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn project_tri_2d(tri: [[f64; 3]; 3], normal: [f64; 3]) -> [[f64; 2]; 3] {
+    let mut drop = 0;
+    if normal[1].abs() > normal[drop].abs() {
+        drop = 1;
+    }
+    if normal[2].abs() > normal[drop].abs() {
+        drop = 2;
+    }
+    let keep = match drop {
+        0 => [1, 2],
+        1 => [0, 2],
+        _ => [0, 1],
+    };
+    [
+        [tri[0][keep[0]], tri[0][keep[1]]],
+        [tri[1][keep[0]], tri[1][keep[1]]],
+        [tri[2][keep[0]], tri[2][keep[1]]],
+    ]
+}
+
 /// Run shell analysis over a triangle mesh.
 pub fn analyze_shells(
     verts: &[[f64; 3]],
@@ -175,6 +348,40 @@ pub fn analyze_shells(
 
     let m = tris.len();
     let h_med = median_edge_length(verts, tris);
+
+    let (shell_map, num_shells) = compute_shell_components(tris);
+
+    let mut shell_bboxes = vec![crate::winding::Aabb::empty(); num_shells];
+    for (i, &t) in tris.iter().enumerate() {
+        let sid = shell_map[i];
+        shell_bboxes[sid].expand_point(verts[t[0] as usize]);
+        shell_bboxes[sid].expand_point(verts[t[1] as usize]);
+        shell_bboxes[sid].expand_point(verts[t[2] as usize]);
+    }
+
+    let mut shell_enclosed = vec![false; num_shells];
+    if num_shells > 1 {
+        for s1 in 0..num_shells {
+            let b1 = &shell_bboxes[s1];
+            for s2 in 0..num_shells {
+                if s1 == s2 {
+                    continue;
+                }
+                let b2 = &shell_bboxes[s2];
+                // Check if b1 is strictly contained inside b2
+                if b1.min[0] >= b2.min[0] - 1e-6
+                    && b1.min[1] >= b2.min[1] - 1e-6
+                    && b1.min[2] >= b2.min[2] - 1e-6
+                    && b1.max[0] <= b2.max[0] + 1e-6
+                    && b1.max[1] <= b2.max[1] + 1e-6
+                    && b1.max[2] <= b2.max[2] + 1e-6
+                {
+                    shell_enclosed[s1] = true;
+                    break;
+                }
+            }
+        }
+    }
 
     // Build MeshBvh
     let tris_usize: Vec<[usize; 3]> = tris
@@ -203,7 +410,6 @@ pub fn analyze_shells(
     // -------------------------------------------------------------------------
     // 1. Coincident face pre-pass (Mandatory C2)
     // -------------------------------------------------------------------------
-    // Map canonical (u, v, w) key -> Vec<face_idx>
     let mut key_map: HashMap<(u32, u32, u32), Vec<usize>> = HashMap::with_capacity(m);
     for (i, &t) in tris.iter().enumerate() {
         let key = triangle_canonical_key(t);
@@ -214,15 +420,12 @@ pub fn analyze_shells(
         if group.len() <= 1 {
             continue;
         }
-        // If there are exactly two faces sharing all 3 vertices
         if group.len() == 2 {
             let i1 = group[0];
             let i2 = group[1];
             let parity1 = cyclic_parity(tris[i1]);
             let parity2 = cyclic_parity(tris[i2]);
             if parity1 != parity2 {
-                // Opposite normals: candidate for touching contact wall
-                // Verify with winding number: evaluate winding at centroid offset
                 let t = tris[i1];
                 let v0 = verts[t[0] as usize];
                 let v1 = verts[t[1] as usize];
@@ -238,7 +441,6 @@ pub fn analyze_shells(
                     let w_front = bvh.winding_at(p_front);
                     let w_back = bvh.winding_at(p_back);
                     let w_min = w_front.min(w_back);
-                    // If both sides are inside (w_min >= 1 - delta), this is an internal touching interface
                     if w_min >= 1.0 - config.delta {
                         res.classes[i1] = FaceClass::CoincidentOpposite;
                         res.classes[i2] = FaceClass::CoincidentOpposite;
@@ -247,12 +449,74 @@ pub fn analyze_shells(
                     }
                 }
             } else {
-                // Same normals: exact duplicate
-                res.classes[i1] = FaceClass::Outer; // will be classified by winding
+                res.classes[i1] = FaceClass::Outer;
                 res.classes[i2] = FaceClass::CoincidentSame;
                 res.coincident_same_count += 1;
                 continue;
             }
+        } else {
+            res.unresolved_coincident_count += group.len();
+        }
+    }
+
+    // Coplanar overlapping faces check (Addendum item 3)
+    let mut plane_map: HashMap<(i64, i64, i64, i64), Vec<usize>> = HashMap::with_capacity(m);
+    for (i, &t) in tris.iter().enumerate() {
+        let v0 = verts[t[0] as usize];
+        let v1 = verts[t[1] as usize];
+        let v2 = verts[t[2] as usize];
+        let normal = cross3(sub3(v1, v0), sub3(v2, v0));
+        let pkey = plane_key(normal, v0, h_med);
+        plane_map.entry(pkey).or_default().push(i);
+    }
+
+    let mut unresolved_coplanar = false;
+    for group in plane_map.values() {
+        if group.len() <= 1 {
+            continue;
+        }
+        for j in 0..group.len() {
+            let i1 = group[j];
+            for k in (j + 1)..group.len() {
+                let i2 = group[k];
+                if shell_map[i1] == shell_map[i2] {
+                    continue;
+                }
+                if triangle_canonical_key(tris[i1]) == triangle_canonical_key(tris[i2]) {
+                    continue;
+                }
+                let norm1 = cross3(
+                    sub3(verts[tris[i1][1] as usize], verts[tris[i1][0] as usize]),
+                    sub3(verts[tris[i1][2] as usize], verts[tris[i1][0] as usize]),
+                );
+                let p1 = project_tri_2d(
+                    [
+                        verts[tris[i1][0] as usize],
+                        verts[tris[i1][1] as usize],
+                        verts[tris[i1][2] as usize],
+                    ],
+                    norm1,
+                );
+                let p2 = project_tri_2d(
+                    [
+                        verts[tris[i2][0] as usize],
+                        verts[tris[i2][1] as usize],
+                        verts[tris[i2][2] as usize],
+                    ],
+                    norm1,
+                );
+                if triangles_proper_overlap_2d(&p1, &p2) {
+                    unresolved_coplanar = true;
+                    res.unresolved_coincident_count += 1;
+                    break;
+                }
+            }
+            if unresolved_coplanar {
+                break;
+            }
+        }
+        if unresolved_coplanar {
+            break;
         }
     }
 
@@ -262,14 +526,13 @@ pub fn analyze_shells(
     let delta = config.delta;
     let eps_scale = config.eps_scale;
 
-    // Parallel classification for remaining faces
-    let face_classes: Vec<FaceClass> = (0..m)
+    let face_results: Vec<(FaceClass, f64, f64, f64, bool)> = (0..m)
         .into_par_iter()
         .map(|i| {
             if res.classes[i] == FaceClass::CoincidentOpposite
                 || res.classes[i] == FaceClass::CoincidentSame
             {
-                return res.classes[i];
+                return (res.classes[i], 0.0, 0.0, 0.0, false);
             }
 
             let t = tris[i];
@@ -284,7 +547,7 @@ pub fn analyze_shells(
             let normal = cross3(e01, sub3(v2, v0));
             let area2 = norm3(normal);
             if area2 < 1e-14 {
-                return FaceClass::Degenerate;
+                return (FaceClass::Degenerate, 0.0, 0.0, 0.0, false);
             }
             let area = area2 * 0.5;
             let unorm = scale3(normal, 1.0 / area2);
@@ -296,63 +559,76 @@ pub fn analyze_shells(
                 h_med
             };
 
-            let eps = (inradius * eps_scale)
+            let mut eps = (inradius * eps_scale)
                 .max(1e-6 * h_med)
                 .min(0.05 * h_med);
 
             let c = scale3(add3(add3(v0, v1), v2), 1.0 / 3.0);
+
+            // Thin gaps clamping (Addendum item 5)
+            if num_shells > 1 {
+                let (_, dist, _) = bvh.closest_point_excluding(c, shell_map[i], &shell_map);
+                if dist.is_finite() && dist > 0.0 {
+                    eps = eps.min(0.45 * dist);
+                }
+            }
+            eps = eps.max(1e-7 * h_med);
+
             let p_front = add3(c, scale3(unorm, eps));
             let p_back = sub3(c, scale3(unorm, eps));
 
             let w_front = bvh.winding_at(p_front);
             let w_back = bvh.winding_at(p_back);
 
+            // Inconsistent orientation / flipped normals check (Addendum item 6)
+            let inverted = w_front < -delta || w_back < -delta;
+
             let w_min = w_front.min(w_back);
             let w_max = w_front.max(w_back);
 
-            // Case A: Outer surface (0 <-> 1 transition)
-            if w_min < delta && w_max > 1.0 - delta && w_max < 1.0 + delta {
-                // If w_front < delta, outward normal points into exterior air -> normal Outer surface
-                // If w_front > 1 - delta, inward normal points into interior
-                if config.check_ray_escape {
+            // Case A: Outer surface (separates void w < delta from solid w >= 1 - delta)
+            if w_min < delta && w_max >= 1.0 - delta {
+                if config.check_ray_escape && shell_enclosed[shell_map[i]] {
                     if let Some(st) = &stabber {
-                        // Check if 0-region escapes to infinity
                         let p_void = if w_front < delta { p_front } else { p_back };
                         let vote = st.vote(&bvh, p_void);
                         if vote.escape_votes == 0 {
-                            // Enclosed void with no escape to bbox border -> internal cavity
-                            return if config.keep_cavities {
+                            let cls = if config.keep_cavities {
                                 FaceClass::Cavity
                             } else {
                                 FaceClass::Buried
                             };
+                            return (cls, w_min, w_front, w_back, inverted);
                         }
                     }
                 }
-                return FaceClass::Outer;
+                return (FaceClass::Outer, w_min, w_front, w_back, inverted);
             }
 
             // Case B: Buried / embedded shell (both sides inside solid volume)
             if w_min >= 1.0 - delta {
-                return FaceClass::Buried;
+                return (FaceClass::Buried, w_min, w_front, w_back, inverted);
             }
 
             // Case C: Debris in void (both sides outside, w < delta)
             if w_max < delta {
-                return FaceClass::Buried;
-            }
-
-            // Case D: Higher order overlapping shells (w_min >= 0.5)
-            if w_min >= 0.5 {
-                return FaceClass::Buried;
+                return (FaceClass::Buried, w_min, w_front, w_back, inverted);
             }
 
             // Default: outer boundary
-            FaceClass::Outer
+            (FaceClass::Outer, w_min, w_front, w_back, inverted)
         })
         .collect();
 
-    res.classes = face_classes;
+    for (i, r) in face_results.iter().enumerate() {
+        if res.classes[i] != FaceClass::CoincidentOpposite
+            && res.classes[i] != FaceClass::CoincidentSame
+        {
+            res.classes[i] = r.0;
+        }
+    }
+
+    let has_inverted = face_results.iter().any(|r| r.4);
 
     // Tally counts & surviving indices
     for (i, &cls) in res.classes.iter().enumerate() {
@@ -368,19 +644,36 @@ pub fn analyze_shells(
             FaceClass::Buried => {
                 res.buried_count += 1;
             }
-            FaceClass::CoincidentOpposite => {
-                // dissolved
-            }
-            FaceClass::CoincidentSame => {
-                // duplicate dropped
-            }
-            FaceClass::Degenerate => {
-                // dropped
-            }
+            FaceClass::CoincidentOpposite => {}
+            FaceClass::CoincidentSame => {}
+            FaceClass::Degenerate => {}
         }
     }
 
-    res.reason = "ok".to_string();
+    for &idx in &res.surviving_indices {
+        let w_min = face_results[idx].1;
+        if w_min >= 1.5 - delta {
+            res.internal_walls_count += 1;
+        }
+    }
+
+    if has_inverted {
+        res.has_internal_walls = true;
+        res.reason = "inconsistent_orientation".to_string();
+    } else if unresolved_coplanar {
+        res.has_internal_walls = true;
+        res.reason = "unresolved_coplanar_overlapping".to_string();
+    } else if res.internal_walls_count > 0 || res.unresolved_coincident_count > 0 {
+        res.has_internal_walls = true;
+        res.reason = "internal_walls_present".to_string();
+    } else {
+        res.has_internal_walls = false;
+        res.reason = "ok".to_string();
+    }
+
+    if res.has_internal_walls {
+        res.surviving_indices = (0..m).collect();
+    }
     res
 }
 
@@ -392,6 +685,31 @@ pub fn shell_analyze_and_filter(
 ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, ShellAnalysisResult) {
     if tris.is_empty() || verts.is_empty() {
         return (verts.to_vec(), tris.to_vec(), ShellAnalysisResult::default());
+    }
+
+    let tris_usize: Vec<[usize; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+
+    // Flower / C1: If proper self-intersections exist, split along exact intersection curves first
+    if config.split_intersections {
+        if let Ok((pool, out_tris, rep)) = crate::arrangement::arrangement_lite_core(verts, &tris_usize) {
+            if rep.si_pairs_detected > 0 {
+                let split_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
+                let split_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
+                let mut split_cfg = config.clone();
+                split_cfg.split_intersections = false;
+                let split_res = analyze_shells(&split_verts, &split_tris, &split_cfg);
+                if !split_res.has_internal_walls && split_res.reason == "ok" {
+                    let mut final_tris = Vec::with_capacity(split_res.surviving_indices.len());
+                    for &idx in &split_res.surviving_indices {
+                        final_tris.push(split_tris[idx]);
+                    }
+                    return (split_verts, final_tris, split_res);
+                }
+            }
+        }
     }
 
     let analysis = analyze_shells(verts, tris, config);
@@ -665,20 +983,19 @@ mod tests {
         let res = analyze_shells(&verts, &tris, &config);
 
         println!(
-            "100045: outer={} buried={} cavity={} coinc_opp={} coinc_same={}",
+            "100045: reason={} outer={} buried={} cavity={} coinc_opp={} coinc_same={}",
+            res.reason,
             res.outer_count,
             res.buried_count,
             res.cavity_count,
             res.coincident_opp_count,
             res.coincident_same_count
         );
-        for (i, &c) in res.classes.iter().enumerate() {
-            if c != FaceClass::Outer {
-                println!("face {}: class={:?} tri={:?}", i, c, tris[i]);
-            }
-        }
-        assert!(res.outer_count >= 410);
-        assert!(res.buried_count <= 10);
+        // 100045 has interpenetrating internal shells (Delta = 6.918%) with coplanar overlapping faces,
+        // so it must trigger has_internal_walls and unresolved_coplanar_overlapping fallback:
+        assert!(res.has_internal_walls);
+        assert_eq!(res.reason, "unresolved_coplanar_overlapping");
+        assert_eq!(res.surviving_indices.len(), 420);
     }
 
     #[test]
@@ -693,6 +1010,7 @@ mod tests {
         let config = ShellConfig::default();
         let res = analyze_shells(&verts, &tris, &config);
 
+        println!("248395 res.reason: {}", res.reason);
         println!(
             "248395: outer={} buried={} cavity={} coinc_opp={} coinc_same={}",
             res.outer_count,
@@ -701,7 +1019,195 @@ mod tests {
             res.coincident_opp_count,
             res.coincident_same_count
         );
-        // Over 93% of faces are preserved (outer + cavity)
+        let buried_indices: Vec<usize> = res.classes.iter().enumerate()
+            .filter(|(_, &c)| c == FaceClass::Buried)
+            .map(|(i, _)| i)
+            .collect();
+        println!("248395 buried faces count: {}, first 10: {:?}", buried_indices.len(), &buried_indices[..10.min(buried_indices.len())]);
+        assert_eq!(res.cavity_count, 0);
+        assert!(res.outer_count >= 12300);
         assert!(res.surviving_indices.len() >= 12300);
+        assert!(!res.has_internal_walls);
+        assert_eq!(res.reason, "ok");
+    }
+
+    #[test]
+    fn test_1038441_shell_analysis() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/real-world-samples/thingi10k_1038441.stl"
+        );
+        let (verts, tris) = read_stl_welded(path);
+        let config = ShellConfig::default();
+        let res = analyze_shells(&verts, &tris, &config);
+        println!(
+            "1038441: outer={} buried={} cavity={} coinc_opp={} coinc_same={}",
+            res.outer_count,
+            res.buried_count,
+            res.cavity_count,
+            res.coincident_opp_count,
+            res.coincident_same_count
+        );
+    }
+
+    /// Generate a hollow box (outer solid with reversed inner void, forming a wall).
+    fn hollow_box(origin: [f64; 3], size: [f64; 3], wall_thickness: f64) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let (mut verts, mut tris) = unit_box(origin, size);
+        let inner_origin = [
+            origin[0] + wall_thickness,
+            origin[1] + wall_thickness,
+            origin[2] + wall_thickness,
+        ];
+        let inner_size = [
+            size[0] - 2.0 * wall_thickness,
+            size[1] - 2.0 * wall_thickness,
+            size[2] - 2.0 * wall_thickness,
+        ];
+        let (in_v, in_t) = unit_box(inner_origin, inner_size);
+        let offset = verts.len() as u32;
+        verts.extend(in_v);
+        // Reversed normal for inner cavity
+        for t in in_t {
+            tris.push([offset + t[0], offset + t[2], offset + t[1]]);
+        }
+        (verts, tris)
+    }
+
+    /// Combine two meshes into one triangle soup.
+    fn combine_meshes(
+        m1: (Vec<[f64; 3]>, Vec<[u32; 3]>),
+        m2: (Vec<[f64; 3]>, Vec<[u32; 3]>),
+    ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let (mut v1, mut t1) = m1;
+        let (v2, t2) = m2;
+        let offset = v1.len() as u32;
+        v1.extend(v2);
+        for t in t2 {
+            t1.push([offset + t[0], offset + t[1], offset + t[2]]);
+        }
+        (v1, t1)
+    }
+
+    #[test]
+    fn test_onion_with_air_gaps() {
+        // Addendum item 1: concentric thin-walled layers with air between layers.
+        // Every face has air on one side and wall on the other (0 <-> 1).
+        // ALL layers must stay 100% verbatim, parts unchanged.
+        let layer1 = hollow_box([-2.0, -2.0, -2.0], [4.0, 4.0, 4.0], 0.2); // wall thickness 0.2
+        let layer2 = hollow_box([-1.4, -1.4, -1.4], [2.8, 2.8, 2.8], 0.2); // gap of 0.2 from 1.6 to 1.4
+        let (verts, tris) = combine_meshes(layer1, layer2);
+        assert_eq!(tris.len(), 48);
+
+        let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.buried_count, 0);
+        assert_eq!(res.surviving_indices.len(), 48);
+        assert_eq!(out_t.len(), 48);
+        println!("onion res.reason={}, internal_walls_count={}, unresolved_coinc={}",
+            res.reason, res.internal_walls_count, res.unresolved_coincident_count);
+        assert!(!res.has_internal_walls);
+        assert_eq!(res.reason, "ok");
+    }
+
+    #[test]
+    fn test_nested_solid_shells_sloppy_onion() {
+        // Addendum item 2: nested solid shells, all outward-oriented, no gaps.
+        // Inner shells are fully enclosed (w >= 1 on both sides) -> dissolving them is correct.
+        // Output = outer box verbatim, 0 holes/NM.
+        let b1 = unit_box([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0]);
+        let b2 = unit_box([-2.0, -2.0, -2.0], [4.0, 4.0, 4.0]);
+        let b3 = unit_box([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0]);
+        let (verts, tris) = combine_meshes(combine_meshes(b1, b2), b3);
+        assert_eq!(tris.len(), 36);
+
+        let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.outer_count, 12);
+        assert_eq!(res.buried_count, 24);
+        assert_eq!(out_t.len(), 12); // outer box verbatim
+        assert!(!res.has_internal_walls);
+        assert_eq!(res.reason, "ok");
+    }
+
+    #[test]
+    fn test_half_cut_onion_fallback() {
+        // Addendum item 3: nested solids cut by one plane (z = 0), so cut faces of all layers
+        // are coplanar and overlapping. Coplanar overlapping faces -> unresolved -> fallback.
+        let outer = unit_box([-2.0, -2.0, 0.0], [4.0, 4.0, 2.0]);
+        let inner = unit_box([-1.0, -1.0, 0.0], [2.0, 2.0, 1.0]);
+        let (verts, tris) = combine_meshes(outer, inner);
+
+        let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert!(res.has_internal_walls);
+        assert_eq!(res.reason, "unresolved_coplanar_overlapping");
+        // Must fallback, never emit half-union:
+        assert_eq!(out_t.len(), tris.len());
+    }
+
+    #[test]
+    fn test_flower_three_boxes_crossing_body() {
+        // Addendum item 4: petals that interpenetrate the centre and each other, partly outside.
+        // Visible parts stay verbatim, seams via exact split (C1).
+        let center = unit_box([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0]);
+        let petal1 = unit_box([0.5, -0.3, -0.3], [1.5, 0.6, 0.6]);
+        let petal2 = unit_box([-0.3, 0.5, -0.3], [0.6, 1.5, 0.6]);
+        let petal3 = unit_box([-0.3, -0.3, 0.5], [0.6, 0.6, 1.5]);
+        let (verts, tris) = combine_meshes(
+            combine_meshes(center, petal1),
+            combine_meshes(petal2, petal3),
+        );
+
+        let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert!(!res.has_internal_walls);
+        assert_eq!(res.reason, "ok");
+        // Buried parts dissolved, outer preserved with exact seams
+        assert!(out_t.len() > 0);
+        let directed = crate::tamponade::directed_boundary_edges(&out_t);
+        assert!(directed.is_empty(), "Flower must be watertight with 0 holes! holes={}", directed.len());
+    }
+
+    #[test]
+    fn test_thin_gaps_clamped_eps() {
+        // Addendum item 5: gap between layers smaller than query offset eps.
+        // eps must be clamped below half the local gap, layers must not be merged.
+        let l1 = hollow_box([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0], 0.05); // outer size 2.0, inner hollow 1.9
+        let l2 = hollow_box([-0.85, -0.85, -0.85], [1.7, 1.7, 1.7], 0.05); // gap is 0.1, h_med ~ 1.5
+        let (verts, tris) = combine_meshes(l1, l2);
+
+        let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert_eq!(res.buried_count, 0);
+        assert_eq!(res.surviving_indices.len(), 48);
+        assert_eq!(out_t.len(), 48);
+        assert!(!res.has_internal_walls);
+        assert_eq!(res.reason, "ok");
+    }
+
+    #[test]
+    fn test_inconsistent_orientation_inner_shell_fallback() {
+        // Addendum item 6: Inconsistently oriented inner shell (flipped normals, winding -1 / 0 inside)
+        // -> ambiguous -> fallback, never 'fix' it by deleting.
+        let outer = hollow_box([-3.0, -3.0, -3.0], [6.0, 6.0, 6.0], 1.0);
+        let (in_v, in_t) = unit_box([-1.0, -1.0, -1.0], [2.0, 2.0, 2.0]);
+        // Flip inner normals -> inside winding is -1, outside is 0
+        let mut flipped_in_t = Vec::new();
+        for t in in_t {
+            flipped_in_t.push([t[0], t[2], t[1]]);
+        }
+        let (verts, tris) = combine_meshes(outer, (in_v, flipped_in_t));
+
+        let config = ShellConfig::default();
+        let (_out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+
+        assert!(res.has_internal_walls);
+        assert_eq!(res.reason, "inconsistent_orientation");
+        assert_eq!(out_t.len(), tris.len()); // never delete inner shell
     }
 }

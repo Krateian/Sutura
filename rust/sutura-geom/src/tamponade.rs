@@ -747,21 +747,12 @@ pub fn tamponade_repair(
         return (verts.to_vec(), tris.to_vec(), info);
     }
 
-    // Shell analysis pre-pass (A1: Idea A)
-    let shell_cfg = crate::shell::ShellConfig::default();
-    let (active_verts, active_tris, shell_res) =
-        crate::shell::shell_analyze_and_filter(verts, tris, &shell_cfg);
-    let shells_modified = shell_res.buried_count > 0
-        || shell_res.coincident_opp_count > 0
-        || shell_res.coincident_same_count > 0;
+    let active_verts = verts.to_vec();
+    let active_tris = tris.to_vec();
 
     let directed = directed_boundary_edges(&active_tris);
     if directed.is_empty() {
-        info.reason = if shells_modified {
-            "ok".to_string()
-        } else {
-            "no_holes".to_string()
-        };
+        info.reason = "no_holes".to_string();
         info.healthy_faces_kept = active_tris.len();
         info.seconds = t0.elapsed().as_secs_f64();
         return (active_verts, active_tris, info);
@@ -770,11 +761,7 @@ pub fn tamponade_repair(
     let directed_set: HashSet<(u32, u32)> = directed.iter().cloned().collect();
     let loops = build_boundary_loops(&directed);
     if loops.is_empty() {
-        info.reason = if shells_modified {
-            "ok".to_string()
-        } else {
-            "no_holes".to_string()
-        };
+        info.reason = "no_holes".to_string();
         info.healthy_faces_kept = active_tris.len();
         info.seconds = t0.elapsed().as_secs_f64();
         return (active_verts, active_tris, info);
@@ -1212,11 +1199,13 @@ mod tests {
             tris.push([t[0] + offset, t[1] + offset, t[2] + offset]);
         }
         assert_eq!(tris.len(), 24);
-        let config = TamponadeConfig { h_min: Some(0.5), ..Default::default() };
-        let (_out_verts, out_tris, info) = tamponade_repair(&verts, &tris, &config);
+        let (_out_verts, out_tris, info) = crate::shell::shell_analyze_and_filter(
+            &verts,
+            &tris,
+            &crate::shell::ShellConfig::default(),
+        );
         assert_eq!(info.reason, "ok");
         assert_eq!(out_tris.len(), 12);
         assert_eq!(boundary_edge_count(&out_tris), 0);
-        assert_eq!(info.healthy_faces_kept, 12);
     }
 }
