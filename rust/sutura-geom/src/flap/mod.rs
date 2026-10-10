@@ -178,6 +178,95 @@ fn percentile(mut v: Vec<f64>, q: f64) -> f64 {
     }
 }
 
+/// Candidate face-count ceiling above which the per-loop safety check is
+/// skipped entirely (both scans are O(mesh) per loop; above the cap the patch
+/// is accepted, like an unknown verdict).  Keeps the opt-in membrane path from
+/// turning a many-loop large mesh (ornate-frame: 179 loops, ~400k faces) into
+/// an O(loops x faces) cost.
+const SAFETY_SI_MAX_FACES: usize = 200_000;
+
+/// First-occurrence remap of exactly float32-coincident vertices (the weld a
+/// STL reload performs), so a seam that only appears after reload is visible.
+fn reload_weld_remap(v: &[V3]) -> Vec<u32> {
+    let mut seen: HashMap<[u32; 3], u32> = HashMap::with_capacity(v.len());
+    let mut remap = vec![0u32; v.len()];
+    for (i, p) in v.iter().enumerate() {
+        let key = [
+            (p[0] as f32).to_bits(),
+            (p[1] as f32).to_bits(),
+            (p[2] as f32).to_bits(),
+        ];
+        let idx = *seen.entry(key).or_insert(i as u32);
+        remap[i] = idx;
+    }
+    remap
+}
+
+/// Per-loop safety: reject a candidate patch that (a) makes any of its own
+/// faces properly self-intersect (exact classifier over the whole candidate;
+/// skipped above [`SAFETY_SI_MAX_FACES`]) or (b) leaves a patch edge that is not
+/// incident to exactly two faces after an exact float32 reload-weld (a crack,
+/// fin or non-manifold seam).  Mirror of the Python `patch_safety`.
+fn patch_safety(base_v: &[V3], base_t: &[T3], add_v: &[V3], patch: &[T3]) -> (bool, &'static str) {
+    if patch.is_empty() {
+        return (true, "");
+    }
+    // Above the cap both scans are skipped (the patch reads as accepted); this
+    // bounds the opt-in membrane cost on a large many-loop mesh.
+    if base_t.len() + patch.len() > SAFETY_SI_MAX_FACES {
+        return (true, "");
+    }
+    let mut cand_v: Vec<V3> = Vec::with_capacity(base_v.len() + add_v.len());
+    cand_v.extend_from_slice(base_v);
+    cand_v.extend_from_slice(add_v);
+    let mut cand_t: Vec<T3> = Vec::with_capacity(base_t.len() + patch.len());
+    cand_t.extend_from_slice(base_t);
+    cand_t.extend_from_slice(patch);
+    let nb = base_t.len();
+
+    // (a) exact self-intersection involving a patch face.
+    {
+        let t_usize: Vec<[usize; 3]> = cand_t
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let mut mask = vec![false; cand_t.len()];
+        for m in mask.iter_mut().skip(nb) {
+            *m = true;
+        }
+        if crate::self_intersections_subset_core(&cand_v, &t_usize, &mask) > 0 {
+            return (false, "si");
+        }
+    }
+
+    // (b) reload-weld topology: every edge of the patch must be used twice.
+    let remap = reload_weld_remap(&cand_v);
+    let mut counts: HashMap<(u32, u32), u32> = HashMap::with_capacity(cand_t.len() * 3);
+    for t in &cand_t {
+        let (a, b, c) = (
+            remap[t[0] as usize],
+            remap[t[1] as usize],
+            remap[t[2] as usize],
+        );
+        for (u, w) in [(a, b), (b, c), (c, a)] {
+            *counts.entry(ekey(u, w)).or_insert(0) += 1;
+        }
+    }
+    for t in patch {
+        let (a, b, c) = (
+            remap[t[0] as usize],
+            remap[t[1] as usize],
+            remap[t[2] as usize],
+        );
+        for (u, w) in [(a, b), (b, c), (c, a)] {
+            if counts.get(&ekey(u, w)).copied().unwrap_or(0) != 2 {
+                return (false, "reload_nm");
+            }
+        }
+    }
+    (true, "")
+}
+
 #[derive(Clone)]
 pub struct FlapParams {
     pub refine: bool,
@@ -265,6 +354,8 @@ pub struct Report {
     pub loops_skipped_coplanar: usize,
     pub loops_skipped_flat: usize,
     pub loops_skipped_sliver: usize,
+    pub loops_skipped_safety: usize,
+    pub safety_rejections: Vec<(usize, String)>,
     pub non_simple_reported: usize,
     pub orient_reversed: usize,
     pub welded_cracks: usize,
@@ -406,6 +497,12 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
     let mut extra_ref: Vec<guard::PatchRef> = Vec::new();
     let mut q_before: Vec<(f64, f64)> = Vec::new();
     let mut q_after: Vec<(f64, f64)> = Vec::new();
+
+    // Bounded (membrane) fairing + per-loop safety check, opt-in; default OFF
+    // keeps the thin-plate path byte-identical.
+    let membrane = std::env::var("SUTURA_FLAP_MEMBRANE")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false);
 
     for loop_v in &loops {
         let loop_arr = loop_v;
@@ -610,7 +707,15 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                     pv
                 };
             }
-            fair::fair_patch(&mut p_pts, &faces, m, &ghost);
+            // Membrane (order 1) fairing is bounded by the rim, so a curved rim
+            // no longer makes the dense interior overshoot and fold the patch
+            // over itself (the thin-plate order-2 solve, the default, can).
+            // Gated by SUTURA_FLAP_MEMBRANE so the default path is byte-identical.
+            if membrane {
+                fair::fair_patch_energy(&mut p_pts, &faces, m, &ghost, 1, None, 0.0);
+            } else {
+                fair::fair_patch(&mut p_pts, &faces, m, &ghost);
+            }
         }
 
         if prm.sliver_cleanup && !faces.is_empty() {
@@ -738,6 +843,20 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             } else {
                 report.loops_skipped_coplanar += 1;
                 log.action = Some("coplanar".to_string());
+                report.loop_log.push(log);
+                continue;
+            }
+        }
+
+        // Per-loop safety check (membrane path): never commit a patch that
+        // self-intersects or leaves a reload-non-manifold seam; drop it and
+        // leave the hole for a later tier instead.
+        if membrane {
+            let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces);
+            if !safe {
+                report.loops_skipped_safety += 1;
+                report.safety_rejections.push((m, why.to_string()));
+                log.action = Some("safety".to_string());
                 report.loop_log.push(log);
                 continue;
             }

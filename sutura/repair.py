@@ -3467,7 +3467,8 @@ def enforce_reload_verdict(report, verts, tris):
 
 FLAP_SKIP_KEYS = ('loops_skipped_nm', 'loops_skipped_flat',
                   'loops_skipped_sheet', 'loops_skipped_coplanar',
-                  'loops_skipped_sliver', 'loops_fan_fallback')
+                  'loops_skipped_sliver', 'loops_skipped_safety',
+                  'loops_fan_fallback')
 
 
 def _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):

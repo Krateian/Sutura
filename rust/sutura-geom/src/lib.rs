@@ -936,7 +936,7 @@ fn self_intersections_subset<'py>(
 
 /// Core subset self-intersection count (no Python); see
 /// `self_intersections_subset`.
-fn self_intersections_subset_core(
+pub(crate) fn self_intersections_subset_core(
     verts: &[[f64; 3]],
     tris: &[[usize; 3]],
     subset: &[bool],

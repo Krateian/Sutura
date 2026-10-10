@@ -1108,8 +1108,16 @@ def _vertex_normals(verts, tris):
 # ---------------------------------------------------------------------------
 # fairing (discrete biharmonic / thin-plate with C1 ghost boundary)
 # ---------------------------------------------------------------------------
-def fair_patch(P, faces, n_boundary, ghost_pos):
-    """Fair the interior patch vertices with a biharmonic solve.
+def fair_patch_energy(P, faces, n_boundary, ghost_pos, order=2,
+                      data=None, lam=0.0):
+    """Fair the interior patch vertices with a discrete energy solve.
+
+    ``order`` 1 selects the membrane/umbrella energy (graph Laplacian ``G``),
+    2 the biharmonic thin-plate energy (``GᵀG = G²``, the historical solve).
+    When ``data`` (one target per interior vertex) and ``lam > 0`` are given, a
+    soft data term ``lam · Σ‖x_i − data_i‖²`` pulls each interior vertex toward
+    its target (the projection onto the parent reference surface, Arif's
+    "laser" guide) so a dense cap is not left free to overshoot.
 
     P: (n,3) flap vertices (first ``n_boundary`` are the fixed hole rim).
     ghost_pos: (n_boundary,3) C1 ghost positions (fixed) connected one-to-one
@@ -1130,7 +1138,7 @@ def fair_patch(P, faces, n_boundary, ghost_pos):
     W.data[:] = 1.0
     deg = np.asarray(W.sum(1)).ravel()
     L = sp.diags(deg) - W
-    M = (L.T @ L).tocsc()
+    M = (L if order == 1 else (L.T @ L)).tocsc()
 
     X = np.zeros((ntot, 3))
     X[:len(P)] = P
@@ -1140,6 +1148,9 @@ def fair_patch(P, faces, n_boundary, ghost_pos):
                             np.arange(len(P), ntot)])
     A = M[unknown][:, unknown] + sp.identity(len(unknown), format="csc") * 1e-9
     rhs = -(M[unknown][:, fixed] @ X[fixed])
+    if data is not None and lam > 0:
+        A = A + sp.identity(len(unknown), format="csc") * lam
+        rhs = rhs + lam * np.asarray(data, dtype=np.float64)
     try:
         if len(unknown) > FAIR_DIRECT_MAX:
             sol = np.empty((len(unknown), 3))
@@ -1155,6 +1166,86 @@ def fair_patch(P, faces, n_boundary, ghost_pos):
         sol = sol.reshape(-1, 3)
     P[unknown] = sol
     return P
+
+
+def fair_patch(P, faces, n_boundary, ghost_pos):
+    """Historical thin-plate (biharmonic) fairing; see :func:`fair_patch_energy`."""
+    return fair_patch_energy(P, faces, n_boundary, ghost_pos, 2, None, 0.0)
+
+
+# Face-count ceiling above which the per-loop safety check is skipped entirely
+# (same cap as the Rust `SAFETY_SI_MAX_FACES`): the patch reads as accepted.
+_SI_MAX_FACES = 200000
+
+
+def _reload_weld_remap(verts):
+    """First-occurrence map of exactly float32-coincident vertices (the weld a
+    STL reload performs)."""
+    key = np.ascontiguousarray(verts, dtype=np.float32).view(np.uint32)
+    seen = {}
+    remap = np.empty(len(verts), dtype=np.int64)
+    for i in range(len(verts)):
+        k = (int(key[i, 0]), int(key[i, 1]), int(key[i, 2]))
+        idx = seen.get(k)
+        if idx is None:
+            seen[k] = i
+            idx = i
+        remap[i] = idx
+    return remap
+
+
+def patch_safety(base_v, base_t, add_v, patch_faces):
+    """``(safe, reason)`` for a candidate patch.
+
+    Rejects a patch that (a) makes any of its own faces properly self-intersect
+    (exact classifier over the whole candidate; skipped above ``_SI_MAX_FACES``,
+    which reads as accepted) or (b) leaves a patch edge that is not incident to
+    exactly two faces after an exact float32 reload-weld (a crack, fin or
+    non-manifold seam).  Cheap when the exact classifier is unavailable: the SI
+    scan degrades to "unknown" and only the topological weld check runs.
+    """
+    base_v = np.asarray(base_v, dtype=np.float64)
+    base_t = np.asarray(base_t, dtype=np.int64)
+    add_v = np.asarray(add_v, dtype=np.float64)
+    pf = np.asarray(patch_faces, dtype=np.int64)
+    if len(pf) == 0:
+        return True, ''
+    if len(base_t) + len(pf) > _SI_MAX_FACES:
+        return True, ''
+    cand_v = np.vstack([base_v, add_v]) if len(add_v) else base_v
+    cand_t = np.vstack([base_t, pf]) if len(base_t) else pf
+    nb = len(base_t)
+    nadd = len(pf)
+
+    # (a) exact self-intersection involving a patch face.
+    try:
+        import sutura_geom as _sg
+        mask, cnt = _sg.self_intersecting_faces(
+            cand_v.astype(np.float64), cand_t.astype(np.int32))
+        if int(cnt) >= 0:
+            mask = np.asarray(mask, dtype=bool)
+            if mask.size == len(cand_t) and bool(mask[nb:nb + nadd].any()):
+                return False, 'si'
+    except Exception:  # noqa: BLE001 - absence of the classifier is not an error
+        pass
+
+    # (b) reload-weld topology: every edge of the patch must be used twice.
+    remap = _reload_weld_remap(cand_v)
+    counts = {}
+    for tri in cand_t:
+        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+        a, b, c = int(remap[a]), int(remap[b]), int(remap[c])
+        for u, w in ((a, b), (b, c), (c, a)):
+            k = (u, w) if u < w else (w, u)
+            counts[k] = counts.get(k, 0) + 1
+    for tri in pf:
+        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+        a, b, c = int(remap[a]), int(remap[b]), int(remap[c])
+        for u, w in ((a, b), (b, c), (c, a)):
+            k = (u, w) if u < w else (w, u)
+            if counts.get(k, 0) != 2:
+                return False, 'reload_nm'
+    return True, ''
 
 
 def weld_open_chains(v, t, max_rounds=12, max_merge_frac=None, sites=None,
@@ -1416,6 +1507,7 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
               "patch_faces": 0, "new_vertices": 0, "large_loops_fan": 0,
               "refine": bool(refine), "fair": bool(fair), "split": None,
               "loops_skipped_coplanar": 0, "loops_skipped_flat": 0,
+              "loops_skipped_safety": 0,
               "non_simple_reported": 0, "errors": [], "loop_log": []}
     _q_before_min, _q_before_asp = [], []
     _q_after_min, _q_after_asp = [], []
@@ -1614,13 +1706,11 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
                             faces = [(a, c, b) for (a, b, c) in faces]
                         break
 
-        # Snapshot the refined, pre-fair patch. The thin-plate fairing overshoots
-        # on a curved rim and can fold the patch over itself; the coplanar guard
-        # below then falls back to this unfaired patch (still refine-only Flap)
-        # instead of discarding the whole loop.
+        # Snapshot the refined, pre-fair patch. The fairing can fold on a
+        # curved rim; the coplanar guard below falls back to this unfaired patch
+        # (still refine-only Flap) instead of discarding the whole loop.
         P_prefair = P.copy() if (fair and len(P) > m) else None
         if fair and len(P) > m:
-            loop_set = set(int(x) for x in loop_arr)
             centroid = pts.mean(axis=0)
             ghost_pos = np.zeros((m, 3))
             ell = max(float(target), 1e-12) * _fair_fraction(m)
@@ -1637,7 +1727,17 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
                 tng = d - float(np.dot(d, nrm)) * nrm   # inward tangent
                 tn = np.linalg.norm(tng)
                 ghost_pos[i] = p - ell * (tng / tn) if tn > 1e-9 else p
-            P = fair_patch(P, faces, m, ghost_pos)
+            # Membrane (order 1) fairing is bounded by the rim, so a curved rim
+            # no longer makes the dense interior overshoot and fold the patch
+            # over itself.  `fair_patch_energy` can additionally take a
+            # reference-surface data term when a caller supplies one.  Opt-in
+            # (SUTURA_FLAP_MEMBRANE) so the default thin-plate path is
+            # byte-identical.
+            _mem = __import__('os').environ.get('SUTURA_FLAP_MEMBRANE')
+            if _mem is not None and _mem not in ('', '0'):
+                P = fair_patch_energy(P, faces, m, ghost_pos, 1, None, 0.0)
+            else:
+                P = fair_patch(P, faces, m, ghost_pos)
 
         # Final sliver cleanup: remove degenerate/sliver patch triangles (the
         # DP can emit zero-area triangles on crack/pinch loops and thin slivers
@@ -1731,6 +1831,21 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
             else:
                 report["loops_skipped_coplanar"] += 1
                 log["action"] = "coplanar"
+                continue
+
+        # Per-loop safety check: never commit a patch that self-intersects or
+        # leaves a reload-non-manifold seam; drop it and leave the hole for a
+        # later tier instead (the coplanar guard already covers folds).  Opt-in
+        # with the membrane fairing so the default path is byte-identical.
+        _mem = __import__('os').environ.get('SUTURA_FLAP_MEMBRANE')
+        if _mem is not None and _mem not in ('', '0'):
+            _safe, _why = patch_safety(out_v, out_t, P[m:], gfaces)
+            if not _safe:
+                report["loops_skipped_safety"] = \
+                    report.get("loops_skipped_safety", 0) + 1
+                report.setdefault("safety_rejections", []).append(
+                    {"m": int(m), "reason": _why})
+                log["action"] = "safety"
                 continue
 
         for j in range(m, len(P)):

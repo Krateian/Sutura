@@ -180,6 +180,17 @@ pub fn flap_fill_py<'py>(
     rep.set_item("fair", report.fair)?;
     rep.set_item("loops_skipped_coplanar", report.loops_skipped_coplanar)?;
     rep.set_item("loops_skipped_flat", report.loops_skipped_flat)?;
+    rep.set_item("loops_skipped_safety", report.loops_skipped_safety)?;
+    if !report.safety_rejections.is_empty() {
+        let rej = PyList::empty(py);
+        for (m, why) in &report.safety_rejections {
+            let d = PyDict::new(py);
+            d.set_item("m", *m)?;
+            d.set_item("reason", why.clone())?;
+            rej.append(d)?;
+        }
+        rep.set_item("safety_rejections", rej)?;
+    }
     rep.set_item("non_simple_reported", report.non_simple_reported)?;
 
     let split = PyDict::new(py);
