@@ -119,6 +119,20 @@ const RBF_MIN_HOLE_FACTOR: f64 = 6.0;
 /// (the intact-ring samples carry weight 1). A low weight lets the rim pull the
 /// extrapolation toward the actual opening without overriding the intact ring.
 const RBF_RIM_WEIGHT: f64 = 0.15;
+/// Leave-one-out self-consistency band of the saddle RBF fallback. The single
+/// quadric is rejected as a saddle when opposite tangent rays predict opposite
+/// heights, but a thin-plate RBF can bend both ways and represent it. The RBF is
+/// admitted only when dropping each ring sample in turn and predicting it from
+/// the rest stays within this band: a genuine saddle's surface is predictable
+/// from its own neighbourhood, an over-extrapolated or noisy fit is not. The
+/// band is the sampling scale (`0.25 h`: a dropped sample must be predictable
+/// from neighbours one edge away) with a floor of twice the fit residual, so a
+/// numerically clean ring (`rms ~ 0`) does not collapse the band to zero.
+const RBF_LOO_H_FRAC: f64 = 0.25;
+const RBF_LOO_RMS_K: f64 = 2.0;
+/// Maximum number of ring samples held out in the LOO gate (deterministic
+/// stride); bounds the repeated `O(M^3)` refits of a large ring.
+const RBF_LOO_MAX: usize = 24;
 /// A rim/tail vertex deeper than this fraction of `h` below the reference is
 /// part of the overshoot tail and is lifted onto the reference surface.
 const TRIM_EPS_FACTOR: f64 = 0.02;
@@ -1683,16 +1697,14 @@ fn build_reference(
             above += 1;
         }
     }
-    if below >= min_side && above >= min_side {
-        if dbg {
-            eprintln!(
-                "[ref] m={} saddle_veto below={} above={}",
-                rim.len(),
-                below,
-                above
-            );
-        }
-        return None;
+    let saddle_veto = below >= min_side && above >= min_side;
+    if saddle_veto && dbg {
+        eprintln!(
+            "[ref] m={} saddle_veto below={} above={}",
+            rim.len(),
+            below,
+            above
+        );
     }
 
     // Quadric acceptance. The single quadric is the default: cheap and exact for
@@ -1718,7 +1730,7 @@ fn build_reference(
             sag_ok
         );
     }
-    if rms_ok && spread_ok && sag_ok {
+    if !saddle_veto && rms_ok && spread_ok && sag_ok {
         return Some(ReferenceSurface {
             origin: c,
             u,
@@ -1731,8 +1743,51 @@ fn build_reference(
     }
     let rbf_enabled =
         !matches!(std::env::var("SUTURA_RBF").as_deref(), Ok("0") | Ok("false"));
+    // The saddle fallback has its own switch so the A/B can isolate it from the
+    // curved-hole RBF fallback below (SUTURA_RBF=0 still disables all of it).
+    let saddle_rbf_enabled = !matches!(
+        std::env::var("SUTURA_RBF_SADDLE").as_deref(),
+        Ok("0") | Ok("false")
+    );
     if !rbf_enabled {
         return None;
+    }
+    if saddle_veto {
+        // A saddle is not representable by the single quadric (opposite tangent
+        // rays predict opposite heights) but IS representable by the thin-plate
+        // RBF, whose field bends both ways. On a saddle the laser meeting-point
+        // anchor is meaningless -- that is exactly what this veto detected -- so
+        // use only the ring+rim weighted fit (anchored to the real opening) and
+        // gate it with the leave-one-out self-consistency test.
+        if !saddle_rbf_enabled {
+            return None;
+        }
+        let loo_band = (RBF_LOO_H_FRAC * h).max(RBF_LOO_RMS_K * rms);
+        return build_rbf_reference(
+            &samples,
+            &point_normals,
+            &rim_pts,
+            c,
+            u,
+            v,
+            n,
+            h_lo,
+            h_hi,
+            band,
+            h,
+            &rays,
+            true,
+            Some(loo_band),
+        )
+        .map(|(fit, rbf_rms)| ReferenceSurface {
+            origin: c,
+            u,
+            v,
+            n,
+            model: RefModel::Rbf(fit),
+            rms: rbf_rms,
+            concave,
+        });
     }
     // Ring-only thin-plate RBF (ring samples + the laser meeting-point anchor).
     if let Some((fit, rbf_rms)) = build_rbf_reference(
@@ -1749,6 +1804,7 @@ fn build_reference(
         h,
         &rays,
         false,
+        None,
     ) {
         return Some(ReferenceSurface {
             origin: c,
@@ -1777,6 +1833,7 @@ fn build_reference(
         h,
         &rays,
         true,
+        None,
     )
     .map(|(fit, rbf_rms)| ReferenceSurface {
         origin: c,
@@ -1798,6 +1855,11 @@ fn build_reference(
 /// stops a partial rim from sagging, which is the failure the quadric cannot
 /// avoid. The gate then bounds the fitted field over the hole disk by the ring's
 /// own height band and slope, so an over-extrapolated fit is rejected.
+///
+/// When `loo_band` is `Some`, the fit must additionally pass a leave-one-out
+/// self-consistency test over the ring samples (used by the saddle fallback,
+/// where the band/slope gate alone cannot tell a genuine saddle from a wild
+/// extrapolation).
 #[allow(clippy::too_many_arguments)]
 fn build_rbf_reference(
     samples: &[(f64, f64, f64)],
@@ -1813,6 +1875,7 @@ fn build_rbf_reference(
     h: f64,
     rays: &[f64],
     use_rim: bool,
+    loo_band: Option<f64>,
 ) -> Option<(rbf::TpsFit, f64)> {
     let dbg = std::env::var("SUTURA_REF_DBG").is_ok();
     if samples.len() < REF_MIN_POINTS || (!use_rim && rays.is_empty()) {
@@ -1932,6 +1995,15 @@ fn build_rbf_reference(
         return None;
     }
 
+    if let Some(loo) = loo_band {
+        if !rbf_loo_ok(samples, rim_pts, c, u, v, n, use_rim, rays, h_lo, h_hi, loo) {
+            if dbg {
+                eprintln!("[rbf] m={} loo_fail", rim_pts.len());
+            }
+            return None;
+        }
+    }
+
     let mut ss = 0.0;
     for &(su, sv, d) in samples {
         let r = d - fit.eval(su, sv);
@@ -1939,6 +2011,80 @@ fn build_rbf_reference(
     }
     let rbf_rms = (ss / samples.len().max(1) as f64).sqrt();
     Some((fit, rbf_rms))
+}
+
+/// Leave-one-out self-consistency of the RBF fallback: drop each ring sample in
+/// turn, refit without it, and require the prediction at the held-out sample to
+/// stay within `band`. Returns `false` on any refit failure or oversized error.
+/// At most `RBF_LOO_MAX` samples are held out (deterministic stride) so the
+/// repeated `O(M^3)` refits stay bounded.
+#[allow(clippy::too_many_arguments)]
+fn rbf_loo_ok(
+    samples: &[(f64, f64, f64)],
+    rim_pts: &[[f64; 3]],
+    c: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    n: [f64; 3],
+    use_rim: bool,
+    rays: &[f64],
+    h_lo: f64,
+    h_hi: f64,
+    band: f64,
+) -> bool {
+    let m = samples.len();
+    if m < 4 {
+        return false;
+    }
+    let stride = ((m + RBF_LOO_MAX - 1) / RBF_LOO_MAX).max(1);
+    let mut i = 0usize;
+    while i < m {
+        let held = samples[i];
+        let fit = if use_rim {
+            let mut pts: Vec<(f64, f64, f64, f64)> = Vec::with_capacity(m + rim_pts.len());
+            for (j, &s) in samples.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                pts.push((s.0, s.1, s.2, 1.0));
+            }
+            for p in rim_pts {
+                let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
+                let hh = dot3(d, n);
+                if hh.is_finite() {
+                    pts.push((dot3(d, u), dot3(d, v), hh, RBF_RIM_WEIGHT));
+                }
+            }
+            rbf::TpsFit::fit_weighted(&pts, RBF_RIDGE, RBF_MAX_CENTRES)
+        } else {
+            let mut pts: Vec<(f64, f64, f64)> = Vec::with_capacity(m + 1);
+            for (j, &s) in samples.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                pts.push(s);
+            }
+            if !rays.is_empty() {
+                let ray_median = rays[rays.len() / 2];
+                if !ray_median.is_finite() {
+                    return false;
+                }
+                let anchor = ray_median.clamp(h_lo - 0.5 * band, h_hi + 0.5 * band);
+                pts.push((0.0, 0.0, anchor));
+            }
+            rbf::TpsFit::fit(&pts, RBF_RIDGE, RBF_MAX_CENTRES)
+        };
+        let fit = match fit {
+            Some(f) => f,
+            None => return false,
+        };
+        let pred = fit.eval(held.0, held.1);
+        if !pred.is_finite() || (pred - held.2).abs() > band {
+            return false;
+        }
+        i += stride;
+    }
+    true
 }
 
 /// Deviation gate against the reference surface.
@@ -3305,9 +3451,12 @@ mod tests {
     }
 
     #[test]
-    fn test_saddle_has_no_reference() {
-        // Saddle z = x y: opposite tangent rays meet at opposite heights, so
-        // the reference is rejected and the rim-only plug is used.
+    fn test_saddle_gets_rbf_reference() {
+        // Saddle z = x y: opposite tangent rays meet at opposite heights, so the
+        // quadric is vetoed as a saddle -- but the thin-plate RBF can bend both
+        // ways. R6 routes the saddle veto into the RBF fallback, gated by the
+        // leave-one-out self-consistency test, so a smooth saddle now keeps a
+        // reference instead of falling back to the rim-only plug.
         let n = 16usize;
         let step = 2.0 / n as f64;
         let mut verts = Vec::new();
@@ -3335,10 +3484,10 @@ mod tests {
                 tris.push([a0, c, d]);
             }
         }
-        let config = TamponadeConfig { h_min: Some(0.02), ..Default::default() };
+        let config = TamponadeConfig { h_min: None, ..Default::default() };
         let (_v, _t, info) = tamponade_repair(&verts, &tris, &config);
-        assert_eq!(info.reference_used, 0, "saddle must fall back: {info:?}");
-        assert!(info.reference_fallback >= 1);
+        assert!(info.reference_used >= 1, "saddle must now get an RBF reference: {info:?}");
+        assert!(info.reference_rbf >= 1, "the saddle reference must be RBF: {info:?}");
     }
 
     #[test]
@@ -3359,6 +3508,29 @@ mod tests {
             .expect("central hole rim");
         let refs = build_reference(&verts, &tris, rim, 0.02, &adj);
         assert!(refs.is_some(), "curved big hole must keep a reference");
+    }
+
+    #[test]
+    fn test_saddle_rbf_reference_passes_loo() {
+        // A genuine saddle z = xy: the quadric fit is exact on the ring, but the
+        // tangent-ray split vetoes it. The R6 design routes the saddle veto into
+        // the thin-plate RBF fallback, gated by a leave-one-out self-consistency
+        // test, so a real smooth saddle keeps a reference (the RBF can bend both
+        // ways). h is the grid step, matching the sampling scale.
+        let (verts, tris) = grid_with_central_hole_fn(40, 0.5, |x, y| x * y);
+        let adj = build_adjacency(verts.len(), &tris);
+        let loops = build_boundary_loops(&directed_boundary_edges(&tris));
+        let rim = loops
+            .iter()
+            .filter(|l| l.len() < 120)
+            .max_by_key(|l| l.len())
+            .expect("central hole rim");
+        let refs = build_reference(&verts, &tris, rim, 0.05, &adj)
+            .expect("saddle must get an RBF reference");
+        assert!(
+            matches!(refs.model, RefModel::Rbf(_)),
+            "saddle reference must use the RBF model"
+        );
     }
 
     #[test]
