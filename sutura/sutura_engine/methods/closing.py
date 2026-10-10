@@ -444,7 +444,13 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
         face_centers = cur_v[cur_f].mean(axis=1)
         centroid = cur_v.mean(axis=0)
         if np.sum((face_centers - centroid) * cur_fn) < 0:
-            ms.apply_filter('meshing_invert_face_orientation')
+            try:
+                import topology
+                cur_f_new = topology.invert_face_orientation(cur_f)
+                ms.clear()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cur_v, face_matrix=cur_f_new.astype(np.int32)))
+            except Exception:
+                ms.apply_filter('meshing_invert_face_orientation')
             ms.apply_filter('compute_normal_per_face')
 
         # 3. Compute per-vertex normals

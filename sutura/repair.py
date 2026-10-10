@@ -404,6 +404,22 @@ def apply_chain(ms, chain):
             elif name == 'meshing_remove_unreferenced_vertices':
                 _remove_unref_vertices_ms(ms, ml)
                 handled = True
+            elif name == 'meshing_remove_connected_component_by_face_number':
+                min_sz = params.get('mincomponentsize', 8)
+                remove_unref = params.get('removeunref', True)
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_connected_components(v, t, min_faces=min_sz, remove_unref=remove_unref)
+                if len(t_new) == 0:
+                    ms.apply_filter(name, **params)
+                elif len(t_new) < len(t):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_invert_face_orientation':
+                _invert_faces_ms(ms, ml)
+                handled = True
 
             if not handled:
                 ms.apply_filter(name, **params)
@@ -424,11 +440,26 @@ def _remove_unref_vertices_ms(ms, ml):
         v = m.vertex_matrix()
         t = m.face_matrix()
         v_new, t_new = topology.remove_unreferenced_vertices(v, t)
-        if len(v_new) < len(v):
+        if len(v_new) == 0:
+            ms.apply_filter('meshing_remove_unreferenced_vertices')
+        elif len(v_new) < len(v):
             ms.clear()
             ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
     except Exception:
         ms.apply_filter('meshing_remove_unreferenced_vertices')
+
+
+def _invert_faces_ms(ms, ml):
+    """Invert face orientation on a MeshSet in-place with native topology fallback."""
+    try:
+        m = ms.current_mesh()
+        v = m.vertex_matrix()
+        t = m.face_matrix()
+        t_new = topology.invert_face_orientation(t)
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+    except Exception:
+        ms.apply_filter('meshing_invert_face_orientation')
 
 
 def extreme_extra_passes(ms, ml, params):
@@ -1565,7 +1596,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     geom = ms.apply_filter('get_geometric_measures')
     if geom.get('mesh_volume', 0) < 0:
-        ms.apply_filter('meshing_invert_face_orientation')
+        _invert_faces_ms(ms, ml)
         geom = ms.apply_filter('get_geometric_measures')
     after_volume = geom.get('mesh_volume', 0)
 
@@ -5736,8 +5767,21 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
         ms.apply_filter('set_selection_none')
     before_faces = ms.current_mesh().face_number()
-    ms.apply_filter('meshing_remove_connected_component_by_face_number',
-                    mincomponentsize=params['mincomponentsize'], removeunref=True)
+    try:
+        m = ms.current_mesh()
+        v_cur = m.vertex_matrix()
+        t_cur = m.face_matrix()
+        v_new, t_new = topology.remove_connected_components(
+            v_cur, t_cur, min_faces=params['mincomponentsize'], remove_unref=True)
+        if len(t_new) == 0:
+            ms.apply_filter('meshing_remove_connected_component_by_face_number',
+                            mincomponentsize=params['mincomponentsize'], removeunref=True)
+        elif len(t_new) < len(t_cur):
+            ms.clear()
+            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+    except Exception:
+        ms.apply_filter('meshing_remove_connected_component_by_face_number',
+                        mincomponentsize=params['mincomponentsize'], removeunref=True)
     debris_faces = max(before_faces - ms.current_mesh().face_number(), 0)
 
     est = estimate_confidence_pre_repair({
