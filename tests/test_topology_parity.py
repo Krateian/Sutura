@@ -95,6 +95,9 @@ def _run_all(topo_engine):
         nf = topology.remove_null_faces(v, t)
         dv_v, dv_t = topology.remove_duplicate_vertices(v, t)
         unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
+        rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
+        inv_t = topology.invert_face_orientation(t)
+        topo_dict = topology.mesh_topology(v, t)
         results.append({
             'edge_table': (e.tobytes(), c.tobytes(), inv.tobytes()),
             'weld_vertices': (uv.tobytes(), uinv.tobytes()),
@@ -108,6 +111,9 @@ def _run_all(topo_engine):
             'remove_null_faces': nf.tobytes(),
             'remove_duplicate_vertices': (dv_v.tobytes(), dv_t.tobytes()),
             'remove_unreferenced_vertices': (unv_v.tobytes(), unv_t.tobytes()),
+            'remove_connected_components': (rcc_v.tobytes(), rcc_t.tobytes()),
+            'invert_face_orientation': inv_t.tobytes(),
+            'mesh_topology': json.dumps(topo_dict, sort_keys=True),
         })
     return results
 
@@ -156,6 +162,13 @@ def test_fallback_when_kernel_missing():
             unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
             exp_unv_v, exp_unv_t = topology._remove_unreferenced_vertices_numpy(v, t)
             assert unv_v.tobytes() == exp_unv_v.tobytes() and unv_t.tobytes() == exp_unv_t.tobytes()
+            rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
+            exp_rcc_v, exp_rcc_t = topology._remove_connected_components_numpy(v, t, min_faces=2, remove_unref=True)
+            assert rcc_v.tobytes() == exp_rcc_v.tobytes() and rcc_t.tobytes() == exp_rcc_t.tobytes()
+            inv_t = topology.invert_face_orientation(t)
+            assert inv_t.tobytes() == topology._invert_face_orientation_numpy(t).tobytes()
+            topo_dict = topology.mesh_topology(v, t)
+            assert topo_dict == topology._mesh_topology_numpy(v, t)
     finally:
         topology._geom = saved
         topology.set_engine('auto')
