@@ -61,10 +61,16 @@ const REF_NORMAL_SPREAD_DEG: f64 = 60.0;
 /// The quadric fit residual (rms over the ring points) must not exceed this
 /// multiple of `h`, else the surrounding surface is not locally smooth.
 const REF_RMS_FACTOR: f64 = 1.0;
-/// Laser-ray divergence brake: the MAD of the tangent-ray meeting heights must
-/// not exceed this multiple of `h`. A saddle makes opposite tangents meet at
-/// opposite heights, so it is rejected (`no reference`).
+/// Laser-ray divergence brake: a tangent ray whose meeting height deviates from
+/// the fitted centre by more than this multiple of the ring's own fit roughness
+/// (`rms`) counts as being on one side. A saddle sends a *material share* of the
+/// rays to both sides and is rejected (`no reference`).
 const REF_RAY_SPREAD_FACTOR: f64 = 1.5;
+/// Minimum share of the tangent rays that must fall beyond the tolerance on
+/// BOTH sides before the reference is rejected as a saddle. A genuine bowl or
+/// dome can have one stray ray (a short or overshoot rim neighbour) on the
+/// opposite side; a single outlier must not veto a real seal.
+const REF_RAY_MIN_SIDE_FRAC: f64 = 0.15;
 /// Ridge regularisation of the quadric normal equations (relative to the trace).
 const REF_RIDGE: f64 = 1e-6;
 /// A rim/tail vertex deeper than this fraction of `h` below the reference is
@@ -1549,20 +1555,25 @@ fn build_reference(
     // ring point to the hole axis. For a bowl/dome/cylinder they all agree in
     // sign (the surface continues one way); a saddle makes opposite sides
     // predict opposite heights, so the sign of the residual to the fitted
-    // centre height flips -> `no reference`.
+    // centre height flips -> `no reference`. A saddle is rejected only when a
+    // *material share* of the rays lies beyond the tolerance on BOTH sides; a
+    // single stray ray must not veto a genuine seal. The tolerance is scaled by
+    // the ring's own fit roughness (`rms`), not the global median edge `h`,
+    // which is the wrong scale for a rim spanning many `h`.
     let c0 = coeffs[0];
-    let tol = REF_RAY_SPREAD_FACTOR * h;
-    let mut below = false;
-    let mut above = false;
+    let tol = REF_RAY_SPREAD_FACTOR * rms.max(1e-9);
+    let min_side = ((rays.len() as f64) * REF_RAY_MIN_SIDE_FRAC).ceil() as usize;
+    let mut below = 0usize;
+    let mut above = 0usize;
     for &w in &rays {
         let r = w - c0;
         if r < -tol {
-            below = true;
+            below += 1;
         } else if r > tol {
-            above = true;
+            above += 1;
         }
     }
-    if below && above {
+    if below >= min_side && above >= min_side {
         return None;
     }
 
