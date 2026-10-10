@@ -1806,113 +1806,98 @@ pub fn tamponade_repair(
 
         let tp0 = Instant::now();
         // T3: fit a smooth "laser" reference surface (line 2) through the intact
-        // ring 2..=3 tissue. When it is available and the rim is not a bump,
-        // seal at the reference level; otherwise keep the rim-only plug.
+        // ring 2..=3 tissue. When it is available, seal at the reference level —
+        // a concave dent and a convex bump alike; only a saddle / noisy ring
+        // yields no reference (`build_reference` -> None) and keeps the rim-only
+        // plug.
         let reference = adj
             .as_ref()
             .and_then(|a| build_reference(verts, tris, &rim, h, a));
         let mut sealed = false;
         if let Some(ref refs) = reference {
-            // Rim protrusion test: a rim sitting clearly above the reference is
-            // a bump/spike, not a hole -> do not lift a membrane up to it.
-            let mut pos = 0.0f64;
-            let mut neg = 0.0f64;
+            // Overshoot trim: lift tail rim vertices that sit clearly below
+            // the reference (the extruded spike that overhangs the hole).
+            let mut trimmed = 0usize;
+            let mut moved: HashSet<u32> = HashSet::new();
             for &v in &rim {
-                let d = refs.signed_height(out_verts[v as usize]);
-                if d > pos {
-                    pos = d;
+                if trimmed >= TRIM_MAX_VERTICES {
+                    break;
                 }
-                if -d > neg {
-                    neg = -d;
+                let p = out_verts[v as usize];
+                if refs.signed_height(p) < -TRIM_EPS_FACTOR * h {
+                    out_verts[v as usize] = refs.place(p);
+                    if moved.insert(v) {
+                        trimmed += 1;
+                    }
                 }
             }
-            if pos > REF_DEV_FACTOR * h && pos > 2.0 * neg {
-                info.reference_fallback += 1;
-            } else {
-                // Overshoot trim: lift tail rim vertices that sit clearly below
-                // the reference (the extruded spike that overhangs the hole).
-                let mut trimmed = 0usize;
-                let mut moved: HashSet<u32> = HashSet::new();
-                for &v in &rim {
-                    if trimmed >= TRIM_MAX_VERTICES {
-                        break;
-                    }
-                    let p = out_verts[v as usize];
-                    if refs.signed_height(p) < -TRIM_EPS_FACTOR * h {
-                        out_verts[v as usize] = refs.place(p);
-                        if moved.insert(v) {
-                            trimmed += 1;
-                        }
-                    }
-                }
-                info.trimmed_vertices += trimmed;
+            info.trimmed_vertices += trimmed;
 
-                // Candidate 1: rim-only DP on the (possibly trimmed) rim.
-                let mut cand: Option<Vec<[u32; 3]>> = None;
-                let mut added: Vec<[f64; 3]> = Vec::new();
-                if let Ok(dp) = triangulate_rim_loop(&rim, &out_verts, &directed_set, tiny) {
-                    if reference_dev_ok(&dp, refs, &out_verts, h) {
-                        cand = Some(dp);
-                    }
+            // Candidate 1: rim-only DP on the (possibly trimmed) rim.
+            let mut cand: Option<Vec<[u32; 3]>> = None;
+            let mut added: Vec<[f64; 3]> = Vec::new();
+            if let Ok(dp) = triangulate_rim_loop(&rim, &out_verts, &directed_set, tiny) {
+                if reference_dev_ok(&dp, refs, &out_verts, h) {
+                    cand = Some(dp);
                 }
-                // Candidate 2: a fan to a single interior vertex ON the
-                // reference surface (handles concave craters a rim DP cannot
-                // represent without bulging).
-                if cand.is_none() {
-                    if let Some((fan_local, centre)) = fan_patch(&rim, refs, &directed_set) {
-                        let new_idx = out_verts.len() as u32;
-                        let m = rim.len() as u32;
-                        let fan: Vec<[u32; 3]> = fan_local
-                            .iter()
-                            .map(|t| {
-                                let f = |x: u32| if x == m { new_idx } else { rim[x as usize] };
-                                [f(t[0]), f(t[1]), f(t[2])]
-                            })
-                            .collect();
-                        added.push(centre);
-                        cand = Some(fan);
-                    }
-                }
-
-                if let Some(cand) = cand {
-                    let mut verts_ext = out_verts.clone();
-                    verts_ext.extend_from_slice(&added);
-                    let dev_ok = reference_dev_ok(&cand, refs, &verts_ext, h);
-                    let cand_counts = edge_use_counts(&cand);
-                    let collides = cand_counts
+            }
+            // Candidate 2: a fan to a single interior vertex ON the reference
+            // surface (handles concave craters and convex bumps a rim DP cannot
+            // represent without bulging / flattening).
+            if cand.is_none() {
+                if let Some((fan_local, centre)) = fan_patch(&rim, refs, &directed_set) {
+                    let new_idx = out_verts.len() as u32;
+                    let m = rim.len() as u32;
+                    let fan: Vec<[u32; 3]> = fan_local
                         .iter()
-                        .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
-                    if !dev_ok {
-                        info.loop_diag
-                            .push(format!("m={} rejected:deviation", rim.len()));
-                        plug_rejected_dev_count += 1;
-                        info.reference_fallback += 1;
-                    } else if collides {
-                        info.loop_diag
-                            .push(format!("m={} rejected:edge_collision", rim.len()));
-                        plug_rejected_count += 1;
-                        info.reference_fallback += 1;
-                    } else {
-                        for (e, &d) in &cand_counts {
-                            *edge_count.entry(*e).or_insert(0) += d;
-                        }
-                        let n_added = added.len();
-                        out_verts.extend_from_slice(&added);
-                        info.patch_vertices += n_added;
-                        plug_face_count += cand.len();
-                        out_tris.extend(cand);
-                        plug_count += 1;
-                        info.reference_used += 1;
-                        sealed = true;
-                        info.loop_diag.push(format!(
-                            "m={} sealed:ref{}",
-                            rim.len(),
-                            if n_added > 0 { ":fan" } else { "" }
-                        ));
-                    }
-                } else {
-                    info.reference_fallback += 1;
+                        .map(|t| {
+                            let f = |x: u32| if x == m { new_idx } else { rim[x as usize] };
+                            [f(t[0]), f(t[1]), f(t[2])]
+                        })
+                        .collect();
+                    added.push(centre);
+                    cand = Some(fan);
                 }
+            }
+
+            if let Some(cand) = cand {
+                let mut verts_ext = out_verts.clone();
+                verts_ext.extend_from_slice(&added);
+                let dev_ok = reference_dev_ok(&cand, refs, &verts_ext, h);
+                let cand_counts = edge_use_counts(&cand);
+                let collides = cand_counts
+                    .iter()
+                    .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
+                if !dev_ok {
+                    info.loop_diag
+                        .push(format!("m={} rejected:deviation", rim.len()));
+                    plug_rejected_dev_count += 1;
+                    info.reference_fallback += 1;
+                } else if collides {
+                    info.loop_diag
+                        .push(format!("m={} rejected:edge_collision", rim.len()));
+                    plug_rejected_count += 1;
+                    info.reference_fallback += 1;
+                } else {
+                    for (e, &d) in &cand_counts {
+                        *edge_count.entry(*e).or_insert(0) += d;
+                    }
+                    let n_added = added.len();
+                    out_verts.extend_from_slice(&added);
+                    info.patch_vertices += n_added;
+                    plug_face_count += cand.len();
+                    out_tris.extend(cand);
+                    plug_count += 1;
+                    info.reference_used += 1;
+                    sealed = true;
+                    info.loop_diag.push(format!(
+                        "m={} sealed:ref{}",
+                        rim.len(),
+                        if n_added > 0 { ":fan" } else { "" }
+                    ));
+                }
+            } else {
+                info.reference_fallback += 1;
             }
         } else {
             info.reference_fallback += 1;
@@ -2519,12 +2504,16 @@ mod tests {
     }
 
     #[test]
-    fn test_convex_bump_not_sealed_by_reference() {
-        // Flat grid with a raised lip around the hole: the rim protrudes above
-        // the intact (flat) surrounding tissue -> bump, reference rejected.
-        let (mut verts, tris) = grid_with_central_hole(16, 0.0);
+    fn test_convex_bump_sealed_with_reference() {
+        // Convex dome (`z = -r^2`) with the hole at its peak: the intact
+        // surrounding tissue rises toward the hole, so the reference surface
+        // (line 2) extrapolates to the peak. A convex hole must be sealed on
+        // that reference too -- exactly like a concave dent -- not bridged by a
+        // flat rim-only cap below the bump, and a lowered tail rim vertex is
+        // trimmed onto the reference (no fin left in the air).
+        let (mut verts, tris) = grid_with_central_hole(16, -1.0);
         let bd = directed_boundary_edges(&tris);
-        let mut rim_vs = HashSet::new();
+        let mut rim_vs: HashSet<u32> = HashSet::new();
         for (a, b) in &bd {
             for v in [*a, *b] {
                 let p = verts[v as usize];
@@ -2533,13 +2522,26 @@ mod tests {
                 }
             }
         }
-        for &v in &rim_vs {
-            verts[v as usize][2] += 0.5;
-        }
+        assert!(!rim_vs.is_empty(), "fixture must have a central hole rim");
+        // Overshoot tail: lower one rim vertex well below the reference.
+        let tail_v = *rim_vs.iter().min().unwrap();
+        verts[tail_v as usize][2] -= 0.5;
+
         let config = TamponadeConfig { h_min: Some(0.02), ..Default::default() };
-        let (_out_v, _out_t, info) = tamponade_repair(&verts, &tris, &config);
-        assert_eq!(info.reference_used, 0, "bump must not use the reference: {info:?}");
-        assert!(info.reference_fallback >= 1);
+        let (out_v, out_t, info) = tamponade_repair(&verts, &tris, &config);
+
+        assert!(info.reference_used >= 1, "convex bump must use the reference: {info:?}");
+        assert!(info.trimmed_vertices >= 1, "overshoot tail not trimmed: {info:?}");
+        assert_eq!(boundary_edge_count_near(&out_t, &out_v, 0.6), 0);
+
+        // No flat cap below the bump: a repaired vertex inside the former hole
+        // reaches the reference peak (z ~ 0), not just the rim-chord height.
+        let peak = out_v
+            .iter()
+            .filter(|p| p[0].abs() < 0.32 && p[1].abs() < 0.32)
+            .map(|p| p[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(peak > -0.05, "hole capped below the bump (peak z={peak})");
     }
 
     #[test]
