@@ -1233,9 +1233,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         ar_t = np.asarray(t, dtype=np.int64)
         ar_rep = {'skipped': False}
         try:
-            # Imported here, inside the guard: autorefine needs
-            # pyrobust-predicates, and a missing optional dependency must be
-            # reported, never crash the repair.
+            # Imported here, inside the guard: autorefine uses
+            # sutura_geom.orient3d exact predicates, and any unexpected error
+            # must be caught and reported, never crashing the repair.
             import autorefine as _autorefine
             ar_v, ar_t, ar_info = _autorefine.autorefine(ar_v, ar_t)
             ar_rep.update(ar_info)
@@ -3399,14 +3399,9 @@ def _reload_component_count(verts, tris):
     wv, wt = weld_reload_equivalent(verts, tris)
     if len(wt) == 0:
         return 0
-    import scipy.sparse as _sp
-    from scipy.sparse.csgraph import connected_components as _cc
     n = len(wv)
     edges = np.vstack([wt[:, [0, 1]], wt[:, [1, 2]], wt[:, [2, 0]]])
-    adj = _sp.coo_matrix(
-        (np.ones(len(edges), dtype=np.int8), (edges[:, 0], edges[:, 1])),
-        shape=(n, n))
-    return int(_cc(adj, directed=False)[0])
+    return int(topology.connected_components((n, edges), return_labels=False))
 
 
 def _flap_final_verdict(in_verts, in_tris, out_verts, out_tris):
@@ -3644,25 +3639,19 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
     non-flap repair is left untouched. The largest component is always kept and
     the mesh is never emptied. Runs on the STL save/reload-equivalent form
     (``weld_reload_equivalent``) so the verdict sees exactly what is dropped.
-    Pure numpy/scipy; never raises; a byte-identical no-op (returns the input
-    arrays and ``None``) when nothing qualifies, when scipy is unavailable, or
-    on any error. Returns ``(verts, tris, info)``; ``info['dropped']`` logs
-    every removed component (faces, volume, thickness, diag, centroid).
+    Pure numpy/stdlib (topology.connected_components); never raises; a byte-identical
+    no-op (returns the input arrays and ``None``) when nothing qualifies or on any
+    error. Returns ``(verts, tris, info)``; ``info['dropped']`` logs every removed
+    component (faces, volume, thickness, diag, centroid).
     """
     try:
-        import scipy.sparse as _sp
-        from scipy.sparse.csgraph import connected_components as _cc
-
         iv, _it = weld_reload_equivalent(in_verts, in_tris)
         wv, wt = weld_reload_equivalent(out_verts, out_tris)
         if len(iv) == 0 or len(wt) == 0:
             return out_verts, out_tris, None
         n = len(wv)
         edges = np.vstack([wt[:, [0, 1]], wt[:, [1, 2]], wt[:, [2, 0]]])
-        adj = _sp.coo_matrix(
-            (np.ones(len(edges), dtype=np.int8), (edges[:, 0], edges[:, 1])),
-            shape=(n, n))
-        ncomp, labels = _cc(adj, directed=False)
+        ncomp, labels = topology.connected_components((n, edges))
         face_label = labels[wt[:, 0]]
         face_counts = np.bincount(face_label, minlength=ncomp)
         in_diag = float(np.linalg.norm(iv.max(0) - iv.min(0)))

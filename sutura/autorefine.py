@@ -37,7 +37,7 @@ into sub-triangles. This is the core property that fixes the documented
 opens more boundary edges than it closes).
 
 Implementation notes:
-- Pure numpy + pyrobust_predicates. NO pymeshlab, NO scipy, NO trimesh.
+- Pure numpy + sutura_geom. NO pymeshlab, NO scipy, NO trimesh.
 - Exact predicates are used for the plane-side tests (EPICK: exact
   predicates, float64 construction), matching the paper's note that this
   gives certified topology with less control on input-output distance than
@@ -48,7 +48,10 @@ Implementation notes:
 """
 import numpy as np
 
-from pyrobust_predicates import orient3d
+try:
+    import sutura_geom
+except ImportError:
+    sutura_geom = None
 
 MAX_ITERATIONS = 5
 DEFAULT_SNAP_BITS = 23  # largest |x| scaled into [2^23, 2^24) -> rel. err <= 2^-24
@@ -67,7 +70,7 @@ def orient3d_adaptive(a, b, c, d):
 
     Adaptive (Shewchuk-style filter then exact fallback): a fast float64
     4x4 determinant decides whenever it is comfortably away from zero; the
-    exact pyrobust_predicates adaptive predicate handles near-degenerate
+    exact sutura_geom.orient3d adaptive predicate handles near-degenerate
     inputs. Returns a float sign."""
     ax, ay, az = a[0], a[1], a[2]
     bx, by, bz = b[0], b[1], b[2]
@@ -81,10 +84,9 @@ def orient3d_adaptive(a, b, c, d):
              + abs(dx - ax) + abs(dy - ay) + abs(dz - az))
     if abs(det) > 1e-14 * max(scale, 1e-300) * max(scale, 1e-300):
         return det
-    return orient3d(float(ax), float(ay), float(az),
-                    float(bx), float(by), float(bz),
-                    float(cx), float(cy), float(cz),
-                    float(dx), float(dy), float(dz))
+    if sutura_geom is not None and hasattr(sutura_geom, 'orient3d'):
+        return float(sutura_geom.orient3d(a, b, c, d))
+    return det
 
 
 # ---------------------------------------------------------------------------

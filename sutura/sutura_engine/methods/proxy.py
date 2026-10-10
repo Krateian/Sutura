@@ -183,15 +183,11 @@ def _filter_debris_components(verts, tris, min_faces=MIN_DEBRIS_COMPONENT_FACES)
     """Filter out small disconnected debris components (< min_faces), keeping legitimate parts."""
     if len(tris) == 0:
         return verts, tris
-    import scipy.sparse as sp
-    from scipy.sparse.csgraph import connected_components
+    import topology
 
     n_v = len(verts)
-    i = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
-    j = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
-    data = np.ones(len(i), dtype=bool)
-    adj = sp.coo_matrix((data, (i, j)), shape=(n_v, n_v))
-    n_components, labels = connected_components(adj, directed=False)
+    e = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    n_components, labels = topology.connected_components((n_v, e))
     if n_components <= 1:
         return verts, tris
 
@@ -210,15 +206,11 @@ def _keep_largest_component(verts, tris):
     """Keep only the largest connected component of faces."""
     if len(tris) == 0:
         return verts, tris
-    import scipy.sparse as sp
-    from scipy.sparse.csgraph import connected_components
+    import topology
 
     n_v = len(verts)
-    i = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
-    j = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
-    data = np.ones(len(i), dtype=bool)
-    adj = sp.coo_matrix((data, (i, j)), shape=(n_v, n_v))
-    n_components, labels = connected_components(adj, directed=False)
+    e = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    n_components, labels = topology.connected_components((n_v, e))
     if n_components <= 1:
         return verts, tris
 
@@ -384,8 +376,7 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
                 bad_face_indices.add(f_idx)
 
     # 3. Debris components
-    import scipy.sparse as sp
-    from scipy.sparse.csgraph import connected_components
+    import topology
 
     edge_to_faces = {}
     for f_idx, tri in enumerate(tris):
@@ -403,8 +394,7 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
             fj.extend([f_list[1], f_list[0]])
 
     if fi:
-        adj = sp.coo_matrix((np.ones(len(fi), dtype=bool), (fi, fj)), shape=(n_faces, n_faces))
-        _, labels = connected_components(adj, directed=False)
+        _, labels = topology.connected_components((n_faces, np.column_stack((fi, fj))))
         uniq_l, counts_l = np.unique(labels, return_counts=True)
         small_labels = set(uniq_l[counts_l < MIN_DEBRIS_COMPONENT_FACES])
         for f_idx, l in enumerate(labels):

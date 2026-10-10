@@ -167,14 +167,9 @@ def _resolve_sign_field(sign_field):
 def _available_memory_bytes():
     """Best-effort available RAM in bytes (stdlib only).
 
-    Order: psutil (if present) -> ``os.sysconf`` (Linux) -> ``sysctl hw.memsize``
-    halved on macOS -> a conservative 4 GB fallback.  Never raises.
+    Order: ``os.sysconf`` (Linux) -> ``sysctl hw.memsize`` halved on macOS ->
+    a conservative 4 GB fallback.  Never raises.
     """
-    try:
-        import psutil  # type: ignore
-        return int(psutil.virtual_memory().available)
-    except Exception:  # noqa: BLE001
-        pass
     try:
         pages = os.sysconf('SC_AVPHYS_PAGES')
         size = os.sysconf('SC_PAGE_SIZE')

@@ -151,7 +151,6 @@ STRINGS = {
             "• Manifold3D (Apache-2.0) — Stage 2 volumetric manifold solid rebuilding.\n"
             "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Array math, sparse/geometry algorithms and mesh IO across the tiers.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Robust tetrahedralization envelope fallback.\n"
-            "• pyrobust-predicates / Shewchuk (Public Domain) — Exact 3D geometric orientation.\n"
             "• sutura_geom Rust crates: robust, faer, rayon, num-* (MIT/Apache-2.0) — Exact predicates, sparse LU, morphology and the Flap/Dressing accelerators.\n"
             "• PySide6 / Qt (LGPL-3.0) — Native graphical user interface framework."
         ),
@@ -771,7 +770,6 @@ STRINGS = {
             "• Manifold3D (Apache-2.0) — Aşama 2 hacimsel manifold katı yeniden inşası.\n"
             "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Katmanlar genelinde dizi matematiği, seyrek/geometri algoritmaları ve mesh G/Ç.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Sağlam tetrahedralizasyon son-çare zarfı.\n"
-            "• pyrobust-predicates / Shewchuk (Kamu Malı) — Kesin 3D geometrik yönelim.\n"
             "• sutura_geom Rust crate'leri: robust, faer, rayon, num-* (MIT/Apache-2.0) — Kesin predikatlar, seyrek LU, morfoloji ve Flap/Dressing hızlandırıcıları.\n"
             "• PySide6 / Qt (LGPL-3.0) — Yerel grafik kullanıcı arayüzü çatısı."
         ),

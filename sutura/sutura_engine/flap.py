@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import numpy as np
 import scipy.sparse as sp
-import scipy.sparse.csgraph as csgraph
 import scipy.sparse.linalg as spla
 from scipy.spatial import cKDTree
+
+import topology
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +90,7 @@ def _component_stats(v2, t2, f_rfc, f_ffo, f_frs, angle_deg=2.0):
     two = f_rfc == 2
     fa = f_ffo[f_frs[two]]
     fb = f_ffo[f_frs[two] + 1]
-    g = sp.coo_matrix((np.ones(len(fa)), (fa, fb)), shape=(F, F))
-    _, labels = csgraph.connected_components(g, directed=False)
+    _, labels = topology.connected_components((F, np.column_stack((fa, fb))))
     nu = int(labels.max()) + 1
     vol_c = np.zeros(nu)
     np.add.at(vol_c, labels, vol_f)
@@ -345,9 +345,7 @@ def split_non_manifold(verts, tris):
         cmax = np.where(starts == b, corner_s, corner_e)
         src = np.concatenate([cmin[i0], cmax[i0]])
         dst = np.concatenate([cmin[i1], cmax[i1]])
-        adj = sp.coo_matrix((np.ones(len(src), dtype=np.int8), (src, dst)),
-                            shape=(ncorner, ncorner)).tocsr()
-        _nc, comp = csgraph.connected_components(adj, directed=False)
+        _nc, comp = topology.connected_components((ncorner, np.column_stack((src, dst))))
         comp = comp.astype(np.int64)
     else:
         comp = np.arange(ncorner, dtype=np.int64)
@@ -1372,9 +1370,7 @@ def drop_lone_triangles(v, t):
     pair_start = run_start[run_count == 2]
     f1 = fo[pair_start]
     f2 = fo[pair_start + 1]
-    adj = sp.coo_matrix((np.ones(len(f1), dtype=np.int8), (f1, f2)),
-                        shape=(len(t), len(t))).tocsr()
-    _nc, comp = csgraph.connected_components(adj, directed=False)
+    _nc, comp = topology.connected_components((len(t), np.column_stack((f1, f2))))
     comp = comp.astype(np.int64)
     size = np.bincount(comp)
     keep = size[comp] >= 2

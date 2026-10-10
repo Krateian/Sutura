@@ -37,7 +37,6 @@ CANONICAL_BASE_PACKAGES = {
     'numpy',
     'pyside6',
     'pyside6-essentials',
-    'pyrobust-predicates',
     'pip',
     'setuptools',
     'wheel',
