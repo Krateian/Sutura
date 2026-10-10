@@ -3928,7 +3928,9 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                     'melt_layers_tried', 'melt_layers_accepted',
                     'melt_layers_rolled_back', 'micro_welds_ok',
                     'micro_welds_failed', 'excised_faces',
-                    'healthy_faces_kept'):
+                    'healthy_faces_kept',
+                    'reference_used', 'reference_fallback',
+                    'trimmed_vertices', 'patch_vertices'):
             rec[key] = trec.get(key)
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):
