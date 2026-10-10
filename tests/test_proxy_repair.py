@@ -4,10 +4,12 @@
 Checks:
   1. health_mask detects boundary holes, non-manifold geometry, debris, and dilates.
   2. build_proxy produces watertight 2-manifold surface without debris.
-  3. proxy_template_repair repairs broken sphere with hole, flipped face, and debris.
-  4. proxy_template_repair repairs broken torus while preserving topology.
-  5. Defensive error handling returns honest error reports without raising.
-  6. Enforces face budget (output <= max(2x input, 20k)) and projected_fraction_healthy >= 90%.
+  3. build_proxy is bounded on a fan mesh whose PyMeshLab resample call hangs
+     (falls back to alpha_wrap within the per-attempt budget).
+  4. proxy_template_repair repairs broken sphere with hole, flipped face, and debris.
+  5. proxy_template_repair repairs broken torus while preserving topology.
+  6. Defensive error handling returns honest error reports without raising.
+  7. Enforces face budget (output <= max(2x input, 20k)) and projected_fraction_healthy >= 90%.
 
 Runtime target: < 15 s (< 30 s limit).
 Usage: python3 tests/test_proxy_repair.py
@@ -122,6 +124,75 @@ def test_proxy_template_repair_torus():
     print(f"  ✓ test_proxy_template_repair_torus passed (faces: {len(t_out)}, genus: {mf.genus()})")
 
 
+def _make_fan_box(edge=1.0, W=40.0, H=4.0):
+    """Closed box with a fine top grid but a coarse bottom fan triangle fan.
+
+    The long thin fan triangles (longest edge / median edge ~ 56) make
+    PyMeshLab's ``generate_resampled_uniform_mesh`` KdTree construction fail to
+    terminate; this is the H1 hang trigger (plate_b_bump)."""
+    n = int(round(W / edge))
+    xs = np.linspace(0.0, W, n + 1)
+    X, Y = np.meshgrid(xs, xs, indexing='ij')
+    tris = []
+    for i in range(n):
+        for j in range(n):
+            a = [X[i, j], Y[i, j], H]
+            b = [X[i + 1, j], Y[i + 1, j], H]
+            c = [X[i, j + 1], Y[i, j + 1], H]
+            d = [X[i + 1, j + 1], Y[i + 1, j + 1], H]
+            tris.append([a, b, d])
+            tris.append([a, d, c])
+    top, bot = {}, {}
+    for i in range(n + 1):
+        top[(i, 0)] = [xs[i], 0.0, H]
+        top[(i, n)] = [xs[i], W, H]
+        top[(0, i)] = [0.0, xs[i], H]
+        top[(n, i)] = [W, xs[i], H]
+        bot[(i, 0)] = [xs[i], 0.0, 0.0]
+        bot[(i, n)] = [xs[i], W, 0.0]
+        bot[(0, i)] = [0.0, xs[i], 0.0]
+        bot[(n, i)] = [W, xs[i], 0.0]
+    for i in range(n):
+        tris.append([top[(i, 0)], bot[(i, 0)], bot[(i + 1, 0)]])
+        tris.append([top[(i, 0)], bot[(i + 1, 0)], top[(i + 1, 0)]])
+        tris.append([top[(i + 1, n)], bot[(i + 1, n)], bot[(i, n)]])
+        tris.append([top[(i + 1, n)], bot[(i, n)], top[(i, n)]])
+        tris.append([top[(0, i + 1)], bot[(0, i + 1)], bot[(0, i)]])
+        tris.append([top[(0, i + 1)], bot[(0, i)], top[(0, i)]])
+        tris.append([top[(n, i)], bot[(n, i)], bot[(n, i + 1)]])
+        tris.append([top[(n, i)], bot[(n, i + 1)], top[(n, i + 1)]])
+    ring = ([bot[(i, 0)] for i in range(n)] + [bot[(n, i)] for i in range(n)]
+            + [bot[(i, n)] for i in range(n, 0, -1)]
+            + [bot[(0, i)] for i in range(n, 0, -1)])
+    centre = [W / 2.0, W / 2.0, 0.0]
+    for k in range(len(ring)):
+        tris.append([ring[k], ring[(k + 1) % len(ring)], centre])
+    tris = np.asarray(tris, np.float64).reshape(-1, 3, 3)
+    flat = tris.reshape(-1, 3)
+    v, inv = np.unique(flat, axis=0, return_inverse=True)
+    return v, inv.reshape(-1, 3).astype(np.int64)
+
+
+def test_build_proxy_bounded_on_fan_mesh():
+    """The VCG resample KdTree hang must be bounded, falling back to alpha_wrap.
+
+    Regression for the H1 plate_b_bump hang: ``build_proxy`` runs the two
+    uniform-resample strategies in a subprocess with a wall-clock budget, so a
+    non-terminating VCG call cannot hang the whole repair."""
+    v, t = _make_fan_box(edge=1.0)
+    t0 = time.time()
+    pv, pt, info = pr.build_proxy(v, t, resample_timeout=4.0)
+    elapsed = time.time() - t0
+    assert info['method'] == 'alpha_wrap', (
+        f"expected the alpha-wrap fallback on the hang mesh, got {info['method']}")
+    assert len(pt) >= 100, f"alpha-wrap proxy too small: {len(pt)} faces"
+    assert elapsed < 25.0, f"build_proxy was not bounded: {elapsed:.1f}s"
+    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=pv, tri_verts=pt))
+    assert mf.status() == manifold3d.Error.NoError, f"Proxy manifold error: {mf.status()}"
+    print(f"  ✓ test_build_proxy_bounded_on_fan_mesh passed "
+          f"(method: {info['method']}, faces: {len(pt)}, {elapsed:.1f}s)")
+
+
 def test_defensive_error_handling():
     empty_v = np.zeros((0, 3), dtype=np.float64)
     empty_t = np.zeros((0, 3), dtype=np.int64)
@@ -142,6 +213,7 @@ def main():
     print("Running proxy-template repair tests (tests/test_proxy_repair.py)...")
     test_health_mask()
     test_build_proxy()
+    test_build_proxy_bounded_on_fan_mesh()
     test_proxy_template_repair_sphere()
     test_proxy_template_repair_torus()
     test_defensive_error_handling()

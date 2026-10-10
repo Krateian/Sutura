@@ -30,6 +30,92 @@ PROJECTION_MIN_NORMAL_DOT = 0.0  # alignment threshold for projection
 SI_FACE_CAP = 200_000  # cap self-intersection checks above 200k faces
 MIN_FACE_BUDGET = 20_000  # output faces <= max(2x input, 20k)
 
+# PyMeshLab's ``generate_resampled_uniform_mesh`` (VCG) builds a face KdTree
+# whose construction can fail to terminate on meshes that carry very long thin
+# triangles (e.g. a coarse bottom fan meeting a fine grid: max edge / median
+# edge ~ 56). The native loop is not interruptible from Python, so the call is
+# run in a bounded subprocess; on timeout the caller falls through to the next
+# strategy (ultimately ``generate_alpha_wrap``, which is fast and robust).
+PROXY_RESAMPLE_TIMEOUT = 20.0  # seconds, per uniform-resample attempt
+
+
+def _resample_timeout():
+    """Resolved per-attempt resample budget (env ``SUTURA_PROXY_RESAMPLE_TIMEOUT``)."""
+    import os
+    raw = os.environ.get('SUTURA_PROXY_RESAMPLE_TIMEOUT')
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return PROXY_RESAMPLE_TIMEOUT
+
+
+def _uniform_resample(verts, tris, voxel, offset, absdist):
+    """Run one ``generate_resampled_uniform_mesh`` call and return (verts, faces)."""
+    import pymeshlab as ml
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, dtype=np.float64),
+                        face_matrix=np.asarray(tris, np.int32)))
+    ms.apply_filter('generate_resampled_uniform_mesh',
+                    cellsize=ml.PureValue(float(voxel)),
+                    offset=ml.PureValue(float(offset)),
+                    absdist=bool(absdist))
+    out = ms.current_mesh()
+    return (np.asarray(out.vertex_matrix(), dtype=np.float64),
+            np.asarray(out.face_matrix(), dtype=np.int32))
+
+
+def _resample_worker(in_npz, out_npz, voxel, offset, absdist):
+    """Subprocess entry point for :func:`_uniform_resample_isolated`."""
+    data = np.load(in_npz)
+    pv, pt = _uniform_resample(np.asarray(data['v'], dtype=np.float64),
+                               np.asarray(data['t'], dtype=np.int64),
+                               float(voxel), float(offset), bool(absdist))
+    np.savez(out_npz, v=pv, t=pt)
+
+
+def _uniform_resample_isolated(verts, tris, voxel, offset, absdist, timeout=None):
+    """``_uniform_resample`` in a subprocess, bounded by ``timeout`` seconds.
+
+    Protects the repair from the VCG KdTree non-termination described above:
+    on timeout (or any child failure) this raises, and ``build_proxy`` falls
+    through to its next strategy. The child runs under the current interpreter
+    with the parent's ``sys.path`` so it resolves the same ``sutura_engine``
+    package in every install layout.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+
+    if timeout is None:
+        timeout = _resample_timeout()
+    work = tempfile.mkdtemp(prefix='sutura_proxy_resample_')
+    try:
+        in_npz = os.path.join(work, 'in.npz')
+        out_npz = os.path.join(work, 'out.npz')
+        np.savez(in_npz,
+                 v=np.ascontiguousarray(verts, dtype=np.float64),
+                 t=np.ascontiguousarray(tris, np.int32))
+        path = [p for p in sys.path if isinstance(p, str)]
+        code = (
+            "import sys; sys.path[:0] = %r\n"
+            "from sutura_engine.methods.proxy import _resample_worker\n"
+            "_resample_worker(%r, %r, %r, %r, %r)\n"
+            % (path, in_npz, out_npz, float(voxel), float(offset), bool(absdist))
+        )
+        subprocess.run([sys.executable, '-c', code], timeout=float(timeout),
+                       check=True, capture_output=True)
+        data = np.load(out_npz)
+        return (np.asarray(data['v'], dtype=np.float64),
+                np.asarray(data['t'], dtype=np.int32))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
 
 def _referenced_only(verts, tris):
     """Drop unreferenced vertices and remap triangle indices."""
@@ -146,7 +232,7 @@ def _keep_largest_component(verts, tris):
     return verts[used_verts], remap[keep_faces]
 
 
-def build_proxy(verts, tris, voxel=None):
+def build_proxy(verts, tris, voxel=None, resample_timeout=None):
     """Construct a watertight, coarse proxy surface for the input mesh.
 
     Attempts in order:
@@ -155,6 +241,12 @@ def build_proxy(verts, tris, voxel=None):
       (b) PyMeshLab generate_alpha_wrap fallback
 
     Voxel size is clamped so grid dimensions stay within [32, 256].
+
+    ``resample_timeout`` (default: ``_resample_timeout()``) bounds each
+    uniform-resample attempt; the two PyMeshLab resample strategies run in a
+    subprocess so a VCG KdTree non-termination on long thin triangles cannot
+    hang the repair (see ``PROXY_RESAMPLE_TIMEOUT``). On timeout the strategy
+    is skipped and the alpha-wrap fallback is used.
     Returns (pv, pt, info_dict).
     """
     verts = np.asarray(verts, dtype=np.float64)
@@ -182,17 +274,18 @@ def build_proxy(verts, tris, voxel=None):
         voxel = max_dim / MIN_GRID_CELLS
 
     import pymeshlab as ml
+    import time
+
+    if resample_timeout is None:
+        resample_timeout = _resample_timeout()
+    resample_start = time.monotonic()
 
     # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
     try:
+        rv, rt = _uniform_resample_isolated(in_v, in_t, voxel, 0.0, False,
+                                            timeout=resample_timeout)
         ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        ms.apply_filter(
-            'generate_resampled_uniform_mesh',
-            cellsize=ml.PureValue(voxel),
-            offset=ml.PureValue(0.0),
-            absdist=False,
-        )
+        ms.add_mesh(ml.Mesh(vertex_matrix=rv, face_matrix=np.asarray(rt, np.int32)))
         ms.apply_filter('meshing_close_holes', maxholesize=10000)
         ms.apply_filter('meshing_close_holes', maxholesize=10000)
         out = ms.current_mesh()
@@ -211,18 +304,10 @@ def build_proxy(verts, tris, voxel=None):
 
     # Strategy 2: Unsigned distance offset resampling (absdist=True, offset=voxel)
     try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        ms.apply_filter(
-            'generate_resampled_uniform_mesh',
-            cellsize=ml.PureValue(voxel),
-            offset=ml.PureValue(voxel),
-            absdist=True,
-        )
-        out = ms.current_mesh()
-        pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
-        pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+        remaining = max(resample_timeout - (time.monotonic() - resample_start), 3.0)
+        rv, rt = _uniform_resample_isolated(in_v, in_t, voxel, voxel, True,
+                                            timeout=remaining)
+        pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
