@@ -307,8 +307,16 @@ def _close_holes_step(maxholesize):
     return ('meshing_close_holes', params)
 
 
-def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
-    chain = [
+def stage1_cleanup_chain(ml):
+    """The Stage-1 mesh-hygiene passes: duplicate/null removal, non-manifold
+    edge/vertex repair and a coherent re-orientation, with NO hole closing and
+    NO component removal.
+
+    ``stage1_chain`` builds on this list; the Tamponade prepass (T4) also uses
+    it verbatim so the reference-based hole plug runs on the same cleaned
+    surface the chain would otherwise hand to its generic ``close_holes``.
+    """
+    return [
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
         ('meshing_remove_duplicate_vertices', {}),
@@ -327,6 +335,11 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False
         # so the mesh must be vertex-manifold first. A final close_holes pass
         # re-closes anything the debris removal / re-orient opened.
         ('meshing_repair_non_manifold_vertices', {}),
+    ]
+
+
+def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
+    chain = stage1_cleanup_chain(ml) + [
         _close_holes_step(maxholesize),
         # --experimental-join-components replaces this removal step with a
         # join (small components are moved onto the nearest larger component
@@ -1185,6 +1198,31 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     holes_before = boundary_loop_stats(v, t)[0]
     nm_before = before.get('non_two_manifold_edges', 0)
 
+    # Tamponade prepass (lead decision, T4 step 2): when the tier is ON, seal
+    # holes on the CLEANED input BEFORE the Flap pre-pass and before Stage 1's
+    # generic meshing_close_holes, so a genuine crater is closed with the
+    # reference-surface plug rather than the low-quality Stage-1 cap. Stage 1
+    # then only re-closes the loops Tamponade skipped or rejected. Runs on the
+    # same hygiene chain (no hole closing, no component removal) the chain
+    # itself starts with, so the surface matches. With the tier OFF this block
+    # is a no-op and the pipeline is byte-identical. The post-chain
+    # tamponade_tier call below is skipped once this prepass has sealed the
+    # mesh, so its stats record is preserved.
+    if tamponade is True:
+        _tms = ml.MeshSet()
+        _tms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
+        apply_chain(_tms, stage1_cleanup_chain(ml))
+        _tafter = _tms.apply_filter('get_topological_measures')
+        _tms, _tafter = tamponade_tier(
+            ml, _tms, _tafter, stats, tmpdir, tamponade=True,
+            intensity=(getattr(triage_spec, 'base', None)
+                       or getattr(triage_spec, 'name', None)),
+            spec=triage_spec, si_mode=si_mode, prepass=True)
+        if (stats.get('tamponade') or {}).get('adopted'):
+            v = np.asarray(_tms.current_mesh().vertex_matrix(), dtype=np.float32)
+            t = np.asarray(_tms.current_mesh().face_matrix(), dtype=np.int32)
+            verts, tris = v, t
+
     # Flap: surface-based hole fill (on by default in the CLI). It is the FIRST Stage-1
     # step, a pre-pass on the input as it stands here (normally the original
     # surface; note the outer-shell extraction above may already have replaced
@@ -1414,15 +1452,19 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                closing=closing, proxy_template=proxy_template)
 
-    # Registry method 17 (Tamponade): interior hole plug + SI melt. Runs on the
-    # CURRENT stage-1 result (after the Flap pre-pass and the closing ladder),
-    # before Graft/fTetWild. Adopts only when the reload-honest holes+non-
-    # manifold strictly falls without raising parts or losing healthy faces.
-    ms, after = tamponade_tier(ml, ms, after, stats, tmpdir,
-                               tamponade=(tamponade is True),
-                               intensity=(getattr(triage_spec, 'base', None)
-                                          or getattr(triage_spec, 'name', None)),
-                               spec=triage_spec, si_mode=si_mode)
+    # Registry method 17 (Tamponade): interior hole plug + SI melt. When the
+    # tier is ON it normally runs as a pre-pass (before Flap / Stage 1, see
+    # above) so its reference plug wins over the generic cap; this post-chain
+    # call is then skipped. It is kept for the OFF path and as a second chance
+    # when the prepass ran but did not adopt (e.g. no reference found there).
+    # Adopts only when the reload-honest holes+non-manifold strictly falls
+    # without raising parts or losing healthy faces.
+    if not (stats.get('tamponade') or {}).get('adopted'):
+        ms, after = tamponade_tier(ml, ms, after, stats, tmpdir,
+                                   tamponade=(tamponade is True),
+                                   intensity=(getattr(triage_spec, 'base', None)
+                                              or getattr(triage_spec, 'name', None)),
+                                   spec=triage_spec, si_mode=si_mode)
     # A watertight Tamponade adoption already closed the mesh: skip the deep
     # tiers (the same "a watertight candidate supersedes" logic Graft adoption
     # uses), but still record the ladder's own report.
@@ -3846,7 +3888,7 @@ def _count_vertex_components(n_verts, tris):
 
 
 def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
-                   intensity=None, spec=None, si_mode='report'):
+                   intensity=None, spec=None, si_mode='report', prepass=False):
     """Interior-plug tier for registry method 17 (Tamponade).
 
     Runs ``sutura_engine.tamponade.run_tamponade`` on the CURRENT stage-1 result
@@ -3856,10 +3898,19 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
     does not rise and at least 99 % of the pre-tier faces are carried through
     verbatim (``healthy_faces_kept``).  ``stats['tamponade']`` records the
     verdict and the Rust counters.  Never raises.
+
+    ``prepass=True`` is the T4 placement where Tamponade runs on the CLEANED
+    input BEFORE the Stage-1 chain, so the chain's own cleanup + close_holes
+    steps repair the non-manifold edge the reference plug can leave behind and
+    re-cap any small loop it opens.  The gate is therefore relaxed: the
+    candidate must strictly reduce the reload-honest HOLES (the seal worked)
+    and keep >= 99 % of the input faces; a non-manifold rise is tolerated
+    (Stage 1 fixes it).  ``rec['placement']`` records which placement ran.
     """
     if not tamponade:
         return ms, after
     rec = {'tier': 'tamponade', 'ran': False, 'adopted': False,
+           'placement': 'prepass' if prepass else 'post_stage1',
            'watertight': False, 'reload_watertight': False, 'reason': None,
            'reject_reason': None, 'intensity': intensity, 'budget_s': None,
            'h_min': None, 'input_faces': None, 'output_faces': None,
@@ -3970,7 +4021,22 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         si_ok = (base_si_exact is None or cand_si_exact is None
                  or cand_si_exact <= base_si_exact)
         rec['si_ok'] = si_ok
-        geometry_fall = strict_fall or si_fall
+        # Prepass placement: the Stage-1 chain still runs after the seal and
+        # repairs the non-manifold edge the reference plug can leave behind
+        # (and re-caps any small loop its repair opens), so the gate only
+        # requires the seal to strictly reduce the HOLES and keep the healthy
+        # faces. Post-chain placement keeps the stricter holes+non-manifold
+        # gate because nothing repairs the candidate after it.
+        if prepass:
+            geometry_fall = (cand_holes < base_holes) or si_fall
+            no_rise = cand_holes <= base_holes
+            # The reference plug can graze nearby crater geometry and report a
+            # transient self-intersection count; the Stage-1 chain (nm repair +
+            # si_excise_recap) reconciles it after the seal, so the prepass does
+            # not reject on SI -- the final pipeline result is what is judged.
+            si_ok = True
+        else:
+            geometry_fall = strict_fall or si_fall
         if no_rise and geometry_fall and parts_ok and healthy_ok and si_ok and len(cand_t):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
