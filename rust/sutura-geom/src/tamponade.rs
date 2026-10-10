@@ -21,6 +21,7 @@ use crate::mincut::BkGraph;
 use crate::rbf;
 use crate::triangle_intersection;
 use crate::winding::MeshBvh;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -1005,8 +1006,34 @@ fn throat_separates(
     let mut uf = UnionFind::new(total);
     // `wall_bits` records the blocked forward neighbours of each cell (bit 0
     // +x, bit 1 +y, bit 2 +z); `near_surface` marks both endpoints of every
-    // blocked edge, the seeds of the distance-to-surface flood fill.
-    let mut wall_bits: Vec<u8> = vec![0u8; total];
+    // blocked edge, the seeds of the distance-to-surface flood fill. A cell's
+    // bits depend only on that cell and its forward neighbours, so the
+    // (BVH-ray) wall test for every edge is independent and runs in parallel;
+    // the graph edges and the union-find over the traversable edges then run
+    // serially in the original row-major order, so the components and the cut
+    // are unchanged.
+    let wall_bits: Vec<u8> = (0..total)
+        .into_par_iter()
+        .map(|idx| {
+            let iz = idx / (nx * ny);
+            let rem = idx % (nx * ny);
+            let iy = rem / nx;
+            let ix = rem % nx;
+            let c = cell_center(ix, iy, iz);
+            let mut bits = 0u8;
+            if ix + 1 < nx && crosses_wall(bvh, c, cell_center(ix + 1, iy, iz)) {
+                bits |= 1;
+            }
+            if iy + 1 < ny && crosses_wall(bvh, c, cell_center(ix, iy + 1, iz)) {
+                bits |= 2;
+            }
+            if iz + 1 < nz && crosses_wall(bvh, c, cell_center(ix, iy, iz + 1)) {
+                bits |= 4;
+            }
+            bits
+        })
+        .collect();
+
     let mut near_surface: Vec<bool> = vec![false; total];
     for iz in 0..nz {
         if deadline_passed(deadline) {
@@ -1015,42 +1042,45 @@ fn throat_separates(
         for iy in 0..ny {
             for ix in 0..nx {
                 let idx = cell_idx(ix, iy, iz);
-                let c = cell_center(ix, iy, iz);
-                if ix + 1 < nx {
-                    let c2 = cell_center(ix + 1, iy, iz);
+                let bits = wall_bits[idx];
+                if bits & 7 != 0 {
+                    near_surface[idx] = true;
+                    if ix + 1 < nx && bits & 1 != 0 {
+                        near_surface[idx + 1] = true;
+                    }
+                    if iy + 1 < ny && bits & 2 != 0 {
+                        near_surface[idx + nx] = true;
+                    }
+                    if iz + 1 < nz && bits & 4 != 0 {
+                        near_surface[idx + nx * ny] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    for iz in 0..nz {
+        if deadline_passed(deadline) {
+            return CutVerdict::Timeout;
+        }
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let idx = cell_idx(ix, iy, iz);
+                let bits = wall_bits[idx];
+                if ix + 1 < nx && bits & 1 == 0 {
                     let j = cell_idx(ix + 1, iy, iz);
-                    if crosses_wall(bvh, c, c2) {
-                        wall_bits[idx] |= 1;
-                        near_surface[idx] = true;
-                        near_surface[j] = true;
-                    } else {
-                        g.add_edge(idx, j, face_cap, face_cap);
-                        uf.union(idx, j);
-                    }
+                    g.add_edge(idx, j, face_cap, face_cap);
+                    uf.union(idx, j);
                 }
-                if iy + 1 < ny {
-                    let c2 = cell_center(ix, iy + 1, iz);
+                if iy + 1 < ny && bits & 2 == 0 {
                     let j = cell_idx(ix, iy + 1, iz);
-                    if crosses_wall(bvh, c, c2) {
-                        wall_bits[idx] |= 2;
-                        near_surface[idx] = true;
-                        near_surface[j] = true;
-                    } else {
-                        g.add_edge(idx, j, face_cap, face_cap);
-                        uf.union(idx, j);
-                    }
+                    g.add_edge(idx, j, face_cap, face_cap);
+                    uf.union(idx, j);
                 }
-                if iz + 1 < nz {
-                    let c2 = cell_center(ix, iy, iz + 1);
+                if iz + 1 < nz && bits & 4 == 0 {
                     let j = cell_idx(ix, iy, iz + 1);
-                    if crosses_wall(bvh, c, c2) {
-                        wall_bits[idx] |= 4;
-                        near_surface[idx] = true;
-                        near_surface[j] = true;
-                    } else {
-                        g.add_edge(idx, j, face_cap, face_cap);
-                        uf.union(idx, j);
-                    }
+                    g.add_edge(idx, j, face_cap, face_cap);
+                    uf.union(idx, j);
                 }
             }
         }
@@ -1250,6 +1280,12 @@ fn throat_separates(
                 for ix in 0..nx {
                     let idx = cell_idx(ix, iy, iz);
                     if comp_tag.contains_key(&uf.find(idx)) {
+                        continue;
+                    }
+                    // A border cell is forced to sink by `tag` regardless of
+                    // its winding, so its exact value need not be computed.
+                    if border_of(idx) {
+                        cls[idx] = 2;
                         continue;
                     }
                     pts.push(center_of(idx));
