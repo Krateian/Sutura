@@ -1528,7 +1528,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # uses), but still record the ladder's own report.
     _tamp_watertight = bool(
         (stats.get('tamponade') or {}).get('adopted')
-        and (stats.get('tamponade') or {}).get('reload_watertight'))
+        and (stats.get('tamponade') or {}).get('reload_watertight')
+        and (stats.get('tamponade') or {}).get('candidate_parts', 1) <= 1)
 
     # Registry method 13 (Graft / shell wrap): the morphology last-resort tier,
     # run on the ORIGINAL input arrays before the fTetWild ladder. Adopts only a
@@ -4000,12 +4001,34 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         if healthy is not None and len(cur_t):
             rec['healthy_fraction'] = float(healthy) / float(len(cur_t))
 
+        cand_iw = 0
+        try:
+            from sutura_geom import PyMeshBvh
+            _bvh = PyMeshBvh(cand_v.astype(np.float64), cand_t.astype(np.int32))
+            _p0 = cand_v[cand_t[:, 0]].astype(np.float64)
+            _p1 = cand_v[cand_t[:, 1]].astype(np.float64)
+            _p2 = cand_v[cand_t[:, 2]].astype(np.float64)
+            _c = (_p0 + _p1 + _p2) / 3.0
+            _n = np.cross(_p1 - _p0, _p2 - _p0)
+            _ln = np.linalg.norm(_n, axis=1, keepdims=True)
+            _ln[_ln == 0] = 1.0
+            _n = _n / _ln
+            _diag = float(np.linalg.norm(cand_v.max(0) - cand_v.min(0)))
+            _eps = max(_diag * 1e-4, 1e-6)
+            _wp = _bvh.winding_points(_c + _n * _eps)
+            _wm = _bvh.winding_points(_c - _n * _eps)
+            cand_iw = int(((_wp >= 1.5) & (_wm >= 1.5)).sum())
+        except Exception:
+            cand_iw = 0
+        rec['candidate_internal_walls'] = cand_iw
+        iw_ok = (cand_iw == 0)
+
         no_rise = cand_holes <= base_holes and cand_nm <= base_nm
         strict_fall = (cand_holes + cand_nm) < (base_holes + base_nm)
         parts_ok = cand_parts <= base_parts
         healthy_ok = (healthy is None or len(cur_t) == 0
                       or float(healthy) >= 0.99 * float(len(cur_t)))
-        if no_rise and strict_fall and parts_ok and healthy_ok and len(cand_t):
+        if no_rise and strict_fall and parts_ok and healthy_ok and iw_ok and len(cand_t):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
             after = ms.apply_filter('get_topological_measures')
@@ -4025,6 +4048,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 reasons.append('component count rose')
             if not healthy_ok:
                 reasons.append('healthy faces below 99%')
+            if not iw_ok:
+                reasons.append(f'internal walls present ({cand_iw})')
             if not len(cand_t):
                 reasons.append('no geometry')
             rec['reason'] = 'not adopted (%s)' % '; '.join(reasons or ['?'])
