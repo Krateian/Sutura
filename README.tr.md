@@ -611,7 +611,7 @@ bırakılır, böylece her delik yine bir kapak alır.
 
 **Varsayılan olarak açıktır.** `--no-flap` (veya `SUTURA_FLAP=0`) kapatır,
 `--flap` (veya `SUTURA_FLAP=1`) açıkça zorlar; GUI aynı anahtarı Seçenekler →
-Deneysel sekmesindeki **Flap yüzey delik doldurma** onay kutusuyla sunar. Bir
+Onarım sekmesindeki **Flap yüzey delik doldurma** onay kutusuyla sunar. Bir
 aday yalnızca yeniden-yüklemede dürüst `delik + non-manifold` sayısı
 kötüleşmediğinde benimsenir; ardından düzlük-tabanlı bir temizlik sıfır
 kalınlıklı kalıntı tabakalarını atar, gerçek katı bir parçayı asla atmaz. İnce

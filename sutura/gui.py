@@ -3210,7 +3210,14 @@ class OptionsDialog(QDialog):
         main.profile_btn_delete.clicked.connect(main._profile_delete)
         main._reload_intensity_combo()
         main._refresh_profile_controls()
-        r.addWidget(main.chk_tamponade)
+        # The two on-by-default switches (Tamponade interior plug, Flap
+        # surface hole fill) sit together on the Repair tab, so the
+        # Experimental tab stays strictly opt-in / off by default.
+        flap_tamp_row = QHBoxLayout()
+        flap_tamp_row.addWidget(main.chk_tamponade)
+        flap_tamp_row.addWidget(main.chk_flap)
+        flap_tamp_row.addStretch(1)
+        r.addLayout(flap_tamp_row)
         r.addStretch(1)
         self.tabs.addTab(repair, _t('opt_tab_repair'))
 
@@ -3223,7 +3230,6 @@ class OptionsDialog(QDialog):
         e.addWidget(warn)
         for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
                     main.chk_join_components, main.chk_edge_tiebreak,
-                    main.chk_flap,
                     main.chk_dressing, main.chk_dressing_force_adopt):
             e.addWidget(chk)
         _drain_row = QHBoxLayout()
@@ -3790,7 +3796,8 @@ class MainWindow(QMainWindow):
         self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
         self.chk_indirect_autorefine.toggled.connect(
             lambda on: setattr(self, '_indirect_autorefine', on))
-        # opt-in Flap surface hole fill (Stage 1, batch-wide; off by default)
+        # Flap surface hole fill (Stage 1, batch-wide; ON by default, shown on
+        # the Repair tab next to Tamponade, not the Experimental tab)
         self.chk_flap = QCheckBox(_t('flap_label'))
         self.chk_flap.setToolTip(_t('flap_tip'))
         self.chk_flap.setChecked(self._flap)

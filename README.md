@@ -607,7 +607,7 @@ every hole still gets a lid.
 
 It is **on by default**. `--no-flap` (or `SUTURA_FLAP=0`) turns it off, `--flap`
 (or `SUTURA_FLAP=1`) forces it explicitly, and the GUI exposes the same switch
-as the Options → Experimental checkbox **Flap surface hole fill**. A candidate
+as the Options → Repair checkbox **Flap surface hole fill**. A candidate
 is adopted only when the reload-honest `holes + non-manifold` count does not
 worsen; a flatness-based cleanup then drops zero-thickness debris sheets and
 never a legitimate solid part. When the thin-plate patch is rejected (a coplanar
