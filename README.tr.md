@@ -608,7 +608,12 @@ bırakılır, böylece her delik yine bir kapak alır.
 Deneysel sekmesindeki **Flap yüzey delik doldurma** onay kutusuyla sunar. Bir
 aday yalnızca yeniden-yüklemede dürüst `delik + non-manifold` sayısı
 kötüleşmediğinde benimsenir; ardından düzlük-tabanlı bir temizlik sıfır
-kalınlıklı kalıntı tabakalarını atar, gerçek katı bir parçayı asla atmaz.
+kalınlıklı kalıntı tabakalarını atar, gerçek katı bir parçayı asla atmaz. İnce
+plaka yaması reddedildiğinde (eş düzlemli katlanma) halka sırasıyla zar,
+referans-yumuşatma ve yumuşatılmamış inceltilmiş adayları dener ve aynı
+koruyucuları Flap zaman bütçesi içinde geçen ilkini uygular; bu halka-başına
+seçimi kapatıp yalnızca ince-plaka davranışını korumak için
+`SUTURA_FLAP_SELECT=0` ayarlayın.
 
 Doldurma çekirdeğinin Rust uygulaması (`sutura_geom.flap_fill`, `sutura_geom`
 eklentisinin parçası) bulunduğunda otomatik kullanılır; aksi halde saf numpy

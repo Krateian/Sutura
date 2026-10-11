@@ -161,6 +161,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   parity holds) with an env opt-out only (`SUTURA_SI_EXCISE=0`), like the ray-stab vote.
   The refined Stage-1 hole fill (`SUTURA_REFINE_HOLE=1`) is an unproven evaluation switch,
   so it is env-only too; when it is proven it gets a CLI flag and a GUI control together.
+- **Flap per-loop candidate selection (unreleased):** on by default, the selector tries the
+  membrane / reference-fairing / unfaired refined alternatives only when a loop's thin-plate
+  patch is rejected (coplanar fold), charged against the Flap wall-clock budget, so both the
+  CLI and the GUI get it and parity is automatic. It is disabled with the env-only
+  `SUTURA_FLAP_SELECT=0` (like the ray-stab vote, no CLI flag or GUI control).
 - **Localized exact self-union (`sutura/local_exact.py`, unreleased):** the tier that
   replaces a residual Stage-2 self-intersecting cluster with the exact outer-hull
   triangulation of a small patch. It is OPT-IN and OFF by default for every install

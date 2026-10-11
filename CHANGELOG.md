@@ -87,7 +87,11 @@ All notable changes to this project are documented here.
   `sutura.topology`, saving ~2.1 MB installed. Phase 2a routes the Stage-1
   mesh-cleaning filters to the Rust kernel (`sutura_geom.remove_duplicate_faces`,
   `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding)
-  with a transparent pure-numpy fallback and bit-for-bit parity tests.
+  with a transparent pure-numpy fallback and bit-for-bit parity tests. Phase 2b
+  extends the routing to connected-component removal and face inversion
+  (`topology.remove_connected_components`, `invert_face_orientation`,
+  `mesh_topology`), so the whole Stage-1 cleaning path prefers the native
+  kernel, with parity and fallback coverage in `tests/test_topology_parity.py`.
 
 Flap hole-filling refinement is inspired by Liepa (2003), Filling Holes in
 Meshes; no third-party code is used.

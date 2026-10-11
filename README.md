@@ -605,7 +605,11 @@ It is **on by default**. `--no-flap` (or `SUTURA_FLAP=0`) turns it off, `--flap`
 as the Options → Experimental checkbox **Flap surface hole fill**. A candidate
 is adopted only when the reload-honest `holes + non-manifold` count does not
 worsen; a flatness-based cleanup then drops zero-thickness debris sheets and
-never a legitimate solid part.
+never a legitimate solid part. When the thin-plate patch is rejected (a coplanar
+fold), the loop tries the membrane, reference-fairing and unfaired refined
+candidates in turn and commits the first that passes the same guards within the
+Flap time budget; set `SUTURA_FLAP_SELECT=0` to disable this per-loop selection
+and keep the thin-plate-only behaviour.
 
 The fill core has a Rust implementation (`sutura_geom.flap_fill`, part of the
 `sutura_geom` extension) that is used automatically when present, and otherwise
