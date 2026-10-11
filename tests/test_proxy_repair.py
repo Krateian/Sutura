@@ -193,6 +193,23 @@ def test_build_proxy_bounded_on_fan_mesh():
           f"(method: {info['method']}, faces: {len(pt)}, {elapsed:.1f}s)")
 
 
+def test_resample_memory_guard_resolution():
+    """Resample memory ceiling: default, env override, invalid ignored, 0 disables."""
+    from sutura_engine.methods import proxy as _proxy
+    assert _proxy._resample_max_rss_kb() == _proxy.PROXY_RESAMPLE_MAX_RSS_MB * 1024
+    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = '64'
+    assert _proxy._resample_max_rss_kb() == 64 * 1024
+    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = 'nonsense'
+    assert _proxy._resample_max_rss_kb() == _proxy.PROXY_RESAMPLE_MAX_RSS_MB * 1024
+    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = '0'
+    assert _proxy._resample_max_rss_kb() == 0
+    del os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB']
+    # The live-RSS reader must at least report this process's own memory.
+    rss = _proxy._proc_rss_kb(os.getpid())
+    assert rss is None or rss > 0, rss
+    print("  ✓ test_resample_memory_guard_resolution passed")
+
+
 def test_defensive_error_handling():
     empty_v = np.zeros((0, 3), dtype=np.float64)
     empty_t = np.zeros((0, 3), dtype=np.int64)
@@ -214,6 +231,7 @@ def main():
     test_health_mask()
     test_build_proxy()
     test_build_proxy_bounded_on_fan_mesh()
+    test_resample_memory_guard_resolution()
     test_proxy_template_repair_sphere()
     test_proxy_template_repair_torus()
     test_defensive_error_handling()
