@@ -175,6 +175,12 @@ jobs:
       - name: "Test: Flap hole filler"
         run: ./venv/bin/python tests/test_flap.py
 
+      # Tamponade (#17) is opt-in and its Rust core is covered by the
+      # rust-geom cargo tests; this suite pins the Python integration surface
+      # (numpy + fakes only, no extension / pymeshlab required).
+      - name: "Test: Tamponade integration (method #17)"
+        run: ./venv/bin/python tests/test_tamponade_integration.py
+
       - name: "Test: update-check shutdown"
         run: ./venv/bin/python tests/test_update_check_shutdown.py
 
