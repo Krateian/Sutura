@@ -280,6 +280,9 @@ pub struct TamponadeInfo {
     /// One entry per boundary loop: its vertex count and the decision taken
     /// (`sealed`, `tiny_sealed`, or a rejection reason). Diagnostic only.
     pub loop_diag: Vec<String>,
+    /// One entry per STENT candidate attempt: `m=<n> <reason>` (sealed or the
+    /// rejection cause). Diagnostic only.
+    pub stent_diag: Vec<String>,
 }
 
 /// Compute a robust median edge length of the input mesh.
@@ -3507,6 +3510,9 @@ struct PlugRegion {
     rim: Vec<u32>,
     /// True when this region was produced by the stent plug candidate.
     stent: bool,
+    /// Number of vertices this plug appended (stent/steiner fan). Used so a
+    /// rollback subtracts the true `patch_vertices` delta, not a hardcoded 1.
+    added_verts: usize,
     /// Diagnostic method tag for the per-plug metrics report.
     method: &'static str,
 }
@@ -4309,6 +4315,25 @@ const STENT_PRESSURE: f64 = 6.0;
 const STENT_MAX_ITERS: usize = 6;
 /// Per-loop wall-clock cap for the fallback pass, in milliseconds.
 const STENT_LOOP_BUDGET_MS: u64 = 500;
+/// Additional per-rim-vertex slice (ms): a large loop needs more active-set
+/// iterations than a 4-vertex crater, so the per-loop slice grows with the rim
+/// size. Clamped by the tier's global deadline and by `STENT_LOOP_MAX_BUDGET_MS`.
+const STENT_LOOP_BUDGET_PER_VERT_MS: f64 = 8.0;
+/// Absolute per-loop slice ceiling (ms).
+const STENT_LOOP_MAX_BUDGET_MS: u64 = 4000;
+
+/// Per-loop stent wall-clock slice, scaled by the rim size and clamped by the
+/// tier deadline when one is set.
+fn stent_loop_deadline(m: usize, global: Option<Instant>) -> Option<Instant> {
+    let ms = STENT_LOOP_BUDGET_MS
+        + (STENT_LOOP_BUDGET_PER_VERT_MS * m as f64) as u64;
+    let ms = ms.min(STENT_LOOP_MAX_BUDGET_MS);
+    let local = Instant::now() + Duration::from_millis(ms);
+    match global {
+        Some(g) => Some(if local < g { local } else { g }),
+        None => Some(local),
+    }
+}
 
 /// Prune back-and-forth antenna spur pairs where `dist(pts[i], pts[i+2]) < 1e-4`.
 /// Operates on a LOCAL rim copy only: the caller must never pass the rim that
@@ -4346,6 +4371,16 @@ fn prune_spur_slits(rim: &mut Vec<u32>, verts: &[[f64; 3]]) {
     }
 }
 
+/// Remove rim vertices that coincide in the STL reload float32 quantisation
+/// (keeping the first occurrence). Non-adjacent duplicates -- a pinched rim
+/// that visits the same position twice -- otherwise double an edge in the cap
+/// and fail the reload-nonmanifold gate; after the reload weld they are one
+/// vertex anyway.
+fn dedup_rim_f32(rim: &mut Vec<u32>, verts: &[[f64; 3]]) {
+    let mut seen: HashSet<[u32; 3]> = HashSet::new();
+    rim.retain(|&v| seen.insert(f32_position_key(verts[v as usize])));
+}
+
 /// Outward prior from the rim's incident boundary face normals (outward for a
 /// consistently oriented shell). Zero vector when unavailable.
 fn outward_prior(edge_normals: &HashMap<(u32, u32), [f64; 3]>, rim: &[u32]) -> [f64; 3] {
@@ -4370,6 +4405,9 @@ fn outward_prior(edge_normals: &HashMap<(u32, u32), [f64; 3]>, rim: &[u32]) -> [
 /// outward pressure on the free vertices. Rim vertices (`0..m`) and any free
 /// vertex that has reached the shell (within `tol`) are Dirichlet (frozen); a
 /// Newton step that would cross the shell is clamped to the crossing.
+/// Returns `true` when the solve stopped because its wall-clock `deadline`
+/// expired (i.e. it did not reach a fixed point), `false` when it converged
+/// (free set empty, max move below tolerance) or a linear solve failed.
 fn solve_thin_plate_active_set(
     p: &mut Vec<[f64; 3]>,
     faces: &[[u32; 3]],
@@ -4380,10 +4418,32 @@ fn solve_thin_plate_active_set(
     n_out: [f64; 3],
     max_iters: usize,
     deadline: Option<Instant>,
-) {
+) -> bool {
     let n = p.len();
     if n <= m {
-        return;
+        return false;
+    }
+    // Aperture-plane bound. The cap may not rise farther OUTWARD (`n_out`) than
+    // the highest rim vertex: without it an unobstructed through-hole keeps
+    // inflating into a dome that pokes through a thin wall and is dropped by the
+    // leak gate. A crater on a flat rim is filled flush with the rim; a dent is
+    // still shaped by the shell obstacle up to that level.
+    let mut c = [0.0f64; 3];
+    for i in 0..m {
+        c[0] += p[i][0];
+        c[1] += p[i][1];
+        c[2] += p[i][2];
+    }
+    let inv_m = 1.0 / m as f64;
+    c = [c[0] * inv_m, c[1] * inv_m, c[2] * inv_m];
+    let mut plane_max = 0.0f64;
+    for i in 0..m {
+        let off = (p[i][0] - c[0]) * n_out[0]
+            + (p[i][1] - c[1]) * n_out[1]
+            + (p[i][2] - c[2]) * n_out[2];
+        if off > plane_max {
+            plane_max = off;
+        }
     }
     let mut active = vec![false; n];
     for i in 0..m {
@@ -4402,8 +4462,10 @@ fn solve_thin_plate_active_set(
         v.dedup();
     }
 
+    let mut timed_out = false;
     for _iter in 0..max_iters {
         if deadline_passed(deadline) {
+            timed_out = true;
             break;
         }
         for i in m..n {
@@ -4535,6 +4597,14 @@ fn solve_thin_plate_active_set(
 
         let mut max_move = 0.0f64;
         for (k, &r) in free.iter().enumerate() {
+            // Enforce the global/slice deadline INSIDE the per-vertex movement
+            // loop too: a single large LU solve plus its BVH queries can
+            // otherwise overrun the per-loop slice, which is what let the
+            // tier exceed its wall-clock budget on ornate-frame.
+            if deadline_passed(deadline) {
+                timed_out = true;
+                break;
+            }
             let p_target = [b_mat[(k, 0)], b_mat[(k, 1)], b_mat[(k, 2)]];
             let p_old = p[r];
             let step = [p_target[0] - p_old[0], p_target[1] - p_old[1], p_target[2] - p_old[2]];
@@ -4560,6 +4630,19 @@ fn solve_thin_plate_active_set(
                         active[r] = true;
                     }
                 }
+                // Aperture-plane clamp: never rise above the highest rim vertex
+                // along the outward normal.
+                let off = (p[r][0] - c[0]) * n_out[0]
+                    + (p[r][1] - c[1]) * n_out[1]
+                    + (p[r][2] - c[2]) * n_out[2];
+                if off > plane_max {
+                    let d = off - plane_max;
+                    p[r] = [
+                        p[r][0] - n_out[0] * d,
+                        p[r][1] - n_out[1] * d,
+                        p[r][2] - n_out[2] * d,
+                    ];
+                }
                 let actual = norm3([p[r][0] - p_old[0], p[r][1] - p_old[1], p[r][2] - p_old[2]]);
                 if actual > max_move {
                     max_move = actual;
@@ -4570,6 +4653,7 @@ fn solve_thin_plate_active_set(
             break;
         }
     }
+    timed_out
 }
 
 /// Runaway guard for a stent patch: no added vertex may stray beyond
@@ -4606,7 +4690,9 @@ fn stent_shape_ok(
 
 /// Stent plug candidate: stiff active-set thin-plate inflate from INSIDE the
 /// solid. `rim` must already be a local (possibly pruned) copy. Returns
-/// `(cand_tris, added_verts)`; `cand` is in global vertex indices.
+/// `(cand_tris, added_verts)`; `cand` is in global vertex indices. On `None`,
+/// `*reason` carries a short rejection cause; `*timed_out` is set when the
+/// active-set solve was cut off by its wall-clock slice (no convergence).
 #[allow(clippy::too_many_arguments)]
 fn stent_plug(
     rim: &[u32],
@@ -4619,9 +4705,14 @@ fn stent_plug(
     new_base: u32,
     n_prior: [f64; 3],
     deadline: Option<Instant>,
+    reason: &mut &'static str,
+    timed_out: &mut bool,
 ) -> Option<(Vec<[u32; 3]>, Vec<[f64; 3]>)> {
+    *reason = "";
+    *timed_out = false;
     let m = rim.len();
     if m < 3 {
+        *reason = "no_rim";
         return None;
     }
     let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
@@ -4642,6 +4733,7 @@ fn stent_plug(
         }
     }
     if rim_extent < 1e-12 {
+        *reason = "degenerate";
         return None;
     }
 
@@ -4754,7 +4846,7 @@ fn stent_plug(
         seed_local_tris = flipped;
     }
 
-    solve_thin_plate_active_set(
+    *timed_out = solve_thin_plate_active_set(
         &mut seed_pts,
         &seed_local_tris,
         m,
@@ -4784,12 +4876,59 @@ fn stent_plug(
     let mut vy = verts.to_vec();
     vy.extend_from_slice(&added);
     if !plug_structure_ok(&cand, rim, &vy) {
+        *reason = "structure";
         return None;
     }
     if cancellation_count(&cand, rim, directed_set) == 0 {
+        *reason = "cancel0";
         return None;
     }
     Some((cand, added))
+}
+
+/// Diagnostic-only dump of a stent attempt (loop + candidate) as an OBJ when
+/// `SUTURA_TAMP_STENT_DUMP` names a directory. Never affects a repair; a write
+/// failure is ignored. The shell is written first (unchanged) then the added
+/// vertices and the candidate faces, so the OBJ reloads as shell+candidate for
+/// external inspection of a rejection.
+fn dump_stent_candidate(
+    dir: &str,
+    seq: usize,
+    m: usize,
+    reason: &str,
+    out_verts: &[[f64; 3]],
+    out_tris: &[[u32; 3]],
+    added: &[[f64; 3]],
+    cand: &[[u32; 3]],
+) {
+    use std::io::Write;
+    let path = format!("{}/stent_{:02}_m{}_{}.obj", dir, seq, m, reason);
+    let file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let mut w = std::io::BufWriter::new(file);
+    let _ = writeln!(w, "# stent attempt seq={} m={} reason={}", seq, m, reason);
+    let _ = writeln!(
+        w,
+        "# nv={} nadded={} ncand={} ntri={}",
+        out_verts.len(),
+        added.len(),
+        cand.len(),
+        out_tris.len()
+    );
+    for p in out_verts {
+        let _ = writeln!(w, "v {} {} {}", p[0], p[1], p[2]);
+    }
+    for p in added {
+        let _ = writeln!(w, "v {} {} {}", p[0], p[1], p[2]);
+    }
+    for t in out_tris {
+        let _ = writeln!(w, "f {} {} {}", t[0] + 1, t[1] + 1, t[2] + 1);
+    }
+    for t in cand {
+        let _ = writeln!(w, "f {} {} {}", t[0] + 1, t[1] + 1, t[2] + 1);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5012,6 +5151,25 @@ pub fn tamponade_repair(
     let t0 = Instant::now();
     let mut info = TamponadeInfo::default();
     info.healthy_faces_kept = tris.len();
+
+    // Diagnostic-only: when `SUTURA_TAMP_STENT_DUMP` names a directory, write
+    // the loop + rejected stent candidate as an OBJ (see `dump_stent_candidate`).
+    macro_rules! stent_dump {
+        ($seq:expr, $ov:expr, $ot:expr, $m:expr, $reason:expr, $added:expr, $cand:expr) => {
+            if let Ok(d) = std::env::var("SUTURA_TAMP_STENT_DUMP") {
+                dump_stent_candidate(
+                    &d,
+                    $seq,
+                    $m,
+                    $reason,
+                    $ov,
+                    $ot,
+                    $added,
+                    $cand,
+                );
+            }
+        };
+    }
 
     if tris.is_empty() || verts.is_empty() {
         info.reason = "empty mesh".to_string();
@@ -5447,6 +5605,12 @@ pub fn tamponade_repair(
             None
         };
         let mut sealed = false;
+        // Set when the rim-only / Steiner-fan branch (which deliberately leaves
+        // `sealed = false`, cf. the M4 note) committed a region. The stent must
+        // not re-attempt a loop the rim/steiner plug already sealed (review
+        // observation 2): the no-gain guard would drop the duplicate, but only
+        // after the wasted solve.
+        let mut rim_sealed = false;
         // Every in-place vertex move this loop makes (the overshoot trim), with
         // the position each vertex held before the move. Carried into whichever
         // plug commits, so a later rollback can restore the region exactly.
@@ -5582,6 +5746,7 @@ pub fn tamponade_repair(
                         moved: loop_moved.clone(),
                         rim: group_rim.clone(),
                         stent: false,
+                        added_verts: n_added,
                         method: if is_skirt { "skirt" } else { "reference" },
                     });
                     plug_count += 1;
@@ -5705,9 +5870,11 @@ pub fn tamponade_repair(
                                 moved: loop_moved.clone(),
                                 rim: group_rim.clone(),
                                 stent: false,
+                                added_verts: if centre.is_some() { 1 } else { 0 },
                                 method: if centre.is_some() { "steiner" } else { "rim" },
                             });
                             plug_count += 1;
+                            rim_sealed = true;
                             info.loop_diag.push(format!(
                                 "m={} sealed{}{}",
                                 rim.len(),
@@ -5734,22 +5901,16 @@ pub fn tamponade_repair(
         // active-set inflate from inside. The rim is pruned on a LOCAL copy only.
         // The shared end-of-tier gates (leak / double-wall / connectivity) and
         // the reload verdict judge the committed region.
-        if !sealed && stent_plug_enabled() {
+        if !sealed && !rim_sealed && stent_plug_enabled() {
             let mut rim_b = rim.clone();
             prune_spur_slits(&mut rim_b, &out_verts);
+            dedup_rim_f32(&mut rim_b, &out_verts);
             if rim_b.len() >= 3 {
                 let n_prior = outward_prior(&bnd_edge_normals, &rim_b);
                 let new_base = out_verts.len() as u32;
-                let loop_deadline = match deadline {
-                    Some(global) => {
-                        let local = Instant::now()
-                            + Duration::from_millis(STENT_LOOP_BUDGET_MS);
-                        Some(if local < global { local } else { global })
-                    }
-                    None => {
-                        Some(Instant::now() + Duration::from_millis(STENT_LOOP_BUDGET_MS))
-                    }
-                };
+                let loop_deadline = stent_loop_deadline(rim_b.len(), deadline);
+                let mut reason: &'static str = "";
+                let mut timed_out = false;
                 match stent_plug(
                     &rim_b,
                     &out_verts,
@@ -5761,6 +5922,8 @@ pub fn tamponade_repair(
                     new_base,
                     n_prior,
                     loop_deadline,
+                    &mut reason,
+                    &mut timed_out,
                 ) {
                     Some((cand, added)) => {
                         let cand_counts = edge_use_counts(&cand);
@@ -5770,15 +5933,24 @@ pub fn tamponade_repair(
                         if collides {
                             info.loop_diag
                                 .push(format!("m={} rejected:edge_collision", rim_b.len()));
+                            info.stent_diag
+                                .push(format!("m={} rejected:edge_collision", rim_b.len()));
                             info.stent_rejected += 1;
+                            stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim_b.len(), "edge_collision", &added, &cand);
                         } else if !stent_shape_ok(&cand, &out_verts, &added, &rim_b, rim_diag) {
                             info.loop_diag
                                 .push(format!("m={} rejected:shape", rim_b.len()));
+                            info.stent_diag
+                                .push(format!("m={} rejected:shape", rim_b.len()));
                             info.stent_rejected += 1;
+                            stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim_b.len(), "shape", &added, &cand);
                         } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
                             info.loop_diag
                                 .push(format!("m={} rejected:reload_nm", rim_b.len()));
+                            info.stent_diag
+                                .push(format!("m={} rejected:reload_nm", rim_b.len()));
                             info.stent_rejected += 1;
+                            stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim_b.len(), "reload_nm", &added, &cand);
                         } else {
                             for (e, &d) in &cand_counts {
                                 *edge_count.entry(*e).or_insert(0) += d;
@@ -5795,18 +5967,33 @@ pub fn tamponade_repair(
                                 reference: false,
                                 steiner: n_added > 0,
                                 moved: loop_moved.clone(),
-                                rim: group_rim.clone(),
+                                rim: rim_b.clone(),
                                 stent: true,
+                                added_verts: n_added,
                                 method: "stent",
                             });
                             plug_count += 1;
                             info.stent_used += 1;
                             sealed = true;
                             info.loop_diag.push(format!("m={} sealed:stent", rim_b.len()));
+                            info.stent_diag.push(format!(
+                                "m={} sealed{}",
+                                rim_b.len(),
+                                if timed_out { " (deadline)" } else { "" }
+                            ));
                         }
                     }
                     None => {
                         info.stent_rejected += 1;
+                        info.stent_diag.push(format!(
+                            "m={} rejected:{}",
+                            rim_b.len(),
+                            if reason.is_empty() {
+                                if timed_out { "deadline" } else { "unknown" }
+                            } else {
+                                reason
+                            }
+                        ));
                     }
                 }
             }
@@ -5830,7 +6017,10 @@ pub fn tamponade_repair(
         // region is injected at most once; a region that sealed is skipped.
         if queue.is_empty() {
             for (region, gls) in &greedy_by_region {
-                if !region_sealed.contains(region) && greedy_injected.insert(*region) {
+                if !region_sealed.contains(region)
+                    && !kept_open.contains(region)
+                    && greedy_injected.insert(*region)
+                {
                     for gl in gls {
                         queue.push_back((gl.clone(), Some(loops[*region].clone()), *region));
                     }
@@ -5872,6 +6062,10 @@ pub fn tamponade_repair(
             if rim.len() < 3 {
                 continue;
             }
+            dedup_rim_f32(&mut rim, &out_verts);
+            if rim.len() < 3 {
+                continue;
+            }
 
             let mut rim_box = BBox::empty();
             for &v in &rim {
@@ -5884,13 +6078,9 @@ pub fn tamponade_repair(
 
             let n_prior = outward_prior(&bnd_edge_normals, &rim);
             let new_base = out_verts.len() as u32;
-            let loop_deadline = match deadline {
-                Some(global) => {
-                    let local = Instant::now() + Duration::from_millis(STENT_LOOP_BUDGET_MS);
-                    Some(if local < global { local } else { global })
-                }
-                None => Some(Instant::now() + Duration::from_millis(STENT_LOOP_BUDGET_MS)),
-            };
+            let loop_deadline = stent_loop_deadline(rim.len(), deadline);
+            let mut reason: &'static str = "";
+            let mut timed_out = false;
             let stent_res = stent_plug(
                 &rim,
                 &out_verts,
@@ -5902,6 +6092,8 @@ pub fn tamponade_repair(
                 new_base,
                 n_prior,
                 loop_deadline,
+                &mut reason,
+                &mut timed_out,
             );
             if deadline_passed(deadline) {
                 // The global tier budget is gone; do not commit further plugs.
@@ -5917,15 +6109,24 @@ pub fn tamponade_repair(
                 if collides {
                     info.loop_diag
                         .push(format!("m={} rejected:edge_collision", rim.len()));
+                    info.stent_diag
+                        .push(format!("m={} rejected:edge_collision", rim.len()));
                     info.stent_rejected += 1;
+                    stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim.len(), "edge_collision", &added, &cand);
                 } else if !stent_shape_ok(&cand, &out_verts, &added, &rim, rim_diag) {
                     info.loop_diag
                         .push(format!("m={} rejected:shape", rim.len()));
+                    info.stent_diag
+                        .push(format!("m={} rejected:shape", rim.len()));
                     info.stent_rejected += 1;
+                    stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim.len(), "shape", &added, &cand);
                 } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
                     info.loop_diag
                         .push(format!("m={} rejected:reload_nm", rim.len()));
+                    info.stent_diag
+                        .push(format!("m={} rejected:reload_nm", rim.len()));
                     info.stent_rejected += 1;
+                    stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim.len(), "reload_nm", &added, &cand);
                 } else {
                     for (e, &d) in &cand_counts {
                         *edge_count.entry(*e).or_insert(0) += d;
@@ -5944,15 +6145,30 @@ pub fn tamponade_repair(
                         moved: Vec::new(),
                         rim: rim.clone(),
                         stent: true,
+                        added_verts: n_added,
                         method: "stent",
                     });
                     plug_count += 1;
                     info.stent_used += 1;
                     region_sealed.insert(region_key);
                     info.loop_diag.push(format!("m={} sealed:stent", rim.len()));
+                    info.stent_diag.push(format!(
+                        "m={} sealed{}",
+                        rim.len(),
+                        if timed_out { " (deadline)" } else { "" }
+                    ));
                 }
             } else {
                 info.stent_rejected += 1;
+                info.stent_diag.push(format!(
+                    "m={} rejected:{}",
+                    rim.len(),
+                    if reason.is_empty() {
+                        if timed_out { "deadline" } else { "unknown" }
+                    } else {
+                        reason
+                    }
+                ));
             }
         }
     }
@@ -6064,8 +6280,11 @@ pub fn tamponade_repair(
                 if region.reference {
                     info.reference_used = info.reference_used.saturating_sub(1);
                 }
-                if region.steiner {
-                    info.patch_vertices = info.patch_vertices.saturating_sub(1);
+                // M8: subtract the region's true appended-vertex count, not a
+                // hardcoded 1 (a stent fan appends many vertices per region).
+                if region.steiner && region.added_verts > 0 {
+                    info.patch_vertices = info.patch_vertices
+                        .saturating_sub(region.added_verts);
                 }
                 if region.stent {
                     info.stent_used = info.stent_used.saturating_sub(1);
@@ -7045,7 +7264,7 @@ mod tests {
         let base = reload_verdict(&verts, &tris[..2]);
         let full = reload_verdict(&verts, &tris);
         // The third triangle is the "plug" region.
-        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new(), stent: false, method: "rim" };
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new(), stent: false, added_verts: 0, method: "rim" };
         let without = reload_verdict_without(&verts, &tris, &region);
         assert!(
             without.nm_edges < full.nm_edges && !without.worse_than(&base),
@@ -7114,6 +7333,7 @@ mod tests {
             moved: Vec::new(),
             rim: Vec::new(),
             stent: false,
+            added_verts: 0,
             method: "rim",
         };
         (verts, tris, region)
@@ -7150,6 +7370,7 @@ mod tests {
             moved: Vec::new(),
             rim: Vec::new(),
             stent: false,
+            added_verts: 0,
             method: "rim",
         };
 
@@ -7199,6 +7420,7 @@ mod tests {
             moved: vec![(3, [0.5, 0.5, 0.05])],
             rim: Vec::new(),
             stent: false,
+            added_verts: 0,
             method: "reference",
         };
         let mut ov = verts.clone();
@@ -7261,6 +7483,7 @@ mod tests {
                 moved: Vec::new(),
                 rim: rim.clone(),
                 stent: false,
+                added_verts: 0,
                 method: "steiner",
             };
             plug_leak(&bvh, &verts, &nv, &t, &region, tol, 8)
@@ -7307,7 +7530,7 @@ mod tests {
         let dup_tris = vec![[8u32, 9, 10]];
         let region = PlugRegion {
             tri_start: 0, tri_end: 1, reference: false, steiner: true,
-            moved: Vec::new(), rim: Vec::new(), stent: false, method: "steiner",
+            moved: Vec::new(), rim: Vec::new(), stent: false, added_verts: 0, method: "steiner",
         };
         assert!(
             !plug_is_double_wall(&bvh, &verts, &tris, &dup, &dup_tris, &region, tol),
@@ -7528,11 +7751,53 @@ mod tests {
         let bvh = MeshBvh::from_arrays(&verts, &idx);
         let plug = stent_plug(
             &rim, &verts, &directed_set, &edge_count, &bvh, 0.5, 0.05,
-            verts.len() as u32, [0.0, 0.0, 1.0], None,
+            verts.len() as u32, [0.0, 0.0, 1.0], None, &mut "", &mut false,
         );
         assert!(plug.is_some(), "stent must produce a candidate for a flat square hole");
         let (cand, _added) = plug.unwrap();
         assert!(!cand.is_empty());
+    }
+
+    #[test]
+    fn test_dedup_rim_f32_removes_coincident() {
+        // Two rim entries with the same float32 position (a pinched rim) must
+        // collapse to one: otherwise the cap doubles an edge and fails the
+        // reload-nonmanifold gate.
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let mut rim = vec![0u32, 1, 2, 3, 4];
+        dedup_rim_f32(&mut rim, &verts);
+        assert_eq!(rim, vec![0u32, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_stent_aperture_clamp_keeps_flat_hole_flat() {
+        // A flat through-hole must not be domed outward: every added vertex has
+        // to stay at or below the rim plane (z = 1, n_out = +z).
+        let (verts, tris) = unit_cube_open_top();
+        let rim: Vec<u32> = vec![4, 5, 6, 7];
+        let directed_set: HashSet<(u32, u32)> =
+            [(4, 5), (5, 6), (6, 7), (7, 4)].into_iter().collect();
+        let edge_count: HashMap<(u32, u32), i32> = HashMap::new();
+        let idx: Vec<[usize; 3]> = tris
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let bvh = MeshBvh::from_arrays(&verts, &idx);
+        let plug = stent_plug(
+            &rim, &verts, &directed_set, &edge_count, &bvh, 0.5, 0.05,
+            verts.len() as u32, [0.0, 0.0, 1.0], None, &mut "", &mut false,
+        );
+        let (_cand, added) = plug.expect("flat hole must seal");
+        assert!(
+            added.iter().all(|p| p[2] <= 1.0 + 1e-9),
+            "the cap must not dome above the rim plane"
+        );
     }
 
     #[test]
@@ -7581,7 +7846,7 @@ mod tests {
         let bvh = MeshBvh::from_arrays(&verts, &idx);
         let plug = stent_plug(
             &rim, &verts, &directed_set, &edge_count, &bvh, 0.2, 0.05,
-            verts.len() as u32, [0.0, 0.0, 1.0], None,
+            verts.len() as u32, [0.0, 0.0, 1.0], None, &mut "", &mut false,
         );
         assert!(plug.is_some(), "a shallow conical tip within tol must be sealed by the stent");
     }
