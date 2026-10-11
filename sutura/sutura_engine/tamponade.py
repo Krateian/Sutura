@@ -14,8 +14,9 @@ surface-based tiers it never deletes an input triangle: the report's
 ``reference_used`` / ``reference_fallback`` / ``trimmed_vertices`` /
 ``patch_vertices`` describe the reference-surface path.
 
-The tier is opt-in.  ``run_tamponade`` is a thin, never-raising wrapper around
-the extension: an install without ``sutura_geom.tamponade`` (or with
+The tier is on by default (disable with ``--no-tamponade`` /
+``SUTURA_TAMPONADE=0``).  ``run_tamponade`` is a thin, never-raising wrapper
+around the extension: an install without ``sutura_geom.tamponade`` (or with
 ``TAMPONADE_SUPPORTED`` absent) reports ``{'ran': False, 'reason':
 'sutura_geom.tamponade unavailable'}`` and the caller keeps the mesh it had.
 

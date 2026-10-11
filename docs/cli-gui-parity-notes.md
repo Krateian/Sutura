@@ -175,14 +175,14 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `1/true/yes/on`) and disabled with `SUTURA_LOCAL_EXACT=0`; there is deliberately NO CLI
   flag or GUI control, so CLI and GUI behave identically (parity by construction, like the
   ray-stab vote).
-- **Tamponade (#17, interior hole plug + SI melt, unreleased):** CLI
+- **Tamponade (#17, interior hole plug + SI melt, v0.9.0):** CLI
   `--tamponade` / `--no-tamponade` and env `SUTURA_TAMPONADE` /
   `SUTURA_TAMPONADE_DEFAULT` control the on-by-default interior-plug tier; the GUI
   exposes the same as Options → Repair *Tamponade (fill holes from inside)*
   (EN/TR), and the repair-log panel renders the adopted / not-adopted verdict.
   The library default (`TAMPONADE_DEFAULT_ENABLED = True`) runs the tier on every
   path; `--no-tamponade` / `SUTURA_TAMPONADE=0` / the GUI checkbox disable it.
-- **Stent (Tamponade's inflate-from-inside plug, unreleased):** a per-loop plug
+- **Stent (Tamponade's inflate-from-inside plug, v0.9.0):** a per-loop plug
   candidate inside Tamponade that runs when the reference plug is rejected for
   that loop. It rides INSIDE the Tamponade tier (it only runs when Tamponade runs
   — on by default; disable Tamponade itself with `--no-tamponade` /

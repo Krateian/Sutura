@@ -143,11 +143,16 @@ def main():
     # 16 Dressing is opt-in (needs_user_input) but still selectable.
     assert acts[15].text().startswith('Dressing') or 'Dressing' in acts[15].text(), \
         acts[15].text()
-    # 17 Tamponade is opt-in (needs_user_input) but still selectable; enabled
-    # iff the Rust extension exposes sutura_geom.tamponade.
+    # 17 Tamponade (on by default) is selectable; enabled iff the Rust
+    # extension exposes sutura_geom.tamponade.
     assert 'Tamponade' in acts[16].text(), acts[16].text()
     t_ok, _t_reason = methods.get_method(17).available()
     assert acts[16].isEnabled() is t_ok, (acts[16].isEnabled(), t_ok)
+    # Tagging #17 works and renders the running-order badge in the Method column.
+    w._on_tag_toggle([b], 'method', 17)
+    assert '#17' in w._item_by_path[b].text(1), w._item_by_path[b].text(1)
+    w._on_tag_toggle([b], 'method', 17)
+    assert '#17' not in w._item_by_path[b].text(1), w._item_by_path[b].text(1)
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live

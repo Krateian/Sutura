@@ -319,14 +319,17 @@ STRINGS = {
                                     'shape may deform; the same option the '
                                     'non-watertight suggestion offers.',
         'tamponade_label': 'Tamponade (fill holes from inside)',
-        'tamponade_tip': 'Opt-in (#17): plug each open Stage-1 boundary loop '
-                         'from the inside (no input triangle is deleted) and '
-                         'melt residual self-intersections in rolled-back '
-                         'layers, keeping >= 99% of the healthy faces. Runs '
-                         'after Stage 1 + Flap and before Graft/fTetWild; '
-                         'adopted only when the reload-honest holes + '
-                         'non-manifold count strictly falls. Off by default '
-                         'until measured on the corpus.',
+        'tamponade_tip': 'Tamponade (#17) \u2014 on by default; turn it off here '
+                         'or with --no-tamponade / SUTURA_TAMPONADE=0. Runs '
+                         'first as a pre-pass on the cleaned input before Flap '
+                         'and Stage 1 hole closing, with a second chance after '
+                         'Flap and before Graft/fTetWild. Plugs each open hole '
+                         'from the inside (Stent inflates from inside and '
+                         'freezes at the shell; large holes split into several '
+                         'Stents); never deletes input triangles; adopted only '
+                         'when the reload-honest holes + non-manifold count '
+                         'strictly falls without new parts. A final safety net '
+                         're-runs without it if the result collapses or leaks.',
         'try_dressing_btn': '\u26a0 Try Dressing (makes it watertight, but the '
                             'part may deform)',
         'try_dressing_btn_n': '\u26a0 Try Dressing on %d file(s) '
@@ -941,14 +944,18 @@ STRINGS = {
                                     'su geçirmez olmayan sonuçta önerilen '
                                     'seçeneğin aynısı.',
         'tamponade_label': 'Tamponad (delikleri içeriden doldur)',
-        'tamponade_tip': 'İsteğe bağlı (#17): Aşama-1 sonrası kalan her açık '
-                         'sınır çevrimini içeriden tıkar (hiçbir giriş üçgeni '
-                         'silinmez) ve kalan kendisiyle-kesişimleri geri '
-                         'alınan katmanlarla eritir; sağlıklı yüzlerin >= %99\'u '
-                         'korunur. Aşama 1 + Flap sonrası, Graft/fTetWild '
-                         'öncesi çalışır; yalnızca yeniden-yükleme delik + '
-                         'manifoldu-bo-zuk sayısı kesin azalırsa benimsenir. '
-                         'Korpus ölçümüne kadar varsayılan olarak kapalı.',
+        'tamponade_tip': 'Tamponad (#17) \u2014 varsayılan olarak açık; buradan '
+                         'ya da --no-tamponade / SUTURA_TAMPONADE=0 ile '
+                         'kapatın. Önce temizlenmiş girdi üzerinde Flap ve '
+                         'Aşama 1 delik kapatmadan önce bir ön-geçiş olarak '
+                         'çalışır; Flap sonrası ve Graft/fTetWild öncesi ikinci '
+                         'bir şansı vardır. Her açık deliği içeriden tıkar '
+                         '(Stent içeriden şişer ve kabukta donar; büyük delikler '
+                         'birkaç Stente bölünür); hiçbir giriş üçgenini silmez; '
+                         'yalnızca yeniden-yükleme delik + manifold-bo-zuk '
+                         'sayısı yeni parça oluşturmadan kesin azalırsa '
+                         'benimsenir. Sonuç çöker ya da sızdırırsa emniyet ağı '
+                         'onsuz yeniden çalıştırır.',
         'try_dressing_btn': '\u26a0 Pansuman (Dressing) ile dene (su geçirmez yapar, ama '
                             'parça deforme olabilir)',
         'try_dressing_btn_n': '\u26a0 %d dosyada Pansuman (Dressing) ile dene (su geçirmez, '
@@ -3816,8 +3823,7 @@ class MainWindow(QMainWindow):
         self.chk_dressing_force_adopt.setToolTip(_t('dressing_force_adopt_tip'))
         self.chk_dressing_force_adopt.toggled.connect(
             lambda on: setattr(self, '_dressing_force_adopt', on))
-        # opt-in Tamponade interior plug (#17, batch-wide; off by default until
-        # measured on the corpus)
+        # Tamponade interior plug (#17, batch-wide; on by default)
         self.chk_tamponade = QCheckBox(_t('tamponade_label'))
         self.chk_tamponade.setToolTip(_t('tamponade_tip'))
         self.chk_tamponade.setChecked(self._tamponade)
