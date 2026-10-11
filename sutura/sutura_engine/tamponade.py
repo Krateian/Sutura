@@ -76,7 +76,7 @@ TAMPONADE_PREPASS_MIN_S = 1.0
 TAMPONADE_LOOP_BUDGET_BASE_S = 0.30
 TAMPONADE_LOOP_BUDGET_PER_VERTEX_S = 0.10
 
-# The inside-out SI melt is opt-in by intensity: it runs only at the two
+# The inside-out SI melt is gated by intensity: it runs only at the two
 # heavier presets (or when explicitly forced with SUTURA_TAMPONADE_MELT=1),
 # because slicers ignore self-intersections and the melt is not worth its
 # per-layer cost at quick/balanced.
