@@ -247,10 +247,10 @@ pub struct TamponadeInfo {
     /// Holes sealed by a skirt plug (cap on the reference + zipper strip to the
     /// projected rim; subset of `reference_used`).
     pub reference_skirt: usize,
-    /// Holes sealed by the balloon plug (thin-plate active-set inflate).
-    pub balloon_used: usize,
-    /// Balloon candidates attempted but not committed (any reason).
-    pub balloon_rejected: usize,
+    /// Holes sealed by the stent plug (thin-plate active-set inflate).
+    pub stent_used: usize,
+    /// Stent candidates attempted but not committed (any reason).
+    pub stent_rejected: usize,
     /// Per-plug standard numeric metrics (JSON array, see plug-metrics spec).
     pub plug_metrics_json: String,
     /// Rim/tail vertices lifted onto the reference surface (overshoot trim).
@@ -3505,8 +3505,8 @@ struct PlugRegion {
     /// gate's aperture-footprint test so a reference fill that bulges over the
     /// whole hole is not mistaken for a leak.
     rim: Vec<u32>,
-    /// True when this region was produced by the balloon plug candidate.
-    balloon: bool,
+    /// True when this region was produced by the stent plug candidate.
+    stent: bool,
     /// Diagnostic method tag for the per-plug metrics report.
     method: &'static str,
 }
@@ -4271,10 +4271,10 @@ fn build_plug_metrics_json(
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"m\":{},\"method\":\"{}\",\"balloon\":{},\"n_faces\":{},\"area_mm2\":{:.6},\"coincident_frac\":{:.4},\"leak\":{},\"double_wall\":{},\"connected\":{},\"min_edge_mm\":{:.6},\"max_aspect\":{:.3},\"tol\":{:.6}}}",
+            "{{\"m\":{},\"method\":\"{}\",\"stent\":{},\"n_faces\":{},\"area_mm2\":{:.6},\"coincident_frac\":{:.4},\"leak\":{},\"double_wall\":{},\"connected\":{},\"min_edge_mm\":{:.6},\"max_aspect\":{:.3},\"tol\":{:.6}}}",
             region.rim.len(),
             region.method,
-            region.balloon,
+            region.stent,
             region.tri_end - region.tri_start,
             area,
             coincident_frac,
@@ -4290,11 +4290,11 @@ fn build_plug_metrics_json(
     out
 }
 
-// --- Balloon plug (thin-plate active-set inflate, Method #17 candidate) ----
-/// Opt-out switch for the balloon plug candidate. Unset -> enabled; `0`/`false`
+// --- Stent plug (thin-plate active-set inflate, Method #17 candidate) ----
+/// Opt-out switch for the stent plug candidate. Unset -> enabled; `0`/`false`
 /// -> disabled and the tier is a byte-exact no-op.
-pub fn balloon_plug_enabled() -> bool {
-    match std::env::var("SUTURA_TAMP_BALLOON") {
+pub fn stent_plug_enabled() -> bool {
+    match std::env::var("SUTURA_TAMP_STENT") {
         Ok(v) => v != "0" && !v.eq_ignore_ascii_case("false"),
         Err(_) => true,
     }
@@ -4304,11 +4304,11 @@ pub fn balloon_plug_enabled() -> bool {
 /// length). The active set freezes a free vertex the instant it reaches the
 /// shell and the collision clamp bounds every step, so an over-large value is
 /// contained; a few edges reaches a crater wall within the iteration cap.
-const BALLOON_PRESSURE: f64 = 6.0;
-/// Active-set iterations for one balloon candidate.
-const BALLOON_MAX_ITERS: usize = 6;
+const STENT_PRESSURE: f64 = 6.0;
+/// Active-set iterations for one stent candidate.
+const STENT_MAX_ITERS: usize = 6;
 /// Per-loop wall-clock cap for the fallback pass, in milliseconds.
-const BALLOON_LOOP_BUDGET_MS: u64 = 500;
+const STENT_LOOP_BUDGET_MS: u64 = 500;
 
 /// Prune back-and-forth antenna spur pairs where `dist(pts[i], pts[i+2]) < 1e-4`.
 /// Operates on a LOCAL rim copy only: the caller must never pass the rim that
@@ -4454,7 +4454,7 @@ fn solve_thin_plate_active_set(
         let mut lower: HashMap<(usize, usize), f64> = HashMap::new();
         let mut rhs = vec![[0.0f64; 3]; n_free];
         let mut mrow: Vec<(u32, f64)> = Vec::new();
-        let p_force = BALLOON_PRESSURE * h;
+        let p_force = STENT_PRESSURE * h;
 
         for &r in &free {
             let row_local = free_map[r];
@@ -4572,10 +4572,10 @@ fn solve_thin_plate_active_set(
     }
 }
 
-/// Runaway guard for a balloon patch: no added vertex may stray beyond
+/// Runaway guard for a stent patch: no added vertex may stray beyond
 /// `1.5 * rim_diag` from the rim centroid. Curved-shell conformance is expected,
 /// so no planarity / planar-normal test is applied.
-fn balloon_shape_ok(
+fn stent_shape_ok(
     cand: &[[u32; 3]],
     verts: &[[f64; 3]],
     added: &[[f64; 3]],
@@ -4604,11 +4604,11 @@ fn balloon_shape_ok(
     true
 }
 
-/// Balloon plug candidate: stiff active-set thin-plate inflate from INSIDE the
+/// Stent plug candidate: stiff active-set thin-plate inflate from INSIDE the
 /// solid. `rim` must already be a local (possibly pruned) copy. Returns
 /// `(cand_tris, added_verts)`; `cand` is in global vertex indices.
 #[allow(clippy::too_many_arguments)]
-fn balloon_plug(
+fn stent_plug(
     rim: &[u32],
     verts: &[[f64; 3]],
     directed_set: &HashSet<(u32, u32)>,
@@ -4762,7 +4762,7 @@ fn balloon_plug(
         h,
         tol,
         n_out,
-        BALLOON_MAX_ITERS,
+        STENT_MAX_ITERS,
         deadline,
     );
 
@@ -5163,7 +5163,7 @@ pub fn tamponade_repair(
         model_box.expand_point(*v);
     }
     let model_diag = model_box.diagonal().max(h);
-    // Balloon / leak-gate tolerance: `clamp(diag/10000, 0.0125, 0.05)`.
+    // Stent / leak-gate tolerance: `clamp(diag/10000, 0.0125, 0.05)`.
     let tol = leak_tol(model_diag);
 
     let mut out_verts = verts.to_vec();
@@ -5258,7 +5258,7 @@ pub fn tamponade_repair(
     }
     let mut region_sealed: HashSet<usize> = HashSet::new();
     // Regions a keep-open decision deliberately left unsealed. They must NEVER be
-    // revisited (by a greedy sub-loop injection or the balloon fallback): an
+    // revisited (by a greedy sub-loop injection or the stent fallback): an
     // intentional opening, an uncertain loop, a no-separation cut, a loop that
     // exhausted its own allowance, or an oversized rim.
     let mut kept_open: HashSet<usize> = HashSet::new();
@@ -5581,7 +5581,7 @@ pub fn tamponade_repair(
                         steiner: n_added > 0,
                         moved: loop_moved.clone(),
                         rim: group_rim.clone(),
-                        balloon: false,
+                        stent: false,
                         method: if is_skirt { "skirt" } else { "reference" },
                     });
                     plug_count += 1;
@@ -5704,7 +5704,7 @@ pub fn tamponade_repair(
                                 steiner: centre.is_some(),
                                 moved: loop_moved.clone(),
                                 rim: group_rim.clone(),
-                                balloon: false,
+                                stent: false,
                                 method: if centre.is_some() { "steiner" } else { "rim" },
                             });
                             plug_count += 1;
@@ -5730,11 +5730,11 @@ pub fn tamponade_repair(
                 }
             }
         }
-        // Balloon candidate (last resort for a damage hole): thin-plate
+        // Stent candidate (last resort for a damage hole): thin-plate
         // active-set inflate from inside. The rim is pruned on a LOCAL copy only.
         // The shared end-of-tier gates (leak / double-wall / connectivity) and
         // the reload verdict judge the committed region.
-        if !sealed && balloon_plug_enabled() {
+        if !sealed && stent_plug_enabled() {
             let mut rim_b = rim.clone();
             prune_spur_slits(&mut rim_b, &out_verts);
             if rim_b.len() >= 3 {
@@ -5743,14 +5743,14 @@ pub fn tamponade_repair(
                 let loop_deadline = match deadline {
                     Some(global) => {
                         let local = Instant::now()
-                            + Duration::from_millis(BALLOON_LOOP_BUDGET_MS);
+                            + Duration::from_millis(STENT_LOOP_BUDGET_MS);
                         Some(if local < global { local } else { global })
                     }
                     None => {
-                        Some(Instant::now() + Duration::from_millis(BALLOON_LOOP_BUDGET_MS))
+                        Some(Instant::now() + Duration::from_millis(STENT_LOOP_BUDGET_MS))
                     }
                 };
-                match balloon_plug(
+                match stent_plug(
                     &rim_b,
                     &out_verts,
                     &directed_set,
@@ -5770,15 +5770,15 @@ pub fn tamponade_repair(
                         if collides {
                             info.loop_diag
                                 .push(format!("m={} rejected:edge_collision", rim_b.len()));
-                            info.balloon_rejected += 1;
-                        } else if !balloon_shape_ok(&cand, &out_verts, &added, &rim_b, rim_diag) {
+                            info.stent_rejected += 1;
+                        } else if !stent_shape_ok(&cand, &out_verts, &added, &rim_b, rim_diag) {
                             info.loop_diag
                                 .push(format!("m={} rejected:shape", rim_b.len()));
-                            info.balloon_rejected += 1;
+                            info.stent_rejected += 1;
                         } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
                             info.loop_diag
                                 .push(format!("m={} rejected:reload_nm", rim_b.len()));
-                            info.balloon_rejected += 1;
+                            info.stent_rejected += 1;
                         } else {
                             for (e, &d) in &cand_counts {
                                 *edge_count.entry(*e).or_insert(0) += d;
@@ -5796,17 +5796,17 @@ pub fn tamponade_repair(
                                 steiner: n_added > 0,
                                 moved: loop_moved.clone(),
                                 rim: group_rim.clone(),
-                                balloon: true,
-                                method: "balloon",
+                                stent: true,
+                                method: "stent",
                             });
                             plug_count += 1;
-                            info.balloon_used += 1;
+                            info.stent_used += 1;
                             sealed = true;
-                            info.loop_diag.push(format!("m={} sealed:balloon", rim_b.len()));
+                            info.loop_diag.push(format!("m={} sealed:stent", rim_b.len()));
                         }
                     }
                     None => {
-                        info.balloon_rejected += 1;
+                        info.stent_rejected += 1;
                     }
                 }
             }
@@ -5839,20 +5839,20 @@ pub fn tamponade_repair(
         }
     }
 
-    // Balloon fallback pass for loops no candidate could seal. Largest rejected
+    // Stent fallback pass for loops no candidate could seal. Largest rejected
     // rim first; each loop bounded by its own wall-clock slice within the tier
     // deadline. Loops a keep-open decision left open are NEVER touched.
-    if balloon_plug_enabled() {
-        let mut balloon_candidates: Vec<(usize, Vec<u32>)> = Vec::new();
+    if stent_plug_enabled() {
+        let mut stent_candidates: Vec<(usize, Vec<u32>)> = Vec::new();
         for (li, loop_v) in loops.iter().enumerate() {
             let key = if manifold_mode { loop_outer[li] } else { li };
             if !region_sealed.contains(&key) && !kept_open.contains(&key) {
-                balloon_candidates.push((key, loop_v.clone()));
+                stent_candidates.push((key, loop_v.clone()));
             }
         }
-        balloon_candidates.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        stent_candidates.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
-        for (region_key, loop_v) in balloon_candidates {
+        for (region_key, loop_v) in stent_candidates {
             if deadline_passed(deadline) {
                 info.reason = "timeout exceeded".to_string();
                 break;
@@ -5886,12 +5886,12 @@ pub fn tamponade_repair(
             let new_base = out_verts.len() as u32;
             let loop_deadline = match deadline {
                 Some(global) => {
-                    let local = Instant::now() + Duration::from_millis(BALLOON_LOOP_BUDGET_MS);
+                    let local = Instant::now() + Duration::from_millis(STENT_LOOP_BUDGET_MS);
                     Some(if local < global { local } else { global })
                 }
-                None => Some(Instant::now() + Duration::from_millis(BALLOON_LOOP_BUDGET_MS)),
+                None => Some(Instant::now() + Duration::from_millis(STENT_LOOP_BUDGET_MS)),
             };
-            let balloon_res = balloon_plug(
+            let stent_res = stent_plug(
                 &rim,
                 &out_verts,
                 &directed_set,
@@ -5909,7 +5909,7 @@ pub fn tamponade_repair(
                 break;
             }
 
-            if let Some((cand, added)) = balloon_res {
+            if let Some((cand, added)) = stent_res {
                 let cand_counts = edge_use_counts(&cand);
                 let collides = cand_counts
                     .iter()
@@ -5917,15 +5917,15 @@ pub fn tamponade_repair(
                 if collides {
                     info.loop_diag
                         .push(format!("m={} rejected:edge_collision", rim.len()));
-                    info.balloon_rejected += 1;
-                } else if !balloon_shape_ok(&cand, &out_verts, &added, &rim, rim_diag) {
+                    info.stent_rejected += 1;
+                } else if !stent_shape_ok(&cand, &out_verts, &added, &rim, rim_diag) {
                     info.loop_diag
                         .push(format!("m={} rejected:shape", rim.len()));
-                    info.balloon_rejected += 1;
+                    info.stent_rejected += 1;
                 } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
                     info.loop_diag
                         .push(format!("m={} rejected:reload_nm", rim.len()));
-                    info.balloon_rejected += 1;
+                    info.stent_rejected += 1;
                 } else {
                     for (e, &d) in &cand_counts {
                         *edge_count.entry(*e).or_insert(0) += d;
@@ -5943,16 +5943,16 @@ pub fn tamponade_repair(
                         steiner: n_added > 0,
                         moved: Vec::new(),
                         rim: rim.clone(),
-                        balloon: true,
-                        method: "balloon",
+                        stent: true,
+                        method: "stent",
                     });
                     plug_count += 1;
-                    info.balloon_used += 1;
+                    info.stent_used += 1;
                     region_sealed.insert(region_key);
-                    info.loop_diag.push(format!("m={} sealed:balloon", rim.len()));
+                    info.loop_diag.push(format!("m={} sealed:stent", rim.len()));
                 }
             } else {
-                info.balloon_rejected += 1;
+                info.stent_rejected += 1;
             }
         }
     }
@@ -5997,17 +5997,17 @@ pub fn tamponade_repair(
         info.components_after = full.components;
         info.closed_shells_before = base.closed_shells;
         info.closed_shells_after = full.closed_shells;
-        // Balloon no-gain guard: a balloon that does not STRICTLY reduce the
+        // Stent no-gain guard: a stent that does not STRICTLY reduce the
         // reload boundary-edge count does not seal its hole (e.g. a sub-rim of a
         // piecewise-split hole); keeping it only adds a visible membrane fin.
-        // A genuinely sealing balloon makes the tier-without-it worse (the loop
+        // A genuinely sealing stent makes the tier-without-it worse (the loop
         // reopens), so only a no-gain region is dropped here.
-        let mut balloon_no_gain = vec![false; plug_regions.len()];
+        let mut stent_no_gain = vec![false; plug_regions.len()];
         for (ri, region) in plug_regions.iter().enumerate() {
-            if region.balloon {
+            if region.stent {
                 let without = reload_verdict_without(&out_verts, &out_tris, region);
                 if without.boundary_loops <= full.boundary_loops {
-                    balloon_no_gain[ri] = true;
+                    stent_no_gain[ri] = true;
                 }
             }
         }
@@ -6016,7 +6016,7 @@ pub fn tamponade_repair(
             || leak_drop.iter().any(|&d| d)
             || dw_drop.iter().any(|&d| d)
             || float_drop.iter().any(|&d| d)
-            || balloon_no_gain.iter().any(|&d| d)
+            || stent_no_gain.iter().any(|&d| d)
         {
             let mut drop = vec![false; plug_regions.len()];
             if reload_regressed {
@@ -6037,7 +6037,7 @@ pub fn tamponade_repair(
                 drop[ri] |= leak_drop[ri];
                 drop[ri] |= dw_drop[ri];
                 drop[ri] |= float_drop[ri];
-                drop[ri] |= balloon_no_gain[ri];
+                drop[ri] |= stent_no_gain[ri];
             }
             let any = drop.iter().any(|&d| d);
             // When every plug region is dropped the tier must be a byte-exact
@@ -6067,8 +6067,8 @@ pub fn tamponade_repair(
                 if region.steiner {
                     info.patch_vertices = info.patch_vertices.saturating_sub(1);
                 }
-                if region.balloon {
-                    info.balloon_used = info.balloon_used.saturating_sub(1);
+                if region.stent {
+                    info.stent_used = info.stent_used.saturating_sub(1);
                 }
                 plugs_rolled_back += 1;
             }
@@ -7045,7 +7045,7 @@ mod tests {
         let base = reload_verdict(&verts, &tris[..2]);
         let full = reload_verdict(&verts, &tris);
         // The third triangle is the "plug" region.
-        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new(), balloon: false, method: "rim" };
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new(), stent: false, method: "rim" };
         let without = reload_verdict_without(&verts, &tris, &region);
         assert!(
             without.nm_edges < full.nm_edges && !without.worse_than(&base),
@@ -7113,7 +7113,7 @@ mod tests {
             steiner: false,
             moved: Vec::new(),
             rim: Vec::new(),
-            balloon: false,
+            stent: false,
             method: "rim",
         };
         (verts, tris, region)
@@ -7149,7 +7149,7 @@ mod tests {
             steiner: false,
             moved: Vec::new(),
             rim: Vec::new(),
-            balloon: false,
+            stent: false,
             method: "rim",
         };
 
@@ -7198,7 +7198,7 @@ mod tests {
             steiner: true,
             moved: vec![(3, [0.5, 0.5, 0.05])],
             rim: Vec::new(),
-            balloon: false,
+            stent: false,
             method: "reference",
         };
         let mut ov = verts.clone();
@@ -7260,7 +7260,7 @@ mod tests {
                 steiner: true,
                 moved: Vec::new(),
                 rim: rim.clone(),
-                balloon: false,
+                stent: false,
                 method: "steiner",
             };
             plug_leak(&bvh, &verts, &nv, &t, &region, tol, 8)
@@ -7307,7 +7307,7 @@ mod tests {
         let dup_tris = vec![[8u32, 9, 10]];
         let region = PlugRegion {
             tri_start: 0, tri_end: 1, reference: false, steiner: true,
-            moved: Vec::new(), rim: Vec::new(), balloon: false, method: "steiner",
+            moved: Vec::new(), rim: Vec::new(), stent: false, method: "steiner",
         };
         assert!(
             !plug_is_double_wall(&bvh, &verts, &tris, &dup, &dup_tris, &region, tol),
@@ -7510,5 +7510,116 @@ mod tests {
         };
         let (_ov2, _ot2, info2) = tamponade_repair(&v, &t, &config_off);
         assert_eq!(info2.plugs, 1, "Thin cup mouth must seal with gate OFF (default unchanged)");
+    }
+
+    // ---- Stent plug candidate -------------------------------------------
+
+    #[test]
+    fn test_stent_flat_hole_seals() {
+        let (verts, tris) = unit_cube_open_top();
+        let rim: Vec<u32> = vec![4, 5, 6, 7];
+        let directed_set: HashSet<(u32, u32)> =
+            [(4, 5), (5, 6), (6, 7), (7, 4)].into_iter().collect();
+        let edge_count: HashMap<(u32, u32), i32> = HashMap::new();
+        let idx: Vec<[usize; 3]> = tris
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let bvh = MeshBvh::from_arrays(&verts, &idx);
+        let plug = stent_plug(
+            &rim, &verts, &directed_set, &edge_count, &bvh, 0.5, 0.05,
+            verts.len() as u32, [0.0, 0.0, 1.0], None,
+        );
+        assert!(plug.is_some(), "stent must produce a candidate for a flat square hole");
+        let (cand, _added) = plug.unwrap();
+        assert!(!cand.is_empty());
+    }
+
+    #[test]
+    fn test_stent_crater_fixture_used() {
+        let path = "/tmp/v074/go/fixtures-v2/plate_a_dent.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            h_min: Some(0.5),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert!(info.stent_used >= 1, "stent must seal the crater plate_a_dent");
+        assert!(info.loop_diag.iter().any(|d| d.contains("sealed:stent")));
+    }
+
+    #[test]
+    fn test_stent_conical_tip_within_tol() {
+        // Shallow conical tip (depth 0.02 < tol) inside a ring rim must be sealed.
+        let mut verts: Vec<[f64; 3]> = Vec::new();
+        let m = 6usize;
+        for i in 0..m {
+            let a = (i as f64) * std::f64::consts::PI * 2.0 / (m as f64);
+            verts.push([a.cos(), a.sin(), 0.0]);
+        }
+        let tip = verts.len() as u32;
+        verts.push([0.0, 0.0, -0.02]);
+        let mut tris: Vec<[u32; 3]> = Vec::new();
+        for i in 0..m {
+            let next = ((i + 1) % m) as u32;
+            tris.push([i as u32, next, tip]);
+        }
+        let bottom = verts.len() as u32;
+        verts.push([0.0, 0.0, -0.1]);
+        for i in 0..m {
+            let next = ((i + 1) % m) as u32;
+            tris.push([next, i as u32, bottom]);
+        }
+        let rim: Vec<u32> = (0..m as u32).collect();
+        let directed_set: HashSet<(u32, u32)> =
+            (0..m).map(|i| (i as u32, ((i + 1) % m) as u32)).collect();
+        let edge_count: HashMap<(u32, u32), i32> = HashMap::new();
+        let idx: Vec<[usize; 3]> = tris
+            .iter()
+            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+            .collect();
+        let bvh = MeshBvh::from_arrays(&verts, &idx);
+        let plug = stent_plug(
+            &rim, &verts, &directed_set, &edge_count, &bvh, 0.2, 0.05,
+            verts.len() as u32, [0.0, 0.0, 1.0], None,
+        );
+        assert!(plug.is_some(), "a shallow conical tip within tol must be sealed by the stent");
+    }
+
+    #[test]
+    fn test_stent_kept_open_cup_stays_open() {
+        // An intentional opening must never be revisited by the stent.
+        let path = "/tmp/v074/agy/a6-fixtures/case1_open_cup.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            openings_gate: Some(true),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        assert_eq!(info.plugs, 0, "stent must not seal an intentional opening");
+        assert_eq!(info.stent_used, 0, "no stent may be adopted on a kept-open cup");
+    }
+
+    #[test]
+    fn test_stent_metrics_json_reports_stent() {
+        // The per-plug metrics report is a valid JSON array and tags an adopted
+        // stent with method "stent" (the standard numeric plug report).
+        let path = "/tmp/v074/go/fixtures-v2/plate_a_dent.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            h_min: Some(0.5),
+            ..Default::default()
+        };
+        let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        let mj = &info.plug_metrics_json;
+        assert!(
+            mj.starts_with('[') && mj.ends_with(']'),
+            "metrics must be a JSON array: {mj}"
+        );
+        assert!(
+            mj.contains("\"method\":\"stent\""),
+            "an adopted stent must appear in the metrics report: {mj}"
+        );
+        assert!(mj.contains("\"tol\""), "metrics must carry the tolerance");
     }
 }
