@@ -815,6 +815,7 @@ fn tamponade_py<'py>(
     d.set_item("reference_skirt", info.reference_skirt)?;
     d.set_item("stent_used", info.stent_used)?;
     d.set_item("stent_rejected", info.stent_rejected)?;
+    d.set_item("stent_subplugs", info.stent_subplugs)?;
     d.set_item("plug_metrics", info.plug_metrics_json)?;
     d.set_item("trimmed_vertices", info.trimmed_vertices)?;
     d.set_item("patch_vertices", info.patch_vertices)?;

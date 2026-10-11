@@ -251,6 +251,9 @@ pub struct TamponadeInfo {
     pub stent_used: usize,
     /// Stent candidates attempted but not committed (any reason).
     pub stent_rejected: usize,
+    /// Sub-plugs committed by the multi-stent partition (one per sub-loop of a
+    /// loop the single stent could not seal). 0 for ordinary single-stent runs.
+    pub stent_subplugs: usize,
     /// Per-plug standard numeric metrics (JSON array, see plug-metrics spec).
     pub plug_metrics_json: String,
     /// Rim/tail vertices lifted onto the reference surface (overshoot trim).
@@ -3513,6 +3516,10 @@ struct PlugRegion {
     /// Number of vertices this plug appended (stent/steiner fan). Used so a
     /// rollback subtracts the true `patch_vertices` delta, not a hardcoded 1.
     added_verts: usize,
+    /// Non-zero group id shared by every sub-plug of one multi-stent loop: the
+    /// adoption safety net drops the whole group if any member is dropped, so a
+    /// partial seal (which would break the shared chord seam) never survives.
+    group: usize,
     /// Diagnostic method tag for the per-plug metrics report.
     method: &'static str,
 }
@@ -4375,10 +4382,56 @@ fn prune_spur_slits(rim: &mut Vec<u32>, verts: &[[f64; 3]]) {
 /// (keeping the first occurrence). Non-adjacent duplicates -- a pinched rim
 /// that visits the same position twice -- otherwise double an edge in the cap
 /// and fail the reload-nonmanifold gate; after the reload weld they are one
-/// vertex anyway.
+/// vertex anyway. The multi-stent path partitions instead; this is kept for the
+/// single-loop regression test.
+#[cfg(test)]
 fn dedup_rim_f32(rim: &mut Vec<u32>, verts: &[[f64; 3]]) {
     let mut seen: HashSet<[u32; 3]> = HashSet::new();
     rim.retain(|&v| seen.insert(f32_position_key(verts[v as usize])));
+}
+
+/// Split a boundary loop that visits the same float32 reload position more than
+/// once (a pinched rim) into simple sub-loops that share the pinch vertex, so
+/// each sub-loop can be capped without doubling a reload edge. A loop with no
+/// repeated reload position is returned unchanged (a single sub-loop). The
+/// sub-loops are emitted in walk order; the pinch vertex appears in each of the
+/// sub-loops it closes.
+fn split_pinched_loop(rim: &[u32], verts: &[[f64; 3]]) -> Vec<Vec<u32>> {
+    let key = |v: u32| f32_position_key(verts[v as usize]);
+    let mut stack: Vec<u32> = Vec::new();
+    let mut pos: HashMap<[u32; 3], usize> = HashMap::new();
+    let mut out: Vec<Vec<u32>> = Vec::new();
+    let mut saw_repeat = false;
+    for &v in rim {
+        let k = key(v);
+        if let Some(&idx) = pos.get(&k) {
+            // Emit the run since the first occurrence as a simple sub-loop that
+            // keeps only the first pinch occurrence (both occurrences share a
+            // reload position, so a cap using both would be degenerate).
+            if stack.len() - idx >= 3 {
+                out.push(stack[idx..].to_vec());
+            }
+            for w in stack[idx + 1..].iter() {
+                pos.remove(&key(*w));
+            }
+            stack.truncate(idx + 1);
+            saw_repeat = true;
+        } else {
+            pos.insert(k, stack.len());
+            stack.push(v);
+        }
+    }
+    if saw_repeat {
+        if stack.len() >= 3 {
+            out.push(stack);
+        }
+        if out.is_empty() {
+            out.push(rim.to_vec());
+        }
+    } else {
+        out.push(rim.to_vec());
+    }
+    out
 }
 
 /// Outward prior from the rim's incident boundary face normals (outward for a
@@ -4931,6 +4984,321 @@ fn dump_stent_candidate(
     }
 }
 
+/// Minimum loop size the multi-stent partitioner may split with interior chords.
+const STENT_PARTITION_MIN_M: usize = 12;
+/// Hard cap on sub-plugs per original loop.
+const STENT_MAX_SUBPLUGS: usize = 6;
+
+/// True when the straight segment `a..b` stays inside the solid (every interior
+/// sample has winding >= 0.5) and does not cross the shell. Used to accept a
+/// partition chord between two rim vertices.
+fn chord_inside(a: [f64; 3], b: [f64; 3], bvh: &MeshBvh, h: f64) -> bool {
+    let d = norm3([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+    if d < 1e-9 {
+        return false;
+    }
+    let dir = [(b[0] - a[0]) / d, (b[1] - a[1]) / d, (b[2] - a[2]) / d];
+    if bvh.intersect_ray(a, dir, d, 1e-9).crossings > 0 {
+        return false;
+    }
+    let k = ((d / h.max(1e-9)).ceil() as usize).clamp(2, 32);
+    for i in 1..k {
+        let t = i as f64 / k as f64;
+        let p = [a[0] + dir[0] * d * t, a[1] + dir[1] * d * t, a[2] + dir[2] * d * t];
+        if bvh.winding_at(p) < 0.5 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Recursive chord partition of one simple rim into sub-loops. Each returned
+/// sub-loop is a contiguous rim run closed by a chord between its endpoints, so
+/// adjacent sub-plugs share that chord edge exactly (a manifold seam).
+fn partition_rim(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    bvh: &MeshBvh,
+    h: f64,
+    depth: usize,
+    out: &mut Vec<Vec<u32>>,
+) {
+    if rim.len() < 3 {
+        return;
+    }
+    if out.len() >= STENT_MAX_SUBPLUGS || depth == 0 || rim.len() < STENT_PARTITION_MIN_M {
+        out.push(rim.to_vec());
+        return;
+    }
+    let m = rim.len();
+    let mut bb = BBox::empty();
+    for &v in rim {
+        bb.expand_point(verts[v as usize]);
+    }
+    let diag = bb.diagonal();
+    let mut best: Option<(f64, usize, usize)> = None;
+    for i in 0..m {
+        for j in (i + 2)..m {
+            let arc1 = j - i + 1;
+            let arc2 = m - (j - i) + 1;
+            if arc1 < 3 || arc2 < 3 {
+                continue;
+            }
+            let a = verts[rim[i] as usize];
+            let b = verts[rim[j] as usize];
+            let d = norm3([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+            if d > diag || d < 1e-9 {
+                continue;
+            }
+            if !chord_inside(a, b, bvh, h) {
+                continue;
+            }
+            if best.map_or(true, |(bd, _, _)| d < bd) {
+                best = Some((d, i, j));
+            }
+        }
+    }
+    match best {
+        Some((_, i, j)) => {
+            let lo1: Vec<u32> = rim[i..=j].to_vec();
+            let mut lo2: Vec<u32> = rim[j..].to_vec();
+            lo2.extend_from_slice(&rim[..=i]);
+            partition_rim(&lo1, verts, bvh, h, depth - 1, out);
+            partition_rim(&lo2, verts, bvh, h, depth - 1, out);
+        }
+        None => out.push(rim.to_vec()),
+    }
+}
+
+/// Full sub-loop list for a rim: pinch split first, then a chord partition of
+/// each part. A loop with no pinch and no valid chord returns itself.
+fn partition_loop(rim: &[u32], verts: &[[f64; 3]], bvh: &MeshBvh, h: f64) -> Vec<Vec<u32>> {
+    let mut out: Vec<Vec<u32>> = Vec::new();
+    for part in split_pinched_loop(rim, verts) {
+        partition_rim(&part, verts, bvh, h, 3, &mut out);
+    }
+    if out.is_empty() {
+        out.push(rim.to_vec());
+    }
+    out
+}
+
+/// Multi-candidate `plug_reload_ok`: the union of `cands` (sharing one
+/// `new_base`, with `added` the concatenated added vertices) must not raise a
+/// reload edge that was used by <= 2 faces over 2.
+fn plug_reload_ok_multi(
+    out_verts: &[[f64; 3]],
+    out_tris: &[[u32; 3]],
+    new_base: u32,
+    added: &[[f64; 3]],
+    cands: &[Vec<[u32; 3]>],
+) -> bool {
+    let pos = |id: u32| -> [f64; 3] {
+        if id < new_base { out_verts[id as usize] } else { added[(id - new_base) as usize] }
+    };
+    let key = |p: [f64; 3]| -> [u32; 3] {
+        [(p[0] as f32).to_bits(), (p[1] as f32).to_bits(), (p[2] as f32).to_bits()]
+    };
+    let mut keyset: HashSet<[u32; 3]> = HashSet::new();
+    for c in cands {
+        for t in c {
+            for &id in t {
+                keyset.insert(key(pos(id)));
+            }
+        }
+    }
+    let mut base: HashMap<([u32; 3], [u32; 3]), i32> = HashMap::new();
+    let add_tri = |t: &[u32; 3], edges: &mut HashMap<([u32; 3], [u32; 3]), i32>| {
+        let a = key(pos(t[0]));
+        let b = key(pos(t[1]));
+        let c = key(pos(t[2]));
+        for (x, y) in [(a, b), (b, c), (c, a)] {
+            let e = if x <= y { (x, y) } else { (y, x) };
+            *edges.entry(e).or_insert(0) += 1;
+        }
+    };
+    for t in out_tris {
+        if t.iter().any(|&id| keyset.contains(&key(pos(id)))) {
+            add_tri(t, &mut base);
+        }
+    }
+    let mut with = base.clone();
+    for c in cands {
+        for t in c {
+            add_tri(t, &mut with);
+        }
+    }
+    for (e, c) in &with {
+        if *c > 2 && base.get(e).copied().unwrap_or(0) <= 2 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Seal one boundary loop with the Stent: try the whole (pruned) rim first, and
+/// when that fails partition it into sub-loops (pinch vertices + interior
+/// chords) and inflate one Stent per sub-loop. All-or-nothing: every sub-plug
+/// must pass every gate or none is committed. Returns true when the loop was
+/// sealed. `moved`/`method` are copied into each committed plug region.
+#[allow(clippy::too_many_arguments)]
+fn stent_attempt(
+    rim: &[u32],
+    out_verts: &mut Vec<[f64; 3]>,
+    out_tris: &mut Vec<[u32; 3]>,
+    edge_count: &mut HashMap<(u32, u32), i32>,
+    plug_regions: &mut Vec<PlugRegion>,
+    plug_count: &mut usize,
+    plug_face_count: &mut usize,
+    directed_set: &HashSet<(u32, u32)>,
+    bnd_edge_normals: &HashMap<(u32, u32), [f64; 3]>,
+    bvh: &MeshBvh,
+    h: f64,
+    tol: f64,
+    deadline: Option<Instant>,
+    moved: &[(u32, [f64; 3])],
+    group_counter: &mut usize,
+    info: &mut TamponadeInfo,
+) -> bool {
+    let mut rim_p = rim.to_vec();
+    prune_spur_slits(&mut rim_p, out_verts);
+    if rim_p.len() < 3 {
+        return false;
+    }
+    // One shared wall-clock slice for the whole (original) loop, per the
+    // multi-stent budget rule; sub-plugs share it.
+    let loop_deadline = stent_loop_deadline(rim_p.len(), deadline);
+    let sub_loops = partition_loop(&rim_p, out_verts, bvh, h);
+
+    // Build one candidate per sub-loop (no state mutated yet).
+    let base_new = out_verts.len() as u32;
+    let mut caps: Vec<(Vec<u32>, Vec<[u32; 3]>, Vec<[f64; 3]>, f64)> = Vec::new();
+    let mut cum_added = 0u32;
+    for sub in &sub_loops {
+        if sub.len() < 3 {
+            continue;
+        }
+        let mut bb = BBox::empty();
+        for &v in sub {
+            bb.expand_point(out_verts[v as usize]);
+        }
+        let sub_diag = bb.diagonal();
+        let n_prior = outward_prior(bnd_edge_normals, sub);
+        let new_base = base_new + cum_added;
+        let mut reason: &'static str = "";
+        let mut timed_out = false;
+        match stent_plug(
+            sub,
+            out_verts,
+            directed_set,
+            edge_count,
+            bvh,
+            h,
+            tol,
+            new_base,
+            n_prior,
+            loop_deadline,
+            &mut reason,
+            &mut timed_out,
+        ) {
+            Some((cand, added)) => {
+                cum_added += added.len() as u32;
+                caps.push((sub.clone(), cand, added, sub_diag));
+            }
+            None => {
+                info.stent_rejected += 1;
+                let why = if reason.is_empty() {
+                    if timed_out { "deadline" } else { "unknown" }
+                } else {
+                    reason
+                };
+                info.stent_diag.push(format!("m={} rejected:{}", sub.len(), why));
+                return false;
+            }
+        }
+    }
+    if caps.is_empty() {
+        return false;
+    }
+
+    // Collective gates on the whole candidate set (all sub-plugs share the rim
+    // chord edges, so they must be judged together).
+    let mut loop_edges: HashMap<(u32, u32), i32> = HashMap::new();
+    for c in &caps {
+        for e in edge_use_counts(&c.1) {
+            *loop_edges.entry(e.0).or_insert(0) += e.1;
+        }
+    }
+    let n_caps = caps.len();
+    let all_cands: Vec<Vec<[u32; 3]>> = caps.iter().map(|c| c.1.clone()).collect();
+    let all_added: Vec<[f64; 3]> = caps.iter().flat_map(|c| c.2.iter().copied()).collect();
+    let multi = n_caps > 1;
+    let reject = |info: &mut TamponadeInfo, why: &str, caps: &[(Vec<u32>, Vec<[u32; 3]>, Vec<[f64; 3]>, f64)], out_verts: &[[f64; 3]], out_tris: &[[u32; 3]]| {
+        info.stent_rejected += 1;
+        let m = caps.first().map(|c| c.0.len()).unwrap_or(0);
+        info.stent_diag.push(format!("m={} rejected:{}", m, why));
+        if let Ok(d) = std::env::var("SUTURA_TAMP_STENT_DUMP") {
+            if let Some(c) = caps.first() {
+                dump_stent_candidate(&d, info.stent_diag.len(), c.0.len(), why,
+                    out_verts, out_tris, &c.2, &c.1);
+            }
+        }
+    };
+
+    // Collision: an edge may not exceed 2 total (shell + all sub-plugs).
+    if loop_edges.iter().any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2) {
+        reject(info, "edge_collision", &caps, out_verts, out_tris);
+        return false;
+    }
+    for (sub, cand, added, sub_diag) in &caps {
+        if !stent_shape_ok(cand, out_verts, added, sub, *sub_diag) {
+            reject(info, "shape", &caps, out_verts, out_tris);
+            return false;
+        }
+    }
+    if !plug_reload_ok_multi(out_verts, out_tris, base_new, &all_added, &all_cands) {
+        reject(info, "reload_nm", &caps, out_verts, out_tris);
+        return false;
+    }
+
+    // Commit every sub-plug (all-or-nothing already guaranteed).
+    *group_counter += 1;
+    let group = *group_counter;
+    for (_sub, cand, added, _sub_diag) in caps {
+        for (e, &d) in &edge_use_counts(&cand) {
+            *edge_count.entry(*e).or_insert(0) += d;
+        }
+        let n_added = added.len();
+        out_verts.extend_from_slice(&added);
+        info.patch_vertices += n_added;
+        *plug_face_count += cand.len();
+        let tri_start = out_tris.len();
+        out_tris.extend(cand);
+        let rim_used = _sub.clone();
+        plug_regions.push(PlugRegion {
+            tri_start,
+            tri_end: out_tris.len(),
+            reference: false,
+            steiner: n_added > 0,
+            moved: moved.to_vec(),
+            rim: rim_used,
+            stent: true,
+            added_verts: n_added,
+            group,
+            method: "stent",
+        });
+        *plug_count += 1;
+        info.stent_used += 1;
+    }
+    if multi {
+        info.stent_subplugs += n_caps;
+        info.stent_diag.push(format!("m={} sealed:stent-multi ({})", rim_p.len(), n_caps));
+    } else {
+        info.stent_diag.push(format!("m={} sealed:stent", rim_p.len()));
+    }
+    true
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum LoopVerdict {
     IntentionalOpening { score: f64, reason: &'static str },
@@ -5151,25 +5519,6 @@ pub fn tamponade_repair(
     let t0 = Instant::now();
     let mut info = TamponadeInfo::default();
     info.healthy_faces_kept = tris.len();
-
-    // Diagnostic-only: when `SUTURA_TAMP_STENT_DUMP` names a directory, write
-    // the loop + rejected stent candidate as an OBJ (see `dump_stent_candidate`).
-    macro_rules! stent_dump {
-        ($seq:expr, $ov:expr, $ot:expr, $m:expr, $reason:expr, $added:expr, $cand:expr) => {
-            if let Ok(d) = std::env::var("SUTURA_TAMP_STENT_DUMP") {
-                dump_stent_candidate(
-                    &d,
-                    $seq,
-                    $m,
-                    $reason,
-                    $ov,
-                    $ot,
-                    $added,
-                    $cand,
-                );
-            }
-        };
-    }
 
     if tris.is_empty() || verts.is_empty() {
         info.reason = "empty mesh".to_string();
@@ -5421,6 +5770,8 @@ pub fn tamponade_repair(
     // exhausted its own allowance, or an oversized rim.
     let mut kept_open: HashSet<usize> = HashSet::new();
     let mut greedy_injected: HashSet<usize> = HashSet::new();
+    // Unique id per committed multi-stent group (0 = non-stent plug).
+    let mut stent_group_counter = 0usize;
 
     while let Some((loop_v, group_hint, region_key)) = queue.pop_front() {
         if deadline_passed(deadline) {
@@ -5747,6 +6098,7 @@ pub fn tamponade_repair(
                         rim: group_rim.clone(),
                         stent: false,
                         added_verts: n_added,
+                group: 0,
                         method: if is_skirt { "skirt" } else { "reference" },
                     });
                     plug_count += 1;
@@ -5871,6 +6223,7 @@ pub fn tamponade_repair(
                                 rim: group_rim.clone(),
                                 stent: false,
                                 added_verts: if centre.is_some() { 1 } else { 0 },
+                                group: 0,
                                 method: if centre.is_some() { "steiner" } else { "rim" },
                             });
                             plug_count += 1;
@@ -5902,100 +6255,26 @@ pub fn tamponade_repair(
         // The shared end-of-tier gates (leak / double-wall / connectivity) and
         // the reload verdict judge the committed region.
         if !sealed && !rim_sealed && stent_plug_enabled() {
-            let mut rim_b = rim.clone();
-            prune_spur_slits(&mut rim_b, &out_verts);
-            dedup_rim_f32(&mut rim_b, &out_verts);
-            if rim_b.len() >= 3 {
-                let n_prior = outward_prior(&bnd_edge_normals, &rim_b);
-                let new_base = out_verts.len() as u32;
-                let loop_deadline = stent_loop_deadline(rim_b.len(), deadline);
-                let mut reason: &'static str = "";
-                let mut timed_out = false;
-                match stent_plug(
-                    &rim_b,
-                    &out_verts,
-                    &directed_set,
-                    &edge_count,
-                    &bvh,
-                    h,
-                    tol,
-                    new_base,
-                    n_prior,
-                    loop_deadline,
-                    &mut reason,
-                    &mut timed_out,
-                ) {
-                    Some((cand, added)) => {
-                        let cand_counts = edge_use_counts(&cand);
-                        let collides = cand_counts
-                            .iter()
-                            .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
-                        if collides {
-                            info.loop_diag
-                                .push(format!("m={} rejected:edge_collision", rim_b.len()));
-                            info.stent_diag
-                                .push(format!("m={} rejected:edge_collision", rim_b.len()));
-                            info.stent_rejected += 1;
-                            stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim_b.len(), "edge_collision", &added, &cand);
-                        } else if !stent_shape_ok(&cand, &out_verts, &added, &rim_b, rim_diag) {
-                            info.loop_diag
-                                .push(format!("m={} rejected:shape", rim_b.len()));
-                            info.stent_diag
-                                .push(format!("m={} rejected:shape", rim_b.len()));
-                            info.stent_rejected += 1;
-                            stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim_b.len(), "shape", &added, &cand);
-                        } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
-                            info.loop_diag
-                                .push(format!("m={} rejected:reload_nm", rim_b.len()));
-                            info.stent_diag
-                                .push(format!("m={} rejected:reload_nm", rim_b.len()));
-                            info.stent_rejected += 1;
-                            stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim_b.len(), "reload_nm", &added, &cand);
-                        } else {
-                            for (e, &d) in &cand_counts {
-                                *edge_count.entry(*e).or_insert(0) += d;
-                            }
-                            let n_added = added.len();
-                            out_verts.extend_from_slice(&added);
-                            info.patch_vertices += n_added;
-                            plug_face_count += cand.len();
-                            let tri_start = out_tris.len();
-                            out_tris.extend(cand);
-                            plug_regions.push(PlugRegion {
-                                tri_start,
-                                tri_end: out_tris.len(),
-                                reference: false,
-                                steiner: n_added > 0,
-                                moved: loop_moved.clone(),
-                                rim: rim_b.clone(),
-                                stent: true,
-                                added_verts: n_added,
-                                method: "stent",
-                            });
-                            plug_count += 1;
-                            info.stent_used += 1;
-                            sealed = true;
-                            info.loop_diag.push(format!("m={} sealed:stent", rim_b.len()));
-                            info.stent_diag.push(format!(
-                                "m={} sealed{}",
-                                rim_b.len(),
-                                if timed_out { " (deadline)" } else { "" }
-                            ));
-                        }
-                    }
-                    None => {
-                        info.stent_rejected += 1;
-                        info.stent_diag.push(format!(
-                            "m={} rejected:{}",
-                            rim_b.len(),
-                            if reason.is_empty() {
-                                if timed_out { "deadline" } else { "unknown" }
-                            } else {
-                                reason
-                            }
-                        ));
-                    }
-                }
+            if stent_attempt(
+                &rim,
+                &mut out_verts,
+                &mut out_tris,
+                &mut edge_count,
+                &mut plug_regions,
+                &mut plug_count,
+                &mut plug_face_count,
+                &directed_set,
+                &bnd_edge_normals,
+                &bvh,
+                h,
+                tol,
+                deadline,
+                &loop_moved,
+                &mut stent_group_counter,
+                &mut info,
+            ) {
+                sealed = true;
+                info.loop_diag.push(format!("m={} sealed:stent", rim.len()));
             }
         }
         if !sealed {
@@ -6058,117 +6337,39 @@ pub fn tamponade_repair(
             if rim.len() < 3 {
                 continue;
             }
-            prune_spur_slits(&mut rim, &out_verts);
-            if rim.len() < 3 {
-                continue;
-            }
-            dedup_rim_f32(&mut rim, &out_verts);
-            if rim.len() < 3 {
-                continue;
-            }
-
             let mut rim_box = BBox::empty();
             for &v in &rim {
                 rim_box.expand_point(out_verts[v as usize]);
             }
-            let rim_diag = rim_box.diagonal();
-            if rim_diag > PLUG_MAX_LOOP_DIAM_FACTOR * h {
+            if rim_box.diagonal() > PLUG_MAX_LOOP_DIAM_FACTOR * h {
                 continue;
             }
 
-            let n_prior = outward_prior(&bnd_edge_normals, &rim);
-            let new_base = out_verts.len() as u32;
-            let loop_deadline = stent_loop_deadline(rim.len(), deadline);
-            let mut reason: &'static str = "";
-            let mut timed_out = false;
-            let stent_res = stent_plug(
+            if stent_attempt(
                 &rim,
-                &out_verts,
+                &mut out_verts,
+                &mut out_tris,
+                &mut edge_count,
+                &mut plug_regions,
+                &mut plug_count,
+                &mut plug_face_count,
                 &directed_set,
-                &edge_count,
+                &bnd_edge_normals,
                 &bvh,
                 h,
                 tol,
-                new_base,
-                n_prior,
-                loop_deadline,
-                &mut reason,
-                &mut timed_out,
-            );
+                deadline,
+                &[],
+                &mut stent_group_counter,
+                &mut info,
+            ) {
+                region_sealed.insert(region_key);
+                info.loop_diag.push(format!("m={} sealed:stent", rim.len()));
+            }
             if deadline_passed(deadline) {
                 // The global tier budget is gone; do not commit further plugs.
                 info.reason = "timeout exceeded".to_string();
                 break;
-            }
-
-            if let Some((cand, added)) = stent_res {
-                let cand_counts = edge_use_counts(&cand);
-                let collides = cand_counts
-                    .iter()
-                    .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
-                if collides {
-                    info.loop_diag
-                        .push(format!("m={} rejected:edge_collision", rim.len()));
-                    info.stent_diag
-                        .push(format!("m={} rejected:edge_collision", rim.len()));
-                    info.stent_rejected += 1;
-                    stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim.len(), "edge_collision", &added, &cand);
-                } else if !stent_shape_ok(&cand, &out_verts, &added, &rim, rim_diag) {
-                    info.loop_diag
-                        .push(format!("m={} rejected:shape", rim.len()));
-                    info.stent_diag
-                        .push(format!("m={} rejected:shape", rim.len()));
-                    info.stent_rejected += 1;
-                    stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim.len(), "shape", &added, &cand);
-                } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
-                    info.loop_diag
-                        .push(format!("m={} rejected:reload_nm", rim.len()));
-                    info.stent_diag
-                        .push(format!("m={} rejected:reload_nm", rim.len()));
-                    info.stent_rejected += 1;
-                    stent_dump!(info.stent_diag.len(), &out_verts, &out_tris, rim.len(), "reload_nm", &added, &cand);
-                } else {
-                    for (e, &d) in &cand_counts {
-                        *edge_count.entry(*e).or_insert(0) += d;
-                    }
-                    let n_added = added.len();
-                    out_verts.extend_from_slice(&added);
-                    info.patch_vertices += n_added;
-                    plug_face_count += cand.len();
-                    let tri_start = out_tris.len();
-                    out_tris.extend(cand);
-                    plug_regions.push(PlugRegion {
-                        tri_start,
-                        tri_end: out_tris.len(),
-                        reference: false,
-                        steiner: n_added > 0,
-                        moved: Vec::new(),
-                        rim: rim.clone(),
-                        stent: true,
-                        added_verts: n_added,
-                        method: "stent",
-                    });
-                    plug_count += 1;
-                    info.stent_used += 1;
-                    region_sealed.insert(region_key);
-                    info.loop_diag.push(format!("m={} sealed:stent", rim.len()));
-                    info.stent_diag.push(format!(
-                        "m={} sealed{}",
-                        rim.len(),
-                        if timed_out { " (deadline)" } else { "" }
-                    ));
-                }
-            } else {
-                info.stent_rejected += 1;
-                info.stent_diag.push(format!(
-                    "m={} rejected:{}",
-                    rim.len(),
-                    if reason.is_empty() {
-                        if timed_out { "deadline" } else { "unknown" }
-                    } else {
-                        reason
-                    }
-                ));
             }
         }
     }
@@ -6254,6 +6455,25 @@ pub fn tamponade_repair(
                 drop[ri] |= dw_drop[ri];
                 drop[ri] |= float_drop[ri];
                 drop[ri] |= stent_no_gain[ri];
+            }
+            // All-or-nothing multi-stent: drop every sub-plug of a group whose
+            // any member is dropped. A partial seal would leave the shared
+            // chord seam as a boundary (an internal wall), so the group goes
+            // together.
+            {
+                let mut group_bad: HashMap<usize, bool> = HashMap::new();
+                for (ri, region) in plug_regions.iter().enumerate() {
+                    if region.group != 0 && drop[ri] {
+                        group_bad.insert(region.group, true);
+                    }
+                }
+                for (ri, region) in plug_regions.iter().enumerate() {
+                    if region.group != 0
+                        && group_bad.get(&region.group).copied().unwrap_or(false)
+                    {
+                        drop[ri] = true;
+                    }
+                }
             }
             let any = drop.iter().any(|&d| d);
             // When every plug region is dropped the tier must be a byte-exact
@@ -7264,7 +7484,7 @@ mod tests {
         let base = reload_verdict(&verts, &tris[..2]);
         let full = reload_verdict(&verts, &tris);
         // The third triangle is the "plug" region.
-        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new(), stent: false, added_verts: 0, method: "rim" };
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new(), stent: false, added_verts: 0, group: 0, method: "rim" };
         let without = reload_verdict_without(&verts, &tris, &region);
         assert!(
             without.nm_edges < full.nm_edges && !without.worse_than(&base),
@@ -7333,7 +7553,7 @@ mod tests {
             moved: Vec::new(),
             rim: Vec::new(),
             stent: false,
-            added_verts: 0,
+            added_verts: 0, group: 0,
             method: "rim",
         };
         (verts, tris, region)
@@ -7370,7 +7590,7 @@ mod tests {
             moved: Vec::new(),
             rim: Vec::new(),
             stent: false,
-            added_verts: 0,
+            added_verts: 0, group: 0,
             method: "rim",
         };
 
@@ -7420,7 +7640,7 @@ mod tests {
             moved: vec![(3, [0.5, 0.5, 0.05])],
             rim: Vec::new(),
             stent: false,
-            added_verts: 0,
+            added_verts: 0, group: 0,
             method: "reference",
         };
         let mut ov = verts.clone();
@@ -7483,7 +7703,7 @@ mod tests {
                 moved: Vec::new(),
                 rim: rim.clone(),
                 stent: false,
-                added_verts: 0,
+                added_verts: 0, group: 0,
                 method: "steiner",
             };
             plug_leak(&bvh, &verts, &nv, &t, &region, tol, 8)
@@ -7530,7 +7750,7 @@ mod tests {
         let dup_tris = vec![[8u32, 9, 10]];
         let region = PlugRegion {
             tri_start: 0, tri_end: 1, reference: false, steiner: true,
-            moved: Vec::new(), rim: Vec::new(), stent: false, added_verts: 0, method: "steiner",
+            moved: Vec::new(), rim: Vec::new(), stent: false, added_verts: 0, group: 0, method: "steiner",
         };
         assert!(
             !plug_is_double_wall(&bvh, &verts, &tris, &dup, &dup_tris, &region, tol),
@@ -7773,6 +7993,37 @@ mod tests {
         let mut rim = vec![0u32, 1, 2, 3, 4];
         dedup_rim_f32(&mut rim, &verts);
         assert_eq!(rim, vec![0u32, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_split_pinched_loop_into_two() {
+        // A rim that visits vertex 0's position twice is two loops sharing the
+        // pinch: [0,1,2] and [0,3,4].
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+        ];
+        let rim = vec![0u32, 1, 2, 3, 4];
+        // Pretend vertex 0 and vertex 3 share a float32 position by moving 3.
+        let mut verts2 = verts.clone();
+        verts2[3] = verts2[0];
+        let subs = split_pinched_loop(&rim, &verts2);
+        assert!(!subs.is_empty(), "a pinched rim must be split");
+        // Every returned sub-loop is simple (no repeated reload position).
+        for s in &subs {
+            let mut keys: Vec<[u32; 3]> =
+                s.iter().map(|&v| f32_position_key(verts2[v as usize])).collect();
+            keys.sort_unstable();
+            let n = keys.len();
+            keys.dedup();
+            assert_eq!(keys.len(), n, "sub-loop {s:?} still has a pinch");
+        }
+        // A non-pinched rim is returned unchanged.
+        let one = split_pinched_loop(&rim, &verts);
+        assert_eq!(one, vec![vec![0u32, 1, 2, 3, 4]]);
     }
 
     #[test]
