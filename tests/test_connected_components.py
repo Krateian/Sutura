@@ -1,19 +1,24 @@
-"""Unit tests for topology.connected_components (disjoint-set union-find).
+#!/usr/bin/env python3
+"""Regression test for topology.connected_components (disjoint-set union-find).
 
-Verifies full compatibility and parity with scipy.sparse.csgraph.connected_components
-on arbitrary graphs, edge cases, and multiple input shapes.
+Verifies full compatibility and parity with
+scipy.sparse.csgraph.connected_components on arbitrary graphs, edge cases, and
+multiple input shapes.  topology.py is stdlib + numpy only, so this suite runs
+without the Rust extension; scipy is used only as an independent oracle and the
+parity checks are skipped if it is absent.
+Usage: python3 tests/test_connected_components.py
 """
 import os
 import sys
-import numpy as np
-import pytest
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA_DIR = os.path.join(REPO_DIR, 'sutura')
 if SUTURA_DIR not in sys.path:
     sys.path.insert(0, SUTURA_DIR)
 
-import topology
+import numpy as np  # noqa: E402
+
+import topology  # noqa: E402
 
 
 def test_empty_graph():
@@ -53,7 +58,11 @@ def test_tuple_coordinate_format():
 
 
 def test_scipy_sparse_coo_and_csr_formats():
-    import scipy.sparse as sp
+    try:
+        import scipy.sparse as sp
+    except ImportError:
+        print('skip test_scipy_sparse_coo_and_csr_formats (scipy not installed)')
+        return
     edges = np.array([[0, 1], [1, 2], [3, 4]])
     coo = sp.coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(6, 6))
     csr = coo.tocsr()
@@ -65,8 +74,12 @@ def test_scipy_sparse_coo_and_csr_formats():
 
 
 def test_randomized_parity_with_scipy():
-    import scipy.sparse as sp
-    import scipy.sparse.csgraph as csgraph
+    try:
+        import scipy.sparse as sp
+        import scipy.sparse.csgraph as csgraph
+    except ImportError:
+        print('skip test_randomized_parity_with_scipy (scipy not installed)')
+        return
 
     rng = np.random.default_rng(1337)
     for _ in range(50):
@@ -83,3 +96,15 @@ def test_randomized_parity_with_scipy():
 
         assert sc_nc == top_nc
         assert np.array_equal(sc_lab, top_lab)
+
+
+def main():
+    for name, fn in sorted(globals().items()):
+        if name.startswith('test_') and callable(fn):
+            fn()
+            print('ok  %s' % name)
+    print('connected-components tests passed')
+
+
+if __name__ == '__main__':
+    main()

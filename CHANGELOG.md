@@ -47,8 +47,9 @@ All notable changes to this project are documented here.
   resample filter builds a VCG face KD-tree whose construction degenerates
   (several GB, minutes) on meshes with long skinny triangle fans; this
   OOM-killed the whole repair during method-#10 escalation. The filter now runs
-  in a child process under a wall-clock timeout (`RESAMPLE_SUBPROC_TIMEOUT`,
-  60 s) and falls through to the existing alpha-wrap fallback on timeout, with
+  in a child process under a wall-clock timeout (`PROXY_RESAMPLE_TIMEOUT`,
+  20 s, overridable via `SUTURA_PROXY_RESAMPLE_TIMEOUT`) and falls through to
+  the existing alpha-wrap fallback on timeout, with
   the child driven through temp NPZ files so the parent JSON report is never
   corrupted. Output is byte-identical whenever the resample completes in time.
 - **Dependency reduction Phase 1 and native Rust cleanup filters.** Phase 1
