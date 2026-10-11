@@ -4489,15 +4489,21 @@ fn solve_thin_plate_active_set(
     }
     let inv_m = 1.0 / m as f64;
     c = [c[0] * inv_m, c[1] * inv_m, c[2] * inv_m];
-    let mut plane_max = 0.0f64;
-    for i in 0..m {
-        let off = (p[i][0] - c[0]) * n_out[0]
-            + (p[i][1] - c[1]) * n_out[1]
-            + (p[i][2] - c[2]) * n_out[2];
-        if off > plane_max {
-            plane_max = off;
-        }
-    }
+    // Aperture-plane bound. The cap may not rise farther OUTWARD (`n_out`) than
+    // the rim's MEDIAN offset, not its maximum: a damaged rim has overshoot
+    // spikes (a dangling tail / an uneven rim) that would otherwise let the cap
+    // dome past the surrounding surface -- a visible bulge. The median tracks
+    // the true rim level, so a crater on a flat rim is filled flush and the cap
+    // never protrudes beyond the original surface.
+    let mut offsets: Vec<f64> = (0..m)
+        .map(|i| {
+            (p[i][0] - c[0]) * n_out[0]
+                + (p[i][1] - c[1]) * n_out[1]
+                + (p[i][2] - c[2]) * n_out[2]
+        })
+        .collect();
+    offsets.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let plane_max = offsets[m / 2];
     let mut active = vec![false; n];
     for i in 0..m {
         active[i] = true;
@@ -6255,6 +6261,19 @@ pub fn tamponade_repair(
         // The shared end-of-tier gates (leak / double-wall / connectivity) and
         // the reload verdict judge the committed region.
         if !sealed && !rim_sealed && stent_plug_enabled() {
+            // A Stent must NOT inherit the reference overshoot trim: the trim
+            // lifts rim vertices onto a reference the Stent never validated, so
+            // a cap built on the trimmed rim would keep those lifted vertices
+            // (a visible bulge past the original surface). Undo the trim and
+            // build the Stent on the original rim.
+            if let Some(snap) = &trim_snapshot {
+                if !loop_moved.is_empty() {
+                    out_verts = snap.clone();
+                    info.trimmed_vertices =
+                        info.trimmed_vertices.saturating_sub(loop_moved.len());
+                    loop_moved.clear();
+                }
+            }
             if stent_attempt(
                 &rim,
                 &mut out_verts,
@@ -8062,6 +8081,29 @@ mod tests {
         let (_ov, _ot, info) = tamponade_repair(&v, &t, &config);
         assert!(info.stent_used >= 1, "stent must seal the crater plate_a_dent");
         assert!(info.loop_diag.iter().any(|d| d.contains("sealed:stent")));
+    }
+
+    #[test]
+    fn test_stent_no_outward_bulge_on_dent() {
+        // A Stent seal must never push geometry OUTWARD past the original
+        // surface: the reference overshoot trim must not leak into the Stent
+        // (it would lift rim vertices onto a reference the Stent never
+        // validated). The plate_a_dent cap has to stay at or below the input's
+        // top surface.
+        let path = "/tmp/v074/go/fixtures-v2/plate_a_dent.stl";
+        let (v, t) = read_stl_u32(path);
+        let config = TamponadeConfig {
+            h_min: Some(0.5),
+            ..Default::default()
+        };
+        let (ov, _ot, info) = tamponade_repair(&v, &t, &config);
+        let in_top = v.iter().map(|p| p[2]).fold(f64::MIN, f64::max);
+        let out_top = ov.iter().map(|p| p[2]).fold(f64::MIN, f64::max);
+        assert!(
+            out_top <= in_top + 1e-6,
+            "stent bulged outward: output z max {out_top} > input {in_top} (used={})",
+            info.stent_used
+        );
     }
 
     #[test]
