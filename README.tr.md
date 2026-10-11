@@ -1826,8 +1826,9 @@ yüzgeç üçgenini ve kendisiyle kesişen bir üçgeni olan bir küp üretir.
 Regresyon süitleri:
 
 ```sh
-python3 tests/make_layered_multiobject_3mf.py --check   # katmanlı çok nesneli 3MF
-python3 tests/test_adversarial.py                       # bozuk girdi işleme
+# İkisi de depo içindeki sutura/repair.py'yi çalıştırır; CLI'nin kendi Python'u ile çalıştırın:
+~/.local/share/sutura/venv/bin/python tests/make_layered_multiobject_3mf.py --check   # katmanlı çok nesneli 3MF
+~/.local/share/sutura/venv/bin/python tests/test_adversarial.py                       # bozuk girdi işleme
 ```
 
 `tests/real-world-samples/` içindeki gerçek dünya örnekleri
@@ -1874,7 +1875,7 @@ README'si, "Sloan flips and edge-point propagation").
 İşkence testleri zor ama basılabilir geometriyi kapsar:
 
 ```sh
-python3 tests/torture_tests.py
+~/.local/share/sutura/venv/bin/python tests/torture_tests.py
 ```
 
 Rust çekirdeği (`rust/sutura-geom`, Rust araç zinciri gerekir; sonuçlar crate

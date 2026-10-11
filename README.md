@@ -1824,8 +1824,9 @@ duplicated face, a fin triangle and a self-intersecting triangle.
 Regression suites:
 
 ```sh
-python3 tests/make_layered_multiobject_3mf.py --check   # layered multi-object 3MF
-python3 tests/test_adversarial.py                       # malformed-input handling
+# These spawn the in-repo sutura/repair.py, so run them with the CLI's Python:
+~/.local/share/sutura/venv/bin/python tests/make_layered_multiobject_3mf.py --check   # layered multi-object 3MF
+~/.local/share/sutura/venv/bin/python tests/test_adversarial.py                       # malformed-input handling
 ```
 
 Real-world samples in `tests/real-world-samples/` come from the
@@ -1873,7 +1874,7 @@ and edge-point propagation").
 Torture tests cover hard-but-printable geometry:
 
 ```sh
-python3 tests/torture_tests.py
+~/.local/share/sutura/venv/bin/python tests/torture_tests.py
 ```
 
 Rust core (`rust/sutura-geom`, needs a Rust toolchain; results in the crate
