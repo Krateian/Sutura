@@ -770,6 +770,9 @@ fn tamponade_py<'py>(
         max_nodes,
         time_budget_s,
         openings_gate: None,
+        fwn: std::env::var("SUTURA_TAMP_FWN")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tamponade::tamponade_repair(&rv, &rt, &config)

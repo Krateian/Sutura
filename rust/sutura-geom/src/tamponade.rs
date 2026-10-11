@@ -173,6 +173,24 @@ const LOOP_BUDGET_PER_VERTEX_S: f64 = 0.10;
 /// Deviation gate against the reference surface (allows the curved patch).
 const REF_DEV_FACTOR: f64 = 3.0;
 
+// --- fast generalized winding (Barill et al. 2018, `SUTURA_TAMP_FWN`) -------
+/// Accuracy parameter of the fast winding approximation used for the min-cut's
+/// bulk queries.  `2` is the paper's reference default: nodes farther than two
+/// radii are collapsed to a dipole.  The `tag` decision thresholds (source
+/// `> 0.5`, sink `< 0.1`) are re-evaluated exactly within `FWN_REFINE_BAND`.
+pub const FWN_BETA: f64 = 2.0;
+/// Accuracy used for the cheap second pass on cells near a decision threshold.
+/// Much cheaper than the exact sum (far nodes are still aggregated) but orders
+/// of magnitude more accurate than `FWN_BETA`.
+pub const FWN_REFINE_BETA: f64 = 16.0;
+/// Half-width of the band around the `tag` thresholds (`0.1`, `0.5`) inside
+/// which the coarse winding is distrusted and sharpened with `FWN_REFINE_BETA`.
+pub const FWN_REFINE_BAND: f64 = 0.15;
+/// Half-width of the band around a `tag` threshold inside which even the
+/// sharpened value is replaced by the exact all-triangle sum, so the min-cut's
+/// cell classification is identical to the accurate path.
+pub const FWN_TIGHT_BAND: f64 = 0.005;
+
 #[derive(Clone, Debug)]
 pub struct TamponadeConfig {
     pub h_min: Option<f64>,
@@ -180,6 +198,10 @@ pub struct TamponadeConfig {
     pub max_nodes: Option<usize>,
     pub time_budget_s: Option<f64>,
     pub openings_gate: Option<bool>,
+    /// Use the fast generalized-winding approximation (Barill et al. 2018) for
+    /// the min-cut's bulk winding queries, refining exactly near a decision
+    /// threshold (`SUTURA_TAMP_FWN`).  Off keeps the accurate BVH winding.
+    pub fwn: bool,
 }
 
 impl Default for TamponadeConfig {
@@ -190,6 +212,7 @@ impl Default for TamponadeConfig {
             max_nodes: None,
             time_budget_s: None,
             openings_gate: None,
+            fwn: false,
         }
     }
 }
@@ -915,6 +938,24 @@ fn throat_separates(
 ) -> CutVerdict {
     const TERM: f64 = 1.0e12;
 
+    // The `tag` decision thresholds (source `> 0.5`, sink `< 0.1`); the fast
+    // winding path refines exactly inside `FWN_REFINE_BAND` of either.
+    const TAG_THRESHOLDS: [f64; 2] = [0.1, 0.5];
+    let winding = |pts: &[[f64; 3]]| -> Vec<f64> {
+        if config.fwn {
+            bvh.winding_points_hybrid_par(
+                pts,
+                FWN_BETA,
+                FWN_REFINE_BETA,
+                &TAG_THRESHOLDS,
+                FWN_REFINE_BAND,
+                FWN_TIGHT_BAND,
+            )
+        } else {
+            bvh.winding_points_par(pts)
+        }
+    };
+
     let mut bbox = BBox::empty();
     for &v in loop_v {
         bbox.expand_point(verts[v as usize]);
@@ -1172,7 +1213,7 @@ fn throat_separates(
                     pts.push(cell_center(ix, iy, iz));
                 }
             }
-            let ws = bvh.winding_points_par(&pts);
+            let ws = winding(&pts);
             let mut k = 0usize;
             for iy in 0..ny {
                 for ix in 0..nx {
@@ -1230,7 +1271,7 @@ fn throat_separates(
         if deadline_passed(deadline) {
             return CutVerdict::Timeout;
         }
-        let ws = bvh.winding_points_par(&sample_pts);
+        let ws = winding(&sample_pts);
         let mut comp_tag: HashMap<usize, i8> = HashMap::new();
         let mut comp_bad: HashSet<usize> = HashSet::new();
         for k in 0..sample_idx.len() {
@@ -1272,8 +1313,12 @@ fn throat_separates(
         }
         // Unresolved components: exact per-cell evaluation, one z-slab at a
         // time so the intra-cut deadline also bounds the fallback.
+        let mut fallback_cells = 0usize;
         for iz in 0..nz {
             if deadline_passed(deadline) {
+                if prof {
+                    eprintln!("[tamp]     fallback timeout at slab {} cells={}", iz, fallback_cells);
+                }
                 return CutVerdict::Timeout;
             }
             let mut pts: Vec<[f64; 3]> = Vec::new();
@@ -1297,10 +1342,18 @@ fn throat_separates(
             if pts.is_empty() {
                 continue;
             }
-            let ws2 = bvh.winding_points_par(&pts);
+            let ws2 = winding(&pts);
+            fallback_cells += idxs.len();
             for (k, &idx) in idxs.iter().enumerate() {
                 cls[idx] = tag(ws2[k], border_of(idx));
             }
+        }
+        if prof && fallback_cells > 0 {
+            eprintln!(
+                "[tamp]     fallback cells={} winding_s={:.3}",
+                fallback_cells,
+                tw0.elapsed().as_secs_f64()
+            );
         }
     }
     let winding_s = tw0.elapsed().as_secs_f64();
@@ -5102,6 +5155,36 @@ mod tests {
                     "component vs per-cell verdict differ (h={}, rim={:?})",
                     h, rim
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fwn_winding_matches_accurate_cut() {
+        // The fast generalized-winding path (SUTURA_TAMP_FWN) must yield the
+        // same cut verdict as the accurate BVH winding on the fixtures, i.e.
+        // the near-threshold exact refine makes the occupancy grid identical.
+        let (cube_v, cube_t) = unit_cube_open_top();
+        let (solid_v, solid_t) = unit_solid_cube();
+        let (sphere_v, sphere_t) = unit_sphere();
+        let fixtures: Vec<(Vec<[f64; 3]>, Vec<[u32; 3]>, Vec<u32>)> = vec![
+            (cube_v, cube_t, vec![4, 5, 6, 7]),
+            (solid_v, solid_t, vec![4, 5, 6, 7]),
+            (sphere_v, sphere_t, vec![0, 1, 2, 3, 4, 5]),
+        ];
+        let accurate = TamponadeConfig::default();
+        let mut fast = TamponadeConfig::default();
+        fast.fwn = true;
+        for (verts, tris, rim) in fixtures {
+            let idx: Vec<[usize; 3]> = tris
+                .iter()
+                .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+                .collect();
+            let bvh = MeshBvh::from_arrays(&verts, &idx);
+            for &h in &[0.05_f64, 0.2_f64] {
+                let a = throat_separates(&verts, &rim, h, 1.0, &bvh, &accurate, false, None);
+                let f = throat_separates(&verts, &rim, h, 1.0, &bvh, &fast, false, None);
+                assert_eq!(a, f, "fwn vs accurate verdict differ (h={}, rim={:?})", h, rim);
             }
         }
     }
