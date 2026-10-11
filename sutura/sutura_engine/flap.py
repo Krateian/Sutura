@@ -1485,12 +1485,14 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
                      separate_stl=True, bridge_open_chains=False,
                      weld_max_frac=0.02, orient="reverse", avoid_coplanar=True,
                      coplanar_frac=0.05, coplanar_cos=0.99,
-                     sliver_cleanup=False):
+                     sliver_cleanup=False, time_budget=None):
     """Cover every simple boundary loop with a fair surface flap.
 
     The pure-numpy reference oracle.  ``flap_fill`` dispatches to the Rust port
     when the extension exposes it; this function remains the fallback and the
-    parity oracle for the port.
+    parity oracle for the port.  ``time_budget`` bounds the Rust per-loop
+    candidate selector and is accepted here only for signature parity (the
+    oracle has no selector, so it is ignored).
 
     ``collect_quality`` adds aggregate patch triangle-quality percentiles
     (min-angle p5/p50, aspect p50/p95) for the DP patch *before* refinement and
@@ -1908,8 +1910,12 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
               drop_lone_tris=True, weld_cracks=True, split_nm=True,
               separate_stl=True, bridge_open_chains=False, weld_max_frac=0.02,
               orient="reverse", avoid_coplanar=True, coplanar_frac=0.05,
-              coplanar_cos=0.99, sliver_cleanup=False):
+              coplanar_cos=0.99, sliver_cleanup=False, time_budget=None):
     """Fill boundary loops, using the Rust port when the extension has it.
+
+    ``time_budget`` (seconds) bounds the Rust per-loop candidate selector so the
+    alternative search stops at its preset budget and leaves the remaining loops
+    to Stage-1; the numpy oracle has no selector and ignores it.
 
     Dispatches to ``sutura_geom.flap_fill`` (bit-for-bit parity with
     :func:`flap_fill_python`, verified by ``tests/test_flap_rust_parity.py``)
@@ -1930,7 +1936,8 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
                 bridge_open_chains=bridge_open_chains,
                 weld_max_frac=weld_max_frac, orient=orient,
                 avoid_coplanar=avoid_coplanar, coplanar_frac=coplanar_frac,
-                coplanar_cos=coplanar_cos, sliver_cleanup=sliver_cleanup)
+                coplanar_cos=coplanar_cos, sliver_cleanup=sliver_cleanup,
+                time_budget=time_budget)
             return (np.asarray(rv, dtype=np.float64),
                     np.asarray(rt, dtype=np.int64), dict(rrep))
         except Exception:  # noqa: BLE001 - a repair tier never crashes
@@ -1943,4 +1950,4 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
         bridge_open_chains=bridge_open_chains, weld_max_frac=weld_max_frac,
         orient=orient, avoid_coplanar=avoid_coplanar,
         coplanar_frac=coplanar_frac, coplanar_cos=coplanar_cos,
-        sliver_cleanup=sliver_cleanup)
+        sliver_cleanup=sliver_cleanup, time_budget=time_budget)

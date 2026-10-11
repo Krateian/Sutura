@@ -3846,7 +3846,8 @@ def _flap_step_impl(ml, ms, after, stats, rec):
         try:
             from sutura_engine import flap as _flap
             cand_v, cand_t, frep = _flap.flap_fill(base_v, base_t,
-                                                   separate_stl=False)
+                                                   separate_stl=False,
+                                                   time_budget=budget)
         except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
             rec['reason'] = 'flap error: %s' % e
             return ms, after

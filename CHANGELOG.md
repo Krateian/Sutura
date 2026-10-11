@@ -6,6 +6,17 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Flap per-loop candidate selection (on by default).** Each boundary loop
+  commits the thin-plate patch first, exactly like the historical default, so a
+  loop it fills is byte-identical and costs nothing extra. Only when the
+  thin-plate patch is rejected (coplanar fold) does the loop try the
+  membrane/REF/unfaired refined alternatives, one at a time, committing the
+  first that passes the baseline-relative zero-volume, coplanar and reload
+  safety guards; a loop no candidate can fill safely still falls to Stage-1.
+  The alternative search is charged against the Flap wall-clock budget (the
+  alternatives stop at the preset deadline and the loop falls to Stage-1), so
+  turning selection on cannot overshoot the intensity preset. Opt out with
+  `SUTURA_FLAP_SELECT=0`.
 - **Tamponade (repair method #17, interior hole plug; alias `lava`).**
   A new opt-in geometry-inventing tier (`sutura_engine.tamponade`, Rust
   `sutura_geom.tamponade`) that closes open boundaries from the inside: each

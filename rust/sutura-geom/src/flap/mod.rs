@@ -17,6 +17,7 @@ pub mod topology;
 pub use binding::flap_fill_py;
 
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 /// A 3-D point.
 pub type V3 = [f64; 3];
@@ -538,6 +539,12 @@ pub struct FlapParams {
     pub coplanar_frac: f64,
     pub coplanar_cos: f64,
     pub sliver_cleanup: bool,
+    /// Wall-clock budget for the whole call, in seconds. When set (and > 0),
+    /// the per-loop candidate selector stops trying alternatives once the
+    /// deadline passes and leaves the remaining loops to Stage-1, so an
+    /// expensive selection cannot push the run past its preset budget.
+    /// `None` = unlimited.
+    pub time_budget: Option<f64>,
 }
 
 impl Default for FlapParams {
@@ -559,6 +566,7 @@ impl Default for FlapParams {
             coplanar_frac: 0.05,
             coplanar_cos: 0.99,
             sliver_cleanup: false,
+            time_budget: None,
         }
     }
 }
@@ -630,6 +638,21 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         fair: prm.fair,
         ..Default::default()
     };
+
+    // Wall-clock budget for the whole call (see ``FlapParams::time_budget``).
+    // ``None`` (the default) leaves selection unbounded; the Python caller
+    // passes its preset budget so the per-loop candidate selector can bail out
+    // of the alternative search instead of overshooting.  ``alt_reserve`` is
+    // the time held back for the largest *single* alternative still to start:
+    // it grows to the largest alternative duration seen so far (seeded at 25 %
+    // of the budget) and gates the start of every alternative, so the whole
+    // call stays within budget while never preempting an alternative mid-solve.
+    let budget_dur = prm
+        .time_budget
+        .filter(|b| *b > 0.0)
+        .map(Duration::from_secs_f64);
+    let deadline = budget_dur.map(|b| Instant::now() + b);
+    let mut alt_reserve = budget_dur.map(|b| b.mul_f64(0.25)).unwrap_or(Duration::ZERO);
 
     // ---- boundary normalisation / non-manifold split --------------------
     let (mut v2, mut t2): (Vec<V3>, Vec<T3>);
@@ -762,10 +785,14 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
     // Per-loop candidate selection: try thin-plate, then membrane, REF and the
-    // unfaired refined patch, committing the first that passes the guards.
+    // unfaired refined patch, committing the first that passes the guards.  The
+    // primary (thin-plate) candidate is committed exactly like the historical
+    // default, so any loop the thin-plate path already filled is unchanged; the
+    // alternatives only add baseline-relative safe fills that the default left
+    // to Stage-1.  Default ON; `SUTURA_FLAP_SELECT=0` opts out.
     let select = std::env::var("SUTURA_FLAP_SELECT")
         .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(false);
+        .unwrap_or(true);
     let adj_ref = if ref_on {
         Some(crate::tamponade::build_adjacency(v2.len(), &t2))
     } else {
@@ -1055,13 +1082,17 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             .map(|i| (loop_arr[i], loop_arr[(i + 1) % m]))
             .collect();
 
-        // Per-loop candidate selection (SUTURA_FLAP_SELECT): thin-plate (accepted
-        // like the default), then membrane, REF, the unfaired refined patch and a
-        // projected SI-free patch; the first that passes the zero-volume /
-        // coplanar / safety guards is committed.  A loop no candidate can fill
-        // safely falls to Stage-1.
+        // Per-loop candidate selection (SUTURA_FLAP_SELECT): the primary
+        // (thin-plate) patch is evaluated first and committed with zero extra
+        // work when it passes, exactly like the historical default (and
+        // `SUTURA_FLAP_SELECT=0`), so any loop it fills is byte-identical.  Only
+        // when the primary is rejected (coplanar fold) are the alternatives --
+        // membrane, REF, the unfaired refined patch and a projected SI-free
+        // patch -- built, one at a time, each checked before the next; the first
+        // that passes the zero-volume / coplanar / safety guards is committed.
+        // A loop no candidate can fill safely, or one the wall-clock budget
+        // reaches, falls to Stage-1.
         if select && p_prefair.is_some() {
-            let base = p_prefair.as_ref().unwrap();
             let cand_ok = |p: &[V3], fc: &[[u32; 3]], gf: &[T3], primary: bool| -> bool {
                 if let Some(fi) = fi_opt {
                     let comp = stats.lab[fi as usize] as usize;
@@ -1101,70 +1132,92 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 }
                 true
             };
-            let mut cands: Vec<(Vec<V3>, Vec<[u32; 3]>, Vec<T3>, bool)> =
-                vec![(p_pts.clone(), faces.clone(), gfaces.clone(), true)];
-            {
-                let mut c = base.clone();
-                fair::fair_patch_energy(&mut c, &faces, m, &ghost, 1, None, 0.0);
-                cands.push((c, faces.clone(), gfaces.clone(), false));
-            }
-            if ref_on {
-                if let Some(adj) = adj_ref.as_ref() {
-                    if let Some(refs) =
-                        crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
-                    {
-                        let mut c = base.clone();
-                        for _ in 0..3 {
-                            let data: Vec<V3> =
-                                c[m..].iter().map(|&q| refs.place(q)).collect();
-                            fair::fair_patch_energy(
-                                &mut c, &faces, m, &ghost, 1, Some(&data), 2.0,
-                            );
-                        }
-                        cands.push((c, faces.clone(), gfaces.clone(), false));
+            // An alternative may start only when the reserve (the largest one
+            // yet seen) still fits before the deadline.
+            let fits =
+                |reserve: Duration| deadline.is_none_or(|d| Instant::now() + reserve < d);
+            // Primary: no alternative is built unless this is rejected.
+            let mut chosen = cand_ok(&p_pts, &faces, &gfaces, true);
+            if !chosen && fits(alt_reserve) {
+                let base = p_prefair.as_ref().unwrap();
+                // 1) Membrane (order-1) fairing of the refined patch.
+                let a0 = Instant::now();
+                {
+                    let mut c = base.clone();
+                    fair::fair_patch_energy(&mut c, &faces, m, &ghost, 1, None, 0.0);
+                    if cand_ok(&c, &faces, &gfaces, false) {
+                        p_pts = c;
+                        chosen = true;
                     }
                 }
-            }
-            cands.push((base.clone(), faces.clone(), gfaces.clone(), false));
-            // Projected SI-free patch: independent (ear-clipped) faces.
-            if let Some((pp, pf)) =
-                projected_patch(&v2, &t2, loop_arr, target, adj_ref.as_ref(), &forb)
-            {
-                let base2 = out_v.len();
-                let gf2: Vec<T3> = pf
-                    .iter()
-                    .map(|f| {
-                        let g = |i: u32| -> u32 {
-                            if (i as usize) < m {
-                                loop_arr[i as usize]
-                            } else {
-                                (base2 + (i as usize - m)) as u32
+                alt_reserve = alt_reserve.max(Instant::now() - a0);
+                // 2) Reference fairing (opt-in via SUTURA_FLAP_REF).
+                if !chosen && ref_on && fits(alt_reserve) {
+                    let a0 = Instant::now();
+                    if let Some(adj) = adj_ref.as_ref() {
+                        if let Some(refs) =
+                            crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
+                        {
+                            let mut c = base.clone();
+                            for _ in 0..3 {
+                                let data: Vec<V3> =
+                                    c[m..].iter().map(|&q| refs.place(q)).collect();
+                                fair::fair_patch_energy(
+                                    &mut c, &faces, m, &ghost, 1, Some(&data), 2.0,
+                                );
                             }
-                        };
-                        [g(f[0]), g(f[1]), g(f[2])]
-                    })
-                    .collect();
-                cands.push((pp, pf, gf2, false));
-            }
-            let mut chosen: Option<(Vec<V3>, Vec<[u32; 3]>, Vec<T3>)> = None;
-            for (c, fc, gf, primary) in cands {
-                if cand_ok(&c, &fc, &gf, primary) {
-                    chosen = Some((c, fc, gf));
-                    break;
+                            if cand_ok(&c, &faces, &gfaces, false) {
+                                p_pts = c;
+                                chosen = true;
+                            }
+                        }
+                    }
+                    alt_reserve = alt_reserve.max(Instant::now() - a0);
+                }
+                // 3) Unfaired refined patch.
+                if !chosen && fits(alt_reserve) {
+                    let a0 = Instant::now();
+                    if cand_ok(base, &faces, &gfaces, false) {
+                        p_pts = base.clone();
+                        chosen = true;
+                    }
+                    alt_reserve = alt_reserve.max(Instant::now() - a0);
+                }
+                // 4) Projected SI-free patch (independent ear-clipped faces).
+                if !chosen && fits(alt_reserve) {
+                    let a0 = Instant::now();
+                    if let Some((pp, pf)) =
+                        projected_patch(&v2, &t2, loop_arr, target, adj_ref.as_ref(), &forb)
+                    {
+                        let base2 = out_v.len();
+                        let gf2: Vec<T3> = pf
+                            .iter()
+                            .map(|f| {
+                                let g = |i: u32| -> u32 {
+                                    if (i as usize) < m {
+                                        loop_arr[i as usize]
+                                    } else {
+                                        (base2 + (i as usize - m)) as u32
+                                    }
+                                };
+                                [g(f[0]), g(f[1]), g(f[2])]
+                            })
+                            .collect();
+                        if cand_ok(&pp, &pf, &gf2, false) {
+                            p_pts = pp;
+                            faces = pf;
+                            gfaces = gf2;
+                            chosen = true;
+                        }
+                    }
+                    alt_reserve = alt_reserve.max(Instant::now() - a0);
                 }
             }
-            match chosen {
-                Some((c, fc, gf)) => {
-                    p_pts = c;
-                    faces = fc;
-                    gfaces = gf;
-                }
-                None => {
-                    report.loops_skipped_coplanar += 1;
-                    log.action = Some("coplanar".to_string());
-                    report.loop_log.push(log);
-                    continue;
-                }
+            if !chosen {
+                report.loops_skipped_coplanar += 1;
+                log.action = Some("coplanar".to_string());
+                report.loop_log.push(log);
+                continue;
             }
         }
 

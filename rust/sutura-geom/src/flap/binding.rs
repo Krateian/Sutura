@@ -88,7 +88,8 @@ fn quality_dict<'py>(py: Python<'py>, q: &QualityAgg) -> PyResult<Bound<'py, PyD
     collect_quality=false, drop_lone_tris=true, weld_cracks=true,
     split_nm=true, separate_stl=true, bridge_open_chains=false,
     weld_max_frac=0.02, orient="reverse".to_string(), avoid_coplanar=true,
-    coplanar_frac=0.05, coplanar_cos=0.99, sliver_cleanup=false
+    coplanar_frac=0.05, coplanar_cos=0.99, sliver_cleanup=false,
+    time_budget=None
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn flap_fill_py<'py>(
@@ -111,6 +112,7 @@ pub fn flap_fill_py<'py>(
     coplanar_frac: f64,
     coplanar_cos: f64,
     sliver_cleanup: bool,
+    time_budget: Option<f64>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i64>>,
@@ -144,6 +146,7 @@ pub fn flap_fill_py<'py>(
         coplanar_frac,
         coplanar_cos,
         sliver_cleanup,
+        time_budget,
     };
 
     let (out_v, out_t, report) = flap_fill(&rv, &rt, &prm);
