@@ -643,17 +643,30 @@ Graft/fTetWild katmanlarından önce** çalışır.
 
 **İsteğe bağlıdır**: `--tamponade` (veya `SUTURA_TAMPONADE`), GUI aynı anahtarı
 Seçenekler → Onarım sekmesindeki **Tamponad (delikleri içeriden doldur)**
-onay kutusuyla sunar. Bir aday yalnızca yeniden-yüklemede dürüst (kaynaklı)
-mesh'te delik ve non-manifold kenar sayısı artmadığında, ikisi birlikte kesin
-olarak azaldığında, bileşen sayısı artmadığında ve katman öncesi yüzlerin en az
-%99'u korunduğunda benimsenir. Rust eklentisinin `sutura_geom.tamponade`
-sunması gerekir (numpy için yedek yol yoktur); aksi halde katman kendini
-kullanılamaz olarak bildirir ve atlanır. Süre bütçesi yoğunluk ön ayarını
-izler (`quick` bu katmanı kapatır). Rapor `tamponade` anahtarını taşır: `ran`,
-`adopted`, `reason`, `plugs`, `plug_faces`,
+onay kutusuyla sunar. Bir tıkaç yalnızca şu durumlarda reddedilir, böylece
+katman yalnızca sonucu kesin olarak iyileştirdiğinde çıktıyı değiştirir:
+
+- **katı cismin dışına sızar** — tıkacın bir örnek noktası orijinal yüzeyden
+  `clamp(köşegen/10000, 0,0125, 0,05)` mm'den daha uzakta boş uzayda yer alır ve
+  delik ağzının üzerinde değildir;
+- yeniden-yüklemede dürüst (kaynaklı) mesh'te **delik veya non-manifold kenar
+  oluşturur**;
+- mevcut bir yüzeyle **ters yönde çakışır** (çift duvar) ve bu çakışma kendi
+  alanının %20'sinden fazladır — ters yönlü çakışan yüzler tek-çift dilimleyicide
+  malzemeyi iptal edebilir; aynı yönlü çakışma ise pozitif dolgulu dilimleyicide
+  birleştirilir ve olduğu gibi bırakılır;
+- **ayrı bir parça veya kendi başına kapalı bir kabuk ekler** (tıkaç, sınır
+  halkası üzerinden ana kabuğa kenar-bağlantılı olmalıdır);
+- ya da katman öncesi yüzlerin %99'undan azı korunur.
+
+Kendini kesmeler **yalnızca raporlanır** (dilimleyici çakışan hacimleri
+birleştirir), bu yüzden benimsenmeyi hiçbir zaman engellemez. Rust eklentisinin
+`sutura_geom.tamponade` sunması gerekir (numpy için yedek yol yoktur); aksi halde
+katman kendini kullanılamaz olarak bildirir ve atlanır. Süre bütçesi yoğunluk ön
+ayarını izler (`quick` bu katmanı kapatır). Rapor `tamponade` anahtarını taşır:
+`ran`, `adopted`, `reason`, `plugs`, `plug_faces`,
 `melt_layers_tried`/`_accepted`/`_rolled_back`, `micro_welds_ok`/`_failed`,
-`healthy_faces_kept`, `input_faces`, `output_faces` ve `seconds`. Katman,
-gerçek-dünya korpusunda ölçülene kadar isteğe bağlı kalır.
+`healthy_faces_kept`, `input_faces`, `output_faces` ve `seconds`.
 
 #### Graft (morfoloji kabuk sarma, #13)
 

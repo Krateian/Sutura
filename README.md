@@ -642,17 +642,29 @@ tiers**.
 
 It is **opt-in**: `--tamponade` (or `SUTURA_TAMPONADE`), and the GUI exposes the
 same switch as the Options → Repair checkbox **Tamponade (fill holes from
-inside)**. A candidate is adopted only when, on the reload-honest (welded) mesh,
-neither holes nor non-manifold edges rise, the two together strictly fall, the
-component count does not rise and at least 99 % of the pre-tier faces are kept.
-The Rust extension must provide `sutura_geom.tamponade` (there is no numpy
-fallback); otherwise the tier reports itself unavailable and is skipped. The
-wall-clock budget follows the intensity preset (`quick` disables the tier). The
-report carries a `tamponade` key with `ran`, `adopted`, `reason`, `plugs`,
-`plug_faces`, `melt_layers_tried`/`_accepted`/`_rolled_back`,
-`micro_welds_ok`/`_failed`, `healthy_faces_kept`, `input_faces`, `output_faces`
-and `seconds`. The tier stays opt-in until it is measured on the real-world
-corpus.
+inside)**. A plug is rejected only when one of these holds, so the tier only
+changes the output when it strictly helps:
+
+- it **leaks outside the solid** — a plug sample lies in empty space beyond
+  `clamp(diagonal/10000, 0.0125, 0.05)` mm from the original surface and not over
+  the hole aperture;
+- it **creates holes or non-manifold edges** on the reload-honest (welded) mesh;
+- it **overlaps an existing surface with the opposite orientation** (a double
+  wall) over more than 20 % of its own area — opposite coincident faces can
+  cancel material in an even-odd slicer, whereas a same-orientation overlap is
+  unioned by a positive-fill slicer and is left alone;
+- it **would add a separate part or a closed shell** of its own (a plug must be
+  edge-connected to the main shell through its boundary loop);
+- or fewer than 99 % of the pre-tier faces are kept.
+
+Self-intersections are **report-only** (a slicer unions overlapping volumes), so
+they never block adoption. The Rust extension must provide
+`sutura_geom.tamponade` (there is no numpy fallback); otherwise the tier reports
+itself unavailable and is skipped. The wall-clock budget follows the intensity
+preset (`quick` disables the tier). The report carries a `tamponade` key with
+`ran`, `adopted`, `reason`, `plugs`, `plug_faces`,
+`melt_layers_tried`/`_accepted`/`_rolled_back`, `micro_welds_ok`/`_failed`,
+`healthy_faces_kept`, `input_faces`, `output_faces` and `seconds`.
 
 #### Graft (morphology shell wrap, #13)
 

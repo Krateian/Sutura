@@ -54,6 +54,22 @@ All notable changes to this project are documented here.
   remains **opt-in** (`TAMPONADE_DEFAULT_ENABLED = False`; `--tamponade` /
   `SUTURA_TAMPONADE` / the GUI Options checkbox), and the library default stays
   off and byte-identical.
+- **Tamponade anti-parallel-only double wall and plug connectivity gate.** The
+  double-wall gate now counts only the coincident area whose normal is
+  anti-parallel (angle > 160°) — opposite-oriented coincident faces can cancel
+  material in an even-odd slicer, so a plug is rolled back only when that
+  opposite fraction exceeds 20 % of its new-face area; a same-orientation
+  coincidence is unioned by a positive-fill slicer and is accepted (its fraction
+  is reported as `coincident_same_frac`). A separate connectivity gate rolls
+  back any plug that is not edge-connected to the main shell through its loop (a
+  floating component or a self-contained closed sub-shell), so a plug can never
+  add a separate part. The reload-honest verdict now also counts vertex-connected
+  components and closed shells, and `worse_than` rejects a component-count
+  increase. `TamponadeInfo` exposes `plugs_floating`, `components_before` /
+  `_after` and `closed_shells_before` / `_after`. Measured: fixtures-v2 (14) plus
+  thingi10k_1038441 and thingi10k_100827 are byte-identical to the base; the
+  ornate-frame post-Flap tier keeps 2 caps (9 rolled back as double-wall, 0
+  floating), holes 23 -> 21, components 220 -> 220, adopted.
 - **Proxy resample timeout guard (`Scaffold`, method #10).** The uniform
   resample filter builds a VCG face KD-tree whose construction degenerates
   (several GB, minutes) on meshes with long skinny triangle fans; this
