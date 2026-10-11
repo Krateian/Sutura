@@ -58,6 +58,10 @@ edilmiş değil, sadece tempo yavaşlayacak.
 
 ![Sutura GUI](assets/screenshot.png)
 
+![Seçenekler → Onarım sekmesi](assets/options-dialog.png)
+
+*Tamponade ve Flap, Seçenekler → Onarım'da varsayılan olarak açıktır.*
+
 ## Sutura bir modeli nasıl onarır, sade anlatım
 
 Bozuk bir 3B model hasarlı bir deri gibidir. Tarayıcı göremediği yerlerde

@@ -170,6 +170,12 @@ All notable changes to this project are documented here.
   (`topology.remove_connected_components`, `invert_face_orientation`,
   `mesh_topology`), so the whole Stage-1 cleaning path prefers the native
   kernel, with parity and fallback coverage in `tests/test_topology_parity.py`.
+- **Graft rejects a candidate that covers too little of the input.** When a
+  Graft result misses too much of the input surface it is refused and the
+  repair falls through to the next deep tier instead of adopting it.
+- **Tamponade final safety net.** If an adopted Tamponade result collapses or
+  leaks, the repair is re-run without Tamponade, so a bad plug can never make
+  the output worse.
 
 Flap hole-filling refinement is inspired by Liepa (2003), Filling Holes in
 Meshes; no third-party code is used.

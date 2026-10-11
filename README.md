@@ -55,6 +55,10 @@ a while going forward — the project is not abandoned, only slower-paced.
 
 ![Sutura GUI](assets/screenshot.png)
 
+![Options → Repair tab](assets/options-dialog.png)
+
+*Tamponade and Flap are on by default in Options → Repair.*
+
 ## How Sutura repairs a mesh, in plain words
 
 A broken 3D model is like damaged skin. A scanner leaves **holes** where it saw
