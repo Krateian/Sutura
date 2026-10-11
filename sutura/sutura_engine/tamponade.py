@@ -29,6 +29,7 @@ presets; ``quick`` disables the tier.
 """
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -183,6 +184,8 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
               'healthy_faces_kept': None,
               'reference_used': None, 'reference_fallback': None,
               'reference_skirt': None,
+              'balloon_used': None, 'balloon_rejected': None,
+              'plug_metrics': None,
               'trimmed_vertices': None, 'patch_vertices': None,
               'plugs_rolled_back': None, 'plugs_leaking': None,
               'plugs_double_wall': None, 'plugs_floating': None,
@@ -225,12 +228,19 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
                     'excised_faces', 'healthy_faces_kept',
                     'reference_used', 'reference_fallback',
                     'reference_skirt',
+                    'balloon_used', 'balloon_rejected',
                     'trimmed_vertices', 'patch_vertices',
                     'plugs_rolled_back', 'plugs_leaking',
                     'plugs_double_wall', 'plugs_floating',
                     'components_before', 'components_after',
                     'closed_shells_before', 'closed_shells_after'):
             report[key] = info.get(key)
+        raw_metrics = info.get('plug_metrics')
+        if raw_metrics:
+            try:
+                report['plug_metrics'] = json.loads(raw_metrics)
+            except (ValueError, TypeError):
+                report['plug_metrics'] = None
         if info.get('reason'):
             report['reason'] = info['reason']
         if len(out_t) == 0:

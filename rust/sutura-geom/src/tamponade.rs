@@ -21,6 +21,10 @@ use crate::mincut::BkGraph;
 use crate::rbf;
 use crate::triangle_intersection;
 use crate::winding::MeshBvh;
+use faer::linalg::solvers::Solve;
+use faer::sparse::linalg::solvers::{Lu, SymbolicLu};
+use faer::sparse::{SparseColMat, Triplet};
+use faer::Mat;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
@@ -243,6 +247,12 @@ pub struct TamponadeInfo {
     /// Holes sealed by a skirt plug (cap on the reference + zipper strip to the
     /// projected rim; subset of `reference_used`).
     pub reference_skirt: usize,
+    /// Holes sealed by the balloon plug (thin-plate active-set inflate).
+    pub balloon_used: usize,
+    /// Balloon candidates attempted but not committed (any reason).
+    pub balloon_rejected: usize,
+    /// Per-plug standard numeric metrics (JSON array, see plug-metrics spec).
+    pub plug_metrics_json: String,
     /// Rim/tail vertices lifted onto the reference surface (overshoot trim).
     pub trimmed_vertices: usize,
     /// Interior patch vertices placed on the reference surface.
@@ -3495,6 +3505,10 @@ struct PlugRegion {
     /// gate's aperture-footprint test so a reference fill that bulges over the
     /// whole hole is not mistaken for a leak.
     rim: Vec<u32>,
+    /// True when this region was produced by the balloon plug candidate.
+    balloon: bool,
+    /// Diagnostic method tag for the per-plug metrics report.
+    method: &'static str,
 }
 
 /// Reload verdict of the output with one plug region removed (vertices kept,
@@ -4200,6 +4214,584 @@ fn plug_edges_connected(
     connected
 }
 
+/// Standard per-plug numeric metrics as a JSON array (see the plug-metrics
+/// spec). Computed on the pre-rollback output arrays; `rolled[ri]` marks a
+/// region the adoption gates dropped (skipped from the report). `tol` is the
+/// leak/deviation tolerance in mesh units.
+#[allow(clippy::too_many_arguments)]
+fn build_plug_metrics_json(
+    orig_bvh: &MeshBvh,
+    orig_verts: &[[f64; 3]],
+    orig_tris: &[[u32; 3]],
+    new_verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    rolled: &[bool],
+    leak: &[bool],
+    dw: &[bool],
+    floating: &[bool],
+    tol: f64,
+) -> String {
+    let mut out = String::from("[");
+    for (ri, region) in regions.iter().enumerate() {
+        if rolled.get(ri).copied().unwrap_or(false) {
+            continue;
+        }
+        let (total, opposite, same) =
+            plug_coincidence(orig_bvh, orig_verts, orig_tris, new_verts, tris, region, tol);
+        let coincident_frac = if total > 0.0 { (opposite + same) / total } else { 0.0 };
+        let mut area = 0.0f64;
+        let mut min_edge = f64::INFINITY;
+        let mut max_edge = 0.0f64;
+        for f in region.tri_start..region.tri_end {
+            if f >= tris.len() {
+                break;
+            }
+            let t = tris[f];
+            if t.iter().any(|&v| v as usize >= new_verts.len()) {
+                continue;
+            }
+            let a = new_verts[t[0] as usize];
+            let b = new_verts[t[1] as usize];
+            let c = new_verts[t[2] as usize];
+            area += tri_area(a, b, c);
+            for (p, q) in [(a, b), (b, c), (c, a)] {
+                let e = norm3([q[0] - p[0], q[1] - p[1], q[2] - p[2]]);
+                if e < min_edge {
+                    min_edge = e;
+                }
+                if e > max_edge {
+                    max_edge = e;
+                }
+            }
+        }
+        let min_edge = if min_edge.is_finite() { min_edge } else { 0.0 };
+        let max_aspect = if min_edge > 1e-12 { max_edge / min_edge } else { 0.0 };
+        if out.len() > 1 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"m\":{},\"method\":\"{}\",\"balloon\":{},\"n_faces\":{},\"area_mm2\":{:.6},\"coincident_frac\":{:.4},\"leak\":{},\"double_wall\":{},\"connected\":{},\"min_edge_mm\":{:.6},\"max_aspect\":{:.3},\"tol\":{:.6}}}",
+            region.rim.len(),
+            region.method,
+            region.balloon,
+            region.tri_end - region.tri_start,
+            area,
+            coincident_frac,
+            leak.get(ri).copied().unwrap_or(false),
+            dw.get(ri).copied().unwrap_or(false),
+            !floating.get(ri).copied().unwrap_or(false),
+            min_edge,
+            max_aspect,
+            tol,
+        ));
+    }
+    out.push(']');
+    out
+}
+
+// --- Balloon plug (thin-plate active-set inflate, Method #17 candidate) ----
+/// Opt-out switch for the balloon plug candidate. Unset -> enabled; `0`/`false`
+/// -> disabled and the tier is a byte-exact no-op.
+pub fn balloon_plug_enabled() -> bool {
+    match std::env::var("SUTURA_TAMP_BALLOON") {
+        Ok(v) => v != "0" && !v.eq_ignore_ascii_case("false"),
+        Err(_) => true,
+    }
+}
+
+/// Dimensionless inflation pressure scale (multiplied by the median edge
+/// length). The active set freezes a free vertex the instant it reaches the
+/// shell and the collision clamp bounds every step, so an over-large value is
+/// contained; a few edges reaches a crater wall within the iteration cap.
+const BALLOON_PRESSURE: f64 = 6.0;
+/// Active-set iterations for one balloon candidate.
+const BALLOON_MAX_ITERS: usize = 6;
+/// Per-loop wall-clock cap for the fallback pass, in milliseconds.
+const BALLOON_LOOP_BUDGET_MS: u64 = 500;
+
+/// Prune back-and-forth antenna spur pairs where `dist(pts[i], pts[i+2]) < 1e-4`.
+/// Operates on a LOCAL rim copy only: the caller must never pass the rim that
+/// feeds the reference fit / other tiers.
+fn prune_spur_slits(rim: &mut Vec<u32>, verts: &[[f64; 3]]) {
+    loop {
+        let n = rim.len();
+        if n < 3 {
+            break;
+        }
+        let mut pruned = false;
+        for i in 0..n {
+            let v0 = rim[i] as usize;
+            let v2 = rim[(i + 2) % n] as usize;
+            let p0 = verts[v0];
+            let p2 = verts[v2];
+            let d2 = (p2[0] - p0[0]).powi(2) + (p2[1] - p0[1]).powi(2) + (p2[2] - p0[2]).powi(2);
+            if d2 < 1e-8 {
+                let idx1 = (i + 1) % n;
+                let idx2 = (i + 2) % n;
+                if idx1 < idx2 {
+                    rim.remove(idx2);
+                    rim.remove(idx1);
+                } else {
+                    rim.remove(idx1);
+                    rim.remove(idx2);
+                }
+                pruned = true;
+                break;
+            }
+        }
+        if !pruned {
+            break;
+        }
+    }
+}
+
+/// Outward prior from the rim's incident boundary face normals (outward for a
+/// consistently oriented shell). Zero vector when unavailable.
+fn outward_prior(edge_normals: &HashMap<(u32, u32), [f64; 3]>, rim: &[u32]) -> [f64; 3] {
+    let mut s = [0.0f64; 3];
+    let m = rim.len();
+    for i in 0..m {
+        if let Some(n) = edge_normals.get(&ekey2(rim[i], rim[(i + 1) % m])) {
+            s[0] += n[0];
+            s[1] += n[1];
+            s[2] += n[2];
+        }
+    }
+    let l = norm3(s);
+    if l > 1e-9 {
+        [s[0] / l, s[1] / l, s[2] / l]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
+/// Thin-plate (biharmonic `L^2`) active-set obstacle solve with a constant
+/// outward pressure on the free vertices. Rim vertices (`0..m`) and any free
+/// vertex that has reached the shell (within `tol`) are Dirichlet (frozen); a
+/// Newton step that would cross the shell is clamped to the crossing.
+fn solve_thin_plate_active_set(
+    p: &mut Vec<[f64; 3]>,
+    faces: &[[u32; 3]],
+    m: usize,
+    bvh: &MeshBvh,
+    h: f64,
+    tol: f64,
+    n_out: [f64; 3],
+    max_iters: usize,
+    deadline: Option<Instant>,
+) {
+    let n = p.len();
+    if n <= m {
+        return;
+    }
+    let mut active = vec![false; n];
+    for i in 0..m {
+        active[i] = true;
+    }
+
+    let mut nb: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for f in faces {
+        for &(u, w) in &[(f[0], f[1]), (f[1], f[2]), (f[2], f[0])] {
+            nb[u as usize].push(w);
+            nb[w as usize].push(u);
+        }
+    }
+    for v in nb.iter_mut() {
+        v.sort_unstable();
+        v.dedup();
+    }
+
+    for _iter in 0..max_iters {
+        if deadline_passed(deadline) {
+            break;
+        }
+        for i in m..n {
+            if !active[i] {
+                let (_q, dist, _) = bvh.closest_point(p[i]);
+                if dist <= tol {
+                    active[i] = true;
+                }
+            }
+        }
+        let free: Vec<usize> = (m..n).filter(|&i| !active[i]).collect();
+        if free.is_empty() {
+            break;
+        }
+        let n_free = free.len();
+        let mut free_map = vec![usize::MAX; n];
+        for (k, &idx) in free.iter().enumerate() {
+            free_map[idx] = k;
+        }
+
+        let mut v_normals = vec![[0.0f64; 3]; n];
+        for f in faces {
+            let a = p[f[0] as usize];
+            let b = p[f[1] as usize];
+            let c = p[f[2] as usize];
+            let fnorm = cross3(
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            for &v in f {
+                v_normals[v as usize][0] += fnorm[0];
+                v_normals[v as usize][1] += fnorm[1];
+                v_normals[v as usize][2] += fnorm[2];
+            }
+        }
+        for &r in &free {
+            let nl = norm3(v_normals[r]);
+            v_normals[r] = if nl > 1e-12 {
+                [v_normals[r][0] / nl, v_normals[r][1] / nl, v_normals[r][2] / nl]
+            } else {
+                n_out
+            };
+            if dot3(v_normals[r], n_out) < 0.0 {
+                v_normals[r] = [-v_normals[r][0], -v_normals[r][1], -v_normals[r][2]];
+            }
+        }
+
+        let mut lower: HashMap<(usize, usize), f64> = HashMap::new();
+        let mut rhs = vec![[0.0f64; 3]; n_free];
+        let mut mrow: Vec<(u32, f64)> = Vec::new();
+        let p_force = BALLOON_PRESSURE * h;
+
+        for &r in &free {
+            let row_local = free_map[r];
+            mrow.clear();
+            for a in std::iter::once(r as u32).chain(nb[r].iter().copied()) {
+                let va = if a as usize == r {
+                    nb[r].len() as f64
+                } else {
+                    -1.0
+                };
+                if va == 0.0 {
+                    continue;
+                }
+                mrow.push((a, va * nb[a as usize].len() as f64));
+                for &b in &nb[a as usize] {
+                    mrow.push((b, -va));
+                }
+            }
+            mrow.sort_by_key(|&(c, _)| c);
+            let mut merged: Vec<(u32, f64)> = Vec::with_capacity(mrow.len());
+            for &(c, val) in &mrow {
+                if let Some(last) = merged.last_mut() {
+                    if last.0 == c {
+                        last.1 += val;
+                        continue;
+                    }
+                }
+                merged.push((c, val));
+            }
+
+            for &(c, val) in &merged {
+                let c_usize = c as usize;
+                if active[c_usize] {
+                    rhs[row_local][0] -= val * p[c_usize][0];
+                    rhs[row_local][1] -= val * p[c_usize][1];
+                    rhs[row_local][2] -= val * p[c_usize][2];
+                } else {
+                    let col_local = free_map[c_usize];
+                    if row_local >= col_local {
+                        *lower.entry((row_local, col_local)).or_insert(0.0) += val;
+                    }
+                }
+            }
+            *lower.entry((row_local, row_local)).or_insert(0.0) += 1e-9;
+            rhs[row_local][0] += p_force * v_normals[r][0];
+            rhs[row_local][1] += p_force * v_normals[r][1];
+            rhs[row_local][2] += p_force * v_normals[r][2];
+        }
+
+        let mut trips: Vec<Triplet<usize, usize, f64>> = Vec::with_capacity(lower.len() * 2);
+        for (&(hi, lo), &v) in &lower {
+            trips.push(Triplet::new(hi, lo, v));
+            if hi != lo {
+                trips.push(Triplet::new(lo, hi, v));
+            }
+        }
+        trips.sort_by(|a, b| a.row.cmp(&b.row).then(a.col.cmp(&b.col)));
+
+        let mat = match SparseColMat::<usize, f64>::try_new_from_triplets(n_free, n_free, &trips) {
+            Ok(mm) => mm,
+            Err(_) => break,
+        };
+        let sym = match SymbolicLu::try_new(mat.symbolic()) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        let lu = match Lu::try_new_with_symbolic(sym, mat.as_ref()) {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let mut b_mat = Mat::<f64>::zeros(n_free, 3);
+        for i in 0..n_free {
+            b_mat[(i, 0)] = rhs[i][0];
+            b_mat[(i, 1)] = rhs[i][1];
+            b_mat[(i, 2)] = rhs[i][2];
+        }
+        lu.solve_in_place(&mut b_mat);
+
+        let mut max_move = 0.0f64;
+        for (k, &r) in free.iter().enumerate() {
+            let p_target = [b_mat[(k, 0)], b_mat[(k, 1)], b_mat[(k, 2)]];
+            let p_old = p[r];
+            let step = [p_target[0] - p_old[0], p_target[1] - p_old[1], p_target[2] - p_old[2]];
+            let slen = norm3(step);
+            if slen > 1e-12 {
+                let sdir = [step[0] / slen, step[1] / slen, step[2] / slen];
+                let hit = bvh.intersect_ray(p_old, sdir, slen, 1e-6);
+                if hit.crossings > 0 && hit.nearest_t < slen {
+                    let t_hit = hit.nearest_t.max(0.0);
+                    p[r] = [
+                        p_old[0] + sdir[0] * t_hit,
+                        p_old[1] + sdir[1] * t_hit,
+                        p_old[2] + sdir[2] * t_hit,
+                    ];
+                    let (_q, d, _) = bvh.closest_point(p[r]);
+                    if d <= tol {
+                        active[r] = true;
+                    }
+                } else {
+                    let (_q, d, _) = bvh.closest_point(p_target);
+                    p[r] = p_target;
+                    if d <= tol {
+                        active[r] = true;
+                    }
+                }
+                let actual = norm3([p[r][0] - p_old[0], p[r][1] - p_old[1], p[r][2] - p_old[2]]);
+                if actual > max_move {
+                    max_move = actual;
+                }
+            }
+        }
+        if max_move < 1e-4 * h {
+            break;
+        }
+    }
+}
+
+/// Runaway guard for a balloon patch: no added vertex may stray beyond
+/// `1.5 * rim_diag` from the rim centroid. Curved-shell conformance is expected,
+/// so no planarity / planar-normal test is applied.
+fn balloon_shape_ok(
+    cand: &[[u32; 3]],
+    verts: &[[f64; 3]],
+    added: &[[f64; 3]],
+    rim: &[u32],
+    rim_diag: f64,
+) -> bool {
+    if cand.is_empty() || rim.len() < 3 {
+        return true;
+    }
+    let mut centroid = [0.0f64; 3];
+    for &v in rim {
+        let p = verts[v as usize];
+        centroid[0] += p[0];
+        centroid[1] += p[1];
+        centroid[2] += p[2];
+    }
+    let inv = 1.0 / rim.len() as f64;
+    centroid = [centroid[0] * inv, centroid[1] * inv, centroid[2] * inv];
+    let limit = 1.5 * rim_diag;
+    for p in added {
+        let d = norm3([p[0] - centroid[0], p[1] - centroid[1], p[2] - centroid[2]]);
+        if !d.is_finite() || d > limit {
+            return false;
+        }
+    }
+    true
+}
+
+/// Balloon plug candidate: stiff active-set thin-plate inflate from INSIDE the
+/// solid. `rim` must already be a local (possibly pruned) copy. Returns
+/// `(cand_tris, added_verts)`; `cand` is in global vertex indices.
+#[allow(clippy::too_many_arguments)]
+fn balloon_plug(
+    rim: &[u32],
+    verts: &[[f64; 3]],
+    directed_set: &HashSet<(u32, u32)>,
+    edge_count: &HashMap<(u32, u32), i32>,
+    bvh: &MeshBvh,
+    h: f64,
+    tol: f64,
+    new_base: u32,
+    n_prior: [f64; 3],
+    deadline: Option<Instant>,
+) -> Option<(Vec<[u32; 3]>, Vec<[f64; 3]>)> {
+    let m = rim.len();
+    if m < 3 {
+        return None;
+    }
+    let pts: Vec<[f64; 3]> = rim.iter().map(|&v| verts[v as usize]).collect();
+    let mut c = [0.0f64; 3];
+    for p in &pts {
+        c[0] += p[0];
+        c[1] += p[1];
+        c[2] += p[2];
+    }
+    let inv_m = 1.0 / m as f64;
+    c = [c[0] * inv_m, c[1] * inv_m, c[2] * inv_m];
+
+    let mut rim_extent = 0.0f64;
+    for p in &pts {
+        let d = norm3([p[0] - c[0], p[1] - c[1], p[2] - c[2]]);
+        if d > rim_extent {
+            rim_extent = d;
+        }
+    }
+    if rim_extent < 1e-12 {
+        return None;
+    }
+
+    let rn = newell_normal(&pts);
+    let rnl = norm3(rn);
+    let n_newell = if rnl > 1e-12 {
+        [rn[0] / rnl, rn[1] / rnl, rn[2] / rnl]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+
+    let eps_test = 0.3 * rim_extent.min(h).max(tol);
+    let w_pos = bvh.winding_at([
+        c[0] + eps_test * n_newell[0],
+        c[1] + eps_test * n_newell[1],
+        c[2] + eps_test * n_newell[2],
+    ]);
+    let w_neg = bvh.winding_at([
+        c[0] - eps_test * n_newell[0],
+        c[1] - eps_test * n_newell[1],
+        c[2] - eps_test * n_newell[2],
+    ]);
+    let w_diff = (w_pos - w_neg).abs();
+    // Robust outward direction: trust the winding when unambiguous; near an open
+    // aperture both sides read ~0.5, so fall back to the mesh-derived outward
+    // prior (the side the solid lies on), and finally to the Newell normal.
+    let n_out = if w_diff > 0.2 {
+        if w_pos >= w_neg {
+            [-n_newell[0], -n_newell[1], -n_newell[2]]
+        } else {
+            n_newell
+        }
+    } else if norm3(n_prior) > 1e-9 {
+        n_prior
+    } else {
+        n_newell
+    };
+
+    // Seed: min-area DP when clean, else a centroid fan (never splits the rim).
+    let mut seed_pts: Vec<[f64; 3]> = pts.clone();
+    let mut seed_local_tris: Vec<[u32; 3]> = Vec::new();
+    if m <= PLUG_DP_CAP {
+        let dp = min_area_triangulation_filtered(
+            &pts,
+            PLUG_DP_CAP,
+            &HashSet::new(),
+            PLUG_MIN_AREA,
+            PLUG_COLLINEAR_MARGIN_DEG,
+        );
+        if dp.len() == m - 2 {
+            let mut collides = false;
+            for t in &dp {
+                for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                    let diff = (a as i64 - b as i64).abs();
+                    let is_rim = diff == 1 || diff == (m as i64 - 1);
+                    if !is_rim {
+                        let e = ekey2(rim[a as usize], rim[b as usize]);
+                        if edge_count.get(&e).copied().unwrap_or(0) >= 2 {
+                            collides = true;
+                            break;
+                        }
+                    }
+                }
+                if collides {
+                    break;
+                }
+            }
+            if !collides {
+                seed_local_tris = dp;
+            }
+        }
+    }
+    if seed_local_tris.is_empty() {
+        let c_idx = seed_pts.len() as u32;
+        seed_pts.push(c);
+        for i in 0..m {
+            let next = ((i + 1) % m) as u32;
+            seed_local_tris.push([i as u32, next, c_idx]);
+        }
+    } else {
+        // One centroid split per large all-rim seed triangle (front refinement).
+        let mut initial_faces = Vec::with_capacity(seed_local_tris.len() + 8);
+        for f in seed_local_tris {
+            let all_rim = (f[0] as usize) < m && (f[1] as usize) < m && (f[2] as usize) < m;
+            let pa = seed_pts[f[0] as usize];
+            let pb = seed_pts[f[1] as usize];
+            let pc = seed_pts[f[2] as usize];
+            if all_rim && tri_area(pa, pb, pc) > 0.5 * h * h && seed_pts.len() < 400 {
+                let c_idx = seed_pts.len() as u32;
+                seed_pts.push([
+                    (pa[0] + pb[0] + pc[0]) / 3.0,
+                    (pa[1] + pb[1] + pc[1]) / 3.0,
+                    (pa[2] + pb[2] + pc[2]) / 3.0,
+                ]);
+                initial_faces.push([f[0], f[1], c_idx]);
+                initial_faces.push([f[1], f[2], c_idx]);
+                initial_faces.push([f[2], f[0], c_idx]);
+            } else {
+                initial_faces.push(f);
+            }
+        }
+        seed_local_tris = initial_faces;
+    }
+
+    // Orientation that cancels the rim boundary edges.
+    let base_cancels = cancellation_count_local(&seed_local_tris, rim, directed_set);
+    let flipped: Vec<[u32; 3]> = seed_local_tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
+    let flip_cancels = cancellation_count_local(&flipped, rim, directed_set);
+    if flip_cancels > base_cancels {
+        seed_local_tris = flipped;
+    }
+
+    solve_thin_plate_active_set(
+        &mut seed_pts,
+        &seed_local_tris,
+        m,
+        bvh,
+        h,
+        tol,
+        n_out,
+        BALLOON_MAX_ITERS,
+        deadline,
+    );
+
+    let added: Vec<[f64; 3]> = seed_pts[m..].to_vec();
+    let cand: Vec<[u32; 3]> = seed_local_tris
+        .iter()
+        .map(|t| {
+            let f = |x: u32| -> u32 {
+                if (x as usize) < m {
+                    rim[x as usize]
+                } else {
+                    new_base + (x as usize - m) as u32
+                }
+            };
+            [f(t[0]), f(t[1]), f(t[2])]
+        })
+        .collect();
+
+    let mut vy = verts.to_vec();
+    vy.extend_from_slice(&added);
+    if !plug_structure_ok(&cand, rim, &vy) {
+        return None;
+    }
+    if cancellation_count(&cand, rim, directed_set) == 0 {
+        return None;
+    }
+    Some((cand, added))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum LoopVerdict {
     IntentionalOpening { score: f64, reason: &'static str },
@@ -4571,6 +5163,8 @@ pub fn tamponade_repair(
         model_box.expand_point(*v);
     }
     let model_diag = model_box.diagonal().max(h);
+    // Balloon / leak-gate tolerance: `clamp(diag/10000, 0.0125, 0.05)`.
+    let tol = leak_tol(model_diag);
 
     let mut out_verts = verts.to_vec();
     let mut out_tris = tris.to_vec();
@@ -4663,6 +5257,11 @@ pub fn tamponade_repair(
         }
     }
     let mut region_sealed: HashSet<usize> = HashSet::new();
+    // Regions a keep-open decision deliberately left unsealed. They must NEVER be
+    // revisited (by a greedy sub-loop injection or the balloon fallback): an
+    // intentional opening, an uncertain loop, a no-separation cut, a loop that
+    // exhausted its own allowance, or an oversized rim.
+    let mut kept_open: HashSet<usize> = HashSet::new();
     let mut greedy_injected: HashSet<usize> = HashSet::new();
 
     while let Some((loop_v, group_hint, region_key)) = queue.pop_front() {
@@ -4710,6 +5309,7 @@ pub fn tamponade_repair(
             info.loop_diag
                 .push(format!("m={} rejected:too_large", rim.len()));
             plug_rejected_size_count += 1;
+            kept_open.insert(region_key);
             continue;
         }
 
@@ -4726,11 +5326,13 @@ pub fn tamponade_repair(
                         rim.len(), score, reason
                     ));
                     plug_rejected_count += 1;
+                    kept_open.insert(region_key);
                     continue;
                 }
                 LoopVerdict::Uncertain => {
                     info.loop_diag.push(format!("m={} kept_open:uncertain", rim.len()));
                     plug_rejected_count += 1;
+                    kept_open.insert(region_key);
                     continue;
                 }
                 LoopVerdict::DamageHole => {}
@@ -4795,6 +5397,7 @@ pub fn tamponade_repair(
                     info.loop_diag
                         .push(format!("m={} rejected:no_separation", rim.len()));
                     plug_rejected_count += 1;
+                    kept_open.insert(region_key);
                     continue;
                 }
                 CutVerdict::Timeout => {
@@ -4807,6 +5410,7 @@ pub fn tamponade_repair(
                     }
                     info.loop_diag
                         .push(format!("m={} rejected:loop_timeout", rim.len()));
+                    kept_open.insert(region_key);
                     continue;
                 }
                 CutVerdict::Inconclusive => {
@@ -4977,6 +5581,8 @@ pub fn tamponade_repair(
                         steiner: n_added > 0,
                         moved: loop_moved.clone(),
                         rim: group_rim.clone(),
+                        balloon: false,
+                        method: if is_skirt { "skirt" } else { "reference" },
                     });
                     plug_count += 1;
                     info.reference_used += 1;
@@ -5098,6 +5704,8 @@ pub fn tamponade_repair(
                                 steiner: centre.is_some(),
                                 moved: loop_moved.clone(),
                                 rim: group_rim.clone(),
+                                balloon: false,
+                                method: if centre.is_some() { "steiner" } else { "rim" },
                             });
                             plug_count += 1;
                             info.loop_diag.push(format!(
@@ -5119,6 +5727,87 @@ pub fn tamponade_repair(
                     info.loop_diag
                         .push(format!("m={} rejected:{}", rim.len(), why));
                     plug_rejected_count += 1;
+                }
+            }
+        }
+        // Balloon candidate (last resort for a damage hole): thin-plate
+        // active-set inflate from inside. The rim is pruned on a LOCAL copy only.
+        // The shared end-of-tier gates (leak / double-wall / connectivity) and
+        // the reload verdict judge the committed region.
+        if !sealed && balloon_plug_enabled() {
+            let mut rim_b = rim.clone();
+            prune_spur_slits(&mut rim_b, &out_verts);
+            if rim_b.len() >= 3 {
+                let n_prior = outward_prior(&bnd_edge_normals, &rim_b);
+                let new_base = out_verts.len() as u32;
+                let loop_deadline = match deadline {
+                    Some(global) => {
+                        let local = Instant::now()
+                            + Duration::from_millis(BALLOON_LOOP_BUDGET_MS);
+                        Some(if local < global { local } else { global })
+                    }
+                    None => {
+                        Some(Instant::now() + Duration::from_millis(BALLOON_LOOP_BUDGET_MS))
+                    }
+                };
+                match balloon_plug(
+                    &rim_b,
+                    &out_verts,
+                    &directed_set,
+                    &edge_count,
+                    &bvh,
+                    h,
+                    tol,
+                    new_base,
+                    n_prior,
+                    loop_deadline,
+                ) {
+                    Some((cand, added)) => {
+                        let cand_counts = edge_use_counts(&cand);
+                        let collides = cand_counts
+                            .iter()
+                            .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
+                        if collides {
+                            info.loop_diag
+                                .push(format!("m={} rejected:edge_collision", rim_b.len()));
+                            info.balloon_rejected += 1;
+                        } else if !balloon_shape_ok(&cand, &out_verts, &added, &rim_b, rim_diag) {
+                            info.loop_diag
+                                .push(format!("m={} rejected:shape", rim_b.len()));
+                            info.balloon_rejected += 1;
+                        } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
+                            info.loop_diag
+                                .push(format!("m={} rejected:reload_nm", rim_b.len()));
+                            info.balloon_rejected += 1;
+                        } else {
+                            for (e, &d) in &cand_counts {
+                                *edge_count.entry(*e).or_insert(0) += d;
+                            }
+                            let n_added = added.len();
+                            out_verts.extend_from_slice(&added);
+                            info.patch_vertices += n_added;
+                            plug_face_count += cand.len();
+                            let tri_start = out_tris.len();
+                            out_tris.extend(cand);
+                            plug_regions.push(PlugRegion {
+                                tri_start,
+                                tri_end: out_tris.len(),
+                                reference: false,
+                                steiner: n_added > 0,
+                                moved: loop_moved.clone(),
+                                rim: group_rim.clone(),
+                                balloon: true,
+                                method: "balloon",
+                            });
+                            plug_count += 1;
+                            info.balloon_used += 1;
+                            sealed = true;
+                            info.loop_diag.push(format!("m={} sealed:balloon", rim_b.len()));
+                        }
+                    }
+                    None => {
+                        info.balloon_rejected += 1;
+                    }
                 }
             }
         }
@@ -5146,6 +5835,124 @@ pub fn tamponade_repair(
                         queue.push_back((gl.clone(), Some(loops[*region].clone()), *region));
                     }
                 }
+            }
+        }
+    }
+
+    // Balloon fallback pass for loops no candidate could seal. Largest rejected
+    // rim first; each loop bounded by its own wall-clock slice within the tier
+    // deadline. Loops a keep-open decision left open are NEVER touched.
+    if balloon_plug_enabled() {
+        let mut balloon_candidates: Vec<(usize, Vec<u32>)> = Vec::new();
+        for (li, loop_v) in loops.iter().enumerate() {
+            let key = if manifold_mode { loop_outer[li] } else { li };
+            if !region_sealed.contains(&key) && !kept_open.contains(&key) {
+                balloon_candidates.push((key, loop_v.clone()));
+            }
+        }
+        balloon_candidates.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+        for (region_key, loop_v) in balloon_candidates {
+            if deadline_passed(deadline) {
+                info.reason = "timeout exceeded".to_string();
+                break;
+            }
+            if region_sealed.contains(&region_key) || kept_open.contains(&region_key) {
+                continue;
+            }
+            let mut rim: Vec<u32> = loop_v.clone();
+            rim.dedup();
+            if rim.len() >= 2 && rim.first() == rim.last() {
+                rim.pop();
+            }
+            if rim.len() < 3 {
+                continue;
+            }
+            prune_spur_slits(&mut rim, &out_verts);
+            if rim.len() < 3 {
+                continue;
+            }
+
+            let mut rim_box = BBox::empty();
+            for &v in &rim {
+                rim_box.expand_point(out_verts[v as usize]);
+            }
+            let rim_diag = rim_box.diagonal();
+            if rim_diag > PLUG_MAX_LOOP_DIAM_FACTOR * h {
+                continue;
+            }
+
+            let n_prior = outward_prior(&bnd_edge_normals, &rim);
+            let new_base = out_verts.len() as u32;
+            let loop_deadline = match deadline {
+                Some(global) => {
+                    let local = Instant::now() + Duration::from_millis(BALLOON_LOOP_BUDGET_MS);
+                    Some(if local < global { local } else { global })
+                }
+                None => Some(Instant::now() + Duration::from_millis(BALLOON_LOOP_BUDGET_MS)),
+            };
+            let balloon_res = balloon_plug(
+                &rim,
+                &out_verts,
+                &directed_set,
+                &edge_count,
+                &bvh,
+                h,
+                tol,
+                new_base,
+                n_prior,
+                loop_deadline,
+            );
+            if deadline_passed(deadline) {
+                // The global tier budget is gone; do not commit further plugs.
+                info.reason = "timeout exceeded".to_string();
+                break;
+            }
+
+            if let Some((cand, added)) = balloon_res {
+                let cand_counts = edge_use_counts(&cand);
+                let collides = cand_counts
+                    .iter()
+                    .any(|(e, &d)| edge_count.get(e).copied().unwrap_or(0) + d > 2);
+                if collides {
+                    info.loop_diag
+                        .push(format!("m={} rejected:edge_collision", rim.len()));
+                    info.balloon_rejected += 1;
+                } else if !balloon_shape_ok(&cand, &out_verts, &added, &rim, rim_diag) {
+                    info.loop_diag
+                        .push(format!("m={} rejected:shape", rim.len()));
+                    info.balloon_rejected += 1;
+                } else if !plug_reload_ok(&out_verts, &out_tris, new_base, &added, &cand) {
+                    info.loop_diag
+                        .push(format!("m={} rejected:reload_nm", rim.len()));
+                    info.balloon_rejected += 1;
+                } else {
+                    for (e, &d) in &cand_counts {
+                        *edge_count.entry(*e).or_insert(0) += d;
+                    }
+                    let n_added = added.len();
+                    out_verts.extend_from_slice(&added);
+                    info.patch_vertices += n_added;
+                    plug_face_count += cand.len();
+                    let tri_start = out_tris.len();
+                    out_tris.extend(cand);
+                    plug_regions.push(PlugRegion {
+                        tri_start,
+                        tri_end: out_tris.len(),
+                        reference: false,
+                        steiner: n_added > 0,
+                        moved: Vec::new(),
+                        rim: rim.clone(),
+                        balloon: true,
+                        method: "balloon",
+                    });
+                    plug_count += 1;
+                    info.balloon_used += 1;
+                    region_sealed.insert(region_key);
+                    info.loop_diag.push(format!("m={} sealed:balloon", rim.len()));
+                }
+            } else {
+                info.balloon_rejected += 1;
             }
         }
     }
@@ -5190,10 +5997,26 @@ pub fn tamponade_repair(
         info.components_after = full.components;
         info.closed_shells_before = base.closed_shells;
         info.closed_shells_after = full.closed_shells;
+        // Balloon no-gain guard: a balloon that does not STRICTLY reduce the
+        // reload boundary-edge count does not seal its hole (e.g. a sub-rim of a
+        // piecewise-split hole); keeping it only adds a visible membrane fin.
+        // A genuinely sealing balloon makes the tier-without-it worse (the loop
+        // reopens), so only a no-gain region is dropped here.
+        let mut balloon_no_gain = vec![false; plug_regions.len()];
+        for (ri, region) in plug_regions.iter().enumerate() {
+            if region.balloon {
+                let without = reload_verdict_without(&out_verts, &out_tris, region);
+                if without.boundary_loops <= full.boundary_loops {
+                    balloon_no_gain[ri] = true;
+                }
+            }
+        }
+        let mut rolled = vec![false; plug_regions.len()];
         if reload_regressed
             || leak_drop.iter().any(|&d| d)
             || dw_drop.iter().any(|&d| d)
             || float_drop.iter().any(|&d| d)
+            || balloon_no_gain.iter().any(|&d| d)
         {
             let mut drop = vec![false; plug_regions.len()];
             if reload_regressed {
@@ -5214,6 +6037,7 @@ pub fn tamponade_repair(
                 drop[ri] |= leak_drop[ri];
                 drop[ri] |= dw_drop[ri];
                 drop[ri] |= float_drop[ri];
+                drop[ri] |= balloon_no_gain[ri];
             }
             let any = drop.iter().any(|&d| d);
             // When every plug region is dropped the tier must be a byte-exact
@@ -5231,8 +6055,8 @@ pub fn tamponade_repair(
                 true
             };
             for (ri, region) in plug_regions.iter().enumerate() {
-                let rolled = give_up || drop[ri];
-                if !rolled {
+                rolled[ri] = give_up || drop[ri];
+                if !rolled[ri] {
                     continue;
                 }
                 plug_face_count -= region.tri_end - region.tri_start;
@@ -5243,8 +6067,15 @@ pub fn tamponade_repair(
                 if region.steiner {
                     info.patch_vertices = info.patch_vertices.saturating_sub(1);
                 }
+                if region.balloon {
+                    info.balloon_used = info.balloon_used.saturating_sub(1);
+                }
                 plugs_rolled_back += 1;
             }
+            info.plug_metrics_json = build_plug_metrics_json(
+                &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, &rolled,
+                &leak_drop, &dw_drop, &float_drop, tol,
+            );
             if give_up {
                 // Restore the exact input topology and vertices (also undoes
                 // any overshoot trim), guaranteeing no regression.
@@ -5266,6 +6097,12 @@ pub fn tamponade_repair(
                 "rolled_back {} plug(s) ({} leaking, {} double-wall, {} floating)",
                 plugs_rolled_back, leak_fired, dw_fired, float_fired
             ));
+        } else {
+            // No adoption gate fired: every plug survives, report them all.
+            info.plug_metrics_json = build_plug_metrics_json(
+                &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, &rolled,
+                &leak_drop, &dw_drop, &float_drop, tol,
+            );
         }
     }
     info.plugs_rolled_back = plugs_rolled_back;
@@ -6208,7 +7045,7 @@ mod tests {
         let base = reload_verdict(&verts, &tris[..2]);
         let full = reload_verdict(&verts, &tris);
         // The third triangle is the "plug" region.
-        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new() };
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new(), balloon: false, method: "rim" };
         let without = reload_verdict_without(&verts, &tris, &region);
         assert!(
             without.nm_edges < full.nm_edges && !without.worse_than(&base),
@@ -6276,6 +7113,8 @@ mod tests {
             steiner: false,
             moved: Vec::new(),
             rim: Vec::new(),
+            balloon: false,
+            method: "rim",
         };
         (verts, tris, region)
     }
@@ -6310,6 +7149,8 @@ mod tests {
             steiner: false,
             moved: Vec::new(),
             rim: Vec::new(),
+            balloon: false,
+            method: "rim",
         };
 
         let regions = [poking, clean];
@@ -6357,6 +7198,8 @@ mod tests {
             steiner: true,
             moved: vec![(3, [0.5, 0.5, 0.05])],
             rim: Vec::new(),
+            balloon: false,
+            method: "reference",
         };
         let mut ov = verts.clone();
         let mut ot = tris.clone();
@@ -6417,6 +7260,8 @@ mod tests {
                 steiner: true,
                 moved: Vec::new(),
                 rim: rim.clone(),
+                balloon: false,
+                method: "steiner",
             };
             plug_leak(&bvh, &verts, &nv, &t, &region, tol, 8)
         };
@@ -6462,7 +7307,7 @@ mod tests {
         let dup_tris = vec![[8u32, 9, 10]];
         let region = PlugRegion {
             tri_start: 0, tri_end: 1, reference: false, steiner: true,
-            moved: Vec::new(), rim: Vec::new(),
+            moved: Vec::new(), rim: Vec::new(), balloon: false, method: "steiner",
         };
         assert!(
             !plug_is_double_wall(&bvh, &verts, &tris, &dup, &dup_tris, &region, tol),
