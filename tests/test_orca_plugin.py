@@ -890,6 +890,11 @@ def _work_children(data_dir):
     root = os.path.join(data_dir, 'orca_plugins', '.sutura_work')
     if not os.path.isdir(root):
         return []
+    for _ in range(50):
+        items = [e for e in os.listdir(root) if e != 'out']
+        if not items:
+            return []
+        time.sleep(0.02)
     return [e for e in os.listdir(root) if e != 'out']
 
 
