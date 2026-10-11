@@ -503,6 +503,35 @@ def _mesh_topology_numpy(verts, tris):
     }
 
 
+def _mesh_geometric_measures_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    nf = len(t)
+    if nf == 0:
+        return {'surface_area': 0.0}
+
+    v0 = v[t[:, 0]]
+    v1 = v[t[:, 1]]
+    v2 = v[t[:, 2]]
+
+    cross_e = np.cross(v1 - v0, v2 - v0)
+    area = float(0.5 * np.sum(np.linalg.norm(cross_e, axis=1)))
+
+    e0 = np.sort(t[:, [0, 1]], axis=1)
+    e1 = np.sort(t[:, [1, 2]], axis=1)
+    e2 = np.sort(t[:, [2, 0]], axis=1)
+    all_e = np.vstack([e0, e1, e2])
+
+    _, counts = np.unique(all_e, axis=0, return_counts=True)
+    is_closed_manifold = bool(np.all(counts == 2))
+
+    res = {'surface_area': area}
+    if is_closed_manifold:
+        vol = float(np.sum(v0 * np.cross(v1, v2)) / 6.0)
+        res['mesh_volume'] = vol
+    return res
+
+
 def _tri_tri_intersect_clean(v1, v2):
     """Möller clean-room triangle-triangle proper transversal intersection test."""
     e1 = v1[1] - v1[0]
@@ -815,6 +844,22 @@ def mesh_topology(verts, tris):
     return _mesh_topology_numpy(v, t)
 
 
+def mesh_geometric_measures(verts, tris):
+    """Complete geometric measures of a triangle mesh (matching VCGLib get_geometric_measures)."""
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if _has_rust('mesh_geometric_measures'):
+        try:
+            return _geom.mesh_geometric_measures(v, t)
+        except Exception:
+            pass
+    return _mesh_geometric_measures_numpy(v, t)
+
+
 def native_si_enabled():
     """Return True if native self-intersection detection is enabled.
 
@@ -845,6 +890,17 @@ def native_nme_enabled():
     rather than PyMeshLab's VCGLib filter.
     """
     env = os.environ.get('SUTURA_NATIVE_NME', '').strip().lower()
+    return env in ('1', 'true', 'yes', 'on')
+
+
+def native_measures_enabled():
+    """Return True if native geometric measures calculation is enabled.
+
+    Controlled by environment variable ``SUTURA_NATIVE_MEASURES`` (default OFF: 0/false).
+    When enabled, geometric measures (mesh volume and surface area) use native
+    geometry via sutura_geom rather than PyMeshLab's VCGLib filter.
+    """
+    env = os.environ.get('SUTURA_NATIVE_MEASURES', '').strip().lower()
     return env in ('1', 'true', 'yes', 'on')
 
 
@@ -1085,10 +1141,12 @@ __all__ = [
     're_orient_faces_coherently',
     'repair_non_manifold_edges',
     'mesh_topology',
+    'mesh_geometric_measures',
     'connected_components',
     'native_si_enabled',
     'native_orient_enabled',
     'native_nme_enabled',
+    'native_measures_enabled',
     'self_intersecting_faces',
     'select_self_intersections_ms',
     'clear_bvh_cache',

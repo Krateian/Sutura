@@ -815,6 +815,101 @@ pub fn repair_non_manifold_edges_core(
     out
 }
 
+/// Complete geometric measures of a triangle mesh (matching VCGLib / PyMeshLab get_geometric_measures).
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn mesh_geometric_measures<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let (vol_opt, area) = mesh_geometric_measures_core(&vrows, &trows);
+    let dict = PyDict::new(py);
+    dict.set_item("surface_area", area)?;
+    if let Some(vol) = vol_opt {
+        dict.set_item("mesh_volume", vol)?;
+    }
+    Ok(dict)
+}
+
+pub fn mesh_geometric_measures_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+) -> (Option<f64>, f64) {
+    let nf = trows.len();
+    let nv = vrows.len();
+    if nf == 0 {
+        return (None, 0.0);
+    }
+
+    let mut area_sum = 0.0f64;
+    let mut vol_sum = 0.0f64;
+
+    for tri in trows {
+        let i0 = tri[0];
+        let i1 = tri[1];
+        let i2 = tri[2];
+        if i0 < 0 || i1 < 0 || i2 < 0 || (i0 as usize) >= nv || (i1 as usize) >= nv || (i2 as usize) >= nv {
+            continue;
+        }
+        let p0 = vrows[i0 as usize];
+        let p1 = vrows[i1 as usize];
+        let p2 = vrows[i2 as usize];
+        let p0_64 = [p0[0] as f64, p0[1] as f64, p0[2] as f64];
+        let p1_64 = [p1[0] as f64, p1[1] as f64, p1[2] as f64];
+        let p2_64 = [p2[0] as f64, p2[1] as f64, p2[2] as f64];
+
+        let e1 = [p1_64[0] - p0_64[0], p1_64[1] - p0_64[1], p1_64[2] - p0_64[2]];
+        let e2 = [p2_64[0] - p0_64[0], p2_64[1] - p0_64[1], p2_64[2] - p0_64[2]];
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let tri_area = 0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        area_sum += tri_area;
+
+        let v_cross = [
+            p1_64[1] * p2_64[2] - p1_64[2] * p2_64[1],
+            p1_64[2] * p2_64[0] - p1_64[0] * p2_64[2],
+            p1_64[0] * p2_64[1] - p1_64[1] * p2_64[0],
+        ];
+        vol_sum += p0_64[0] * v_cross[0] + p0_64[1] * v_cross[1] + p0_64[2] * v_cross[2];
+    }
+
+    let mut half_edges: Vec<(i64, i64)> = Vec::with_capacity(3 * nf);
+    for tri in trows {
+        half_edges.push(canon(tri[0], tri[1]));
+        half_edges.push(canon(tri[1], tri[2]));
+        half_edges.push(canon(tri[2], tri[0]));
+    }
+    half_edges.sort_unstable();
+
+    let mut is_closed_manifold = true;
+    let mut i = 0;
+    while i < half_edges.len() {
+        let mut j = i + 1;
+        while j < half_edges.len() && half_edges[j] == half_edges[i] {
+            j += 1;
+        }
+        if (j - i) != 2 {
+            is_closed_manifold = false;
+            break;
+        }
+        i = j;
+    }
+
+    let vol = if is_closed_manifold {
+        Some(vol_sum / 6.0)
+    } else {
+        None
+    };
+
+    (vol, area_sum)
+}
+
 /// Complete topological measures of a triangle mesh (matching VCGLib / PyMeshLab get_topological_measures).
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
@@ -1255,4 +1350,23 @@ mod tests {
         assert_eq!(res.len(), 2);
         assert_eq!(res, vec![[0, 1, 2], [0, 1, 3]]);
     }
+
+    #[test]
+    fn test_mesh_geometric_measures_cube() {
+        let v = vec![
+            [0.0f32, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0],
+        ];
+        let t = vec![
+            [0i64, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+            [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5],
+            [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+        ];
+        let (vol_opt, area) = mesh_geometric_measures_core(&v, &t);
+        assert!((area - 6.0).abs() < 1e-6);
+        assert!(vol_opt.is_some());
+        let vol = vol_opt.unwrap();
+        assert!((vol.abs() - 1.0).abs() < 1e-6);
+    }
 }
+

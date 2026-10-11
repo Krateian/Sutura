@@ -1323,7 +1323,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     before = before_ms.apply_filter('get_topological_measures')
-    before_geom = before_ms.apply_filter('get_geometric_measures')
+    if topology.native_measures_enabled():
+        before_geom = topology.mesh_geometric_measures(v, t)
+    else:
+        before_geom = before_ms.apply_filter('get_geometric_measures')
     before_volume = before_geom.get('mesh_volume', 0)
     before_area = surface_area(v, t)
     before_verts = before.get('vertices_number', 0)
@@ -1658,10 +1661,22 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if skipped:
         stats['stage1']['skipped'] = skipped
 
-    geom = ms.apply_filter('get_geometric_measures')
-    if geom.get('mesh_volume', 0) < 0:
-        _invert_faces_ms(ms, ml)
+    if topology.native_measures_enabled():
+        m_cur = ms.current_mesh()
+        cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
+        cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+        geom = topology.mesh_geometric_measures(cur_v, cur_t)
+        if geom.get('mesh_volume', 0) < 0:
+            _invert_faces_ms(ms, ml)
+            m_cur = ms.current_mesh()
+            cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
+            cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+            geom = topology.mesh_geometric_measures(cur_v, cur_t)
+    else:
         geom = ms.apply_filter('get_geometric_measures')
+        if geom.get('mesh_volume', 0) < 0:
+            _invert_faces_ms(ms, ml)
+            geom = ms.apply_filter('get_geometric_measures')
     after_volume = geom.get('mesh_volume', 0)
 
     new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
