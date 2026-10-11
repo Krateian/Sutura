@@ -146,6 +146,11 @@ DEFAULT_CONFIG = {
     # (template, method) success/time history. Resettable from the CLI
     # (`sutura clear-learning`) and the GUI Options.
     'learning_triage': True,
+    # Tamponade (#17, incl. the Stent candidate): ON by default (opt-out).
+    # The GUI reads this for the initial Options checkbox state and persists a
+    # user's change; a missing/legacy key is treated as ON, so an old config
+    # saved in the opt-in era does not silently keep it off.
+    'tamponade': True,
 }
 
 

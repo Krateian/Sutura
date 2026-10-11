@@ -1788,6 +1788,8 @@ class RepairWorker(QThread):
                 args.append('--no-flap')
             if self._tamponade:
                 args.append('--tamponade')
+            else:
+                args.append('--no-tamponade')
             if self._dressing or self._dressing_force_adopt:
                 args.append('--experimental-dressing')
                 if self._dressing_drain in ('none', 'half', 'full', 'deep'):
@@ -3659,7 +3661,10 @@ class MainWindow(QMainWindow):
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
         self._flap = True             # batch-wide Flap surface hole fill (Stage 1, on by default)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
-        self._tamponade = False       # batch-wide opt-in Tamponade interior plug (#17)
+        # Batch-wide Tamponade (#17, incl. Stent): ON by default. A missing or
+        # legacy config key is treated as ON so an old opt-in-era config cannot
+        # silently keep it off.
+        self._tamponade = bool(updater.load_config().get('tamponade', True))
         self._dressing_drain = None   # batch-wide Dressing drain override (None = preset)
         self._dressing_defects = None       # None = module default ('all')
         self._dressing_rmax_scale = None    # None = 1.0
@@ -3809,8 +3814,7 @@ class MainWindow(QMainWindow):
         self.chk_tamponade = QCheckBox(_t('tamponade_label'))
         self.chk_tamponade.setToolTip(_t('tamponade_tip'))
         self.chk_tamponade.setChecked(self._tamponade)
-        self.chk_tamponade.toggled.connect(
-            lambda on: setattr(self, '_tamponade', on))
+        self.chk_tamponade.toggled.connect(self._on_tamponade_toggled)
         # Drain (healthy-region erode-back) override for Dressing; the empty
         # entry means "use the intensity preset default".
         self.cmb_dressing_drain = QComboBox()
@@ -3871,7 +3875,7 @@ class MainWindow(QMainWindow):
             (self.chk_flap, True),
             (self.chk_dressing, False),
             (self.chk_dressing_force_adopt, False),
-            (self.chk_tamponade, False),
+            (self.chk_tamponade, True),
         )
         self._options_dialog = OptionsDialog(self)
         self._sync_intensity_checkboxes()
@@ -4109,6 +4113,16 @@ class MainWindow(QMainWindow):
     def _on_si_mode_changed(self, index):
         """Store the batch-wide self-intersection policy."""
         self._si_mode = self.cmb_si_mode.itemData(index) or 'report'
+
+    def _on_tamponade_toggled(self, on):
+        """Store and persist the batch-wide Tamponade switch (ON by default)."""
+        self._tamponade = bool(on)
+        try:
+            cfg = updater.load_config()
+            cfg['tamponade'] = bool(on)
+            updater.save_config(cfg)
+        except Exception:  # noqa: BLE001 - persisting never blocks the toggle
+            pass
 
     def _on_dressing_drain_changed(self, index):
         """Map the Dressing drain combo to the CLI override ('' = preset)."""

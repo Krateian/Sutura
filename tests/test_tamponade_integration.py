@@ -408,22 +408,23 @@ def test_tier_closed_balanced_skips_without_scan():
 # --- 3. flag / env / constant resolution ------------------------------------
 
 def test_resolve_tamponade():
-    assert repair.resolve_tamponade() is False           # default switch off
+    assert repair.resolve_tamponade() is True            # default switch ON
     assert repair.resolve_tamponade(force=True) is True
     assert repair.resolve_tamponade(no_tamponade=True, force=True) is False
     assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': '1'}) is True
     assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': '0'}) is False
-    # an invalid env value falls back to the default switch
-    assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': 'maybe'}) is False
+    # an invalid env value falls back to the default switch (ON)
+    assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': 'maybe'}) is True
     # the default switch can be overridden per run / by env
     assert repair.resolve_tamponade(default_enabled=True) is True
+    assert repair.resolve_tamponade(default_enabled=False) is False
     assert repair.resolve_tamponade(environ={}, default_enabled=True) is True
     # --no-tamponade beats a truthy env; --tamponade beats a falsy env
     assert repair.resolve_tamponade(no_tamponade=True,
                                     environ={'SUTURA_TAMPONADE': '1'}) is False
     assert repair.resolve_tamponade(force=True,
                                     environ={'SUTURA_TAMPONADE': '0'}) is True
-    assert repair.TAMPONADE_DEFAULT_ENABLED is False
+    assert repair.TAMPONADE_DEFAULT_ENABLED is True
     print('ok  resolve_tamponade precedence (flag > env > switch)')
 
 

@@ -352,6 +352,35 @@ def main():
     assert w._flap is True
     assert (w.chk_flap, True) in w._options_defaults
 
+    # Tamponade (#17, incl. Stent): ON by default; checkbox -> --tamponade /
+    # --no-tamponade (the opt-out).
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], tamponade=True)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--tamponade' in captured['args'], captured['args']
+    assert '--no-tamponade' not in captured['args'], captured['args']
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], tamponade=False)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--no-tamponade' in captured['args'], captured['args']
+    assert '--tamponade' not in captured['args'], captured['args']
+    # the checkbox is checked by default (a missing/legacy config key = ON)
+    assert w._tamponade is True and w.chk_tamponade.isChecked()
+    w.chk_tamponade.setChecked(False)
+    assert w._tamponade is False
+    w.chk_tamponade.setChecked(True)
+    assert w._tamponade is True
+    assert (w.chk_tamponade, True) in w._options_defaults
+    print('ok  RepairWorker Tamponade flag + checkbox default ON')
+
     # SI policy: default 'report' adds no flag; 'repair'/'off' add --si-mode
     captured.clear()
     gui.subprocess.Popen = _fake_popen

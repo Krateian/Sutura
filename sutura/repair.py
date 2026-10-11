@@ -2108,12 +2108,16 @@ def resolve_dressing(no_dressing=False, force=False, environ=None,
 
 TAMPONADE_ENV = 'SUTURA_TAMPONADE'
 
-# Single default switch for the Tamponade tier (method #17).  OFF for now: the
-# module constant below, overridable by the ``SUTURA_TAMPONADE_DEFAULT`` env
-# var.  The lead flips it after the corpus gate.  The CLI ``--tamponade`` flag
-# forces it on per run; the library default in ``repair_mesh_from_arrays`` stays
-# ``False`` so direct library calls keep their pre-Tamponade behaviour.
-TAMPONADE_DEFAULT_ENABLED = False
+# Single default switch for the Tamponade tier (method #17).  ON by default
+# (Arif's standing rule: improvements ship enabled, opt-out): the module
+# constant below, overridable by the ``SUTURA_TAMPONADE_DEFAULT`` env var.
+# ``--no-tamponade`` / ``SUTURA_TAMPONADE=0`` opt out; the legacy
+# ``--tamponade`` flag is still accepted (it just re-affirms the default).  The
+# library default in ``repair_mesh_from_arrays`` stays ``False`` so direct
+# library calls keep their pre-Tamponade behaviour -- every user-facing path
+# (CLI, GUI, file-manager menu, Orca plugin) passes the flag explicitly or
+# inherits this CLI default.
+TAMPONADE_DEFAULT_ENABLED = True
 
 
 def _tamponade_default_enabled():
@@ -7272,7 +7276,9 @@ def main():
                              'before Graft/fTetWild; adopted only when the '
                              'reload-honest holes + non-manifold count strictly '
                              'falls without raising the part count or losing '
-                             'more than 1%% of the healthy faces. Opt-in for now; '
+                             'more than 1%% of the healthy faces. ON by default '
+                             '(this flag is kept for compatibility); disable '
+                             'with --no-tamponade; '
                              'env: SUTURA_TAMPONADE / SUTURA_TAMPONADE_DEFAULT')
     parser.add_argument('--no-tamponade', action='store_true',
                         help='disable the Tamponade tier (#17); this is the '
