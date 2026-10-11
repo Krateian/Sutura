@@ -5843,7 +5843,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         """Repair the loaded mesh with Flap on/off, through P-HONEST.
 
         ``run_tamponade`` defaults to the outer flag; the Flap-OFF safety-net
-        re-run passes False so the opt-in Tamponade tier is not evaluated a
+        re-run passes False so the Tamponade tier is not evaluated a
         second time for a fallback candidate that is usually discarded (the
         net keeps Flap-ON unless OFF is strictly better, and skipping the tier
         can only make OFF look no better, so the chosen result never worsens).
@@ -7457,21 +7457,25 @@ def main():
     parser.add_argument('--no-flap', action='store_true',
                         help='disable the Flap hole filler (it is on by default)')
     parser.add_argument('--tamponade', action='store_true',
-                        help='enable the Tamponade tier (#17): plug each open '
-                             'boundary loop from the INSIDE (no input face is '
-                             'deleted) and melt residual self-intersections in '
-                             'rolled-back layers. Runs after Stage 1 + Flap, '
-                             'before Graft/fTetWild; adopted only when the '
-                             'reload-honest holes + non-manifold count strictly '
-                             'falls without raising the part count or losing '
-                             'more than 1%% of the healthy faces. ON by default '
-                             '(this flag is kept for compatibility); disable '
-                             'with --no-tamponade; '
+                        help='enable the Tamponade tier (#17): it is ON by '
+                             'default (this flag is kept for compatibility); '
+                             'disable with --no-tamponade. Runs first as a '
+                             'pre-pass on the cleaned input before Flap and '
+                             'Stage 1 hole closing, with a second chance after '
+                             'Flap and before Graft/fTetWild: plugs each open '
+                             'hole from the INSIDE (Stent inflates from inside '
+                             'and freezes at the shell; large holes split into '
+                             'several Stents; no input face is deleted) and '
+                             'melts residual self-intersections in rolled-back '
+                             'layers. Adopted only when the reload-honest holes '
+                             '+ non-manifold count strictly falls without '
+                             'raising the part count or losing more than 1%% of '
+                             'the healthy faces; a final safety net re-runs '
+                             'without it if the result collapses or leaks; '
                              'env: SUTURA_TAMPONADE / SUTURA_TAMPONADE_DEFAULT')
     parser.add_argument('--no-tamponade', action='store_true',
-                        help='disable the Tamponade tier (#17); this is the '
-                             'default (Tamponade is opt-in until measured on the '
-                             'corpus)')
+                        help='disable the Tamponade tier (#17); it is on by '
+                             'default, so this turns it off')
     parser.add_argument('--no-dressing', action='store_true',
                         help='disable the Dressing (viscosity coat) tier (#16); '
                              'this is the default (Dressing is opt-in)')
@@ -7838,7 +7842,7 @@ def main():
     _flap_arg = resolve_flap(no_flap=args.no_flap, force=args.flap)
     # Tamponade (#17): the single default switch (TAMPONADE_DEFAULT_ENABLED /
     # SUTURA_TAMPONADE_DEFAULT) decides; --no-tamponade disables and
-    # --tamponade forces. OFF by default until measured on the corpus.
+    # --tamponade forces. ON by default.
     _tamponade_arg = resolve_tamponade(no_tamponade=args.no_tamponade,
                                        force=args.tamponade)
     # Dressing (#16): the single default switch (DRESSING_DEFAULT_ENABLED /

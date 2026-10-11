@@ -395,7 +395,7 @@ simetrik taramaların eksik arkasını tamamlar; #15 Duvar Kalınlaştır isteğ
 morfolojik ince-duvar kalınlaştırıcıdır (asla otomatik çalışmaz); #16 Pansuman
 isteğe bağlı, değişken viskoziteli seviye kümesi kaplamasıdır (aşağıda kendi bölümü);
 ve #17 Tamponad, açık sınırları içeriden dolduran ve geri alınan katmanlardaki
-kalan kendini kesmeleri eriten isteğe bağlı iç tıkaçtır (takma ad `lava`,
+kalan kendini kesmeleri eriten varsayılan açık iç tıkaçtır (takma ad `lava`,
 aşağıda kendi bölümü).
 8–10 numaralı yöntemler girdi üzerinde çalışır (fTetWild katmanı gibi) ve
 sonuçlarını yalnızca katı-su geçirmez olduğunda ve özgün yüzey hâlâ
@@ -446,7 +446,8 @@ olduğu için sıralamaya dahil edilmez, açıkça seçilmelidir); #16 Pansuman 
 kendi kaplama→girdi sadakat kapısıyla korunur ve aynı şekilde sıralamaya dahil
 edilmez (korpus üzerinde ölçülene kadar isteğe bağlıdır); #17 Tamponad ise kendi
 yeniden-yükleme-dürüst delik/non-manifold/parça-sayısı/sağlıklı-yüz denetimiyle
-korunur ve aynı şekilde korpus üzerinde ölçülene kadar sıralamaya dahil edilmez.
+korunur; boru hattında varsayılan olarak açıktır ama açık bir alternatif olarak
+sıralamaya dahil edilmez.
 
 #### Nesne analizi ve öneriler
 

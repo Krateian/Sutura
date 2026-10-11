@@ -333,7 +333,7 @@ def test_flap_off_leaves_no_report_key():
 
 
 def test_flap_safety_net_does_not_rerun_tamponade():
-    # HIGH-1 safety net: the flap-OFF re-run must skip the opt-in Tamponade
+    # HIGH-1 safety net: the flap-OFF re-run must skip the Tamponade
     # tier, which already ran once on the primary flap-ON attempt (the
     # fallback candidate is usually discarded). Regression for the double
     # Tamponade invocation (two expensive Rust tier passes per --tamponade run).

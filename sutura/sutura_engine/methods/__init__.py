@@ -323,9 +323,10 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
                 'complex folds / heavy self-intersections skin-coatable',
                 'rec_reason_dressing', ())
     if method_id == 'tamponade':
-        # Opt-in only (needs_user_input excludes it from the ranking); the
-        # interior plug favours a modest local defect load, where keeping every
-        # healthy face verbatim matters more than a whole-mesh rebuild.
+        # On by default in the pipeline but still excluded from the ranking
+        # (needs_user_input); the interior plug favours a modest local defect
+        # load, where keeping every healthy face verbatim matters more than a
+        # whole-mesh rebuild.
         score = (0.5 * _clamp01((holes + nm) / 3.0)
                  + 0.3 * _clamp01(open_ratio / 0.05)
                  + 0.2 * _clamp01(si / 500.0))

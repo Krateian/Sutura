@@ -14,8 +14,9 @@ surface-based tiers it never deletes an input triangle: the report's
 ``reference_used`` / ``reference_fallback`` / ``trimmed_vertices`` /
 ``patch_vertices`` describe the reference-surface path.
 
-The tier is opt-in.  ``run_tamponade`` is a thin, never-raising wrapper around
-the extension: an install without ``sutura_geom.tamponade`` (or with
+The tier is on by default (disable with ``--no-tamponade`` /
+``SUTURA_TAMPONADE=0``).  ``run_tamponade`` is a thin, never-raising wrapper
+around the extension: an install without ``sutura_geom.tamponade`` (or with
 ``TAMPONADE_SUPPORTED`` absent) reports ``{'ran': False, 'reason':
 'sutura_geom.tamponade unavailable'}`` and the caller keeps the mesh it had.
 
@@ -75,7 +76,7 @@ TAMPONADE_PREPASS_MIN_S = 1.0
 TAMPONADE_LOOP_BUDGET_BASE_S = 0.30
 TAMPONADE_LOOP_BUDGET_PER_VERTEX_S = 0.10
 
-# The inside-out SI melt is opt-in by intensity: it runs only at the two
+# The inside-out SI melt is gated by intensity: it runs only at the two
 # heavier presets (or when explicitly forced with SUTURA_TAMPONADE_MELT=1),
 # because slicers ignore self-intersections and the melt is not worth its
 # per-layer cost at quick/balanced.
