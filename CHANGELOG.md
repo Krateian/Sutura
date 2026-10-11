@@ -53,8 +53,9 @@ All notable changes to this project are documented here.
   surrounding healthy triangles, and residual self-intersections are melted in
   thin layers that are individually rolled back when they do not reduce the
   crossing count. It never deletes an input triangle (`healthy_faces_kept`
-  counts the faces carried through verbatim). It runs on the current Stage-1
-  result, after Flap and before the Graft/fTetWild deep tiers, and is registered
+  counts the faces carried through verbatim). It runs first as a pre-pass on the
+  cleaned input (before Flap and Stage 1's generic hole closing), with a second
+  chance after Flap and before the Graft/fTetWild deep tiers, and is registered
   as method #17 in `--list-methods` (`17`/`m17`/`tamponade`/`lava`).
   Adoption requires the reload-honest (welded) holes + non-manifold count to
   strictly fall, the component count not to rise and at least 99 % of the
