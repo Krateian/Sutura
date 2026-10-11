@@ -818,6 +818,11 @@ fn tamponade_py<'py>(
     d.set_item("plugs_rolled_back", info.plugs_rolled_back)?;
     d.set_item("plugs_leaking", info.plugs_leaking)?;
     d.set_item("plugs_double_wall", info.plugs_double_wall)?;
+    d.set_item("plugs_floating", info.plugs_floating)?;
+    d.set_item("components_before", info.components_before)?;
+    d.set_item("components_after", info.components_after)?;
+    d.set_item("closed_shells_before", info.closed_shells_before)?;
+    d.set_item("closed_shells_after", info.closed_shells_after)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;
