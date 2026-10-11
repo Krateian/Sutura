@@ -98,6 +98,9 @@ your file ─► Flap ─► Stage 1 clean-up ─► (still open?) Tamponade ─
    holes after Flap, and kept only if the result is measurably better. The name
    comes from surgery: a tamponade fills a cavity from inside to stop bleeding
    at its opening. Turn it on with `--tamponade` or the GUI Options checkbox.
+   Inside Tamponade, **Stent** is an inflate-from-inside plug used when the
+   reference plug is rejected for a loop; it stops at the shell and never leaves
+   the solid. Not related to method #8 Balloon (Poisson surface reconstruction).
 4. **Graft: only when the damage is serious.** If the model is still open or
    tangled, Graft builds a fresh closed shell over the damaged areas and grafts
    it onto the healthy original surface, like a skin graft. Healthy areas keep

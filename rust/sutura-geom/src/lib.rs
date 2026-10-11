@@ -831,6 +831,10 @@ fn tamponade_py<'py>(
     d.set_item("reference_fallback", info.reference_fallback)?;
     d.set_item("reference_rbf", info.reference_rbf)?;
     d.set_item("reference_skirt", info.reference_skirt)?;
+    d.set_item("stent_used", info.stent_used)?;
+    d.set_item("stent_rejected", info.stent_rejected)?;
+    d.set_item("stent_subplugs", info.stent_subplugs)?;
+    d.set_item("plug_metrics", info.plug_metrics_json)?;
     d.set_item("trimmed_vertices", info.trimmed_vertices)?;
     d.set_item("patch_vertices", info.patch_vertices)?;
     d.set_item("plugs_rolled_back", info.plugs_rolled_back)?;
@@ -844,6 +848,7 @@ fn tamponade_py<'py>(
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;
+    d.set_item("stent_diag", info.stent_diag.clone())?;
     Ok((verts_np, tris_np, d))
 }
 

@@ -182,3 +182,14 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   (EN/TR), and the repair-log panel renders the adopted / not-adopted verdict.
   The library default (`tamponade=False`, `TAMPONADE_DEFAULT_ENABLED = False`)
   keeps every existing path byte-identical until the corpus measurement.
+- **Stent (Tamponade's inflate-from-inside plug, unreleased):** a per-loop plug
+  candidate inside Tamponade that runs when the reference plug is rejected for
+  that loop. It rides INSIDE the Tamponade tier (it only runs when `--tamponade`
+  or the GUI checkbox is on), so there is deliberately NO separate CLI flag or
+  GUI control. Its only switch is the env opt-out `SUTURA_TAMP_STENT=0` (default
+  ON whenever Tamponade runs), which is an exact geometry no-op; CLI and GUI
+  behave identically because neither exposes it. The tier report carries
+  `stent_used` / `stent_rejected` and the standard per-plug `plug_metrics`
+  array; the GUI's tamponade log renders the adopted verdict unchanged. The
+  name is deliberately NOT "balloon" to avoid confusion with method #8 Balloon
+  (Poisson surface reconstruction).

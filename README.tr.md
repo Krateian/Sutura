@@ -103,7 +103,10 @@ dosyan ─► Flap ─► Aşama 1 temizlik ─► (hâlâ açık mı?) Tamponad
    hâlâ delik varsa denenir ve yalnızca sonuç ölçülebilir biçimde daha iyiyse
    tutulur. Adı cerrahiden gelir: tamponad, kanamayı ağzında durdurmak için bir
    boşluğu içeriden doldurur. Açmak için `--tamponade` ya da GUI Seçenekler
-   kutusu.
+   kutusu. Tamponad içinde **Stent**, bir döngü için referans tıkaç reddedildiğinde
+   kullanılan, içeriden şişerek kapanan bir tıkaçtır; kabuğa dayanınca durur ve
+   katının dışına asla taşmaz. Yöntem #8 Balloon (Poisson yüzey yeniden
+   oluşturma) ile ilgisi yoktur.
 4. **Graft: yalnızca hasar ciddiyse.** Model hâlâ açık ya da karışıksa Graft,
    hasarlı bölgelerin üstüne yeni ve kapalı bir kabuk kurar ve bunu sağlam
    orijinal yüzeye deri nakli gibi diker. Sağlam bölgeler orijinal üçgenlerini
