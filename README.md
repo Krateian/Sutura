@@ -67,13 +67,31 @@ skin alone. A repair runs as a short chain of steps, and each later step only
 acts when the earlier ones left work behind:
 
 ```
-your file ─► Flap ─► Stage 1 clean-up ─► (still open?) Tamponade ─► (still broken?) Graft ─► Stage 2 solid ─► repaired copy
-             fills holes   fixes edges,         plugs holes       rebuilds only        one closed,
-             along the     closes what is       from inside       the damaged areas    printable solid
-             surface       left
+your file ─► Tamponade ─► Flap ─► Stage 1 clean-up ─► (still open?) Tamponade ─► (still broken?) Graft ─► Stage 2 solid ─► repaired copy
+             plugs holes  fills holes  fixes edges,                 plugs holes                  rebuilds only     one closed,
+             from inside  along the    closes what is               from inside                  the damaged areas printable solid
+                          surface      left
 ```
 
-1. **Flap: fills holes the way the surface wants to go** (new in 0.8.0, on by
+1. **Tamponade: plugs the holes from the inside, like lava** (on by default).
+   It runs first, as a pre-pass on the cleaned-up input before Flap and
+   Stage 1, so a genuine crater is sealed at its narrowest point instead of
+   getting a flat lid. It fills the part from the inside: picture the inside of
+   the part flooded with lava. Where the shell is intact the lava simply
+   touches it and stops, so the original surface is not changed. At a hole the
+   lava would escape, so it is held back and sealed right at the shell; that
+   hardened lava is the plug. Folds trapped inside the part are melted from the
+   deepest point outward, one layer at a time; if a layer would create a bad
+   edge (the kind that makes the mesh non-manifold) that last layer is undone,
+   and a very small spot is welded shut instead. It gets a second chance after
+   Flap and Stage 1 for any hole they leave, and is kept only if the result is
+   measurably better. The name comes from surgery: a tamponade fills a cavity
+   from inside to stop bleeding at its opening. Turn it on with `--tamponade`
+   or the GUI Options checkbox. Inside Tamponade, **Stent** is an
+   inflate-from-inside plug used when the reference plug is rejected for a
+   loop; it stops at the shell and never leaves the solid. Not related to
+   method #8 Balloon (Poisson surface reconstruction).
+2. **Flap: fills holes the way the surface wants to go** (new in 0.8.0, on by
    default). A classic hole fill puts a flat lid on a hole. Flap continues the
    surrounding surface into the hole instead, like brushing liquid primer or
    epoxy over a gap: the patch leaves the rim at the same slope as its
@@ -82,25 +100,9 @@ your file ─► Flap ─► Stage 1 clean-up ─► (still open?) Tamponade ─
    If Flap cannot fill a hole safely it leaves it to the next step, so a file is
    never worse with Flap than without it. Turn it off with `--no-flap` or the
    *Flap surface hole fill* checkbox.
-2. **Stage 1: clean-up (PyMeshLab).** Removes duplicate and broken triangles,
+3. **Stage 1: clean-up (PyMeshLab).** Removes duplicate and broken triangles,
    untangles bad edges, makes every face point the same way and closes any
    hole that is still open.
-3. **Tamponade: plugs the holes from the inside, like lava** (on by default).
-   When a part is still open after Flap and Stage 1, Tamponade fills it from
-   the inside: picture the inside of the part flooded with lava. Where the
-   shell is intact the lava simply touches it and stops, so the original
-   surface is not changed. At a hole the lava would escape, so it is held back
-   and sealed at the narrowest point right at the shell; that hardened lava is
-   the plug. Folds trapped inside the part are melted from the deepest point
-   outward, one layer at a time; if a layer would create a bad edge (the kind
-   that makes the mesh non-manifold) that last layer is undone, and a very
-   small spot is welded shut instead. It is tried only when the part still has
-   holes after Flap, and kept only if the result is measurably better. The name
-   comes from surgery: a tamponade fills a cavity from inside to stop bleeding
-   at its opening. Turn it on with `--tamponade` or the GUI Options checkbox.
-   Inside Tamponade, **Stent** is an inflate-from-inside plug used when the
-   reference plug is rejected for a loop; it stops at the shell and never leaves
-   the solid. Not related to method #8 Balloon (Poisson surface reconstruction).
 4. **Graft: only when the damage is serious.** If the model is still open or
    tangled, Graft builds a fresh closed shell over the damaged areas and grafts
    it onto the healthy original surface, like a skin graft. Healthy areas keep
@@ -643,9 +645,10 @@ the narrowest point, without touching the surrounding healthy triangles; the
 input faces are carried through verbatim (`healthy_faces_kept`). Residual
 self-intersections are then melted in thin layers from the deepest point
 outward, and a layer that would not reduce the crossing count is rolled back, so
-the tier never ends up worse. It is the interior counterpart of Flap and Graft
-and runs on the **current Stage-1 result, after Flap, before the Graft/fTetWild
-tiers**.
+the tier never ends up worse. It is the interior counterpart of Flap and Graft.
+It runs as a **pre-pass on the cleaned input, before Flap and Stage 1**, and
+gets a **second chance after the Stage-1/Flap closing ladder, before the
+Graft/fTetWild tiers**.
 
 It is **on by default**: disable it with `--no-tamponade` (or
 `SUTURA_TAMPONADE=0`), or the Options → Repair checkbox **Tamponade (fill holes

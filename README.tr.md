@@ -71,14 +71,34 @@ dokunmaz. Onarım kısa bir adım zinciridir ve her adım yalnızca önceki adı
 bıraktıysa devreye girer:
 
 ```
-dosyan ─► Flap ─► Aşama 1 temizlik ─► (hâlâ açık mı?) Tamponad ─► (hâlâ bozuk mu?) Graft ─► Aşama 2 katı ─► onarılmış kopya
-          delikleri   kenarları düzeltir,     delikleri       yalnızca hasarlı        tek parça, kapalı,
-          yüzeyi      kalan delikleri         içeriden        bölgeleri yeniden       basılabilir katı
-          sürdürerek  kapatır                 tıkar           kurar
-          kapatır
+dosyan ─► Tamponad ─► Flap ─► Aşama 1 temizlik ─► (hâlâ açık mı?) Tamponad ─► (hâlâ bozuk mu?) Graft ─► Aşama 2 katı ─► onarılmış kopya
+          delikleri   delikleri    kenarları düzeltir,            delikleri                    yalnızca hasarlı    tek parça, kapalı,
+          içeriden    yüzeyi       kalan delikleri                içeriden                     bölgeleri yeniden   basılabilir katı
+          tıkar       sürdürmerek  kapatır                        tıkar                        kurar
+                      kapatır
 ```
 
-1. **Flap: delikleri yüzeyin gittiği yöne doğru doldurur** (0.8.0'da yeni,
+1. **Tamponad: delikleri içeriden, lav gibi tıkar** (varsayılan açık).
+   İlk o çalışır: temizlenmiş girdi üzerinde Flap ve Aşama 1'den önce bir
+   ön-geçiş olarak, böylece gerçek bir krater düz bir kapak yerine hemen
+   kabuğun en dar noktasında tıkanır. Parçayı içeriden doldurur: parçanın
+   içinin lavla dolduğunu düşün. Kabuk sağlamsa lav oraya yalnızca dokunup
+   durur, yani orijinal yüzey değişmez. Bir delikte lav dışarı kaçacaktır; bu
+   yüzden hemen kabuğun en dar yerinde tutulup sızdırmaz hale getirilir ve
+   donan lav tıpayı oluşturur. Parçanın içinde kalan kıvrımlar en derin
+   noktadan dışa doğru, her seferinde bir katman eritilir; bir katman hatalı
+   bir kenar (iki yüzün yanlış biçimde paylaştığı, yani manifold olmayan bir
+   kenar) oluşturacaksa o son katman geri alınır ve onun yerine çok küçük bir
+   nokta kaynakla kapatılır. Flap ve Aşama 1'in bıraktığı delikler için ikinci
+   bir şans daha alır ve yalnızca sonuç ölçülebilir biçimde daha iyiyse
+   tutulur. Adı cerrahiden gelir: tamponad, kanamayı ağzında durdurmak için bir
+   boşluğu içeriden doldurur. Varsayılan olarak açıktır; kapatmak için
+   `--no-tamponade` ya da GUI Seçenekler
+   kutusu. Tamponad içinde **Stent**, bir döngü için referans tıkaç reddedildiğinde
+   kullanılan, içeriden şişerek kapanan bir tıkaçtır; kabuğa dayanınca durur ve
+   katının dışına asla taşmaz. Yöntem #8 Balloon (Poisson yüzey yeniden
+   oluşturma) ile ilgisi yoktur.
+2. **Flap: delikleri yüzeyin gittiği yöne doğru doldurur** (0.8.0'da yeni,
    varsayılan açık). Klasik delik doldurma deliğe düz bir kapak koyar. Flap ise
    çevredeki yüzeyi deliğin içine doğru devam ettirir; bir boşluğun üstüne sıvı
    astar ya da epoksi sürmek gibi: yama, kenardan komşu yüzeyle aynı eğimle
@@ -87,27 +107,9 @@ dosyan ─► Flap ─► Aşama 1 temizlik ─► (hâlâ açık mı?) Tamponad
    yenidir. Flap bir deliği güvenle dolduramıyorsa onu bir sonraki adıma bırakır,
    yani bir dosya Flap ile asla Flap'siz halinden kötü olmaz. Kapatmak için
    `--no-flap` ya da *Flap yüzey delik doldurma* kutusu.
-2. **Aşama 1: temizlik (PyMeshLab).** Tekrarlanan ve bozuk üçgenleri siler,
+3. **Aşama 1: temizlik (PyMeshLab).** Tekrarlanan ve bozuk üçgenleri siler,
    hatalı kenarları çözer, tüm yüzleri aynı yöne çevirir ve hâlâ açık kalan
    delikleri kapatır.
-3. **Tamponad: delikleri içeriden, lav gibi tıkar** (varsayılan açık).
-   Parça Flap ve Aşama 1'den sonra hâlâ açıksa Tamponad onu içeriden doldurur:
-   parçanın içinin lavla dolduğunu düşün. Kabuk sağlamsa lav oraya yalnızca
-   dokunup durur, yani orijinal yüzey değişmez. Bir delikte lav dışarı
-   kaçacaktır; bu yüzden hemen kabuğun en dar yerinde tutulup sızdırmaz hale
-   getirilir ve donan lav tıpayı oluşturur. Parçanın içinde kalan kıvrımlar en
-   derin noktadan dışa doğru, her seferinde bir katman eritilir; bir katman
-   hatalı bir kenar (iki yüzün yanlış biçimde paylaştığı, yani manifold
-   olmayan bir kenar) oluşturacaksa o son katman geri alınır ve onun yerine
-   çok küçük bir nokta kaynakla kapatılır. Yalnızca Flap'ten sonra parçada
-   hâlâ delik varsa denenir ve yalnızca sonuç ölçülebilir biçimde daha iyiyse
-   tutulur. Adı cerrahiden gelir: tamponad, kanamayı ağzında durdurmak için bir
-   boşluğu içeriden doldurur. Varsayılan olarak açıktır; kapatmak için
-   `--no-tamponade` ya da GUI Seçenekler
-   kutusu. Tamponad içinde **Stent**, bir döngü için referans tıkaç reddedildiğinde
-   kullanılan, içeriden şişerek kapanan bir tıkaçtır; kabuğa dayanınca durur ve
-   katının dışına asla taşmaz. Yöntem #8 Balloon (Poisson yüzey yeniden
-   oluşturma) ile ilgisi yoktur.
 4. **Graft: yalnızca hasar ciddiyse.** Model hâlâ açık ya da karışıksa Graft,
    hasarlı bölgelerin üstüne yeni ve kapalı bir kabuk kurar ve bunu sağlam
    orijinal yüzeye deri nakli gibi diker. Sağlam bölgeler orijinal üçgenlerini
@@ -647,8 +649,9 @@ sınır halkasını dolaşıp kabuğa en dar noktada kavuşan bir tıkaç kurar 
 (`healthy_faces_kept`). Kalan kendini kesmeler daha sonra en derin noktadan
 dışa doğru ince katmanlar hâlinde eritilir ve kesişme sayısını azaltmayan bir
 katman geri alınır, böylece katman hiçbir zaman daha kötü bitmez. Flap ve
-Graft'ın içe dönük karşılığıdır ve **Aşama 1 sonucu üzerinde, Flap'ten sonra,
-Graft/fTetWild katmanlarından önce** çalışır.
+Graft'ın içe dönük karşılığıdır. **Temizlenmiş girdi üzerinde, Flap ve Aşama
+1'den önce bir ön-geçiş olarak** çalışır ve **Aşama 1/Flap kapatma merdiveninden
+sonra, Graft/fTetWild katmanlarından önce ikinci bir şans** alır.
 
 **Varsayılan olarak açıktır**: kapatmak için `--no-tamponade` (veya
 `SUTURA_TAMPONADE=0`) ya da Seçenekler → Onarım sekmesindeki **Tamponad

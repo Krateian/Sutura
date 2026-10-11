@@ -1214,13 +1214,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     not strict-watertight or has more parts than the input; False (library
     default) keeps the output byte-identical.
     ``tamponade`` enables the interior-plug tier (method #17,
-    ``sutura_engine.tamponade``): it runs on the stage-1 result after the Flap
-    pre-pass and before Graft/fTetWild, plugs each open boundary from the
-    inside without deleting an input face, and is adopted only when the
-    reload-honest holes + non-manifold count strictly falls without raising the
-    component count or losing more than 1% of the pre-tier faces; a watertight
-    adoption then skips the deep tiers. False (library default) keeps the output
-    byte-identical.
+    ``sutura_engine.tamponade``): it runs as a PRE-PASS on the cleaned input
+    before the Flap pre-pass and before Stage-1's hole closing, so a genuine
+    crater is sealed with the reference-surface plug rather than the generic
+    Stage-1 cap, and a second-chance call runs after the Stage-1/Flap closing
+    ladder and before Graft/fTetWild when the pre-pass did not adopt. It plugs
+    each open boundary from the inside without deleting an input face, and is
+    adopted only when the reload-honest holes + non-manifold count strictly
+    falls without raising the component count or losing more than 1% of the
+    pre-tier faces; a watertight adoption then skips the deep tiers. False
+    (library default) keeps the output byte-identical.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
