@@ -254,6 +254,17 @@ pub struct TamponadeInfo {
     /// Plugs rolled back for duplicating an existing (surviving) surface -- a
     /// double wall (the coincidence gate).
     pub plugs_double_wall: usize,
+    /// Plugs rolled back for not being edge-connected to the main shell (a
+    /// floating component or a closed sub-shell of their own).
+    pub plugs_floating: usize,
+    /// Reload-welded vertex-connected component count of the tier input.
+    pub components_before: usize,
+    /// Reload-welded vertex-connected component count of the tier output.
+    pub components_after: usize,
+    /// Reload-welded closed-shell count of the tier input.
+    pub closed_shells_before: usize,
+    /// Reload-welded closed-shell count of the tier output.
+    pub closed_shells_after: usize,
     pub seconds: f64,
     pub reason: String,
     /// One entry per boundary loop: its vertex count and the decision taken
@@ -3215,6 +3226,10 @@ pub struct ReloadVerdict {
     pub nm_edges: usize,
     pub nm_vertices: usize,
     pub degenerate_faces: usize,
+    /// Vertex-connected face components of the reload-welded mesh.
+    pub components: usize,
+    /// Components with no boundary edge (closed shells).
+    pub closed_shells: usize,
 }
 
 impl ReloadVerdict {
@@ -3228,6 +3243,7 @@ impl ReloadVerdict {
             || self.nm_edges > base.nm_edges
             || self.nm_vertices > base.nm_vertices
             || self.degenerate_faces > base.degenerate_faces
+            || self.components > base.components
     }
 }
 
@@ -3315,6 +3331,48 @@ pub fn reload_verdict(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> ReloadVerdict {
         if faces.len() >= 2 && !reload_faces_single_fan(v, faces, &wtris) {
             verdict.nm_vertices += 1;
         }
+    }
+
+    // Vertex-connected face components and closed-shell count. A component is a
+    // closed shell when none of its faces has a boundary (once-used) edge.
+    let nf = wtris.len();
+    if nf > 0 {
+        let mut parent: Vec<u32> = (0..nf as u32).collect();
+        fn find(p: &mut [u32], mut x: u32) -> u32 {
+            while p[x as usize] != x {
+                p[x as usize] = p[p[x as usize] as usize];
+                x = p[x as usize];
+            }
+            x
+        }
+        for faces in vfaces.values() {
+            for k in 1..faces.len() {
+                let a = find(&mut parent, faces[0]);
+                let b = find(&mut parent, faces[k]);
+                if a != b {
+                    parent[b as usize] = a;
+                }
+            }
+        }
+        let mut has_boundary: HashMap<u32, bool> = HashMap::new();
+        for (fi, t) in wtris.iter().enumerate() {
+            let root = find(&mut parent, fi as u32);
+            let e = has_boundary.entry(root).or_insert(false);
+            for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                if edges.get(&reload_edge_key(x, y)).copied().unwrap_or(0) == 1 {
+                    *e = true;
+                }
+            }
+        }
+        let mut roots: HashSet<u32> = HashSet::new();
+        for fi in 0..nf {
+            roots.insert(find(&mut parent, fi as u32));
+        }
+        verdict.components = roots.len();
+        verdict.closed_shells = roots
+            .iter()
+            .filter(|r| !has_boundary.get(r).copied().unwrap_or(false))
+            .count();
     }
 
     verdict
@@ -3958,19 +4016,22 @@ fn tri_normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
 }
 
 /// Cosine of the coincidence angle: a plug face whose normal is within this of
-/// an original face normal (either orientation) and whose centroid lies within
-/// `tol` of it duplicates that surface.
+/// an original face normal (same or opposite orientation) and whose centroid
+/// lies within `tol` of it duplicates that surface.
 const DOUBLE_WALL_COS: f64 = 0.9396926207859084; // cos(20 deg)
-/// Reject a plug as a double wall when more than this fraction of its new-face
-/// area duplicates an existing (surviving) surface.
+/// Reject a plug when more than this fraction of its new-face area coincides
+/// with an existing (surviving) surface with the OPPOSITE orientation (normal
+/// angle > 160 deg). Same-orientation coincidence is harmless for FDM (a
+/// positive-fill slicer unions it); opposite coincidence can cancel material
+/// in even-odd slicing.
 const DOUBLE_WALL_AREA_FRAC: f64 = 0.20;
 
-/// A plug is a double wall when more than `DOUBLE_WALL_AREA_FRAC` of its new
-/// face area coincides (centroid within `tol`, normal within 20 deg, either
-/// orientation) with an original input face. Such a plug overlays an existing
-/// surface sheet rather than closing an open hole; the WHOLE plug is rolled
-/// back (dropping individual faces would reopen the hole).
-fn plug_is_double_wall(
+/// Coincidence breakdown of one plug against the surviving original surface:
+/// `(total_area, opposite_area, same_area)`. A face counts as coincident when
+/// its centroid lies within `tol` of an original face, projects inside it and
+/// its normal is within 20 deg of the original (same) or within 20 deg of
+/// anti-parallel (opposite).
+fn plug_coincidence(
     orig_bvh: &MeshBvh,
     orig_verts: &[[f64; 3]],
     orig_tris: &[[u32; 3]],
@@ -3978,9 +4039,10 @@ fn plug_is_double_wall(
     tris: &[[u32; 3]],
     region: &PlugRegion,
     tol: f64,
-) -> bool {
+) -> (f64, f64, f64) {
     let mut total_area = 0.0f64;
-    let mut coincident_area = 0.0f64;
+    let mut opposite_area = 0.0f64;
+    let mut same_area = 0.0f64;
     for f in region.tri_start..region.tri_end {
         if f >= tris.len() {
             break;
@@ -4023,8 +4085,8 @@ fn plug_is_double_wall(
             continue;
         }
         // The centroid must project INSIDE the original triangle: an adjacent
-        // coplanar rim face (sharing an edge) projects outside and is not a
-        // double wall.
+        // coplanar rim face (sharing an edge) projects outside and is not
+        // coincident.
         let proj = [centroid[0] - h * on[0] / onl, centroid[1] - h * on[1] / onl,
                     centroid[2] - h * on[2] / onl];
         let v0 = [ob[0] - oa[0], ob[1] - oa[1], ob[2] - oa[2]];
@@ -4046,12 +4108,33 @@ fn plug_is_double_wall(
         if !inside {
             continue;
         }
-        let cos = (n[0] * on[0] + n[1] * on[1] + n[2] * on[2]).abs() / (nl * onl);
+        let cos = (n[0] * on[0] + n[1] * on[1] + n[2] * on[2]) / (nl * onl);
         if cos >= DOUBLE_WALL_COS {
-            coincident_area += 0.5 * nl;
+            same_area += 0.5 * nl;
+        } else if cos <= -DOUBLE_WALL_COS {
+            opposite_area += 0.5 * nl;
         }
     }
-    total_area > 0.0 && coincident_area > DOUBLE_WALL_AREA_FRAC * total_area
+    (total_area, opposite_area, same_area)
+}
+
+/// A plug is a double wall when more than `DOUBLE_WALL_AREA_FRAC` of its new
+/// face area coincides with a surviving original face with the OPPOSITE
+/// orientation (normal angle > 160 deg). Such a plug can cancel material in an
+/// even-odd slicer; the WHOLE plug is rolled back (dropping individual faces
+/// would reopen the hole). Same-orientation coincidence is accepted.
+fn plug_is_double_wall(
+    orig_bvh: &MeshBvh,
+    orig_verts: &[[f64; 3]],
+    orig_tris: &[[u32; 3]],
+    new_verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    region: &PlugRegion,
+    tol: f64,
+) -> bool {
+    let (total, opposite, _same) =
+        plug_coincidence(orig_bvh, orig_verts, orig_tris, new_verts, tris, region, tol);
+    total > 0.0 && opposite > DOUBLE_WALL_AREA_FRAC * total
 }
 
 /// Per-plug double-wall mask (see `plug_is_double_wall`).
@@ -4071,6 +4154,39 @@ fn plug_double_wall_mask(
                                 region, tol)
         })
         .collect()
+}
+
+/// True when the plug region is edge-connected to the rest of the output: it
+/// must have at least one region-boundary edge (an edge used once within the
+/// region, i.e. the plug is NOT a closed sub-shell of its own) AND that edge
+/// must be shared with a face outside the region. A plug that fails either test
+/// is a floating / self-contained shell a slicer may read as a separate part.
+fn plug_edges_connected(
+    tris: &[[u32; 3]],
+    region: &PlugRegion,
+    out_edge_count: &HashMap<(u32, u32), i32>,
+) -> bool {
+    let mut region_use: HashMap<(u32, u32), i32> = HashMap::new();
+    for f in region.tri_start..region.tri_end {
+        if f >= tris.len() {
+            break;
+        }
+        let t = tris[f];
+        for (x, y) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *region_use.entry(reload_edge_key(x, y)).or_insert(0) += 1;
+        }
+    }
+    if region_use.is_empty() {
+        return false;
+    }
+    let mut connected = false;
+    for (e, &ru) in &region_use {
+        if ru == 1 && out_edge_count.get(e).copied().unwrap_or(0) > ru {
+            connected = true;
+            break;
+        }
+    }
+    connected
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5052,7 +5168,22 @@ pub fn tamponade_repair(
         let dw_drop = plug_double_wall_mask(
             &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, tol);
         info.plugs_double_wall = dw_drop.iter().filter(|&&d| d).count();
-        if reload_regressed || leak_drop.iter().any(|&d| d) || dw_drop.iter().any(|&d| d) {
+        // Connectivity gate: every plug must be edge-connected to the shell
+        // through its loop (not a floating component or a closed sub-shell).
+        let float_drop: Vec<bool> = plug_regions
+            .iter()
+            .map(|r| !plug_edges_connected(&out_tris, r, &edge_count))
+            .collect();
+        info.plugs_floating = float_drop.iter().filter(|&&d| d).count();
+        info.components_before = base.components;
+        info.components_after = full.components;
+        info.closed_shells_before = base.closed_shells;
+        info.closed_shells_after = full.closed_shells;
+        if reload_regressed
+            || leak_drop.iter().any(|&d| d)
+            || dw_drop.iter().any(|&d| d)
+            || float_drop.iter().any(|&d| d)
+        {
             let mut drop = vec![false; plug_regions.len()];
             if reload_regressed {
                 for (ri, region) in plug_regions.iter().enumerate() {
@@ -5060,7 +5191,8 @@ pub fn tamponade_repair(
                     if (without.boundary_edges < full.boundary_edges
                         || without.nm_edges < full.nm_edges
                         || without.nm_vertices < full.nm_vertices
-                        || without.degenerate_faces < full.degenerate_faces)
+                        || without.degenerate_faces < full.degenerate_faces
+                        || without.components < full.components)
                         && !without.worse_than(&base)
                     {
                         drop[ri] = true;
@@ -5070,6 +5202,7 @@ pub fn tamponade_repair(
             for ri in 0..plug_regions.len() {
                 drop[ri] |= leak_drop[ri];
                 drop[ri] |= dw_drop[ri];
+                drop[ri] |= float_drop[ri];
             }
             let any = drop.iter().any(|&d| d);
             // When every plug region is dropped the tier must be a byte-exact
@@ -5117,9 +5250,10 @@ pub fn tamponade_repair(
             }
             let leak_fired = leak_drop.iter().filter(|&&d| d).count();
             let dw_fired = dw_drop.iter().filter(|&&d| d).count();
+            let float_fired = float_drop.iter().filter(|&&d| d).count();
             info.loop_diag.push(format!(
-                "rolled_back {} plug(s) ({} leaking, {} double-wall)",
-                plugs_rolled_back, leak_fired, dw_fired
+                "rolled_back {} plug(s) ({} leaking, {} double-wall, {} floating)",
+                plugs_rolled_back, leak_fired, dw_fired, float_fired
             ));
         }
     }
@@ -6308,7 +6442,8 @@ mod tests {
         let bvh = MeshBvh::from_arrays(&verts, &idx);
         let tol = leak_tol(2.0);
 
-        // A plug face coincident with the existing top face (double wall).
+        // A plug face coincident with the existing top face but with the SAME
+        // orientation is harmless (accepted).
         let mut dup = verts.clone();
         dup.push([0.0, 0.0, 1.0]);
         dup.push([1.0, 0.0, 1.0]);
@@ -6319,8 +6454,15 @@ mod tests {
             moved: Vec::new(), rim: Vec::new(),
         };
         assert!(
-            plug_is_double_wall(&bvh, &verts, &tris, &dup, &dup_tris, &region, tol),
-            "a coincident plug face must be a double wall"
+            !plug_is_double_wall(&bvh, &verts, &tris, &dup, &dup_tris, &region, tol),
+            "a same-orientation coincident face must be accepted"
+        );
+
+        // The same face with OPPOSITE winding (anti-parallel) is a double wall.
+        let opp_tris = vec![[10u32, 9, 8]];
+        assert!(
+            plug_is_double_wall(&bvh, &verts, &tris, &dup, &opp_tris, &region, tol),
+            "an opposite-orientation coincident face must be a double wall"
         );
 
         // A plug face floating clear of the surface is not a double wall.

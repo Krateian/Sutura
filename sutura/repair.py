@@ -4232,7 +4232,9 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'excised_faces': None,
             'healthy_faces_kept': None, 'healthy_fraction': None,
             'plugs_rolled_back': None, 'plugs_leaking': None,
-            'plugs_double_wall': None,
+            'plugs_double_wall': None, 'plugs_floating': None,
+            'components_before': None, 'components_after': None,
+            'closed_shells_before': None, 'closed_shells_after': None,
            'input_self_intersections': None,
            'candidate_self_intersections': None, 'si_fall': None,
            'si_ok': None, 'melt_enabled': None, 'si_method': None,
@@ -4338,7 +4340,9 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                     'reference_used', 'reference_fallback',
                     'trimmed_vertices', 'patch_vertices',
                     'plugs_rolled_back', 'plugs_leaking',
-                    'plugs_double_wall'):
+                    'plugs_double_wall', 'plugs_floating',
+                    'components_before', 'components_after',
+                    'closed_shells_before', 'closed_shells_after'):
             rec[key] = trec.get(key)
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):
