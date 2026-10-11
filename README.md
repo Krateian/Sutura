@@ -90,8 +90,9 @@ your file ─► Tamponade ─► Flap ─► Stage 1 clean-up ─► (still ope
    and a very small spot is welded shut instead. It gets a second chance after
    Flap and Stage 1 for any hole they leave, and is kept only if the result is
    measurably better. The name comes from surgery: a tamponade fills a cavity
-   from inside to stop bleeding at its opening. Turn it on with `--tamponade`
-   or the GUI Options checkbox. Inside Tamponade, **Stent** is an
+   from inside to stop bleeding at its opening. It is on by default; turn it
+   off with `--no-tamponade` / `SUTURA_TAMPONADE=0` or the GUI Options
+   checkbox. Inside Tamponade, **Stent** is an
    inflate-from-inside plug used when the reference plug is rejected for a
    loop; it stops at the shell and never leaves the solid. Not related to
    method #8 Balloon (Poisson surface reconstruction).
@@ -440,8 +441,8 @@ self-guarded by `hausdorff_outside` (preventing movement of untouched geometry);
 Dressing is self-guarded by its coat→input fidelity gate and likewise excluded
 from auto-ranking (opt-in until measured on the corpus); and #17 Tamponade is
 self-guarded by its own reload-honest holes/non-manifold/part-count/healthy-face
-check and is likewise excluded from auto-ranking until it is measured on the
-corpus.
+check; it is on by default in the pipeline but still excluded from auto-ranking
+(`needs_user_input`) as an explicit alternative to it.
 
 #### Object analysis and recommendations
 
