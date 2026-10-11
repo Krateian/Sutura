@@ -3831,6 +3831,83 @@ def _flap_off_preferred(on_verdict, off_verdict):
     return _score(off_verdict) < _score(on_verdict)
 
 
+# Tamponade final safety net (G11 release blocker). The Tamponade adoption gate
+# is decided on the pre-chain / stage-1 mesh and only proves that damage
+# (holes + non-manifold) falls; it says nothing about the FINAL shape. On
+# thingi10k_100827 a Tamponade prepass adoption (holes 6 -> 4 on a 71-face
+# scan) let the downstream deep tier rebuild the 37 mm object into a 7 mm
+# fragment, so the saved STL was geometrically far off the input while still
+# watertight. This check flags exactly that observable collapse: the saved
+# result no longer spans the input's bounding box. repair_file then re-runs
+# once with Tamponade OFF and keeps the candidate that covers more of the
+# input (never worse on damage or part count).
+TAMP_COLLAPSE_BBOX_FRAC = 0.5
+
+
+def _bbox_diagonal(verts):
+    """Bounding-box diagonal of a vertex array (0.0 for an empty mesh)."""
+    if verts is None or len(verts) == 0:
+        return 0.0
+    a = np.asarray(verts, dtype=np.float64)
+    return float(np.linalg.norm(a.max(0) - a.min(0)))
+
+
+def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
+    """Whether a Tamponade-adopted FINAL mesh warrants a Tamponade-OFF re-run.
+
+    Returns ``(reason, metrics)`` with ``reason`` None when the result is
+    acceptable. The single cheap trigger is a bounding-box collapse relative to
+    the input (``coverage < TAMP_COLLAPSE_BBOX_FRAC``): a repaired result must
+    still span the object it was given, so a fragment smaller than half the
+    input diagonal is a hard red flag. ``metrics`` also carries the reload-honest
+    damage and the component count so the OFF candidate can be compared.
+    """
+    in_diag = _bbox_diagonal(in_verts)
+    out_diag = _bbox_diagonal(out_verts)
+    coverage = (out_diag / in_diag) if in_diag else 1.0
+    try:
+        holes, nm = reload_strict_holes_nm(out_verts, out_tris)
+        wv, wt = weld_reload_equivalent(out_verts, out_tris)
+        parts = _count_vertex_components(len(wv), wt)
+    except Exception:  # noqa: BLE001 - metrics are best-effort
+        holes = nm = parts = None
+    metrics = {'input_diag_mm': round(in_diag, 4),
+               'output_diag_mm': round(out_diag, 4),
+               'coverage': round(coverage, 4),
+               'holes': holes, 'non_manifold': nm, 'parts': parts}
+    if in_diag and coverage < TAMP_COLLAPSE_BBOX_FRAC:
+        return 'bbox_collapse', metrics
+    return None, metrics
+
+
+def _tamponade_off_preferred(on_metrics, off_metrics):
+    """Whether the Tamponade-OFF result should replace the Tamponade-ON one.
+
+    OFF wins only when it is never worse on damage or component count and then
+    covers strictly more of the input's bounding box; a tie keeps the
+    Tamponade result, so an adoption is discarded only when it is actually
+    worse. Unknown metrics (``None``) are treated conservatively as "not
+    worse", so the coverage comparison still decides.
+    """
+    def _damage(m):
+        h = m.get('holes')
+        n = m.get('non_manifold')
+        if h is None or n is None:
+            return None
+        return h + n
+
+    def _parts(m):
+        return m.get('parts')
+
+    on_dmg, off_dmg = _damage(on_metrics), _damage(off_metrics)
+    if on_dmg is not None and off_dmg is not None and off_dmg > on_dmg:
+        return False
+    on_parts, off_parts = _parts(on_metrics), _parts(off_metrics)
+    if on_parts is not None and off_parts is not None and off_parts > on_parts:
+        return False
+    return off_metrics.get('coverage', 0.0) > on_metrics.get('coverage', 0.0)
+
+
 # Flap time budget by intensity preset (seconds). ``quick`` disables Flap
 # entirely; a run that exceeds its preset budget is measured (and cached for a
 # repeat attempt) but never adopted, so a slow Flap can stall neither the
@@ -5826,10 +5903,48 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             else:
                 report['flap']['final_fallback'] = fallback
 
+    # Tamponade final safety net (G11): the Tamponade adoption gate is
+    # topological-only and decided on the pre-chain / stage-1 mesh, so it
+    # cannot guarantee the FINAL result keeps the input's shape. When a cheap
+    # bounding-box check flags a collapse (the saved result no longer spans the
+    # input), re-run this file ONCE with Tamponade OFF and keep the candidate
+    # that covers more of the input without regressing damage or part count.
+    # A no-op unless Tamponade was actually adopted and the final collapsed.
+    if tamponade and (report.get('tamponade') or {}).get('adopted'):
+        try:
+            on_reason, on_metrics = _tamponade_final_needs_off(
+                verts, tris, new_v, new_t)
+        except Exception:  # noqa: BLE001 - the net never crashes a repair
+            on_reason, on_metrics = None, None
+        if on_reason:
+            on_tamp = dict(report['tamponade'])
+            fallback = {'ran': False, 'used': 'on', 'reason': on_reason,
+                        'on': on_metrics}
+            use_off = False
+            try:
+                off_report, off_v, off_t = _run(flap, run_tamponade=False)
+                _, off_metrics = _tamponade_final_needs_off(
+                    verts, tris, off_v, off_t)
+                fallback['ran'] = True
+                fallback['off'] = off_metrics
+                use_off = _tamponade_off_preferred(on_metrics, off_metrics)
+            except Exception as e:  # noqa: BLE001 - the net never crashes
+                fallback['error'] = str(e)
+            fallback['used'] = 'off' if use_off else 'on'
+            if use_off:
+                on_tamp['adopted_final'] = False
+                on_tamp['final_fallback'] = fallback
+                off_report['tamponade'] = on_tamp
+                report, new_v, new_t = off_report, off_v, off_t
+            else:
+                report['tamponade']['final_fallback'] = fallback
+
     report.setdefault('timings', {})
     report['timings']['file_total'] = round(time.perf_counter() - _t_file, 3)
     report['timings']['flap_off_rerun'] = bool(
         (report.get('flap') or {}).get('final_fallback', {}).get('ran'))
+    report['timings']['tamponade_off_rerun'] = bool(
+        (report.get('tamponade') or {}).get('final_fallback', {}).get('ran'))
     save_mesh(out, new_v, new_t)
     return report
 

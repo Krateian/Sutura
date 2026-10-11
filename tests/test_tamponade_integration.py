@@ -444,6 +444,38 @@ def test_method_alias_resolution():
     print('ok  registry resolves every Tamponade alias to #17')
 
 
+# --- 5. final shape safety net (G11 release blocker) ------------------------
+
+def test_final_guard_flags_bbox_collapse():
+    # thingi10k_100827: a 37 mm object rebuilt into a 7 mm fragment. The guard
+    # must flag the collapse and pass a full-coverage result.
+    in_v = _CUBE_V * np.array([13.0, 13.0, 32.5])
+    out_v = _CUBE_V * np.array([5.0, 3.5, 3.5])
+    reason, m = repair._tamponade_final_needs_off(in_v, _CUBE_F, out_v, _CUBE_F)
+    assert reason == 'bbox_collapse', (reason, m)
+    assert m['coverage'] < repair.TAMP_COLLAPSE_BBOX_FRAC, m
+    assert m['holes'] == 0 and m['parts'] == 1, m
+    reason2, m2 = repair._tamponade_final_needs_off(
+        in_v, _CUBE_F, _CUBE_V * 13.0, _CUBE_F)
+    assert reason2 is None, (reason2, m2)
+    assert m2['coverage'] > repair.TAMP_COLLAPSE_BBOX_FRAC, m2
+    print('ok  final guard flags a bbox collapse and passes a full result')
+
+
+def test_tamponade_off_preferred_rules():
+    on = {'coverage': 0.19, 'holes': 0, 'non_manifold': 0, 'parts': 1}
+    off = {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 1}
+    assert repair._tamponade_off_preferred(on, off) is True
+    # OFF never replaces ON when it regresses damage or the part count.
+    assert repair._tamponade_off_preferred(
+        on, {'coverage': 1.0, 'holes': 0, 'non_manifold': 2, 'parts': 1}) is False
+    assert repair._tamponade_off_preferred(
+        on, {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 2}) is False
+    # A coverage tie keeps the Tamponade result.
+    assert repair._tamponade_off_preferred(on, dict(on)) is False
+    print('ok  OFF replaces ON only with more coverage and no regression')
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith('test_') and callable(v)]

@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Tamponade could make the final shape worse than `--no-tamponade`.** The
+  Tamponade adoption gate is topological-only (the reload-honest holes +
+  non-manifold count must fall) and is decided on the pre-chain / stage-1 mesh,
+  so it could not observe that a later deep tier rebuilt the object into a
+  small fragment (thingi10k_100827: a 37 mm scan reduced to a 7 mm fragment
+  while still watertight). `repair_file` now adds a final safety net that
+  mirrors the Flap one: when Tamponade was adopted and the saved result
+  collapses to less than `TAMP_COLLAPSE_BBOX_FRAC` (0.5) of the input's
+  bounding-box diagonal, it re-runs once with Tamponade OFF and keeps the
+  candidate that covers more of the input without regressing damage or part
+  count. Tamponade is discarded only when the no-tamponade result is actually
+  better, so every existing adoption stays byte-identical.
+
 ## [0.9.0] - 2026-10-11
 
 ### Added
