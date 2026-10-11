@@ -111,8 +111,10 @@ All notable changes to this project are documented here.
   (several GB, minutes) on meshes with long skinny triangle fans; this
   OOM-killed the whole repair during method-#10 escalation. The filter now runs
   in a child process under a wall-clock timeout (`PROXY_RESAMPLE_TIMEOUT`,
-  20 s, overridable via `SUTURA_PROXY_RESAMPLE_TIMEOUT`) and falls through to
-  the existing alpha-wrap fallback on timeout, with
+  20 s, overridable via `SUTURA_PROXY_RESAMPLE_TIMEOUT`) and a resident-memory
+  ceiling (`PROXY_RESAMPLE_MAX_RSS_MB`, 2048 MB, overridable via
+  `SUTURA_PROXY_RESAMPLE_MAX_RSS_MB`; `0` disables it), and falls through to
+  the existing alpha-wrap fallback when either limit is hit, with
   the child driven through temp NPZ files so the parent JSON report is never
   corrupted. Output is byte-identical whenever the resample completes in time.
 - **Native self-intersection detection behind `SUTURA_NATIVE_SI` (default
@@ -151,6 +153,19 @@ Meshes; no third-party code is used.
   where it sat after the version history, into the `## License` section
   immediately after the Apache 2.0 paragraph, matching `README.tr.md`. The
   paragraph is unchanged; only its position changed.
+
+### Known limitations
+
+- **Tamponade is off by default.** It stays opt-in (`--tamponade` /
+  `SUTURA_TAMPONADE` / the GUI checkbox) until it has been measured on more
+  real-world files.
+- **Stent mostly matters inside Tamponade.** On most real files the later repair
+  stages already close the tiny holes a loop can have, so the Stent candidate is
+  rarely the deciding seal; it runs only when Tamponade runs.
+- **Graft output can vary slightly between runs depending on free RAM.** The
+  effective morphology grid budget is clamped to the RAM available when the tier
+  runs, so a low-memory host can coarsen the grid and produce a slightly
+  different (still valid) shape. A fix is planned for 0.9.1.
 
 ## [0.8.1] - 2026-10-03
 
