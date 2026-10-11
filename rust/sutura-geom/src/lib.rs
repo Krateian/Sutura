@@ -770,6 +770,9 @@ fn tamponade_py<'py>(
         max_nodes,
         time_budget_s,
         openings_gate: None,
+        fwn: std::env::var("SUTURA_TAMP_FWN")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tamponade::tamponade_repair(&rv, &rt, &config)
@@ -813,6 +816,8 @@ fn tamponade_py<'py>(
     d.set_item("trimmed_vertices", info.trimmed_vertices)?;
     d.set_item("patch_vertices", info.patch_vertices)?;
     d.set_item("plugs_rolled_back", info.plugs_rolled_back)?;
+    d.set_item("plugs_leaking", info.plugs_leaking)?;
+    d.set_item("plugs_double_wall", info.plugs_double_wall)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;

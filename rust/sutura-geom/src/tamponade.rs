@@ -173,6 +173,24 @@ const LOOP_BUDGET_PER_VERTEX_S: f64 = 0.10;
 /// Deviation gate against the reference surface (allows the curved patch).
 const REF_DEV_FACTOR: f64 = 3.0;
 
+// --- fast generalized winding (Barill et al. 2018, `SUTURA_TAMP_FWN`) -------
+/// Accuracy parameter of the fast winding approximation used for the min-cut's
+/// bulk queries.  `2` is the paper's reference default: nodes farther than two
+/// radii are collapsed to a dipole.  The `tag` decision thresholds (source
+/// `> 0.5`, sink `< 0.1`) are re-evaluated exactly within `FWN_REFINE_BAND`.
+pub const FWN_BETA: f64 = 2.0;
+/// Accuracy used for the cheap second pass on cells near a decision threshold.
+/// Much cheaper than the exact sum (far nodes are still aggregated) but orders
+/// of magnitude more accurate than `FWN_BETA`.
+pub const FWN_REFINE_BETA: f64 = 16.0;
+/// Half-width of the band around the `tag` thresholds (`0.1`, `0.5`) inside
+/// which the coarse winding is distrusted and sharpened with `FWN_REFINE_BETA`.
+pub const FWN_REFINE_BAND: f64 = 0.15;
+/// Half-width of the band around a `tag` threshold inside which even the
+/// sharpened value is replaced by the exact all-triangle sum, so the min-cut's
+/// cell classification is identical to the accurate path.
+pub const FWN_TIGHT_BAND: f64 = 0.005;
+
 #[derive(Clone, Debug)]
 pub struct TamponadeConfig {
     pub h_min: Option<f64>,
@@ -180,6 +198,10 @@ pub struct TamponadeConfig {
     pub max_nodes: Option<usize>,
     pub time_budget_s: Option<f64>,
     pub openings_gate: Option<bool>,
+    /// Use the fast generalized-winding approximation (Barill et al. 2018) for
+    /// the min-cut's bulk winding queries, refining exactly near a decision
+    /// threshold (`SUTURA_TAMP_FWN`).  Off keeps the accurate BVH winding.
+    pub fwn: bool,
 }
 
 impl Default for TamponadeConfig {
@@ -190,6 +212,7 @@ impl Default for TamponadeConfig {
             max_nodes: None,
             time_budget_s: None,
             openings_gate: None,
+            fwn: false,
         }
     }
 }
@@ -226,6 +249,11 @@ pub struct TamponadeInfo {
     pub patch_vertices: usize,
     /// Plugs rolled back by the final reload-honest "never worse" safety net.
     pub plugs_rolled_back: usize,
+    /// Plugs whose surface pokes outside the original solid (the leak gate).
+    pub plugs_leaking: usize,
+    /// Plugs rolled back for duplicating an existing (surviving) surface -- a
+    /// double wall (the coincidence gate).
+    pub plugs_double_wall: usize,
     pub seconds: f64,
     pub reason: String,
     /// One entry per boundary loop: its vertex count and the decision taken
@@ -915,6 +943,24 @@ fn throat_separates(
 ) -> CutVerdict {
     const TERM: f64 = 1.0e12;
 
+    // The `tag` decision thresholds (source `> 0.5`, sink `< 0.1`); the fast
+    // winding path refines exactly inside `FWN_REFINE_BAND` of either.
+    const TAG_THRESHOLDS: [f64; 2] = [0.1, 0.5];
+    let winding = |pts: &[[f64; 3]]| -> Vec<f64> {
+        if config.fwn {
+            bvh.winding_points_hybrid_par(
+                pts,
+                FWN_BETA,
+                FWN_REFINE_BETA,
+                &TAG_THRESHOLDS,
+                FWN_REFINE_BAND,
+                FWN_TIGHT_BAND,
+            )
+        } else {
+            bvh.winding_points_par(pts)
+        }
+    };
+
     let mut bbox = BBox::empty();
     for &v in loop_v {
         bbox.expand_point(verts[v as usize]);
@@ -1172,7 +1218,7 @@ fn throat_separates(
                     pts.push(cell_center(ix, iy, iz));
                 }
             }
-            let ws = bvh.winding_points_par(&pts);
+            let ws = winding(&pts);
             let mut k = 0usize;
             for iy in 0..ny {
                 for ix in 0..nx {
@@ -1230,7 +1276,7 @@ fn throat_separates(
         if deadline_passed(deadline) {
             return CutVerdict::Timeout;
         }
-        let ws = bvh.winding_points_par(&sample_pts);
+        let ws = winding(&sample_pts);
         let mut comp_tag: HashMap<usize, i8> = HashMap::new();
         let mut comp_bad: HashSet<usize> = HashSet::new();
         for k in 0..sample_idx.len() {
@@ -1272,8 +1318,12 @@ fn throat_separates(
         }
         // Unresolved components: exact per-cell evaluation, one z-slab at a
         // time so the intra-cut deadline also bounds the fallback.
+        let mut fallback_cells = 0usize;
         for iz in 0..nz {
             if deadline_passed(deadline) {
+                if prof {
+                    eprintln!("[tamp]     fallback timeout at slab {} cells={}", iz, fallback_cells);
+                }
                 return CutVerdict::Timeout;
             }
             let mut pts: Vec<[f64; 3]> = Vec::new();
@@ -1297,10 +1347,18 @@ fn throat_separates(
             if pts.is_empty() {
                 continue;
             }
-            let ws2 = bvh.winding_points_par(&pts);
+            let ws2 = winding(&pts);
+            fallback_cells += idxs.len();
             for (k, &idx) in idxs.iter().enumerate() {
                 cls[idx] = tag(ws2[k], border_of(idx));
             }
+        }
+        if prof && fallback_cells > 0 {
+            eprintln!(
+                "[tamp]     fallback cells={} winding_s={:.3}",
+                fallback_cells,
+                tw0.elapsed().as_secs_f64()
+            );
         }
     }
     let winding_s = tw0.elapsed().as_secs_f64();
@@ -3171,9 +3229,14 @@ pub struct ReloadVerdict {
 }
 
 impl ReloadVerdict {
-    /// True when `self` carries more structural damage than `base`.
+    /// True when `self` carries more structural damage than `base`. Boundary
+    /// EDGES are included (a plug that opens a hole is a regression on reload);
+    /// `boundary_loops` is deliberately excluded because its walk over the
+    /// non-manifold boundary graph is order-sensitive (nondeterministic across
+    /// processes) while the edge count is order-independent.
     fn worse_than(&self, base: &ReloadVerdict) -> bool {
-        self.nm_edges > base.nm_edges
+        self.boundary_edges > base.boundary_edges
+            || self.nm_edges > base.nm_edges
             || self.nm_vertices > base.nm_vertices
             || self.degenerate_faces > base.degenerate_faces
     }
@@ -3269,12 +3332,18 @@ pub fn reload_verdict(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> ReloadVerdict {
 }
 
 /// Count the boundary loops of a boundary-adjacency graph by walking every
-/// undirected boundary edge once.
+/// undirected boundary edge once. Keys and neighbour lists are walked in sorted
+/// order so the result is independent of `HashMap` iteration order (the graph
+/// can be non-manifold, where the walk order changes the loop count).
 fn reload_count_boundary_loops(adj: &HashMap<u32, Vec<u32>>) -> usize {
     let mut used: HashSet<(u32, u32)> = HashSet::new();
     let mut loops = 0usize;
-    for (&start, nbrs) in adj {
-        for &nb in nbrs {
+    let mut keys: Vec<u32> = adj.keys().copied().collect();
+    keys.sort_unstable();
+    for start in keys {
+        let mut nbrs = adj[&start].clone();
+        nbrs.sort_unstable();
+        for nb in nbrs {
             if !used.insert(reload_edge_key(start, nb)) {
                 continue;
             }
@@ -3284,7 +3353,9 @@ fn reload_count_boundary_loops(adj: &HashMap<u32, Vec<u32>>) -> usize {
             while cur != start {
                 let mut next: Option<u32> = None;
                 if let Some(cn) = adj.get(&cur) {
-                    for &m in cn {
+                    let mut cs = cn.clone();
+                    cs.sort_unstable();
+                    for &m in &cs {
                         if m == prev {
                             continue;
                         }
@@ -3361,6 +3432,11 @@ struct PlugRegion {
     /// Vertices this plug moved in place, each with its original position
     /// (captured before the move). Restored on rollback.
     moved: Vec<(u32, [f64; 3])>,
+    /// The hole aperture rim (original vertex indices): the GROUP/parent rim
+    /// the reference was fitted on, not the sealed sub-rim. Used by the leak
+    /// gate's aperture-footprint test so a reference fill that bulges over the
+    /// whole hole is not mistaken for a leak.
+    rim: Vec<u32>,
 }
 
 /// Reload verdict of the output with one plug region removed (vertices kept,
@@ -3605,6 +3681,10 @@ fn local_si_subset(
 /// plug's faces did not exist in the base mesh, so any positive value is a rise
 /// the reload verdict cannot see (a plug poking through a nearby sheet) and the
 /// plug is rolled back.
+///
+/// Superseded by the leak gate (`plug_leak`) in the adoption decision; kept for
+/// the unit tests and as the local-SI metric.
+#[allow(dead_code)]
 fn plug_local_si(
     verts: &[[f64; 3]],
     tris: &[[u32; 3]],
@@ -3638,6 +3718,11 @@ fn plug_local_si(
 /// Per-plug local self-intersection rollback mask: `true` for every plug whose
 /// new faces create a proper crossing with nearby tissue. One AABB grid is
 /// built for all plugs, so the scan is O(faces) once plus O(local) per plug.
+///
+/// No longer part of the adoption decision: self-intersections are report-only
+/// (slicers union overlapping volumes), replaced by the leak gate below. Kept
+/// for the unit tests and as the local-SI metric.
+#[allow(dead_code)]
 fn si_rollback_mask(
     verts: &[[f64; 3]],
     tris: &[[u32; 3]],
@@ -3651,6 +3736,351 @@ fn si_rollback_mask(
     regions
         .iter()
         .map(|region| plug_local_si(verts, tris, &grid, region, h) > 0)
+        .collect()
+}
+
+/// Tolerance of the plug leak gate: a plug sample that lies in empty space is
+/// treated as touching the original surface (accepted) when it is within this
+/// distance of it. Mirrors the CLI rule `clamp(diag/10000, 0.0125, 0.05)` mm.
+fn leak_tol(model_diag: f64) -> f64 {
+    (model_diag / 10_000.0).clamp(0.0125, 0.05)
+}
+
+/// True when `p` lies over the hole aperture: its projection onto the rim's
+/// best-fit plane is inside the rim polygon or within `tol` of its boundary.
+/// A reference/Steiner plug that fills a crater or bump sits over the aperture
+/// and is therefore not a leak, even though the missing region is outside the
+/// original solid.
+fn over_aperture(p: [f64; 3], rim_pts: &[[f64; 3]], tol: f64) -> bool {
+    let m = rim_pts.len();
+    if m < 3 {
+        return true; // degenerate rim: never reject on footprint
+    }
+    // Newell normal of the ordered loop (robust for a planar-ish rim).
+    let mut nrm = [0.0f64; 3];
+    for i in 0..m {
+        let a = rim_pts[i];
+        let b = rim_pts[(i + 1) % m];
+        nrm[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        nrm[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    let nl = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+    if nl < 1e-12 {
+        return true;
+    }
+    let nrm = [nrm[0] / nl, nrm[1] / nl, nrm[2] / nl];
+    // Orthonormal in-plane basis (u, v).
+    let mut u = if nrm[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let un = u[0] * nrm[0] + u[1] * nrm[1] + u[2] * nrm[2];
+    u = [u[0] - un * nrm[0], u[1] - un * nrm[1], u[2] - un * nrm[2]];
+    let ul = (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt();
+    if ul < 1e-12 {
+        return true;
+    }
+    u = [u[0] / ul, u[1] / ul, u[2] / ul];
+    let v = [
+        nrm[1] * u[2] - nrm[2] * u[1],
+        nrm[2] * u[0] - nrm[0] * u[2],
+        nrm[0] * u[1] - nrm[1] * u[0],
+    ];
+    let mut c = [0.0f64; 3];
+    for q in rim_pts {
+        c[0] += q[0];
+        c[1] += q[1];
+        c[2] += q[2];
+    }
+    let inv = 1.0 / m as f64;
+    let c = [c[0] * inv, c[1] * inv, c[2] * inv];
+    let to2d = |q: [f64; 3]| -> [f64; 2] {
+        let d = [q[0] - c[0], q[1] - c[1], q[2] - c[2]];
+        [
+            d[0] * u[0] + d[1] * u[1] + d[2] * u[2],
+            d[0] * v[0] + d[1] * v[1] + d[2] * v[2],
+        ]
+    };
+    let poly: Vec<[f64; 2]> = rim_pts.iter().map(|q| to2d(*q)).collect();
+    let pp = to2d(p);
+    // Ray-casting point-in-polygon.
+    let mut inside = false;
+    let mut j = m - 1;
+    for i in 0..m {
+        let (xi, yi) = (poly[i][0], poly[i][1]);
+        let (xj, yj) = (poly[j][0], poly[j][1]);
+        if (yi > pp[1]) != (yj > pp[1])
+            && pp[0] < (xj - xi) * (pp[1] - yi) / (yj - yi) + xi
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    if inside {
+        return true;
+    }
+    // Distance to the polygon boundary (in-plane), tolerant to `tol`.
+    let mut best = f64::INFINITY;
+    for i in 0..m {
+        let a = poly[i];
+        let b = poly[(i + 1) % m];
+        let abx = b[0] - a[0];
+        let aby = b[1] - a[1];
+        let apx = pp[0] - a[0];
+        let apy = pp[1] - a[1];
+        let denom = abx * abx + aby * aby;
+        let t = if denom > 1e-18 {
+            ((apx * abx + apy * aby) / denom).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let dx = apx - t * abx;
+        let dy = apy - t * aby;
+        let d = (dx * dx + dy * dy).sqrt();
+        if d < best {
+            best = d;
+        }
+    }
+    best <= tol
+}
+
+/// True when the segment `a`->`b` crosses the surface away from both ends (a
+/// crossing within `tol` of either endpoint is a grazing hit at the rim or the
+/// sample itself and is ignored).
+fn plug_pokes_wall(bvh: &MeshBvh, a: [f64; 3], b: [f64; 3], tol: f64) -> bool {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if len <= 2.0 * tol {
+        return false;
+    }
+    let dir = [d[0] / len, d[1] / len, d[2] / len];
+    let start = [a[0] + dir[0] * tol, a[1] + dir[1] * tol, a[2] + dir[2] * tol];
+    let max_t = len - 2.0 * tol;
+    bvh.intersect_ray(start, dir, max_t, 1e-9).crossings > 0
+}
+
+/// Leak test for one plug. Only the plug's NEW geometry is sampled: the
+/// vertices it appends (index >= `orig_nv`) and the original rim vertices it
+/// relocated (`region.moved`). A cap built purely from the existing rim cannot
+/// protrude, so it is never a leak. A sample is a leak when it lies in empty
+/// space (`w < 0.5`), is NOT over the hole aperture, and is farther than `tol`
+/// from the nearest original surface -- i.e. the plug pokes out through a wall
+/// into open space (material a slicer would print outside the model). Plug
+/// faces inside the solid, over the aperture, or touching existing geometry
+/// are accepted; self-intersections are ignored (slicers union overlapping
+/// volumes), so this replaces the former local-SI rejection.
+fn plug_leak(
+    orig_bvh: &MeshBvh,
+    orig_verts: &[[f64; 3]],
+    new_verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    region: &PlugRegion,
+    tol: f64,
+    orig_nv: usize,
+) -> bool {
+    if region.moved.is_empty() && region.tri_start >= tris.len() {
+        return false;
+    }
+    let rim_pts: Vec<[f64; 3]> = region
+        .rim
+        .iter()
+        .filter_map(|&v| orig_verts.get(v as usize).copied())
+        .collect();
+    let moved: HashSet<u32> = region.moved.iter().map(|(v, _)| *v).collect();
+    for f in region.tri_start..region.tri_end {
+        if f >= tris.len() {
+            break;
+        }
+        let t = tris[f];
+        for &v in &t {
+            let vi = v as usize;
+            // Only added vertices and relocated originals can protrude.
+            if vi < orig_nv && !moved.contains(&v) {
+                continue;
+            }
+            let p = match new_verts.get(vi) {
+                Some(p) => *p,
+                None => continue,
+            };
+            if orig_bvh.winding_at(p) >= 0.5 {
+                continue; // inside the solid
+            }
+            if over_aperture(p, &rim_pts, tol) {
+                continue; // bridging the hole
+            }
+            let (_q, d, _i) = orig_bvh.closest_point(p);
+            if d <= tol {
+                continue; // touching/grazing the original surface
+            }
+            // Outside the solid, not over the aperture and not touching it: a
+            // genuine leak only when the plug reaches it by crossing a wall
+            // from the hole rim (a bridge over the opening stays clear).
+            let mut best = f64::INFINITY;
+            let mut nearest: Option<[f64; 3]> = None;
+            for q in &rim_pts {
+                let dx = p[0] - q[0];
+                let dy = p[1] - q[1];
+                let dz = p[2] - q[2];
+                let d2 = dx * dx + dy * dy + dz * dz;
+                if d2 < best {
+                    best = d2;
+                    nearest = Some(*q);
+                }
+            }
+            if let Some(r) = nearest {
+                if plug_pokes_wall(orig_bvh, r, p, tol) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Per-plug leak mask: `true` for every plug region whose new surface pokes
+/// outside the original solid. The winding BVH is built once over the tier
+/// input and shared across regions.
+fn plug_leak_mask(
+    orig_bvh: &MeshBvh,
+    orig_verts: &[[f64; 3]],
+    new_verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    tol: f64,
+    orig_nv: usize,
+) -> Vec<bool> {
+    regions
+        .iter()
+        .map(|region| {
+            plug_leak(orig_bvh, orig_verts, new_verts, tris, region, tol, orig_nv)
+        })
+        .collect()
+}
+
+/// Normal of triangle `(a, b, c)`, zero for a degenerate face.
+fn tri_normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
+    [
+        (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+        (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+    ]
+}
+
+/// Cosine of the coincidence angle: a plug face whose normal is within this of
+/// an original face normal (either orientation) and whose centroid lies within
+/// `tol` of it duplicates that surface.
+const DOUBLE_WALL_COS: f64 = 0.9396926207859084; // cos(20 deg)
+/// Reject a plug as a double wall when more than this fraction of its new-face
+/// area duplicates an existing (surviving) surface.
+const DOUBLE_WALL_AREA_FRAC: f64 = 0.20;
+
+/// A plug is a double wall when more than `DOUBLE_WALL_AREA_FRAC` of its new
+/// face area coincides (centroid within `tol`, normal within 20 deg, either
+/// orientation) with an original input face. Such a plug overlays an existing
+/// surface sheet rather than closing an open hole; the WHOLE plug is rolled
+/// back (dropping individual faces would reopen the hole).
+fn plug_is_double_wall(
+    orig_bvh: &MeshBvh,
+    orig_verts: &[[f64; 3]],
+    orig_tris: &[[u32; 3]],
+    new_verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    region: &PlugRegion,
+    tol: f64,
+) -> bool {
+    let mut total_area = 0.0f64;
+    let mut coincident_area = 0.0f64;
+    for f in region.tri_start..region.tri_end {
+        if f >= tris.len() {
+            break;
+        }
+        let t = tris[f];
+        if t.iter().any(|&v| v as usize >= new_verts.len()) {
+            continue;
+        }
+        let a = new_verts[t[0] as usize];
+        let b = new_verts[t[1] as usize];
+        let c = new_verts[t[2] as usize];
+        let n = tri_normal(a, b, c);
+        let nl = norm3(n);
+        total_area += 0.5 * nl;
+        if nl < 1e-12 {
+            continue;
+        }
+        let centroid = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0,
+                        (a[2] + b[2] + c[2]) / 3.0];
+        let (_q, d, fi) = orig_bvh.closest_point(centroid);
+        if d >= tol || fi == usize::MAX {
+            continue;
+        }
+        let ot = orig_tris[fi];
+        if ot.iter().any(|&v| v as usize >= orig_verts.len()) {
+            continue;
+        }
+        let oa = orig_verts[ot[0] as usize];
+        let ob = orig_verts[ot[1] as usize];
+        let oc = orig_verts[ot[2] as usize];
+        let on = tri_normal(oa, ob, oc);
+        let onl = norm3(on);
+        if onl < 1e-12 {
+            continue;
+        }
+        // Perpendicular distance from the centroid to the ORIGINAL face plane.
+        let w = [centroid[0] - oa[0], centroid[1] - oa[1], centroid[2] - oa[2]];
+        let h = (w[0] * on[0] + w[1] * on[1] + w[2] * on[2]) / onl;
+        if h.abs() >= tol {
+            continue;
+        }
+        // The centroid must project INSIDE the original triangle: an adjacent
+        // coplanar rim face (sharing an edge) projects outside and is not a
+        // double wall.
+        let proj = [centroid[0] - h * on[0] / onl, centroid[1] - h * on[1] / onl,
+                    centroid[2] - h * on[2] / onl];
+        let v0 = [ob[0] - oa[0], ob[1] - oa[1], ob[2] - oa[2]];
+        let v1 = [oc[0] - oa[0], oc[1] - oa[1], oc[2] - oa[2]];
+        let v2 = [proj[0] - oa[0], proj[1] - oa[1], proj[2] - oa[2]];
+        let dot = |p: [f64; 3], q: [f64; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+        let d00 = dot(v0, v0);
+        let d01 = dot(v0, v1);
+        let d11 = dot(v1, v1);
+        let d20 = dot(v2, v0);
+        let d21 = dot(v2, v1);
+        let denom = d00 * d11 - d01 * d01;
+        if denom.abs() < 1e-18 {
+            continue;
+        }
+        let u = (d11 * d20 - d01 * d21) / denom;
+        let vv = (d00 * d21 - d01 * d20) / denom;
+        let inside = u >= -1e-4 && vv >= -1e-4 && u + vv <= 1.0 + 1e-4;
+        if !inside {
+            continue;
+        }
+        let cos = (n[0] * on[0] + n[1] * on[1] + n[2] * on[2]).abs() / (nl * onl);
+        if cos >= DOUBLE_WALL_COS {
+            coincident_area += 0.5 * nl;
+        }
+    }
+    total_area > 0.0 && coincident_area > DOUBLE_WALL_AREA_FRAC * total_area
+}
+
+/// Per-plug double-wall mask (see `plug_is_double_wall`).
+fn plug_double_wall_mask(
+    orig_bvh: &MeshBvh,
+    orig_verts: &[[f64; 3]],
+    orig_tris: &[[u32; 3]],
+    new_verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    regions: &[PlugRegion],
+    tol: f64,
+) -> Vec<bool> {
+    regions
+        .iter()
+        .map(|region| {
+            plug_is_double_wall(orig_bvh, orig_verts, orig_tris, new_verts, tris,
+                                region, tol)
+        })
         .collect()
 }
 
@@ -4430,6 +4860,7 @@ pub fn tamponade_repair(
                         reference: true,
                         steiner: n_added > 0,
                         moved: loop_moved.clone(),
+                        rim: group_rim.clone(),
                     });
                     plug_count += 1;
                     info.reference_used += 1;
@@ -4550,6 +4981,7 @@ pub fn tamponade_repair(
                                 reference: false,
                                 steiner: centre.is_some(),
                                 moved: loop_moved.clone(),
+                                rim: group_rim.clone(),
                             });
                             plug_count += 1;
                             info.loop_diag.push(format!(
@@ -4612,26 +5044,32 @@ pub fn tamponade_repair(
     // byte-for-byte, so the output can never be worse than the input.
     //
     // A reload regression is not the only way a plug can damage the mesh: a
-    // plug can poke through a nearby sheet and create a proper self
-    // intersection that leaves the topology unchanged, so the reload verdict
-    // cannot see it. For every plug the local self-intersection delta is also
-    // computed (`plug_local_si`: the new faces against the surrounding tissue
-    // within the plug AABB expanded by 2h); a plug that raises it is rolled
-    // back with the same machinery. The scan is O(local) per plug and the pass
-    // only writes when one of the checks fires, keeping the default path
-    // byte-identical.
+    // plug can poke through a nearby sheet. Self-intersections are NOT repaired
+    // here (slicers union overlapping volumes, so an interior crossing prints
+    // fine); what matters is material OUTSIDE the solid. The leak gate
+    // (`plug_leak_mask`) samples each plug against the ORIGINAL input's
+    // generalized winding number and drops a plug only when a sample lies in
+    // empty space farther than `leak_tol` from the nearest original surface
+    // (a real protrusion). SI stays report-only.
     let mut plugs_rolled_back = 0usize;
     if !plug_regions.is_empty() {
         let base = reload_verdict(verts, tris);
         let full = reload_verdict(&out_verts, &out_tris);
         let reload_regressed = full.worse_than(&base);
-        let si_drop = si_rollback_mask(&out_verts, &out_tris, &plug_regions, h);
-        if reload_regressed || si_drop.iter().any(|&d| d) {
+        let tol = leak_tol(model_diag);
+        let leak_drop = plug_leak_mask(
+            &bvh, verts, &out_verts, &out_tris, &plug_regions, tol, verts.len());
+        info.plugs_leaking = leak_drop.iter().filter(|&&d| d).count();
+        let dw_drop = plug_double_wall_mask(
+            &bvh, verts, tris, &out_verts, &out_tris, &plug_regions, tol);
+        info.plugs_double_wall = dw_drop.iter().filter(|&&d| d).count();
+        if reload_regressed || leak_drop.iter().any(|&d| d) || dw_drop.iter().any(|&d| d) {
             let mut drop = vec![false; plug_regions.len()];
             if reload_regressed {
                 for (ri, region) in plug_regions.iter().enumerate() {
                     let without = reload_verdict_without(&out_verts, &out_tris, region);
-                    if (without.nm_edges < full.nm_edges
+                    if (without.boundary_edges < full.boundary_edges
+                        || without.nm_edges < full.nm_edges
                         || without.nm_vertices < full.nm_vertices
                         || without.degenerate_faces < full.degenerate_faces)
                         && !without.worse_than(&base)
@@ -4641,10 +5079,17 @@ pub fn tamponade_repair(
                 }
             }
             for ri in 0..plug_regions.len() {
-                drop[ri] |= si_drop[ri];
+                drop[ri] |= leak_drop[ri];
+                drop[ri] |= dw_drop[ri];
             }
             let any = drop.iter().any(|&d| d);
-            let give_up = if any {
+            // When every plug region is dropped the tier must be a byte-exact
+            // no-op: the per-region path would still compact/re-index vertices
+            // (and could leave an overshoot trim in place), so take the full
+            // restore branch. The STL output was already geometry-identical;
+            // this makes the in-memory arrays identical too.
+            let all_dropped = drop.iter().all(|&d| d);
+            let give_up = all_dropped || if any {
                 // A per-plug fix whose fixed point still regresses is treated
                 // as un-attributeable and falls back to a full rollback.
                 reload_verdict_dropping(&out_verts, &out_tris, &plug_regions, &drop)
@@ -4681,10 +5126,11 @@ pub fn tamponade_repair(
             } else {
                 apply_region_rollback(&mut out_verts, &mut out_tris, &plug_regions, &drop);
             }
-            let si_fired = si_drop.iter().filter(|&&d| d).count();
+            let leak_fired = leak_drop.iter().filter(|&&d| d).count();
+            let dw_fired = dw_drop.iter().filter(|&&d| d).count();
             info.loop_diag.push(format!(
-                "rolled_back {} plug(s) ({} on self-intersection)",
-                plugs_rolled_back, si_fired
+                "rolled_back {} plug(s) ({} leaking, {} double-wall)",
+                plugs_rolled_back, leak_fired, dw_fired
             ));
         }
     }
@@ -5113,6 +5559,36 @@ mod tests {
                     "component vs per-cell verdict differ (h={}, rim={:?})",
                     h, rim
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn test_fwn_winding_matches_accurate_cut() {
+        // The fast generalized-winding path (SUTURA_TAMP_FWN) must yield the
+        // same cut verdict as the accurate BVH winding on the fixtures, i.e.
+        // the near-threshold exact refine makes the occupancy grid identical.
+        let (cube_v, cube_t) = unit_cube_open_top();
+        let (solid_v, solid_t) = unit_solid_cube();
+        let (sphere_v, sphere_t) = unit_sphere();
+        let fixtures: Vec<(Vec<[f64; 3]>, Vec<[u32; 3]>, Vec<u32>)> = vec![
+            (cube_v, cube_t, vec![4, 5, 6, 7]),
+            (solid_v, solid_t, vec![4, 5, 6, 7]),
+            (sphere_v, sphere_t, vec![0, 1, 2, 3, 4, 5]),
+        ];
+        let accurate = TamponadeConfig::default();
+        let mut fast = TamponadeConfig::default();
+        fast.fwn = true;
+        for (verts, tris, rim) in fixtures {
+            let idx: Vec<[usize; 3]> = tris
+                .iter()
+                .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+                .collect();
+            let bvh = MeshBvh::from_arrays(&verts, &idx);
+            for &h in &[0.05_f64, 0.2_f64] {
+                let a = throat_separates(&verts, &rim, h, 1.0, &bvh, &accurate, false, None);
+                let f = throat_separates(&verts, &rim, h, 1.0, &bvh, &fast, false, None);
+                assert_eq!(a, f, "fwn vs accurate verdict differ (h={}, rim={:?})", h, rim);
             }
         }
     }
@@ -5598,7 +6074,7 @@ mod tests {
         let base = reload_verdict(&verts, &tris[..2]);
         let full = reload_verdict(&verts, &tris);
         // The third triangle is the "plug" region.
-        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new() };
+        let region = PlugRegion { tri_start: 2, tri_end: 3, reference: false, steiner: false, moved: Vec::new(), rim: Vec::new() };
         let without = reload_verdict_without(&verts, &tris, &region);
         assert!(
             without.nm_edges < full.nm_edges && !without.worse_than(&base),
@@ -5665,6 +6141,7 @@ mod tests {
             reference: false,
             steiner: false,
             moved: Vec::new(),
+            rim: Vec::new(),
         };
         (verts, tris, region)
     }
@@ -5698,6 +6175,7 @@ mod tests {
             reference: false,
             steiner: false,
             moved: Vec::new(),
+            rim: Vec::new(),
         };
 
         let regions = [poking, clean];
@@ -5744,6 +6222,7 @@ mod tests {
             reference: true,
             steiner: true,
             moved: vec![(3, [0.5, 0.5, 0.05])],
+            rim: Vec::new(),
         };
         let mut ov = verts.clone();
         let mut ot = tris.clone();
@@ -5756,6 +6235,114 @@ mod tests {
         assert!(
             ov.iter().any(|v| (v[2] - 0.05).abs() < 1e-9),
             "restored position missing: {ov:?}"
+        );
+    }
+
+    // ---- leak gate (replaces the local-SI adoption rejection) ------------
+
+    #[test]
+    fn leak_gate_flags_only_a_plug_outside_the_solid() {
+        // Closed unit cube; a plug triangle either sits inside the solid, is a
+        // cap over the top opening (over the aperture), or floats laterally in
+        // open space.
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![
+            [0, 2, 1], [0, 3, 2],
+            [4, 5, 6], [4, 6, 7],
+            [0, 1, 5], [0, 5, 4],
+            [1, 2, 6], [1, 6, 5],
+            [2, 3, 7], [2, 7, 6],
+            [3, 0, 4], [3, 4, 7],
+        ];
+        let idx: Vec<[usize; 3]> =
+            tris.iter().map(|t| [t[0] as usize, t[1] as usize, t[2] as usize]).collect();
+        let bvh = MeshBvh::from_arrays(&verts, &idx);
+        let tol = leak_tol(2.0); // small cube -> 0.0125 floor
+        assert!(tol >= 0.0125);
+        let rim = vec![4u32, 5, 6, 7]; // top opening
+
+        let probe = |pt: [f64; 3]| -> bool {
+            let mut nv = verts.clone();
+            nv.push(pt);
+            nv.push([pt[0] + 0.05, pt[1], pt[2]]);
+            nv.push([pt[0], pt[1] + 0.05, pt[2]]);
+            let t = vec![[8u32, 9, 10]];
+            let region = PlugRegion {
+                tri_start: 0,
+                tri_end: 1,
+                reference: false,
+                steiner: true,
+                moved: Vec::new(),
+                rim: rim.clone(),
+            };
+            plug_leak(&bvh, &verts, &nv, &t, &region, tol, 8)
+        };
+
+        assert!(!probe([0.5, 0.5, 0.5]), "an interior plug must not leak");
+        assert!(
+            !probe([0.5, 0.5, 1.5]),
+            "a cap over the aperture must not leak"
+        );
+        // A true leak reaches a point by CROSSING a wall, which `plug_pokes_wall`
+        // detects; a point merely outside the hole is not a leak on its own.
+        assert!(
+            plug_pokes_wall(&bvh, [0.5, 0.5, 1.0], [0.5, 0.5, -1.0], tol),
+            "a segment through the solid must be a wall crossing"
+        );
+        assert!(
+            !plug_pokes_wall(&bvh, [0.5, 0.5, 1.0], [0.5, 0.5, 2.0], tol),
+            "a segment clear of the solid must not cross a wall"
+        );
+    }
+
+    #[test]
+    fn double_wall_gate_flags_a_plug_over_existing_surface() {
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0],
+        ];
+        let tris: Vec<[u32; 3]> = vec![
+            [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4],
+            [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7],
+        ];
+        let idx: Vec<[usize; 3]> =
+            tris.iter().map(|t| [t[0] as usize, t[1] as usize, t[2] as usize]).collect();
+        let bvh = MeshBvh::from_arrays(&verts, &idx);
+        let tol = leak_tol(2.0);
+
+        // A plug face coincident with the existing top face (double wall).
+        let mut dup = verts.clone();
+        dup.push([0.0, 0.0, 1.0]);
+        dup.push([1.0, 0.0, 1.0]);
+        dup.push([1.0, 1.0, 1.0]);
+        let dup_tris = vec![[8u32, 9, 10]];
+        let region = PlugRegion {
+            tri_start: 0, tri_end: 1, reference: false, steiner: true,
+            moved: Vec::new(), rim: Vec::new(),
+        };
+        assert!(
+            plug_is_double_wall(&bvh, &verts, &tris, &dup, &dup_tris, &region, tol),
+            "a coincident plug face must be a double wall"
+        );
+
+        // A plug face floating clear of the surface is not a double wall.
+        let mut free = verts.clone();
+        free.push([0.0, 0.0, 5.0]);
+        free.push([1.0, 0.0, 5.0]);
+        free.push([1.0, 1.0, 5.0]);
+        let free_tris = vec![[8u32, 9, 10]];
+        assert!(
+            !plug_is_double_wall(&bvh, &verts, &tris, &free, &free_tris, &region, tol),
+            "a floating plug face must not be a double wall"
         );
     }
 
