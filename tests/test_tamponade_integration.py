@@ -300,10 +300,26 @@ def test_tier_adopts_si_only_improvement():
     print('ok  tier adopts an SI-only improvement (C2)')
 
 
+def _subset_si_available():
+    """Whether the Rust subset SI counter the prepass prefers is importable.
+
+    The CI Python jobs install the engine without building ``sutura_geom``, so
+    the tier correctly falls back to the full exact scan there; local venvs
+    with the extension take the local subset path. The test covers both."""
+    try:
+        import sutura_geom
+    except Exception:
+        return False
+    return getattr(sutura_geom, 'self_intersections_subset', None) is not None
+
+
 def test_prepass_uses_local_si_guard_not_full_scan():
     # The prepass must not pay for a full exact-SI scan on the pre-tier mesh or
-    # on the candidate: it compares only the faces the seal changed (the Rust
-    # subset counter) and reports si_method='local'.
+    # on the candidate WHEN the Rust subset counter is available: it compares
+    # only the faces the seal changed and reports si_method='local'. Without the
+    # extension (`_local_si_rise` returns used=False) the tier must fall back to
+    # the full exact scan of both meshes and report si_method='full'; this is
+    # the environment the CI Python jobs run in, so both branches are asserted.
     calls = {'n': 0}
     real = repair._exact_si_face_count
     repair._exact_si_face_count = lambda v, t: calls.__setitem__(
@@ -321,10 +337,21 @@ def test_prepass_uses_local_si_guard_not_full_scan():
         tamp.run_tamponade = _REAL_RUN_TAMPONADE
         repair._exact_si_face_count = real
     assert rec['ran'] is True, rec
-    assert rec['si_method'] == 'local', rec
-    assert rec['base_local_si'] is not None and rec['cand_local_si'] is not None, rec
-    assert calls['n'] == 0, calls
-    print('ok  prepass uses the local SI guard (no full exact-SI scan)')
+    if _subset_si_available():
+        assert rec['si_method'] == 'local', rec
+        assert (rec['base_local_si'] is not None
+                and rec['cand_local_si'] is not None), rec
+        assert calls['n'] == 0, calls
+        print('ok  prepass uses the local SI guard (no full exact-SI scan)')
+    else:
+        # No extension: the full scan runs once on the base and once on the
+        # candidate (the candidate is only scanned when the base scan returns a
+        # count, not None).
+        assert rec['si_method'] == 'full', rec
+        assert (rec['input_self_intersections'] is not None
+                and rec['candidate_self_intersections'] is not None), rec
+        assert calls['n'] == 2, calls
+        print('ok  prepass falls back to the full exact scan without the extension')
 
 
 def test_prepass_budget_zero_skips():

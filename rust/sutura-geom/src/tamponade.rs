@@ -7863,6 +7863,13 @@ mod tests {
         assert_eq!(boundary_edge_count(&out_tris), 0);
     }
 
+    /// Absolute path to a committed synthetic STL fixture, resolved relative to
+    /// the crate root (`tests/fixtures/`) so the tests never depend on files
+    /// under `/tmp`, which CI does not have.
+    fn fixture(name: &str) -> String {
+        format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name)
+    }
+
     fn read_stl_u32(path: &str) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
         let data = std::fs::read(path).expect("read STL");
         let n = u32::from_le_bytes(data[80..84].try_into().unwrap()) as usize;
@@ -7889,7 +7896,7 @@ mod tests {
 
     #[test]
     fn test_a6_case1_open_cup_stays_open() {
-        let path = "/tmp/v074/agy/a6-fixtures/case1_open_cup.stl";
+        let path = &fixture("case1_open_cup.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             openings_gate: Some(true),
@@ -7903,7 +7910,7 @@ mod tests {
 
     #[test]
     fn test_a6_case2_pipe_stays_open() {
-        let path = "/tmp/v074/agy/a6-fixtures/case2_pipe.stl";
+        let path = &fixture("case2_pipe.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             openings_gate: Some(true),
@@ -7917,7 +7924,7 @@ mod tests {
 
     #[test]
     fn test_a6_case3_broken_cup_seals_puncture_only() {
-        let path = "/tmp/v074/agy/a6-fixtures/case3_broken_cup.stl";
+        let path = &fixture("case3_broken_cup.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             openings_gate: Some(true),
@@ -7931,7 +7938,7 @@ mod tests {
 
     #[test]
     fn test_a6_case4_cracked_sphere_seals() {
-        let path = "/tmp/v074/agy/a6-fixtures/case4_cracked_sphere.stl";
+        let path = &fixture("case4_cracked_sphere.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             openings_gate: Some(true),
@@ -7943,7 +7950,7 @@ mod tests {
 
     #[test]
     fn test_a6_case5_box_missing_face_seals() {
-        let path = "/tmp/v074/agy/a6-fixtures/case5_box_missing_face.stl";
+        let path = &fixture("case5_box_missing_face.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             openings_gate: Some(true),
@@ -7955,7 +7962,7 @@ mod tests {
 
     #[test]
     fn test_a6_case6_thin_cup_stays_open() {
-        let path = "/tmp/v074/agy/a6-fixtures/case6_thin_cup.stl";
+        let path = &fixture("case6_thin_cup.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             openings_gate: Some(true),
@@ -8072,7 +8079,7 @@ mod tests {
 
     #[test]
     fn test_stent_crater_fixture_used() {
-        let path = "/tmp/v074/go/fixtures-v2/plate_a_dent.stl";
+        let path = &fixture("plate_a_dent.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             h_min: Some(0.5),
@@ -8090,7 +8097,7 @@ mod tests {
         // (it would lift rim vertices onto a reference the Stent never
         // validated). The plate_a_dent cap has to stay at or below the input's
         // top surface.
-        let path = "/tmp/v074/go/fixtures-v2/plate_a_dent.stl";
+        let path = &fixture("plate_a_dent.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             h_min: Some(0.5),
@@ -8147,7 +8154,7 @@ mod tests {
     #[test]
     fn test_stent_kept_open_cup_stays_open() {
         // An intentional opening must never be revisited by the stent.
-        let path = "/tmp/v074/agy/a6-fixtures/case1_open_cup.stl";
+        let path = &fixture("case1_open_cup.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             openings_gate: Some(true),
@@ -8162,7 +8169,7 @@ mod tests {
     fn test_stent_metrics_json_reports_stent() {
         // The per-plug metrics report is a valid JSON array and tags an adopted
         // stent with method "stent" (the standard numeric plug report).
-        let path = "/tmp/v074/go/fixtures-v2/plate_a_dent.stl";
+        let path = &fixture("plate_a_dent.stl");
         let (v, t) = read_stl_u32(path);
         let config = TamponadeConfig {
             h_min: Some(0.5),
