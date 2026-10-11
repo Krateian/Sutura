@@ -200,8 +200,35 @@ def test_fallback_when_kernel_missing():
     print('fallback OK (missing kernel -> numpy oracle)')
 
 
+def test_re_orient_parity():
+    v, t = _cube()
+    t_inv = t.copy()
+    t_inv[1] = [t_inv[1, 1], t_inv[1, 0], t_inv[1, 2]]
+
+    out_np = topology._re_orient_faces_coherently_numpy(t_inv)
+    if topology._has_rust('re_orient_faces_coherently'):
+        out_rs = topology._geom.re_orient_faces_coherently(t_inv)
+        assert np.array_equal(out_np, out_rs), f"mismatch: np=\n{out_np}\nrs=\n{out_rs}"
+
+    t_nm = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=np.int64)
+    np_err = None
+    try:
+        topology._re_orient_faces_coherently_numpy(t_nm)
+    except Exception as e:
+        np_err = type(e)
+    rs_err = None
+    if topology._has_rust('re_orient_faces_coherently'):
+        try:
+            topology._geom.re_orient_faces_coherently(t_nm)
+        except Exception as e:
+            rs_err = type(e)
+        assert np_err == rs_err == ValueError
+    print('re_orient_faces_coherently parity OK (Rust == numpy oracle, bit-for-bit)')
+
+
 def main():
     test_parity()
+    test_re_orient_parity()
     test_fallback_when_kernel_missing()
     topology.set_engine('auto')
     print('topology parity tests passed')

@@ -420,6 +420,10 @@ def apply_chain(ms, chain):
             elif name == 'meshing_invert_face_orientation':
                 _invert_faces_ms(ms, ml)
                 handled = True
+            elif name == 'meshing_re_orient_faces_coherently':
+                if topology.native_orient_enabled():
+                    _re_orient_faces_ms(ms, ml)
+                    handled = True
 
             if not handled:
                 ms.apply_filter(name, **params)
@@ -460,6 +464,17 @@ def _invert_faces_ms(ms, ml):
         ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
     except Exception:
         ms.apply_filter('meshing_invert_face_orientation')
+
+
+def _re_orient_faces_ms(ms, ml):
+    """Re-orient faces coherently on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.re_orient_faces_coherently(t)
+    if not np.array_equal(t_new, t):
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
 
 
 def extreme_extra_passes(ms, ml, params):

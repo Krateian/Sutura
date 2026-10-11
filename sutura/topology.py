@@ -238,6 +238,56 @@ def _invert_face_orientation_numpy(tris):
     return t[:, [1, 0, 2]]
 
 
+def _re_orient_faces_coherently_numpy(tris):
+    t = np.asarray(tris, dtype=np.int64)
+    nf = len(t)
+    if nf == 0:
+        return t
+    from collections import deque
+    edge_to_faces = {}
+    for fi, tri in enumerate(t):
+        if tri[0] == tri[1] or tri[1] == tri[2] or tri[2] == tri[0]:
+            raise ValueError("Mesh has some not 2-manifold faces, Orientability requires manifoldness")
+        for i in range(3):
+            e = (min(tri[i], tri[(i + 1) % 3]), max(tri[i], tri[(i + 1) % 3]))
+            edge_to_faces.setdefault(e, []).append(fi)
+
+    for flist in edge_to_faces.values():
+        if len(flist) > 2:
+            raise ValueError("Mesh has some not 2-manifold faces, Orientability requires manifoldness")
+
+    out = t.copy()
+    visited = np.zeros(nf, dtype=bool)
+    for start_f in range(nf):
+        if visited[start_f]:
+            continue
+        visited[start_f] = True
+        queue = deque([start_f])
+        while queue:
+            curr = queue.popleft()
+            curr_tri = out[curr]
+            for k in range(3):
+                a, b = curr_tri[k], curr_tri[(k + 1) % 3]
+                e = (min(a, b), max(a, b))
+                for nxt in edge_to_faces.get(e, []):
+                    if visited[nxt]:
+                        continue
+                    nxt_tri = out[nxt]
+                    pos_a = -1
+                    pos_b = -1
+                    for idx in range(3):
+                        if nxt_tri[idx] == a:
+                            pos_a = idx
+                        if nxt_tri[idx] == b:
+                            pos_b = idx
+                    if pos_a != -1 and pos_b != -1 and (pos_a + 1) % 3 == pos_b:
+                        nxt_tri[pos_a], nxt_tri[pos_b] = nxt_tri[pos_b], nxt_tri[pos_a]
+                        out[nxt] = nxt_tri
+                    visited[nxt] = True
+                    queue.append(nxt)
+    return out
+
+
 def _mesh_topology_numpy(verts, tris):
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int64)
@@ -641,6 +691,24 @@ def invert_face_orientation(tris):
     return _invert_face_orientation_numpy(t)
 
 
+def re_orient_faces_coherently(tris):
+    """Re-orient faces coherently across manifold edges.
+
+    Matching VCGLib meshing_re_orient_faces_coherently.
+    """
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) <= 1:
+        return t
+    if _has_rust('re_orient_faces_coherently'):
+        try:
+            return _geom.re_orient_faces_coherently(t)
+        except Exception:
+            raise
+    return _re_orient_faces_coherently_numpy(t)
+
+
 def mesh_topology(verts, tris):
     """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures)."""
     v = np.ascontiguousarray(verts, dtype=np.float32)
@@ -665,6 +733,17 @@ def native_si_enabled():
     sutura_geom rather than PyMeshLab's VCGLib filter.
     """
     env = os.environ.get('SUTURA_NATIVE_SI', '').strip().lower()
+    return env in ('1', 'true', 'yes', 'on')
+
+
+def native_orient_enabled():
+    """Return True if native coherent face reorientation is enabled.
+
+    Controlled by environment variable ``SUTURA_NATIVE_ORIENT`` (default OFF: 0/false).
+    When enabled, coherent face winding propagation uses native dual-graph BFS via
+    sutura_geom rather than PyMeshLab's VCGLib filter.
+    """
+    env = os.environ.get('SUTURA_NATIVE_ORIENT', '').strip().lower()
     return env in ('1', 'true', 'yes', 'on')
 
 
@@ -902,9 +981,11 @@ __all__ = [
     'remove_unreferenced_vertices',
     'remove_connected_components',
     'invert_face_orientation',
+    're_orient_faces_coherently',
     'mesh_topology',
     'connected_components',
     'native_si_enabled',
+    'native_orient_enabled',
     'self_intersecting_faces',
     'select_self_intersections_ms',
     'clear_bvh_cache',

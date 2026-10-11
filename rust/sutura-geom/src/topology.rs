@@ -554,6 +554,122 @@ pub fn invert_face_orientation<'py>(
     Ok(rows_to_array2_i64(py, &out))
 }
 
+/// Re-orient faces coherently across manifold edges (matching VCGLib / PyMeshLab meshing_re_orient_faces_coherently).
+///
+/// Propagates orientation across adjacent faces sharing a 2-manifold edge via BFS on each
+/// connected component. If any edge has >2 incident faces or a degenerate face exists, returns
+/// an error matching VCGLib contract ("Mesh has some not 2-manifold faces, Orientability requires manifoldness").
+#[derive(Debug, PartialEq, Eq)]
+pub enum TopologyError {
+    NonManifold,
+}
+
+#[pyfunction]
+#[pyo3(signature = (tris))]
+pub fn re_orient_faces_coherently<'py>(
+    py: Python<'py>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let trows = read_i64_rows(&tris)?;
+    let out = re_orient_faces_coherently_core(&trows).map_err(|e| match e {
+        TopologyError::NonManifold => PyValueError::new_err(
+            "Mesh has some not 2-manifold faces, Orientability requires manifoldness",
+        ),
+    })?;
+    Ok(rows_to_array2_i64(py, &out))
+}
+
+pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3]>, TopologyError> {
+    let nf = trows.len();
+    if nf == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut half_edges: Vec<((i64, i64), usize, i64, i64)> = Vec::with_capacity(3 * nf);
+    for (f_idx, tri) in trows.iter().enumerate() {
+        if tri[0] == tri[1] || tri[1] == tri[2] || tri[2] == tri[0] {
+            return Err(TopologyError::NonManifold);
+        }
+        half_edges.push((canon(tri[0], tri[1]), f_idx, tri[0], tri[1]));
+        half_edges.push((canon(tri[1], tri[2]), f_idx, tri[1], tri[2]));
+        half_edges.push((canon(tri[2], tri[0]), f_idx, tri[2], tri[0]));
+    }
+    half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let mut adj: Vec<Vec<(usize, i64, i64)>> = vec![Vec::new(); nf];
+
+    let mut i = 0;
+    while i < half_edges.len() {
+        let mut j = i + 1;
+        while j < half_edges.len() && half_edges[j].0 == half_edges[i].0 {
+            j += 1;
+        }
+        let count = j - i;
+        if count > 2 {
+            return Err(TopologyError::NonManifold);
+        }
+        if count == 2 {
+            let f1 = half_edges[i].1;
+            let f2 = half_edges[i + 1].1;
+            if f1 != f2 {
+                let (u, v) = half_edges[i].0;
+                adj[f1].push((f2, u, v));
+                adj[f2].push((f1, u, v));
+            }
+        }
+        i = j;
+    }
+
+    let mut out: Vec<[i64; 3]> = trows.to_vec();
+    let mut visited = vec![false; nf];
+    let mut queue = std::collections::VecDeque::new();
+
+    for start_f in 0..nf {
+        if visited[start_f] {
+            continue;
+        }
+        visited[start_f] = true;
+        queue.push_back(start_f);
+
+        while let Some(curr) = queue.pop_front() {
+            let curr_tri = out[curr];
+            // Explore in cyclic edge order of curr_tri
+            for k in 0..3 {
+                let a = curr_tri[k];
+                let b = curr_tri[(k + 1) % 3];
+                let e_canon = canon(a, b);
+                for &(nxt, u, v) in &adj[curr] {
+                    if (u, v) != e_canon {
+                        continue;
+                    }
+                    if visited[nxt] {
+                        continue;
+                    }
+                    // In curr_tri, directed edge is a -> b
+                    let nxt_tri = out[nxt];
+                    let mut pos_a = usize::MAX;
+                    let mut pos_b = usize::MAX;
+                    for idx in 0..3 {
+                        if nxt_tri[idx] == a { pos_a = idx; }
+                        if nxt_tri[idx] == b { pos_b = idx; }
+                    }
+                    if pos_a != usize::MAX && pos_b != usize::MAX {
+                        if (pos_a + 1) % 3 == pos_b {
+                            // nxt also has a -> b (same direction). Incoherent across edge!
+                            // Swap pos_a and pos_b to invert nxt
+                            out[nxt].swap(pos_a, pos_b);
+                        }
+                    }
+                    visited[nxt] = true;
+                    queue.push_back(nxt);
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 /// Complete topological measures of a triangle mesh (matching VCGLib / PyMeshLab get_topological_measures).
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
@@ -952,5 +1068,30 @@ mod tests {
         assert_eq!(ds.find(0), ds.find(1));
         assert_eq!(ds.find(2), ds.find(4));
         assert_ne!(ds.find(0), ds.find(2));
+    }
+
+    #[test]
+    fn test_re_orient_faces_coherently_two_triangles() {
+        // Two triangles sharing edge (1, 2)
+        // f0: [0, 1, 2], edge is 1 -> 2
+        // f1: [3, 1, 2], edge is 1 -> 2 (incoherent)
+        let t = vec![[0, 1, 2], [3, 1, 2]];
+        let res = re_orient_faces_coherently_core(&t).unwrap();
+        assert_eq!(res[0], [0, 1, 2]);
+        assert_eq!(res[1], [3, 2, 1]); // swapped 1 and 2
+    }
+
+    #[test]
+    fn test_re_orient_faces_coherently_non_manifold_error() {
+        // 3 triangles sharing edge (0, 1)
+        let t = vec![[0, 1, 2], [0, 1, 3], [0, 1, 4]];
+        assert!(re_orient_faces_coherently_core(&t).is_err());
+    }
+
+    #[test]
+    fn test_re_orient_faces_coherently_degenerate_error() {
+        // Degenerate triangle [0, 0, 1]
+        let t = vec![[0, 0, 1], [0, 1, 2]];
+        assert!(re_orient_faces_coherently_core(&t).is_err());
     }
 }
