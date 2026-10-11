@@ -20,6 +20,13 @@ other agents must read them before starting:
   navigation (`graphify query`, `graphify update .` after commits), worker
   discipline, shape-based validation, product defaults, git hygiene.
 - `.claude/skills/sutura-release/SKILL.md` — the full release checklist.
+- `.claude/skills/sutura-verify/SKILL.md` — independent shape-based
+  verification of any repair change (default vs opt-out: holes, non-manifold,
+  components/shells, Orca parts+manifold, two-sided distance, leak, runtime);
+  the harness lives in its `scripts/`.
+- `.claude/skills/sutura-new-method/SKILL.md` — the end-to-end checklist for
+  adding a repair method (registry, CLI flag + env opt-out, GUI checkbox +
+  tooltip EN/TR + Use-method menu, packaging lists, CI-safe tests, READMEs).
 
 When a rule changes, edit the skill file; do not duplicate it here.
 
