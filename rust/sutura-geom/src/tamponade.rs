@@ -1761,6 +1761,17 @@ impl ReferenceSurface {
             self.origin[2] + su * self.u[2] + sv * self.v[2] + h * self.n[2],
         ]
     }
+
+    /// The local frame `(origin, u, v, n)` (Flap's projected-patch candidate).
+    pub(crate) fn frame(&self) -> ([f64; 3], [f64; 3], [f64; 3], [f64; 3]) {
+        (self.origin, self.u, self.v, self.n)
+    }
+
+    /// In-plane coordinates `(u, v)` of `p` in the reference frame.
+    pub(crate) fn uv(&self, p: [f64; 3]) -> (f64, f64) {
+        let d = [p[0] - self.origin[0], p[1] - self.origin[1], p[2] - self.origin[2]];
+        (dot3(d, self.u), dot3(d, self.v))
+    }
 }
 
 /// Vertex->face and edge->face adjacency of the input mesh, built once.

@@ -302,6 +302,224 @@ fn patch_safety(
     (true, "")
 }
 
+/// Wrap a 2-D point for the `robust` exact predicates.
+#[inline]
+fn coord2(p: [f64; 2]) -> robust::Coord<f64> {
+    robust::Coord { x: p[0], y: p[1] }
+}
+
+/// Signed area (x2) of a 2-D polygon.
+fn poly_area2(poly: &[[f64; 2]]) -> f64 {
+    let n = poly.len();
+    let mut a = 0.0;
+    for i in 0..n {
+        let j = (i + 1) % n;
+        a += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
+    }
+    a
+}
+
+/// True when point `p` lies on segment `a`-`b` (assumed collinear).
+fn on_seg(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
+    p[0] >= a[0].min(b[0]) - 1e-12
+        && p[0] <= a[0].max(b[0]) + 1e-12
+        && p[1] >= a[1].min(b[1]) - 1e-12
+        && p[1] <= a[1].max(b[1]) + 1e-12
+}
+
+/// Any shared point of segments `a`-`b` and `c`-`d` (exact `orient2d`).
+fn seg_intersect(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let o1 = robust::orient2d(coord2(a), coord2(b), coord2(c));
+    let o2 = robust::orient2d(coord2(a), coord2(b), coord2(d));
+    let o3 = robust::orient2d(coord2(c), coord2(d), coord2(a));
+    let o4 = robust::orient2d(coord2(c), coord2(d), coord2(b));
+    if ((o1 > 0.0) != (o2 > 0.0)) && o1 != 0.0 && o2 != 0.0 && ((o3 > 0.0) != (o4 > 0.0)) && o3 != 0.0
+        && o4 != 0.0
+    {
+        return true;
+    }
+    if o1 == 0.0 && on_seg(a, b, c) {
+        return true;
+    }
+    if o2 == 0.0 && on_seg(a, b, d) {
+        return true;
+    }
+    if o3 == 0.0 && on_seg(c, d, a) {
+        return true;
+    }
+    if o4 == 0.0 && on_seg(c, d, b) {
+        return true;
+    }
+    false
+}
+
+/// True when the closed polygon has no self-crossing (non-adjacent edges must
+/// not share any point).
+fn polygon_simple(poly: &[[f64; 2]]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        for j in (i + 1)..n {
+            let c = poly[j];
+            let d = poly[(j + 1) % n];
+            // adjacent edges share a vertex -- allowed
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                continue;
+            }
+            if seg_intersect(a, b, c, d) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Point-in-triangle (allowing boundary) via exact `orient2d`.
+fn point_in_tri(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
+    let d1 = robust::orient2d(coord2(a), coord2(b), coord2(p));
+    let d2 = robust::orient2d(coord2(b), coord2(c), coord2(p));
+    let d3 = robust::orient2d(coord2(c), coord2(a), coord2(p));
+    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(neg && pos)
+}
+
+/// Ear-clip a simple polygon (CCW forced), skipping ears whose new diagonal is
+/// in `forbidden` (a chord that already has a face).  Returns `None` on failure.
+fn ear_clip(poly: &[[f64; 2]], forbidden: &HashSet<(u32, u32)>) -> Option<Vec<[u32; 3]>> {
+    let n = poly.len();
+    if n < 3 {
+        return None;
+    }
+    let mut idx: Vec<usize> = (0..n).collect();
+    if poly_area2(poly) < 0.0 {
+        idx.reverse();
+    }
+    let mut tris: Vec<[u32; 3]> = Vec::with_capacity(n.saturating_sub(2));
+    let mut guard = 0usize;
+    while idx.len() > 3 {
+        guard += 1;
+        if guard > n * n + 4 {
+            return None;
+        }
+        let k = idx.len();
+        let mut clipped = false;
+        for i in 0..k {
+            let ia = idx[(i + k - 1) % k];
+            let ib = idx[i];
+            let ic = idx[(i + 1) % k];
+            if forbidden.contains(&ekey(ia as u32, ic as u32)) {
+                continue;
+            }
+            let (a, b, c) = (poly[ia], poly[ib], poly[ic]);
+            if robust::orient2d(coord2(a), coord2(b), coord2(c)) <= 0.0 {
+                continue;
+            }
+            let mut empty = true;
+            for &j in &idx {
+                if j == ia || j == ib || j == ic {
+                    continue;
+                }
+                if point_in_tri(poly[j], a, b, c) {
+                    empty = false;
+                    break;
+                }
+            }
+            if empty {
+                tris.push([ia as u32, ib as u32, ic as u32]);
+                idx.remove(i);
+                clipped = true;
+                break;
+            }
+        }
+        if !clipped {
+            return None;
+        }
+    }
+    tris.push([idx[0] as u32, idx[1] as u32, idx[2] as u32]);
+    Some(tris)
+}
+
+/// A frame `(origin, u, v)` from the rim's Newell normal (fallback plane).
+fn newell_frame(rim: &[V3]) -> Option<([f64; 3], [f64; 3], [f64; 3])> {
+    let m = rim.len();
+    if m < 3 {
+        return None;
+    }
+    let mut n = [0.0f64; 3];
+    for i in 0..m {
+        let a = rim[i];
+        let b = rim[(i + 1) % m];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    if norm(n) < 1e-20 {
+        return None;
+    }
+    let n = [n[0] / norm(n), n[1] / norm(n), n[2] / norm(n)];
+    let refv = if n[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let mut u = cross(refv, n);
+    let ul = norm(u);
+    if ul < 1e-20 {
+        return None;
+    }
+    u = [u[0] / ul, u[1] / ul, u[2] / ul];
+    let v = cross(n, u);
+    let mut o = [0.0f64; 3];
+    for p in rim {
+        o[0] += p[0] / m as f64;
+        o[1] += p[1] / m as f64;
+        o[2] += p[2] / m as f64;
+    }
+    Some((o, u, v))
+}
+
+/// SI-free projected patch: project the rim into a reference frame (Tamponade's
+/// fitted ReferenceSurface, else the rim's Newell plane), require the projected
+/// polygon to be simple, ear-clip it in 2-D, and return the patch using the
+/// ORIGINAL rim positions.  A piecewise-linear graph over the projection plane
+/// cannot self-intersect, so the result is SI-free by construction.  `None`
+/// when the projected polygon is not simple (the caller gives up).
+fn projected_patch(
+    v2: &[V3],
+    t2: &[T3],
+    loop_arr: &[u32],
+    target: f64,
+    adj: Option<&crate::tamponade::Adjacency>,
+    forbidden: &HashSet<(u32, u32)>,
+) -> Option<(Vec<V3>, Vec<[u32; 3]>)> {
+    let m = loop_arr.len();
+    if m < 3 {
+        return None;
+    }
+    let rim: Vec<V3> = loop_arr.iter().map(|&i| v2[i as usize]).collect();
+    let frame = match adj.and_then(|a| crate::tamponade::build_reference(v2, t2, loop_arr, target, a)) {
+        Some(r) => {
+            let (o, u, v, _n) = r.frame();
+            (o, u, v)
+        }
+        None => newell_frame(&rim)?,
+    };
+    let (o, u_ax, v_ax) = frame;
+    let poly: Vec<[f64; 2]> = rim
+        .iter()
+        .map(|p| {
+            let d = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+            [dot(d, u_ax), dot(d, v_ax)]
+        })
+        .collect();
+    if !polygon_simple(&poly) {
+        return None;
+    }
+    let tris = ear_clip(&poly, forbidden)?;
+    Some((rim, tris))
+}
+
 #[derive(Clone)]
 pub struct FlapParams {
     pub refine: bool,
@@ -829,7 +1047,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 (base + (i - m)) as u32
             }
         };
-        let gfaces: Vec<T3> = faces
+        let mut gfaces: Vec<T3> = faces
             .iter()
             .map(|f| [gmap(f[0] as usize), gmap(f[1] as usize), gmap(f[2] as usize)])
             .collect();
@@ -837,23 +1055,20 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             .map(|i| (loop_arr[i], loop_arr[(i + 1) % m]))
             .collect();
 
-        // Per-loop candidate selection (SUTURA_FLAP_SELECT): try thin-plate,
-        // then membrane, REF and the unfaired refined patch, committing the
-        // first that passes the zero-volume / coplanar / safety / normal-
-        // deviation guards, so a loop the thin-plate fold guard rejects can
-        // still be filled cleanly instead of falling to Stage-1.
+        // Per-loop candidate selection (SUTURA_FLAP_SELECT): thin-plate (accepted
+        // like the default), then membrane, REF, the unfaired refined patch and a
+        // projected SI-free patch; the first that passes the zero-volume /
+        // coplanar / safety guards is committed.  A loop no candidate can fill
+        // safely falls to Stage-1.
         if select && p_prefair.is_some() {
             let base = p_prefair.as_ref().unwrap();
-            // `primary` = the thin-plate patch, accepted exactly like the
-            // default path (no safety), so SELECT is never worse than default;
-            // the alternatives additionally need the per-loop safety.
-            let ok = |p: &[V3], primary: bool| -> bool {
+            let cand_ok = |p: &[V3], fc: &[[u32; 3]], gf: &[T3], primary: bool| -> bool {
                 if let Some(fi) = fi_opt {
                     let comp = stats.lab[fi as usize] as usize;
                     if nloops_c[comp] == 1 {
                         let mut vp = 0.0f64;
                         let mut ap = 0.0f64;
-                        for f in &faces {
+                        for f in fc {
                             let (a, b, c) =
                                 (p[f[0] as usize], p[f[1] as usize], p[f[2] as usize]);
                             vp += dot(a, cross(b, c)) / 6.0;
@@ -869,7 +1084,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 if prm.avoid_coplanar
                     && guard::coplanar_collides(
                         p,
-                        &faces,
+                        fc,
                         &[],
                         &extra_ref,
                         prm.coplanar_frac,
@@ -879,20 +1094,19 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                     return false;
                 }
                 if !primary {
-                    let (safe, _why) = patch_safety(&out_v, &out_t, &p[m..], &gfaces, &rim_edges);
+                    let (safe, _why) = patch_safety(&out_v, &out_t, &p[m..], gf, &rim_edges);
                     if !safe {
                         return false;
                     }
                 }
                 true
             };
-            // Candidate 0 is the current (thin-plate) patch, accepted like the
-            // default; then membrane, REF and the unfaired refined patch.
-            let mut cands: Vec<(Vec<V3>, bool)> = vec![(p_pts.clone(), true)];
+            let mut cands: Vec<(Vec<V3>, Vec<[u32; 3]>, Vec<T3>, bool)> =
+                vec![(p_pts.clone(), faces.clone(), gfaces.clone(), true)];
             {
                 let mut c = base.clone();
                 fair::fair_patch_energy(&mut c, &faces, m, &ghost, 1, None, 0.0);
-                cands.push((c, false));
+                cands.push((c, faces.clone(), gfaces.clone(), false));
             }
             if ref_on {
                 if let Some(adj) = adj_ref.as_ref() {
@@ -907,21 +1121,43 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                                 &mut c, &faces, m, &ghost, 1, Some(&data), 2.0,
                             );
                         }
-                        cands.push((c, false));
+                        cands.push((c, faces.clone(), gfaces.clone(), false));
                     }
                 }
             }
-            cands.push((base.clone(), false));
-            let mut chosen: Option<Vec<V3>> = None;
-            for (c, primary) in cands {
-                if ok(&c, primary) {
-                    chosen = Some(c);
+            cands.push((base.clone(), faces.clone(), gfaces.clone(), false));
+            // Projected SI-free patch: independent (ear-clipped) faces.
+            if let Some((pp, pf)) =
+                projected_patch(&v2, &t2, loop_arr, target, adj_ref.as_ref(), &forb)
+            {
+                let base2 = out_v.len();
+                let gf2: Vec<T3> = pf
+                    .iter()
+                    .map(|f| {
+                        let g = |i: u32| -> u32 {
+                            if (i as usize) < m {
+                                loop_arr[i as usize]
+                            } else {
+                                (base2 + (i as usize - m)) as u32
+                            }
+                        };
+                        [g(f[0]), g(f[1]), g(f[2])]
+                    })
+                    .collect();
+                cands.push((pp, pf, gf2, false));
+            }
+            let mut chosen: Option<(Vec<V3>, Vec<[u32; 3]>, Vec<T3>)> = None;
+            for (c, fc, gf, primary) in cands {
+                if cand_ok(&c, &fc, &gf, primary) {
+                    chosen = Some((c, fc, gf));
                     break;
                 }
             }
             match chosen {
-                Some(c) => {
+                Some((c, fc, gf)) => {
                     p_pts = c;
+                    faces = fc;
+                    gfaces = gf;
                 }
                 None => {
                     report.loops_skipped_coplanar += 1;
