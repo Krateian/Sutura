@@ -18,6 +18,7 @@ is non-finite, the numpy path is used transparently.  ``SUTURA_TOPOLOGY=python``
 stdlib + numpy only, by design: importable wherever ``defects.py`` is.
 """
 import os
+import time
 import numpy as np
 
 try:  # optional native acceleration
@@ -61,6 +62,7 @@ _RUST_FNS = (
     'remove_connected_components',
     'invert_face_orientation',
     'mesh_topology',
+    'self_intersecting_faces',
 )
 
 
@@ -379,6 +381,93 @@ def _mesh_topology_numpy(verts, tris):
     }
 
 
+def _tri_tri_intersect_clean(v1, v2):
+    """Möller clean-room triangle-triangle proper transversal intersection test."""
+    e1 = v1[1] - v1[0]
+    e2 = v1[2] - v1[0]
+    n1 = np.cross(e1, e2)
+    d1 = -np.dot(n1, v1[0])
+
+    dv2 = [np.dot(n1, v2[k]) + d1 for k in range(3)]
+    if (dv2[0] > 1e-12 and dv2[1] > 1e-12 and dv2[2] > 1e-12) or (dv2[0] < -1e-12 and dv2[1] < -1e-12 and dv2[2] < -1e-12):
+        return False
+    if any(abs(x) <= 1e-12 for x in dv2):
+        return False
+
+    f1 = v2[1] - v2[0]
+    f2 = v2[2] - v2[0]
+    n2 = np.cross(f1, f2)
+    d2 = -np.dot(n2, v2[0])
+
+    dv1 = [np.dot(n2, v1[k]) + d2 for k in range(3)]
+    if (dv1[0] > 1e-12 and dv1[1] > 1e-12 and dv1[2] > 1e-12) or (dv1[0] < -1e-12 and dv1[1] < -1e-12 and dv1[2] < -1e-12):
+        return False
+    if any(abs(x) <= 1e-12 for x in dv1):
+        return False
+
+    D = np.cross(n1, n2)
+    len_D2 = np.dot(D, D)
+    if len_D2 < 1e-24:
+        return False
+
+    def get_interval(v, dv):
+        pts = []
+        for i in range(3):
+            j = (i + 1) % 3
+            if dv[i] * dv[j] < 0:
+                t = dv[i] / (dv[i] - dv[j])
+                pt = v[i] + t * (v[j] - v[i])
+                pts.append(np.dot(pt, D))
+        if len(pts) != 2:
+            return None
+        return min(pts), max(pts)
+
+    i1 = get_interval(v1, dv1)
+    i2 = get_interval(v2, dv2)
+    if i1 is None or i2 is None:
+        return False
+    t0 = max(i1[0], i2[0])
+    t1 = min(i1[1], i2[1])
+    return (t1 - t0) > 1e-9
+
+
+def _self_intersecting_faces_numpy(verts, tris, max_faces=5000, timeout_s=60.0):
+    """Pure-NumPy fallback oracle for self-intersecting face detection.
+
+    Bounded to max_faces (default 5,000) and timeout_s (default 60s) to guard
+    against O(N^2) hangs. For larger or timed-out meshes, returns (all-false mask, -1).
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    n_faces = len(t)
+    if n_faces < 2:
+        return np.zeros(n_faces, dtype=bool), 0
+    if n_faces > max_faces:
+        return np.zeros(n_faces, dtype=bool), -1
+    t_start = time.perf_counter()
+    mask = np.zeros(n_faces, dtype=bool)
+    mins = np.min(v[t], axis=1)
+    maxs = np.max(v[t], axis=1)
+    for i in range(n_faces):
+        if i % 100 == 0 and (time.perf_counter() - t_start) > timeout_s:
+            return np.zeros(n_faces, dtype=bool), -1
+        ti = t[i]
+        bmin_i = mins[i]
+        bmax_i = maxs[i]
+        overlap = (bmax_i[0] >= mins[i+1:, 0]) & (bmin_i[0] <= maxs[i+1:, 0]) & \
+                  (bmax_i[1] >= mins[i+1:, 1]) & (bmin_i[1] <= maxs[i+1:, 1]) & \
+                  (bmax_i[2] >= mins[i+1:, 2]) & (bmin_i[2] <= maxs[i+1:, 2])
+        cand_indices = np.where(overlap)[0] + (i + 1)
+        for j in cand_indices:
+            tj = t[j]
+            if ti[0] in tj or ti[1] in tj or ti[2] in tj:
+                continue
+            if _tri_tri_intersect_clean(v[ti], v[tj]):
+                mask[i] = True
+                mask[j] = True
+    return mask, int(mask.sum())
+
+
 # --- public API ----------------------------------------------------------- #
 def edge_table(tris):
     """Unique undirected edges, per-edge use counts and half-edge inverse.
@@ -568,6 +657,153 @@ def mesh_topology(verts, tris):
     return _mesh_topology_numpy(v, t)
 
 
+def native_si_enabled():
+    """Return True if native self-intersection detection is enabled.
+
+    Controlled by environment variable ``SUTURA_NATIVE_SI`` (default OFF: 0/false).
+    When enabled, self-intersection queries use exact geometric predicates via
+    sutura_geom rather than PyMeshLab's VCGLib filter.
+    """
+    env = os.environ.get('SUTURA_NATIVE_SI', '').strip().lower()
+    return env in ('1', 'true', 'yes', 'on')
+
+
+# Session BVH and SI cache to avoid redundant builds when geometry is unchanged
+_BVH_CACHE = {
+    'verts_ref': None,
+    'tris_ref': None,
+    'verts_ptr': None,
+    'tris_ptr': None,
+    'verts_shape': None,
+    'tris_shape': None,
+    'v_sample': None,
+    't_sample': None,
+    'bvh': None,
+    'mask': None,
+    'count': None,
+}
+
+
+def clear_bvh_cache():
+    """Clear cached BVH and SI results."""
+    _BVH_CACHE['verts_ref'] = None
+    _BVH_CACHE['tris_ref'] = None
+    _BVH_CACHE['verts_ptr'] = None
+    _BVH_CACHE['tris_ptr'] = None
+    _BVH_CACHE['verts_shape'] = None
+    _BVH_CACHE['tris_shape'] = None
+    _BVH_CACHE['v_sample'] = None
+    _BVH_CACHE['t_sample'] = None
+    _BVH_CACHE['bvh'] = None
+    _BVH_CACHE['mask'] = None
+    _BVH_CACHE['count'] = None
+
+
+def self_intersecting_faces(verts, tris, bvh=None):
+    """Detect self-intersecting faces using exact geometric predicates.
+
+    Returns (mask, count) where mask is a boolean numpy array of length len(tris)
+    and count is the number of flagged faces (or -1 if skipped due to size limits).
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float64)
+    t = np.ascontiguousarray(tris, dtype=np.int32)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) < 2:
+        return np.zeros(len(t), dtype=bool), 0
+
+    if bvh is None:
+        v_ptr = v.__array_interface__['data'][0]
+        t_ptr = t.__array_interface__['data'][0]
+        is_hit = False
+        if verts is _BVH_CACHE['verts_ref'] and tris is _BVH_CACHE['tris_ref']:
+            is_hit = True
+        elif (
+            v_ptr == _BVH_CACHE['verts_ptr']
+            and t_ptr == _BVH_CACHE['tris_ptr']
+            and v.shape == _BVH_CACHE['verts_shape']
+            and t.shape == _BVH_CACHE['tris_shape']
+            and _BVH_CACHE['mask'] is not None
+        ):
+            if (
+                _BVH_CACHE['v_sample'] is not None
+                and _BVH_CACHE['t_sample'] is not None
+                and np.array_equal(v[:min(4, len(v))], _BVH_CACHE['v_sample'])
+                and np.array_equal(t[:min(4, len(t))], _BVH_CACHE['t_sample'])
+            ):
+                is_hit = True
+
+        if is_hit and _BVH_CACHE['mask'] is not None and len(_BVH_CACHE['mask']) == len(t):
+            return _BVH_CACHE['mask'].copy(), _BVH_CACHE['count']
+
+    if _has_rust('self_intersecting_faces'):
+        try:
+            if bvh is not None:
+                if hasattr(bvh, 'self_intersecting_faces'):
+                    return bvh.self_intersecting_faces()
+                return _geom.self_intersecting_faces(v, t, bvh=bvh)
+
+            new_bvh = None
+            if hasattr(_geom, 'PyMeshBvh'):
+                try:
+                    new_bvh = _geom.PyMeshBvh(v, t)
+                except Exception:
+                    new_bvh = None
+
+            if new_bvh is not None and hasattr(new_bvh, 'self_intersecting_faces'):
+                mask, count = new_bvh.self_intersecting_faces()
+            else:
+                mask, count = _geom.self_intersecting_faces(v, t)
+
+            _BVH_CACHE['verts_ref'] = verts
+            _BVH_CACHE['tris_ref'] = tris
+            _BVH_CACHE['verts_ptr'] = v.__array_interface__['data'][0]
+            _BVH_CACHE['tris_ptr'] = t.__array_interface__['data'][0]
+            _BVH_CACHE['verts_shape'] = v.shape
+            _BVH_CACHE['tris_shape'] = t.shape
+            _BVH_CACHE['v_sample'] = v[:min(4, len(v))].copy()
+            _BVH_CACHE['t_sample'] = t[:min(4, len(t))].copy()
+            _BVH_CACHE['bvh'] = new_bvh
+            _BVH_CACHE['mask'] = mask
+            _BVH_CACHE['count'] = count
+            return mask, count
+        except Exception:
+            pass
+    return _self_intersecting_faces_numpy(v, t)
+
+
+def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
+    """Select self-intersecting faces in MeshSet in-place.
+
+    When SUTURA_NATIVE_SI is enabled, computes the mask via native exact
+    predicates and applies it to the MeshSet. Otherwise delegates to
+    PyMeshLab's 'compute_selection_by_self_intersections_per_face'.
+
+    Returns (mask, count).
+    """
+    if not native_si_enabled():
+        ms.apply_filter('compute_selection_by_self_intersections_per_face')
+        res_mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
+        return res_mask, int(res_mask.sum())
+
+    m = ms.current_mesh()
+    if mask is None or count is None:
+        v = m.vertex_matrix()
+        t = m.face_matrix()
+        mask, count = self_intersecting_faces(v, t)
+
+    try:
+        ms.apply_filter('set_selection_none')
+        if count > 0:
+            m.add_face_custom_scalar_attribute(mask.astype(np.float64), '_native_si')
+            ms.apply_filter('compute_selection_by_condition_per_face', condselect='_native_si > 0.5')
+    except Exception:
+        pass
+    return mask, int(count)
+
+
 def connected_components(graph=None, *, directed=False, connection='weak',
                          return_labels=True, n_nodes=None, edges=None):
     """Connected components of an undirected graph.
@@ -668,6 +904,10 @@ __all__ = [
     'invert_face_orientation',
     'mesh_topology',
     'connected_components',
+    'native_si_enabled',
+    'self_intersecting_faces',
+    'select_self_intersections_ms',
+    'clear_bvh_cache',
     'engine',
     'set_engine',
 ]

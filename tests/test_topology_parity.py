@@ -98,6 +98,15 @@ def _run_all(topo_engine):
         rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
         inv_t = topology.invert_face_orientation(t)
         topo_dict = topology.mesh_topology(v, t)
+        if len(t) <= 5000:
+            si_mask, si_cnt = topology.self_intersecting_faces(v, t)
+            si_entry = (si_mask.tobytes(), int(si_cnt))
+        else:
+            if topo_engine == 'rust':
+                si_mask, si_cnt = topology.self_intersecting_faces(v, t)
+                si_entry = (si_mask.tobytes(), int(si_cnt))
+            else:
+                si_entry = None
         results.append({
             'edge_table': (e.tobytes(), c.tobytes(), inv.tobytes()),
             'weld_vertices': (uv.tobytes(), uinv.tobytes()),
@@ -114,6 +123,7 @@ def _run_all(topo_engine):
             'remove_connected_components': (rcc_v.tobytes(), rcc_t.tobytes()),
             'invert_face_orientation': inv_t.tobytes(),
             'mesh_topology': json.dumps(topo_dict, sort_keys=True),
+            'self_intersecting_faces': si_entry,
         })
     return results
 
@@ -125,8 +135,20 @@ def test_parity():
     py = _run_all('python')
     rs = _run_all('rust')
     assert len(py) == len(rs)
+    all_m = _meshes()
     for i, (a, b) in enumerate(zip(py, rs)):
         for key in a:
+            if key == 'self_intersecting_faces' and a[key] is None:
+                # Big mesh: bounded oracle skipped pure-Python O(N^2); verify native Rust matches sutura_geom directly
+                v, t = all_m[i]
+                b_mask, b_cnt = b[key]
+                v_f64 = np.ascontiguousarray(v, dtype=np.float64)
+                t_i32 = np.ascontiguousarray(t, dtype=np.int32)
+                exp_mask, exp_cnt = topology._geom.self_intersecting_faces(v_f64, t_i32)
+                assert b_mask == exp_mask.tobytes() and b_cnt == int(exp_cnt), (
+                    'mismatch on big mesh %d vs sutura_geom' % i
+                )
+                continue
             assert a[key] == b[key], (
                 'parity mismatch on mesh %d key %s\npython=%r\nrust=%r'
                 % (i, key, a[key], b[key]))
@@ -169,6 +191,9 @@ def test_fallback_when_kernel_missing():
             assert inv_t.tobytes() == topology._invert_face_orientation_numpy(t).tobytes()
             topo_dict = topology.mesh_topology(v, t)
             assert topo_dict == topology._mesh_topology_numpy(v, t)
+            si_mask, si_cnt = topology.self_intersecting_faces(v, t)
+            exp_si_mask, exp_si_cnt = topology._self_intersecting_faces_numpy(v, t)
+            assert si_mask.tobytes() == exp_si_mask.tobytes() and si_cnt == exp_si_cnt
     finally:
         topology._geom = saved
         topology.set_engine('auto')

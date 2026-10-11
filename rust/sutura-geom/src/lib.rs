@@ -269,21 +269,39 @@ fn parse_mesh(
     }
     let n = vv.nrows();
     let mut rust_verts: Vec<[f64; 3]> = Vec::with_capacity(n);
-    for i in 0..n {
-        rust_verts.push([vv[[i, 0]], vv[[i, 1]], vv[[i, 2]]]);
+    if let Some(s) = vv.as_slice() {
+        rust_verts.extend(s.chunks_exact(3).map(|c| [c[0], c[1], c[2]]));
+    } else {
+        for i in 0..n {
+            rust_verts.push([vv[[i, 0]], vv[[i, 1]], vv[[i, 2]]]);
+        }
     }
     let m = tt.nrows();
     let mut rust_tris: Vec<[usize; 3]> = Vec::with_capacity(m);
-    for i in 0..m {
-        let (a, b, c) = (tt[[i, 0]], tt[[i, 1]], tt[[i, 2]]);
-        if a < 0 || b < 0 || c < 0 {
-            return Err(PyValueError::new_err("triangle index out of range"));
+    if let Some(s) = tt.as_slice() {
+        for c in s.chunks_exact(3) {
+            let (a, b, c) = (c[0], c[1], c[2]);
+            if a < 0 || b < 0 || c < 0 {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            let (a, b, c) = (a as usize, b as usize, c as usize);
+            if a >= n || b >= n || c >= n {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            rust_tris.push([a, b, c]);
         }
-        let (a, b, c) = (a as usize, b as usize, c as usize);
-        if a >= n || b >= n || c >= n {
-            return Err(PyValueError::new_err("triangle index out of range"));
+    } else {
+        for i in 0..m {
+            let (a, b, c) = (tt[[i, 0]], tt[[i, 1]], tt[[i, 2]]);
+            if a < 0 || b < 0 || c < 0 {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            let (a, b, c) = (a as usize, b as usize, c as usize);
+            if a >= n || b >= n || c >= n {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            rust_tris.push([a, b, c]);
         }
-        rust_tris.push([a, b, c]);
     }
     Ok((rust_verts, rust_tris))
 }
@@ -944,14 +962,19 @@ fn closest_points<'py>(
 /// Returns `(mask, count)` where `count` is the number of flagged faces, or
 /// `-1` when the mesh exceeds `SI_MAX_FACES` (the classifier is skipped).
 #[pyfunction]
-#[pyo3(signature = (verts, tris))]
+#[pyo3(signature = (verts, tris, bvh = None))]
 fn self_intersecting_faces<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    bvh: Option<&PyMeshBvh>,
 ) -> PyResult<(Bound<'py, PyArray1<bool>>, i64)> {
+    if let Some(b) = bvh {
+        return b.self_intersecting_faces(py);
+    }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
-    let (mask, count, _skipped) = self_intersections_core(&rv, &rt);
+    let b = winding::MeshBvh::from_arrays(&rv, &rt);
+    let (mask, count, _skipped) = b.self_intersections(&rv, &rt);
     Ok((PyArray1::from_vec(py, mask), count))
 }
 
@@ -1177,6 +1200,8 @@ fn raystab_grid<'py>(
 #[pyclass]
 pub struct PyMeshBvh {
     inner: winding::MeshBvh,
+    verts: Vec<[f64; 3]>,
+    tris: Vec<[usize; 3]>,
 }
 
 #[pymethods]
@@ -1187,9 +1212,21 @@ impl PyMeshBvh {
         tris: PyArrayLike2<'_, i32, AllowTypeChange>,
     ) -> PyResult<Self> {
         let (rv, rt) = parse_mesh(&verts, &tris)?;
+        let inner = winding::MeshBvh::from_arrays(&rv, &rt);
         Ok(Self {
-            inner: winding::MeshBvh::from_arrays(&rv, &rt),
+            inner,
+            verts: rv,
+            tris: rt,
         })
+    }
+
+    /// Self-intersecting face scan querying this BVH: `(mask, count)`.
+    fn self_intersecting_faces<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyArray1<bool>>, i64)> {
+        let (mask, count, _skipped) = self.inner.self_intersections(&self.verts, &self.tris);
+        Ok((PyArray1::from_vec(py, mask), count))
     }
 
     /// Generalized winding number at a single `(x, y, z)` point.
