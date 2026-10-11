@@ -934,7 +934,44 @@ fn orient3d_f64(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
 }
 
 #[inline]
-fn triangles_have_proper_segment(v1: &[[f64; 3]; 3], v2: &[[f64; 3]; 3]) -> bool {
+fn moller_interval(v: &[[f64; 3]; 3], d: [f64; 3], dir: [f64; 3]) -> (f64, f64) {
+    let p = [
+        v[0][0] * dir[0] + v[0][1] * dir[1] + v[0][2] * dir[2],
+        v[1][0] * dir[0] + v[1][1] * dir[1] + v[1][2] * dir[2],
+        v[2][0] * dir[0] + v[2][1] * dir[1] + v[2][2] * dir[2],
+    ];
+    let s0 = d[0] > 0.0;
+    let s1 = d[1] > 0.0;
+    let s2 = d[2] > 0.0;
+    let (t0, t1) = if s0 == s1 {
+        let denom0 = d[0] - d[2];
+        let denom1 = d[1] - d[2];
+        let frac0 = if denom0.abs() > 1e-15 { d[0] / denom0 } else { 0.5 };
+        let frac1 = if denom1.abs() > 1e-15 { d[1] / denom1 } else { 0.5 };
+        (p[0] + (p[2] - p[0]) * frac0, p[1] + (p[2] - p[1]) * frac1)
+    } else if s0 == s2 {
+        let denom0 = d[0] - d[1];
+        let denom2 = d[2] - d[1];
+        let frac0 = if denom0.abs() > 1e-15 { d[0] / denom0 } else { 0.5 };
+        let frac2 = if denom2.abs() > 1e-15 { d[2] / denom2 } else { 0.5 };
+        (p[0] + (p[1] - p[0]) * frac0, p[2] + (p[1] - p[2]) * frac2)
+    } else {
+        let denom1 = d[1] - d[0];
+        let denom2 = d[2] - d[0];
+        let frac1 = if denom1.abs() > 1e-15 { d[1] / denom1 } else { 0.5 };
+        let frac2 = if denom2.abs() > 1e-15 { d[2] / denom2 } else { 0.5 };
+        (p[1] + (p[0] - p[1]) * frac1, p[2] + (p[0] - p[2]) * frac2)
+    };
+    if t0 < t1 { (t0, t1) } else { (t1, t0) }
+}
+
+#[inline]
+fn triangles_have_proper_segment(
+    v1: &[[f64; 3]; 3],
+    v2: &[[f64; 3]; 3],
+    p1: &[f64; 4],
+    p2: &[f64; 4],
+) -> bool {
     let s0 = orient3d_f64(v1[0], v1[1], v1[2], v2[0]);
     if s0 == 0.0 {
         return false;
@@ -965,6 +1002,24 @@ fn triangles_have_proper_segment(v1: &[[f64; 3]; 3], v2: &[[f64; 3]; 3]) -> bool
     }
     if (t0 > 0.0 && t1 > 0.0 && t2 > 0.0) || (t0 < 0.0 && t1 < 0.0 && t2 < 0.0) {
         return false;
+    }
+
+    let d_dir = [
+        p1[1] * p2[2] - p1[2] * p2[1],
+        p1[2] * p2[0] - p1[0] * p2[2],
+        p1[0] * p2[1] - p1[1] * p2[0],
+    ];
+    let len_sq = d_dir[0] * d_dir[0] + d_dir[1] * d_dir[1] + d_dir[2] * d_dir[2];
+    if len_sq > 1e-22 {
+        let i1 = moller_interval(v1, [t0, t1, t2], d_dir);
+        let i2 = moller_interval(v2, [s0, s1, s2], d_dir);
+        let overlap = i1.1.min(i2.1) - i1.0.max(i2.0);
+        if overlap > 1e-7 {
+            return true;
+        }
+        if overlap < -1e-7 {
+            return false;
+        }
     }
 
     let t1 = crate::triangle_intersection::Triangle::explicit(v1[0], v1[1], v1[2]);
@@ -1016,7 +1071,7 @@ fn test_leaf_pair(
                 if tri_tri_disjoint_float_filter(p1, p2, &v1, &v2) {
                     continue;
                 }
-                if triangles_have_proper_segment(&v1, &v2) {
+                if triangles_have_proper_segment(&v1, &v2, p1, p2) {
                     mask[i].store(true, std::sync::atomic::Ordering::Relaxed);
                     mask[j].store(true, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -1051,7 +1106,7 @@ fn test_leaf_pair(
                 if tri_tri_disjoint_float_filter(p1, p2, &v1, &v2) {
                     continue;
                 }
-                if triangles_have_proper_segment(&v1, &v2) {
+                if triangles_have_proper_segment(&v1, &v2, p1, p2) {
                     mask[i].store(true, std::sync::atomic::Ordering::Relaxed);
                     mask[j].store(true, std::sync::atomic::Ordering::Relaxed);
                 }
@@ -1091,38 +1146,6 @@ fn tri_tri_disjoint_float_filter(
     let len_sq = d_dir[0] * d_dir[0] + d_dir[1] * d_dir[1] + d_dir[2] * d_dir[2];
     if len_sq < 1e-22 {
         return true;
-    }
-
-    #[inline]
-    fn moller_interval(v: &[[f64; 3]; 3], d: [f64; 3], dir: [f64; 3]) -> (f64, f64) {
-        let p = [
-            v[0][0] * dir[0] + v[0][1] * dir[1] + v[0][2] * dir[2],
-            v[1][0] * dir[0] + v[1][1] * dir[1] + v[1][2] * dir[2],
-            v[2][0] * dir[0] + v[2][1] * dir[1] + v[2][2] * dir[2],
-        ];
-        let s0 = d[0] > 0.0;
-        let s1 = d[1] > 0.0;
-        let s2 = d[2] > 0.0;
-        let (t0, t1) = if s0 == s1 {
-            let denom0 = d[0] - d[2];
-            let denom1 = d[1] - d[2];
-            let frac0 = if denom0.abs() > 1e-15 { d[0] / denom0 } else { 0.5 };
-            let frac1 = if denom1.abs() > 1e-15 { d[1] / denom1 } else { 0.5 };
-            (p[0] + (p[2] - p[0]) * frac0, p[1] + (p[2] - p[1]) * frac1)
-        } else if s0 == s2 {
-            let denom0 = d[0] - d[1];
-            let denom2 = d[2] - d[1];
-            let frac0 = if denom0.abs() > 1e-15 { d[0] / denom0 } else { 0.5 };
-            let frac2 = if denom2.abs() > 1e-15 { d[2] / denom2 } else { 0.5 };
-            (p[0] + (p[1] - p[0]) * frac0, p[2] + (p[1] - p[2]) * frac2)
-        } else {
-            let denom1 = d[1] - d[0];
-            let denom2 = d[2] - d[0];
-            let frac1 = if denom1.abs() > 1e-15 { d[1] / denom1 } else { 0.5 };
-            let frac2 = if denom2.abs() > 1e-15 { d[2] / denom2 } else { 0.5 };
-            (p[1] + (p[0] - p[1]) * frac1, p[2] + (p[0] - p[2]) * frac2)
-        };
-        if t0 < t1 { (t0, t1) } else { (t1, t0) }
     }
 
     let i1 = moller_interval(v1, [d1_0, d1_1, d1_2], d_dir);

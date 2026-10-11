@@ -267,21 +267,39 @@ fn parse_mesh(
     }
     let n = vv.nrows();
     let mut rust_verts: Vec<[f64; 3]> = Vec::with_capacity(n);
-    for i in 0..n {
-        rust_verts.push([vv[[i, 0]], vv[[i, 1]], vv[[i, 2]]]);
+    if let Some(s) = vv.as_slice() {
+        rust_verts.extend(s.chunks_exact(3).map(|c| [c[0], c[1], c[2]]));
+    } else {
+        for i in 0..n {
+            rust_verts.push([vv[[i, 0]], vv[[i, 1]], vv[[i, 2]]]);
+        }
     }
     let m = tt.nrows();
     let mut rust_tris: Vec<[usize; 3]> = Vec::with_capacity(m);
-    for i in 0..m {
-        let (a, b, c) = (tt[[i, 0]], tt[[i, 1]], tt[[i, 2]]);
-        if a < 0 || b < 0 || c < 0 {
-            return Err(PyValueError::new_err("triangle index out of range"));
+    if let Some(s) = tt.as_slice() {
+        for c in s.chunks_exact(3) {
+            let (a, b, c) = (c[0], c[1], c[2]);
+            if a < 0 || b < 0 || c < 0 {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            let (a, b, c) = (a as usize, b as usize, c as usize);
+            if a >= n || b >= n || c >= n {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            rust_tris.push([a, b, c]);
         }
-        let (a, b, c) = (a as usize, b as usize, c as usize);
-        if a >= n || b >= n || c >= n {
-            return Err(PyValueError::new_err("triangle index out of range"));
+    } else {
+        for i in 0..m {
+            let (a, b, c) = (tt[[i, 0]], tt[[i, 1]], tt[[i, 2]]);
+            if a < 0 || b < 0 || c < 0 {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            let (a, b, c) = (a as usize, b as usize, c as usize);
+            if a >= n || b >= n || c >= n {
+                return Err(PyValueError::new_err("triangle index out of range"));
+            }
+            rust_tris.push([a, b, c]);
         }
-        rust_tris.push([a, b, c]);
     }
     Ok((rust_verts, rust_tris))
 }
