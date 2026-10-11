@@ -1,15 +1,8 @@
 pymeshlab==2025.7.post1
 numpy>=2.4.0,<2.6
-# Experimental autorefine self-intersection resolution (FAZ16): Shewchuk-style
-# exact 3D orientation predicates (Unlicense / public domain). Pure-python
-# wheel, installable on both the py3.14 and py3.11 venvs (also added to the
-# macOS conda env). Only imported by sutura/autorefine.py behind
-# --experimental-autorefine; the default repair path does not require it.
-pyrobust-predicates==0.1.0
 # Scan-closing / proxy-template tiers (registry methods 8/9/10, P-INT):
-# scipy powers the connected-component labeling in sutura/closing.py and
-# sutura/proxy_repair.py (scipy.sparse.csgraph); trimesh powers the
-# closest-point projection in sutura/proxy_repair.py. Both run in the main
+# scipy powers sparse linear algebra and KD-trees (scipy.spatial); trimesh powers
+# the closest-point projection in sutura/proxy_repair.py. Both run in the main
 # venv, so they are hard dependencies of the method registry. Approximate
 # installed size: scipy ~99 MB (cp314 manylinux/arm64 wheel ~36-40 MB),
 # trimesh ~4.6 MB. rtree is NOT required (trimesh.proximity.closest_point

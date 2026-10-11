@@ -2,6 +2,203 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Graft could adopt a collapsed fragment.** Graft's adoption only checked
+  watertightness and the healthy-region deviation, so a candidate that rebuilt
+  the object into a small fragment passed (`thingi10k_100827`: a 37 mm scan
+  reduced to a 7 mm fragment, `holes 0 / nm 0 / fidelity_ok true`). Graft now
+  computes the **input coverage** (the fraction of input surface samples within
+  tolerance of the result) and reports `input_coverage` / `coverage_ok`; the
+  auto ladder no longer adopts a watertight candidate whose coverage is below
+  `GRAFT_MIN_INPUT_COVERAGE` (0.5, chosen from the measured 17-mesh A18 gap:
+  every accepted Graft candidate scores 0.625-1.000, the fragment 0.013) and
+  falls through to fTetWild / the next tier. Accepted results are unchanged
+  (the gate only rejects the collapse class).
+- **Tamponade could make the final shape worse than `--no-tamponade`.** The
+  Tamponade adoption gate is topological-only (the reload-honest holes +
+  non-manifold count must fall) and is decided on the pre-chain / stage-1 mesh,
+  so it could not observe that a later deep tier rebuilt the object into a
+  small fragment (thingi10k_100827). `repair_file` adds a final safety net that
+  mirrors the Flap one: when Tamponade was adopted and the saved result either
+  collapses below `TAMP_COLLAPSE_BBOX_FRAC` (0.5) of the input's bounding-box
+  diagonal OR leaks material outside the input solid beyond
+  `TAMP_LEAK_TRIGGER_FRAC` (1 % of the diagonal; the 100827 leak was 4.9 %), it
+  re-runs once with Tamponade OFF and keeps the candidate that does not leak
+  further and covers more of the input. Tamponade is discarded only when the
+  no-tamponade result is actually better, so every existing adoption stays
+  byte-identical.
+
+## [0.9.0] - 2026-10-11
+
+### Added
+
+- **Flap per-loop candidate selection (on by default).** Each boundary loop
+  commits the thin-plate patch first, exactly like the historical default, so a
+  loop it fills is byte-identical and costs nothing extra. Only when the
+  thin-plate patch is rejected (coplanar fold) does the loop try the
+  membrane/REF/unfaired refined alternatives, one at a time, committing the
+  first that passes the baseline-relative zero-volume, coplanar and reload
+  safety guards; a loop no candidate can fill safely still falls to Stage-1.
+  The alternative search is charged against the Flap wall-clock budget (the
+  alternatives stop at the preset deadline and the loop falls to Stage-1), so
+  turning selection on cannot overshoot the intensity preset. Opt out with
+  `SUTURA_FLAP_SELECT=0`.
+- **Tamponade (repair method #17, interior hole plug; alias `lava`).**
+  A new geometry-inventing tier (on by default; `sutura_engine.tamponade`, Rust
+  `sutura_geom.tamponade`) that closes open boundaries from the inside: each
+  boundary loop is plugged at its narrowest point without touching the
+  surrounding healthy triangles, and residual self-intersections are melted in
+  thin layers that are individually rolled back when they do not reduce the
+  crossing count. It never deletes an input triangle (`healthy_faces_kept`
+  counts the faces carried through verbatim). It runs first as a pre-pass on the
+  cleaned input (before Flap and Stage 1's generic hole closing), with a second
+  chance after Flap and before the Graft/fTetWild deep tiers, and is registered
+  as method #17 in `--list-methods` (`17`/`m17`/`tamponade`/`lava`).
+  Adoption requires the reload-honest (welded) holes + non-manifold count to
+  strictly fall, the component count not to rise and at least 99 % of the
+  pre-tier faces to be kept; the tier's own guard is authoritative, so the
+  generic one-sided Hausdorff guard is skipped. The wall-clock budget follows
+  the Triage intensity preset (`quick` disables the tier). The Rust extension
+  must provide `sutura_geom.tamponade` (there is no numpy fallback); otherwise
+  the method reports itself unavailable and is skipped. **On by default:**
+  disable with `--no-tamponade`, env `SUTURA_TAMPONADE=0`, or the GUI Options →
+  Repair checkbox **Tamponade (fill holes from inside)**; the library default
+  (`TAMPONADE_DEFAULT_ENABLED = True`) runs the tier. The report carries a
+  `tamponade` key (`ran`, `adopted`,
+  `reason`, `plugs`, `plug_faces`, `melt_layers_tried`/`_accepted`/`_rolled_back`,
+  `micro_welds_ok`/`_failed`, `healthy_faces_kept`, `input_faces`,
+  `output_faces`, `seconds`). Covered by `tests/test_tamponade_integration.py`.
+- **Tamponade reference-surface refinement, thin-plate RBF fallback, shell
+  plug and intentional-openings gate.** On top of the method-#17 baseline, the
+  interior-plug tier gains a fitted reference surface for large and curved
+  boundary loops (a merged reference ring, plus a thin-plate RBF fallback when
+  the quadric sag is rejected), a skirt plug (a cap on the reference joined to
+  the mesh by a zipper strip) for large holes, exact per-plug rollback
+  footprints with a cap shape gate, and an exact coplanar-overlap overlay for
+  penetrating bodies. Intentional openings (a scan or a modelled aperture) are
+  detected and preserved behind the `SUTURA_TAMP_OPENINGS` gate. The tier is
+  **on by default** (`TAMPONADE_DEFAULT_ENABLED = True`); disable it with
+  `--no-tamponade`, `SUTURA_TAMPONADE=0`, or the GUI Options checkbox.
+- **Tamponade anti-parallel-only double wall and plug connectivity gate.** The
+  double-wall gate now counts only the coincident area whose normal is
+  anti-parallel (angle > 160°) — opposite-oriented coincident faces can cancel
+  material in an even-odd slicer, so a plug is rolled back only when that
+  opposite fraction exceeds 20 % of its new-face area; a same-orientation
+  coincidence is unioned by a positive-fill slicer and is accepted (its fraction
+  is reported as `coincident_same_frac`). A separate connectivity gate rolls
+  back any plug that is not edge-connected to the main shell through its loop (a
+  floating component or a self-contained closed sub-shell), so a plug can never
+  add a separate part. The reload-honest verdict now also counts vertex-connected
+  components and closed shells, and `worse_than` rejects a component-count
+  increase. `TamponadeInfo` exposes `plugs_floating`, `components_before` /
+  `_after` and `closed_shells_before` / `_after`. Measured: fixtures-v2 (14) plus
+  thingi10k_1038441 and thingi10k_100827 are byte-identical to the base; the
+  ornate-frame post-Flap tier keeps 2 caps (9 rolled back as double-wall, 0
+  floating), holes 23 -> 21, components 220 -> 220, adopted.
+- **Tamponade Stent plug and multi-stent partition.** Inside Tamponade, a
+  boundary loop whose reference plug is rejected now gets an inflate-from-inside
+  candidate, **Stent**: the plug is grown inward from the rim and the active-set
+  solve is clamped so it can never rise past the rim (a flat through-hole cannot
+  inflate into a dome, and a Stent seal is always built on the original rim, never
+  on a reference overshoot trim). A loop that a single Stent cannot seal is
+  partitioned into simple sub-loops at its pinch points and across the shortest
+  valid interior chord, and one Stent is inflated per sub-loop; adjacent
+  sub-plugs share the chord edge exactly (a manifold seam) and the group is
+  judged all-or-nothing, so a partial seal can never break the seam. Report keys
+  `stent_used` / `stent_rejected` / `stent_subplugs` and the per-plug
+  `plug_metrics` array; diagnostics expose a per-attempt rejection reason
+  (`no_rim`/`degenerate`/`structure`/`cancel0`/`deadline`). Stent rides **inside**
+  Tamponade — it only runs when Tamponade runs (on by default; disable with
+  `--no-tamponade` / `SUTURA_TAMPONADE=0` / the GUI checkbox), so there is
+  deliberately no separate CLI flag or GUI control; its only independent switch
+  is the env opt-out `SUTURA_TAMP_STENT=0` (default ON whenever Tamponade runs,
+  geometry no-op). The name is deliberately **not** "balloon", to avoid confusion
+  with method #8 Balloon (screened-Poisson reconstruction). Measured on
+  ornate-frame: the reference path leaves 23 holes, the multi-stent tier seals the
+  large thin-frame loop (holes 23 -> 18, non-manifold unchanged, components
+  unchanged, leak 0); `SUTURA_TAMP_STENT=0` is byte-identical to the pre-Stent
+  output on all 14 fixtures-v2.
+- **Tamponade plug acceptance rules.** A Tamponade plug is adopted only when
+  every one of these holds, so the tier changes the output only when it strictly
+  helps: it does not **leak** beyond the tolerance (a plug sample must not lie in
+  empty space farther than `clamp(diagonal/10000, 0.0125, 0.05)` mm from the
+  original surface unless it is over the hole aperture); it creates **no new
+  holes or non-manifold edges** on the reload-honest (welded) mesh; it creates
+  **no anti-parallel double wall** over more than 20 % of its own area (only
+  opposite-oriented coincident faces that can cancel material in an even-odd
+  slicer count, same-orientation overlaps are unioned and accepted); it **stays
+  connected** to the main shell through its boundary loop and adds **no new
+  part** (no floating component, no self-contained closed sub-shell); and at least
+  **99 % of the pre-tier faces** are kept byte-identical. Self-intersections are
+  **report-only** — a slicer unions overlapping volumes, so they never block
+  adoption.
+- **Proxy resample timeout guard (`Scaffold`, method #10).** The uniform
+  resample filter builds a VCG face KD-tree whose construction degenerates
+  (several GB, minutes) on meshes with long skinny triangle fans; this
+  OOM-killed the whole repair during method-#10 escalation. The filter now runs
+  in a child process under a wall-clock timeout (`PROXY_RESAMPLE_TIMEOUT`,
+  20 s, overridable via `SUTURA_PROXY_RESAMPLE_TIMEOUT`) and a resident-memory
+  ceiling (`PROXY_RESAMPLE_MAX_RSS_MB`, 2048 MB, overridable via
+  `SUTURA_PROXY_RESAMPLE_MAX_RSS_MB`; `0` disables it), and falls through to
+  the existing alpha-wrap fallback when either limit is hit, with
+  the child driven through temp NPZ files so the parent JSON report is never
+  corrupted. Output is byte-identical whenever the resample completes in time.
+- **Native self-intersection detection behind `SUTURA_NATIVE_SI` (default
+  off).** The self-intersection metric can now be computed by the Rust kernel
+  instead of PyMeshLab's VCGLib filter: `topology.native_si_enabled()` gates a
+  clean-room Möller triangle-interval test (pure-NumPy oracle bounded to
+  ≤ 5,000 faces with a 60-second timeout) and an accelerated dual-BVH exact
+  classifier with Shewchuk interval filters. The metric calculations, the
+  extreme-mode extra passes, the guarded SI excise, `validate` and `--dry-run`
+  all route through the same switch. It is **off by default** (env
+  `SUTURA_NATIVE_SI=1` to enable) because the native count is not byte-identical
+  to PyMeshLab's; parity is verified by `tests/test_topology_parity.py`. It is an
+  env-only evaluation switch with no CLI flag or GUI control, so the CLI and the
+  GUI behave identically (like the ray-stab vote).
+- **Dependency reduction Phase 1 and native Rust cleanup filters.** Phase 1
+  removes `psutil` (replaced by stdlib `os.sysconf` / macOS `sysctl
+  hw.memsize`) and `pyrobust-predicates` (replaced by the Rust
+  `sutura_geom.orient3d`), and replaces every `scipy.sparse.csgraph`
+  connected-component call with a pure Python/NumPy union-find in
+  `sutura.topology`, saving ~2.1 MB installed. Phase 2a routes the Stage-1
+  mesh-cleaning filters to the Rust kernel (`sutura_geom.remove_duplicate_faces`,
+  `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding)
+  with a transparent pure-numpy fallback and bit-for-bit parity tests. Phase 2b
+  extends the routing to connected-component removal and face inversion
+  (`topology.remove_connected_components`, `invert_face_orientation`,
+  `mesh_topology`), so the whole Stage-1 cleaning path prefers the native
+  kernel, with parity and fallback coverage in `tests/test_topology_parity.py`.
+- **Graft rejects a candidate that covers too little of the input.** When a
+  Graft result misses too much of the input surface it is refused and the
+  repair falls through to the next deep tier instead of adopting it.
+- **Tamponade final safety net.** If an adopted Tamponade result collapses or
+  leaks, the repair is re-run without Tamponade, so a bad plug can never make
+  the output worse.
+
+Flap hole-filling refinement is inspired by Liepa (2003), Filling Holes in
+Meshes; no third-party code is used.
+
+### Fixed
+
+- **README license-rationale paragraph placement.** Moved the license-rationale
+  paragraph ("The reason for this change: ...") from the end of `README.md`,
+  where it sat after the version history, into the `## License` section
+  immediately after the Apache 2.0 paragraph, matching `README.tr.md`. The
+  paragraph is unchanged; only its position changed.
+
+### Known limitations
+
+- **Stent mostly matters inside Tamponade.** On most real files the later repair
+  stages already close the tiny holes a loop can have, so the Stent candidate is
+  rarely the deciding seal; it runs only when Tamponade runs (on by default).
+- **Graft output can vary slightly between runs depending on free RAM.** The
+  effective morphology grid budget is clamped to the RAM available when the tier
+  runs, so a low-memory host can coarsen the grid and produce a slightly
+  different (still valid) shape. A fix is planned for 0.9.1.
+
 ## [0.8.1] - 2026-10-03
 
 ### Added

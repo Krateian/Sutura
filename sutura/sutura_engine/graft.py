@@ -102,6 +102,18 @@ LOCAL_WINDOW_MARGIN = 3.0        # expand the damaged bbox by 3 r
 HEALTHY_HAUSDORFF_MAX = 0.0025    # two-sided-on-healthy, rel. to bbox diagonal
 ONE_SIDED_HAUSDORFF_MAX = 0.005   # input -> output, rel. to bbox diagonal
 HAUSDORFF_SAMPLES = 4000
+# Input-coverage gate: fraction of input surface samples within a small
+# tolerance of the result. A geometry-faithful close reproduces the healthy
+# input surface, so coverage is near 1; a collapsed/fragment result (the
+# thingi10k_100827 regression: coverage 0.013) leaves most of the input far
+# from it. The threshold sits in the measured gap on the 17-mesh A18 set:
+# accepted Graft candidates score 0.625-1.000, the collapsed fragment 0.013,
+# so 0.5 keeps every current adoption while rejecting the collapse. The
+# tolerance mirrors the A18 shape harness (`min(max(diag/10000, 0.0125), 0.05)`,
+# in mm for the mm-unit meshes Sutura targets).
+GRAFT_MIN_INPUT_COVERAGE = 0.5
+GRAFT_COVERAGE_TOL_MIN = 0.0125
+GRAFT_COVERAGE_TOL_MAX = 0.05
 DETAIL_TOL_MM = 0.1              # default tolerance: 0.1 mm
 DETAIL_TOL_FRACTION = 0.002      # ... or 0.2 % of the bbox diagonal
 DETAIL_WARN_AREA_FRACTION = 0.02  # warn when >2 % of the area moved beyond tol
@@ -167,14 +179,9 @@ def _resolve_sign_field(sign_field):
 def _available_memory_bytes():
     """Best-effort available RAM in bytes (stdlib only).
 
-    Order: psutil (if present) -> ``os.sysconf`` (Linux) -> ``sysctl hw.memsize``
-    halved on macOS -> a conservative 4 GB fallback.  Never raises.
+    Order: ``os.sysconf`` (Linux) -> ``sysctl hw.memsize`` halved on macOS ->
+    a conservative 4 GB fallback.  Never raises.
     """
-    try:
-        import psutil  # type: ignore
-        return int(psutil.virtual_memory().available)
-    except Exception:  # noqa: BLE001
-        pass
     try:
         pages = os.sysconf('SC_AVPHYS_PAGES')
         size = os.sysconf('SC_PAGE_SIZE')
@@ -314,6 +321,29 @@ def _one_sided_hausdorff(va, ta, vb, tb, diag, n=HAUSDORFF_SAMPLES, rng=None):
     _q, d, _f = sutura_geom.closest_points(vb, tb, pts)
     d = np.asarray(d)
     return float(d.max() / diag), float(d.mean() / diag)
+
+
+def _coverage_tol(diag):
+    """Absolute tolerance (mesh units) for the input-coverage gate."""
+    if diag <= 0.0:
+        return GRAFT_COVERAGE_TOL_MIN
+    return min(max(diag / 10000.0, GRAFT_COVERAGE_TOL_MIN),
+               GRAFT_COVERAGE_TOL_MAX)
+
+
+def _input_coverage(v0, t0, wv, wt, diag, n=HAUSDORFF_SAMPLES, rng=None):
+    """Fraction of input surface samples within ``_coverage_tol(diag)`` of the
+    result: how much of the input the close actually reproduces (1.0 = fully
+    covered). ``None`` for an empty mesh or a zero diagonal."""
+    rng = rng if rng is not None else np.random.default_rng(12345)
+    if len(t0) == 0 or len(wt) == 0 or diag <= 0.0:
+        return None
+    pts = _sample_surface(v0, t0, n, rng)
+    if len(pts) == 0:
+        return None
+    _q, d, _f = sutura_geom.closest_points(wv, wt, pts)
+    d = np.asarray(d)
+    return float((d <= _coverage_tol(diag)).mean())
 
 
 def _behind_on_healthy(v0, t0, region_mask, wv, wt, diag, r, rng):
@@ -928,6 +958,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "hausdorff_one_sided": None,
         "hausdorff_healthy": None,
         "hausdorff_healthy_behind": None,
+        "input_coverage": None,
+        "coverage_ok": None,
         "holes": None,
         "non_manifold": None,
         "faces_before": int(len(t0)),
@@ -1152,6 +1184,16 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         return v0, t0, report
 
     detail = best["detail"]
+    # Input-coverage gate (G12): how much of the INPUT surface the chosen
+    # result reproduces. A fragment that is watertight and healthy-clean but
+    # does not span the object (thingi10k_100827) scores far below 1 here, so
+    # the auto ladder can fall through to fTetWild/next tier instead of
+    # adopting it. Never blocks a fully-covering close.
+    input_coverage = None
+    if guard and diag > 0.0 and len(best["t"]):
+        input_coverage = _input_coverage(v0, t0, best["v"], best["t"], diag)
+    coverage_ok = (input_coverage is None
+                   or input_coverage >= GRAFT_MIN_INPUT_COVERAGE)
     report.update({
         "ok": bool(best["watertight"]),
         "category": "watertight" if best["watertight"] else "partial",
@@ -1169,6 +1211,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "hausdorff_healthy_behind": (round(best["hh_behind"], 5)
                                      if best.get("hh_behind") is not None else None),
         "fidelity_ok": bool(best["fidelity_ok"]),
+        "input_coverage": (round(input_coverage, 4)
+                           if input_coverage is not None else None),
+        "coverage_ok": bool(coverage_ok),
         "holes": best["holes"],
         "non_manifold": best["non_manifold"],
         "p_weld": best["pweld"],
@@ -1182,6 +1227,20 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     })
     report["detail_loss"] = report["hausdorff_healthy"]
     report["warnings"] = _warnings_for(best.get("r_eff", best["r"]), detail, diag)
+    if not coverage_ok:
+        report["warnings"].append({
+            "code": "coverage",
+            "message_en": (
+                "Graft closed the mesh but its input coverage "
+                f"({report['input_coverage']}) is below "
+                f"{GRAFT_MIN_INPUT_COVERAGE}; the result does not reproduce "
+                "enough of the input surface (likely a collapsed fragment)."),
+            "message_tr": (
+                "Graft ağı kapattı ancak girdi kapsaması "
+                f"({report['input_coverage']}) {GRAFT_MIN_INPUT_COVERAGE} "
+                "eşiğinin altında; sonuç girdi yüzeyinin yeterli kısmını "
+                "yeniden üretmiyor (muhtemelen çökmüş bir parça)."),
+        })
     if best["watertight"] and not best["fidelity_ok"]:
         report["warnings"].append({
             "code": "fidelity",

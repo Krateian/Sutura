@@ -146,6 +146,11 @@ DEFAULT_CONFIG = {
     # (template, method) success/time history. Resettable from the CLI
     # (`sutura clear-learning`) and the GUI Options.
     'learning_triage': True,
+    # Tamponade (#17, incl. the Stent candidate): ON by default (opt-out).
+    # The GUI reads this for the initial Options checkbox state and persists a
+    # user's change; a missing/legacy key is treated as ON, so an old config
+    # saved in the opt-in era does not silently keep it off.
+    'tamponade': True,
 }
 
 
@@ -466,10 +471,10 @@ def _install_macos(src_dir, req_files):
         subprocess.run(['conda', 'install', '-y', '-n', env_name, '-c', 'conda-forge',
                         'pymeshlab'], check=True)
         # pip-only deps inside the conda env. Must match install-macos.sh
-        # (scipy powers the closing/proxy tiers' connected components;
-        # pyrobust-predicates powers the autorefine predicates).
+        # (scipy powers sparse linear algebra and KD-trees; sutura_geom
+        # powers the autorefine exact predicates).
         subprocess.run(['conda', 'run', '-n', env_name, 'pip', 'install',
-                        'manifold3d', 'trimesh', 'scipy', 'pyrobust-predicates',
+                        'manifold3d', 'trimesh', 'scipy',
                         'PySide6-Essentials'], check=True)
     _install_macos_geom(src_dir)
 

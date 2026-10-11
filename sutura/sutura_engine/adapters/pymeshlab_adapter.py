@@ -15,6 +15,8 @@ calls and ensures pymeshlab is only imported lazily at execution time.
 from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
+import topology
+
 
 def is_pymeshlab_available() -> bool:
     """Return True if pymeshlab can be imported in the current Python environment."""
@@ -67,9 +69,74 @@ def apply_stage1_filters(verts: np.ndarray, tris: np.ndarray,
 
     for name, fparams in filters:
         try:
-            ms.apply_filter(name, **fparams)
+            handled = False
+            if name == 'meshing_remove_duplicate_faces':
+                m = ms.current_mesh()
+                t = m.face_matrix()
+                t_new = topology.remove_duplicate_faces(t)
+                if len(t_new) < len(t):
+                    v = m.vertex_matrix()
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_remove_null_faces':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                t_new = topology.remove_null_faces(v, t)
+                if len(t_new) < len(t):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_remove_duplicate_vertices':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_duplicate_vertices(v, t)
+                if len(v_new) < len(v):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_remove_unreferenced_vertices':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_unreferenced_vertices(v, t)
+                if len(v_new) == 0:
+                    ms.apply_filter(name, **fparams)
+                elif len(v_new) < len(v):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_remove_connected_component_by_face_number':
+                min_sz = fparams.get('mincomponentsize', 8)
+                remove_unref = fparams.get('removeunref', True)
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                v_new, t_new = topology.remove_connected_components(v, t, min_faces=min_sz, remove_unref=remove_unref)
+                if len(t_new) == 0:
+                    ms.apply_filter(name, **fparams)
+                elif len(t_new) < len(t):
+                    ms.clear()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                handled = True
+            elif name == 'meshing_invert_face_orientation':
+                m = ms.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+                t_new = topology.invert_face_orientation(t)
+                ms.clear()
+                ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                handled = True
+
+            if not handled:
+                ms.apply_filter(name, **fparams)
         except Exception:
-            pass
+            try:
+                ms.apply_filter(name, **fparams)
+            except Exception:
+                pass
 
     after = ms.apply_filter('get_topological_measures')
     m = ms.current_mesh()

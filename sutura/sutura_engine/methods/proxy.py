@@ -30,6 +30,168 @@ PROJECTION_MIN_NORMAL_DOT = 0.0  # alignment threshold for projection
 SI_FACE_CAP = 200_000  # cap self-intersection checks above 200k faces
 MIN_FACE_BUDGET = 20_000  # output faces <= max(2x input, 20k)
 
+# PyMeshLab's ``generate_resampled_uniform_mesh`` (VCG) builds a face KdTree
+# whose construction can fail to terminate on meshes that carry very long thin
+# triangles (e.g. a coarse bottom fan meeting a fine grid: max edge / median
+# edge ~ 56). The native loop is not interruptible from Python, so the call is
+# run in a bounded subprocess; on timeout the caller falls through to the next
+# strategy (ultimately ``generate_alpha_wrap``, which is fast and robust).
+PROXY_RESAMPLE_TIMEOUT = 20.0  # seconds, per uniform-resample attempt
+
+# The same non-terminating VCG KdTree construction grows to many GB of resident
+# memory before the time budget expires. The subprocess is therefore also killed
+# once its RSS exceeds this ceiling, so the guard bounds memory as well as time.
+# The value sits far above any healthy resample (measured < 450 MB total, parent
+# included, on the smoke set) and is overridable via
+# ``SUTURA_PROXY_RESAMPLE_MAX_RSS_MB`` (0 disables it).
+PROXY_RESAMPLE_MAX_RSS_MB = 2048
+
+
+def _resample_timeout():
+    """Resolved per-attempt resample budget (env ``SUTURA_PROXY_RESAMPLE_TIMEOUT``)."""
+    import os
+    raw = os.environ.get('SUTURA_PROXY_RESAMPLE_TIMEOUT')
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return PROXY_RESAMPLE_TIMEOUT
+
+
+def _resample_max_rss_kb():
+    """Resolved per-attempt resample memory ceiling in kB (env override, 0 = off)."""
+    import os
+    raw = os.environ.get('SUTURA_PROXY_RESAMPLE_MAX_RSS_MB')
+    mb = PROXY_RESAMPLE_MAX_RSS_MB
+    if raw:
+        try:
+            val = float(raw)
+            if val >= 0:
+                mb = val
+        except (TypeError, ValueError):
+            pass
+    return int(mb) * 1024
+
+
+def _proc_rss_kb(pid):
+    """Resident set size of ``pid`` in kB, or ``None`` if unavailable."""
+    import sys
+    try:
+        if sys.platform.startswith('linux'):
+            with open('/proc/%d/status' % int(pid)) as fh:
+                for line in fh:
+                    if line.startswith('VmRSS:'):
+                        return int(line.split()[1])
+            return None
+        import subprocess
+        out = subprocess.run(['ps', '-o', 'rss=', '-p', str(int(pid))],
+                             capture_output=True, text=True)
+        txt = out.stdout.strip()
+        return int(txt) if txt else None
+    except Exception:
+        return None
+
+
+def _uniform_resample(verts, tris, voxel, offset, absdist):
+    """Run one ``generate_resampled_uniform_mesh`` call and return (verts, faces)."""
+    import pymeshlab as ml
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, dtype=np.float64),
+                        face_matrix=np.asarray(tris, np.int32)))
+    ms.apply_filter('generate_resampled_uniform_mesh',
+                    cellsize=ml.PureValue(float(voxel)),
+                    offset=ml.PureValue(float(offset)),
+                    absdist=bool(absdist))
+    out = ms.current_mesh()
+    return (np.asarray(out.vertex_matrix(), dtype=np.float64),
+            np.asarray(out.face_matrix(), dtype=np.int32))
+
+
+def _resample_worker(in_npz, out_npz, voxel, offset, absdist):
+    """Subprocess entry point for :func:`_uniform_resample_isolated`."""
+    data = np.load(in_npz)
+    pv, pt = _uniform_resample(np.asarray(data['v'], dtype=np.float64),
+                               np.asarray(data['t'], dtype=np.int64),
+                               float(voxel), float(offset), bool(absdist))
+    np.savez(out_npz, v=pv, t=pt)
+
+
+def _uniform_resample_isolated(verts, tris, voxel, offset, absdist, timeout=None):
+    """``_uniform_resample`` in a subprocess, bounded by ``timeout`` seconds.
+
+    Protects the repair from the VCG KdTree non-termination described above:
+    on timeout (or any child failure) this raises, and ``build_proxy`` falls
+    through to its next strategy. The child is also killed once its resident
+    set exceeds ``_resample_max_rss_kb()`` so the guard bounds memory too.
+    The child runs under the current interpreter with the parent's ``sys.path``
+    so it resolves the same ``sutura_engine`` package in every install layout.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+    import threading
+    import time
+
+    if timeout is None:
+        timeout = _resample_timeout()
+    max_rss_kb = _resample_max_rss_kb()
+    work = tempfile.mkdtemp(prefix='sutura_proxy_resample_')
+    try:
+        in_npz = os.path.join(work, 'in.npz')
+        out_npz = os.path.join(work, 'out.npz')
+        np.savez(in_npz,
+                 v=np.ascontiguousarray(verts, dtype=np.float64),
+                 t=np.ascontiguousarray(tris, np.int32))
+        path = [p for p in sys.path if isinstance(p, str)]
+        code = (
+            "import sys; sys.path[:0] = %r\n"
+            "from sutura_engine.methods.proxy import _resample_worker\n"
+            "_resample_worker(%r, %r, %r, %r, %r)\n"
+            % (path, in_npz, out_npz, float(voxel), float(offset), bool(absdist))
+        )
+        proc = subprocess.Popen([sys.executable, '-c', code],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        over_mem = threading.Event()
+
+        def _watch():
+            while proc.poll() is None:
+                rss = _proc_rss_kb(proc.pid)
+                if max_rss_kb > 0 and rss is not None and rss > max_rss_kb:
+                    over_mem.set()
+                    proc.kill()
+                    return
+                time.sleep(0.2)
+
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
+        try:
+            try:
+                out, err = proc.communicate(timeout=float(timeout))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise TimeoutError(
+                    'proxy resample exceeded the %.1fs budget' % float(timeout))
+        finally:
+            watcher.join(timeout=1.0)
+        if over_mem.is_set():
+            raise RuntimeError(
+                'proxy resample exceeded the %d MB memory cap'
+                % (max_rss_kb // 1024))
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode, 'proxy_resample', output=out, stderr=err)
+        data = np.load(out_npz)
+        return (np.asarray(data['v'], dtype=np.float64),
+                np.asarray(data['t'], dtype=np.int32))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
 
 def _referenced_only(verts, tris):
     """Drop unreferenced vertices and remap triangle indices."""
@@ -97,15 +259,11 @@ def _filter_debris_components(verts, tris, min_faces=MIN_DEBRIS_COMPONENT_FACES)
     """Filter out small disconnected debris components (< min_faces), keeping legitimate parts."""
     if len(tris) == 0:
         return verts, tris
-    import scipy.sparse as sp
-    from scipy.sparse.csgraph import connected_components
+    import topology
 
     n_v = len(verts)
-    i = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
-    j = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
-    data = np.ones(len(i), dtype=bool)
-    adj = sp.coo_matrix((data, (i, j)), shape=(n_v, n_v))
-    n_components, labels = connected_components(adj, directed=False)
+    e = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    n_components, labels = topology.connected_components((n_v, e))
     if n_components <= 1:
         return verts, tris
 
@@ -124,15 +282,11 @@ def _keep_largest_component(verts, tris):
     """Keep only the largest connected component of faces."""
     if len(tris) == 0:
         return verts, tris
-    import scipy.sparse as sp
-    from scipy.sparse.csgraph import connected_components
+    import topology
 
     n_v = len(verts)
-    i = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
-    j = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
-    data = np.ones(len(i), dtype=bool)
-    adj = sp.coo_matrix((data, (i, j)), shape=(n_v, n_v))
-    n_components, labels = connected_components(adj, directed=False)
+    e = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    n_components, labels = topology.connected_components((n_v, e))
     if n_components <= 1:
         return verts, tris
 
@@ -146,7 +300,7 @@ def _keep_largest_component(verts, tris):
     return verts[used_verts], remap[keep_faces]
 
 
-def build_proxy(verts, tris, voxel=None):
+def build_proxy(verts, tris, voxel=None, resample_timeout=None):
     """Construct a watertight, coarse proxy surface for the input mesh.
 
     Attempts in order:
@@ -155,6 +309,14 @@ def build_proxy(verts, tris, voxel=None):
       (b) PyMeshLab generate_alpha_wrap fallback
 
     Voxel size is clamped so grid dimensions stay within [32, 256].
+
+    ``resample_timeout`` (default: ``_resample_timeout()``) bounds each
+    uniform-resample attempt; the two PyMeshLab resample strategies run in a
+    subprocess so a VCG KdTree non-termination on long thin triangles cannot
+    hang the repair (see ``PROXY_RESAMPLE_TIMEOUT``). The subprocess is also
+    killed once its RSS exceeds ``PROXY_RESAMPLE_MAX_RSS_MB``, so the guard
+    bounds memory as well as time. On either bound the strategy is skipped and
+    the alpha-wrap fallback is used.
     Returns (pv, pt, info_dict).
     """
     verts = np.asarray(verts, dtype=np.float64)
@@ -182,17 +344,18 @@ def build_proxy(verts, tris, voxel=None):
         voxel = max_dim / MIN_GRID_CELLS
 
     import pymeshlab as ml
+    import time
+
+    if resample_timeout is None:
+        resample_timeout = _resample_timeout()
+    resample_start = time.monotonic()
 
     # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
     try:
+        rv, rt = _uniform_resample_isolated(in_v, in_t, voxel, 0.0, False,
+                                            timeout=resample_timeout)
         ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        ms.apply_filter(
-            'generate_resampled_uniform_mesh',
-            cellsize=ml.PureValue(voxel),
-            offset=ml.PureValue(0.0),
-            absdist=False,
-        )
+        ms.add_mesh(ml.Mesh(vertex_matrix=rv, face_matrix=np.asarray(rt, np.int32)))
         ms.apply_filter('meshing_close_holes', maxholesize=10000)
         ms.apply_filter('meshing_close_holes', maxholesize=10000)
         out = ms.current_mesh()
@@ -211,18 +374,10 @@ def build_proxy(verts, tris, voxel=None):
 
     # Strategy 2: Unsigned distance offset resampling (absdist=True, offset=voxel)
     try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        ms.apply_filter(
-            'generate_resampled_uniform_mesh',
-            cellsize=ml.PureValue(voxel),
-            offset=ml.PureValue(voxel),
-            absdist=True,
-        )
-        out = ms.current_mesh()
-        pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
-        pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+        remaining = max(resample_timeout - (time.monotonic() - resample_start), 3.0)
+        rv, rt = _uniform_resample_isolated(in_v, in_t, voxel, voxel, True,
+                                            timeout=remaining)
+        pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
@@ -299,8 +454,7 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
                 bad_face_indices.add(f_idx)
 
     # 3. Debris components
-    import scipy.sparse as sp
-    from scipy.sparse.csgraph import connected_components
+    import topology
 
     edge_to_faces = {}
     for f_idx, tri in enumerate(tris):
@@ -318,8 +472,7 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
             fj.extend([f_list[1], f_list[0]])
 
     if fi:
-        adj = sp.coo_matrix((np.ones(len(fi), dtype=bool), (fi, fj)), shape=(n_faces, n_faces))
-        _, labels = connected_components(adj, directed=False)
+        _, labels = topology.connected_components((n_faces, np.column_stack((fi, fj))))
         uniq_l, counts_l = np.unique(labels, return_counts=True)
         small_labels = set(uniq_l[counts_l < MIN_DEBRIS_COMPONENT_FACES])
         for f_idx, l in enumerate(labels):

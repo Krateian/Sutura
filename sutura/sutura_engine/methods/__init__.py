@@ -23,6 +23,7 @@ from sutura_engine.methods.availability import (
     indirect_available,
     proxy_available,
     repeat_available,
+    tamponade_available,
 )
 from sutura_engine.methods.protocol import (
     MethodResult,
@@ -44,6 +45,7 @@ _proxy_available = proxy_available
 _repeat_available = repeat_available
 _graft_available = graft_available
 _dressing_available = dressing_available
+_tamponade_available = tamponade_available
 
 
 def _not_implemented(phase: str) -> Callable[[], Tuple[bool, str]]:
@@ -90,6 +92,8 @@ _METHOD_ALIASES: Dict[str, int] = {
     '15': 15, 'm15': 15, 'wall_thicken': 15, 'wall': 15, 'thicken': 15,
     # 16: Dressing (variable-viscosity volumetric skinning)
     '16': 16, 'm16': 16, 'dressing': 16, 'coat': 16, 'dipcoat': 16,
+    # 17: Tamponade (interior hole plugging and SI melting)
+    '17': 17, 'm17': 17, 'tamponade': 17, 'lava': 17,
 }
 
 
@@ -194,6 +198,7 @@ _CANONICAL_BY_NUM = {
     5: 'autorefine', 6: 'exact_refine', 7: 'ftetwild', 8: 'balloon',
     9: 'backplate', 10: 'scaffold', 11: 'transplant', 12: 'transplant_plus',
     13: 'graft', 14: 'mirror_complete', 15: 'wall_thicken', 16: 'dressing',
+    17: 'tamponade',
 }
 
 
@@ -317,6 +322,16 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
         return (_clamp01(score),
                 'complex folds / heavy self-intersections skin-coatable',
                 'rec_reason_dressing', ())
+    if method_id == 'tamponade':
+        # Opt-in only (needs_user_input excludes it from the ranking); the
+        # interior plug favours a modest local defect load, where keeping every
+        # healthy face verbatim matters more than a whole-mesh rebuild.
+        score = (0.5 * _clamp01((holes + nm) / 3.0)
+                 + 0.3 * _clamp01(open_ratio / 0.05)
+                 + 0.2 * _clamp01(si / 500.0))
+        return (_clamp01(score),
+                'moderate holes/non-manifold pluggable from the inside',
+                'rec_reason_tamponade', ())
     return 0.0, 'not implemented yet', 'rec_reason_not_implemented', ()
 
 

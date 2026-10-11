@@ -326,15 +326,11 @@ def _keep_largest_component(verts, tris):
     """Keep only the largest connected component of faces."""
     if len(tris) == 0:
         return verts, tris
-    import scipy.sparse as sp
-    from scipy.sparse.csgraph import connected_components
+    import topology
 
     n_v = len(verts)
-    i = np.concatenate([tris[:, 0], tris[:, 1], tris[:, 2]])
-    j = np.concatenate([tris[:, 1], tris[:, 2], tris[:, 0]])
-    data = np.ones(len(i), dtype=bool)
-    adj = sp.coo_matrix((data, (i, j)), shape=(n_v, n_v))
-    n_components, labels = connected_components(adj, directed=False)
+    e = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    n_components, labels = topology.connected_components((n_v, e))
     if n_components <= 1:
         return verts, tris
 
@@ -448,7 +444,13 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
         face_centers = cur_v[cur_f].mean(axis=1)
         centroid = cur_v.mean(axis=0)
         if np.sum((face_centers - centroid) * cur_fn) < 0:
-            ms.apply_filter('meshing_invert_face_orientation')
+            try:
+                import topology
+                cur_f_new = topology.invert_face_orientation(cur_f)
+                ms.clear()
+                ms.add_mesh(ml.Mesh(vertex_matrix=cur_v, face_matrix=cur_f_new.astype(np.int32)))
+            except Exception:
+                ms.apply_filter('meshing_invert_face_orientation')
             ms.apply_filter('compute_normal_per_face')
 
         # 3. Compute per-vertex normals

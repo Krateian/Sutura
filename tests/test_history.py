@@ -38,15 +38,15 @@ SCHEMA_KEYS = {
     'repair_confidence_label', 'volume_change_percent',
     'extreme_passes_applied', 'self_intersections_found',
     'self_intersections_removed', 'autorefine_applied', 'ftetwild_applied',
-    'indirect_autorefine_applied', 'method_used_num', 'method_used_id',
-    'method_used_source', 'methods_tried',
+    'indirect_autorefine_applied', 'tamponade_applied', 'method_used_num',
+    'method_used_id', 'method_used_source', 'methods_tried',
 }
 
 
 def _sample_result(**over):
     r = {
-        'input': '/home/krateian/src/sutura/supersecret_turbo.stl',
-        'output': '/home/krateian/src/sutura/supersecret_turbo_fixed.stl',
+        'input': '/home/user/src/sutura/supersecret_turbo.stl',
+        'output': '/home/user/src/sutura/supersecret_turbo_fixed.stl',
         'stage1': {
             'faces_before': 100, 'faces_after': 99,
             'vertices_before': 60, 'vertices_after': 58,
@@ -126,7 +126,7 @@ def test_write_multi_object_3mf():
         history.HISTORY_DIR = tmp
         history.HISTORY_PATH = os.path.join(tmp, 'history.jsonl')
         result = _sample_result()
-        result['input'] = '/home/krateian/src/sutura/secret_thing.3mf'
+        result['input'] = '/home/user/src/sutura/secret_thing.3mf'
         result['object_reports'] = [
             _sample_result(), _sample_result(stage1={
                 'faces_before': 5, 'faces_after': 5, 'vertices_before': 4,

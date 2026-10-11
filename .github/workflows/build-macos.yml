@@ -57,8 +57,7 @@ jobs:
         run: |
           conda install -y -c conda-forge pymeshlab
           pip install --quiet \
-            manifold3d trimesh scipy PySide6-Essentials pyinstaller numpy \
-            pyrobust-predicates
+            manifold3d trimesh scipy PySide6-Essentials pyinstaller numpy
           python -c \
             "import pymeshlab, manifold3d, trimesh, scipy, PySide6; print('deps OK')"
 
@@ -130,9 +129,8 @@ jobs:
             "--collect-submodules" "sutura_engine"
             "--collect-submodules" "sutura.sutura_engine"
             "--paths" "."
-            "--hidden-import" "scipy.sparse" "--hidden-import" "scipy.sparse.csgraph"
+            "--hidden-import" "scipy.sparse"
             "--hidden-import" "scipy.spatial"
-            "--hidden-import" "pyrobust_predicates"
             "--collect-data" "pymeshlab" "--collect-data" "manifold3d")
           for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
                      before-after-render:before_after_render.py \
@@ -179,7 +177,7 @@ jobs:
             --hidden-import sutura_engine \
             --collect-submodules sutura_engine \
             --collect-submodules sutura.sutura_engine \
-            --hidden-import scipy.sparse --hidden-import scipy.sparse.csgraph \
+            --hidden-import scipy.sparse \
             --hidden-import scipy.spatial \
             --collect-data pymeshlab --collect-data manifold3d \
             --name Sutura --windowed --icon assets/icon/Sutura.icns \

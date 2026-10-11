@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Torture tests: hard-but-printable geometry.
 
-Runs the installed `sutura` CLI on five scenarios and compares before/after:
+Runs the Sutura CLI on five scenarios and compares before/after:
   1. 5M-triangle sphere (repair time)
   2. 0.05 mm thin slab (thin features must survive, not be dropped as noise)
   3. multi-part assembly (the 8-face debris threshold must not delete parts)
@@ -9,8 +9,9 @@ Runs the installed `sutura` CLI on five scenarios and compares before/after:
   5. two interpenetrating spheres (self-intersections; run in --mode extreme,
      where the extra self-intersection passes must remove them)
 
-Usage: torture_tests.py  (uses $SUTURA, or the installed CLI at
-~/.local/bin/sutura by default)
+Usage: torture_tests.py  (uses $SUTURA if set, else the in-repo entry point
+this interpreter running sutura/repair.py; run with the venv that has
+pymeshlab)
 """
 import json
 import math
@@ -22,7 +23,7 @@ import tempfile
 
 import numpy as np
 
-SUTURA = os.environ.get('SUTURA', os.path.expanduser('~/.local/bin/sutura'))
+import _cli
 
 
 def write_stl(path, verts, tris):
@@ -59,10 +60,11 @@ def measure(path):
 
 
 def run_sutura(path, mode=None):
-    cmd = [SUTURA]
+    args = []
     if mode:
-        cmd += ['--mode', mode]
-    cmd.append(path)
+        args += ['--mode', mode]
+    args.append(path)
+    cmd = _cli.cli_command(args)
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
     try:
         rep = json.loads(r.stdout.strip().splitlines()[-1])

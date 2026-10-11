@@ -148,6 +148,56 @@ def worst_defect(verts, defect_report):
     return best
 
 
+# --- initial-camera degeneracy guard -------------------------------------
+# A defect whose centroid lies along the model's body diagonal or a principal
+# axis makes ``defect_camera`` aim straight down a symmetry axis: a cube then
+# renders as a symmetric hexagon (or a flat straight-on face) and off-axis
+# spikes in the defect hide behind the silhouette. When ``forward`` comes
+# within ``_CAMERA_SYMMETRY_LIMIT_DEG`` of one of those directions it is
+# tilted by ``_CAMERA_TILT_DEG`` about a perpendicular axis, restoring the
+# oblique 3/4 view the isometric fallback gives while still facing the defect.
+_CAMERA_SYMMETRY_LIMIT_DEG = 20.0
+_CAMERA_TILT_DEG = 30.0
+
+
+def _camera_symmetry_dirs():
+    """Unit body-diagonal and principal-axis directions whose aligned view is
+    symmetric and hides off-axis geometry."""
+    diags = [(sx, sy, sz) for sx in (1.0, -1.0)
+             for sy in (1.0, -1.0) for sz in (1.0, -1.0)]
+    axes = [(1.0, 0.0, 0.0), (-1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0), (0.0, -1.0, 0.0),
+            (0.0, 0.0, 1.0), (0.0, 0.0, -1.0)]
+    dirs = [np.asarray(d, dtype=np.float64) for d in diags + axes]
+    return [d / np.linalg.norm(d) for d in dirs]
+
+
+_CAMERA_SYMMETRY_DIRS = _camera_symmetry_dirs()
+
+
+def _tilt_off_symmetry(forward):
+    """Return ``forward`` tilted off a symmetry axis for an oblique view.
+
+    ``forward`` is returned unchanged unless it lies within
+    ``_CAMERA_SYMMETRY_LIMIT_DEG`` of a body diagonal or principal axis, in
+    which case it is rotated ``_CAMERA_TILT_DEG`` about a perpendicular axis
+    (the same least-aligned-world-axis rule ``heatmap.defect_camera`` uses,
+    so the tie-break is deterministic)."""
+    f = np.asarray(forward, dtype=np.float64)
+    f = f / np.linalg.norm(f)
+    limit = np.cos(np.radians(_CAMERA_SYMMETRY_LIMIT_DEG))
+    if max(abs(float(f @ d)) for d in _CAMERA_SYMMETRY_DIRS) < limit:
+        return f
+    axes = np.array([[0.0, 1.0, 0.0],
+                     [0.0, 0.0, 1.0],
+                     [1.0, 0.0, 0.0]])
+    a = axes[int(np.argmin(np.abs(axes @ f)))]
+    perp = a - float(a @ f) * f
+    perp = perp / np.linalg.norm(perp)
+    th = np.radians(_CAMERA_TILT_DEG)
+    return f * np.cos(th) + np.cross(perp, f) * np.sin(th)
+
+
 def initial_view_camera(verts, rverts, orig_defects, w, h, pad=24):
     """The shared before/after camera used by both the static and interactive
     views, so the interactive viewer opens where the static comparison left
@@ -158,10 +208,14 @@ def initial_view_camera(verts, rverts, orig_defects, w, h, pad=24):
     defect, or None when the mesh is clean or the defect sits at the bbox
     centre (callers fall back to ``_ISOMETRIC``); ``center``/``scale`` is the
     ``shared_frame`` tuple recomputed with that rotation so the scale fits
-    the rotation's view axes.
+    the rotation's view axes. A defect facing straight down a symmetry axis is
+    tilted off it (``_tilt_off_symmetry``) so the defected geometry is never
+    hidden by a perfectly symmetric view.
     """
     center = shared_frame([verts, rverts], w, h, pad=pad)[0]
     worst = worst_defect(verts, orig_defects)
     R = defect_camera(center, worst['centroid']) if worst is not None else None
+    if R is not None:
+        R = defect_camera(center, center + _tilt_off_symmetry(R[2]))
     center, scale = shared_frame([verts, rverts], w, h, pad=pad, rotation=R)
     return R, center, scale

@@ -151,7 +151,6 @@ STRINGS = {
             "• Manifold3D (Apache-2.0) — Stage 2 volumetric manifold solid rebuilding.\n"
             "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Array math, sparse/geometry algorithms and mesh IO across the tiers.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Robust tetrahedralization envelope fallback.\n"
-            "• pyrobust-predicates / Shewchuk (Public Domain) — Exact 3D geometric orientation.\n"
             "• sutura_geom Rust crates: robust, faer, rayon, num-* (MIT/Apache-2.0) — Exact predicates, sparse LU, morphology and the Flap/Dressing accelerators.\n"
             "• PySide6 / Qt (LGPL-3.0) — Native graphical user interface framework."
         ),
@@ -232,6 +231,7 @@ STRINGS = {
         'rec_reason_ftetwild': 'large openings / heavy self-intersections',
         'rec_reason_graft': 'openings / holes closable by a shell wrap',
         'rec_reason_dressing': 'complex folds / heavy self-intersections skin-coatable',
+        'rec_reason_tamponade': 'moderate holes/non-manifold pluggable from the inside',
         'rec_reason_not_scan': 'not a single-sided open scan',
         'rec_reason_poisson': 'single-sided open scan (%.2f)',
         'rec_reason_not_relief': 'no relief-like opening',
@@ -276,6 +276,8 @@ STRINGS = {
         'repair_log_graft_warn': 'Graft detail loss: %s',
         'repair_log_dressing': 'Dressing (viscosity coat): %d faces, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Dressing fidelity: %s',
+        'repair_log_tamponade': 'Tamponade (interior plug): %s plugs, %s faces, holes %s->%s',
+        'repair_log_tamponade_not': 'Tamponade: not adopted (%s)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
@@ -316,6 +318,15 @@ STRINGS = {
                                     'watertight and self-intersection-free. The '
                                     'shape may deform; the same option the '
                                     'non-watertight suggestion offers.',
+        'tamponade_label': 'Tamponade (fill holes from inside)',
+        'tamponade_tip': 'Opt-in (#17): plug each open Stage-1 boundary loop '
+                         'from the inside (no input triangle is deleted) and '
+                         'melt residual self-intersections in rolled-back '
+                         'layers, keeping >= 99% of the healthy faces. Runs '
+                         'after Stage 1 + Flap and before Graft/fTetWild; '
+                         'adopted only when the reload-honest holes + '
+                         'non-manifold count strictly falls. Off by default '
+                         'until measured on the corpus.',
         'try_dressing_btn': '\u26a0 Try Dressing (makes it watertight, but the '
                             'part may deform)',
         'try_dressing_btn_n': '\u26a0 Try Dressing on %d file(s) '
@@ -759,7 +770,6 @@ STRINGS = {
             "• Manifold3D (Apache-2.0) — Aşama 2 hacimsel manifold katı yeniden inşası.\n"
             "• numpy (BSD-3-Clause), scipy (BSD-3-Clause), trimesh (MIT) — Katmanlar genelinde dizi matematiği, seyrek/geometri algoritmaları ve mesh G/Ç.\n"
             "• pytetwild / fTetWild (MPL-2.0) — Sağlam tetrahedralizasyon son-çare zarfı.\n"
-            "• pyrobust-predicates / Shewchuk (Kamu Malı) — Kesin 3D geometrik yönelim.\n"
             "• sutura_geom Rust crate'leri: robust, faer, rayon, num-* (MIT/Apache-2.0) — Kesin predikatlar, seyrek LU, morfoloji ve Flap/Dressing hızlandırıcıları.\n"
             "• PySide6 / Qt (LGPL-3.0) — Yerel grafik kullanıcı arayüzü çatısı."
         ),
@@ -840,6 +850,7 @@ STRINGS = {
         'rec_reason_ftetwild': 'büyük açıklıklar / yoğun kendisiyle-kesişim',
         'rec_reason_graft': 'kabuk sarma ile kapatılabilir açıklıklar / delikler',
         'rec_reason_dressing': 'karmaşık katlanmalar / yoğun kendisiyle-kesişim kaplanabilir',
+        'rec_reason_tamponade': 'içeriden tıkanabilir orta düzey delik / manifoldu-bo-zuk',
         'rec_reason_not_scan': 'tek yönlü açık tarama değil',
         'rec_reason_poisson': 'tek yönlü açık tarama (%.2f)',
         'rec_reason_not_relief': 'kabartma benzeri açıklık yok',
@@ -884,6 +895,8 @@ STRINGS = {
         'repair_log_graft_warn': 'Graft detay kaybı: %s',
         'repair_log_dressing': 'Pansuman (Dressing): %d yüz, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Pansuman sadakati: %s',
+        'repair_log_tamponade': 'Tampon (içeriden tıkaç): %s tıkaç, %s yüz, delik %s->%s',
+        'repair_log_tamponade_not': 'Tampon: benimsenmedi (%s)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
@@ -927,6 +940,15 @@ STRINGS = {
                                     'kaplamayı benimser. Parça deforme olabilir; '
                                     'su geçirmez olmayan sonuçta önerilen '
                                     'seçeneğin aynısı.',
+        'tamponade_label': 'Tamponad (delikleri içeriden doldur)',
+        'tamponade_tip': 'İsteğe bağlı (#17): Aşama-1 sonrası kalan her açık '
+                         'sınır çevrimini içeriden tıkar (hiçbir giriş üçgeni '
+                         'silinmez) ve kalan kendisiyle-kesişimleri geri '
+                         'alınan katmanlarla eritir; sağlıklı yüzlerin >= %99\'u '
+                         'korunur. Aşama 1 + Flap sonrası, Graft/fTetWild '
+                         'öncesi çalışır; yalnızca yeniden-yükleme delik + '
+                         'manifoldu-bo-zuk sayısı kesin azalırsa benimsenir. '
+                         'Korpus ölçümüne kadar varsayılan olarak kapalı.',
         'try_dressing_btn': '\u26a0 Pansuman (Dressing) ile dene (su geçirmez yapar, ama '
                             'parça deforme olabilir)',
         'try_dressing_btn_n': '\u26a0 %d dosyada Pansuman (Dressing) ile dene (su geçirmez, '
@@ -1660,6 +1682,7 @@ class RepairWorker(QThread):
                  join_components=False, autorefine=False, ftetwild='auto',
                  indirect_autorefine=False, ftetwild_optimize=False,
                  flap=False,
+                 tamponade=False,
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
                  dressing_sigma_scale=None, dressing_force_adopt=False,
@@ -1682,6 +1705,7 @@ class RepairWorker(QThread):
         self._ftetwild = ftetwild
         self._indirect_autorefine = indirect_autorefine
         self._flap = flap
+        self._tamponade = tamponade
         self._dressing = dressing
         self._dressing_drain = dressing_drain
         self._dressing_defects = dressing_defects
@@ -1762,6 +1786,10 @@ class RepairWorker(QThread):
                 args.append('--flap')
             else:
                 args.append('--no-flap')
+            if self._tamponade:
+                args.append('--tamponade')
+            else:
+                args.append('--no-tamponade')
             if self._dressing or self._dressing_force_adopt:
                 args.append('--experimental-dressing')
                 if self._dressing_drain in ('none', 'half', 'full', 'deep'):
@@ -3182,6 +3210,14 @@ class OptionsDialog(QDialog):
         main.profile_btn_delete.clicked.connect(main._profile_delete)
         main._reload_intensity_combo()
         main._refresh_profile_controls()
+        # The two on-by-default switches (Tamponade interior plug, Flap
+        # surface hole fill) sit together on the Repair tab, so the
+        # Experimental tab stays strictly opt-in / off by default.
+        flap_tamp_row = QHBoxLayout()
+        flap_tamp_row.addWidget(main.chk_tamponade)
+        flap_tamp_row.addWidget(main.chk_flap)
+        flap_tamp_row.addStretch(1)
+        r.addLayout(flap_tamp_row)
         r.addStretch(1)
         self.tabs.addTab(repair, _t('opt_tab_repair'))
 
@@ -3194,7 +3230,6 @@ class OptionsDialog(QDialog):
         e.addWidget(warn)
         for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
                     main.chk_join_components, main.chk_edge_tiebreak,
-                    main.chk_flap,
                     main.chk_dressing, main.chk_dressing_force_adopt):
             e.addWidget(chk)
         _drain_row = QHBoxLayout()
@@ -3632,6 +3667,10 @@ class MainWindow(QMainWindow):
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
         self._flap = True             # batch-wide Flap surface hole fill (Stage 1, on by default)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
+        # Batch-wide Tamponade (#17, incl. Stent): ON by default. A missing or
+        # legacy config key is treated as ON so an old opt-in-era config cannot
+        # silently keep it off.
+        self._tamponade = bool(updater.load_config().get('tamponade', True))
         self._dressing_drain = None   # batch-wide Dressing drain override (None = preset)
         self._dressing_defects = None       # None = module default ('all')
         self._dressing_rmax_scale = None    # None = 1.0
@@ -3757,7 +3796,8 @@ class MainWindow(QMainWindow):
         self.chk_indirect_autorefine.setToolTip(_t('indirect_autorefine_tip'))
         self.chk_indirect_autorefine.toggled.connect(
             lambda on: setattr(self, '_indirect_autorefine', on))
-        # opt-in Flap surface hole fill (Stage 1, batch-wide; off by default)
+        # Flap surface hole fill (Stage 1, batch-wide; ON by default, shown on
+        # the Repair tab next to Tamponade, not the Experimental tab)
         self.chk_flap = QCheckBox(_t('flap_label'))
         self.chk_flap.setToolTip(_t('flap_tip'))
         self.chk_flap.setChecked(self._flap)
@@ -3776,6 +3816,12 @@ class MainWindow(QMainWindow):
         self.chk_dressing_force_adopt.setToolTip(_t('dressing_force_adopt_tip'))
         self.chk_dressing_force_adopt.toggled.connect(
             lambda on: setattr(self, '_dressing_force_adopt', on))
+        # opt-in Tamponade interior plug (#17, batch-wide; off by default until
+        # measured on the corpus)
+        self.chk_tamponade = QCheckBox(_t('tamponade_label'))
+        self.chk_tamponade.setToolTip(_t('tamponade_tip'))
+        self.chk_tamponade.setChecked(self._tamponade)
+        self.chk_tamponade.toggled.connect(self._on_tamponade_toggled)
         # Drain (healthy-region erode-back) override for Dressing; the empty
         # entry means "use the intensity preset default".
         self.cmb_dressing_drain = QComboBox()
@@ -3836,6 +3882,7 @@ class MainWindow(QMainWindow):
             (self.chk_flap, True),
             (self.chk_dressing, False),
             (self.chk_dressing_force_adopt, False),
+            (self.chk_tamponade, True),
         )
         self._options_dialog = OptionsDialog(self)
         self._sync_intensity_checkboxes()
@@ -4073,6 +4120,16 @@ class MainWindow(QMainWindow):
     def _on_si_mode_changed(self, index):
         """Store the batch-wide self-intersection policy."""
         self._si_mode = self.cmb_si_mode.itemData(index) or 'report'
+
+    def _on_tamponade_toggled(self, on):
+        """Store and persist the batch-wide Tamponade switch (ON by default)."""
+        self._tamponade = bool(on)
+        try:
+            cfg = updater.load_config()
+            cfg['tamponade'] = bool(on)
+            updater.save_config(cfg)
+        except Exception:  # noqa: BLE001 - persisting never blocks the toggle
+            pass
 
     def _on_dressing_drain_changed(self, index):
         """Map the Dressing drain combo to the CLI override ('' = preset)."""
@@ -4434,6 +4491,7 @@ class MainWindow(QMainWindow):
                                    indirect_autorefine=self._indirect_autorefine,
                                    ftetwild_optimize=self.chk_ftetwild_optimize.isChecked(),
                                    flap=self._flap,
+                                   tamponade=self._tamponade,
                                    dressing=self._dressing,
                                    dressing_drain=self._dressing_drain,
                                    dressing_defects=self._dressing_defects,
@@ -4906,6 +4964,16 @@ class MainWindow(QMainWindow):
                 _dmsg = _dwarns[0].get('message_tr' if _is_tr else 'message_en') \
                     or _dwarns[0].get('message_en', '')
                 lines.append(_t('repair_log_dressing_warn', _dmsg))
+        tp_r = data.get('tamponade')
+        if tp_r and tp_r.get('ran'):
+            if tp_r.get('adopted'):
+                lines.append(_t('repair_log_tamponade', tp_r.get('plugs', 0),
+                                tp_r.get('plug_faces', 0),
+                                tp_r.get('baseline_holes'),
+                                tp_r.get('candidate_holes')))
+            else:
+                lines.append(_t('repair_log_tamponade_not',
+                                tp_r.get('reason') or '?'))
         ia_r = data.get('experimental_indirect_autorefine')
         if ia_r and not ia_r.get('skipped') and 'error' not in ia_r:
             key = 'repair_log_indirect' if ia_r.get('adopted') \

@@ -91,6 +91,22 @@ def _run_all(topo_engine):
         rwv, rwt = repair.weld_reload_equivalent(v, t)
         sv, st = repair._separate_weld_collisions(v, t)
         d = defects.detect(v, t, with_indices=True)
+        df = topology.remove_duplicate_faces(t)
+        nf = topology.remove_null_faces(v, t)
+        dv_v, dv_t = topology.remove_duplicate_vertices(v, t)
+        unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
+        rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
+        inv_t = topology.invert_face_orientation(t)
+        topo_dict = topology.mesh_topology(v, t)
+        if len(t) <= 5000:
+            si_mask, si_cnt = topology.self_intersecting_faces(v, t)
+            si_entry = (si_mask.tobytes(), int(si_cnt))
+        else:
+            if topo_engine == 'rust':
+                si_mask, si_cnt = topology.self_intersecting_faces(v, t)
+                si_entry = (si_mask.tobytes(), int(si_cnt))
+            else:
+                si_entry = None
         results.append({
             'edge_table': (e.tobytes(), c.tobytes(), inv.tobytes()),
             'weld_vertices': (uv.tobytes(), uinv.tobytes()),
@@ -100,6 +116,14 @@ def _run_all(topo_engine):
             'repair_weld': (rwv.tobytes(), rwt.tobytes()),
             'separate': (sv.tobytes(), st.tobytes()),
             'detect': json.dumps(d, sort_keys=True),
+            'remove_duplicate_faces': df.tobytes(),
+            'remove_null_faces': nf.tobytes(),
+            'remove_duplicate_vertices': (dv_v.tobytes(), dv_t.tobytes()),
+            'remove_unreferenced_vertices': (unv_v.tobytes(), unv_t.tobytes()),
+            'remove_connected_components': (rcc_v.tobytes(), rcc_t.tobytes()),
+            'invert_face_orientation': inv_t.tobytes(),
+            'mesh_topology': json.dumps(topo_dict, sort_keys=True),
+            'self_intersecting_faces': si_entry,
         })
     return results
 
@@ -111,8 +135,20 @@ def test_parity():
     py = _run_all('python')
     rs = _run_all('rust')
     assert len(py) == len(rs)
+    all_m = _meshes()
     for i, (a, b) in enumerate(zip(py, rs)):
         for key in a:
+            if key == 'self_intersecting_faces' and a[key] is None:
+                # Big mesh: bounded oracle skipped pure-Python O(N^2); verify native Rust matches sutura_geom directly
+                v, t = all_m[i]
+                b_mask, b_cnt = b[key]
+                v_f64 = np.ascontiguousarray(v, dtype=np.float64)
+                t_i32 = np.ascontiguousarray(t, dtype=np.int32)
+                exp_mask, exp_cnt = topology._geom.self_intersecting_faces(v_f64, t_i32)
+                assert b_mask == exp_mask.tobytes() and b_cnt == int(exp_cnt), (
+                    'mismatch on big mesh %d vs sutura_geom' % i
+                )
+                continue
             assert a[key] == b[key], (
                 'parity mismatch on mesh %d key %s\npython=%r\nrust=%r'
                 % (i, key, a[key], b[key]))
@@ -138,6 +174,26 @@ def test_fallback_when_kernel_missing():
             assert not topology._use_rust()
             wv, wt = topology.weld_reload_equivalent(v, t)
             assert wv.tobytes() == topology._weld_reload_equivalent_numpy(v, t)[0].tobytes()
+            df = topology.remove_duplicate_faces(t)
+            assert df.tobytes() == topology._remove_duplicate_faces_numpy(t).tobytes()
+            nf = topology.remove_null_faces(v, t)
+            assert nf.tobytes() == topology._remove_null_faces_numpy(v, t).tobytes()
+            dv_v, dv_t = topology.remove_duplicate_vertices(v, t)
+            exp_dv_v, exp_dv_t = topology._remove_duplicate_vertices_numpy(v, t)
+            assert dv_v.tobytes() == exp_dv_v.tobytes() and dv_t.tobytes() == exp_dv_t.tobytes()
+            unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
+            exp_unv_v, exp_unv_t = topology._remove_unreferenced_vertices_numpy(v, t)
+            assert unv_v.tobytes() == exp_unv_v.tobytes() and unv_t.tobytes() == exp_unv_t.tobytes()
+            rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
+            exp_rcc_v, exp_rcc_t = topology._remove_connected_components_numpy(v, t, min_faces=2, remove_unref=True)
+            assert rcc_v.tobytes() == exp_rcc_v.tobytes() and rcc_t.tobytes() == exp_rcc_t.tobytes()
+            inv_t = topology.invert_face_orientation(t)
+            assert inv_t.tobytes() == topology._invert_face_orientation_numpy(t).tobytes()
+            topo_dict = topology.mesh_topology(v, t)
+            assert topo_dict == topology._mesh_topology_numpy(v, t)
+            si_mask, si_cnt = topology.self_intersecting_faces(v, t)
+            exp_si_mask, exp_si_cnt = topology._self_intersecting_faces_numpy(v, t)
+            assert si_mask.tobytes() == exp_si_mask.tobytes() and si_cnt == exp_si_cnt
     finally:
         topology._geom = saved
         topology.set_engine('auto')

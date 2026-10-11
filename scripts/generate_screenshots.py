@@ -30,6 +30,11 @@ Outputs (overwrites in assets/):
                        methods, Use method, External engines, Clear tags)
                        after a per-file method analysis, with the ranked
                        *Recommended methods* submenu expanded beside it
+  options-dialog.png - the Options window: the *Repair* tab (Tamponade + Flap
+                       switches, checked, plus fTetWild / Triage intensity / SI
+                       policy) stacked above the *Experimental* tab (Dressing
+                       and its sub-controls, plus the opt-in passes), so one
+                       image shows the controls added since the last refresh
 
 The meshes used are generated into a temp dir and removed afterwards.
 """
@@ -293,6 +298,51 @@ def run_context_menu(m, files, out_path):
     print('wrote', out_path)
 
 
+def run_options_dialog(m, out_path):
+    """Grab the Options window's two tabs that carry the new v0.9.0 controls
+    and composite them into one image.
+
+    The Tamponade and Flap switches live on the *Repair* tab and the Dressing
+    controls on the *Experimental* tab, so no single tab can show them all;
+    the two tab grabs are stacked vertically (Repair above Experimental) into
+    one PNG. The Tamponade box is forced checked for the screenshot (its
+    shipping default) with signals blocked, so the user's config is never
+    written and the capture is deterministic regardless of prior setting."""
+    app = QApplication.instance() or QApplication([])
+    m.apply_dark_theme(app)
+    win = m.MainWindow()
+    win.show()
+    win.chk_tamponade.blockSignals(True)
+    win.chk_tamponade.setChecked(True)
+    win.chk_tamponade.blockSignals(False)
+
+    dlg = win._options_dialog
+    dlg.show()
+    dlg.adjustSize()
+    app.processEvents()
+
+    grabs = []
+    for tab in (m.OptionsDialog.TAB_REPAIR, m.OptionsDialog.TAB_EXPERIMENTAL):
+        dlg.open_tab(tab)
+        app.processEvents()
+        grabs.append(dlg.grab())
+
+    gap = 10
+    width = max(pm.width() for pm in grabs)
+    height = sum(pm.height() for pm in grabs) + gap * (len(grabs) - 1)
+    canvas = QPixmap(width, height)
+    canvas.fill(Qt.transparent)
+    painter = QPainter(canvas)
+    y = 0
+    for pm in grabs:
+        painter.drawPixmap(0, y, pm)
+        y += pm.height() + gap
+    painter.end()
+    canvas.save(out_path)
+    dlg.close()
+    print('wrote', out_path)
+
+
 def main():
     os.environ['SUTURA'] = _repo_cli_wrapper()
     m = load_gui()
@@ -311,6 +361,7 @@ def main():
                          out_path=os.path.join(ASSETS, 'before-after-panel.png'))
         run_context_menu(m, files,
                          out_path=os.path.join(ASSETS, 'method-menu.png'))
+        run_options_dialog(m, os.path.join(ASSETS, 'options-dialog.png'))
     finally:
         shutil.rmtree(sample_dir, ignore_errors=True)
     print('done')

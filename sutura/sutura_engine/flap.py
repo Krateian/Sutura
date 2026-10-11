@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import numpy as np
 import scipy.sparse as sp
-import scipy.sparse.csgraph as csgraph
 import scipy.sparse.linalg as spla
 from scipy.spatial import cKDTree
+
+import topology
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +90,7 @@ def _component_stats(v2, t2, f_rfc, f_ffo, f_frs, angle_deg=2.0):
     two = f_rfc == 2
     fa = f_ffo[f_frs[two]]
     fb = f_ffo[f_frs[two] + 1]
-    g = sp.coo_matrix((np.ones(len(fa)), (fa, fb)), shape=(F, F))
-    _, labels = csgraph.connected_components(g, directed=False)
+    _, labels = topology.connected_components((F, np.column_stack((fa, fb))))
     nu = int(labels.max()) + 1
     vol_c = np.zeros(nu)
     np.add.at(vol_c, labels, vol_f)
@@ -345,9 +345,7 @@ def split_non_manifold(verts, tris):
         cmax = np.where(starts == b, corner_s, corner_e)
         src = np.concatenate([cmin[i0], cmax[i0]])
         dst = np.concatenate([cmin[i1], cmax[i1]])
-        adj = sp.coo_matrix((np.ones(len(src), dtype=np.int8), (src, dst)),
-                            shape=(ncorner, ncorner)).tocsr()
-        _nc, comp = csgraph.connected_components(adj, directed=False)
+        _nc, comp = topology.connected_components((ncorner, np.column_stack((src, dst))))
         comp = comp.astype(np.int64)
     else:
         comp = np.arange(ncorner, dtype=np.int64)
@@ -1108,8 +1106,16 @@ def _vertex_normals(verts, tris):
 # ---------------------------------------------------------------------------
 # fairing (discrete biharmonic / thin-plate with C1 ghost boundary)
 # ---------------------------------------------------------------------------
-def fair_patch(P, faces, n_boundary, ghost_pos):
-    """Fair the interior patch vertices with a biharmonic solve.
+def fair_patch_energy(P, faces, n_boundary, ghost_pos, order=2,
+                      data=None, lam=0.0):
+    """Fair the interior patch vertices with a discrete energy solve.
+
+    ``order`` 1 selects the membrane/umbrella energy (graph Laplacian ``G``),
+    2 the biharmonic thin-plate energy (``GᵀG = G²``, the historical solve).
+    When ``data`` (one target per interior vertex) and ``lam > 0`` are given, a
+    soft data term ``lam · Σ‖x_i − data_i‖²`` pulls each interior vertex toward
+    its target (the projection onto the parent reference surface, Arif's
+    "laser" guide) so a dense cap is not left free to overshoot.
 
     P: (n,3) flap vertices (first ``n_boundary`` are the fixed hole rim).
     ghost_pos: (n_boundary,3) C1 ghost positions (fixed) connected one-to-one
@@ -1130,7 +1136,7 @@ def fair_patch(P, faces, n_boundary, ghost_pos):
     W.data[:] = 1.0
     deg = np.asarray(W.sum(1)).ravel()
     L = sp.diags(deg) - W
-    M = (L.T @ L).tocsc()
+    M = (L if order == 1 else (L.T @ L)).tocsc()
 
     X = np.zeros((ntot, 3))
     X[:len(P)] = P
@@ -1140,6 +1146,9 @@ def fair_patch(P, faces, n_boundary, ghost_pos):
                             np.arange(len(P), ntot)])
     A = M[unknown][:, unknown] + sp.identity(len(unknown), format="csc") * 1e-9
     rhs = -(M[unknown][:, fixed] @ X[fixed])
+    if data is not None and lam > 0:
+        A = A + sp.identity(len(unknown), format="csc") * lam
+        rhs = rhs + lam * np.asarray(data, dtype=np.float64)
     try:
         if len(unknown) > FAIR_DIRECT_MAX:
             sol = np.empty((len(unknown), 3))
@@ -1155,6 +1164,88 @@ def fair_patch(P, faces, n_boundary, ghost_pos):
         sol = sol.reshape(-1, 3)
     P[unknown] = sol
     return P
+
+
+def fair_patch(P, faces, n_boundary, ghost_pos):
+    """Historical thin-plate (biharmonic) fairing; see :func:`fair_patch_energy`."""
+    return fair_patch_energy(P, faces, n_boundary, ghost_pos, 2, None, 0.0)
+
+
+# Face-count ceiling above which the per-loop safety check is skipped entirely
+# (same cap as the Rust `SAFETY_SI_MAX_FACES`): the patch reads as accepted.
+_SI_MAX_FACES = 200000
+
+
+def _reload_weld_remap(verts):
+    """First-occurrence map of exactly float32-coincident vertices (the weld a
+    STL reload performs)."""
+    key = np.ascontiguousarray(verts, dtype=np.float32).view(np.uint32)
+    seen = {}
+    remap = np.empty(len(verts), dtype=np.int64)
+    for i in range(len(verts)):
+        k = (int(key[i, 0]), int(key[i, 1]), int(key[i, 2]))
+        idx = seen.get(k)
+        if idx is None:
+            seen[k] = i
+            idx = i
+        remap[i] = idx
+    return remap
+
+
+def patch_safety(base_v, base_t, add_v, patch_faces, rim_edges):
+    """``(safe, reason)`` for a candidate patch.
+
+    Rejects a patch that (a) makes any of its own faces properly self-intersect
+    (exact classifier over the whole candidate; skipped above ``_SI_MAX_FACES``,
+    which reads as accepted) or (b) leaves a RIM edge that is not shared by
+    exactly two faces after an exact float32 reload-weld (a split rim edge /
+    T-junction, a doubled seam, a crack).  Interior patch edges are not checked:
+    a float32-coincident interior vertex is separated later by
+    ``separate_coincident_stl``.  Cheap when the exact classifier is
+    unavailable: the SI scan degrades to "unknown" and only the seam check runs.
+    """
+    base_v = np.asarray(base_v, dtype=np.float64)
+    base_t = np.asarray(base_t, dtype=np.int64)
+    add_v = np.asarray(add_v, dtype=np.float64)
+    pf = np.asarray(patch_faces, dtype=np.int64)
+    if len(pf) == 0:
+        return True, ''
+    if len(base_t) + len(pf) > _SI_MAX_FACES:
+        return True, ''
+    cand_v = np.vstack([base_v, add_v]) if len(add_v) else base_v
+    cand_t = np.vstack([base_t, pf]) if len(base_t) else pf
+    nb = len(base_t)
+    nadd = len(pf)
+
+    # (a) exact self-intersection involving a patch face.
+    try:
+        import sutura_geom as _sg
+        mask, cnt = _sg.self_intersecting_faces(
+            cand_v.astype(np.float64), cand_t.astype(np.int32))
+        if int(cnt) >= 0:
+            mask = np.asarray(mask, dtype=bool)
+            if mask.size == len(cand_t) and bool(mask[nb:nb + nadd].any()):
+                return False, 'si'
+    except Exception:  # noqa: BLE001 - absence of the classifier is not an error
+        pass
+
+    # (b) reload-weld seam: every rim edge must be shared by exactly two faces.
+    remap = _reload_weld_remap(cand_v)
+    if bool(np.any(remap != np.arange(len(remap), dtype=np.int64))):
+        return False, 'coincident'
+    counts = {}
+    for tri in cand_t:
+        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
+        a, b, c = int(remap[a]), int(remap[b]), int(remap[c])
+        for u, w in ((a, b), (b, c), (c, a)):
+            k = (u, w) if u < w else (w, u)
+            counts[k] = counts.get(k, 0) + 1
+    for (ra, rb) in rim_edges:
+        u, w = int(remap[int(ra)]), int(remap[int(rb)])
+        k = (u, w) if u < w else (w, u)
+        if counts.get(k, 0) != 2:
+            return False, 'reload_nm'
+    return True, ''
 
 
 def weld_open_chains(v, t, max_rounds=12, max_merge_frac=None, sites=None,
@@ -1372,9 +1463,7 @@ def drop_lone_triangles(v, t):
     pair_start = run_start[run_count == 2]
     f1 = fo[pair_start]
     f2 = fo[pair_start + 1]
-    adj = sp.coo_matrix((np.ones(len(f1), dtype=np.int8), (f1, f2)),
-                        shape=(len(t), len(t))).tocsr()
-    _nc, comp = csgraph.connected_components(adj, directed=False)
+    _nc, comp = topology.connected_components((len(t), np.column_stack((f1, f2))))
     comp = comp.astype(np.int64)
     size = np.bincount(comp)
     keep = size[comp] >= 2
@@ -1396,12 +1485,14 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
                      separate_stl=True, bridge_open_chains=False,
                      weld_max_frac=0.02, orient="reverse", avoid_coplanar=True,
                      coplanar_frac=0.05, coplanar_cos=0.99,
-                     sliver_cleanup=False):
+                     sliver_cleanup=False, time_budget=None):
     """Cover every simple boundary loop with a fair surface flap.
 
     The pure-numpy reference oracle.  ``flap_fill`` dispatches to the Rust port
     when the extension exposes it; this function remains the fallback and the
-    parity oracle for the port.
+    parity oracle for the port.  ``time_budget`` bounds the Rust per-loop
+    candidate selector and is accepted here only for signature parity (the
+    oracle has no selector, so it is ignored).
 
     ``collect_quality`` adds aggregate patch triangle-quality percentiles
     (min-angle p5/p50, aspect p50/p95) for the DP patch *before* refinement and
@@ -1416,6 +1507,7 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
               "patch_faces": 0, "new_vertices": 0, "large_loops_fan": 0,
               "refine": bool(refine), "fair": bool(fair), "split": None,
               "loops_skipped_coplanar": 0, "loops_skipped_flat": 0,
+              "loops_skipped_safety": 0,
               "non_simple_reported": 0, "errors": [], "loop_log": []}
     _q_before_min, _q_before_asp = [], []
     _q_after_min, _q_after_asp = [], []
@@ -1614,8 +1706,11 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
                             faces = [(a, c, b) for (a, b, c) in faces]
                         break
 
+        # Snapshot the refined, pre-fair patch. The fairing can fold on a
+        # curved rim; the coplanar guard below falls back to this unfaired patch
+        # (still refine-only Flap) instead of discarding the whole loop.
+        P_prefair = P.copy() if (fair and len(P) > m) else None
         if fair and len(P) > m:
-            loop_set = set(int(x) for x in loop_arr)
             centroid = pts.mean(axis=0)
             ghost_pos = np.zeros((m, 3))
             ell = max(float(target), 1e-12) * _fair_fraction(m)
@@ -1632,7 +1727,21 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
                 tng = d - float(np.dot(d, nrm)) * nrm   # inward tangent
                 tn = np.linalg.norm(tng)
                 ghost_pos[i] = p - ell * (tng / tn) if tn > 1e-9 else p
-            P = fair_patch(P, faces, m, ghost_pos)
+            # Membrane (order 1) fairing is bounded by the rim, so a curved rim
+            # no longer makes the dense interior overshoot and fold the patch
+            # over itself.  `fair_patch_energy` can additionally take a
+            # reference-surface data term when a caller supplies one.  Opt-in
+            # (SUTURA_FLAP_MEMBRANE) so the default thin-plate path is
+            # byte-identical.  SUTURA_FLAP_REF (the wider Tamponade
+            # ReferenceSurface data term) is Rust-only: this numpy oracle has no
+            # ReferenceSurface, so it degrades to the membrane path.
+            _mem = __import__('os').environ.get('SUTURA_FLAP_MEMBRANE')
+            _ref = __import__('os').environ.get('SUTURA_FLAP_REF')
+            if ((_mem is not None and _mem not in ('', '0'))
+                    or (_ref is not None and _ref not in ('', '0'))):
+                P = fair_patch_energy(P, faces, m, ghost_pos, 1, None, 0.0)
+            else:
+                P = fair_patch(P, faces, m, ghost_pos)
 
         # Final sliver cleanup: remove degenerate/sliver patch triangles (the
         # DP can emit zero-area triangles on crack/pinch loops and thin slivers
@@ -1710,9 +1819,42 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
         if avoid_coplanar and _coplanar_collides(
                 P, faces, [], extra_ref,
                 overlap_frac=coplanar_frac, cos_tol=coplanar_cos):
-            report["loops_skipped_coplanar"] += 1
-            log["action"] = "coplanar"
-            continue
+            # The patch overlaps. When the fairing introduced the overlap (the
+            # unfaired refined patch is clean), drop the fairing and keep the
+            # refined patch instead of discarding the loop; skip only when the
+            # unfaired patch also overlaps (the genuinely protected case: a
+            # double surface / a patch that folds without fairing).
+            _ff = __import__('os').environ.get('SUTURA_FLAP_FAIR_FALLBACK')
+            fair_fallback = _ff is not None and _ff != '' and _ff != '0'
+            pre_clean = (fair_fallback and P_prefair is not None and
+                         not _coplanar_collides(
+                             P_prefair, faces, [], extra_ref,
+                             overlap_frac=coplanar_frac, cos_tol=coplanar_cos))
+            if pre_clean:
+                P = P_prefair
+            else:
+                report["loops_skipped_coplanar"] += 1
+                log["action"] = "coplanar"
+                continue
+
+        # Per-loop safety check: never commit a patch that self-intersects or
+        # leaves a reload-non-manifold seam; drop it and leave the hole for a
+        # later tier instead (the coplanar guard already covers folds).  Opt-in
+        # with the membrane fairing so the default path is byte-identical.
+        _mem = __import__('os').environ.get('SUTURA_FLAP_MEMBRANE')
+        _ref = __import__('os').environ.get('SUTURA_FLAP_REF')
+        if ((_mem is not None and _mem not in ('', '0'))
+                or (_ref is not None and _ref not in ('', '0'))):
+            _safe, _why = patch_safety(out_v, out_t, P[m:], gfaces,
+                                       [(int(loop_arr[i]), int(loop_arr[(i + 1) % m]))
+                                        for i in range(m)])
+            if not _safe:
+                report["loops_skipped_safety"] = \
+                    report.get("loops_skipped_safety", 0) + 1
+                report.setdefault("safety_rejections", []).append(
+                    {"m": int(m), "reason": _why})
+                log["action"] = "safety"
+                continue
 
         for j in range(m, len(P)):
             out_v.append(P[j])
@@ -1768,8 +1910,12 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
               drop_lone_tris=True, weld_cracks=True, split_nm=True,
               separate_stl=True, bridge_open_chains=False, weld_max_frac=0.02,
               orient="reverse", avoid_coplanar=True, coplanar_frac=0.05,
-              coplanar_cos=0.99, sliver_cleanup=False):
+              coplanar_cos=0.99, sliver_cleanup=False, time_budget=None):
     """Fill boundary loops, using the Rust port when the extension has it.
+
+    ``time_budget`` (seconds) bounds the Rust per-loop candidate selector so the
+    alternative search stops at its preset budget and leaves the remaining loops
+    to Stage-1; the numpy oracle has no selector and ignores it.
 
     Dispatches to ``sutura_geom.flap_fill`` (bit-for-bit parity with
     :func:`flap_fill_python`, verified by ``tests/test_flap_rust_parity.py``)
@@ -1790,7 +1936,8 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
                 bridge_open_chains=bridge_open_chains,
                 weld_max_frac=weld_max_frac, orient=orient,
                 avoid_coplanar=avoid_coplanar, coplanar_frac=coplanar_frac,
-                coplanar_cos=coplanar_cos, sliver_cleanup=sliver_cleanup)
+                coplanar_cos=coplanar_cos, sliver_cleanup=sliver_cleanup,
+                time_budget=time_budget)
             return (np.asarray(rv, dtype=np.float64),
                     np.asarray(rt, dtype=np.int64), dict(rrep))
         except Exception:  # noqa: BLE001 - a repair tier never crashes
@@ -1803,4 +1950,4 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
         bridge_open_chains=bridge_open_chains, weld_max_frac=weld_max_frac,
         orient=orient, avoid_coplanar=avoid_coplanar,
         coplanar_frac=coplanar_frac, coplanar_cos=coplanar_cos,
-        sliver_cleanup=sliver_cleanup)
+        sliver_cleanup=sliver_cleanup, time_budget=time_budget)

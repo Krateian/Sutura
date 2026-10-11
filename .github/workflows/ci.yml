@@ -175,6 +175,21 @@ jobs:
       - name: "Test: Flap hole filler"
         run: ./venv/bin/python tests/test_flap.py
 
+      # Tamponade (#17) is opt-in and its Rust core is covered by the
+      # rust-geom cargo tests; this suite pins the Python integration surface
+      # (numpy + fakes only, no extension / pymeshlab required).
+      - name: "Test: Tamponade integration (method #17)"
+        run: ./venv/bin/python tests/test_tamponade_integration.py
+
+      # topology.connected_components replaces scipy.sparse.csgraph (Phase 1);
+      # pin it against a scipy oracle. Runs without the Rust extension (the
+      # rust-geom job covers the Rust kernel), exercising the numpy fallback.
+      - name: "Test: connected components (scipy parity)"
+        run: ./venv/bin/python tests/test_connected_components.py
+
+      - name: "Test: topology parity (numpy fallback, no extension)"
+        run: ./venv/bin/python tests/test_topology_parity.py
+
       - name: "Test: update-check shutdown"
         run: ./venv/bin/python tests/test_update_check_shutdown.py
 

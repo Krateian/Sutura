@@ -135,6 +135,37 @@ def dressing_available() -> Tuple[bool, Optional[str]]:
         return False, 'dressing unavailable: %s' % e
 
 
+def tamponade_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 17 needs the Rust Tamponade core.
+
+    Available when ``sutura_engine.tamponade`` (the wrapper) is importable and
+    the installed ``sutura_geom`` advertises ``TAMPONADE_SUPPORTED`` plus the
+    ``tamponade`` function."""
+    try:
+        if (importlib.util.find_spec('sutura_engine.tamponade') is None
+                and importlib.util.find_spec('tamponade') is None):
+            return False, 'sutura_engine.tamponade is not available'
+        try:
+            spec = importlib.util.find_spec('sutura_geom')
+        except Exception as e:
+            return False, 'rust extension sutura_geom is not installed (%s)' % e
+        if spec is None:
+            return False, 'rust extension sutura_geom is not installed'
+        try:
+            import sutura_geom
+            if not getattr(sutura_geom, 'TAMPONADE_SUPPORTED', False) \
+                    or not hasattr(sutura_geom, 'tamponade'):
+                return False, ('sutura_geom has no tamponade support '
+                               '(rebuild needed)')
+        except Exception as e:
+            return False, 'sutura_geom import failed: %s' % e
+        if importlib.util.find_spec('numpy') is None:
+            return False, 'numpy is not available'
+        return True, None
+    except Exception as e:
+        return False, 'tamponade unavailable: %s' % e
+
+
 def graft_available() -> Tuple[bool, Optional[str]]:
     """Registry method 13 needs the Rust morphology core (Cast)."""
     try:

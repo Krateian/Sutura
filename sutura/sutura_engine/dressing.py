@@ -762,24 +762,19 @@ def _decimate_coat(ml, v, t, target_faces):
 def _component_labels(t):
     """Vertex-connected face components as an ``(F,)`` int64 label array.
 
-    Faces are grouped when they share a vertex.  Uses scipy's sparse
-    connected-components; returns ``None`` when scipy is unavailable (the
-    caller then leaves the coat untouched rather than risk a wrong split).
+    Faces are grouped when they share a vertex.  Uses topology.connected_components.
     """
     F = len(t)
     if F == 0:
         return None
     try:
-        from scipy.sparse import coo_matrix
-        from scipy.sparse.csgraph import connected_components
+        import topology
+        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+        nv = int(t.max()) + 1
+        _n, vlab = topology.connected_components((nv, e))
+        return vlab[t[:, 0]]
     except Exception:  # noqa: BLE001 - optional fast path
         return None
-    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
-    nv = int(t.max()) + 1
-    g = coo_matrix((np.ones(len(e), np.int8), (e[:, 0], e[:, 1])),
-                   shape=(nv, nv))
-    _n, vlab = connected_components(g, directed=False)
-    return vlab[t[:, 0]]
 
 
 def _clean_coat_components(v0, t0, cv, ct, voxel):

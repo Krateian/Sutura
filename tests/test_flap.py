@@ -332,6 +332,41 @@ def test_flap_off_leaves_no_report_key():
     assert 'flap' not in rep, rep.get('flap')
 
 
+def test_flap_safety_net_does_not_rerun_tamponade():
+    # HIGH-1 safety net: the flap-OFF re-run must skip the opt-in Tamponade
+    # tier, which already ran once on the primary flap-ON attempt (the
+    # fallback candidate is usually discarded). Regression for the double
+    # Tamponade invocation (two expensive Rust tier passes per --tamponade run).
+    import tempfile
+    m = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
+    work = tempfile.mkdtemp(prefix='flaptamp-')
+    src = os.path.join(work, 'cube.obj')
+    m.export(src)
+
+    seen = []
+    real = repair.repair_mesh_from_arrays
+
+    def fake(v, t, tmpdir, **kw):
+        seen.append(kw.get('tamponade'))
+        v = np.asarray(v, np.float32)
+        t = np.asarray(t, np.int32)
+        # One face removed -> the flap-ON final is not strict-watertight, so
+        # the safety net fires and forces the flap-OFF re-run. The input is OBJ
+        # so P-WELD (STL-only, can cap a one-triangle hole) does not intervene.
+        return {'flap': {'adopted': True}}, v, t[:-1]
+
+    repair.repair_mesh_from_arrays = fake
+    try:
+        repair.repair_file(src, os.path.join(work, 'cube_fixed.obj'), work,
+                           mode='medium', deep_repair='off', ftetwild=False,
+                           graft=False, flap=True, tamponade=True)
+    finally:
+        repair.repair_mesh_from_arrays = real
+
+    assert seen and seen[0] is True, seen
+    assert len(seen) == 2 and seen[1] is False, seen
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):

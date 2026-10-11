@@ -427,7 +427,7 @@ fn gradient_normal(
 /// Regularised QEF minimiser.  `a` is the accumulated normal outer-product
 /// matrix, `b` the accumulated `n * (n . p)` vector, `mass` the mean Hermite
 /// point.  Minimises `|A x - b|^2 + lambda |x - mass|^2`.
-fn solve_qef(a: &[[f64; 3]; 3], b: &[f64; 3], mass: [f64; 3], reg: f64) -> [f64; 3] {
+pub(crate) fn solve_qef(a: &[[f64; 3]; 3], b: &[f64; 3], mass: [f64; 3], reg: f64) -> [f64; 3] {
     let (evals, evecs) = jacobi_eigen(a);
     let lambda = reg * (evals[0] + evals[1] + evals[2]).abs() / 3.0 + 1e-9;
     let breg = [
@@ -446,9 +446,16 @@ fn solve_qef(a: &[[f64; 3]; 3], b: &[f64; 3], mass: [f64; 3], reg: f64) -> [f64;
     x
 }
 
+/// Alias for solve_qef used by the Lava octree dual contouring engine.
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn solve_qef_sym3(a: &[[f64; 3]; 3], b: &[f64; 3], mass: [f64; 3], reg: f64) -> [f64; 3] {
+    solve_qef(a, b, mass, reg)
+}
+
 /// Jacobi eigen-decomposition of a symmetric 3x3 matrix.  Returns
 /// `(eigenvalues, eigenvectors-as-columns)`.
-fn jacobi_eigen(input: &[[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
+pub(crate) fn jacobi_eigen(input: &[[f64; 3]; 3]) -> ([f64; 3], [[f64; 3]; 3]) {
     let mut a = *input;
     let mut v = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     for _ in 0..32 {

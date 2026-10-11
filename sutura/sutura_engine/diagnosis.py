@@ -161,6 +161,17 @@ def _count_self_intersections(v: np.ndarray, t: np.ndarray) -> Tuple[int, bool]:
     import pymeshlab as ml
     faces = len(t)
     try:
+        try:
+            from .. import topology
+        except (ImportError, ValueError):
+            import topology
+        if topology.native_si_enabled():
+            _, count = topology.self_intersecting_faces(v, t)
+            if count >= 0:
+                return int(count), False
+    except Exception:
+        pass
+    try:
         if faces <= SI_COUNT_MAX_FACES:
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -329,7 +340,7 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         return analysis
 
     # Cache lookup
-    version = '0.8.1'
+    version = '0.9.0'
     try:
         from repair import VERSION
         version = VERSION

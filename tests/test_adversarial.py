@@ -4,7 +4,12 @@
 Each generated input must be rejected with a non-zero exit code and an
 'error' in the JSON report. A silent exit-0 success on malformed input is
 the failure mode this guards (the tool once returned 0 on every failure).
-Usage: test_adversarial.py  (expects the installed `sutura` CLI)
+
+The CLI defaults to the in-repo entry point (this interpreter running
+``sutura/repair.py``) so the working tree is exercised; set ``SUTURA`` to use
+an installed CLI or launcher instead. Run with an interpreter that can import
+``repair.py``'s dependencies (the venv with pymeshlab).
+Usage: test_adversarial.py
 """
 import json
 import os
@@ -13,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 
-SUTURA = os.environ.get('SUTURA', os.path.expanduser('~/.local/bin/sutura'))
+import _cli
 
 CUBE = [
     ((-1, -1, -1), (1, -1, -1), (1, 1, -1)), ((-1, -1, -1), (1, 1, -1), (-1, 1, -1)),
@@ -83,7 +88,8 @@ def build(tmp):
 
 def run_sutura(path):
     try:
-        r = subprocess.run([SUTURA, path], capture_output=True, text=True, timeout=120)
+        r = subprocess.run(_cli.cli_command([path]), capture_output=True,
+                           text=True, timeout=120)
     except subprocess.TimeoutExpired:
         return 124, {}   # hung, not a clean rejection -> treated as a failure
     try:
