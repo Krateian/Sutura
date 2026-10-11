@@ -10,6 +10,19 @@ users — the own exact geometry core (`rust/sutura-geom`), the own mesh-type
 classifier, the opt-in experimental tiers — sit behind flags and the GUI's
 Options window, never in the way of the plain repair.
 
+## Agent skills (read first)
+
+Two skill files in `.claude/skills/` are the single source of truth for how
+agents work in this repo. Claude Code loads them automatically; OpenCode and
+other agents must read them before starting:
+
+- `.claude/skills/sutura-dev/SKILL.md` — daily rules: graphify-first code
+  navigation (`graphify query`, `graphify update .` after commits), worker
+  discipline, shape-based validation, product defaults, git hygiene.
+- `.claude/skills/sutura-release/SKILL.md` — the full release checklist.
+
+When a rule changes, edit the skill file; do not duplicate it here.
+
 ## How it runs
 
 - Real entry point is `sutura/repair.py` (JSON report to stdout; `--human` for a readable report; exit 0 on success or a stage-1-only partial, exit 1 on a hard error like malformed input). `bin/sutura` is only a bash wrapper: `exec $HOME/.local/share/sutura/venv/bin/python .../repair.py "$@"`. Two read-only modes share the same entry point: `sutura validate model.stl` (first positional arg `validate`) analyzes without repairing, and `sutura model.stl --dry-run` reports the would-do plan — both write NO output file. Mode/eşik resolution for repair AND dry-run comes from the shared `repair.resolve_mode_params(mode, type, conf)` (single source of truth, like classification.py).
@@ -507,6 +520,9 @@ The new method immediately participates in `--list-methods`, `--analyze` recomme
   every release — the user does not need to ask or remind.
 
 ## Release checklist
+
+> The canonical, current checklist is `.claude/skills/sutura-release/SKILL.md`.
+> Read it first; the notes below are older background.
 
 Get the user's explicit go-ahead to start a release, asked for by name
 ("should I cut vX.Y.Z now?"), before step 1 — green CI, a merged PR, or
