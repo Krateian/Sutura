@@ -473,6 +473,13 @@ def test_tamponade_off_preferred_rules():
         on, {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 2}) is False
     # A coverage tie keeps the Tamponade result.
     assert repair._tamponade_off_preferred(on, dict(on)) is False
+    # A lower outside-the-input leak (G12) also lets OFF replace ON.
+    on_leak = {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 1,
+               'leak_mm': 1.83}
+    off_leak = {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 1,
+                'leak_mm': 0.0}
+    assert repair._tamponade_off_preferred(on_leak, off_leak) is True
+    assert repair._tamponade_off_preferred(off_leak, on_leak) is False
     print('ok  OFF replaces ON only with more coverage and no regression')
 
 

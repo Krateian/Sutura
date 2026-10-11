@@ -6,18 +6,30 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Graft could adopt a collapsed fragment.** Graft's adoption only checked
+  watertightness and the healthy-region deviation, so a candidate that rebuilt
+  the object into a small fragment passed (`thingi10k_100827`: a 37 mm scan
+  reduced to a 7 mm fragment, `holes 0 / nm 0 / fidelity_ok true`). Graft now
+  computes the **input coverage** (the fraction of input surface samples within
+  tolerance of the result) and reports `input_coverage` / `coverage_ok`; the
+  auto ladder no longer adopts a watertight candidate whose coverage is below
+  `GRAFT_MIN_INPUT_COVERAGE` (0.5, chosen from the measured 17-mesh A18 gap:
+  every accepted Graft candidate scores 0.625-1.000, the fragment 0.013) and
+  falls through to fTetWild / the next tier. Accepted results are unchanged
+  (the gate only rejects the collapse class).
 - **Tamponade could make the final shape worse than `--no-tamponade`.** The
   Tamponade adoption gate is topological-only (the reload-honest holes +
   non-manifold count must fall) and is decided on the pre-chain / stage-1 mesh,
   so it could not observe that a later deep tier rebuilt the object into a
-  small fragment (thingi10k_100827: a 37 mm scan reduced to a 7 mm fragment
-  while still watertight). `repair_file` now adds a final safety net that
-  mirrors the Flap one: when Tamponade was adopted and the saved result
-  collapses to less than `TAMP_COLLAPSE_BBOX_FRAC` (0.5) of the input's
-  bounding-box diagonal, it re-runs once with Tamponade OFF and keeps the
-  candidate that covers more of the input without regressing damage or part
-  count. Tamponade is discarded only when the no-tamponade result is actually
-  better, so every existing adoption stays byte-identical.
+  small fragment (thingi10k_100827). `repair_file` adds a final safety net that
+  mirrors the Flap one: when Tamponade was adopted and the saved result either
+  collapses below `TAMP_COLLAPSE_BBOX_FRAC` (0.5) of the input's bounding-box
+  diagonal OR leaks material outside the input solid beyond
+  `TAMP_LEAK_TRIGGER_FRAC` (1 % of the diagonal; the 100827 leak was 4.9 %), it
+  re-runs once with Tamponade OFF and keeps the candidate that does not leak
+  further and covers more of the input. Tamponade is discarded only when the
+  no-tamponade result is actually better, so every existing adoption stays
+  byte-identical.
 
 ## [0.9.0] - 2026-10-11
 

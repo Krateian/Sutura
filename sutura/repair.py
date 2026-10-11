@@ -3831,17 +3831,26 @@ def _flap_off_preferred(on_verdict, off_verdict):
     return _score(off_verdict) < _score(on_verdict)
 
 
-# Tamponade final safety net (G11 release blocker). The Tamponade adoption gate
-# is decided on the pre-chain / stage-1 mesh and only proves that damage
+# Tamponade final safety net (G11/G12 release blocker). The Tamponade adoption
+# gate is decided on the pre-chain / stage-1 mesh and only proves that damage
 # (holes + non-manifold) falls; it says nothing about the FINAL shape. On
 # thingi10k_100827 a Tamponade prepass adoption (holes 6 -> 4 on a 71-face
 # scan) let the downstream deep tier rebuild the 37 mm object into a 7 mm
-# fragment, so the saved STL was geometrically far off the input while still
-# watertight. This check flags exactly that observable collapse: the saved
-# result no longer spans the input's bounding box. repair_file then re-runs
-# once with Tamponade OFF and keeps the candidate that covers more of the
-# input (never worse on damage or part count).
+# fragment (G11: bbox-collapse trigger), and even after the Graft coverage gate
+# (G12) stopped the fragment the Tamponade path left a 1.83 mm outside-the-input
+# leak the no-tamponade path did not have (leak trigger). repair_file re-runs
+# once with Tamponade OFF and keeps the candidate that covers more of the input
+# and does not leak further outside it (never worse on damage or part count).
 TAMP_COLLAPSE_BBOX_FRAC = 0.5
+# Outside-the-input leak trigger: a Tamponade-adopted result whose added
+# vertices lie outside the input solid beyond this fraction of the input
+# diagonal re-runs Tamponade OFF. 1 % is above the pre-existing (non-Tamponade)
+# leak of heavily folded meshes (ornate-frame 0.09 %) but far below the
+# 100827 Tamponade leak (4.9 %).
+TAMP_LEAK_TRIGGER_FRAC = 0.01
+# Above this face count the leak metric is skipped (its input-face key set +
+# BVH would dominate the run) and only the cheap bbox trigger applies.
+TAMP_LEAK_MAX_FACES = 150000
 
 
 def _bbox_diagonal(verts):
@@ -3852,15 +3861,54 @@ def _bbox_diagonal(verts):
     return float(np.linalg.norm(a.max(0) - a.min(0)))
 
 
+def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
+    """Outside-the-input leak of a repaired mesh, mirroring the A18 harness.
+
+    The result's ADDED vertices (those not on any input face) are tested with
+    the generalized winding number against the input solid: a vertex OUTSIDE the
+    input (``w < 0.5``) and further than the shape tolerance from it is a leak
+    (material bulging into empty space, e.g. thingi10k_100827's 1.83 mm leak).
+    Returns ``(leak_mm, count)``; ``(0.0, 0)`` when the mesh is empty, too large
+    to test, or the extension is unavailable.
+    """
+    try:
+        import sutura_geom
+        iv = np.asarray(in_verts, dtype=np.float64)
+        it = np.asarray(in_tris, dtype=np.int32)
+        ov = np.asarray(out_verts, dtype=np.float64)
+        ot = np.asarray(out_tris, dtype=np.int32)
+        if (len(it) == 0 or len(ot) == 0
+                or len(it) > TAMP_LEAK_MAX_FACES):
+            return 0.0, 0
+        in_keys = set(map(tuple, np.sort(it, axis=1).tolist()))
+        add_mask = np.fromiter(
+            (tuple(sorted(row)) not in in_keys for row in ot.tolist()),
+            dtype=bool, count=len(ot))
+        if not add_mask.any():
+            return 0.0, 0
+        add_v = ov[np.unique(ot[add_mask])]
+        bvh = sutura_geom.PyMeshBvh(iv, it)
+        w = np.asarray(bvh.winding_points(add_v))
+        _q, dist, _f = sutura_geom.closest_points(iv, it, add_v)
+        dist = np.asarray(dist, dtype=np.float64)
+        tol = min(max(in_diag / 10000.0, 0.0125), 0.05)
+        bad = (w < 0.5) & (dist > tol)
+        if not bad.any():
+            return 0.0, 0
+        return float(dist[bad].max()), int(bad.sum())
+    except Exception:  # noqa: BLE001 - a metric failure is not fatal
+        return 0.0, 0
+
+
 def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
     """Whether a Tamponade-adopted FINAL mesh warrants a Tamponade-OFF re-run.
 
     Returns ``(reason, metrics)`` with ``reason`` None when the result is
-    acceptable. The single cheap trigger is a bounding-box collapse relative to
-    the input (``coverage < TAMP_COLLAPSE_BBOX_FRAC``): a repaired result must
-    still span the object it was given, so a fragment smaller than half the
-    input diagonal is a hard red flag. ``metrics`` also carries the reload-honest
-    damage and the component count so the OFF candidate can be compared.
+    acceptable. Two cheap triggers: a bounding-box collapse relative to the
+    input (``coverage < TAMP_COLLAPSE_BBOX_FRAC``, a fragment far smaller than
+    the object) and an outside-the-input leak above ``TAMP_LEAK_TRIGGER_FRAC``
+    of the diagonal. ``metrics`` carries the reload-honest damage, the
+    component count and the leak so the OFF candidate can be compared.
     """
     in_diag = _bbox_diagonal(in_verts)
     out_diag = _bbox_diagonal(out_verts)
@@ -3871,12 +3919,17 @@ def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
         parts = _count_vertex_components(len(wv), wt)
     except Exception:  # noqa: BLE001 - metrics are best-effort
         holes = nm = parts = None
+    leak_mm, leak_pts = _tamponade_shape_leak(
+        in_verts, in_tris, out_verts, out_tris, in_diag)
     metrics = {'input_diag_mm': round(in_diag, 4),
                'output_diag_mm': round(out_diag, 4),
                'coverage': round(coverage, 4),
+               'leak_mm': round(leak_mm, 4), 'leak_pts': leak_pts,
                'holes': holes, 'non_manifold': nm, 'parts': parts}
     if in_diag and coverage < TAMP_COLLAPSE_BBOX_FRAC:
         return 'bbox_collapse', metrics
+    if in_diag and (leak_mm / in_diag) > TAMP_LEAK_TRIGGER_FRAC:
+        return 'shape_leak', metrics
     return None, metrics
 
 
@@ -3884,10 +3937,10 @@ def _tamponade_off_preferred(on_metrics, off_metrics):
     """Whether the Tamponade-OFF result should replace the Tamponade-ON one.
 
     OFF wins only when it is never worse on damage or component count and then
-    covers strictly more of the input's bounding box; a tie keeps the
-    Tamponade result, so an adoption is discarded only when it is actually
-    worse. Unknown metrics (``None``) are treated conservatively as "not
-    worse", so the coverage comparison still decides.
+    leaks strictly less outside the input or covers strictly more of its
+    bounding box; a tie keeps the Tamponade result, so an adoption is discarded
+    only when it is actually worse. Unknown metrics (``None``) are treated
+    conservatively as "not worse".
     """
     def _damage(m):
         h = m.get('holes')
@@ -3905,6 +3958,8 @@ def _tamponade_off_preferred(on_metrics, off_metrics):
     on_parts, off_parts = _parts(on_metrics), _parts(off_metrics)
     if on_parts is not None and off_parts is not None and off_parts > on_parts:
         return False
+    if off_metrics.get('leak_mm', 0.0) < on_metrics.get('leak_mm', 0.0):
+        return True
     return off_metrics.get('coverage', 0.0) > on_metrics.get('coverage', 0.0)
 
 
@@ -4646,6 +4701,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         else GRAFT_TIMEOUT
     rec = {'tier': 'graft', 'ran': False, 'adopted': False,
            'watertight': False, 'fidelity_ok': None,
+           'input_coverage': None, 'coverage_ok': None,
            'hausdorff_healthy': None, 'detail_max_mm': None,
            'detail_area_moved': None, 'r_used': None, 'mode': None,
            'faces': None, 'holes': None, 'non_manifold': None,
@@ -4684,6 +4740,8 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
             rec['timed_out'] = True
             rec['reject_reason'] = 'budget'
         rec['fidelity_ok'] = grec.get('fidelity_ok')
+        rec['input_coverage'] = grec.get('input_coverage')
+        rec['coverage_ok'] = grec.get('coverage_ok')
         rec['hausdorff_healthy'] = grec.get('hausdorff_healthy')
         rec['detail_max_mm'] = grec.get('detail_max_mm')
         rec['detail_area_moved'] = grec.get('detail_area_moved')
@@ -5341,6 +5399,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             graft_ms = graft_after = None
             graft_dev = None
             graft_ok = False
+            graft_cov_failed = False
             # Only run the last-resort Graft when stage 1 still leaves holes or
             # non-manifold edges (the same trigger fTetWild's 'auto' uses).  A
             # closed stage-1 result is already the final mesh: Graft must not
@@ -5354,13 +5413,21 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                                              spec=spec)
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
-                    if _g.get('fidelity_ok') is not False:
+                    # Adopt only a watertight candidate that is faithful AND
+                    # covers the input (G12). A coverage failure (a collapsed
+                    # fragment that still passed the healthy-deviation gate,
+                    # thingi10k_100827) is held aside like a fidelity failure so
+                    # the ladder falls through to fTetWild/next tier; it is
+                    # never preferred over fTetWild by the deviation tie-break.
+                    if (_g.get('fidelity_ok') is not False
+                            and _g.get('coverage_ok') is not False):
                         ms, after = _g_ms, _g_after
                         graft_ok = True
                         tiers_run.append('graft')
                     else:
                         graft_ms, graft_after = _g_ms, _g_after
                         graft_dev = _g.get('hausdorff_healthy')
+                        graft_cov_failed = (_g.get('coverage_ok') is False)
 
             # Dressing (#16) sits AFTER Graft and BEFORE fTetWild: its
             # volumetric skin targets the whole-shell folds and heavy
@@ -5408,10 +5475,13 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     ft_adopted = bool((stats.get('experimental_ftetwild')
                                        or {}).get('adopted'))
                     if (not ft_adopted
+                            or graft_cov_failed
                             or (ft_dev is not None and graft_dev is not None
                                 and ft_dev < graft_dev)):
                         stats['graft']['adopted'] = False
                         stats['graft']['reason'] = (
+                            'superseded by fTetWild (input coverage below '
+                            'threshold)' if graft_cov_failed else
                             'superseded by fTetWild (lower healthy deviation)')
                         tiers_run.append('graft')
                     else:
