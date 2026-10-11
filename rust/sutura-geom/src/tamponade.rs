@@ -1759,7 +1759,7 @@ enum RefModel {
 /// point closest to the centre ("line 1").
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
-struct ReferenceSurface {
+pub(crate) struct ReferenceSurface {
     origin: [f64; 3],
     u: [f64; 3],
     v: [f64; 3],
@@ -1788,7 +1788,7 @@ impl ReferenceSurface {
 
     /// Project `p` onto the reference surface along `n` (an overshoot tail is
     /// lifted onto line 2 without changing its in-plane position).
-    fn place(&self, p: [f64; 3]) -> [f64; 3] {
+    pub(crate) fn place(&self, p: [f64; 3]) -> [f64; 3] {
         let d = [p[0] - self.origin[0], p[1] - self.origin[1], p[2] - self.origin[2]];
         let su = dot3(d, self.u);
         let sv = dot3(d, self.v);
@@ -1799,16 +1799,27 @@ impl ReferenceSurface {
             self.origin[2] + su * self.u[2] + sv * self.v[2] + h * self.n[2],
         ]
     }
+
+    /// The local frame `(origin, u, v, n)` (Flap's projected-patch candidate).
+    pub(crate) fn frame(&self) -> ([f64; 3], [f64; 3], [f64; 3], [f64; 3]) {
+        (self.origin, self.u, self.v, self.n)
+    }
+
+    /// In-plane coordinates `(u, v)` of `p` in the reference frame.
+    pub(crate) fn uv(&self, p: [f64; 3]) -> (f64, f64) {
+        let d = [p[0] - self.origin[0], p[1] - self.origin[1], p[2] - self.origin[2]];
+        (dot3(d, self.u), dot3(d, self.v))
+    }
 }
 
 /// Vertex->face and edge->face adjacency of the input mesh, built once.
-struct Adjacency {
+pub(crate) struct Adjacency {
     vert_faces: Vec<Vec<u32>>,
     edge_faces: HashMap<(u32, u32), Vec<u32>>,
     edge_mult: HashMap<(u32, u32), i32>,
 }
 
-fn build_adjacency(nverts: usize, tris: &[[u32; 3]]) -> Adjacency {
+pub(crate) fn build_adjacency(nverts: usize, tris: &[[u32; 3]]) -> Adjacency {
     let mut vert_faces: Vec<Vec<u32>> = vec![Vec::new(); nverts];
     let mut edge_faces: HashMap<(u32, u32), Vec<u32>> = HashMap::with_capacity(tris.len() * 3);
     let mut edge_mult: HashMap<(u32, u32), i32> = HashMap::with_capacity(tris.len() * 3);
@@ -1914,7 +1925,7 @@ fn fit_quadric(samples: &[(f64, f64, f64)]) -> Option<([f64; 6], f64)> {
 
 /// Fit the "laser" reference surface for one rim. `None` -> `no reference`
 /// (the caller keeps the rim-only plug).
-fn build_reference(
+pub(crate) fn build_reference(
     verts: &[[f64; 3]],
     tris: &[[u32; 3]],
     rim: &[u32],
