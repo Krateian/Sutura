@@ -480,6 +480,19 @@ def extreme_extra_passes(ms, ml, params):
     When the mesh already has no self-intersecting faces the extra passes are
     skipped harmlessly (no error, nothing removed) and passes_applied is False.
     """
+    if topology.native_si_enabled():
+        m = ms.current_mesh()
+        mask, found = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
+        found = max(int(found), 0)
+        if found == 0:
+            return False, 0, 0, 0, {}
+        before_removal = m.face_number()
+        topology.select_self_intersections_ms(ms, ml)
+        ms.apply_filter('meshing_remove_selected_faces')
+        removed = max(before_removal - ms.current_mesh().face_number(), 0)
+        _remove_unref_vertices_ms(ms, ml)
+        applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
+        return True, found, removed, applied2, skipped2
     ms.apply_filter('compute_selection_by_self_intersections_per_face')
     found = int(ms.current_mesh().face_selection_array().sum())
     if found == 0:
@@ -586,6 +599,10 @@ def _should_run_local_exact(report, spec):
 def _si_count(ms):
     """Number of faces flagged by the self-intersection filter (selection is
     cleared afterwards; the filter never changes geometry)."""
+    if topology.native_si_enabled():
+        m = ms.current_mesh()
+        _, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
+        return max(int(count), 0)
     ms.apply_filter('compute_selection_by_self_intersections_per_face')
     n = int(ms.current_mesh().face_selection_array().sum())
     ms.apply_filter('set_selection_none')
@@ -645,7 +662,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
         saved_v = ms.current_mesh().vertex_matrix().copy()
         saved_t = ms.current_mesh().face_matrix().copy()
         try:
-            ms.apply_filter('compute_selection_by_self_intersections_per_face')
+            if topology.native_si_enabled():
+                topology.select_self_intersections_ms(ms, ml)
+            else:
+                ms.apply_filter('compute_selection_by_self_intersections_per_face')
             ms.apply_filter('apply_selection_dilatation')
             selected = int(ms.current_mesh().face_selection_array().sum())
             if selected == 0:
@@ -1653,6 +1673,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # pymeshlab count independently, so it is unaffected.
     if si_mode == 'off':
         stats['stage1']['self_intersections_remaining'] = None
+    elif topology.native_si_enabled():
+        m = ms.current_mesh()
+        _, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
+        stats['stage1']['self_intersections_remaining'] = max(int(count), 0)
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         stats['stage1']['self_intersections_remaining'] = int(
@@ -3063,6 +3087,10 @@ def _hausdorff_rel(ml, in_v, in_t, out_v, out_t, samples=HAUSDORFF_SAMPLES):
 
 
 def _count_si(ml, ms):
+    if topology.native_si_enabled():
+        m = ms.current_mesh()
+        _, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
+        return max(int(count), 0)
     ms.apply_filter('compute_selection_by_self_intersections_per_face')
     n = int(ms.current_mesh().face_selection_array().sum())
     ms.apply_filter('set_selection_none')
@@ -5646,6 +5674,9 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental',
     topo = ms.apply_filter('get_topological_measures')
     if si_mode == 'off':
         self_intersections = None
+    elif topology.native_si_enabled():
+        _, count = topology.self_intersecting_faces(v, t)
+        self_intersections = max(int(count), 0)
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
@@ -5762,6 +5793,10 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     # self-intersections are measured before the debris-removal step below.
     if si_mode == 'off':
         self_intersections = None
+    elif topology.native_si_enabled():
+        _, count = topology.self_intersecting_faces(
+            ms.current_mesh().vertex_matrix(), ms.current_mesh().face_matrix())
+        self_intersections = max(int(count), 0)
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
