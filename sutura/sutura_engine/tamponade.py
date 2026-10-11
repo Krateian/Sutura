@@ -184,7 +184,8 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
               'reference_used': None, 'reference_fallback': None,
               'reference_skirt': None,
               'trimmed_vertices': None, 'patch_vertices': None,
-              'plugs_rolled_back': None}
+              'plugs_rolled_back': None, 'plugs_leaking': None,
+              'plugs_double_wall': None}
     try:
         v = np.asarray(verts, dtype=np.float64)
         t = np.asarray(tris, dtype=np.int64)
@@ -223,7 +224,8 @@ def run_tamponade(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
                     'reference_used', 'reference_fallback',
                     'reference_skirt',
                     'trimmed_vertices', 'patch_vertices',
-                    'plugs_rolled_back'):
+                    'plugs_rolled_back', 'plugs_leaking',
+                    'plugs_double_wall'):
             report[key] = info.get(key)
         if info.get('reason'):
             report['reason'] = info['reason']

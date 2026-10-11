@@ -3242,6 +3242,41 @@ def _exact_si_face_count(verts, tris):
         return None
 
 
+def _internal_wall_count(verts, tris):
+    """Count buried "internal wall" faces of a mesh.
+
+    A face is an internal wall when its centroid reads a generalized winding
+    number ``>= 1.5`` on BOTH sides (both sides are inside the solid), i.e. the
+    surface is buried inside other geometry.  Used by the Tamponade adoption
+    gate as a never-worse metric relative to the tier's own input (a mesh can
+    already legitimately carry internal walls, so an absolute ``== 0`` test
+    would reject an otherwise no-op candidate forever).  Returns 0 when the
+    Rust extension is unavailable.
+    """
+    try:
+        from sutura_geom import PyMeshBvh
+        v = np.asarray(verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int32)
+        if len(t) == 0 or len(v) == 0:
+            return 0
+        bvh = PyMeshBvh(v, t)
+        p0 = v[t[:, 0]]
+        p1 = v[t[:, 1]]
+        p2 = v[t[:, 2]]
+        c = (p0 + p1 + p2) / 3.0
+        n = np.cross(p1 - p0, p2 - p0)
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        ln[ln == 0] = 1.0
+        n = n / ln
+        diag = float(np.linalg.norm(v.max(0) - v.min(0)))
+        eps = max(diag * 1e-4, 1e-6)
+        wp = bvh.winding_points(c + n * eps)
+        wm = bvh.winding_points(c - n * eps)
+        return int(((wp >= 1.5) & (wm >= 1.5)).sum())
+    except Exception:  # noqa: BLE001 - a metric failure is not fatal
+        return 0
+
+
 def _canonical_face_keys(verts, tris):
     """Order-independent ``V36`` key per face (its 3 vertex coords, sorted).
 
@@ -4139,6 +4174,26 @@ def _count_vertex_components(n_verts, tris):
     return int(len({find(int(i)) for i in used.tolist()}))
 
 
+def _dump_tamp_mesh(dump_dir, name, verts, tris):
+    """Write one Tamponade diagnostic mesh when ``SUTURA_TAMP_DUMP`` is set.
+
+    The variable holds a directory; a binary STL (the on-disk reload form) and
+    an ``.npz`` with the exact in-memory arrays are written so the tier's input
+    and output can be reloaded and scored independently. Never raises: a dump
+    failure must not affect a repair.
+    """
+    try:
+        if not dump_dir:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+        stl_write_binary(os.path.join(dump_dir, name + '.stl'), verts, tris)
+        np.savez(os.path.join(dump_dir, name + '.npz'),
+                 verts=np.asarray(verts, dtype=np.float64),
+                 tris=np.asarray(tris, dtype=np.int64))
+    except Exception:  # noqa: BLE001 - diagnostics never break a repair
+        pass
+
+
 def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                    intensity=None, spec=None, si_mode='report', prepass=False):
     """Interior-plug tier for registry method 17 (Tamponade).
@@ -4175,21 +4230,33 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'melt_layers_accepted': None, 'melt_layers_rolled_back': None,
            'micro_welds_ok': None, 'micro_welds_failed': None,
            'excised_faces': None,
-           'healthy_faces_kept': None, 'healthy_fraction': None,
-           'plugs_rolled_back': None,
+            'healthy_faces_kept': None, 'healthy_fraction': None,
+            'plugs_rolled_back': None, 'plugs_leaking': None,
+            'plugs_double_wall': None,
            'input_self_intersections': None,
            'candidate_self_intersections': None, 'si_fall': None,
            'si_ok': None, 'melt_enabled': None, 'si_method': None,
+           'input_internal_walls': None, 'candidate_internal_walls': None,
            'prepass_seconds': None}
     if 'tamponade_shell_prepass' in stats:
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
     try:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
         cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
+        dump_dir = os.environ.get('SUTURA_TAMP_DUMP')
+        _dump_tamp_mesh(dump_dir, 'tamp_input', cur_v, cur_t)
         rec['input_faces'] = int(len(cur_t))
-        base_holes = boundary_loop_stats(cur_v, cur_t)[0]
-        base_nm = int(after.get('non_two_manifold_edges', 0) or 0)
-        base_parts = _count_vertex_components(len(cur_v), cur_t)
+        # Base metrics MUST use the same reload-honest definition as the
+        # candidate below (weld_reload_equivalent + defects.detect), otherwise
+        # the gate compares in-memory boundary loops / pymeshlab non-manifold
+        # edges against the candidate's on-reload values and a true no-op can
+        # look like a regression (ornate-frame: boundary_loop_stats 39 vs the
+        # reload-honest 23).  `after` carries the in-memory measures only.
+        wb_v, wb_t = weld_reload_equivalent(cur_v, cur_t)
+        _base_defects = detect_defects(wb_v, wb_t)
+        base_holes = len(_base_defects['holes'])
+        base_nm = len(_base_defects['non_manifold'])
+        base_parts = _count_vertex_components(len(wb_v), wb_t)
         rec['input_holes'] = base_holes
         rec['input_non_manifold'] = base_nm
         rec['input_parts'] = base_parts
@@ -4224,10 +4291,15 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         # 'off', and on a closed mesh at quick/balanced (nothing to plug, melt
         # off) no scan is needed at all.  The prepass uses the cheap LOCAL SI
         # guard instead (see below), so it never pays for this full scan.
+        # Measured on the WELDED base (`wb_v`/`wb_t`) so it matches the
+        # candidate's `wv`/`wt` scan exactly: `_exact_si_face_count` is
+        # representation-sensitive (float32 welding merges near-coincident
+        # vertices), so a no-op candidate read against the raw float64 input
+        # otherwise shows a spurious SI fall and gets adopted for nothing.
         base_si_exact = None
         if (not prepass and si_mode != 'off'
                 and (melt_on or base_holes > 0 or base_nm > 0)):
-            base_si_exact = _exact_si_face_count(cur_v, cur_t)
+            base_si_exact = _exact_si_face_count(wb_v, wb_t)
         base_si = base_si_exact if base_si_exact is not None else 0
         rec['input_self_intersections'] = base_si_exact
 
@@ -4265,7 +4337,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                     'healthy_faces_kept',
                     'reference_used', 'reference_fallback',
                     'trimmed_vertices', 'patch_vertices',
-                    'plugs_rolled_back'):
+                    'plugs_rolled_back', 'plugs_leaking',
+                    'plugs_double_wall'):
             rec[key] = trec.get(key)
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):
@@ -4275,6 +4348,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
 
         cand_v = np.asarray(out_v, dtype=np.float32)
         cand_t = np.asarray(out_t, dtype=np.int32)
+        _dump_tamp_mesh(dump_dir, 'tamp_output', cand_v, cand_t)
         rec['output_faces'] = int(len(cand_t))
         cand_holes, cand_nm = reload_strict_holes_nm(cand_v, cand_t)
         wv, wt = weld_reload_equivalent(cand_v, cand_t)
@@ -4286,27 +4360,16 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         if healthy is not None and len(cur_t):
             rec['healthy_fraction'] = float(healthy) / float(len(cur_t))
 
-        cand_iw = 0
-        try:
-            from sutura_geom import PyMeshBvh
-            _bvh = PyMeshBvh(cand_v.astype(np.float64), cand_t.astype(np.int32))
-            _p0 = cand_v[cand_t[:, 0]].astype(np.float64)
-            _p1 = cand_v[cand_t[:, 1]].astype(np.float64)
-            _p2 = cand_v[cand_t[:, 2]].astype(np.float64)
-            _c = (_p0 + _p1 + _p2) / 3.0
-            _n = np.cross(_p1 - _p0, _p2 - _p0)
-            _ln = np.linalg.norm(_n, axis=1, keepdims=True)
-            _ln[_ln == 0] = 1.0
-            _n = _n / _ln
-            _diag = float(np.linalg.norm(cand_v.max(0) - cand_v.min(0)))
-            _eps = max(_diag * 1e-4, 1e-6)
-            _wp = _bvh.winding_points(_c + _n * _eps)
-            _wm = _bvh.winding_points(_c - _n * _eps)
-            cand_iw = int(((_wp >= 1.5) & (_wm >= 1.5)).sum())
-        except Exception:
-            cand_iw = 0
-        rec['candidate_internal_walls'] = cand_iw
-        iw_ok = (cand_iw == 0)
+        # Internal walls are REPORT-ONLY under the leak rule: a buried face is
+        # inside the solid and a slicer unions it fine, so it no longer blocks
+        # adoption. The winding query costs ~100 s on a 400k-face mesh, so it is
+        # computed only on request (SUTURA_TAMP_IW).
+        plugs_added = int(rec.get('plugs') or 0)
+        if plugs_added and os.environ.get('SUTURA_TAMP_IW'):
+            cand_iw = _internal_wall_count(cand_v, cand_t)
+            rec['candidate_internal_walls'] = cand_iw
+            if cand_iw > 0:
+                rec['input_internal_walls'] = _internal_wall_count(cur_v, cur_t)
 
         no_rise = cand_holes <= base_holes and cand_nm <= base_nm
         strict_fall = (cand_holes + cand_nm) < (base_holes + base_nm)
@@ -4329,7 +4392,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 si_fall = bool(cand_local < base_local)
                 si_ok = bool(not si_rise)
             else:
-                base_si_exact = _exact_si_face_count(cur_v, cur_t)
+                base_si_exact = _exact_si_face_count(wb_v, wb_t)
                 rec['input_self_intersections'] = base_si_exact
                 cand_si_exact = (_exact_si_face_count(wv, wt)
                                  if base_si_exact is not None else None)
@@ -4373,7 +4436,15 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                     rec['prepass_seconds'] = _elapsed
         else:
             geometry_fall = strict_fall or si_fall
-        if no_rise and geometry_fall and parts_ok and healthy_ok and si_ok and len(cand_t):
+        # Post-chain placement: self-intersections are REPORT-ONLY (slicers
+        # union overlapping volumes) and internal walls are report-only too, so
+        # neither blocks adoption; the Rust leak gate and the reload-honest
+        # holes/non-manifold guard above are the real safety. The prepass keeps
+        # its strict SI non-rise guard (`si_guard`) because Stage 1 does not
+        # fully reconcile the SI a reference plug can add.
+        si_guard = si_ok if prepass else True
+        if (no_rise and geometry_fall and parts_ok and healthy_ok and si_guard
+                and len(cand_t)):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
             after = ms.apply_filter('get_topological_measures')
@@ -4395,7 +4466,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 reasons.append('holes/non-manifold rose')
             if not geometry_fall:
                 reasons.append('holes+non-manifold/SI did not strictly fall')
-            if not si_ok:
+            if not si_guard:
                 if rec.get('reject_reason') == 'prepass budget exceeded':
                     reasons.append('prepass budget exceeded')
                 else:
@@ -4404,8 +4475,6 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 reasons.append('component count rose')
             if not healthy_ok:
                 reasons.append('healthy faces below 99%')
-            if not iw_ok:
-                reasons.append(f'internal walls present ({cand_iw})')
             if not len(cand_t):
                 reasons.append('no geometry')
             rec['reason'] = 'not adopted (%s)' % '; '.join(reasons or ['?'])
