@@ -100,6 +100,21 @@ impl Aabb {
         self.min[0] > self.max[0]
     }
 
+    #[inline]
+    pub fn overlaps(&self, o: &Aabb) -> bool {
+        self.min[0] <= o.max[0] && self.max[0] >= o.min[0]
+            && self.min[1] <= o.max[1] && self.max[1] >= o.min[1]
+            && self.min[2] <= o.max[2] && self.max[2] >= o.min[2]
+    }
+
+    #[inline]
+    pub fn size_sq(&self) -> f64 {
+        let dx = self.max[0] - self.min[0];
+        let dy = self.max[1] - self.min[1];
+        let dz = self.max[2] - self.min[2];
+        dx * dx + dy * dy + dz * dz
+    }
+
     pub fn expand_point(&mut self, p: [f64; 3]) {
         for i in 0..3 {
             if p[i] < self.min[i] {
@@ -714,6 +729,410 @@ impl MeshBvh {
         self.ray_node(n.left as usize, o, d, inv_d, t_max, hb);
         self.ray_node(n.right as usize, o, d, inv_d, t_max, hb);
     }
+
+    /// High-performance parallel self-intersection scan over the BVH: `(mask, count, skipped)`.
+    pub fn self_intersections(
+        &self,
+        verts: &[[f64; 3]],
+        tris: &[[usize; 3]],
+    ) -> (Vec<bool>, i64, bool) {
+        let f = tris.len();
+        if f == 0 {
+            return (Vec::new(), 0, false);
+        }
+        if f > crate::SI_MAX_FACES {
+            return (vec![false; f], -1, true);
+        }
+
+        let tri_boxes: Vec<Aabb> = (0..f)
+            .map(|i| {
+                let mut b = Aabb::empty();
+                b.expand_point(verts[tris[i][0]]);
+                b.expand_point(verts[tris[i][1]]);
+                b.expand_point(verts[tris[i][2]]);
+                b
+            })
+            .collect();
+
+        let tri_planes: Vec<[f64; 4]> = (0..f)
+            .map(|i| {
+                let a = tris[i];
+                let v0 = verts[a[0]];
+                let v1 = verts[a[1]];
+                let v2 = verts[a[2]];
+                let e0 = [v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]];
+                let e1 = [v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]];
+                let n = [
+                    e0[1] * e1[2] - e0[2] * e1[1],
+                    e0[2] * e1[0] - e0[0] * e1[2],
+                    e0[0] * e1[1] - e0[1] * e1[0],
+                ];
+                let d = -(n[0] * v0[0] + n[1] * v0[1] + n[2] * v0[2]);
+                [n[0], n[1], n[2], d]
+            })
+            .collect();
+
+        let mask: Vec<std::sync::atomic::AtomicBool> = (0..f)
+            .map(|_| std::sync::atomic::AtomicBool::new(false))
+            .collect();
+
+        // For small meshes (f < 1024), run sequentially on caller thread to avoid thread-pool overhead.
+        if f < 1024 {
+            let mut stack = Vec::with_capacity(64);
+            stack.push((0, 0));
+
+            while let Some((a_idx, b_idx)) = stack.pop() {
+                let na = &self.nodes[a_idx];
+                let nb = &self.nodes[b_idx];
+                if !na.bbox.overlaps(&nb.bbox) {
+                    continue;
+                }
+                if na.left < 0 && nb.left < 0 {
+                    test_leaf_pair(
+                        &self.order,
+                        tris,
+                        verts,
+                        &tri_boxes,
+                        &tri_planes,
+                        &mask,
+                        na,
+                        nb,
+                        a_idx == b_idx,
+                    );
+                } else if na.left < 0 {
+                    stack.push((a_idx, nb.left as usize));
+                    stack.push((a_idx, nb.right as usize));
+                } else if nb.left < 0 {
+                    stack.push((na.left as usize, b_idx));
+                    stack.push((na.right as usize, b_idx));
+                } else {
+                    if a_idx == b_idx {
+                        stack.push((na.left as usize, na.left as usize));
+                        stack.push((na.right as usize, na.right as usize));
+                        stack.push((na.left as usize, na.right as usize));
+                    } else if na.bbox.size_sq() > nb.bbox.size_sq() {
+                        stack.push((na.left as usize, b_idx));
+                        stack.push((na.right as usize, b_idx));
+                    } else {
+                        stack.push((a_idx, nb.left as usize));
+                        stack.push((a_idx, nb.right as usize));
+                    }
+                }
+            }
+            let res_mask: Vec<bool> = mask.into_iter().map(|b| b.into_inner()).collect();
+            let count = res_mask.iter().filter(|&&b| b).count() as i64;
+            return (res_mask, count, false);
+        }
+
+        // Dual BVH traversal: collect candidate node pairs at shallow depth,
+        // then process them in parallel across CPU cores using Rayon.
+        let mut work_tasks: Vec<(usize, usize)> = Vec::with_capacity(512);
+        work_tasks.push((0, 0));
+
+        let num_threads = rayon::current_num_threads().max(1);
+        let target_tasks = (num_threads * 16).max(64);
+
+        while work_tasks.len() < target_tasks {
+            let mut found_internal = false;
+            let mut next_tasks = Vec::with_capacity(work_tasks.len() * 2);
+            for &(a_idx, b_idx) in &work_tasks {
+                let na = &self.nodes[a_idx];
+                let nb = &self.nodes[b_idx];
+                if !na.bbox.overlaps(&nb.bbox) {
+                    continue;
+                }
+                if na.left < 0 && nb.left < 0 {
+                    next_tasks.push((a_idx, b_idx));
+                } else if na.left < 0 {
+                    found_internal = true;
+                    next_tasks.push((a_idx, nb.left as usize));
+                    next_tasks.push((a_idx, nb.right as usize));
+                } else if nb.left < 0 {
+                    found_internal = true;
+                    next_tasks.push((na.left as usize, b_idx));
+                    next_tasks.push((na.right as usize, b_idx));
+                } else {
+                    found_internal = true;
+                    if a_idx == b_idx {
+                        next_tasks.push((na.left as usize, na.left as usize));
+                        next_tasks.push((na.right as usize, na.right as usize));
+                        next_tasks.push((na.left as usize, na.right as usize));
+                    } else if na.bbox.size_sq() > nb.bbox.size_sq() {
+                        next_tasks.push((na.left as usize, b_idx));
+                        next_tasks.push((na.right as usize, b_idx));
+                    } else {
+                        next_tasks.push((a_idx, nb.left as usize));
+                        next_tasks.push((a_idx, nb.right as usize));
+                    }
+                }
+            }
+            work_tasks = next_tasks;
+            if !found_internal {
+                break;
+            }
+        }
+
+        // Process all subproblems in parallel with Rayon
+        work_tasks.into_par_iter().for_each(|initial_pair| {
+            let mut stack = Vec::with_capacity(128);
+            stack.push(initial_pair);
+
+            while let Some((a_idx, b_idx)) = stack.pop() {
+                let na = &self.nodes[a_idx];
+                let nb = &self.nodes[b_idx];
+                if !na.bbox.overlaps(&nb.bbox) {
+                    continue;
+                }
+                if na.left < 0 && nb.left < 0 {
+                    test_leaf_pair(
+                        &self.order,
+                        tris,
+                        verts,
+                        &tri_boxes,
+                        &tri_planes,
+                        &mask,
+                        na,
+                        nb,
+                        a_idx == b_idx,
+                    );
+                } else if na.left < 0 {
+                    stack.push((a_idx, nb.left as usize));
+                    stack.push((a_idx, nb.right as usize));
+                } else if nb.left < 0 {
+                    stack.push((na.left as usize, b_idx));
+                    stack.push((na.right as usize, b_idx));
+                } else {
+                    if a_idx == b_idx {
+                        stack.push((na.left as usize, na.left as usize));
+                        stack.push((na.right as usize, na.right as usize));
+                        stack.push((na.left as usize, na.right as usize));
+                    } else if na.bbox.size_sq() > nb.bbox.size_sq() {
+                        stack.push((na.left as usize, b_idx));
+                        stack.push((na.right as usize, b_idx));
+                    } else {
+                        stack.push((a_idx, nb.left as usize));
+                        stack.push((a_idx, nb.right as usize));
+                    }
+                }
+            }
+        });
+
+        let res_mask: Vec<bool> = mask.into_iter().map(|b| b.into_inner()).collect();
+        let count = res_mask.iter().filter(|&&b| b).count() as i64;
+        (res_mask, count, false)
+    }
+}
+
+#[inline]
+fn orient3d_f64(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    robust::orient3d(
+        robust::Coord3D { x: a[0], y: a[1], z: a[2] },
+        robust::Coord3D { x: b[0], y: b[1], z: b[2] },
+        robust::Coord3D { x: c[0], y: c[1], z: c[2] },
+        robust::Coord3D { x: d[0], y: d[1], z: d[2] },
+    )
+}
+
+#[inline]
+fn triangles_have_proper_segment(v1: &[[f64; 3]; 3], v2: &[[f64; 3]; 3]) -> bool {
+    let s0 = orient3d_f64(v1[0], v1[1], v1[2], v2[0]);
+    if s0 == 0.0 {
+        return false;
+    }
+    let s1 = orient3d_f64(v1[0], v1[1], v1[2], v2[1]);
+    if s1 == 0.0 {
+        return false;
+    }
+    let s2 = orient3d_f64(v1[0], v1[1], v1[2], v2[2]);
+    if s2 == 0.0 {
+        return false;
+    }
+    if (s0 > 0.0 && s1 > 0.0 && s2 > 0.0) || (s0 < 0.0 && s1 < 0.0 && s2 < 0.0) {
+        return false;
+    }
+
+    let t0 = orient3d_f64(v2[0], v2[1], v2[2], v1[0]);
+    if t0 == 0.0 {
+        return false;
+    }
+    let t1 = orient3d_f64(v2[0], v2[1], v2[2], v1[1]);
+    if t1 == 0.0 {
+        return false;
+    }
+    let t2 = orient3d_f64(v2[0], v2[1], v2[2], v1[2]);
+    if t2 == 0.0 {
+        return false;
+    }
+    if (t0 > 0.0 && t1 > 0.0 && t2 > 0.0) || (t0 < 0.0 && t1 < 0.0 && t2 < 0.0) {
+        return false;
+    }
+
+    let t1 = crate::triangle_intersection::Triangle::explicit(v1[0], v1[1], v1[2]);
+    let t2 = crate::triangle_intersection::Triangle::explicit(v2[0], v2[1], v2[2]);
+    matches!(
+        crate::triangle_intersection::intersect_triangles(&t1, &t2),
+        crate::triangle_intersection::TriangleIntersection::ProperSegment { .. }
+    )
+}
+
+#[inline]
+fn test_leaf_pair(
+    order: &[u32],
+    tris: &[[usize; 3]],
+    verts: &[[f64; 3]],
+    tri_boxes: &[Aabb],
+    tri_planes: &[[f64; 4]],
+    mask: &[std::sync::atomic::AtomicBool],
+    na: &Node,
+    nb: &Node,
+    same_node: bool,
+) {
+    if same_node {
+        for k1 in na.start..na.start + na.count {
+            let i = order[k1 as usize] as usize;
+            let a = tris[i];
+            let box_i = &tri_boxes[i];
+            let p1 = &tri_planes[i];
+            let v1 = [verts[a[0]], verts[a[1]], verts[a[2]]];
+            for k2 in (k1 + 1)..na.start + na.count {
+                let j = order[k2 as usize] as usize;
+                if mask[i].load(std::sync::atomic::Ordering::Relaxed)
+                    && mask[j].load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    continue;
+                }
+                let b = tris[j];
+                if a[0] == b[0] || a[0] == b[1] || a[0] == b[2]
+                    || a[1] == b[0] || a[1] == b[1] || a[1] == b[2]
+                    || a[2] == b[0] || a[2] == b[1] || a[2] == b[2]
+                {
+                    continue;
+                }
+                if !box_i.overlaps(&tri_boxes[j]) {
+                    continue;
+                }
+                let p2 = &tri_planes[j];
+                let v2 = [verts[b[0]], verts[b[1]], verts[b[2]]];
+                if tri_tri_disjoint_float_filter(p1, p2, &v1, &v2) {
+                    continue;
+                }
+                if triangles_have_proper_segment(&v1, &v2) {
+                    mask[i].store(true, std::sync::atomic::Ordering::Relaxed);
+                    mask[j].store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    } else {
+        for k1 in na.start..na.start + na.count {
+            let i = order[k1 as usize] as usize;
+            let a = tris[i];
+            let box_i = &tri_boxes[i];
+            let p1 = &tri_planes[i];
+            let v1 = [verts[a[0]], verts[a[1]], verts[a[2]]];
+            for k2 in nb.start..nb.start + nb.count {
+                let j = order[k2 as usize] as usize;
+                if i == j || (mask[i].load(std::sync::atomic::Ordering::Relaxed)
+                    && mask[j].load(std::sync::atomic::Ordering::Relaxed))
+                {
+                    continue;
+                }
+                let b = tris[j];
+                if a[0] == b[0] || a[0] == b[1] || a[0] == b[2]
+                    || a[1] == b[0] || a[1] == b[1] || a[1] == b[2]
+                    || a[2] == b[0] || a[2] == b[1] || a[2] == b[2]
+                {
+                    continue;
+                }
+                if !box_i.overlaps(&tri_boxes[j]) {
+                    continue;
+                }
+                let p2 = &tri_planes[j];
+                let v2 = [verts[b[0]], verts[b[1]], verts[b[2]]];
+                if tri_tri_disjoint_float_filter(p1, p2, &v1, &v2) {
+                    continue;
+                }
+                if triangles_have_proper_segment(&v1, &v2) {
+                    mask[i].store(true, std::sync::atomic::Ordering::Relaxed);
+                    mask[j].store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    }
+}
+
+#[inline]
+fn tri_tri_disjoint_float_filter(
+    p1: &[f64; 4],
+    p2: &[f64; 4],
+    v1: &[[f64; 3]; 3],
+    v2: &[[f64; 3]; 3],
+) -> bool {
+    let d2_0 = p1[0] * v2[0][0] + p1[1] * v2[0][1] + p1[2] * v2[0][2] + p1[3];
+    let d2_1 = p1[0] * v2[1][0] + p1[1] * v2[1][1] + p1[2] * v2[1][2] + p1[3];
+    let d2_2 = p1[0] * v2[2][0] + p1[1] * v2[2][1] + p1[2] * v2[2][2] + p1[3];
+
+    if (d2_0 > 1e-11 && d2_1 > 1e-11 && d2_2 > 1e-11) || (d2_0 < -1e-11 && d2_1 < -1e-11 && d2_2 < -1e-11) {
+        return true;
+    }
+
+    let d1_0 = p2[0] * v1[0][0] + p2[1] * v1[0][1] + p2[2] * v1[0][2] + p2[3];
+    let d1_1 = p2[0] * v1[1][0] + p2[1] * v1[1][1] + p2[2] * v1[1][2] + p2[3];
+    let d1_2 = p2[0] * v1[2][0] + p2[1] * v1[2][1] + p2[2] * v1[2][2] + p2[3];
+
+    if (d1_0 > 1e-11 && d1_1 > 1e-11 && d1_2 > 1e-11) || (d1_0 < -1e-11 && d1_1 < -1e-11 && d1_2 < -1e-11) {
+        return true;
+    }
+
+    let d_dir = [
+        p1[1] * p2[2] - p1[2] * p2[1],
+        p1[2] * p2[0] - p1[0] * p2[2],
+        p1[0] * p2[1] - p1[1] * p2[0],
+    ];
+    let len_sq = d_dir[0] * d_dir[0] + d_dir[1] * d_dir[1] + d_dir[2] * d_dir[2];
+    if len_sq < 1e-22 {
+        return true;
+    }
+
+    #[inline]
+    fn moller_interval(v: &[[f64; 3]; 3], d: [f64; 3], dir: [f64; 3]) -> (f64, f64) {
+        let p = [
+            v[0][0] * dir[0] + v[0][1] * dir[1] + v[0][2] * dir[2],
+            v[1][0] * dir[0] + v[1][1] * dir[1] + v[1][2] * dir[2],
+            v[2][0] * dir[0] + v[2][1] * dir[1] + v[2][2] * dir[2],
+        ];
+        let s0 = d[0] > 0.0;
+        let s1 = d[1] > 0.0;
+        let s2 = d[2] > 0.0;
+        let (t0, t1) = if s0 == s1 {
+            let denom0 = d[0] - d[2];
+            let denom1 = d[1] - d[2];
+            let frac0 = if denom0.abs() > 1e-15 { d[0] / denom0 } else { 0.5 };
+            let frac1 = if denom1.abs() > 1e-15 { d[1] / denom1 } else { 0.5 };
+            (p[0] + (p[2] - p[0]) * frac0, p[1] + (p[2] - p[1]) * frac1)
+        } else if s0 == s2 {
+            let denom0 = d[0] - d[1];
+            let denom2 = d[2] - d[1];
+            let frac0 = if denom0.abs() > 1e-15 { d[0] / denom0 } else { 0.5 };
+            let frac2 = if denom2.abs() > 1e-15 { d[2] / denom2 } else { 0.5 };
+            (p[0] + (p[1] - p[0]) * frac0, p[2] + (p[1] - p[2]) * frac2)
+        } else {
+            let denom1 = d[1] - d[0];
+            let denom2 = d[2] - d[0];
+            let frac1 = if denom1.abs() > 1e-15 { d[1] / denom1 } else { 0.5 };
+            let frac2 = if denom2.abs() > 1e-15 { d[2] / denom2 } else { 0.5 };
+            (p[1] + (p[0] - p[1]) * frac1, p[2] + (p[0] - p[2]) * frac2)
+        };
+        if t0 < t1 { (t0, t1) } else { (t1, t0) }
+    }
+
+    let i1 = moller_interval(v1, [d1_0, d1_1, d1_2], d_dir);
+    let i2 = moller_interval(v2, [d2_0, d2_1, d2_2], d_dir);
+
+    if i1.1 < i2.0 - 1e-9 || i2.1 < i1.0 - 1e-9 {
+        return true;
+    }
+
+    false
 }
 
 fn build_rec(

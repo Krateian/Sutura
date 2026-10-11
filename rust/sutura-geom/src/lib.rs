@@ -861,48 +861,29 @@ fn closest_points<'py>(
 /// Returns `(mask, count)` where `count` is the number of flagged faces, or
 /// `-1` when the mesh exceeds `SI_MAX_FACES` (the classifier is skipped).
 #[pyfunction]
-#[pyo3(signature = (verts, tris))]
+#[pyo3(signature = (verts, tris, bvh = None))]
 fn self_intersecting_faces<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    bvh: Option<&PyMeshBvh>,
 ) -> PyResult<(Bound<'py, PyArray1<bool>>, i64)> {
+    if let Some(b) = bvh {
+        return b.self_intersecting_faces(py);
+    }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
-    let (mask, count, _skipped) = self_intersections_core(&rv, &rt);
+    let b = winding::MeshBvh::from_arrays(&rv, &rt);
+    let (mask, count, _skipped) = b.self_intersections(&rv, &rt);
     Ok((PyArray1::from_vec(py, mask), count))
 }
 
 /// Core self-intersection scan (no Python): `(mask, count, skipped)`.
 fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
-    let f = tris.len();
-    if f == 0 {
-        return (Vec::new(), 0, false);
+    if tris.len() > SI_MAX_FACES {
+        return (vec![false; tris.len()], -1, true);
     }
-    if f > SI_MAX_FACES {
-        return (vec![false; f], -1, true);
-    }
-    let triangles: Vec<triangle_intersection::Triangle> = tris
-        .iter()
-        .map(|t| triangle_intersection::Triangle::explicit(verts[t[0]], verts[t[1]], verts[t[2]]))
-        .collect();
-    let pairs = arrangement::broad_phase_candidates(verts, tris);
-    let mut mask = vec![false; f];
-    for (i, j) in pairs {
-        let (a, b) = (tris[i], tris[j]);
-        let adjacent = a.iter().any(|x| b.contains(x));
-        if adjacent {
-            continue;
-        }
-        match triangle_intersection::intersect_triangles(&triangles[i], &triangles[j]) {
-            triangle_intersection::TriangleIntersection::ProperSegment { .. } => {
-                mask[i] = true;
-                mask[j] = true;
-            }
-            _ => {}
-        }
-    }
-    let count = mask.iter().filter(|&&b| b).count() as i64;
-    (mask, count, false)
+    let bvh = winding::MeshBvh::from_arrays(verts, tris);
+    bvh.self_intersections(verts, tris)
 }
 
 /// Ray-stabbing inside/outside for arbitrary query points.
@@ -1033,6 +1014,8 @@ fn raystab_grid<'py>(
 #[pyclass]
 pub struct PyMeshBvh {
     inner: winding::MeshBvh,
+    verts: Vec<[f64; 3]>,
+    tris: Vec<[usize; 3]>,
 }
 
 #[pymethods]
@@ -1043,9 +1026,21 @@ impl PyMeshBvh {
         tris: PyArrayLike2<'_, i32, AllowTypeChange>,
     ) -> PyResult<Self> {
         let (rv, rt) = parse_mesh(&verts, &tris)?;
+        let inner = winding::MeshBvh::from_arrays(&rv, &rt);
         Ok(Self {
-            inner: winding::MeshBvh::from_arrays(&rv, &rt),
+            inner,
+            verts: rv,
+            tris: rt,
         })
+    }
+
+    /// Self-intersecting face scan querying this BVH: `(mask, count)`.
+    fn self_intersecting_faces<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyArray1<bool>>, i64)> {
+        let (mask, count, _skipped) = self.inner.self_intersections(&self.verts, &self.tris);
+        Ok((PyArray1::from_vec(py, mask), count))
     }
 
     /// Generalized winding number at a single `(x, y, z)` point.

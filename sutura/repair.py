@@ -487,7 +487,7 @@ def extreme_extra_passes(ms, ml, params):
         if found == 0:
             return False, 0, 0, 0, {}
         before_removal = m.face_number()
-        topology.select_self_intersections_ms(ms, ml)
+        topology.select_self_intersections_ms(ms, ml, mask=mask, count=found)
         ms.apply_filter('meshing_remove_selected_faces')
         removed = max(before_removal - ms.current_mesh().face_number(), 0)
         _remove_unref_vertices_ms(ms, ml)
@@ -596,17 +596,24 @@ def _should_run_local_exact(report, spec):
     return _local_exact_budget(spec or triage.resolve_intensity(None)) > 0.0
 
 
+def _si_count_and_mask(ms):
+    """Number of faces flagged and boolean mask (or None)."""
+    if topology.native_si_enabled():
+        m = ms.current_mesh()
+        mask, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
+        return max(int(count), 0), mask
+    ms.apply_filter('compute_selection_by_self_intersections_per_face')
+    mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
+    n = int(mask.sum())
+    ms.apply_filter('set_selection_none')
+    return n, mask
+
+
 def _si_count(ms):
     """Number of faces flagged by the self-intersection filter (selection is
     cleared afterwards; the filter never changes geometry)."""
-    if topology.native_si_enabled():
-        m = ms.current_mesh()
-        _, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-        return max(int(count), 0)
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    n = int(ms.current_mesh().face_selection_array().sum())
-    ms.apply_filter('set_selection_none')
-    return n
+    cnt, _ = _si_count_and_mask(ms)
+    return cnt
 
 
 def si_excise_recap(ms, ml, *, maxholesize=1000,
@@ -632,8 +639,9 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
         'budget_s': (None if time_budget is None else float(time_budget)),
         'seconds': 0.0, 'history': [],
     }
+    init_mask = None
     try:
-        report['initial_si'] = _si_count(ms)
+        report['initial_si'], init_mask = _si_count_and_mask(ms)
     except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
         report['reason'] = 'error: %s' % e
         return ms, report
@@ -663,7 +671,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
         saved_t = ms.current_mesh().face_matrix().copy()
         try:
             if topology.native_si_enabled():
-                topology.select_self_intersections_ms(ms, ml)
+                if round_idx == 0 and init_mask is not None:
+                    topology.select_self_intersections_ms(ms, ml, mask=init_mask, count=current_si)
+                else:
+                    topology.select_self_intersections_ms(ms, ml)
             else:
                 ms.apply_filter('compute_selection_by_self_intersections_per_face')
             ms.apply_filter('apply_selection_dilatation')
@@ -1674,8 +1685,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if si_mode == 'off':
         stats['stage1']['self_intersections_remaining'] = None
     elif topology.native_si_enabled():
-        m = ms.current_mesh()
-        _, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
+        _, count = topology.self_intersecting_faces(new_verts, new_tris)
         stats['stage1']['self_intersections_remaining'] = max(int(count), 0)
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
@@ -5794,8 +5804,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     if si_mode == 'off':
         self_intersections = None
     elif topology.native_si_enabled():
-        _, count = topology.self_intersecting_faces(
-            ms.current_mesh().vertex_matrix(), ms.current_mesh().face_matrix())
+        _, count = topology.self_intersecting_faces(v, t)
         self_intersections = max(int(count), 0)
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')

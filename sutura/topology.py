@@ -668,7 +668,38 @@ def native_si_enabled():
     return env in ('1', 'true', 'yes', 'on')
 
 
-def self_intersecting_faces(verts, tris):
+# Session BVH and SI cache to avoid redundant builds when geometry is unchanged
+_BVH_CACHE = {
+    'verts_ref': None,
+    'tris_ref': None,
+    'verts_ptr': None,
+    'tris_ptr': None,
+    'verts_shape': None,
+    'tris_shape': None,
+    'v_sample': None,
+    't_sample': None,
+    'bvh': None,
+    'mask': None,
+    'count': None,
+}
+
+
+def clear_bvh_cache():
+    """Clear cached BVH and SI results."""
+    _BVH_CACHE['verts_ref'] = None
+    _BVH_CACHE['tris_ref'] = None
+    _BVH_CACHE['verts_ptr'] = None
+    _BVH_CACHE['tris_ptr'] = None
+    _BVH_CACHE['verts_shape'] = None
+    _BVH_CACHE['tris_shape'] = None
+    _BVH_CACHE['v_sample'] = None
+    _BVH_CACHE['t_sample'] = None
+    _BVH_CACHE['bvh'] = None
+    _BVH_CACHE['mask'] = None
+    _BVH_CACHE['count'] = None
+
+
+def self_intersecting_faces(verts, tris, bvh=None):
     """Detect self-intersecting faces using exact geometric predicates.
 
     Returns (mask, count) where mask is a boolean numpy array of length len(tris)
@@ -682,15 +713,68 @@ def self_intersecting_faces(verts, tris):
         raise ValueError("tris must be Mx3")
     if len(t) < 2:
         return np.zeros(len(t), dtype=bool), 0
+
+    if bvh is None:
+        v_ptr = v.__array_interface__['data'][0]
+        t_ptr = t.__array_interface__['data'][0]
+        is_hit = False
+        if verts is _BVH_CACHE['verts_ref'] and tris is _BVH_CACHE['tris_ref']:
+            is_hit = True
+        elif (
+            v_ptr == _BVH_CACHE['verts_ptr']
+            and t_ptr == _BVH_CACHE['tris_ptr']
+            and v.shape == _BVH_CACHE['verts_shape']
+            and t.shape == _BVH_CACHE['tris_shape']
+            and _BVH_CACHE['mask'] is not None
+        ):
+            if (
+                _BVH_CACHE['v_sample'] is not None
+                and _BVH_CACHE['t_sample'] is not None
+                and np.array_equal(v[:min(4, len(v))], _BVH_CACHE['v_sample'])
+                and np.array_equal(t[:min(4, len(t))], _BVH_CACHE['t_sample'])
+            ):
+                is_hit = True
+
+        if is_hit and _BVH_CACHE['mask'] is not None and len(_BVH_CACHE['mask']) == len(t):
+            return _BVH_CACHE['mask'].copy(), _BVH_CACHE['count']
+
     if _has_rust('self_intersecting_faces'):
         try:
-            return _geom.self_intersecting_faces(v, t)
+            if bvh is not None:
+                if hasattr(bvh, 'self_intersecting_faces'):
+                    return bvh.self_intersecting_faces()
+                return _geom.self_intersecting_faces(v, t, bvh=bvh)
+
+            new_bvh = None
+            if hasattr(_geom, 'PyMeshBvh'):
+                try:
+                    new_bvh = _geom.PyMeshBvh(v, t)
+                except Exception:
+                    new_bvh = None
+
+            if new_bvh is not None and hasattr(new_bvh, 'self_intersecting_faces'):
+                mask, count = new_bvh.self_intersecting_faces()
+            else:
+                mask, count = _geom.self_intersecting_faces(v, t)
+
+            _BVH_CACHE['verts_ref'] = verts
+            _BVH_CACHE['tris_ref'] = tris
+            _BVH_CACHE['verts_ptr'] = v.__array_interface__['data'][0]
+            _BVH_CACHE['tris_ptr'] = t.__array_interface__['data'][0]
+            _BVH_CACHE['verts_shape'] = v.shape
+            _BVH_CACHE['tris_shape'] = t.shape
+            _BVH_CACHE['v_sample'] = v[:min(4, len(v))].copy()
+            _BVH_CACHE['t_sample'] = t[:min(4, len(t))].copy()
+            _BVH_CACHE['bvh'] = new_bvh
+            _BVH_CACHE['mask'] = mask
+            _BVH_CACHE['count'] = count
+            return mask, count
         except Exception:
             pass
     return _self_intersecting_faces_numpy(v, t)
 
 
-def select_self_intersections_ms(ms, ml=None):
+def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
     """Select self-intersecting faces in MeshSet in-place.
 
     When SUTURA_NATIVE_SI is enabled, computes the mask via native exact
@@ -701,13 +785,15 @@ def select_self_intersections_ms(ms, ml=None):
     """
     if not native_si_enabled():
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
-        return mask, int(mask.sum())
+        res_mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
+        return res_mask, int(res_mask.sum())
 
     m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    mask, count = self_intersecting_faces(v, t)
+    if mask is None or count is None:
+        v = m.vertex_matrix()
+        t = m.face_matrix()
+        mask, count = self_intersecting_faces(v, t)
+
     try:
         ms.apply_filter('set_selection_none')
         if count > 0:
@@ -821,6 +907,7 @@ __all__ = [
     'native_si_enabled',
     'self_intersecting_faces',
     'select_self_intersections_ms',
+    'clear_bvh_cache',
     'engine',
     'set_engine',
 ]
