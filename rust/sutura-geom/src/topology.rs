@@ -670,6 +670,151 @@ pub fn re_orient_faces_coherently_core(trows: &[[i64; 3]]) -> Result<Vec<[i64; 3
     Ok(out)
 }
 
+/// Repair non-manifold edges by pruning incident faces (matching VCGLib / PyMeshLab meshing_repair_non_manifold_edges).
+///
+/// Iteratively removes the minimum-area incident face from each non-manifold edge (degree > 2)
+/// until all edges have at most 2 incident faces.
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn repair_non_manifold_edges<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let out = repair_non_manifold_edges_core(&vrows, &trows);
+    Ok(rows_to_array2_i64(py, &out))
+}
+
+pub fn repair_non_manifold_edges_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+) -> Vec<[i64; 3]> {
+    let nf = trows.len();
+    let nv = vrows.len();
+    if nf == 0 {
+        return Vec::new();
+    }
+
+    let mut areas: Vec<f64> = Vec::with_capacity(nf);
+    for tri in trows {
+        let i0 = tri[0];
+        let i1 = tri[1];
+        let i2 = tri[2];
+        if i0 < 0 || i1 < 0 || i2 < 0 || (i0 as usize) >= nv || (i1 as usize) >= nv || (i2 as usize) >= nv {
+            areas.push(0.0);
+            continue;
+        }
+        let p0 = vrows[i0 as usize];
+        let p1 = vrows[i1 as usize];
+        let p2 = vrows[i2 as usize];
+        let e1 = [
+            (p1[0] - p0[0]) as f64,
+            (p1[1] - p0[1]) as f64,
+            (p1[2] - p0[2]) as f64,
+        ];
+        let e2 = [
+            (p2[0] - p0[0]) as f64,
+            (p2[1] - p0[1]) as f64,
+            (p2[2] - p0[2]) as f64,
+        ];
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let norm = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        areas.push(0.5 * norm);
+    }
+
+    let mut half_edges: Vec<((i64, i64), usize)> = Vec::with_capacity(3 * nf);
+    let mut face_edges: Vec<[(i64, i64); 3]> = Vec::with_capacity(nf);
+    for (f_idx, tri) in trows.iter().enumerate() {
+        let e0 = canon(tri[0], tri[1]);
+        let e1 = canon(tri[1], tri[2]);
+        let e2 = canon(tri[2], tri[0]);
+        face_edges.push([e0, e1, e2]);
+        half_edges.push((e0, f_idx));
+        half_edges.push((e1, f_idx));
+        half_edges.push((e2, f_idx));
+    }
+    half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let mut edge_faces: std::collections::HashMap<(i64, i64), Vec<usize>> =
+        std::collections::HashMap::new();
+
+    let mut i = 0;
+    let mut active_nm: Vec<(i64, i64)> = Vec::new();
+    while i < half_edges.len() {
+        let mut j = i + 1;
+        while j < half_edges.len() && half_edges[j].0 == half_edges[i].0 {
+            j += 1;
+        }
+        let edge = half_edges[i].0;
+        let mut flist: Vec<usize> = Vec::with_capacity(j - i);
+        for k in i..j {
+            flist.push(half_edges[k].1);
+        }
+        if flist.len() > 2 {
+            active_nm.push(edge);
+        }
+        edge_faces.insert(edge, flist);
+        i = j;
+    }
+
+    if active_nm.is_empty() {
+        return trows.to_vec();
+    }
+
+    let mut removed = vec![false; nf];
+
+    while let Some(edge) = active_nm.pop() {
+        if let Some(flist) = edge_faces.get_mut(&edge) {
+            flist.retain(|&f| !removed[f]);
+            if flist.len() <= 2 {
+                continue;
+            }
+            let mut best_idx = 0;
+            let mut min_area = areas[flist[0]];
+            let mut min_f = flist[0];
+            for (idx, &f) in flist.iter().enumerate().skip(1) {
+                let a = areas[f];
+                if a < min_area || (a == min_area && f < min_f) {
+                    min_area = a;
+                    min_f = f;
+                    best_idx = idx;
+                }
+            }
+            let victim = flist.swap_remove(best_idx);
+            removed[victim] = true;
+
+            if flist.len() > 2 {
+                active_nm.push(edge);
+            }
+
+            for &other_e in &face_edges[victim] {
+                if other_e != edge {
+                    if let Some(other_list) = edge_faces.get_mut(&other_e) {
+                        other_list.retain(|&f| !removed[f]);
+                        if other_list.len() > 2 {
+                            active_nm.push(other_e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<[i64; 3]> = Vec::with_capacity(nf);
+    for (f_idx, tri) in trows.iter().enumerate() {
+        if !removed[f_idx] {
+            out.push(*tri);
+        }
+    }
+    out
+}
+
 /// Complete topological measures of a triangle mesh (matching VCGLib / PyMeshLab get_topological_measures).
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
@@ -1093,5 +1238,21 @@ mod tests {
         // Degenerate triangle [0, 0, 1]
         let t = vec![[0, 0, 1], [0, 1, 2]];
         assert!(re_orient_faces_coherently_core(&t).is_err());
+    }
+
+    #[test]
+    fn test_repair_non_manifold_edges_prunes_smallest_area() {
+        let v = vec![
+            [0.0f32, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],  // t0 area 0.5
+            [0.0, 2.0, 0.0],  // t1 area 1.0
+            [0.0, 0.1, 0.0],  // t2 area 0.05
+        ];
+        let t = vec![[0i64, 1, 2], [0, 1, 3], [0, 1, 4]];
+        let res = repair_non_manifold_edges_core(&v, &t);
+        // t2 (smallest area) should be pruned, leaving t0 and t1
+        assert_eq!(res.len(), 2);
+        assert_eq!(res, vec![[0, 1, 2], [0, 1, 3]]);
     }
 }

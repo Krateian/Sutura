@@ -288,6 +288,78 @@ def _re_orient_faces_coherently_numpy(tris):
     return out
 
 
+def _repair_non_manifold_edges_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    nf = len(t)
+    nv = len(v)
+    if nf == 0:
+        return t
+
+    # Calculate triangle areas
+    p0 = v[t[:, 0]]
+    p1 = v[t[:, 1]]
+    p2 = v[t[:, 2]]
+    cross = np.cross(p1 - p0, p2 - p0)
+    areas = 0.5 * np.linalg.norm(cross, axis=1)
+
+    # Edge to incident faces mapping
+    edge_faces = {}
+    face_edges = []
+    for fi in range(nf):
+        tri = t[fi]
+        e0 = (min(tri[0], tri[1]), max(tri[0], tri[1]))
+        e1 = (min(tri[1], tri[2]), max(tri[1], tri[2]))
+        e2 = (min(tri[2], tri[0]), max(tri[2], tri[0]))
+        face_edges.append((e0, e1, e2))
+        edge_faces.setdefault(e0, []).append(fi)
+        edge_faces.setdefault(e1, []).append(fi)
+        edge_faces.setdefault(e2, []).append(fi)
+
+    sorted_edges = sorted(edge_faces.keys())
+    active_nm = [e for e in sorted_edges if len(edge_faces[e]) > 2]
+    if not active_nm:
+        return t.copy()
+
+    removed = np.zeros(nf, dtype=bool)
+
+    while active_nm:
+        edge = active_nm.pop()
+        flist = edge_faces[edge]
+        flist = [f for f in flist if not removed[f]]
+        edge_faces[edge] = flist
+        if len(flist) <= 2:
+            continue
+
+        best_idx = 0
+        min_area = areas[flist[0]]
+        min_f = flist[0]
+        for idx in range(1, len(flist)):
+            f = flist[idx]
+            a = areas[f]
+            if a < min_area or (a == min_area and f < min_f):
+                min_area = a
+                min_f = f
+                best_idx = idx
+
+        victim = flist[best_idx]
+        flist[best_idx] = flist[-1]
+        flist.pop()
+        removed[victim] = True
+
+        if len(flist) > 2:
+            active_nm.append(edge)
+
+        for other_e in face_edges[victim]:
+            if other_e != edge:
+                other_list = [f for f in edge_faces[other_e] if not removed[f]]
+                edge_faces[other_e] = other_list
+                if len(other_list) > 2:
+                    active_nm.append(other_e)
+
+    return t[~removed].copy()
+
+
 def _mesh_topology_numpy(verts, tris):
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int64)
@@ -709,6 +781,24 @@ def re_orient_faces_coherently(tris):
     return _re_orient_faces_coherently_numpy(t)
 
 
+def repair_non_manifold_edges(verts, tris):
+    """Repair non-manifold edges by pruning incident faces (matching VCGLib meshing_repair_non_manifold_edges)."""
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) == 0:
+        return t
+    if _has_rust('repair_non_manifold_edges'):
+        try:
+            return _geom.repair_non_manifold_edges(v, t)
+        except Exception:
+            pass
+    return _repair_non_manifold_edges_numpy(v, t)
+
+
 def mesh_topology(verts, tris):
     """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures)."""
     v = np.ascontiguousarray(verts, dtype=np.float32)
@@ -744,6 +834,17 @@ def native_orient_enabled():
     sutura_geom rather than PyMeshLab's VCGLib filter.
     """
     env = os.environ.get('SUTURA_NATIVE_ORIENT', '').strip().lower()
+    return env in ('1', 'true', 'yes', 'on')
+
+
+def native_nme_enabled():
+    """Return True if native non-manifold edge repair is enabled.
+
+    Controlled by environment variable ``SUTURA_NATIVE_NME`` (default OFF: 0/false).
+    When enabled, non-manifold edge repair prunes incident faces via sutura_geom
+    rather than PyMeshLab's VCGLib filter.
+    """
+    env = os.environ.get('SUTURA_NATIVE_NME', '').strip().lower()
     return env in ('1', 'true', 'yes', 'on')
 
 
@@ -982,10 +1083,12 @@ __all__ = [
     'remove_connected_components',
     'invert_face_orientation',
     're_orient_faces_coherently',
+    'repair_non_manifold_edges',
     'mesh_topology',
     'connected_components',
     'native_si_enabled',
     'native_orient_enabled',
+    'native_nme_enabled',
     'self_intersecting_faces',
     'select_self_intersections_ms',
     'clear_bvh_cache',

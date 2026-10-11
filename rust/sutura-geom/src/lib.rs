@@ -1107,6 +1107,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::remove_connected_components, m)?)?;
     m.add_function(wrap_pyfunction!(topology::invert_face_orientation, m)?)?;
     m.add_function(wrap_pyfunction!(topology::re_orient_faces_coherently, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::repair_non_manifold_edges, m)?)?;
     m.add_function(wrap_pyfunction!(topology::mesh_topology, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;

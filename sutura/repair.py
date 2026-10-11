@@ -420,6 +420,10 @@ def apply_chain(ms, chain):
             elif name == 'meshing_invert_face_orientation':
                 _invert_faces_ms(ms, ml)
                 handled = True
+            elif name == 'meshing_repair_non_manifold_edges':
+                if topology.native_nme_enabled():
+                    _repair_nme_ms(ms, ml)
+                    handled = True
             elif name == 'meshing_re_orient_faces_coherently':
                 if topology.native_orient_enabled():
                     _re_orient_faces_ms(ms, ml)
@@ -473,6 +477,17 @@ def _re_orient_faces_ms(ms, ml):
     t = m.face_matrix()
     t_new = topology.re_orient_faces_coherently(t)
     if not np.array_equal(t_new, t):
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+
+
+def _repair_nme_ms(ms, ml):
+    """Repair non-manifold edges on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.repair_non_manifold_edges(v, t)
+    if len(t_new) < len(t):
         ms.clear()
         ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
 
@@ -704,7 +719,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 break
             ms.apply_filter('meshing_remove_selected_faces')
             _remove_unref_vertices_ms(ms, ml)
-            ms.apply_filter('meshing_repair_non_manifold_edges')
+            if topology.native_nme_enabled():
+                _repair_nme_ms(ms, ml)
+            else:
+                ms.apply_filter('meshing_repair_non_manifold_edges')
             ms.apply_filter('meshing_repair_non_manifold_vertices')
             close_kwargs = {'maxholesize': maxholesize,
                             'newfaceselected': False,

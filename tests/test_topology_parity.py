@@ -97,6 +97,7 @@ def _run_all(topo_engine):
         unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
         rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
         inv_t = topology.invert_face_orientation(t)
+        rnme_t = topology.repair_non_manifold_edges(v, t)
         topo_dict = topology.mesh_topology(v, t)
         if len(t) <= 5000:
             si_mask, si_cnt = topology.self_intersecting_faces(v, t)
@@ -122,6 +123,7 @@ def _run_all(topo_engine):
             'remove_unreferenced_vertices': (unv_v.tobytes(), unv_t.tobytes()),
             'remove_connected_components': (rcc_v.tobytes(), rcc_t.tobytes()),
             'invert_face_orientation': inv_t.tobytes(),
+            'repair_non_manifold_edges': rnme_t.tobytes(),
             'mesh_topology': json.dumps(topo_dict, sort_keys=True),
             'self_intersecting_faces': si_entry,
         })
@@ -189,6 +191,9 @@ def test_fallback_when_kernel_missing():
             assert rcc_v.tobytes() == exp_rcc_v.tobytes() and rcc_t.tobytes() == exp_rcc_t.tobytes()
             inv_t = topology.invert_face_orientation(t)
             assert inv_t.tobytes() == topology._invert_face_orientation_numpy(t).tobytes()
+            rnme_t = topology.repair_non_manifold_edges(v, t)
+            exp_rnme_t = topology._repair_non_manifold_edges_numpy(v, t)
+            assert rnme_t.tobytes() == exp_rnme_t.tobytes()
             topo_dict = topology.mesh_topology(v, t)
             assert topo_dict == topology._mesh_topology_numpy(v, t)
             si_mask, si_cnt = topology.self_intersecting_faces(v, t)
@@ -226,9 +231,29 @@ def test_re_orient_parity():
     print('re_orient_faces_coherently parity OK (Rust == numpy oracle, bit-for-bit)')
 
 
+def test_repair_nme_parity():
+    v = np.array([
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),  # area 0.5
+        (0.0, 2.0, 0.0),  # area 1.0
+        (0.0, 0.1, 0.0),  # area 0.05 (smallest)
+    ], dtype=np.float32)
+    t = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=np.int64)
+
+    out_np = topology._repair_non_manifold_edges_numpy(v, t)
+    if topology._has_rust('repair_non_manifold_edges'):
+        out_rs = topology._geom.repair_non_manifold_edges(v, t)
+        assert np.array_equal(out_np, out_rs), f"mismatch: np=\n{out_np}\nrs=\n{out_rs}"
+        assert len(out_rs) == 2
+        assert np.array_equal(out_rs, [[0, 1, 2], [0, 1, 3]])
+    print('repair_non_manifold_edges parity OK (Rust == numpy oracle, bit-for-bit)')
+
+
 def main():
     test_parity()
     test_re_orient_parity()
+    test_repair_nme_parity()
     test_fallback_when_kernel_missing()
     topology.set_engine('auto')
     print('topology parity tests passed')
@@ -236,3 +261,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
