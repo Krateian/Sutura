@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.9.0] - 2026-10-11
 
 ### Added
 
@@ -70,6 +70,42 @@ All notable changes to this project are documented here.
   thingi10k_1038441 and thingi10k_100827 are byte-identical to the base; the
   ornate-frame post-Flap tier keeps 2 caps (9 rolled back as double-wall, 0
   floating), holes 23 -> 21, components 220 -> 220, adopted.
+- **Tamponade Stent plug and multi-stent partition.** Inside Tamponade, a
+  boundary loop whose reference plug is rejected now gets an inflate-from-inside
+  candidate, **Stent**: the plug is grown inward from the rim and the active-set
+  solve is clamped so it can never rise past the rim (a flat through-hole cannot
+  inflate into a dome, and a Stent seal is always built on the original rim, never
+  on a reference overshoot trim). A loop that a single Stent cannot seal is
+  partitioned into simple sub-loops at its pinch points and across the shortest
+  valid interior chord, and one Stent is inflated per sub-loop; adjacent
+  sub-plugs share the chord edge exactly (a manifold seam) and the group is
+  judged all-or-nothing, so a partial seal can never break the seam. Report keys
+  `stent_used` / `stent_rejected` / `stent_subplugs` and the per-plug
+  `plug_metrics` array; diagnostics expose a per-attempt rejection reason
+  (`no_rim`/`degenerate`/`structure`/`cancel0`/`deadline`). Stent rides **inside**
+  Tamponade — it only runs when `--tamponade` (or the GUI checkbox) is on, so
+  there is deliberately no separate CLI flag or GUI control; its only switch is
+  the env opt-out `SUTURA_TAMP_STENT=0` (default ON whenever Tamponade runs,
+  geometry no-op). The name is deliberately **not** "balloon", to avoid confusion
+  with method #8 Balloon (screened-Poisson reconstruction). Measured on
+  ornate-frame: the reference path leaves 23 holes, the multi-stent tier seals the
+  large thin-frame loop (holes 23 -> 18, non-manifold unchanged, components
+  unchanged, leak 0); `SUTURA_TAMP_STENT=0` is byte-identical to the pre-Stent
+  output on all 14 fixtures-v2.
+- **Tamponade plug acceptance rules.** A Tamponade plug is adopted only when
+  every one of these holds, so the tier changes the output only when it strictly
+  helps: it does not **leak** beyond the tolerance (a plug sample must not lie in
+  empty space farther than `clamp(diagonal/10000, 0.0125, 0.05)` mm from the
+  original surface unless it is over the hole aperture); it creates **no new
+  holes or non-manifold edges** on the reload-honest (welded) mesh; it creates
+  **no anti-parallel double wall** over more than 20 % of its own area (only
+  opposite-oriented coincident faces that can cancel material in an even-odd
+  slicer count, same-orientation overlaps are unioned and accepted); it **stays
+  connected** to the main shell through its boundary loop and adds **no new
+  part** (no floating component, no self-contained closed sub-shell); and at least
+  **99 % of the pre-tier faces** are kept byte-identical. Self-intersections are
+  **report-only** — a slicer unions overlapping volumes, so they never block
+  adoption.
 - **Proxy resample timeout guard (`Scaffold`, method #10).** The uniform
   resample filter builds a VCG face KD-tree whose construction degenerates
   (several GB, minutes) on meshes with long skinny triangle fans; this
@@ -79,6 +115,18 @@ All notable changes to this project are documented here.
   the existing alpha-wrap fallback on timeout, with
   the child driven through temp NPZ files so the parent JSON report is never
   corrupted. Output is byte-identical whenever the resample completes in time.
+- **Native self-intersection detection behind `SUTURA_NATIVE_SI` (default
+  off).** The self-intersection metric can now be computed by the Rust kernel
+  instead of PyMeshLab's VCGLib filter: `topology.native_si_enabled()` gates a
+  clean-room Möller triangle-interval test (pure-NumPy oracle bounded to
+  ≤ 5,000 faces with a 60-second timeout) and an accelerated dual-BVH exact
+  classifier with Shewchuk interval filters. The metric calculations, the
+  extreme-mode extra passes, the guarded SI excise, `validate` and `--dry-run`
+  all route through the same switch. It is **off by default** (env
+  `SUTURA_NATIVE_SI=1` to enable) because the native count is not byte-identical
+  to PyMeshLab's; parity is verified by `tests/test_topology_parity.py`. It is an
+  env-only evaluation switch with no CLI flag or GUI control, so the CLI and the
+  GUI behave identically (like the ray-stab vote).
 - **Dependency reduction Phase 1 and native Rust cleanup filters.** Phase 1
   removes `psutil` (replaced by stdlib `os.sysconf` / macOS `sysctl
   hw.memsize`) and `pyrobust-predicates` (replaced by the Rust

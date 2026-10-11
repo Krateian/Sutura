@@ -421,7 +421,7 @@ The seventeen methods, in the stable integer order printed by `--list-methods`
 | 14 | `mirror_complete` | Mirror Complete | closing | Reflects a single-sided symmetric scan across its detected symmetry plane. | yes (mirrored back) |
 | 15 | `wall_thicken` | Wall Thicken | envelope | Opt-in morphological dilation thickening walls below `--wall-min-thickness`. | yes (offset) |
 | 16 | `dressing` | Dressing | envelope | Opt-in variable-viscosity level-set skin; 2-manifold and SI-free by construction. | yes (viscosity coat) |
-| 17 | `tamponade` | Tamponade | interior | Opt-in interior plug (alias `lava`): fills each open boundary from the inside, melts residual self-intersections in rolled-back layers; never deletes an input face. | yes (plug) |
+| 17 | `tamponade` | Tamponade | interior | Opt-in interior plug (alias `lava`): fills each open boundary from the inside, melts residual self-intersections in rolled-back layers; its **Stent** candidate inflates a plug inward from the rim (multi-stent partition for large loops); never deletes an input face. | yes (plug) |
 
 The geometry-inventing methods never run unguarded: #7 is bounded by a
 one-sided output→input Hausdorff guard; #8, #9, #10, and #14 by an input→output
@@ -663,6 +663,18 @@ changes the output when it strictly helps:
 - it **would add a separate part or a closed shell** of its own (a plug must be
   edge-connected to the main shell through its boundary loop);
 - or fewer than 99 % of the pre-tier faces are kept.
+
+Inside the tier, a loop whose reference plug is rejected gets an
+inflate-from-inside candidate, **Stent**: the plug is grown inward and clamped so
+it can never rise past the rim (a flat through-hole cannot inflate into a dome,
+and a Stent seal is always built on the original rim, never on a reference
+overshoot trim). A loop a single Stent cannot seal is partitioned into simple
+sub-loops at its pinch points and across the shortest valid interior chord, and
+one Stent is inflated per sub-loop; adjacent sub-plugs share the chord edge
+exactly, so the seam stays manifold, and the group is judged all-or-nothing. The
+name is deliberately **not** *balloon*, to avoid confusion with method #8 Balloon
+(screened-Poisson reconstruction). Stent runs only when Tamponade runs; its only
+switch is the env opt-out `SUTURA_TAMP_STENT=0` (default on, a geometry no-op).
 
 Self-intersections are **report-only** (a slicer unions overlapping volumes), so
 they never block adoption. The Rust extension must provide
@@ -2132,6 +2144,16 @@ community — but for now, it will continue like this.
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.9.0 — 2026-10-11** — **Tamponade** (method #17, opt-in interior hole plug
+  with an inflate-from-inside **Stent** candidate and multi-stent partition for
+  large loops; strict plug acceptance rules — no leak, no new holes/non-manifold
+  edges on reload, no anti-parallel double wall over 20 %, must stay connected
+  and add no part); **Flap** per-loop candidate selection (on by default, tries
+  alternative fills only when the primary patch is rejected, charged to the Flap
+  budget; `SUTURA_FLAP_SELECT=0` opts out); a memory/time guard on the Scaffold
+  resample (#10); native self-intersection detection behind the off-by-default
+  `SUTURA_NATIVE_SI`; and dependency reduction (Phase 1 drops `psutil` /
+  `pyrobust-predicates`, Phase 2a/2b route Stage-1 cleaning to the Rust kernel).
 - **v0.8.1 — 2026-10-03** — Repairs speed up via a native Rust topology kernel
   (vertex welding, duplicate-face and edge counting; bit-for-bit identical output,
   +4–29% end-to-end on the sample models) with a transparent pure-numpy fallback;

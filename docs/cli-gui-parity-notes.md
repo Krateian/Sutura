@@ -193,3 +193,9 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   array; the GUI's tamponade log renders the adopted verdict unchanged. The
   name is deliberately NOT "balloon" to avoid confusion with method #8 Balloon
   (Poisson surface reconstruction).
+- **Native self-intersection detection (unreleased):** the Rust-counted
+  self-intersection metric is an evaluation switch behind the env
+  `SUTURA_NATIVE_SI=1` (default OFF: the count is not byte-identical to
+  PyMeshLab's). It has deliberately NO CLI flag or GUI control, so the CLI and the
+  GUI behave identically (parity by construction, like the ray-stab vote); when it
+  is proven it gets a CLI flag and a GUI control together.

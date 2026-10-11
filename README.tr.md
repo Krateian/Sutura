@@ -427,7 +427,7 @@ kimlikler gösterilmektedir; eski slug'lar takma ad olarak desteklenir):
 | 14 | `mirror_complete` | Aynalı Tamamlama | kapama | Simetrik tek-taraflı taramayı tespit edilen simetri düzleminden aynalar. | evet (aynalı arka) |
 | 15 | `wall_thicken` | Duvar Kalınlaştır | zarf | SDF ızgarasından ince duvarları tespit edip morfolojik öteleme ile kalınlaştırır. | evet (öteleme) |
 | 16 | `dressing` | Pansuman | zarf | İsteğe bağlı, değişken viskoziteli seviye kümesi kaplaması; yapısı gereği 2-manifold ve SI'sız. | evet (viskozite kaplama) |
-| 17 | `tamponade` | Tamponad | iç | İsteğe bağlı iç tıkaç (takma ad `lava`): her açık sınırı içeriden doldurur, geri alınan katmanlardaki kalan kendini kesmeleri eritir; hiçbir girdi yüzünü silmez. | evet (tıkaç) |
+| 17 | `tamponade` | Tamponad | iç | İsteğe bağlı iç tıkaç (takma ad `lava`): her açık sınırı içeriden doldurur, geri alınan katmanlardaki kalan kendini kesmeleri eritir; **Stent** adayı tıkacı kenardan içe doğru şişirir (büyük halkalar için çok-stent bölümlemesi); hiçbir girdi yüzünü silmez. | evet (tıkaç) |
 
 Geometri uyduran yöntemler asla korumasız çalışmaz: #7 tek-taraflı çıktı→girdi
 Hausdorff korumasıyla; #8, #9, #10 ve #14 girdi→çıktı korumasıyla (özgün yüzey
@@ -666,6 +666,19 @@ katman yalnızca sonucu kesin olarak iyileştirdiğinde çıktıyı değiştirir
 - **ayrı bir parça veya kendi başına kapalı bir kabuk ekler** (tıkaç, sınır
   halkası üzerinden ana kabuğa kenar-bağlantılı olmalıdır);
 - ya da katman öncesi yüzlerin %99'undan azı korunur.
+
+Katman içinde, referans tıkacı reddedilen bir halka içten şişirilen bir aday
+kazanır, **Stent**: tıkaç içe doğru büyütülür ve kenarın üzerine asla
+yükselmeyecek şekilde sınırlanır (düz bir geçiş deliği kubbeye dönüşemez ve bir
+Stent tıkacı her zaman orijinal kenar üzerinde kurulur, asla bir referans taşma
+düzeltmesi üzerinde değil). Tek bir Stent'in kapatamadığı bir halka, sıkışma
+noktalarında ve en kısa geçerli iç kiriş boyunca basit alt halkalara bölünür ve
+her alt halka için bir Stent şişirilir; komşu alt tıkaçlar kiriş kenarını birebir
+paylaşır, böylece dikiş manifold kalır ve grup ya-hep-ya-hiç olarak değerlendirilir.
+Ad, #8 Balon (screened-Poisson yeniden inşası) yöntemiyle karışmaması için
+bilinçli olarak *balon* değildir. Stent yalnızca Tamponad çalışırken çalışır;
+tek anahtarı `SUTURA_TAMP_STENT=0` ortam vazgeçmesidir (varsayılan açık, geometri
+açısından no-op).
 
 Kendini kesmeler **yalnızca raporlanır** (dilimleyici çakışan hacimleri
 birleştirir), bu yüzden benimsenmeyi hiçbir zaman engellemez. Rust eklentisinin
@@ -2141,6 +2154,17 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.9.0 — 2026-10-11** — **Tamponad** (#17 yöntemi, isteğe bağlı iç delik
+  tıkacı; içten şişirilen **Stent** adayı ve büyük halkalar için çok-stent
+  bölümlemesi; katı tıkaç kabul kuralları — sızıntı yok, yeniden yüklemede yeni
+  delik/non-manifold kenar yok, %20'yi aşan ters yönlü çift duvar yok, bağlı
+  kalmalı ve parça eklememeli); **Flap** halka-başına aday seçimi (varsayılan
+  açık, alternatif dolgular yalnızca birincil yama reddedilince denenir ve Flap
+  bütçesinden düşülür; `SUTURA_FLAP_SELECT=0` kapatır); Scaffold resample (#10)
+  için bellek/süre koruması; varsayılan kapalı `SUTURA_NATIVE_SI` arkasında yerel
+  self-intersection tespiti; ve bağımlılık azaltımı (Faz 1 `psutil` /
+  `pyrobust-predicates` kaldırır, Faz 2a/2b Aşama-1 temizliğini Rust çekirdeğine
+  yönlendirir).
 - **v0.8.1 — 2026-10-03** — Onarımlar yerel bir Rust topoloji çekirdeğiyle
   hızlanır (köşe kaynatma, mükerrer yüz ve kenar sayımı; bayt bayt aynı çıktı,
   örnek modellerde uçtan uca %4–29) ve şeffaf bir saf-numpy yedek yolu bulunur;
