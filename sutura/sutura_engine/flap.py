@@ -1194,15 +1194,17 @@ def _reload_weld_remap(verts):
     return remap
 
 
-def patch_safety(base_v, base_t, add_v, patch_faces):
+def patch_safety(base_v, base_t, add_v, patch_faces, rim_edges):
     """``(safe, reason)`` for a candidate patch.
 
     Rejects a patch that (a) makes any of its own faces properly self-intersect
     (exact classifier over the whole candidate; skipped above ``_SI_MAX_FACES``,
-    which reads as accepted) or (b) leaves a patch edge that is not incident to
-    exactly two faces after an exact float32 reload-weld (a crack, fin or
-    non-manifold seam).  Cheap when the exact classifier is unavailable: the SI
-    scan degrades to "unknown" and only the topological weld check runs.
+    which reads as accepted) or (b) leaves a RIM edge that is not shared by
+    exactly two faces after an exact float32 reload-weld (a split rim edge /
+    T-junction, a doubled seam, a crack).  Interior patch edges are not checked:
+    a float32-coincident interior vertex is separated later by
+    ``separate_coincident_stl``.  Cheap when the exact classifier is
+    unavailable: the SI scan degrades to "unknown" and only the seam check runs.
     """
     base_v = np.asarray(base_v, dtype=np.float64)
     base_t = np.asarray(base_t, dtype=np.int64)
@@ -1229,8 +1231,10 @@ def patch_safety(base_v, base_t, add_v, patch_faces):
     except Exception:  # noqa: BLE001 - absence of the classifier is not an error
         pass
 
-    # (b) reload-weld topology: every edge of the patch must be used twice.
+    # (b) reload-weld seam: every rim edge must be shared by exactly two faces.
     remap = _reload_weld_remap(cand_v)
+    if bool(np.any(remap != np.arange(len(remap), dtype=np.int64))):
+        return False, 'coincident'
     counts = {}
     for tri in cand_t:
         a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
@@ -1238,13 +1242,11 @@ def patch_safety(base_v, base_t, add_v, patch_faces):
         for u, w in ((a, b), (b, c), (c, a)):
             k = (u, w) if u < w else (w, u)
             counts[k] = counts.get(k, 0) + 1
-    for tri in pf:
-        a, b, c = int(tri[0]), int(tri[1]), int(tri[2])
-        a, b, c = int(remap[a]), int(remap[b]), int(remap[c])
-        for u, w in ((a, b), (b, c), (c, a)):
-            k = (u, w) if u < w else (w, u)
-            if counts.get(k, 0) != 2:
-                return False, 'reload_nm'
+    for (ra, rb) in rim_edges:
+        u, w = int(remap[int(ra)]), int(remap[int(rb)])
+        k = (u, w) if u < w else (w, u)
+        if counts.get(k, 0) != 2:
+            return False, 'reload_nm'
     return True, ''
 
 
@@ -1845,7 +1847,9 @@ def flap_fill_python(verts, tris, *, refine=True, fair=True, max_loop=1200,
         _ref = __import__('os').environ.get('SUTURA_FLAP_REF')
         if ((_mem is not None and _mem not in ('', '0'))
                 or (_ref is not None and _ref not in ('', '0'))):
-            _safe, _why = patch_safety(out_v, out_t, P[m:], gfaces)
+            _safe, _why = patch_safety(out_v, out_t, P[m:], gfaces,
+                                       [(int(loop_arr[i]), int(loop_arr[(i + 1) % m]))
+                                        for i in range(m)])
             if not _safe:
                 report["loops_skipped_safety"] = \
                     report.get("loops_skipped_safety", 0) + 1

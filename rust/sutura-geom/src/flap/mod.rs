@@ -178,90 +178,125 @@ fn percentile(mut v: Vec<f64>, q: f64) -> f64 {
     }
 }
 
-/// Candidate face-count ceiling above which the per-loop safety check is
-/// skipped entirely (both scans are O(mesh) per loop; above the cap the patch
-/// is accepted, like an unknown verdict).  Keeps the opt-in membrane path from
-/// turning a many-loop large mesh (ornate-frame: 179 loops, ~400k faces) into
-/// an O(loops x faces) cost.
-const SAFETY_SI_MAX_FACES: usize = 200_000;
-
-/// First-occurrence remap of exactly float32-coincident vertices (the weld a
-/// STL reload performs), so a seam that only appears after reload is visible.
-fn reload_weld_remap(v: &[V3]) -> Vec<u32> {
-    let mut seen: HashMap<[u32; 3], u32> = HashMap::with_capacity(v.len());
-    let mut remap = vec![0u32; v.len()];
-    for (i, p) in v.iter().enumerate() {
-        let key = [
-            (p[0] as f32).to_bits(),
-            (p[1] as f32).to_bits(),
-            (p[2] as f32).to_bits(),
-        ];
-        let idx = *seen.entry(key).or_insert(i as u32);
-        remap[i] = idx;
-    }
-    remap
-}
-
 /// Per-loop safety: reject a candidate patch that (a) makes any of its own
-/// faces properly self-intersect (exact classifier over the whole candidate;
-/// skipped above [`SAFETY_SI_MAX_FACES`]) or (b) leaves a patch edge that is not
-/// incident to exactly two faces after an exact float32 reload-weld (a crack,
-/// fin or non-manifold seam).  Mirror of the Python `patch_safety`.
-fn patch_safety(base_v: &[V3], base_t: &[T3], add_v: &[V3], patch: &[T3]) -> (bool, &'static str) {
+/// faces properly self-intersect or (b) leaves a RIM edge that is not shared by
+/// exactly two faces after an exact float32 reload-weld (a split rim edge /
+/// T-junction, a doubled seam, a crack).  Mirror of the Python `patch_safety`.
+///
+/// The self-intersection scan is LOCAL: only the original faces whose bounding
+/// box overlaps the patch's (plus the patch against itself) are tested, so it
+/// runs on a large mesh too (ornate-frame ~400k faces) instead of being skipped.
+fn patch_safety(
+    base_v: &[V3],
+    base_t: &[T3],
+    add_v: &[V3],
+    patch: &[T3],
+    rim_edges: &[(u32, u32)],
+) -> (bool, &'static str) {
     if patch.is_empty() {
-        return (true, "");
-    }
-    // Above the cap both scans are skipped (the patch reads as accepted); this
-    // bounds the opt-in membrane cost on a large many-loop mesh.
-    if base_t.len() + patch.len() > SAFETY_SI_MAX_FACES {
         return (true, "");
     }
     let mut cand_v: Vec<V3> = Vec::with_capacity(base_v.len() + add_v.len());
     cand_v.extend_from_slice(base_v);
     cand_v.extend_from_slice(add_v);
-    let mut cand_t: Vec<T3> = Vec::with_capacity(base_t.len() + patch.len());
-    cand_t.extend_from_slice(base_t);
-    cand_t.extend_from_slice(patch);
-    let nb = base_t.len();
 
-    // (a) exact self-intersection involving a patch face.
+    // Patch bounding box + margin.
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for t in patch {
+        for &v in t {
+            let p = cand_v[v as usize];
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+    }
+    let diag = norm([hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]]);
+    let margin = diag.max(1e-9) * 0.5;
+    let inb = |p: V3| (0..3).all(|k| p[k] >= lo[k] - margin && p[k] <= hi[k] + margin);
+
+    // Local mesh: near original faces + the patch faces, remapped compactly.
+    let mut lmap: HashMap<u32, u32> = HashMap::new();
+    let mut lv: Vec<V3> = Vec::new();
+    let mut lt: Vec<[usize; 3]> = Vec::new();
+    let mut remap = |vi: u32, lmap: &mut HashMap<u32, u32>, lv: &mut Vec<V3>| -> usize {
+        if let Some(&x) = lmap.get(&vi) {
+            return x as usize;
+        }
+        lv.push(cand_v[vi as usize]);
+        let x = (lv.len() - 1) as u32;
+        lmap.insert(vi, x);
+        x as usize
+    };
+    for t in base_t {
+        if inb(cand_v[t[0] as usize]) || inb(cand_v[t[1] as usize]) || inb(cand_v[t[2] as usize])
+        {
+            let a = remap(t[0], &mut lmap, &mut lv);
+            let b = remap(t[1], &mut lmap, &mut lv);
+            let c = remap(t[2], &mut lmap, &mut lv);
+            lt.push([a, b, c]);
+        }
+    }
+    let nbase = lt.len();
+    for t in patch {
+        let a = remap(t[0], &mut lmap, &mut lv);
+        let b = remap(t[1], &mut lmap, &mut lv);
+        let c = remap(t[2], &mut lmap, &mut lv);
+        lt.push([a, b, c]);
+    }
+
+    // (a) exact self-intersection involving a patch face, on the local mesh.
     {
-        let t_usize: Vec<[usize; 3]> = cand_t
-            .iter()
-            .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
-            .collect();
-        let mut mask = vec![false; cand_t.len()];
-        for m in mask.iter_mut().skip(nb) {
+        let mut mask = vec![false; lt.len()];
+        for m in mask.iter_mut().skip(nbase) {
             *m = true;
         }
-        if crate::self_intersections_subset_core(&cand_v, &t_usize, &mask) > 0 {
+        if crate::self_intersections_subset_core(&lv, &lt, &mask) > 0 {
             return (false, "si");
         }
     }
 
-    // (b) reload-weld topology: every edge of the patch must be used twice.
-    let remap = reload_weld_remap(&cand_v);
-    let mut counts: HashMap<(u32, u32), u32> = HashMap::with_capacity(cand_t.len() * 3);
-    for t in &cand_t {
-        let (a, b, c) = (
-            remap[t[0] as usize],
-            remap[t[1] as usize],
-            remap[t[2] as usize],
-        );
+    // (b) reload-weld seam: every rim edge must be shared by exactly two faces
+    // after an exact float32 weld (the original face + the patch face).
+    let mut remap32: HashMap<[u32; 3], u32> = HashMap::with_capacity(lv.len());
+    let mut rmap = vec![0u32; lv.len()];
+    let mut coincident = false;
+    for (i, p) in lv.iter().enumerate() {
+        let key = [
+            (p[0] as f32).to_bits(),
+            (p[1] as f32).to_bits(),
+            (p[2] as f32).to_bits(),
+        ];
+        let e = remap32.entry(key).or_insert(i as u32);
+        rmap[i] = *e;
+        if (*e as usize) != i {
+            coincident = true;
+        }
+    }
+    // Distinct patch vertices that coincide in float32 would be nudged apart by
+    // `separate_coincident_stl` after the loop, which can itself introduce a
+    // self-intersection (measured: the unfaired plate_a_dent patch reloads
+    // clean in isolation but the pipeline reaches SI 8).  Reject them here.
+    if coincident {
+        return (false, "coincident");
+    }
+    let mut counts: HashMap<(u32, u32), u32> = HashMap::with_capacity(lt.len() * 3);
+    for t in &lt {
+        let (a, b, c) = (rmap[t[0]], rmap[t[1]], rmap[t[2]]);
         for (u, w) in [(a, b), (b, c), (c, a)] {
             *counts.entry(ekey(u, w)).or_insert(0) += 1;
         }
     }
-    for t in patch {
-        let (a, b, c) = (
-            remap[t[0] as usize],
-            remap[t[1] as usize],
-            remap[t[2] as usize],
-        );
-        for (u, w) in [(a, b), (b, c), (c, a)] {
-            if counts.get(&ekey(u, w)).copied().unwrap_or(0) != 2 {
-                return (false, "reload_nm");
-            }
+    for &(ra, rb) in rim_edges {
+        let la = *lmap.get(&ra).unwrap_or(&u32::MAX);
+        let lb = *lmap.get(&rb).unwrap_or(&u32::MAX);
+        if la == u32::MAX || lb == u32::MAX {
+            return (false, "reload_nm");
+        }
+        let (u, w) = (rmap[la as usize], rmap[lb as usize]);
+        if counts.get(&ekey(u, w)).copied().unwrap_or(0) != 2 {
+            return (false, "reload_nm");
         }
     }
     (true, "")
@@ -798,6 +833,9 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             .iter()
             .map(|f| [gmap(f[0] as usize), gmap(f[1] as usize), gmap(f[2] as usize)])
             .collect();
+        let rim_edges: Vec<(u32, u32)> = (0..m)
+            .map(|i| (loop_arr[i], loop_arr[(i + 1) % m]))
+            .collect();
 
         // Per-loop candidate selection (SUTURA_FLAP_SELECT): try thin-plate,
         // then membrane, REF and the unfaired refined patch, committing the
@@ -841,7 +879,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                     return false;
                 }
                 if !primary {
-                    let (safe, _why) = patch_safety(&out_v, &out_t, &p[m..], &gfaces);
+                    let (safe, _why) = patch_safety(&out_v, &out_t, &p[m..], &gfaces, &rim_edges);
                     if !safe {
                         return false;
                     }
@@ -981,7 +1019,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         // self-intersects or leaves a reload-non-manifold seam; drop it and
         // leave the hole for a later tier instead.
         if (membrane || ref_on) && !select {
-            let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces);
+            let (safe, why) = patch_safety(&out_v, &out_t, &p_pts[m..], &gfaces, &rim_edges);
             if !safe {
                 report.loops_skipped_safety += 1;
                 report.safety_rejections.push((m, why.to_string()));
