@@ -18,7 +18,7 @@ All notable changes to this project are documented here.
   turning selection on cannot overshoot the intensity preset. Opt out with
   `SUTURA_FLAP_SELECT=0`.
 - **Tamponade (repair method #17, interior hole plug; alias `lava`).**
-  A new opt-in geometry-inventing tier (`sutura_engine.tamponade`, Rust
+  A new geometry-inventing tier (on by default; `sutura_engine.tamponade`, Rust
   `sutura_geom.tamponade`) that closes open boundaries from the inside: each
   boundary loop is plugged at its narrowest point without touching the
   surrounding healthy triangles, and residual self-intersections are melted in
@@ -33,15 +33,14 @@ All notable changes to this project are documented here.
   generic one-sided Hausdorff guard is skipped. The wall-clock budget follows
   the Triage intensity preset (`quick` disables the tier). The Rust extension
   must provide `sutura_geom.tamponade` (there is no numpy fallback); otherwise
-  the method reports itself unavailable and is skipped. **Off by default:**
-  `--tamponade` / `--no-tamponade`, env `SUTURA_TAMPONADE` /
-  `SUTURA_TAMPONADE_DEFAULT`, and the GUI Options → Repair checkbox
-  **Tamponade (fill holes from inside)**; the library default stays off and
-  byte-identical. The report carries a `tamponade` key (`ran`, `adopted`,
+  the method reports itself unavailable and is skipped. **On by default:**
+  disable with `--no-tamponade`, env `SUTURA_TAMPONADE=0`, or the GUI Options →
+  Repair checkbox **Tamponade (fill holes from inside)**; the library default
+  (`TAMPONADE_DEFAULT_ENABLED = True`) runs the tier. The report carries a
+  `tamponade` key (`ran`, `adopted`,
   `reason`, `plugs`, `plug_faces`, `melt_layers_tried`/`_accepted`/`_rolled_back`,
   `micro_welds_ok`/`_failed`, `healthy_faces_kept`, `input_faces`,
-  `output_faces`, `seconds`). The tier stays opt-in until it is measured on the
-  real-world corpus. Covered by `tests/test_tamponade_integration.py`.
+  `output_faces`, `seconds`). Covered by `tests/test_tamponade_integration.py`.
 - **Tamponade reference-surface refinement, thin-plate RBF fallback, shell
   plug and intentional-openings gate.** On top of the method-#17 baseline, the
   interior-plug tier gains a fitted reference surface for large and curved
@@ -50,10 +49,9 @@ All notable changes to this project are documented here.
   the mesh by a zipper strip) for large holes, exact per-plug rollback
   footprints with a cap shape gate, and an exact coplanar-overlap overlay for
   penetrating bodies. Intentional openings (a scan or a modelled aperture) are
-  detected and preserved behind the `SUTURA_TAMP_OPENINGS` gate. The tier
-  remains **opt-in** (`TAMPONADE_DEFAULT_ENABLED = False`; `--tamponade` /
-  `SUTURA_TAMPONADE` / the GUI Options checkbox), and the library default stays
-  off and byte-identical.
+  detected and preserved behind the `SUTURA_TAMP_OPENINGS` gate. The tier is
+  **on by default** (`TAMPONADE_DEFAULT_ENABLED = True`); disable it with
+  `--no-tamponade`, `SUTURA_TAMPONADE=0`, or the GUI Options checkbox.
 - **Tamponade anti-parallel-only double wall and plug connectivity gate.** The
   double-wall gate now counts only the coincident area whose normal is
   anti-parallel (angle > 160°) — opposite-oriented coincident faces can cancel
@@ -83,9 +81,10 @@ All notable changes to this project are documented here.
   `stent_used` / `stent_rejected` / `stent_subplugs` and the per-plug
   `plug_metrics` array; diagnostics expose a per-attempt rejection reason
   (`no_rim`/`degenerate`/`structure`/`cancel0`/`deadline`). Stent rides **inside**
-  Tamponade — it only runs when `--tamponade` (or the GUI checkbox) is on, so
-  there is deliberately no separate CLI flag or GUI control; its only switch is
-  the env opt-out `SUTURA_TAMP_STENT=0` (default ON whenever Tamponade runs,
+  Tamponade — it only runs when Tamponade runs (on by default; disable with
+  `--no-tamponade` / `SUTURA_TAMPONADE=0` / the GUI checkbox), so there is
+  deliberately no separate CLI flag or GUI control; its only independent switch
+  is the env opt-out `SUTURA_TAMP_STENT=0` (default ON whenever Tamponade runs,
   geometry no-op). The name is deliberately **not** "balloon", to avoid confusion
   with method #8 Balloon (screened-Poisson reconstruction). Measured on
   ornate-frame: the reference path leaves 23 holes, the multi-stent tier seals the
@@ -156,12 +155,9 @@ Meshes; no third-party code is used.
 
 ### Known limitations
 
-- **Tamponade is off by default.** It stays opt-in (`--tamponade` /
-  `SUTURA_TAMPONADE` / the GUI checkbox) until it has been measured on more
-  real-world files.
 - **Stent mostly matters inside Tamponade.** On most real files the later repair
   stages already close the tiny holes a loop can have, so the Stent candidate is
-  rarely the deciding seal; it runs only when Tamponade runs.
+  rarely the deciding seal; it runs only when Tamponade runs (on by default).
 - **Graft output can vary slightly between runs depending on free RAM.** The
   effective morphology grid budget is clamped to the RAM available when the tier
   runs, so a low-memory host can coarsen the grid and produce a slightly

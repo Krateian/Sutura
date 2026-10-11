@@ -177,16 +177,18 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   ray-stab vote).
 - **Tamponade (#17, interior hole plug + SI melt, unreleased):** CLI
   `--tamponade` / `--no-tamponade` and env `SUTURA_TAMPONADE` /
-  `SUTURA_TAMPONADE_DEFAULT` control the opt-in interior-plug tier; the GUI
+  `SUTURA_TAMPONADE_DEFAULT` control the on-by-default interior-plug tier; the GUI
   exposes the same as Options → Repair *Tamponade (fill holes from inside)*
   (EN/TR), and the repair-log panel renders the adopted / not-adopted verdict.
-  The library default (`tamponade=False`, `TAMPONADE_DEFAULT_ENABLED = False`)
-  keeps every existing path byte-identical until the corpus measurement.
+  The library default (`TAMPONADE_DEFAULT_ENABLED = True`) runs the tier on every
+  path; `--no-tamponade` / `SUTURA_TAMPONADE=0` / the GUI checkbox disable it.
 - **Stent (Tamponade's inflate-from-inside plug, unreleased):** a per-loop plug
   candidate inside Tamponade that runs when the reference plug is rejected for
-  that loop. It rides INSIDE the Tamponade tier (it only runs when `--tamponade`
-  or the GUI checkbox is on), so there is deliberately NO separate CLI flag or
-  GUI control. Its only switch is the env opt-out `SUTURA_TAMP_STENT=0` (default
+  that loop. It rides INSIDE the Tamponade tier (it only runs when Tamponade runs
+  — on by default; disable Tamponade itself with `--no-tamponade` /
+  `SUTURA_TAMPONADE=0` / the GUI checkbox), so there is deliberately NO separate
+  CLI flag or GUI control. Its only independent switch is the env opt-out
+  `SUTURA_TAMP_STENT=0` (default
   ON whenever Tamponade runs), which is an exact geometry no-op; CLI and GUI
   behave identically because neither exposes it. The tier report carries
   `stent_used` / `stent_rejected` and the standard per-plug `plug_metrics`
