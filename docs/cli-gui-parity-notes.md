@@ -14,6 +14,9 @@ omission must be documented here. This file records the current parity gaps
 | `-o/--output` | GUI always writes the default `_fixed` file in place; a custom output path is a scripting need. |
 | `--human`, `--defects`, `--diff` | Text-report presentation flags; the GUI renders the same data graphically (defect panel, repair log, before/after). |
 | `export-history` (`--last`/`--clear`/`--summary-only`) | Usage-history is an anonymous CLI/telemetry feature; no GUI viewer yet. |
+| `--self-check` | The GUI runs the same availability check at startup and shows a dismissible banner when a method is unavailable, but it does not expose the full fixture-exercising command. An accepted gap until the banner grows a "run full check" action. |
+| `--self-repair` | Installation-integrity maintenance for deployed installs (verify, back up, replace, roll back). The GUI never modifies installed files, so this stays a CLI/installer action. |
+| `--diagnostics ZIP_FILE` | The CLI is the working path. The GUI health banner has an export button, but its handler currently references an undefined `sutura.diagnostics.collect_diagnostics`, so the GUI export is a pending wiring fix rather than a parity gap; once fixed it exposes the same archive. |
 | Ray-stabbing vote (`raystab=` / `SUTURA_RAYSTAB`, library/Graft only) | Experimental inside/outside disambiguation; no CLI flag or GUI control yet by design. Deliberately deferred until it is measured on the real-world corpus, at which point it gets both a CLI flag and a GUI control. |
 
 ## GUI-only (allowed exceptions — visual features)
@@ -226,3 +229,14 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   same directory through the shared `sutura_engine/paths.py`. The uninstaller's
   `--purge` (which removes that directory) is an installer-script flag with no
   in-app counterpart, matching the other install/uninstall-time options.
+- **Method health + `--self-check` / `--diagnostics` / `--self-repair` (P0, unreleased):**
+  the per-method error isolation and the `method_health` / `method_errors` report
+  keys are automatic pipeline behaviour (both CLI and GUI consume them, so parity
+  is automatic; the `--human` `Methods: N/17 OK` line and the GUI repair-log
+  `repair_log_methods` string render the same data). The three new commands are
+  CLI-only surfaces and are documented as such in the table above: the GUI shows
+  the startup availability banner (the `--self-check` availability half) but not
+  the full fixture run or the self-repair/integrity actions. `--diagnostics` is a
+  temporary CLI-only gap caused by the GUI banner's export button referencing an
+  undefined `collect_diagnostics`; the wiring fix is tracked separately, after
+  which the GUI exposes the same archive and the gap can be removed.
