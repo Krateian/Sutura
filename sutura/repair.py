@@ -1302,73 +1302,87 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             _t_shell_start = time.time()
             _t_analyze_s = 0.0
             _t_topo_s = 0.0
+            _shell_analyze = None
             try:
                 import sutura_geom
-                import defects as _defects
-                _t0 = time.time()
-                _cand_v, _cand_t, _sinfo = sutura_geom.shell_analyze(
-                    np.asarray(verts, dtype=np.float64),
-                    np.asarray(tris, dtype=np.int32),
-                )
-                _t_analyze_s = time.time() - _t0
-                _t0 = time.time()
-                _in_holes = boundary_loop_stats(verts, tris)[0]
-                _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
-                _in_parts = _count_vertex_components(len(verts), tris)
-                _t_topo_s = time.time() - _t0
-
-                # Phase P-a: DISJOINT parts (60916-type):
-                # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
-                # no buried faces, no coincident opposite walls, no internal walls.
-                _is_p_a = _sinfo.get('is_disjoint', False)
-
-                if _is_p_a:
-                    _shell_adopted = True
-                    _shell_phase = 'P-a_disjoint'
-                    _shell_reason = 'disjoint_parts_no_overlap'
-
-                # Phase P-b: exactly coincident opposite walls -> dissolve both (C2)
-                elif (_sinfo['coincident_opp_count'] > 0
-                        and not _sinfo['has_internal_walls']
-                        and _sinfo['internal_walls_count'] == 0
-                        and _sinfo['unresolved_coincident_count'] == 0
-                        and _sinfo['reason'] == 'ok'):
-                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
-                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
-                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
-                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
-                        _shell_adopted = True
-                        _shell_phase = 'P-b_coincident'
-                        _shell_reason = 'coincident_opposite_dissolved'
-                        verts = np.asarray(_cand_v, dtype=np.float32)
-                        tris = np.asarray(_cand_t, dtype=np.int32)
-                        v, t = verts, tris
-                    else:
-                        _shell_phase = 'P-b_coincident'
-                        _shell_reason = 'rejected_holes_or_parts_rose'
-
-                # Phase P-c: penetrating bodies (100045-type) -> exact clip + stitch (C1)
-                elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok':
-                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
-                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
-                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
-                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
-                        _shell_adopted = True
-                        _shell_phase = 'P-c_penetrating'
-                        _shell_reason = 'penetrating_bodies_clipped_and_stitched'
-                        verts = np.asarray(_cand_v, dtype=np.float32)
-                        tris = np.asarray(_cand_t, dtype=np.int32)
-                        v, t = verts, tris
-                    else:
-                        _shell_phase = 'P-c_penetrating'
-                        _shell_reason = 'rejected_holes_or_parts_rose'
-                else:
-                    _shell_phase = 'P-c_penetrating' if _sinfo['reason'] == 'unresolved_coplanar_overlapping' else 'fallback'
-                    _shell_reason = _sinfo['reason']
+                _shell_analyze = getattr(sutura_geom, 'shell_analyze', None)
             except Exception as _e:
-                _shell_adopted = False
                 _shell_phase = 'error'
                 _shell_reason = str(_e)
+            if _shell_analyze is None:
+                # Stale extension without the shell-analyze binding: skip the
+                # prepass cleanly (report the API gap, not a caught
+                # AttributeError) and fall through to extract_outer_shell.
+                if _shell_phase is None:
+                    _shell_phase = 'api_unavailable'
+                    _shell_reason = 'shell_analyze_unavailable'
+            else:
+                try:
+                    import defects as _defects
+                    _t0 = time.time()
+                    _cand_v, _cand_t, _sinfo = _shell_analyze(
+                        np.asarray(verts, dtype=np.float64),
+                        np.asarray(tris, dtype=np.int32),
+                    )
+                    _t_analyze_s = time.time() - _t0
+                    _t0 = time.time()
+                    _in_holes = boundary_loop_stats(verts, tris)[0]
+                    _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
+                    _in_parts = _count_vertex_components(len(verts), tris)
+                    _t_topo_s = time.time() - _t0
+
+                    # Phase P-a: DISJOINT parts (60916-type):
+                    # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
+                    # no buried faces, no coincident opposite walls, no internal walls.
+                    _is_p_a = _sinfo.get('is_disjoint', False)
+
+                    if _is_p_a:
+                        _shell_adopted = True
+                        _shell_phase = 'P-a_disjoint'
+                        _shell_reason = 'disjoint_parts_no_overlap'
+
+                    # Phase P-b: exactly coincident opposite walls -> dissolve both (C2)
+                    elif (_sinfo['coincident_opp_count'] > 0
+                            and not _sinfo['has_internal_walls']
+                            and _sinfo['internal_walls_count'] == 0
+                            and _sinfo['unresolved_coincident_count'] == 0
+                            and _sinfo['reason'] == 'ok'):
+                        _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                        _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                        _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                        if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                            _shell_adopted = True
+                            _shell_phase = 'P-b_coincident'
+                            _shell_reason = 'coincident_opposite_dissolved'
+                            verts = np.asarray(_cand_v, dtype=np.float32)
+                            tris = np.asarray(_cand_t, dtype=np.int32)
+                            v, t = verts, tris
+                        else:
+                            _shell_phase = 'P-b_coincident'
+                            _shell_reason = 'rejected_holes_or_parts_rose'
+
+                    # Phase P-c: penetrating bodies (100045-type) -> exact clip + stitch (C1)
+                    elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok':
+                        _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                        _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                        _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                        if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                            _shell_adopted = True
+                            _shell_phase = 'P-c_penetrating'
+                            _shell_reason = 'penetrating_bodies_clipped_and_stitched'
+                            verts = np.asarray(_cand_v, dtype=np.float32)
+                            tris = np.asarray(_cand_t, dtype=np.int32)
+                            v, t = verts, tris
+                        else:
+                            _shell_phase = 'P-c_penetrating'
+                            _shell_reason = 'rejected_holes_or_parts_rose'
+                    else:
+                        _shell_phase = 'P-c_penetrating' if _sinfo['reason'] == 'unresolved_coplanar_overlapping' else 'fallback'
+                        _shell_reason = _sinfo['reason']
+                except Exception as _e:
+                    _shell_adopted = False
+                    _shell_phase = 'error'
+                    _shell_reason = str(_e)
 
             _t_shell_total = time.time() - _t_shell_start
             stats['tamponade_shell_prepass'] = {
@@ -4596,6 +4610,14 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 rec['cand_local_si'] = cand_local
                 si_fall = bool(cand_local < base_local)
                 si_ok = bool(not si_rise)
+            elif base_holes == 0 and base_nm == 0:
+                # Stale extension without the SI-subset binding and an already
+                # closed base: there is no holes/non-manifold fall the prepass
+                # could adopt on, so skip the two full exact scans. The prepass
+                # is an optimization only, so not adopting here is always safe.
+                rec['si_method'] = 'unavailable'
+                si_fall = False
+                si_ok = False
             else:
                 base_si_exact = _exact_si_face_count(wb_v, wb_t)
                 rec['input_self_intersections'] = base_si_exact
