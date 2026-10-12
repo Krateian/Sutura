@@ -26,12 +26,9 @@ from sutura_engine import health as method_health
 
 
 def _repair_mod():
-    for name in ('repair', '__main__'):
-        mod = sys.modules.get(name)
-        if mod is not None and hasattr(mod, 'repair_mesh_from_arrays'):
-            return mod
-    import repair as _repair
-    return _repair
+    """The canonical pipeline facade (single implementation instance)."""
+    from sutura_engine import pipeline
+    return pipeline
 
 def _methods_mod():
     for name in ('methods', 'sutura.methods', 'sutura_engine.methods'):

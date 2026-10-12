@@ -211,7 +211,9 @@ def _import_engine():
     if SUTURA not in sys.path:
         sys.path.insert(0, SUTURA)
     os.environ.setdefault('SUTURA_DIR', SUTURA)
-    import repair  # noqa: E402
+    # The pipeline facade is what triage._repair_mod() now returns, so a
+    # monkeypatch on its repair_file must be visible to _attempt.
+    import sutura_engine.pipeline as repair  # noqa: E402
     import sutura_engine.health as health  # noqa: E402
     import sutura_engine.triage as triage  # noqa: E402
     return repair, health, triage
