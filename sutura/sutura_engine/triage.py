@@ -899,6 +899,12 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     eval_fn = _resolve_fn('_evaluate', _evaluate)
     rank_fn = _resolve_fn('rank_methods', _methods_mod().rank_methods)
 
+    # Imported lazily: sutura_engine.pipeline's package __init__ imports the
+    # top-level ``triage`` shim, so a module-level import here would be circular.
+    from sutura_engine.pipeline.order import (
+        FTETWILD_METHOD_NUM, GRAFT_METHOD_NUM, order_graft_before_ftetwild,
+    )
+
     base_method = _methods_mod().get_method(_baseline_num(ctx))
     baseline_start = time.monotonic()
     result = attempt_fn(src, out, tmpdir, ctx, multi)
@@ -957,10 +963,8 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     recs = rank_fn(combined)
     # Graft (#13) is the primary last-resort tier and must be attempted before
     # fTetWild (#7); the templates already prefer it, this guarantees the order
-    # even without a template match.
-    _nums = [r.num for r in recs]
-    if 13 in _nums and 7 in _nums and _nums.index(13) > _nums.index(7):
-        recs.insert(_nums.index(7), recs.pop(_nums.index(13)))
+    # even without a template match (the tier order lives in pipeline.order).
+    recs = order_graft_before_ftetwild(recs)
     attempts = 0
     fallback_start = time.monotonic()
     fallback_budget = min(max(auto_fallback_min_s,
@@ -994,7 +998,7 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                              elapsed_ms=(time.monotonic() - _t0) * 1000))
         if evaluation['watertight']:
             fav, hdev = _graft_fidelity(trial)
-            if method.num == 13 and fav is False:
+            if method.num == GRAFT_METHOD_NUM and fav is False:
                 # Watertight but the healthy surface moved beyond tolerance:
                 # keep it as a candidate and let fTetWild be tried; the lower
                 # healthy deviation wins.
@@ -1013,8 +1017,8 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
 
     if deferred_graft is not None:
         hdev, method, trial, trial_out, rec = deferred_graft
-        ft = _methods_mod().get_method(7)
-        ft_tried = any(t.get('num') == 7 for t in tried)
+        ft = _methods_mod().get_method(FTETWILD_METHOD_NUM)
+        ft_tried = any(t.get('num') == FTETWILD_METHOD_NUM for t in tried)
         if ft is not None and not ft_tried and ft.available()[0]:
             _t0 = time.monotonic()
             ft_out = os.path.join(tmpdir, 'method_7%s' % ext)
