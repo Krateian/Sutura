@@ -126,6 +126,11 @@ jobs:
       - name: "Test: method registry / analysis / ranking"
         run: ./venv/bin/python tests/test_methods.py
 
+      # Error-isolation wrapper + Health section: parity of the output (health
+      # ON vs SUTURA_METHOD_HEALTH=0) and fault-injection isolation.
+      - name: "Test: method health / error isolation"
+        run: ./venv/bin/python tests/test_method_health.py
+
       - name: "Test: method tagging GUI (offscreen)"
         run: ./venv/bin/python tests/test_methods_gui.py
 
