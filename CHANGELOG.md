@@ -11,10 +11,12 @@ All notable changes to this project are documented here.
   different (still valid) envelope on different runs or machines. The budget is
   now a pure function of the explicit intensity preset (`resolve_grid_budget`,
   Quick/Balanced 1.5M cells, Thorough 10M, Extreme 25M; no free-RAM term), so the
-  grid resolution depends only on the input and the options. Free RAM is a safety
-  guard only: if the deterministic budget would not fit, Graft is skipped with a
-  clear `low_memory` message (`report['graft']['reject_reason']='low_memory'`)
-  and the stage-1 result is kept, instead of silently coarsening the grid.
+  grid resolution depends only on the input and the options. Free RAM is a
+  discrete fallback guard only: if the preset budget would not fit, Graft falls
+  back once to the Balanced budget (1.5M cells, reported as
+  `report['graft']['grid_fallback']` with a clear message), and only if even
+  Balanced does not fit is the tier refused (`reject_reason='low_memory'`) and
+  the stage-1 result kept. The resolution is never silently coarsened.
 - **Graft could adopt a collapsed fragment.** Graft's adoption only checked
   watertightness and the healthy-region deviation, so a candidate that rebuilt
   the object into a small fragment passed (`thingi10k_100827`: a 37 mm scan

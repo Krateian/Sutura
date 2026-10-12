@@ -374,10 +374,12 @@ def test_resolve_grid_budget_is_a_pure_function_of_intensity():
 
 
 def test_shell_wrap_grid_params_identical_under_different_free_ram():
-    """Two very different free-RAM values must yield identical grid params.
+    """The free-RAM guard is discrete and deterministic.
 
-    The RAM probe is a refusal guard only: it can skip Graft with a clear
-    ``low_memory`` message but must never pick a different resolution.
+    Enough RAM -> the preset budget (identical for any ample value); a preset
+    that does not fit -> a reported fallback to the Balanced budget; only when
+    even Balanced does not fit -> refuse.  It never picks an arbitrary
+    resolution.
     """
     import sutura_engine.graft as graft_mod
 
@@ -390,28 +392,43 @@ def test_shell_wrap_grid_params_identical_under_different_free_ram():
         # under test here.
         return v, f, {}
 
-    def run_with_ram(ram):
+    def run_with_ram(ram, intensity):
         graft_mod._available_memory_bytes = lambda: ram
         graft_mod.sutura_geom.morph_close = stub_close
         try:
-            return shell_wrap(v, f, intensity="balanced")
+            return shell_wrap(v, f, intensity=intensity)
         finally:
             graft_mod.sutura_geom.morph_close = real_close
 
     try:
-        _a, _b, rep_small = run_with_ram(4 * 1024 ** 3)      # 4 GiB
-        _c, _d, rep_big = run_with_ram(256 * 1024 ** 3)      # 256 GiB
-        _e, _f, rep_tiny = run_with_ram(64 * 1024 ** 2)      # 64 MiB -> refuse
+        _a, _b, rep_bal_hi = run_with_ram(256 * 1024 ** 3, "balanced")
+        _c, _d, rep_bal_lo = run_with_ram(4 * 1024 ** 3, "balanced")
+        _e, _f, rep_ext_hi = run_with_ram(256 * 1024 ** 3, "extreme")
+        _g, _h, rep_ext_mid = run_with_ram(2 * 1024 ** 3, "extreme")
+        _i, _j, rep_tiny = run_with_ram(64 * 1024 ** 2, "extreme")
     finally:
         graft_mod._available_memory_bytes = real_probe
 
-    assert rep_small["grid_budget"] == rep_big["grid_budget"]
-    assert rep_small["voxel"] == rep_big["voxel"]
-    assert rep_small["low_memory"] is False
-    assert rep_big["low_memory"] is False
-    # The low-memory refusal keeps the SAME deterministic budget -- it never
-    # silently coarsens the grid.
-    assert rep_tiny["grid_budget"] == rep_small["grid_budget"]
+    # Enough RAM: identical grid for a huge vs an ample value, preset used.
+    assert rep_bal_hi["grid_budget"] == rep_bal_lo["grid_budget"] == 1_500_000
+    assert rep_bal_hi["voxel"] == rep_bal_lo["voxel"]
+    assert rep_bal_hi["low_memory"] is False
+    assert rep_ext_hi["grid_budget"] == 25_000_000
+    assert rep_ext_hi["grid_fallback"] is None
+
+    # Mid RAM: Extreme does not fit -> reported fallback to Balanced (not a
+    # refusal, not a silent arbitrary coarsening).
+    assert rep_ext_mid["grid_budget"] == 1_500_000
+    assert rep_ext_mid["low_memory"] is False
+    assert rep_ext_mid["reject_reason"] is None
+    assert rep_ext_mid["grid_fallback"] == {
+        "from": 25_000_000, "to": 1_500_000, "intensity": "extreme"}
+    assert any(w.get("code") == "grid_fallback"
+               for w in rep_ext_mid["warnings"])
+
+    # Tiny RAM: even Balanced does not fit -> refuse with the preset budget
+    # left untouched.
+    assert rep_tiny["grid_budget"] == 25_000_000
     assert rep_tiny["low_memory"] is True
     assert rep_tiny["reject_reason"] == "low_memory"
     assert rep_tiny["reason"]

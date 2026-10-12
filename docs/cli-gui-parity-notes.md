@@ -153,10 +153,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   ornate-frame it fails both gates and costs ~326 s). The grid budget is derived
   automatically from the Triage intensity preset alone (never from free RAM, so the
   grid is deterministic), which both the CLI (`--intensity`) and the GUI (batch-wide
-  *Intensity* picker) already set, so parity is automatic. Free RAM is a refusal-only
-  safety guard (a budget that would not fit yields `reject_reason='low_memory'` with a
-  clear message instead of a coarser grid); it is automatic pipeline behaviour for both
-  CLI and GUI, so it needs no separate control.
+  *Intensity* picker) already set, so parity is automatic. Free RAM is a discrete
+  fallback guard: a preset budget that would not fit falls back once to the Balanced grid
+  (`grid_fallback`, with a clear message), and only a budget where even Balanced does not
+  fit is refused (`reject_reason='low_memory'`); the resolution is never silently coarsened.
+  It is automatic pipeline behaviour for both CLI and GUI, so it needs no separate control.
 - **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
   environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
   flag and a GUI control together, per the parity rule.

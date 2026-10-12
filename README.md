@@ -720,8 +720,9 @@ contains severe damage or complex topological defects.
 5. **Deterministic resolution**: The grid budget is a pure function of the explicit
    intensity preset (Quick/Balanced 1.5M cells, Thorough 10M, Extreme 25M), so the same
    input plus the same options always produce the same envelope on any machine. Free RAM
-   never selects a different resolution: if the deterministic budget would not fit, Graft
-   is skipped with a clear `low_memory` message instead of silently coarsening the grid.
+   never selects an arbitrary resolution: if the preset budget would not fit, Graft falls
+   back once to the Balanced grid (reported in the output) and only a case where even that
+   does not fit skips Graft with a clear `low_memory` message.
 
 #### Dressing (variable-viscosity volumetric skin, #16)
 

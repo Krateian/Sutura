@@ -726,9 +726,10 @@ sadakatli bir morfoloji kabuk sarma katmanıdır.
    benimser. Ayrıntı kaybı raporda (`graft.warnings`) gösterilir.
 5. **Belirleyici çözünürlük**: Izgara bütçesi yalnızca açık yoğunluk ön ayarının
    (Quick/Balanced 1,5M hücre, Thorough 10M, Extreme 25M) saf bir fonksiyonudur; aynı
-   girdi ve seçenekler her makinede aynı zarfı üretir. Boş RAM hiçbir zaman farklı bir
-   çözünürlük seçmez: belirleyici bütçe sığmazsa Graft ızgarayı sessizce kabalaştırmak
-   yerine açık bir `low_memory` mesajıyla atlanır.
+   girdi ve seçenekler her makinede aynı zarfı üretir. Boş RAM hiçbir zaman keyfî bir
+   çözünürlük seçmez: ön ayar bütçesi sığmazsa Graft bir kez Balanced ızgarasına geri
+   döner (çıktıda bildirilir) ve yalnızca bunun da sığmadığı durumda açık bir
+   `low_memory` mesajıyla atlanır.
 
 #### Pansuman (değişken viskoziteli hacimsel kaplama, #16)
 

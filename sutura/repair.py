@@ -4708,6 +4708,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
            'warnings': [], 'reason': None,
            'skipped_budget': False, 'timed_out': False,
            'low_memory': False,
+           'grid_fallback': None,
            'reject_reason': None,
            'input_faces': None,
            'max_faces': int(cap) if cap is not None else None,
@@ -4737,6 +4738,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
                                                  time_budget=timeout)
         rec['ran'] = True
         rec['budget_exceeded'] = bool(grec.get('budget_exceeded'))
+        rec['grid_fallback'] = grec.get('grid_fallback')
         if rec['budget_exceeded']:
             rec['timed_out'] = True
             rec['reject_reason'] = 'budget'
@@ -6712,6 +6714,14 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('  Graft (shell wrap)      : %s faces in %.2fs, r=%s, %s%s'
                      % (gr.get('faces', 0), gr.get('seconds', 0),
                         gr.get('r_used'), gr.get('mode'), state))
+        _gf = gr.get('grid_fallback')
+        if _gf:
+            lines.append('    Graft grid            : %s grid does not fit '
+                         'in RAM; used Balanced grid'
+                         % (_gf.get('intensity') or 'preset').capitalize())
+        elif gr.get('low_memory'):
+            lines.append('    Graft grid            : %s'
+                         % (gr.get('reason') or 'low memory'))
     dr_r = r.get('dressing')
     if dr_r and dr_r.get('ran'):
         if dr_r.get('adopted'):

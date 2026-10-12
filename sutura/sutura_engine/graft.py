@@ -68,8 +68,10 @@ DISPLAY_NAME_FULL = "Graft (shell wrap)"
 # term), so the same input plus the same options yield the same grid on every
 # run and every machine.  GRID_BUDGET is the conservative floor (the historical
 # fixed value); the peak Rust usage is roughly GRID_BUDGET_BYTES_PER_CELL bytes
-# per cell.  RAM is never used to pick a different resolution -- it only ever
-# REFUSES a budget that would not fit (see ``shell_wrap``'s low-memory guard).
+# per cell.  RAM is never used to pick a silent/arbitrary resolution -- when the
+# preset budget does not fit it falls back once to the discrete Balanced budget
+# (reported), and only refuses when even Balanced does not fit (see
+# ``shell_wrap``'s low-memory guard).
 GRID_BUDGET = 1_500_000          # minimum / Quick target
 GRID_BUDGET_HARD_MAX = 25_000_000  # never exceed, regardless of intensity
 GRID_BUDGET_BYTES_PER_CELL = 56  # empirical peak bytes per grid cell
@@ -923,9 +925,12 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     ``grid_budget`` caps the grid cells; ``None`` resolves it from the
     ``intensity`` preset alone via ``resolve_grid_budget`` (never from free RAM,
     so the grid is deterministic).  When the auto (preset) budget would not fit
-    the available RAM the tier is refused with a clear ``low_memory`` message
-    and the input is returned unchanged; the resolution is never silently
-    coarsened.  ``time_budget`` (seconds) bounds the closing
+    the available RAM it falls back once to the Balanced budget (1.5M cells),
+    reported as ``grid_fallback`` with a clear warning; only when even Balanced
+    does not fit is the tier refused with a ``low_memory`` message and the input
+    returned unchanged.  The resolution is never silently coarsened.  Explicit
+    ``grid_budget=`` values are honoured verbatim.  ``time_budget`` (seconds)
+    bounds the closing
     ladder: once a candidate exists and the budget is spent the loop stops and
     returns the best candidate so far (``budget_exceeded`` is set in the
     report).  A single ``morph_close`` attempt is not interruptible, so callers
@@ -966,6 +971,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "time_budget": (float(time_budget) if time_budget else None),
         "budget_exceeded": False,
         "low_memory": False,
+        "grid_fallback": None,
+        "reject_reason": None,
         "sign_field": None,
         "projected_fraction": 0.0,
         "remeshed": False,
@@ -995,27 +1002,41 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         report["seconds"] = round(time.perf_counter() - t_start, 3)
         return v0, t0, report
 
-    # RAM safety guard (auto budget only): the deterministic budget is never
-    # coarsened, so if it would not fit the free memory refuse the tier with a
-    # clear message and keep the input.  Explicit ``grid_budget=`` is honoured
-    # verbatim and not guarded.
+    # RAM safety guard (auto budget only), discrete and deterministic: the
+    # preset budget is never silently coarsened.  If it would not fit the free
+    # memory, fall back once to the Balanced budget (GRID_BUDGET); only if that
+    # also does not fit refuse the tier with a clear message and keep the input.
+    # The fallback is reported (`grid_fallback`) so the result is never a
+    # mystery.  Explicit ``grid_budget=`` is honoured verbatim and not guarded.
     if grid_budget_auto:
-        fits, needed, avail = _grid_budget_fits_ram(grid_budget)
+        preset_budget = int(grid_budget)
+        fits, needed, avail = _grid_budget_fits_ram(preset_budget)
         if not fits:
-            report["low_memory"] = True
-            report["reject_reason"] = "low_memory"
-            report["reason"] = (
-                "deterministic grid budget (%d cells, ~%d MB) would not fit "
-                "the ~%d MB of available RAM; Graft skipped (use a lower "
-                "intensity preset or free memory)" % (
-                    grid_budget, needed // (1024 * 1024),
-                    avail // (1024 * 1024)))
-            report["warnings"] = [{
-                "code": "low_memory",
-                "message": report["reason"],
-            }]
-            report["seconds"] = round(time.perf_counter() - t_start, 3)
-            return v0, t0, report
+            balanced = resolve_grid_budget('balanced')
+            fits_bal, _nb, _ab = _grid_budget_fits_ram(balanced, avail)
+            if fits_bal and balanced < preset_budget:
+                grid_budget = int(balanced)
+                report["grid_budget"] = int(grid_budget)
+                report["grid_fallback"] = {
+                    "from": preset_budget,
+                    "to": int(balanced),
+                    "intensity": intensity,
+                }
+            else:
+                report["low_memory"] = True
+                report["reject_reason"] = "low_memory"
+                report["reason"] = (
+                    "deterministic grid budget (%d cells, ~%d MB) would not "
+                    "fit the ~%d MB of available RAM; Graft skipped (use a "
+                    "lower intensity preset or free memory)" % (
+                        preset_budget, needed // (1024 * 1024),
+                        avail // (1024 * 1024)))
+                report["warnings"] = [{
+                    "code": "low_memory",
+                    "message": report["reason"],
+                }]
+                report["seconds"] = round(time.perf_counter() - t_start, 3)
+                return v0, t0, report
 
     use_raystab = _resolve_raystab(raystab)
     report["raystab"] = None
@@ -1273,6 +1294,17 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     })
     report["detail_loss"] = report["hausdorff_healthy"]
     report["warnings"] = _warnings_for(best.get("r_eff", best["r"]), detail, diag)
+    _gf = report.get("grid_fallback")
+    if _gf:
+        _inten = (_gf.get("intensity") or "preset").capitalize()
+        _gf_msg = "%s grid does not fit in RAM; used Balanced grid" % _inten
+        report["warnings"].append({
+            "code": "grid_fallback",
+            "message": _gf_msg,
+            "message_en": _gf_msg,
+            "message_tr": ("%s ızgarası RAM'e sığmıyor; Balanced ızgarası "
+                           "kullanıldı" % _inten),
+        })
     if not coverage_ok:
         report["warnings"].append({
             "code": "coverage",
