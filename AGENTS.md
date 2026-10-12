@@ -465,6 +465,17 @@ The new method immediately participates in `--list-methods`, `--analyze` recomme
   slips):** for any non-trivial task, present a plan and get explicit
   approval before making file changes. Do not start editing on a task's
   first pass without that approval step.
+- **Challenges (objections) — mandatory (standing rule):** every worker plan
+  opens with a "Challenges" section — what in the brief or design the worker
+  thinks is wrong, risky or unnecessary. No minimum count; if there are none,
+  the worker says so in one sentence with the reason (no padding). Each
+  challenge must carry evidence (a `file:line`, or the output of a command
+  actually run); without evidence it is only an idea and does not change the
+  decision. The lead answers every challenge explicitly (accepted / rejected /
+  partly, with reason) and states plainly when its own decision was wrong.
+  Typical valid rejections: scope creep, collision with another worker's
+  files, a new knob/flag/env var where an existing one already suffices. No
+  file changes before the lead's "approved".
 - **Merge and release approval (standing rule):** opening a PR and
   iterating on it — algorithm/math work, benchmarking, pushing more
   commits to an open PR branch — needs no per-step approval. Merging

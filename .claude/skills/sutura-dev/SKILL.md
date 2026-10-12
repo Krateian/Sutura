@@ -21,13 +21,27 @@ Single source of truth for Claude, OpenCode workers and other agents.
   runs, repetitive verification) goes to a worker; Claude spot-checks the real
   output, not the worker's summary.
 - Every worker prompt asks for a short plan before file changes.
-- A worker stops at 45% context; start a new session (OpenCode: ctrl+x n,
-  Gemini/agy: /clear) and resume from its progress file.
+- A worker stops at 45% context; it writes its progress to a /tmp file and is
+  then relaunched from that file (relaunching is not ctrl+x n). Gemini/agy:
+  /clear.
 - Never switch worker models without asking; expensive models need explicit
   permission.
 - Prompts for workers are shown to the maintainer in their own clean code
   block, never mixed with commentary.
 - Check workers every 10-15 minutes; always schedule the next check.
+
+## Challenges (objections) — mandatory
+- Every worker plan opens with a "Challenges" section: what in the brief or
+  design the worker thinks is wrong, risky or unnecessary. No minimum count —
+  if there are none, say so in one sentence with the reason (no padding).
+- Each challenge carries evidence (a `file:line`, or the output of a command
+  actually run); without evidence it is only an idea and does not change the
+  decision.
+- The lead answers every challenge explicitly (accepted / rejected / partly,
+  with reason) and says plainly when its own decision was wrong.
+- Typical valid rejections: scope creep; collision with another worker's files;
+  a new knob/flag/env var where an existing one already suffices.
+- No file changes before the lead's "approved".
 
 ## Validation
 - Judge repairs by shape, not bytes (holes, non-manifold, parts/shells, Orca
