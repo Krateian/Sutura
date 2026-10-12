@@ -474,7 +474,15 @@ The new method immediately participates in `--list-methods`, `--analyze` recomme
   decision. The lead answers every challenge explicitly (accepted / rejected /
   partly, with reason) and states plainly when its own decision was wrong.
   Typical valid rejections: scope creep, collision with another worker's
-  files, a new knob/flag/env var where an existing one already suffices. No
+  files, a new knob/flag/env var where an existing one already suffices. Big
+  tasks only (a new feature or a phase start) answer in the plan: "What would
+  we lose if we skipped this entirely or did it much simpler?" — not for small
+  fixes. One rebuttal round: if the worker disagrees with the lead's answer it
+  may reply once with new evidence, then the lead decides. Cross-model review:
+  for big or risky work (security, user data, a phase plan) a second worker on
+  a different model reviews the plan or the finished diff read-only and reports
+  findings ranked by severity before merge. The lead does not rubber-stamp:
+  when accepting a batch of challenges it verifies the riskiest ones itself. No
   file changes before the lead's "approved".
 - **Merge and release approval (standing rule):** opening a PR and
   iterating on it — algorithm/math work, benchmarking, pushing more
