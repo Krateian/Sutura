@@ -33,6 +33,7 @@ import pymeshlab as ml  # noqa: E402
 
 import repair  # noqa: E402
 import sutura_engine.pipeline.tiers.ftetwild as ft_mod  # noqa: E402
+import sutura_engine.pipeline.tiers.local_remesh as local_remesh_mod  # noqa: E402
 
 OPEN_SAMPLE = os.path.join(REPO, 'tests', 'real-world-samples', 'thingi10k_100827.stl')
 CUBE_V = [(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)]
@@ -494,12 +495,12 @@ def test_local_guard_rejects_moved_outside_faces():
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
     topo = ms.apply_filter('get_topological_measures')
-    saved = repair._umbrella_fair
-    repair._umbrella_fair = lambda verts, tris, first, steps: verts * 1.01
+    saved = local_remesh_mod._umbrella_fair
+    local_remesh_mod._umbrella_fair = lambda verts, tris, first, steps: verts * 1.01
     try:
         out_ms, _topo, rep = repair._local_remesh_tier(ml, ms, topo)
     finally:
-        repair._umbrella_fair = saved
+        local_remesh_mod._umbrella_fair = saved
     assert not rep['adopted'] and not rep['outside_unchanged'], rep
     assert rep['reject_reason'] == 'faces outside the region changed'
     assert out_ms is ms
