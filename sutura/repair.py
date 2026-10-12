@@ -3887,20 +3887,31 @@ def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
         if not add_mask.any():
             return 0.0, 0
         add_v = ov[np.unique(ot[add_mask])]
-        bvh = sutura_geom.PyMeshBvh(iv, it)
-        w = np.asarray(bvh.winding_points(add_v))
+        # The cheap closest-point pass runs first and cheaply answers "is any
+        # added vertex farther than the tolerance from the input?"; only the
+        # far vertices can ever be a leak, so the winding BVH (the expensive
+        # part) is built and queried on that subset alone. Identical result: a
+        # vertex with ``dist <= tol`` can never satisfy ``bad``.
         _q, dist, _f = sutura_geom.closest_points(iv, it, add_v)
         dist = np.asarray(dist, dtype=np.float64)
         tol = min(max(in_diag / 10000.0, 0.0125), 0.05)
-        bad = (w < 0.5) & (dist > tol)
+        far = dist > tol
+        if not far.any():
+            return 0.0, 0
+        far_v = add_v[far]
+        far_dist = dist[far]
+        bvh = sutura_geom.PyMeshBvh(iv, it)
+        w = np.asarray(bvh.winding_points(far_v))
+        bad = w < 0.5
         if not bad.any():
             return 0.0, 0
-        return float(dist[bad].max()), int(bad.sum())
+        return float(far_dist[bad].max()), int(bad.sum())
     except Exception:  # noqa: BLE001 - a metric failure is not fatal
         return 0.0, 0
 
 
-def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
+def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris,
+                               force_metrics=False):
     """Whether a Tamponade-adopted FINAL mesh warrants a Tamponade-OFF re-run.
 
     Returns ``(reason, metrics)`` with ``reason`` None when the result is
@@ -3909,28 +3920,37 @@ def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
     the object) and an outside-the-input leak above ``TAMP_LEAK_TRIGGER_FRAC``
     of the diagonal. ``metrics`` carries the reload-honest damage, the
     component count and the leak so the OFF candidate can be compared.
+
+    The damage metrics (holes / non-manifold / components) are only consumed
+    when a trigger fires and the OFF comparison runs, so on the common
+    no-trigger path they are skipped and ``(None, None)`` is returned. The
+    OFF-side call sets ``force_metrics=True`` so its metrics dict is always
+    built (the comparison reads it unconditionally).
     """
     in_diag = _bbox_diagonal(in_verts)
     out_diag = _bbox_diagonal(out_verts)
     coverage = (out_diag / in_diag) if in_diag else 1.0
+    leak_mm, leak_pts = _tamponade_shape_leak(
+        in_verts, in_tris, out_verts, out_tris, in_diag)
+    reason = None
+    if in_diag and coverage < TAMP_COLLAPSE_BBOX_FRAC:
+        reason = 'bbox_collapse'
+    elif in_diag and (leak_mm / in_diag) > TAMP_LEAK_TRIGGER_FRAC:
+        reason = 'shape_leak'
+    if reason is None and not force_metrics:
+        return None, None
     try:
         holes, nm = reload_strict_holes_nm(out_verts, out_tris)
         wv, wt = weld_reload_equivalent(out_verts, out_tris)
         parts = _count_vertex_components(len(wv), wt)
     except Exception:  # noqa: BLE001 - metrics are best-effort
         holes = nm = parts = None
-    leak_mm, leak_pts = _tamponade_shape_leak(
-        in_verts, in_tris, out_verts, out_tris, in_diag)
     metrics = {'input_diag_mm': round(in_diag, 4),
                'output_diag_mm': round(out_diag, 4),
                'coverage': round(coverage, 4),
                'leak_mm': round(leak_mm, 4), 'leak_pts': leak_pts,
                'holes': holes, 'non_manifold': nm, 'parts': parts}
-    if in_diag and coverage < TAMP_COLLAPSE_BBOX_FRAC:
-        return 'bbox_collapse', metrics
-    if in_diag and (leak_mm / in_diag) > TAMP_LEAK_TRIGGER_FRAC:
-        return 'shape_leak', metrics
-    return None, metrics
+    return reason, metrics
 
 
 def _tamponade_off_preferred(on_metrics, off_metrics):
@@ -5994,7 +6014,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             try:
                 off_report, off_v, off_t = _run(flap, run_tamponade=False)
                 _, off_metrics = _tamponade_final_needs_off(
-                    verts, tris, off_v, off_t)
+                    verts, tris, off_v, off_t, force_metrics=True)
                 fallback['ran'] = True
                 fallback['off'] = off_metrics
                 use_off = _tamponade_off_preferred(on_metrics, off_metrics)
