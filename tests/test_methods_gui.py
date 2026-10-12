@@ -143,11 +143,16 @@ def main():
     # 16 Dressing is opt-in (needs_user_input) but still selectable.
     assert acts[15].text().startswith('Dressing') or 'Dressing' in acts[15].text(), \
         acts[15].text()
-    # 17 Tamponade is opt-in (needs_user_input) but still selectable; enabled
-    # iff the Rust extension exposes sutura_geom.tamponade.
+    # 17 Tamponade (on by default) is selectable; enabled iff the Rust
+    # extension exposes sutura_geom.tamponade.
     assert 'Tamponade' in acts[16].text(), acts[16].text()
     t_ok, _t_reason = methods.get_method(17).available()
     assert acts[16].isEnabled() is t_ok, (acts[16].isEnabled(), t_ok)
+    # Tagging #17 works and renders the running-order badge in the Method column.
+    w._on_tag_toggle([b], 'method', 17)
+    assert '#17' in w._item_by_path[b].text(1), w._item_by_path[b].text(1)
+    w._on_tag_toggle([b], 'method', 17)
+    assert '#17' not in w._item_by_path[b].text(1), w._item_by_path[b].text(1)
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live
@@ -351,6 +356,35 @@ def main():
     w.chk_flap.setChecked(True)
     assert w._flap is True
     assert (w.chk_flap, True) in w._options_defaults
+
+    # Tamponade (#17, incl. Stent): ON by default; checkbox -> --tamponade /
+    # --no-tamponade (the opt-out).
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], tamponade=True)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--tamponade' in captured['args'], captured['args']
+    assert '--no-tamponade' not in captured['args'], captured['args']
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], tamponade=False)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--no-tamponade' in captured['args'], captured['args']
+    assert '--tamponade' not in captured['args'], captured['args']
+    # the checkbox is checked by default (a missing/legacy config key = ON)
+    assert w._tamponade is True and w.chk_tamponade.isChecked()
+    w.chk_tamponade.setChecked(False)
+    assert w._tamponade is False
+    w.chk_tamponade.setChecked(True)
+    assert w._tamponade is True
+    assert (w.chk_tamponade, True) in w._options_defaults
+    print('ok  RepairWorker Tamponade flag + checkbox default ON')
 
     # SI policy: default 'report' adds no flag; 'repair'/'off' add --si-mode
     captured.clear()

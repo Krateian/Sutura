@@ -43,7 +43,7 @@ jobs:
         run: |
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip
-          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-gui.txt trimesh==5.1.0 'scipy>=1.16,<1.17'
+          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-gui.txt
 
       - name: Import check (pymeshlab)
         run: ./venv/bin/python -c "import pymeshlab; print('pymeshlab OK')"
@@ -174,6 +174,21 @@ jobs:
 
       - name: "Test: Flap hole filler"
         run: ./venv/bin/python tests/test_flap.py
+
+      # Tamponade (#17) is on by default and its Rust core is covered by the
+      # rust-geom cargo tests; this suite pins the Python integration surface
+      # (numpy + fakes only, no extension / pymeshlab required).
+      - name: "Test: Tamponade integration (method #17)"
+        run: ./venv/bin/python tests/test_tamponade_integration.py
+
+      # topology.connected_components replaces scipy.sparse.csgraph (Phase 1);
+      # pin it against a scipy oracle. Runs without the Rust extension (the
+      # rust-geom job covers the Rust kernel), exercising the numpy fallback.
+      - name: "Test: connected components (scipy parity)"
+        run: ./venv/bin/python tests/test_connected_components.py
+
+      - name: "Test: topology parity (numpy fallback, no extension)"
+        run: ./venv/bin/python tests/test_topology_parity.py
 
       - name: "Test: update-check shutdown"
         run: ./venv/bin/python tests/test_update_check_shutdown.py

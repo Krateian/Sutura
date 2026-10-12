@@ -1,17 +1,64 @@
-//! Discrete biharmonic (thin-plate) fairing of the patch interior with a C1
-//! ghost boundary, solved as a sparse `LᵀL` normal-equation system with faer.
+//! Discrete fairing of the patch interior with a C1 ghost boundary:
+//! `fair_patch` (biharmonic thin-plate, `GᵀG`, the historical solve) and
+//! `fair_patch_energy`, which can also solve the membrane/umbrella energy
+//! (order 1, the graph Laplacian `G`) and add a soft data term
+//! `lambda * Σ‖x_i − data_i‖²` anchoring the interior to a reference surface.
+//! Solved as a sparse normal-equation system with faer.
 
 use super::V3;
 use faer::linalg::solvers::Solve;
 use faer::sparse::linalg::solvers::{Lu, SymbolicLu};
 use faer::sparse::{SparseColMat, Triplet};
 use faer::Mat;
+use std::collections::HashMap;
+
+/// Accumulate `val` into the lower-triangular system entry `(row_local, col)`
+/// when `col` is an unknown interior column, or into the right-hand side when
+/// `col` is a fixed (rim or ghost) column.
+#[allow(clippy::too_many_arguments)]
+fn add_entry(
+    lower: &mut HashMap<(usize, usize), f64>,
+    rhs: &mut [[f64; 3]],
+    row_local: usize,
+    col: u32,
+    val: f64,
+    n_boundary: usize,
+    n: usize,
+    p: &[V3],
+    ghost_pos: &[V3],
+) {
+    let ci = col as usize;
+    if ci >= n_boundary && ci < n {
+        let col_local = ci - n_boundary;
+        // M is symmetric: store each unordered pair once (row >= col).
+        if row_local >= col_local {
+            *lower.entry((row_local, col_local)).or_insert(0.0) += val;
+        }
+    } else {
+        let x = if ci < n { p[ci] } else { ghost_pos[ci - n] };
+        rhs[row_local][0] -= val * x[0];
+        rhs[row_local][1] -= val * x[1];
+        rhs[row_local][2] -= val * x[2];
+    }
+}
 
 /// Fair the interior vertices of `p`; the first `n_boundary` are fixed hole
 /// rim vertices and `ghost_pos` are the fixed C1 ghost positions (one per rim
-/// vertex) connected one-to-one to them.  Returns the rest of the fairing
-/// system's diagnostics unused (mutates `p` in place).
-pub fn fair_patch(p: &mut Vec<V3>, faces: &[[u32; 3]], n_boundary: usize, ghost_pos: &[V3]) {
+/// vertex) connected one-to-one to them.
+///
+/// `order` 1 selects the membrane/umbrella energy (graph Laplacian `G`), 2 the
+/// biharmonic thin-plate energy (`GᵀG = G²`, the historical behaviour).  When
+/// `data` (one target per interior vertex) and `lambda > 0` are given, a soft
+/// data term pulls each interior vertex toward its target.
+pub fn fair_patch_energy(
+    p: &mut Vec<V3>,
+    faces: &[[u32; 3]],
+    n_boundary: usize,
+    ghost_pos: &[V3],
+    order: u8,
+    data: Option<&[V3]>,
+    lambda: f64,
+) {
     let n = p.len();
     if n <= n_boundary {
         return;
@@ -19,8 +66,8 @@ pub fn fair_patch(p: &mut Vec<V3>, faces: &[[u32; 3]], n_boundary: usize, ghost_
     let ng = n_boundary;
     let ntot = n + ng;
 
-    // Binary adjacency (the reference binarises W by forcing every stored
-    // value to 1.0), plus the ghost 1-to-1 ring.
+    // Binary adjacency (the reference binarises W by forcing every stored value
+    // to 1.0), plus the ghost 1-to-1 ring.
     let mut nb: Vec<Vec<u32>> = vec![Vec::new(); ntot];
     for f in faces {
         for (u, w) in [(f[0], f[1]), (f[1], f[2]), (f[2], f[0])] {
@@ -39,63 +86,91 @@ pub fn fair_patch(p: &mut Vec<V3>, faces: &[[u32; 3]], n_boundary: usize, ghost_
 
     let n_unknown = n - n_boundary;
     let mut rhs = vec![[0.0f64; 3]; n_unknown];
-    // Assemble the lower triangle of A = M[unknown, unknown] + 1e-9 I, keyed by
-    // the ordered (max, min) pair so an unordered pair is stored exactly once
-    // (the matrix is symmetric, so the triplet list must not repeat entries).
-    let mut lower: std::collections::HashMap<(usize, usize), f64> =
-        std::collections::HashMap::new();
+    // Assemble the lower triangle of the system matrix, keyed by the ordered
+    // (max, min) pair so an unordered pair is stored exactly once.
+    let mut lower: HashMap<(usize, usize), f64> = HashMap::new();
 
-    // M row r = sum_a L[r][a] * L[a]  (a in {r} ∪ nb[r]); only unknown rows.
-    let mut mrow: Vec<(u32, f64)> = Vec::new();
-    for r in n_boundary..n {
-        mrow.clear();
-        // entries of L row r: (r, deg[r]) and (c, -1) for c in nb[r]
-        for a in std::iter::once(r as u32).chain(nb[r].iter().copied()) {
-            let va = if a as usize == r {
-                nb[r].len() as f64
-            } else {
-                -1.0
-            };
-            if va == 0.0 {
-                continue;
-            }
-            // L row a: diagonal deg[a], neighbours -1
-            mrow.push((a, va * nb[a as usize].len() as f64));
-            for &b in &nb[a as usize] {
-                mrow.push((b, -va));
-            }
-        }
-        mrow.sort_by_key(|&(c, _)| c);
-        // merge duplicate columns
-        let mut merged: Vec<(u32, f64)> = Vec::with_capacity(mrow.len());
-        for &(c, val) in mrow.iter() {
-            if let Some(last) = merged.last_mut() {
-                if last.0 == c {
-                    last.1 += val;
+    if order >= 2 {
+        // M row r = Σ_a L[r][a] · L[a]  (a ∈ {r} ∪ nb[r]) = (G²)[r]; only
+        // unknown rows.  G is symmetric, so M[r][c] == M[c][r].
+        let mut mrow: Vec<(u32, f64)> = Vec::new();
+        for r in n_boundary..n {
+            let row_local = r - n_boundary;
+            mrow.clear();
+            // entries of L row r: (r, deg[r]) and (c, −1) for c in nb[r]
+            for a in std::iter::once(r as u32).chain(nb[r].iter().copied()) {
+                let va = if a as usize == r {
+                    nb[r].len() as f64
+                } else {
+                    -1.0
+                };
+                if va == 0.0 {
                     continue;
                 }
-            }
-            merged.push((c, val));
-        }
-        let row_local = r - n_boundary;
-        for &(c, val) in &merged {
-            let ci = c as usize;
-            if ci >= n_boundary && ci < n {
-                // unknown column
-                let col_local = ci - n_boundary;
-                // Only the row that is the larger index contributes the pair,
-                // so each symmetric entry is stored exactly once (M is
-                // symmetric: M[r][c] == M[c][r]).
-                if row_local >= col_local {
-                    let v = if ci == r { val + 1e-9 } else { val };
-                    *lower.entry((row_local, col_local)).or_insert(0.0) += v;
+                // L row a: diagonal deg[a], neighbours −1
+                mrow.push((a, va * nb[a as usize].len() as f64));
+                for &b in &nb[a as usize] {
+                    mrow.push((b, -va));
                 }
-            } else {
-                // fixed column (rim or ghost)
-                let x = if ci < n { p[ci] } else { ghost_pos[ci - n] };
-                rhs[row_local][0] -= val * x[0];
-                rhs[row_local][1] -= val * x[1];
-                rhs[row_local][2] -= val * x[2];
+            }
+            mrow.sort_by_key(|&(c, _)| c);
+            let mut merged: Vec<(u32, f64)> = Vec::with_capacity(mrow.len());
+            for &(c, val) in mrow.iter() {
+                if let Some(last) = merged.last_mut() {
+                    if last.0 == c {
+                        last.1 += val;
+                        continue;
+                    }
+                }
+                merged.push((c, val));
+            }
+            for &(c, val) in &merged {
+                add_entry(
+                    &mut lower,
+                    &mut rhs,
+                    row_local,
+                    c,
+                    val,
+                    n_boundary,
+                    n,
+                    p,
+                    ghost_pos,
+                );
+            }
+            // Tikhonov ridge on the diagonal (matches the historical solve).
+            *lower.entry((row_local, row_local)).or_insert(0.0) += 1e-9;
+        }
+    } else {
+        // G row r: diagonal deg[r], neighbours −1 (the umbrella operator).
+        for r in n_boundary..n {
+            let row_local = r - n_boundary;
+            *lower.entry((row_local, row_local)).or_insert(0.0) += nb[r].len() as f64;
+            for &c in &nb[r] {
+                add_entry(
+                    &mut lower,
+                    &mut rhs,
+                    row_local,
+                    c,
+                    -1.0,
+                    n_boundary,
+                    n,
+                    p,
+                    ghost_pos,
+                );
+            }
+            *lower.entry((row_local, row_local)).or_insert(0.0) += 1e-9;
+        }
+    }
+
+    // Soft data term: lambda · ‖x_i − data_i‖² per interior vertex, pinning the
+    // interior to the reference projection while the regulariser smooths it.
+    if let Some(data) = data {
+        if lambda > 0.0 && data.len() >= n_unknown {
+            for i in 0..n_unknown {
+                *lower.entry((i, i)).or_insert(0.0) += lambda;
+                rhs[i][0] += lambda * data[i][0];
+                rhs[i][1] += lambda * data[i][1];
+                rhs[i][2] += lambda * data[i][2];
             }
         }
     }
@@ -137,6 +212,11 @@ pub fn fair_patch(p: &mut Vec<V3>, faces: &[[u32; 3]], n_boundary: usize, ghost_
     }
 }
 
+/// Historical biharmonic (thin-plate) fairing; see [`fair_patch_energy`].
+pub fn fair_patch(p: &mut Vec<V3>, faces: &[[u32; 3]], n_boundary: usize, ghost_pos: &[V3]) {
+    fair_patch_energy(p, faces, n_boundary, ghost_pos, 2, None, 0.0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,25 +249,55 @@ mod tests {
         let before = p.clone();
         fair_patch(&mut p, &faces, 6, &ghost);
         assert_eq!(p, before);
+        fair_patch_energy(&mut p, &faces, 6, &ghost, 1, None, 0.0);
+        assert_eq!(p, before);
     }
 
     #[test]
     fn planar_patch_stays_planar() {
         // Every fixed position (rim and ghost) lies in z = 0, so the zero-RHS
-        // harmonic solve must leave the interior vertex in the plane.
+        // solve must leave the interior vertex in the plane, for both orders.
+        for order in [1u8, 2] {
+            let (mut p, faces, ghost) = wheel(8, 0.0);
+            fair_patch_energy(&mut p, &faces, 8, &ghost, order, None, 0.0);
+            assert!(p[8][2].abs() < 1e-12, "order {} z = {}", order, p[8][2]);
+        }
+    }
+
+    #[test]
+    fn membrane_planar_stays_planar() {
         let (mut p, faces, ghost) = wheel(8, 0.0);
-        fair_patch(&mut p, &faces, 8, &ghost);
+        fair_patch_energy(&mut p, &faces, 8, &ghost, 1, None, 0.0);
         assert!(p[8][2].abs() < 1e-12, "z = {}", p[8][2]);
     }
 
     #[test]
+    fn data_term_pulls_interior_to_target() {
+        // With a strong data term the lone interior vertex is pulled to the
+        // target height, for both energies.
+        for order in [1u8, 2] {
+            let (mut p, faces, ghost) = wheel(8, 0.0);
+            let target = vec![[0.0, 0.0, 1.5]];
+            fair_patch_energy(&mut p, &faces, 8, &ghost, order, Some(&target), 1e5);
+            assert!(
+                (p[8][2] - 1.5).abs() < 0.05,
+                "order {} z = {} (want ~1.5)",
+                order,
+                p[8][2]
+            );
+        }
+    }
+
+    #[test]
     fn deterministic() {
-        let (mut p1, faces, ghost) = wheel(8, 0.5);
-        let mut p2 = p1.clone();
-        fair_patch(&mut p1, &faces, 8, &ghost);
-        fair_patch(&mut p2, &faces, 8, &ghost);
-        for c in 0..3 {
-            assert!((p1[8][c] - p2[8][c]).abs() < 1e-14);
+        for order in [1u8, 2] {
+            let (mut p1, faces, ghost) = wheel(8, 0.5);
+            let mut p2 = p1.clone();
+            fair_patch_energy(&mut p1, &faces, 8, &ghost, order, None, 0.0);
+            fair_patch_energy(&mut p2, &faces, 8, &ghost, order, None, 0.0);
+            for c in 0..3 {
+                assert!((p1[8][c] - p2[8][c]).abs() < 1e-14);
+            }
         }
     }
 }

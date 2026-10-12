@@ -123,7 +123,7 @@ def _install_tier(out_v, out_t, info):
     rec = {'ran': True, 'adopted': False, 'reason': None}
     rec.update(info)
 
-    def fake(verts, tris, *, intensity=None, ml=None):
+    def fake(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
         return out_v, out_t, rec
     tamp.run_tamponade = fake
     return rec
@@ -149,7 +149,9 @@ def test_wrapper_maps_info():
             'micro_welds_ok': 4, 'micro_welds_failed': 0,
             'plugs_rejected': 1, 'plugs_inconclusive': 0,
             'plugs_rejected_size': 1, 'plugs_rejected_dev': 0,
-            'healthy_faces_kept': 11, 'seconds': 0.25}
+            'healthy_faces_kept': 11, 'seconds': 0.25,
+            'reference_used': 2, 'reference_fallback': 1,
+            'trimmed_vertices': 3, 'patch_vertices': 1}
     geom = _FakeGeom(_CUBE_V.copy(), _CUBE_F.copy(), info)
     real = tamp._tamponade_module
     tamp._tamponade_module = lambda: geom
@@ -161,15 +163,15 @@ def test_wrapper_maps_info():
     assert rep['ran'] is True, rep
     assert rep['plugs'] == 2 and rep['plug_faces'] == 8, rep
     assert rep['healthy_faces_kept'] == 11, rep
+    assert rep['reference_used'] == 2 and rep['reference_fallback'] == 1, rep
+    assert rep['trimmed_vertices'] == 3 and rep['patch_vertices'] == 1, rep
     assert rep['seconds'] == 0.25, rep
     assert rep['plugs_rejected_size'] == 1 and rep['plugs_rejected_dev'] == 0, rep
-    # h_min defaults to the input median edge and the budget is the smaller of
-    # the intensity preset and the per-mesh cap.
+    # h_min defaults to the input median edge and the budget passed to the
+    # kernel is the intensity preset (the per-loop allowance lives in Rust).
     assert geom.calls[0]['h_min'] > 0, geom.calls
-    expected = min(60.0, tamp.TAMPONADE_BASE_BUDGET_S
-                   + tamp.TAMPONADE_PER_FACE_BUDGET_S * len(_CUBE_F))
-    assert abs(geom.calls[0]['time_budget_s'] - expected) < 1e-9, geom.calls
-    print('ok  wrapper maps the Rust info keys and the mesh-scaled budget')
+    assert abs(geom.calls[0]['time_budget_s'] - 60.0) < 1e-9, geom.calls
+    print('ok  wrapper maps the Rust info keys and the preset budget')
 
 
 def test_wrapper_never_raises():
@@ -298,6 +300,82 @@ def test_tier_adopts_si_only_improvement():
     print('ok  tier adopts an SI-only improvement (C2)')
 
 
+def _subset_si_available():
+    """Whether the Rust subset SI counter the prepass prefers is importable.
+
+    The CI Python jobs install the engine without building ``sutura_geom``, so
+    the tier correctly falls back to the full exact scan there; local venvs
+    with the extension take the local subset path. The test covers both."""
+    try:
+        import sutura_geom
+    except Exception:
+        return False
+    return getattr(sutura_geom, 'self_intersections_subset', None) is not None
+
+
+def test_prepass_uses_local_si_guard_not_full_scan():
+    # The prepass must not pay for a full exact-SI scan on the pre-tier mesh or
+    # on the candidate WHEN the Rust subset counter is available: it compares
+    # only the faces the seal changed and reports si_method='local'. Without the
+    # extension (`_local_si_rise` returns used=False) the tier must fall back to
+    # the full exact scan of both meshes and report si_method='full'; this is
+    # the environment the CI Python jobs run in, so both branches are asserted.
+    calls = {'n': 0}
+    real = repair._exact_si_face_count
+    repair._exact_si_face_count = lambda v, t: calls.__setitem__(
+        'n', calls['n'] + 1) or 7
+    ml = _FakeML()
+    ms = _FakeMeshSet(_CUBE_V, _OPEN1_F)   # one boundary loop -> the prepass runs
+    stats = {}
+    _install_tier(_CUBE_V, _CUBE_F, {'healthy_faces_kept': len(_CUBE_F)})
+    try:
+        repair.tamponade_tier(ml, ms, {'non_two_manifold_edges': 0}, stats,
+                              '/tmp', tamponade=True, intensity='balanced',
+                              prepass=True)
+        rec = stats['tamponade']
+    finally:
+        tamp.run_tamponade = _REAL_RUN_TAMPONADE
+        repair._exact_si_face_count = real
+    assert rec['ran'] is True, rec
+    if _subset_si_available():
+        assert rec['si_method'] == 'local', rec
+        assert (rec['base_local_si'] is not None
+                and rec['cand_local_si'] is not None), rec
+        assert calls['n'] == 0, calls
+        print('ok  prepass uses the local SI guard (no full exact-SI scan)')
+    else:
+        # No extension: the full scan runs once on the base and once on the
+        # candidate (the candidate is only scanned when the base scan returns a
+        # count, not None).
+        assert rec['si_method'] == 'full', rec
+        assert (rec['input_self_intersections'] is not None
+                and rec['candidate_self_intersections'] is not None), rec
+        assert calls['n'] == 2, calls
+        print('ok  prepass falls back to the full exact scan without the extension')
+
+
+def test_prepass_budget_zero_skips():
+    import os
+    ml = _FakeML()
+    ms = _FakeMeshSet(_CUBE_V, _OPEN1_F)
+    stats = {}
+    old = os.environ.get('SUTURA_TAMPONADE_PREPASS_BUDGET')
+    os.environ['SUTURA_TAMPONADE_PREPASS_BUDGET'] = '0'
+    try:
+        repair.tamponade_tier(ml, ms, {'non_two_manifold_edges': 0}, stats,
+                              '/tmp', tamponade=True, intensity='balanced',
+                              prepass=True)
+        rec = stats['tamponade']
+    finally:
+        if old is None:
+            os.environ.pop('SUTURA_TAMPONADE_PREPASS_BUDGET', None)
+        else:
+            os.environ['SUTURA_TAMPONADE_PREPASS_BUDGET'] = old
+    assert rec['ran'] is False, rec
+    assert 'budget 0' in (rec['reason'] or ''), rec
+    print('ok  prepass budget 0 skips the tier')
+
+
 def test_tier_skips_closed_si_free_mesh():
     # A closed mesh with no measured self-intersections must still skip.
     real = repair._exact_si_face_count
@@ -323,6 +401,19 @@ def test_resolve_melt_si():
     print('ok  melt is gated to thorough/extreme (env override)')
 
 
+def test_resolve_prepass_budget():
+    assert tamp.resolve_tamponade_prepass_budget('quick') == 0.0
+    assert tamp.resolve_tamponade_prepass_budget('balanced') == 15.0
+    assert tamp.resolve_tamponade_prepass_budget('thorough') == 40.0
+    assert tamp.resolve_tamponade_prepass_budget('extreme') == 60.0
+    assert tamp.resolve_tamponade_prepass_budget(None) == 15.0
+    assert tamp.resolve_tamponade_prepass_budget(
+        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': '3.5'}) == 3.5
+    assert tamp.resolve_tamponade_prepass_budget(
+        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': 'x'}) == 15.0
+    print('ok  prepass budget resolution (preset + env override)')
+
+
 def test_tier_closed_balanced_skips_without_scan():
     calls = {'n': 0}
     real = repair._exact_si_face_count
@@ -344,22 +435,23 @@ def test_tier_closed_balanced_skips_without_scan():
 # --- 3. flag / env / constant resolution ------------------------------------
 
 def test_resolve_tamponade():
-    assert repair.resolve_tamponade() is False           # default switch off
+    assert repair.resolve_tamponade() is True            # default switch ON
     assert repair.resolve_tamponade(force=True) is True
     assert repair.resolve_tamponade(no_tamponade=True, force=True) is False
     assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': '1'}) is True
     assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': '0'}) is False
-    # an invalid env value falls back to the default switch
-    assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': 'maybe'}) is False
+    # an invalid env value falls back to the default switch (ON)
+    assert repair.resolve_tamponade(environ={'SUTURA_TAMPONADE': 'maybe'}) is True
     # the default switch can be overridden per run / by env
     assert repair.resolve_tamponade(default_enabled=True) is True
+    assert repair.resolve_tamponade(default_enabled=False) is False
     assert repair.resolve_tamponade(environ={}, default_enabled=True) is True
     # --no-tamponade beats a truthy env; --tamponade beats a falsy env
     assert repair.resolve_tamponade(no_tamponade=True,
                                     environ={'SUTURA_TAMPONADE': '1'}) is False
     assert repair.resolve_tamponade(force=True,
                                     environ={'SUTURA_TAMPONADE': '0'}) is True
-    assert repair.TAMPONADE_DEFAULT_ENABLED is False
+    assert repair.TAMPONADE_DEFAULT_ENABLED is True
     print('ok  resolve_tamponade precedence (flag > env > switch)')
 
 
@@ -377,6 +469,45 @@ def test_method_alias_resolution():
     assert m.kwargs.get('deep_repair') == 'off', m.kwargs
     assert m.kwargs.get('ftetwild') is False, m.kwargs
     print('ok  registry resolves every Tamponade alias to #17')
+
+
+# --- 5. final shape safety net (G11 release blocker) ------------------------
+
+def test_final_guard_flags_bbox_collapse():
+    # thingi10k_100827: a 37 mm object rebuilt into a 7 mm fragment. The guard
+    # must flag the collapse and pass a full-coverage result.
+    in_v = _CUBE_V * np.array([13.0, 13.0, 32.5])
+    out_v = _CUBE_V * np.array([5.0, 3.5, 3.5])
+    reason, m = repair._tamponade_final_needs_off(in_v, _CUBE_F, out_v, _CUBE_F)
+    assert reason == 'bbox_collapse', (reason, m)
+    assert m['coverage'] < repair.TAMP_COLLAPSE_BBOX_FRAC, m
+    assert m['holes'] == 0 and m['parts'] == 1, m
+    reason2, m2 = repair._tamponade_final_needs_off(
+        in_v, _CUBE_F, _CUBE_V * 13.0, _CUBE_F)
+    assert reason2 is None, (reason2, m2)
+    assert m2['coverage'] > repair.TAMP_COLLAPSE_BBOX_FRAC, m2
+    print('ok  final guard flags a bbox collapse and passes a full result')
+
+
+def test_tamponade_off_preferred_rules():
+    on = {'coverage': 0.19, 'holes': 0, 'non_manifold': 0, 'parts': 1}
+    off = {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 1}
+    assert repair._tamponade_off_preferred(on, off) is True
+    # OFF never replaces ON when it regresses damage or the part count.
+    assert repair._tamponade_off_preferred(
+        on, {'coverage': 1.0, 'holes': 0, 'non_manifold': 2, 'parts': 1}) is False
+    assert repair._tamponade_off_preferred(
+        on, {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 2}) is False
+    # A coverage tie keeps the Tamponade result.
+    assert repair._tamponade_off_preferred(on, dict(on)) is False
+    # A lower outside-the-input leak (G12) also lets OFF replace ON.
+    on_leak = {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 1,
+               'leak_mm': 1.83}
+    off_leak = {'coverage': 1.0, 'holes': 0, 'non_manifold': 0, 'parts': 1,
+                'leak_mm': 0.0}
+    assert repair._tamponade_off_preferred(on_leak, off_leak) is True
+    assert repair._tamponade_off_preferred(off_leak, on_leak) is False
+    print('ok  OFF replaces ON only with more coverage and no regression')
 
 
 def main():

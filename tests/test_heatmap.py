@@ -254,6 +254,28 @@ def test_defect_camera_orthonormal_various_directions():
         assert np.allclose(R[2], d / np.linalg.norm(d), atol=1e-9), d
 
 
+def test_initial_view_camera_tilts_off_diagonal_defect():
+    # Regression (v0.8.1 defects.py topology-kernel change): a cube whose worst
+    # defect centroid sits on the body diagonal makes defect_camera look
+    # straight down (1,1,1), so the cube renders as a symmetric hexagon and the
+    # defected geometry hides. initial_view_camera must tilt off that axis.
+    from viewer_common import initial_view_camera
+    verts = np.array([
+        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+    ], dtype=np.float64)
+    defects = {'holes': [{'centroid': [1.0, 1.0, 1.0], 'verts_idx': [6]}],
+               'non_manifold': []}
+    R, _center, _scale = initial_view_camera(verts, verts, defects, 240, 180)
+    assert R is not None
+    assert np.allclose(R @ R.T, np.eye(3), atol=1e-9)
+    assert abs(np.linalg.det(R) - 1.0) < 1e-9
+    forward = R[2] / np.linalg.norm(R[2])
+    iso = np.array([1.0, 1.0, 1.0]) / np.sqrt(3.0)
+    assert abs(float(forward @ iso)) < np.cos(np.radians(20.0)), \
+        float(forward @ iso)
+
+
 def test_prepare_draw_matches_render():
     # regression gate: render() == draw_frame(prepare_render(...)) byte-for-
     # byte, so the interactive split never changes what the static path drew.

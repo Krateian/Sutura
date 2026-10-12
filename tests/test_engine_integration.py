@@ -236,7 +236,8 @@ def test_no_engines_byte_identical():
     assert 'engines' not in base_rep and 'engines' not in loaded_rep
     assert np.array_equal(base_v, loaded_v)
     assert np.array_equal(base_t, loaded_t)
-    strip = lambda r: {k: val for k, val in r.items() if k != 'stage1'}
+    strip = lambda r: {k: val for k, val in r.items()
+                       if k not in ('stage1', 'timings')}
     assert json.dumps(strip(base_rep), sort_keys=True, default=str) == \
         json.dumps(strip(loaded_rep), sort_keys=True, default=str)
     ok('test_no_engines_byte_identical')

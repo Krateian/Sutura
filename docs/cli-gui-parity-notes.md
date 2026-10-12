@@ -161,6 +161,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   parity holds) with an env opt-out only (`SUTURA_SI_EXCISE=0`), like the ray-stab vote.
   The refined Stage-1 hole fill (`SUTURA_REFINE_HOLE=1`) is an unproven evaluation switch,
   so it is env-only too; when it is proven it gets a CLI flag and a GUI control together.
+- **Flap per-loop candidate selection (unreleased):** on by default, the selector tries the
+  membrane / reference-fairing / unfaired refined alternatives only when a loop's thin-plate
+  patch is rejected (coplanar fold), charged against the Flap wall-clock budget, so both the
+  CLI and the GUI get it and parity is automatic. It is disabled with the env-only
+  `SUTURA_FLAP_SELECT=0` (like the ray-stab vote, no CLI flag or GUI control).
 - **Localized exact self-union (`sutura/local_exact.py`, unreleased):** the tier that
   replaces a residual Stage-2 self-intersecting cluster with the exact outer-hull
   triangulation of a small patch. It is OPT-IN and OFF by default for every install
@@ -170,10 +175,29 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `1/true/yes/on`) and disabled with `SUTURA_LOCAL_EXACT=0`; there is deliberately NO CLI
   flag or GUI control, so CLI and GUI behave identically (parity by construction, like the
   ray-stab vote).
-- **Tamponade (#17, interior hole plug + SI melt, unreleased):** CLI
+- **Tamponade (#17, interior hole plug + SI melt, v0.9.0):** CLI
   `--tamponade` / `--no-tamponade` and env `SUTURA_TAMPONADE` /
-  `SUTURA_TAMPONADE_DEFAULT` control the opt-in interior-plug tier; the GUI
+  `SUTURA_TAMPONADE_DEFAULT` control the on-by-default interior-plug tier; the GUI
   exposes the same as Options → Repair *Tamponade (fill holes from inside)*
   (EN/TR), and the repair-log panel renders the adopted / not-adopted verdict.
-  The library default (`tamponade=False`, `TAMPONADE_DEFAULT_ENABLED = False`)
-  keeps every existing path byte-identical until the corpus measurement.
+  The library default (`TAMPONADE_DEFAULT_ENABLED = True`) runs the tier on every
+  path; `--no-tamponade` / `SUTURA_TAMPONADE=0` / the GUI checkbox disable it.
+- **Stent (Tamponade's inflate-from-inside plug, v0.9.0):** a per-loop plug
+  candidate inside Tamponade that runs when the reference plug is rejected for
+  that loop. It rides INSIDE the Tamponade tier (it only runs when Tamponade runs
+  — on by default; disable Tamponade itself with `--no-tamponade` /
+  `SUTURA_TAMPONADE=0` / the GUI checkbox), so there is deliberately NO separate
+  CLI flag or GUI control. Its only independent switch is the env opt-out
+  `SUTURA_TAMP_STENT=0` (default
+  ON whenever Tamponade runs), which is an exact geometry no-op; CLI and GUI
+  behave identically because neither exposes it. The tier report carries
+  `stent_used` / `stent_rejected` and the standard per-plug `plug_metrics`
+  array; the GUI's tamponade log renders the adopted verdict unchanged. The
+  name is deliberately NOT "balloon" to avoid confusion with method #8 Balloon
+  (Poisson surface reconstruction).
+- **Native self-intersection detection (unreleased):** the Rust-counted
+  self-intersection metric is an evaluation switch behind the env
+  `SUTURA_NATIVE_SI=1` (default OFF: the count is not byte-identical to
+  PyMeshLab's). It has deliberately NO CLI flag or GUI control, so the CLI and the
+  GUI behave identically (parity by construction, like the ray-stab vote); when it
+  is proven it gets a CLI flag and a GUI control together.

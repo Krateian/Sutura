@@ -22,6 +22,15 @@ use rayon::prelude::*;
 /// is ~8e-4 of a full turn, well below the 0.5 winding decision boundary.
 pub const WINDING_FAR_TOL: f64 = 1e-2;
 
+/// Accuracy parameter of the Barill et al. 2018 fast winding number (their
+/// Algorithm 1): a BVH node is replaced by its aggregate dipole when the query
+/// is farther than `BETA * node_radius` from the node's approximation centre.
+/// Larger `beta` is more accurate but slower; the paper's reference
+/// implementation defaults to ~2.  This is the "bulk" accuracy used while a
+/// decision only needs to know which side of a threshold the field is on; the
+/// caller re-evaluates exactly when the approximate value is near a threshold.
+pub const FWN_DEFAULT_BETA: f64 = 2.0;
+
 const LEAF_SIZE: usize = 8;
 const MAX_DEPTH: usize = 64;
 
@@ -264,6 +273,9 @@ struct Node {
     vec_area: [f64; 3],
     /// Sum of unsigned triangle areas (far-field magnitude bound).
     area_sum: f64,
+    /// Maximum distance from `center` to any vertex of the node's triangles
+    /// (the paper's `tree.r`); drives the fast-winding `beta` near/far test.
+    radius: f64,
 }
 
 /// Triangle-soup bounding volume hierarchy for winding-number and distance
@@ -442,6 +454,88 @@ impl MeshBvh {
         points.par_iter().map(|p| self.winding_at(*p)).collect()
     }
 
+    /// Fast approximate generalized winding number (Barill et al. 2018,
+    /// Algorithm 1).  A BVH node is replaced by the dipole of its aggregated
+    /// area vectors when the query lies farther than `beta * radius` from the
+    /// node's approximation centre; otherwise the traversal recurses and leaves
+    /// are summed with the exact per-triangle solid angle.  `beta` is the
+    /// paper's accuracy parameter (larger = more accurate, slower); the result
+    /// is divided by `4 pi` to give the winding number.
+    pub fn winding_at_beta(&self, p: [f64; 3], beta: f64) -> f64 {
+        if self.nodes.is_empty() {
+            return 0.0;
+        }
+        self.winding_node_beta(0, p, beta) / (4.0 * std::f64::consts::PI)
+    }
+
+    /// Fast winding for many points, parallel across CPU cores.
+    pub fn winding_points_beta_par(&self, points: &[[f64; 3]], beta: f64) -> Vec<f64> {
+        points.par_iter().map(|p| self.winding_at_beta(*p, beta)).collect()
+    }
+
+    /// The exact generalized winding number: every triangle's solid angle is
+    /// summed with no far-field shortcut (runs the `tol = 0` traversal).  Used
+    /// only for the points where the approximation straddles a decision
+    /// threshold, so the caller's inside/outside decision stays exact.
+    pub fn winding_at_exact(&self, p: [f64; 3]) -> f64 {
+        self.winding_at_tol(p, 0.0)
+    }
+
+    /// Fast winding for many points where any result within `band` of one of
+    /// `thresholds` is re-evaluated with a more accurate (higher-`beta`)
+    /// approximation, and only a result still within `tight_band` of a
+    /// threshold pays for the exact all-triangle sum.  This is the hybrid used
+    /// by the Tamponade min-cut: the bulk of the grid is answered by the coarse
+    /// `beta` approximation, cells near a classification threshold are
+    /// sharpened cheaply, and the few genuinely ambiguous cells are resolved
+    /// exactly, so the threshold decisions (and hence the occupancy grid)
+    /// match the exact path.
+    pub fn winding_points_hybrid_par(
+        &self,
+        points: &[[f64; 3]],
+        beta: f64,
+        refine_beta: f64,
+        thresholds: &[f64],
+        band: f64,
+        tight_band: f64,
+    ) -> Vec<f64> {
+        points
+            .par_iter()
+            .map(|p| {
+                let w = self.winding_at_beta(*p, beta);
+                if !thresholds.iter().any(|t| (w - t).abs() < band) {
+                    return w;
+                }
+                let wr = self.winding_at_beta(*p, refine_beta);
+                if thresholds.iter().any(|t| (wr - t).abs() < tight_band) {
+                    self.winding_at_exact(*p)
+                } else {
+                    wr
+                }
+            })
+            .collect()
+    }
+
+    fn winding_node_beta(&self, idx: usize, p: [f64; 3], beta: f64) -> f64 {
+        let n = &self.nodes[idx];
+        if n.left < 0 {
+            let mut s = 0.0;
+            for i in n.start..n.start + n.count {
+                s += self.tris[self.order[i as usize] as usize].solid_angle(p);
+            }
+            return s;
+        }
+        let r = sub(n.center, p);
+        let d2 = dot(r, r);
+        // Far-field: the node is a single dipole when the query is more than
+        // `beta` node-radii away, exactly Algorithm 1's `||q - p|| > beta * r`.
+        if d2 > 0.0 && d2.sqrt() > beta * n.radius {
+            return dot(n.vec_area, r) / (d2 * d2.sqrt());
+        }
+        self.winding_node_beta(n.left as usize, p, beta)
+            + self.winding_node_beta(n.right as usize, p, beta)
+    }
+
     fn winding_node(&self, idx: usize, p: [f64; 3]) -> f64 {
         self.winding_node_tol(idx, p, WINDING_FAR_TOL)
     }
@@ -486,6 +580,82 @@ impl MeshBvh {
         let mut best = (p, f64::INFINITY, usize::MAX);
         self.closest_node(0, p, &mut best);
         (best.0, best.1.sqrt(), best.2)
+    }
+
+    /// Closest point on the triangle soup excluding triangles belonging to `excluded_shell`:
+    /// `(point, distance, triangle index)`, or `(p, inf, usize::MAX)` if no other triangles exist.
+    pub fn closest_point_excluding(
+        &self,
+        p: [f64; 3],
+        excluded_shell: usize,
+        shell_map: &[usize],
+    ) -> ([f64; 3], f64, usize) {
+        if self.nodes.is_empty() {
+            return (p, f64::INFINITY, usize::MAX);
+        }
+        let mut best = (p, f64::INFINITY, usize::MAX);
+        self.closest_node_excluding(0, p, excluded_shell, shell_map, &mut best);
+        (best.0, best.1.sqrt(), best.2)
+    }
+
+    /// Closest point on the triangle soup excluding triangles belonging to `excluded_shell`,
+    /// restricted to a search radius `max_dist`:
+    /// `(point, distance, triangle index)`, or `(p, inf, usize::MAX)` if no other triangles within `max_dist` exist.
+    pub fn closest_point_excluding_within(
+        &self,
+        p: [f64; 3],
+        excluded_shell: usize,
+        shell_map: &[usize],
+        max_dist: f64,
+    ) -> ([f64; 3], f64, usize) {
+        if self.nodes.is_empty() || max_dist <= 0.0 {
+            return (p, f64::INFINITY, usize::MAX);
+        }
+        let mut best = (p, max_dist * max_dist, usize::MAX);
+        self.closest_node_excluding(0, p, excluded_shell, shell_map, &mut best);
+        if best.2 == usize::MAX {
+            (p, f64::INFINITY, usize::MAX)
+        } else {
+            (best.0, best.1.sqrt(), best.2)
+        }
+    }
+
+    fn closest_node_excluding(
+        &self,
+        idx: usize,
+        p: [f64; 3],
+        excluded_shell: usize,
+        shell_map: &[usize],
+        best: &mut ([f64; 3], f64, usize),
+    ) {
+        let n = &self.nodes[idx];
+        if n.bbox.dist2(p) >= best.1 {
+            return;
+        }
+        if n.left < 0 {
+            for i in n.start..n.start + n.count {
+                let tri = self.order[i as usize] as usize;
+                if tri < shell_map.len() && shell_map[tri] == excluded_shell {
+                    continue;
+                }
+                let (q, d2) = point_tri_closest(p, &self.tris[tri]);
+                if d2 < best.1 {
+                    best.0 = q;
+                    best.1 = d2;
+                    best.2 = tri;
+                }
+            }
+            return;
+        }
+        let dl = self.nodes[n.left as usize].bbox.dist2(p);
+        let dr = self.nodes[n.right as usize].bbox.dist2(p);
+        if dl <= dr {
+            self.closest_node_excluding(n.left as usize, p, excluded_shell, shell_map, best);
+            self.closest_node_excluding(n.right as usize, p, excluded_shell, shell_map, best);
+        } else {
+            self.closest_node_excluding(n.right as usize, p, excluded_shell, shell_map, best);
+            self.closest_node_excluding(n.left as usize, p, excluded_shell, shell_map, best);
+        }
     }
 
     /// Outward unit normal of triangle at index `tri_idx`.
@@ -1177,6 +1347,7 @@ fn build_rec(
         center: [0.0; 3],
         vec_area: [0.0; 3],
         area_sum: 0.0,
+        radius: 0.0,
     });
     let mut bbox = Aabb::empty();
     let mut vec_area = [0.0f64; 3];
@@ -1198,10 +1369,22 @@ fn build_rec(
     } else {
         bbox.center()
     };
+    // The paper's `tree.r`: farthest vertex from the approximation centre.
+    let mut radius = 0.0f64;
+    for &o in &order[start..end] {
+        let t = &tris[o as usize];
+        for v in [t.a, t.b, t.c] {
+            let d = norm(sub(v, center));
+            if d > radius {
+                radius = d;
+            }
+        }
+    }
     nodes[idx as usize].bbox = bbox;
     nodes[idx as usize].center = center;
     nodes[idx as usize].vec_area = vec_area;
     nodes[idx as usize].area_sum = area_sum;
+    nodes[idx as usize].radius = radius;
 
     if end - start <= LEAF_SIZE || depth >= MAX_DEPTH {
         return idx;
@@ -1443,5 +1626,110 @@ mod tests {
         let q = bvh.intersect_ray([0.25, 0.25, 1.0], [0.0, 0.0, -1.0], 10.0, 0.0);
         assert_eq!(q.net, -1);
         assert_eq!(q.crossings, 1);
+    }
+
+    fn sphere(n_lat: usize, n_lon: usize) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let mut verts = Vec::new();
+        for i in 0..=n_lat {
+            let theta = std::f64::consts::PI * i as f64 / n_lat as f64;
+            for j in 0..n_lon {
+                let phi = 2.0 * std::f64::consts::PI * j as f64 / n_lon as f64;
+                verts.push([
+                    theta.sin() * phi.cos(),
+                    theta.sin() * phi.sin(),
+                    theta.cos(),
+                ]);
+            }
+        }
+        let idx = |i: usize, j: usize| (i * n_lon + (j % n_lon)) as usize;
+        let mut tris = Vec::new();
+        for i in 0..n_lat {
+            for j in 0..n_lon {
+                let a = idx(i, j);
+                let b = idx(i + 1, j);
+                let c = idx(i + 1, j + 1);
+                let d = idx(i, j + 1);
+                if i > 0 {
+                    tris.push([a, b, c]);
+                }
+                if i + 1 < n_lat {
+                    tris.push([a, c, d]);
+                }
+            }
+        }
+        (verts, tris)
+    }
+
+    #[test]
+    fn winding_beta_approximates_exact_and_hybrid_refines() {
+        let (v, f) = sphere(24, 24);
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        // A lattice of points inside, on and outside the unit sphere.
+        let mut pts = Vec::new();
+        for &x in &[-1.5, -0.7, -0.2, 0.0, 0.2, 0.7, 1.5] {
+            for &y in &[-1.5, -0.3, 0.0, 0.3, 1.5] {
+                for &z in &[-1.5, -0.4, 0.0, 0.4, 1.5] {
+                    pts.push([x, y, z]);
+                }
+            }
+        }
+        let mut max_err = 0.0f64;
+        for &p in &pts {
+            let exact = bvh.winding_at_exact(p);
+            let fast = bvh.winding_at_beta(p, FWN_DEFAULT_BETA);
+            let e = (fast - exact).abs();
+            if e > max_err {
+                max_err = e;
+            }
+        }
+        // beta = 2 must stay well inside the refine band so the hybrid decisions
+        // are exact; the documented band is 0.1.
+        assert!(max_err < 0.1, "beta=2 max error {max_err} exceeds band");
+
+        // The sharpening pass (beta = 16) must be accurate enough that anything
+        // outside the tight band is decided correctly.
+        let mut max_err_ref = 0.0f64;
+        for &p in &pts {
+            let exact = bvh.winding_at_exact(p);
+            let r = bvh.winding_at_beta(p, 16.0);
+            let e = (r - exact).abs();
+            if e > max_err_ref {
+                max_err_ref = e;
+            }
+        }
+        assert!(max_err_ref < 0.005, "beta=16 max error {max_err_ref} exceeds tight band");
+
+        // The hybrid re-evaluates with the sharper pass whenever the coarse
+        // approximation is within the band of a threshold, and exactly when the
+        // sharper value is still within the tight band.
+        let thresholds = [0.1, 0.5];
+        let hyb = bvh.winding_points_hybrid_par(
+            &pts, FWN_DEFAULT_BETA, 16.0, &thresholds, 0.1, 0.005,
+        );
+        for (p, w) in pts.iter().zip(hyb.iter()) {
+            let exact = bvh.winding_at_exact(*p);
+            let fast = bvh.winding_at_beta(*p, FWN_DEFAULT_BETA);
+            let near = thresholds.iter().any(|t| (fast - t).abs() < 0.1);
+            if !near {
+                assert!((w - fast).abs() < 1e-12);
+            } else {
+                // Sharpened or exact: within the tight band it is exact,
+                // otherwise it is the beta=16 value (accurate to < 0.005).
+                let _ = exact;
+                let sharp = bvh.winding_at_beta(*p, 16.0);
+                assert!((w - sharp).abs() < 1e-12 || (w - exact).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn winding_beta_one_matches_exact_on_cube() {
+        let (v, f) = cube();
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        for p in [[0.5, 0.5, 0.5], [3.0, 0.5, 0.5], [-2.0, 0.5, 0.5]] {
+            let exact = bvh.winding_at_exact(p);
+            let fast = bvh.winding_at_beta(p, FWN_DEFAULT_BETA);
+            assert!((fast - exact).abs() < 1e-2, "p {p:?} fast {fast} exact {exact}");
+        }
     }
 }

@@ -34,6 +34,8 @@ pub mod experimental {
     /// triangle's edge to all input triangles sharing that edge, so the
     /// output has no T-junction there (see `arrangement::arrangement_lite_core`).
     pub const PROPAGATE_EDGE_POINTS: u8 = 4;
+    /// Split coplanar overlapping triangle pairs during arrangement.
+    pub const SPLIT_COPLANAR_OVERLAPS: u8 = 8;
 
     thread_local! {
         static OPTIONS: Cell<u8> = const { Cell::new(0) };
@@ -633,18 +635,56 @@ impl Triangulation {
             None => None,
         };
         let q = match q {
-            Some(q) => q,
+            Some(mut q) => {
+                use num_traits::{One, Zero};
+                let zero = BigRational::zero();
+                let one = BigRational::one();
+                let eps = BigRational::new(num_bigint::BigInt::from(1), num_bigint::BigInt::from(1_000_000_000));
+                if q.s < zero && &q.s > &-&eps {
+                    q.s = zero.clone();
+                }
+                if q.t < zero && &q.t > &-&eps {
+                    q.t = zero.clone();
+                }
+                let st_sum = &q.s + &q.t;
+                if st_sum > one && &st_sum - &one < eps {
+                    let excess = &st_sum - &one;
+                    let half_excess = excess / BigRational::from_integer(num_bigint::BigInt::from(2));
+                    q.s = q.s - &half_excess;
+                    q.t = q.t - &half_excess;
+                    if q.s < zero { q.s = zero.clone(); }
+                    if q.t < zero { q.t = zero.clone(); }
+                    if &q.s + &q.t > one {
+                        q.t = &one - &q.s;
+                    }
+                }
+                q
+            }
             None => return Err(None),
         };
         match self.st_index.get(&st_key(&q)) {
             Some(&vi) => Ok(vi),
-            None => Err(Some(q)),
+            None => {
+                use num_traits::Signed;
+                let tol = BigRational::new(num_bigint::BigInt::from(1), num_bigint::BigInt::from(10_000_000));
+                for (vi, v) in self.verts.iter().enumerate() {
+                    if (&q.s - &v.st.s).abs() < tol && (&q.t - &v.st.t).abs() < tol {
+                        return Ok(vi);
+                    }
+                }
+                Err(Some(q))
+            }
         }
     }
 
     fn insert_vertex_at(&mut self, vi: usize) {
         let p = self.verts[vi].st.clone();
         let t = self.locate(&p);
+        if t.is_none() {
+            eprintln!("OUTSIDE: p=(s={}, t={}), s+t={}", p.s, p.t, &p.s + &p.t);
+            eprintln!("host_a={:?}, host_b={:?}, host_c={:?}", self.host.host_a, self.host.host_b, self.host.host_c);
+            eprintln!("vi provenance={:?}", self.verts[vi].provenance);
+        }
         assert!(t.is_some(), "inserted point outside host triangle");
         let t = t.unwrap();
 

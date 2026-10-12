@@ -38,6 +38,14 @@ MIN_FACE_BUDGET = 20_000  # output faces <= max(2x input, 20k)
 # strategy (ultimately ``generate_alpha_wrap``, which is fast and robust).
 PROXY_RESAMPLE_TIMEOUT = 20.0  # seconds, per uniform-resample attempt
 
+# The same non-terminating VCG KdTree construction grows to many GB of resident
+# memory before the time budget expires. The subprocess is therefore also killed
+# once its RSS exceeds this ceiling, so the guard bounds memory as well as time.
+# The value sits far above any healthy resample (measured < 450 MB total, parent
+# included, on the smoke set) and is overridable via
+# ``SUTURA_PROXY_RESAMPLE_MAX_RSS_MB`` (0 disables it).
+PROXY_RESAMPLE_MAX_RSS_MB = 2048
+
 
 def _resample_timeout():
     """Resolved per-attempt resample budget (env ``SUTURA_PROXY_RESAMPLE_TIMEOUT``)."""
@@ -51,6 +59,40 @@ def _resample_timeout():
         except (TypeError, ValueError):
             pass
     return PROXY_RESAMPLE_TIMEOUT
+
+
+def _resample_max_rss_kb():
+    """Resolved per-attempt resample memory ceiling in kB (env override, 0 = off)."""
+    import os
+    raw = os.environ.get('SUTURA_PROXY_RESAMPLE_MAX_RSS_MB')
+    mb = PROXY_RESAMPLE_MAX_RSS_MB
+    if raw:
+        try:
+            val = float(raw)
+            if val >= 0:
+                mb = val
+        except (TypeError, ValueError):
+            pass
+    return int(mb) * 1024
+
+
+def _proc_rss_kb(pid):
+    """Resident set size of ``pid`` in kB, or ``None`` if unavailable."""
+    import sys
+    try:
+        if sys.platform.startswith('linux'):
+            with open('/proc/%d/status' % int(pid)) as fh:
+                for line in fh:
+                    if line.startswith('VmRSS:'):
+                        return int(line.split()[1])
+            return None
+        import subprocess
+        out = subprocess.run(['ps', '-o', 'rss=', '-p', str(int(pid))],
+                             capture_output=True, text=True)
+        txt = out.stdout.strip()
+        return int(txt) if txt else None
+    except Exception:
+        return None
 
 
 def _uniform_resample(verts, tris, voxel, offset, absdist):
@@ -82,18 +124,22 @@ def _uniform_resample_isolated(verts, tris, voxel, offset, absdist, timeout=None
 
     Protects the repair from the VCG KdTree non-termination described above:
     on timeout (or any child failure) this raises, and ``build_proxy`` falls
-    through to its next strategy. The child runs under the current interpreter
-    with the parent's ``sys.path`` so it resolves the same ``sutura_engine``
-    package in every install layout.
+    through to its next strategy. The child is also killed once its resident
+    set exceeds ``_resample_max_rss_kb()`` so the guard bounds memory too.
+    The child runs under the current interpreter with the parent's ``sys.path``
+    so it resolves the same ``sutura_engine`` package in every install layout.
     """
     import os
     import shutil
     import subprocess
     import sys
     import tempfile
+    import threading
+    import time
 
     if timeout is None:
         timeout = _resample_timeout()
+    max_rss_kb = _resample_max_rss_kb()
     work = tempfile.mkdtemp(prefix='sutura_proxy_resample_')
     try:
         in_npz = os.path.join(work, 'in.npz')
@@ -108,8 +154,38 @@ def _uniform_resample_isolated(verts, tris, voxel, offset, absdist, timeout=None
             "_resample_worker(%r, %r, %r, %r, %r)\n"
             % (path, in_npz, out_npz, float(voxel), float(offset), bool(absdist))
         )
-        subprocess.run([sys.executable, '-c', code], timeout=float(timeout),
-                       check=True, capture_output=True)
+        proc = subprocess.Popen([sys.executable, '-c', code],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        over_mem = threading.Event()
+
+        def _watch():
+            while proc.poll() is None:
+                rss = _proc_rss_kb(proc.pid)
+                if max_rss_kb > 0 and rss is not None and rss > max_rss_kb:
+                    over_mem.set()
+                    proc.kill()
+                    return
+                time.sleep(0.2)
+
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
+        try:
+            try:
+                out, err = proc.communicate(timeout=float(timeout))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise TimeoutError(
+                    'proxy resample exceeded the %.1fs budget' % float(timeout))
+        finally:
+            watcher.join(timeout=1.0)
+        if over_mem.is_set():
+            raise RuntimeError(
+                'proxy resample exceeded the %d MB memory cap'
+                % (max_rss_kb // 1024))
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode, 'proxy_resample', output=out, stderr=err)
         data = np.load(out_npz)
         return (np.asarray(data['v'], dtype=np.float64),
                 np.asarray(data['t'], dtype=np.int32))
@@ -237,8 +313,10 @@ def build_proxy(verts, tris, voxel=None, resample_timeout=None):
     ``resample_timeout`` (default: ``_resample_timeout()``) bounds each
     uniform-resample attempt; the two PyMeshLab resample strategies run in a
     subprocess so a VCG KdTree non-termination on long thin triangles cannot
-    hang the repair (see ``PROXY_RESAMPLE_TIMEOUT``). On timeout the strategy
-    is skipped and the alpha-wrap fallback is used.
+    hang the repair (see ``PROXY_RESAMPLE_TIMEOUT``). The subprocess is also
+    killed once its RSS exceeds ``PROXY_RESAMPLE_MAX_RSS_MB``, so the guard
+    bounds memory as well as time. On either bound the strategy is skipped and
+    the alpha-wrap fallback is used.
     Returns (pv, pt, info_dict).
     """
     verts = np.asarray(verts, dtype=np.float64)

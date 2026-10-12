@@ -21,6 +21,8 @@ import sys
 import subprocess
 import zipfile
 
+import _cli
+
 LAYERS = 15
 OUTPUT = 'test-layered-multiobject.3mf'
 
@@ -185,9 +187,9 @@ def edge_multiplicity(path, model_name):
 
 def check(output):
     """Repair the generated 3MF with sutura and validate the result."""
-    sutura = os.environ.get('SUTURA', os.path.expanduser('~/.local/bin/sutura'))
     fixed = output[:-4] + '_fixed' + output[-4:]
-    r = subprocess.run([sutura, output], capture_output=True, text=True, timeout=600)
+    r = subprocess.run(_cli.cli_command([output]), capture_output=True,
+                       text=True, timeout=600)
     try:
         import json
         rep = json.loads(r.stdout.strip().splitlines()[-1])

@@ -20,24 +20,35 @@ scanned-mechanical parts that the mesh classifier currently reads as organic
 -- a documented known limitation; this regression keeps the behaviour visible
 so a future classifier change cannot silently break the corpus.
 
-Run with a Python that can reach the CLI ($SUTURA or the installed wrapper):
+The CLI is the in-repo entry point (this interpreter running
+``sutura/repair.py``) unless the ``SUTURA`` environment variable overrides it,
+so the suite always exercises the working tree, never a stale global install.
+Run it with an interpreter that can import ``repair.py``'s dependencies (the
+venv with pymeshlab):
     ~/.local/share/sutura/venv/bin/python tests/test_real_world_corpus.py
+
+The per-mesh subprocess timeout (seconds) is configurable via
+``SUTURA_CORPUS_TIMEOUT`` (default 900) so a loaded machine or a stricter CI
+runner budget can bound a single mesh without editing the suite.
 """
 import os
 import subprocess
 import sys
 import tempfile
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import _cli
+
+REPO = _cli.REPO
 SAMPLES = os.path.join(REPO, 'tests', 'real-world-samples')
-SUTURA = os.environ.get('SUTURA', os.path.expanduser('~/.local/bin/sutura'))
+PER_MESH_TIMEOUT = float(os.environ.get('SUTURA_CORPUS_TIMEOUT', '900'))
 
 
 def run(args, path, out=None):
-    cmd = [SUTURA] + args + [path]
+    cmd = _cli.cli_command(args + [path])
     if out is not None:
         cmd += ['-o', out]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       timeout=PER_MESH_TIMEOUT)
     return r
 
 

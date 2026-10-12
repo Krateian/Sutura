@@ -22,6 +22,12 @@ for p in (SUTURA, REPO):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+# The per-loop candidate selector (SUTURA_FLAP_SELECT) is a Rust-only extension
+# with no numpy-oracle counterpart: it never changes a loop the thin-plate
+# primary fills, but it can fill loops the oracle leaves to Stage-1. Pin it off
+# so this test keeps verifying the pure port, not the selector.
+os.environ['SUTURA_FLAP_SELECT'] = '0'
+
 import numpy as np  # noqa: E402
 from scipy.spatial import cKDTree  # noqa: E402
 

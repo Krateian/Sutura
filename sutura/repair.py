@@ -152,7 +152,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -307,8 +307,16 @@ def _close_holes_step(maxholesize):
     return ('meshing_close_holes', params)
 
 
-def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
-    chain = [
+def stage1_cleanup_chain(ml):
+    """The Stage-1 mesh-hygiene passes: duplicate/null removal, non-manifold
+    edge/vertex repair and a coherent re-orientation, with NO hole closing and
+    NO component removal.
+
+    ``stage1_chain`` builds on this list; the Tamponade prepass (T4) also uses
+    it verbatim so the reference-based hole plug runs on the same cleaned
+    surface the chain would otherwise hand to its generic ``close_holes``.
+    """
+    return [
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
         ('meshing_remove_duplicate_vertices', {}),
@@ -327,6 +335,11 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False
         # so the mesh must be vertex-manifold first. A final close_holes pass
         # re-closes anything the debris removal / re-orient opened.
         ('meshing_repair_non_manifold_vertices', {}),
+    ]
+
+
+def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
+    chain = stage1_cleanup_chain(ml) + [
         _close_holes_step(maxholesize),
         # --experimental-join-components replaces this removal step with a
         # join (small components are moved onto the nearest larger component
@@ -1234,13 +1247,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     not strict-watertight or has more parts than the input; False (library
     default) keeps the output byte-identical.
     ``tamponade`` enables the interior-plug tier (method #17,
-    ``sutura_engine.tamponade``): it runs on the stage-1 result after the Flap
-    pre-pass and before Graft/fTetWild, plugs each open boundary from the
-    inside without deleting an input face, and is adopted only when the
-    reload-honest holes + non-manifold count strictly falls without raising the
-    component count or losing more than 1% of the pre-tier faces; a watertight
-    adoption then skips the deep tiers. False (library default) keeps the output
-    byte-identical.
+    ``sutura_engine.tamponade``): it runs as a PRE-PASS on the cleaned input
+    before the Flap pre-pass and before Stage-1's hole closing, so a genuine
+    crater is sealed with the reference-surface plug rather than the generic
+    Stage-1 cap, and a second-chance call runs after the Stage-1/Flap closing
+    ladder and before Graft/fTetWild when the pre-pass did not adopt. It plugs
+    each open boundary from the inside without deleting an input face, and is
+    adopted only when the reload-honest holes + non-manifold count strictly
+    falls without raising the component count or losing more than 1% of the
+    pre-tier faces; a watertight adoption then skips the deep tiers. False
+    (library default) keeps the output byte-identical.
     """
     import pymeshlab as ml
     v = np.asarray(verts, dtype=np.float32)
@@ -1252,6 +1268,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         raise ValueError('input mesh contains NaN or infinite coordinates')
 
     stats = {'stage1': {}}
+    stats['timings'] = {}
+    _t_start = time.perf_counter()
     if triage_spec is None:
         triage_spec = triage.resolve_intensity(None)
     stats.update(triage.triage_report_fields(triage_spec))
@@ -1309,16 +1327,116 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # assemblies), dissolves internal interfaces via slight dilation
     # (dilation = 5e-4 * bbox_diagonal, ~0.05 mm for 100 mm object) and boolean union.
     if mode == 'auto' and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
-        try:
-            import repeat_repair as _rr
-            _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
-            if len(_shell_t) > 0:
-                verts = np.asarray(_shell_v, dtype=np.float32)
-                tris = np.asarray(_shell_t, dtype=np.int32)
-                v, t = verts, tris
-                stats['outer_shell_extracted'] = True
-        except Exception:
-            pass
+        _shell_adopted = False
+        _shell_phase = None
+        _shell_reason = None
+        _sinfo = None
+        if tamponade:
+            _t_shell_start = time.time()
+            _t_analyze_s = 0.0
+            _t_topo_s = 0.0
+            try:
+                import sutura_geom
+                import defects as _defects
+                _t0 = time.time()
+                _cand_v, _cand_t, _sinfo = sutura_geom.shell_analyze(
+                    np.asarray(verts, dtype=np.float64),
+                    np.asarray(tris, dtype=np.int32),
+                )
+                _t_analyze_s = time.time() - _t0
+                _t0 = time.time()
+                _in_holes = boundary_loop_stats(verts, tris)[0]
+                _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
+                _in_parts = _count_vertex_components(len(verts), tris)
+                _t_topo_s = time.time() - _t0
+
+                # Phase P-a: DISJOINT parts (60916-type):
+                # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
+                # no buried faces, no coincident opposite walls, no internal walls.
+                _is_p_a = _sinfo.get('is_disjoint', False)
+
+                if _is_p_a:
+                    _shell_adopted = True
+                    _shell_phase = 'P-a_disjoint'
+                    _shell_reason = 'disjoint_parts_no_overlap'
+
+                # Phase P-b: exactly coincident opposite walls -> dissolve both (C2)
+                elif (_sinfo['coincident_opp_count'] > 0
+                        and not _sinfo['has_internal_walls']
+                        and _sinfo['internal_walls_count'] == 0
+                        and _sinfo['unresolved_coincident_count'] == 0
+                        and _sinfo['reason'] == 'ok'):
+                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                        _shell_adopted = True
+                        _shell_phase = 'P-b_coincident'
+                        _shell_reason = 'coincident_opposite_dissolved'
+                        verts = np.asarray(_cand_v, dtype=np.float32)
+                        tris = np.asarray(_cand_t, dtype=np.int32)
+                        v, t = verts, tris
+                    else:
+                        _shell_phase = 'P-b_coincident'
+                        _shell_reason = 'rejected_holes_or_parts_rose'
+
+                # Phase P-c: penetrating bodies (100045-type) -> exact clip + stitch (C1)
+                elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok':
+                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                        _shell_adopted = True
+                        _shell_phase = 'P-c_penetrating'
+                        _shell_reason = 'penetrating_bodies_clipped_and_stitched'
+                        verts = np.asarray(_cand_v, dtype=np.float32)
+                        tris = np.asarray(_cand_t, dtype=np.int32)
+                        v, t = verts, tris
+                    else:
+                        _shell_phase = 'P-c_penetrating'
+                        _shell_reason = 'rejected_holes_or_parts_rose'
+                else:
+                    _shell_phase = 'P-c_penetrating' if _sinfo['reason'] == 'unresolved_coplanar_overlapping' else 'fallback'
+                    _shell_reason = _sinfo['reason']
+            except Exception as _e:
+                _shell_adopted = False
+                _shell_phase = 'error'
+                _shell_reason = str(_e)
+
+            _t_shell_total = time.time() - _t_shell_start
+            stats['tamponade_shell_prepass'] = {
+                'shell_adopted': _shell_adopted,
+                'shell_phase': _shell_phase,
+                'shell_reason': _shell_reason,
+                'time_s': round(_t_shell_total, 4),
+                'shell_analyze_s': round(_t_analyze_s, 4),
+                'topo_stats_s': round(_t_topo_s, 4),
+                'outer_count': (_sinfo or {}).get('outer_count', 0),
+                'buried_count': (_sinfo or {}).get('buried_count', 0),
+                'cavity_count': (_sinfo or {}).get('cavity_count', 0),
+                'coincident_opp_count': (_sinfo or {}).get('coincident_opp_count', 0),
+                'coincident_same_count': (_sinfo or {}).get('coincident_same_count', 0),
+                'internal_walls_count': (_sinfo or {}).get('internal_walls_count', 0),
+                'unresolved_coincident_count': (_sinfo or {}).get('unresolved_coincident_count', 0),
+                'has_internal_walls': (_sinfo or {}).get('has_internal_walls', False),
+                'is_disjoint': (_sinfo or {}).get('is_disjoint', False),
+            }
+            stats['shell_adopted'] = _shell_adopted
+            stats['shell_phase'] = _shell_phase
+            stats['shell_reason'] = _shell_reason
+
+        # Any phase that is not adopted -> today's path unchanged
+        if not _shell_adopted:
+            try:
+                import repeat_repair as _rr
+                _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
+                if len(_shell_t) > 0:
+                    verts = np.asarray(_shell_v, dtype=np.float32)
+                    tris = np.asarray(_shell_t, dtype=np.int32)
+                    v, t = verts, tris
+                    stats['outer_shell_extracted'] = True
+            except Exception:
+                pass
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -1334,6 +1452,33 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     components_before = before.get('connected_components_number', 0)
     holes_before = boundary_loop_stats(v, t)[0]
     nm_before = before.get('non_two_manifold_edges', 0)
+
+    # Tamponade prepass (lead decision, T4 step 2): when the tier is ON, seal
+    # holes on the CLEANED input BEFORE the Flap pre-pass and before Stage 1's
+    # generic meshing_close_holes, so a genuine crater is closed with the
+    # reference-surface plug rather than the low-quality Stage-1 cap. Stage 1
+    # then only re-closes the loops Tamponade skipped or rejected. Runs on the
+    # same hygiene chain (no hole closing, no component removal) the chain
+    # itself starts with, so the surface matches. With the tier OFF this block
+    # is a no-op and the pipeline is byte-identical. The post-chain
+    # tamponade_tier call below is skipped once this prepass has sealed the
+    # mesh, so its stats record is preserved.
+    if tamponade is True:
+        _t_pre = time.perf_counter()
+        _tms = ml.MeshSet()
+        _tms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
+        apply_chain(_tms, stage1_cleanup_chain(ml))
+        _tafter = _tms.apply_filter('get_topological_measures')
+        _tms, _tafter = tamponade_tier(
+            ml, _tms, _tafter, stats, tmpdir, tamponade=True,
+            intensity=(getattr(triage_spec, 'base', None)
+                       or getattr(triage_spec, 'name', None)),
+            spec=triage_spec, si_mode=si_mode, prepass=True)
+        if (stats.get('tamponade') or {}).get('adopted'):
+            v = np.asarray(_tms.current_mesh().vertex_matrix(), dtype=np.float32)
+            t = np.asarray(_tms.current_mesh().face_matrix(), dtype=np.int32)
+            verts, tris = v, t
+        stats['timings']['prepass'] = round(time.perf_counter() - _t_pre, 3)
 
     # Flap: surface-based hole fill (on by default in the CLI). It is the FIRST Stage-1
     # step, a pre-pass on the input as it stands here (normally the original
@@ -1492,8 +1637,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # Stage-1 chain (+ delete-fallback + join), before the deep-repair ladder.
     # Gated to deep_repair == 'full' (Quick is 'off'; the library default None
     # is untouched) and skipped for mode == 'extreme', which keeps its legacy
-    # extreme_extra_passes. A no-op on meshes with no self-intersections.
-    if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled():
+    _shell_adopted_for_si = (stats.get('tamponade_shell_prepass') or {}).get('shell_adopted', False)
+    if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled() and not _shell_adopted_for_si:
         ms, _si_rec = si_excise_recap(
             ms, ml, maxholesize=_p['maxholesize'],
             time_budget=_si_excise_budget(triage_spec))
@@ -1561,24 +1706,31 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # modules. They run on the ORIGINAL input arrays, before the deep-repair
     # ladder, and adopt only a strict-watertight, no-worse candidate (see
     # ``closing_ladder``).
+    stats['timings']['stage1'] = round(time.perf_counter() - _t_start, 3)
+    _t_tiers = time.perf_counter()
     ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                closing=closing, proxy_template=proxy_template)
 
-    # Registry method 17 (Tamponade): interior hole plug + SI melt. Runs on the
-    # CURRENT stage-1 result (after the Flap pre-pass and the closing ladder),
-    # before Graft/fTetWild. Adopts only when the reload-honest holes+non-
-    # manifold strictly falls without raising parts or losing healthy faces.
-    ms, after = tamponade_tier(ml, ms, after, stats, tmpdir,
-                               tamponade=(tamponade is True),
-                               intensity=(getattr(triage_spec, 'base', None)
-                                          or getattr(triage_spec, 'name', None)),
-                               spec=triage_spec, si_mode=si_mode)
+    # Registry method 17 (Tamponade): interior hole plug + SI melt. When the
+    # tier is ON it normally runs as a pre-pass (before Flap / Stage 1, see
+    # above) so its reference plug wins over the generic cap; this post-chain
+    # call is then skipped. It is kept for the OFF path and as a second chance
+    # when the prepass ran but did not adopt (e.g. no reference found there).
+    # Adopts only when the reload-honest holes+non-manifold strictly falls
+    # without raising parts or losing healthy faces.
+    if not (stats.get('tamponade') or {}).get('adopted'):
+        ms, after = tamponade_tier(ml, ms, after, stats, tmpdir,
+                                   tamponade=(tamponade is True),
+                                   intensity=(getattr(triage_spec, 'base', None)
+                                              or getattr(triage_spec, 'name', None)),
+                                   spec=triage_spec, si_mode=si_mode)
     # A watertight Tamponade adoption already closed the mesh: skip the deep
     # tiers (the same "a watertight candidate supersedes" logic Graft adoption
     # uses), but still record the ladder's own report.
     _tamp_watertight = bool(
         (stats.get('tamponade') or {}).get('adopted')
-        and (stats.get('tamponade') or {}).get('reload_watertight'))
+        and (stats.get('tamponade') or {}).get('reload_watertight')
+        and (stats.get('tamponade') or {}).get('candidate_parts', 1) <= 1)
 
     # Registry method 13 (Graft / shell wrap): the morphology last-resort tier,
     # run on the ORIGINAL input arrays before the fTetWild ladder. Adopts only a
@@ -1619,6 +1771,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if wall_thicken:
         ms, after = wall_thicken_tier(ml, ms, after, stats, v, t,
                                       min_thickness=wall_min_thickness)
+    stats['timings']['deep_repair'] = round(time.perf_counter() - _t_tiers, 3)
 
     # A closed result with no non-manifold edge can still have pinched
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
@@ -1677,6 +1830,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         if geom.get('mesh_volume', 0) < 0:
             _invert_faces_ms(ms, ml)
             geom = ms.apply_filter('get_geometric_measures')
+            if geom.get('mesh_volume', 0) < 0:
+                _invert_faces_ms(ms, ml)
+                geom = ms.apply_filter('get_geometric_measures')
     after_volume = geom.get('mesh_volume', 0)
 
     new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
@@ -2006,12 +2162,16 @@ def resolve_dressing(no_dressing=False, force=False, environ=None,
 
 TAMPONADE_ENV = 'SUTURA_TAMPONADE'
 
-# Single default switch for the Tamponade tier (method #17).  OFF for now: the
-# module constant below, overridable by the ``SUTURA_TAMPONADE_DEFAULT`` env
-# var.  The lead flips it after the corpus gate.  The CLI ``--tamponade`` flag
-# forces it on per run; the library default in ``repair_mesh_from_arrays`` stays
-# ``False`` so direct library calls keep their pre-Tamponade behaviour.
-TAMPONADE_DEFAULT_ENABLED = False
+# Single default switch for the Tamponade tier (method #17).  ON by default
+# (Arif's standing rule: improvements ship enabled, opt-out): the module
+# constant below, overridable by the ``SUTURA_TAMPONADE_DEFAULT`` env var.
+# ``--no-tamponade`` / ``SUTURA_TAMPONADE=0`` opt out; the legacy
+# ``--tamponade`` flag is still accepted (it just re-affirms the default).  The
+# library default in ``repair_mesh_from_arrays`` stays ``False`` so direct
+# library calls keep their pre-Tamponade behaviour -- every user-facing path
+# (CLI, GUI, file-manager menu, Orca plugin) passes the flag explicitly or
+# inherits this CLI default.
+TAMPONADE_DEFAULT_ENABLED = True
 
 
 def _tamponade_default_enabled():
@@ -3178,6 +3338,97 @@ def _exact_si_face_count(verts, tris):
         return None
 
 
+def _internal_wall_count(verts, tris):
+    """Count buried "internal wall" faces of a mesh.
+
+    A face is an internal wall when its centroid reads a generalized winding
+    number ``>= 1.5`` on BOTH sides (both sides are inside the solid), i.e. the
+    surface is buried inside other geometry.  Used by the Tamponade adoption
+    gate as a never-worse metric relative to the tier's own input (a mesh can
+    already legitimately carry internal walls, so an absolute ``== 0`` test
+    would reject an otherwise no-op candidate forever).  Returns 0 when the
+    Rust extension is unavailable.
+    """
+    try:
+        from sutura_geom import PyMeshBvh
+        v = np.asarray(verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int32)
+        if len(t) == 0 or len(v) == 0:
+            return 0
+        bvh = PyMeshBvh(v, t)
+        p0 = v[t[:, 0]]
+        p1 = v[t[:, 1]]
+        p2 = v[t[:, 2]]
+        c = (p0 + p1 + p2) / 3.0
+        n = np.cross(p1 - p0, p2 - p0)
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        ln[ln == 0] = 1.0
+        n = n / ln
+        diag = float(np.linalg.norm(v.max(0) - v.min(0)))
+        eps = max(diag * 1e-4, 1e-6)
+        wp = bvh.winding_points(c + n * eps)
+        wm = bvh.winding_points(c - n * eps)
+        return int(((wp >= 1.5) & (wm >= 1.5)).sum())
+    except Exception:  # noqa: BLE001 - a metric failure is not fatal
+        return 0
+
+
+def _canonical_face_keys(verts, tris):
+    """Order-independent ``V36`` key per face (its 3 vertex coords, sorted).
+
+    Coordinates are rounded to ``float32`` (the on-disk STL precision) and the
+    three vertices of each face are sorted lexicographically, so two faces are
+    equal iff they share the same three points regardless of winding or vertex
+    numbering.  Used to find the faces a Tamponade candidate changed.
+    """
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) == 0 or len(v) == 0:
+        return np.zeros(0, dtype='V36')
+    q = v[t]
+    order = np.lexsort((q[:, :, 2], q[:, :, 1], q[:, :, 0]), axis=1)
+    qs = np.take_along_axis(q, order[:, :, None], axis=1)
+    qs = np.ascontiguousarray(qs, dtype='<f4')
+    return qs.view(np.uint8).reshape(len(qs), 36).view('V36').ravel()
+
+
+def _local_si_rise(base_v, base_t, cand_v, cand_t):
+    """Exact self-intersection rise restricted to the faces the candidate changed.
+
+    The candidate keeps the base's healthy faces verbatim, so any SI difference
+    is attributable to the faces that differ between the two meshes.  This
+    counts the proper-crossing pairs that involve a changed candidate face and
+    the same count for the changed base faces, and reports a rise when the
+    candidate's count is higher.  Far cheaper than rescanning both meshes on a
+    large input.  Returns ``(base_local, cand_local, si_rise, used)`` where
+    ``used`` is False when the extension or its subset API is unavailable (the
+    caller then falls back to the full scans).
+    """
+    try:
+        import sutura_geom
+    except Exception:  # noqa: BLE001 - no extension is a normal case
+        return None, None, None, False
+    fn = getattr(sutura_geom, 'self_intersections_subset', None)
+    if fn is None:
+        return None, None, None, False
+    try:
+        bk = _canonical_face_keys(base_v, base_t)
+        ck = _canonical_face_keys(cand_v, cand_t)
+        cand_changed = (~np.isin(ck, bk)) if len(ck) else np.zeros(0, bool)
+        base_changed = (~np.isin(bk, ck)) if len(bk) else np.zeros(0, bool)
+        base_local = 0
+        if base_changed.any():
+            base_local = int(fn(np.asarray(base_v, dtype=np.float64),
+                                np.asarray(base_t, dtype=np.int32),
+                                base_changed))
+        cand_local = 0
+        if cand_changed.any():
+            cand_local = int(fn(np.asarray(cand_v, dtype=np.float64),
+                                np.asarray(cand_t, dtype=np.int32),
+                                cand_changed))
+        return base_local, cand_local, bool(cand_local > base_local), True
+    except Exception:  # noqa: BLE001 - a classifier failure is not fatal
+        return None, None, None, False
 def _umbrella_fair(verts, tris, first_free, steps):
     """Umbrella-operator smoothing (each vertex moves to the mean of its
     1-ring neighbours) of the vertices with index >= ``first_free``; all
@@ -3543,7 +3794,8 @@ def enforce_reload_verdict(report, verts, tris):
 
 FLAP_SKIP_KEYS = ('loops_skipped_nm', 'loops_skipped_flat',
                   'loops_skipped_sheet', 'loops_skipped_coplanar',
-                  'loops_skipped_sliver', 'loops_fan_fallback')
+                  'loops_skipped_sliver', 'loops_skipped_safety',
+                  'loops_fan_fallback')
 
 
 def _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):
@@ -3626,6 +3878,138 @@ def _flap_off_preferred(on_verdict, off_verdict):
         m = verdict[1]
         return m['holes'] + m['non_manifold'], m['output_parts']
     return _score(off_verdict) < _score(on_verdict)
+
+
+# Tamponade final safety net (G11/G12 release blocker). The Tamponade adoption
+# gate is decided on the pre-chain / stage-1 mesh and only proves that damage
+# (holes + non-manifold) falls; it says nothing about the FINAL shape. On
+# thingi10k_100827 a Tamponade prepass adoption (holes 6 -> 4 on a 71-face
+# scan) let the downstream deep tier rebuild the 37 mm object into a 7 mm
+# fragment (G11: bbox-collapse trigger), and even after the Graft coverage gate
+# (G12) stopped the fragment the Tamponade path left a 1.83 mm outside-the-input
+# leak the no-tamponade path did not have (leak trigger). repair_file re-runs
+# once with Tamponade OFF and keeps the candidate that covers more of the input
+# and does not leak further outside it (never worse on damage or part count).
+TAMP_COLLAPSE_BBOX_FRAC = 0.5
+# Outside-the-input leak trigger: a Tamponade-adopted result whose added
+# vertices lie outside the input solid beyond this fraction of the input
+# diagonal re-runs Tamponade OFF. 1 % is above the pre-existing (non-Tamponade)
+# leak of heavily folded meshes (ornate-frame 0.09 %) but far below the
+# 100827 Tamponade leak (4.9 %).
+TAMP_LEAK_TRIGGER_FRAC = 0.01
+# Above this face count the leak metric is skipped (its input-face key set +
+# BVH would dominate the run) and only the cheap bbox trigger applies.
+TAMP_LEAK_MAX_FACES = 150000
+
+
+def _bbox_diagonal(verts):
+    """Bounding-box diagonal of a vertex array (0.0 for an empty mesh)."""
+    if verts is None or len(verts) == 0:
+        return 0.0
+    a = np.asarray(verts, dtype=np.float64)
+    return float(np.linalg.norm(a.max(0) - a.min(0)))
+
+
+def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
+    """Outside-the-input leak of a repaired mesh, mirroring the A18 harness.
+
+    The result's ADDED vertices (those not on any input face) are tested with
+    the generalized winding number against the input solid: a vertex OUTSIDE the
+    input (``w < 0.5``) and further than the shape tolerance from it is a leak
+    (material bulging into empty space, e.g. thingi10k_100827's 1.83 mm leak).
+    Returns ``(leak_mm, count)``; ``(0.0, 0)`` when the mesh is empty, too large
+    to test, or the extension is unavailable.
+    """
+    try:
+        import sutura_geom
+        iv = np.asarray(in_verts, dtype=np.float64)
+        it = np.asarray(in_tris, dtype=np.int32)
+        ov = np.asarray(out_verts, dtype=np.float64)
+        ot = np.asarray(out_tris, dtype=np.int32)
+        if (len(it) == 0 or len(ot) == 0
+                or len(it) > TAMP_LEAK_MAX_FACES):
+            return 0.0, 0
+        in_keys = set(map(tuple, np.sort(it, axis=1).tolist()))
+        add_mask = np.fromiter(
+            (tuple(sorted(row)) not in in_keys for row in ot.tolist()),
+            dtype=bool, count=len(ot))
+        if not add_mask.any():
+            return 0.0, 0
+        add_v = ov[np.unique(ot[add_mask])]
+        bvh = sutura_geom.PyMeshBvh(iv, it)
+        w = np.asarray(bvh.winding_points(add_v))
+        _q, dist, _f = sutura_geom.closest_points(iv, it, add_v)
+        dist = np.asarray(dist, dtype=np.float64)
+        tol = min(max(in_diag / 10000.0, 0.0125), 0.05)
+        bad = (w < 0.5) & (dist > tol)
+        if not bad.any():
+            return 0.0, 0
+        return float(dist[bad].max()), int(bad.sum())
+    except Exception:  # noqa: BLE001 - a metric failure is not fatal
+        return 0.0, 0
+
+
+def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
+    """Whether a Tamponade-adopted FINAL mesh warrants a Tamponade-OFF re-run.
+
+    Returns ``(reason, metrics)`` with ``reason`` None when the result is
+    acceptable. Two cheap triggers: a bounding-box collapse relative to the
+    input (``coverage < TAMP_COLLAPSE_BBOX_FRAC``, a fragment far smaller than
+    the object) and an outside-the-input leak above ``TAMP_LEAK_TRIGGER_FRAC``
+    of the diagonal. ``metrics`` carries the reload-honest damage, the
+    component count and the leak so the OFF candidate can be compared.
+    """
+    in_diag = _bbox_diagonal(in_verts)
+    out_diag = _bbox_diagonal(out_verts)
+    coverage = (out_diag / in_diag) if in_diag else 1.0
+    try:
+        holes, nm = reload_strict_holes_nm(out_verts, out_tris)
+        wv, wt = weld_reload_equivalent(out_verts, out_tris)
+        parts = _count_vertex_components(len(wv), wt)
+    except Exception:  # noqa: BLE001 - metrics are best-effort
+        holes = nm = parts = None
+    leak_mm, leak_pts = _tamponade_shape_leak(
+        in_verts, in_tris, out_verts, out_tris, in_diag)
+    metrics = {'input_diag_mm': round(in_diag, 4),
+               'output_diag_mm': round(out_diag, 4),
+               'coverage': round(coverage, 4),
+               'leak_mm': round(leak_mm, 4), 'leak_pts': leak_pts,
+               'holes': holes, 'non_manifold': nm, 'parts': parts}
+    if in_diag and coverage < TAMP_COLLAPSE_BBOX_FRAC:
+        return 'bbox_collapse', metrics
+    if in_diag and (leak_mm / in_diag) > TAMP_LEAK_TRIGGER_FRAC:
+        return 'shape_leak', metrics
+    return None, metrics
+
+
+def _tamponade_off_preferred(on_metrics, off_metrics):
+    """Whether the Tamponade-OFF result should replace the Tamponade-ON one.
+
+    OFF wins only when it is never worse on damage or component count and then
+    leaks strictly less outside the input or covers strictly more of its
+    bounding box; a tie keeps the Tamponade result, so an adoption is discarded
+    only when it is actually worse. Unknown metrics (``None``) are treated
+    conservatively as "not worse".
+    """
+    def _damage(m):
+        h = m.get('holes')
+        n = m.get('non_manifold')
+        if h is None or n is None:
+            return None
+        return h + n
+
+    def _parts(m):
+        return m.get('parts')
+
+    on_dmg, off_dmg = _damage(on_metrics), _damage(off_metrics)
+    if on_dmg is not None and off_dmg is not None and off_dmg > on_dmg:
+        return False
+    on_parts, off_parts = _parts(on_metrics), _parts(off_metrics)
+    if on_parts is not None and off_parts is not None and off_parts > on_parts:
+        return False
+    if off_metrics.get('leak_mm', 0.0) < on_metrics.get('leak_mm', 0.0):
+        return True
+    return off_metrics.get('coverage', 0.0) > on_metrics.get('coverage', 0.0)
 
 
 # Flap time budget by intensity preset (seconds). ``quick`` disables Flap
@@ -3723,7 +4107,8 @@ def _flap_step_impl(ml, ms, after, stats, rec):
         try:
             from sutura_engine import flap as _flap
             cand_v, cand_t, frep = _flap.flap_fill(base_v, base_t,
-                                                   separate_stl=False)
+                                                   separate_stl=False,
+                                                   time_budget=budget)
         except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
             rec['reason'] = 'flap error: %s' % e
             return ms, after
@@ -4017,8 +4402,28 @@ def _count_vertex_components(n_verts, tris):
     return int(len({find(int(i)) for i in used.tolist()}))
 
 
+def _dump_tamp_mesh(dump_dir, name, verts, tris):
+    """Write one Tamponade diagnostic mesh when ``SUTURA_TAMP_DUMP`` is set.
+
+    The variable holds a directory; a binary STL (the on-disk reload form) and
+    an ``.npz`` with the exact in-memory arrays are written so the tier's input
+    and output can be reloaded and scored independently. Never raises: a dump
+    failure must not affect a repair.
+    """
+    try:
+        if not dump_dir:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+        stl_write_binary(os.path.join(dump_dir, name + '.stl'), verts, tris)
+        np.savez(os.path.join(dump_dir, name + '.npz'),
+                 verts=np.asarray(verts, dtype=np.float64),
+                 tris=np.asarray(tris, dtype=np.int64))
+    except Exception:  # noqa: BLE001 - diagnostics never break a repair
+        pass
+
+
 def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
-                   intensity=None, spec=None, si_mode='report'):
+                   intensity=None, spec=None, si_mode='report', prepass=False):
     """Interior-plug tier for registry method 17 (Tamponade).
 
     Runs ``sutura_engine.tamponade.run_tamponade`` on the CURRENT stage-1 result
@@ -4028,10 +4433,19 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
     does not rise and at least 99 % of the pre-tier faces are carried through
     verbatim (``healthy_faces_kept``).  ``stats['tamponade']`` records the
     verdict and the Rust counters.  Never raises.
+
+    ``prepass=True`` is the T4 placement where Tamponade runs on the CLEANED
+    input BEFORE the Stage-1 chain, so the chain's own cleanup + close_holes
+    steps repair the non-manifold edge the reference plug can leave behind and
+    re-cap any small loop it opens.  The gate is therefore relaxed: the
+    candidate must strictly reduce the reload-honest HOLES (the seal worked)
+    and keep >= 99 % of the input faces; a non-manifold rise is tolerated
+    (Stage 1 fixes it).  ``rec['placement']`` records which placement ran.
     """
     if not tamponade:
         return ms, after
     rec = {'tier': 'tamponade', 'ran': False, 'adopted': False,
+           'placement': 'prepass' if prepass else 'post_stage1',
            'watertight': False, 'reload_watertight': False, 'reason': None,
            'reject_reason': None, 'intensity': intensity, 'budget_s': None,
            'h_min': None, 'input_faces': None, 'output_faces': None,
@@ -4044,17 +4458,35 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'melt_layers_accepted': None, 'melt_layers_rolled_back': None,
            'micro_welds_ok': None, 'micro_welds_failed': None,
            'excised_faces': None,
-           'healthy_faces_kept': None, 'healthy_fraction': None,
+            'healthy_faces_kept': None, 'healthy_fraction': None,
+            'plugs_rolled_back': None, 'plugs_leaking': None,
+            'plugs_double_wall': None, 'plugs_floating': None,
+            'components_before': None, 'components_after': None,
+            'closed_shells_before': None, 'closed_shells_after': None,
            'input_self_intersections': None,
            'candidate_self_intersections': None, 'si_fall': None,
-           'si_ok': None, 'melt_enabled': None}
+           'si_ok': None, 'melt_enabled': None, 'si_method': None,
+           'input_internal_walls': None, 'candidate_internal_walls': None,
+           'prepass_seconds': None}
+    if 'tamponade_shell_prepass' in stats:
+        rec['shell_prepass'] = stats['tamponade_shell_prepass']
     try:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
         cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
+        dump_dir = os.environ.get('SUTURA_TAMP_DUMP')
+        _dump_tamp_mesh(dump_dir, 'tamp_input', cur_v, cur_t)
         rec['input_faces'] = int(len(cur_t))
-        base_holes = boundary_loop_stats(cur_v, cur_t)[0]
-        base_nm = int(after.get('non_two_manifold_edges', 0) or 0)
-        base_parts = _count_vertex_components(len(cur_v), cur_t)
+        # Base metrics MUST use the same reload-honest definition as the
+        # candidate below (weld_reload_equivalent + defects.detect), otherwise
+        # the gate compares in-memory boundary loops / pymeshlab non-manifold
+        # edges against the candidate's on-reload values and a true no-op can
+        # look like a regression (ornate-frame: boundary_loop_stats 39 vs the
+        # reload-honest 23).  `after` carries the in-memory measures only.
+        wb_v, wb_t = weld_reload_equivalent(cur_v, cur_t)
+        _base_defects = detect_defects(wb_v, wb_t)
+        base_holes = len(_base_defects['holes'])
+        base_nm = len(_base_defects['non_manifold'])
+        base_parts = _count_vertex_components(len(wb_v), wb_t)
         rec['input_holes'] = base_holes
         rec['input_non_manifold'] = base_nm
         rec['input_parts'] = base_parts
@@ -4071,13 +4503,33 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         melt_on = bool(_tamp.resolve_melt_si(intensity_val))
         rec['melt_enabled'] = melt_on
 
+        # Prepass budget: the whole prepass block (seal + local SI guard) is
+        # capped so a large scan cannot stall the pipeline on a candidate that is
+        # likely rejected anyway. A cap <= 0 skips the prepass outright.
+        _tier_start = time.perf_counter()
+        prepass_budget = None
+        if prepass:
+            prepass_budget = _tamp.resolve_tamponade_prepass_budget(intensity_val)
+            if prepass_budget is not None and prepass_budget <= 0:
+                rec['reason'] = ('prepass budget 0 s at intensity %r; tier '
+                                 'skipped' % (intensity_val,))
+                stats['tamponade'] = rec
+                return ms, after
+
         # One exact SI scan of the pre-tier mesh, reused for the melt gate, the
         # skip decision and the adoption guard.  It is skipped when si_mode is
         # 'off', and on a closed mesh at quick/balanced (nothing to plug, melt
-        # off) no scan is needed at all.
+        # off) no scan is needed at all.  The prepass uses the cheap LOCAL SI
+        # guard instead (see below), so it never pays for this full scan.
+        # Measured on the WELDED base (`wb_v`/`wb_t`) so it matches the
+        # candidate's `wv`/`wt` scan exactly: `_exact_si_face_count` is
+        # representation-sensitive (float32 welding merges near-coincident
+        # vertices), so a no-op candidate read against the raw float64 input
+        # otherwise shows a spurious SI fall and gets adopted for nothing.
         base_si_exact = None
-        if si_mode != 'off' and (melt_on or base_holes > 0 or base_nm > 0):
-            base_si_exact = _exact_si_face_count(cur_v, cur_t)
+        if (not prepass and si_mode != 'off'
+                and (melt_on or base_holes > 0 or base_nm > 0)):
+            base_si_exact = _exact_si_face_count(wb_v, wb_t)
         base_si = base_si_exact if base_si_exact is not None else 0
         rec['input_self_intersections'] = base_si_exact
 
@@ -4086,21 +4538,41 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                              'this intensity; tier skipped')
             stats['tamponade'] = rec
             return ms, after
-        if base_holes == 0 and base_nm == 0 and base_si == 0 and not base_si_exact:
+        if (not prepass and base_holes == 0 and base_nm == 0
+                and base_si == 0 and not base_si_exact):
             rec['reason'] = ('no holes/non-manifold/self-intersections to plug; '
                              'tier skipped')
             stats['tamponade'] = rec
             return ms, after
 
+        seal_budget = None
+        if prepass and prepass_budget is not None:
+            remaining = (prepass_budget - _tamp.TAMPONADE_PREPASS_SI_RESERVE_S
+                         - (time.perf_counter() - _tier_start))
+            if remaining < _tamp.TAMPONADE_PREPASS_MIN_S:
+                rec['reason'] = ('prepass budget exhausted before the seal '
+                                 '(%.2f s left)' % max(remaining, 0.0))
+                stats['tamponade'] = rec
+                return ms, after
+            seal_budget = remaining
         out_v, out_t, trec = _tamp.run_tamponade(
-            cur_v, cur_t, intensity=intensity_val, ml=ml)
+            cur_v, cur_t, intensity=intensity_val, ml=ml,
+            time_budget_s=seal_budget)
         for key in ('budget_s', 'h_min', 'seconds', 'plugs', 'plug_faces',
                     'plugs_rejected', 'plugs_inconclusive',
                     'plugs_rejected_size', 'plugs_rejected_dev',
                     'melt_layers_tried', 'melt_layers_accepted',
                     'melt_layers_rolled_back', 'micro_welds_ok',
                     'micro_welds_failed', 'excised_faces',
-                    'healthy_faces_kept'):
+                    'healthy_faces_kept',
+                    'reference_used', 'reference_fallback',
+                    'stent_used', 'stent_rejected', 'stent_subplugs',
+                    'plug_metrics',
+                    'trimmed_vertices', 'patch_vertices',
+                    'plugs_rolled_back', 'plugs_leaking',
+                    'plugs_double_wall', 'plugs_floating',
+                    'components_before', 'components_after',
+                    'closed_shells_before', 'closed_shells_after'):
             rec[key] = trec.get(key)
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):
@@ -4110,6 +4582,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
 
         cand_v = np.asarray(out_v, dtype=np.float32)
         cand_t = np.asarray(out_t, dtype=np.int32)
+        _dump_tamp_mesh(dump_dir, 'tamp_output', cand_v, cand_t)
         rec['output_faces'] = int(len(cand_t))
         cand_holes, cand_nm = reload_strict_holes_nm(cand_v, cand_t)
         wv, wt = weld_reload_equivalent(cand_v, cand_t)
@@ -4121,6 +4594,17 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         if healthy is not None and len(cur_t):
             rec['healthy_fraction'] = float(healthy) / float(len(cur_t))
 
+        # Internal walls are REPORT-ONLY under the leak rule: a buried face is
+        # inside the solid and a slicer unions it fine, so it no longer blocks
+        # adoption. The winding query costs ~100 s on a 400k-face mesh, so it is
+        # computed only on request (SUTURA_TAMP_IW).
+        plugs_added = int(rec.get('plugs') or 0)
+        if plugs_added and os.environ.get('SUTURA_TAMP_IW'):
+            cand_iw = _internal_wall_count(cand_v, cand_t)
+            rec['candidate_internal_walls'] = cand_iw
+            if cand_iw > 0:
+                rec['input_internal_walls'] = _internal_wall_count(cur_v, cur_t)
+
         no_rise = cand_holes <= base_holes and cand_nm <= base_nm
         strict_fall = (cand_holes + cand_nm) < (base_holes + base_nm)
         parts_ok = cand_parts <= base_parts
@@ -4128,20 +4612,73 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                       or float(healthy) >= 0.99 * float(len(cur_t)))
         # Exact self-intersection fall (review C2): a melt-only improvement on a
         # mesh whose holes/non-manifold are already 0 must still be adoptable.
+        # The prepass only compares the faces the candidate changed (cheap on a
+        # large scan); post-chain keeps the full scan of both meshes.
         cand_si_exact = None
-        if base_si_exact is not None:
-            cand_si_exact = _exact_si_face_count(wv, wt)
-            rec['candidate_self_intersections'] = cand_si_exact
-        si_fall = (base_si_exact is not None and cand_si_exact is not None
-                   and cand_si_exact < base_si_exact)
+        base_local = cand_local = None
+        if prepass:
+            base_local, cand_local, si_rise, local_used = _local_si_rise(
+                cur_v, cur_t, wv, wt)
+            if local_used:
+                rec['si_method'] = 'local'
+                rec['base_local_si'] = base_local
+                rec['cand_local_si'] = cand_local
+                si_fall = bool(cand_local < base_local)
+                si_ok = bool(not si_rise)
+            else:
+                base_si_exact = _exact_si_face_count(wb_v, wb_t)
+                rec['input_self_intersections'] = base_si_exact
+                cand_si_exact = (_exact_si_face_count(wv, wt)
+                                 if base_si_exact is not None else None)
+                rec['candidate_self_intersections'] = cand_si_exact
+                si_fall = (base_si_exact is not None
+                           and cand_si_exact is not None
+                           and cand_si_exact < base_si_exact)
+                si_ok = (base_si_exact is None or cand_si_exact is None
+                         or cand_si_exact <= base_si_exact)
+                rec['si_method'] = 'full'
+        else:
+            if base_si_exact is not None:
+                cand_si_exact = _exact_si_face_count(wv, wt)
+                rec['candidate_self_intersections'] = cand_si_exact
+            si_fall = (base_si_exact is not None and cand_si_exact is not None
+                       and cand_si_exact < base_si_exact)
+            si_ok = (base_si_exact is None or cand_si_exact is None
+                     or cand_si_exact <= base_si_exact)
         rec['si_fall'] = si_fall
-        # Never adopt a candidate whose exact self-intersection count rose
-        # versus the pre-tier mesh: the melt may only improve or leave it.
-        si_ok = (base_si_exact is None or cand_si_exact is None
-                 or cand_si_exact <= base_si_exact)
         rec['si_ok'] = si_ok
-        geometry_fall = strict_fall or si_fall
-        if no_rise and geometry_fall and parts_ok and healthy_ok and si_ok and len(cand_t):
+        # Prepass placement: the Stage-1 chain still runs after the seal and
+        # repairs the non-manifold edge the reference plug can leave behind
+        # (and re-caps any small loop its repair opens), so the gate only
+        # requires the seal to strictly reduce the HOLES and keep the healthy
+        # faces. Post-chain placement keeps the stricter holes+non-manifold
+        # gate because nothing repairs the candidate after it.
+        if prepass:
+            geometry_fall = (cand_holes < base_holes) or si_fall
+            no_rise = cand_holes <= base_holes
+            # The prepass must not raise the exact self-intersection count of the
+            # mesh it seals. The reference plug can graze nearby crater geometry
+            # and add self-intersections the downstream Stage-1 chain does not
+            # fully reconcile (measured: ornate-frame 66584 -> 66749, 1038441
+            # 2350 -> 2436), so `si_ok` is kept as the strict non-rise guard
+            # computed above rather than forced True.
+            if prepass_budget is not None:
+                _elapsed = time.perf_counter() - _tier_start
+                if _elapsed > prepass_budget:
+                    si_ok = False
+                    rec['reject_reason'] = 'prepass budget exceeded'
+                    rec['prepass_seconds'] = _elapsed
+        else:
+            geometry_fall = strict_fall or si_fall
+        # Post-chain placement: self-intersections are REPORT-ONLY (slicers
+        # union overlapping volumes) and internal walls are report-only too, so
+        # neither blocks adoption; the Rust leak gate and the reload-honest
+        # holes/non-manifold guard above are the real safety. The prepass keeps
+        # its strict SI non-rise guard (`si_guard`) because Stage 1 does not
+        # fully reconcile the SI a reference plug can add.
+        si_guard = si_ok if prepass else True
+        if (no_rise and geometry_fall and parts_ok and healthy_ok and si_guard
+                and len(cand_t)):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
             after = ms.apply_filter('get_topological_measures')
@@ -4149,18 +4686,25 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
             wet = bool(cand_holes == 0 and cand_nm == 0)
             rec['watertight'] = wet
             rec['reload_watertight'] = wet
+            if rec.get('si_method') == 'local':
+                si_desc = '%s -> %s (local)' % (base_local, cand_local)
+            else:
+                si_desc = '%s -> %s' % (base_si_exact, cand_si_exact)
             rec['reason'] = ('adopted (holes %d -> %d, non-manifold %d -> %d, '
-                             'SI %s -> %s)'
+                             'SI %s)'
                              % (base_holes, cand_holes, base_nm, cand_nm,
-                                base_si_exact, cand_si_exact))
+                                si_desc))
         else:
             reasons = []
             if not no_rise:
                 reasons.append('holes/non-manifold rose')
             if not geometry_fall:
                 reasons.append('holes+non-manifold/SI did not strictly fall')
-            if not si_ok:
-                reasons.append('self-intersections rose')
+            if not si_guard:
+                if rec.get('reject_reason') == 'prepass budget exceeded':
+                    reasons.append('prepass budget exceeded')
+                else:
+                    reasons.append('self-intersections rose')
             if not parts_ok:
                 reasons.append('component count rose')
             if not healthy_ok:
@@ -4172,7 +4716,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
     except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
         if isinstance(e, (KeyboardInterrupt, SystemExit)):
             raise
-        rec['reason'] = 'error: %s: %s' % (type(e).__name__, e)
+    if 'tamponade_shell_prepass' in stats:
+        rec['shell_prepass'] = stats['tamponade_shell_prepass']
     stats['tamponade'] = rec
     return ms, after
 
@@ -4205,6 +4750,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         else GRAFT_TIMEOUT
     rec = {'tier': 'graft', 'ran': False, 'adopted': False,
            'watertight': False, 'fidelity_ok': None,
+           'input_coverage': None, 'coverage_ok': None,
            'hausdorff_healthy': None, 'detail_max_mm': None,
            'detail_area_moved': None, 'r_used': None, 'mode': None,
            'faces': None, 'holes': None, 'non_manifold': None,
@@ -4243,6 +4789,8 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
             rec['timed_out'] = True
             rec['reject_reason'] = 'budget'
         rec['fidelity_ok'] = grec.get('fidelity_ok')
+        rec['input_coverage'] = grec.get('input_coverage')
+        rec['coverage_ok'] = grec.get('coverage_ok')
         rec['hausdorff_healthy'] = grec.get('hausdorff_healthy')
         rec['detail_max_mm'] = grec.get('detail_max_mm')
         rec['detail_area_moved'] = grec.get('detail_area_moved')
@@ -4900,6 +5448,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             graft_ms = graft_after = None
             graft_dev = None
             graft_ok = False
+            graft_cov_failed = False
             # Only run the last-resort Graft when stage 1 still leaves holes or
             # non-manifold edges (the same trigger fTetWild's 'auto' uses).  A
             # closed stage-1 result is already the final mesh: Graft must not
@@ -4913,13 +5462,21 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                                              spec=spec)
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
-                    if _g.get('fidelity_ok') is not False:
+                    # Adopt only a watertight candidate that is faithful AND
+                    # covers the input (G12). A coverage failure (a collapsed
+                    # fragment that still passed the healthy-deviation gate,
+                    # thingi10k_100827) is held aside like a fidelity failure so
+                    # the ladder falls through to fTetWild/next tier; it is
+                    # never preferred over fTetWild by the deviation tie-break.
+                    if (_g.get('fidelity_ok') is not False
+                            and _g.get('coverage_ok') is not False):
                         ms, after = _g_ms, _g_after
                         graft_ok = True
                         tiers_run.append('graft')
                     else:
                         graft_ms, graft_after = _g_ms, _g_after
                         graft_dev = _g.get('hausdorff_healthy')
+                        graft_cov_failed = (_g.get('coverage_ok') is False)
 
             # Dressing (#16) sits AFTER Graft and BEFORE fTetWild: its
             # volumetric skin targets the whole-shell folds and heavy
@@ -4967,10 +5524,13 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     ft_adopted = bool((stats.get('experimental_ftetwild')
                                        or {}).get('adopted'))
                     if (not ft_adopted
+                            or graft_cov_failed
                             or (ft_dev is not None and graft_dev is not None
                                 and ft_dev < graft_dev)):
                         stats['graft']['adopted'] = False
                         stats['graft']['reason'] = (
+                            'superseded by fTetWild (input coverage below '
+                            'threshold)' if graft_cov_failed else
                             'superseded by fTetWild (lower healthy deviation)')
                         tiers_run.append('graft')
                     else:
@@ -5073,7 +5633,10 @@ def maybe_run_stage2(report, verts, tris, tmpdir):
         inter = os.path.join(tmpdir, 'stage1.obj')
         out_obj = os.path.join(tmpdir, 'stage2.obj')
         write_obj(inter, verts, tris)
+        _t_s2 = time.perf_counter()
         mrep, _ = run_stage2(inter, out_obj)
+        report.setdefault('timings', {})['stage2'] = round(
+            time.perf_counter() - _t_s2, 3)
         if mrep is not None:
             report['stage2'] = mrep
             if 'error' not in mrep and os.path.exists(out_obj):
@@ -5329,7 +5892,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         """Repair the loaded mesh with Flap on/off, through P-HONEST.
 
         ``run_tamponade`` defaults to the outer flag; the Flap-OFF safety-net
-        re-run passes False so the opt-in Tamponade tier is not evaluated a
+        re-run passes False so the Tamponade tier is not evaluated a
         second time for a fallback candidate that is usually discarded (the
         net keeps Flap-ON unless OFF is strictly better, and skipping the tier
         can only make OFF look no better, so the chosen result never worsens).
@@ -5412,6 +5975,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         enforce_reload_verdict(report, new_v, new_t)
         return report, new_v, new_t
 
+    _t_file = time.perf_counter()
     report, new_v, new_t = _run(flap)
 
     # HIGH-1 safety net: the Flap adoption gate is topological-only and decided
@@ -5458,6 +6022,48 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             else:
                 report['flap']['final_fallback'] = fallback
 
+    # Tamponade final safety net (G11): the Tamponade adoption gate is
+    # topological-only and decided on the pre-chain / stage-1 mesh, so it
+    # cannot guarantee the FINAL result keeps the input's shape. When a cheap
+    # bounding-box check flags a collapse (the saved result no longer spans the
+    # input), re-run this file ONCE with Tamponade OFF and keep the candidate
+    # that covers more of the input without regressing damage or part count.
+    # A no-op unless Tamponade was actually adopted and the final collapsed.
+    if tamponade and (report.get('tamponade') or {}).get('adopted'):
+        try:
+            on_reason, on_metrics = _tamponade_final_needs_off(
+                verts, tris, new_v, new_t)
+        except Exception:  # noqa: BLE001 - the net never crashes a repair
+            on_reason, on_metrics = None, None
+        if on_reason:
+            on_tamp = dict(report['tamponade'])
+            fallback = {'ran': False, 'used': 'on', 'reason': on_reason,
+                        'on': on_metrics}
+            use_off = False
+            try:
+                off_report, off_v, off_t = _run(flap, run_tamponade=False)
+                _, off_metrics = _tamponade_final_needs_off(
+                    verts, tris, off_v, off_t)
+                fallback['ran'] = True
+                fallback['off'] = off_metrics
+                use_off = _tamponade_off_preferred(on_metrics, off_metrics)
+            except Exception as e:  # noqa: BLE001 - the net never crashes
+                fallback['error'] = str(e)
+            fallback['used'] = 'off' if use_off else 'on'
+            if use_off:
+                on_tamp['adopted_final'] = False
+                on_tamp['final_fallback'] = fallback
+                off_report['tamponade'] = on_tamp
+                report, new_v, new_t = off_report, off_v, off_t
+            else:
+                report['tamponade']['final_fallback'] = fallback
+
+    report.setdefault('timings', {})
+    report['timings']['file_total'] = round(time.perf_counter() - _t_file, 3)
+    report['timings']['flap_off_rerun'] = bool(
+        (report.get('flap') or {}).get('final_fallback', {}).get('ran'))
+    report['timings']['tamponade_off_rerun'] = bool(
+        (report.get('tamponade') or {}).get('final_fallback', {}).get('ran'))
     save_mesh(out, new_v, new_t)
     return report
 
@@ -6120,12 +6726,15 @@ def human_report(r, show_defects=False, show_diff=False):
         else:
             state = ' NOT adopted (%s)' % (tp_r.get('reason') or '?')
         lines.append('  Tamponade (plug)        : %s plugs, %s plug faces, '
-                     'holes=%s nm=%s, healthy kept %s in %.2fs%s'
+                     'holes=%s nm=%s, healthy kept %s in %.2fs%s%s'
                      % (tp_r.get('plugs'), tp_r.get('plug_faces'),
                         tp_r.get('candidate_holes'),
                         tp_r.get('candidate_non_manifold'),
                         tp_r.get('healthy_faces_kept'),
-                        tp_r.get('seconds') or 0, state))
+                        tp_r.get('seconds') or 0, state,
+                        '' if not tp_r.get('plugs_rolled_back')
+                        else ', rolled back %s'
+                        % tp_r.get('plugs_rolled_back')))
     gr = r.get('graft')
     if gr and gr.get('ran'):
         if gr.get('adopted'):
@@ -6897,19 +7506,25 @@ def main():
     parser.add_argument('--no-flap', action='store_true',
                         help='disable the Flap hole filler (it is on by default)')
     parser.add_argument('--tamponade', action='store_true',
-                        help='enable the Tamponade tier (#17): plug each open '
-                             'boundary loop from the INSIDE (no input face is '
-                             'deleted) and melt residual self-intersections in '
-                             'rolled-back layers. Runs after Stage 1 + Flap, '
-                             'before Graft/fTetWild; adopted only when the '
-                             'reload-honest holes + non-manifold count strictly '
-                             'falls without raising the part count or losing '
-                             'more than 1%% of the healthy faces. Opt-in for now; '
+                        help='enable the Tamponade tier (#17): it is ON by '
+                             'default (this flag is kept for compatibility); '
+                             'disable with --no-tamponade. Runs first as a '
+                             'pre-pass on the cleaned input before Flap and '
+                             'Stage 1 hole closing, with a second chance after '
+                             'Flap and before Graft/fTetWild: plugs each open '
+                             'hole from the INSIDE (Stent inflates from inside '
+                             'and freezes at the shell; large holes split into '
+                             'several Stents; no input face is deleted) and '
+                             'melts residual self-intersections in rolled-back '
+                             'layers. Adopted only when the reload-honest holes '
+                             '+ non-manifold count strictly falls without '
+                             'raising the part count or losing more than 1%% of '
+                             'the healthy faces; a final safety net re-runs '
+                             'without it if the result collapses or leaks; '
                              'env: SUTURA_TAMPONADE / SUTURA_TAMPONADE_DEFAULT')
     parser.add_argument('--no-tamponade', action='store_true',
-                        help='disable the Tamponade tier (#17); this is the '
-                             'default (Tamponade is opt-in until measured on the '
-                             'corpus)')
+                        help='disable the Tamponade tier (#17); it is on by '
+                             'default, so this turns it off')
     parser.add_argument('--no-dressing', action='store_true',
                         help='disable the Dressing (viscosity coat) tier (#16); '
                              'this is the default (Dressing is opt-in)')
@@ -7276,7 +7891,7 @@ def main():
     _flap_arg = resolve_flap(no_flap=args.no_flap, force=args.flap)
     # Tamponade (#17): the single default switch (TAMPONADE_DEFAULT_ENABLED /
     # SUTURA_TAMPONADE_DEFAULT) decides; --no-tamponade disables and
-    # --tamponade forces. OFF by default until measured on the corpus.
+    # --tamponade forces. ON by default.
     _tamponade_arg = resolve_tamponade(no_tamponade=args.no_tamponade,
                                        force=args.tamponade)
     # Dressing (#16): the single default switch (DRESSING_DEFAULT_ENABLED /

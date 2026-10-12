@@ -29,7 +29,9 @@ pub mod point;
 pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
+pub mod rbf;
 pub mod raycast;
+pub mod shell;
 pub mod tamponade;
 pub mod topology;
 pub mod triangle_intersection;
@@ -785,6 +787,10 @@ fn tamponade_py<'py>(
         melt_si,
         max_nodes,
         time_budget_s,
+        openings_gate: None,
+        fwn: std::env::var("SUTURA_TAMP_FWN")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
     };
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tamponade::tamponade_repair(&rv, &rt, &config)
@@ -821,9 +827,91 @@ fn tamponade_py<'py>(
     d.set_item("micro_welds_failed", info.micro_welds_failed)?;
     d.set_item("excised_faces", info.excised_faces)?;
     d.set_item("healthy_faces_kept", info.healthy_faces_kept)?;
+    d.set_item("reference_used", info.reference_used)?;
+    d.set_item("reference_fallback", info.reference_fallback)?;
+    d.set_item("reference_rbf", info.reference_rbf)?;
+    d.set_item("reference_skirt", info.reference_skirt)?;
+    d.set_item("stent_used", info.stent_used)?;
+    d.set_item("stent_rejected", info.stent_rejected)?;
+    d.set_item("stent_subplugs", info.stent_subplugs)?;
+    d.set_item("plug_metrics", info.plug_metrics_json)?;
+    d.set_item("trimmed_vertices", info.trimmed_vertices)?;
+    d.set_item("patch_vertices", info.patch_vertices)?;
+    d.set_item("plugs_rolled_back", info.plugs_rolled_back)?;
+    d.set_item("plugs_leaking", info.plugs_leaking)?;
+    d.set_item("plugs_double_wall", info.plugs_double_wall)?;
+    d.set_item("plugs_floating", info.plugs_floating)?;
+    d.set_item("components_before", info.components_before)?;
+    d.set_item("components_after", info.components_after)?;
+    d.set_item("closed_shells_before", info.closed_shells_before)?;
+    d.set_item("closed_shells_after", info.closed_shells_after)?;
     d.set_item("seconds", info.seconds)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;
+    d.set_item("stent_diag", info.stent_diag.clone())?;
+    Ok((verts_np, tris_np, d))
+}
+
+/// Complete shell analysis & filter pre-pass for Tamponade.
+/// Returns (candidate_verts, candidate_tris, info_dict).
+#[pyfunction]
+#[pyo3(name = "shell_analyze")]
+#[pyo3(signature = (verts, tris, delta=0.1, keep_cavities=true, split_intersections=true))]
+fn shell_analyze_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    delta: f64,
+    keep_cavities: bool,
+    split_intersections: bool,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt_usize) = parse_mesh(&verts, &tris)?;
+    let rt: Vec<[u32; 3]> = rt_usize
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let config = shell::ShellConfig {
+        delta,
+        keep_cavities,
+        split_intersections,
+        ..Default::default()
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        shell::shell_analyze_and_filter(&rv, &rt, &config)
+    }));
+    let (ov, ot, res) = match outcome {
+        Ok(v) => v,
+        Err(_) => {
+            let mut res = shell::ShellAnalysisResult::default();
+            res.reason = "panic".to_string();
+            res.has_internal_walls = true;
+            (rv.clone(), rt.clone(), res)
+        }
+    };
+
+    let out_verts: Vec<Vec<f64>> = ov.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = ot
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let verts_np = PyArray2::from_vec2(py, &out_verts)?;
+    let tris_np = PyArray2::from_vec2(py, &out_tris)?;
+
+    let d = PyDict::new(py);
+    d.set_item("outer_count", res.outer_count)?;
+    d.set_item("buried_count", res.buried_count)?;
+    d.set_item("cavity_count", res.cavity_count)?;
+    d.set_item("coincident_opp_count", res.coincident_opp_count)?;
+    d.set_item("coincident_same_count", res.coincident_same_count)?;
+    d.set_item("internal_walls_count", res.internal_walls_count)?;
+    d.set_item("unresolved_coincident_count", res.unresolved_coincident_count)?;
+    d.set_item("has_internal_walls", res.has_internal_walls)?;
+    d.set_item("is_disjoint", res.is_disjoint)?;
+    d.set_item("reason", res.reason.clone())?;
     Ok((verts_np, tris_np, d))
 }
 
@@ -902,6 +990,66 @@ fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool
     }
     let bvh = winding::MeshBvh::from_arrays(verts, tris);
     bvh.self_intersections(verts, tris)
+}
+
+/// Self-intersections counted only from a face SUBSET.
+///
+/// Returns the number of proper-crossing, non-adjacent face PAIRS `(i, j)` in
+/// which at least one of `i`, `j` is flagged in `subset`.  Used by the
+/// Tamponade prepass to compare only the faces it changed (plus whatever they
+/// cross) instead of rescanning the whole mesh after every candidate; the
+/// caller runs the same metric on the base mesh's changed faces and rejects
+/// when the candidate's count rises.  `0` when the mesh exceeds
+/// `SI_MAX_FACES` or the subset is empty.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, subset))]
+fn self_intersections_subset<'py>(
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    subset: PyArrayLike1<'py, bool, AllowTypeChange>,
+) -> PyResult<i64> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let s: Vec<bool> = subset.as_array().iter().copied().collect();
+    Ok(self_intersections_subset_core(&rv, &rt, &s))
+}
+
+/// Core subset self-intersection count (no Python); see
+/// `self_intersections_subset`.
+pub(crate) fn self_intersections_subset_core(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    subset: &[bool],
+) -> i64 {
+    let f = tris.len();
+    if f == 0 || f > SI_MAX_FACES {
+        return 0;
+    }
+    if !subset.iter().take(f).any(|&b| b) {
+        return 0;
+    }
+    let triangles: Vec<triangle_intersection::Triangle> = tris
+        .iter()
+        .map(|t| triangle_intersection::Triangle::explicit(verts[t[0]], verts[t[1]], verts[t[2]]))
+        .collect();
+    let pairs = arrangement::broad_phase_candidates(verts, tris);
+    let mut count = 0i64;
+    for (i, j) in pairs {
+        let si = subset.get(i).copied().unwrap_or(false);
+        let sj = subset.get(j).copied().unwrap_or(false);
+        if !(si || sj) {
+            continue;
+        }
+        let (a, b) = (tris[i], tris[j]);
+        if a.iter().any(|x| b.contains(x)) {
+            continue;
+        }
+        if let triangle_intersection::TriangleIntersection::ProperSegment { .. } =
+            triangle_intersection::intersect_triangles(&triangles[i], &triangles[j])
+        {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// Ray-stabbing inside/outside for arbitrary query points.
@@ -1095,6 +1243,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dressing_coat, m)?)?;
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
     m.add_function(wrap_pyfunction!(topology::edge_table, m)?)?;
@@ -1113,6 +1262,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
+    m.add_function(wrap_pyfunction!(shell_analyze_py, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
@@ -1126,7 +1276,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{insphere_coords, orient3d_coords};
+    use super::{insphere_coords, orient3d_coords, self_intersections_subset_core};
 
     const ORIGIN: [f64; 3] = [0.0, 0.0, 0.0];
     const X: [f64; 3] = [1.0, 0.0, 0.0];
@@ -1167,6 +1317,32 @@ mod tests {
         // inside the circumsphere -> positive.
         let c = [0.25, 0.25, -0.25];
         assert!(insphere_coords(ORIGIN, X, Y, NEG_Z, c) > 0.0);
+    }
+
+    #[test]
+    fn self_intersections_subset_counts_only_subset_pairs() {
+        // Triangle 0 lies in z=0; triangle 1 pierces it at (0.25, 0.25, 0).
+        let verts: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, -0.5, -1.0],
+            [0.5, 0.5, -1.0],
+            [0.5, 0.5, 1.0],
+        ];
+        let tris: Vec<[usize; 3]> = vec![[0, 1, 2], [3, 4, 5]];
+        assert_eq!(
+            self_intersections_subset_core(&verts, &tris, &[true, false]),
+            1
+        );
+        assert_eq!(
+            self_intersections_subset_core(&verts, &tris, &[false, true]),
+            1
+        );
+        assert_eq!(
+            self_intersections_subset_core(&verts, &tris, &[false, false]),
+            0
+        );
     }
 
     #[test]

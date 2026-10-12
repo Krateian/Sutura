@@ -10,6 +10,26 @@ users — the own exact geometry core (`rust/sutura-geom`), the own mesh-type
 classifier, the opt-in experimental tiers — sit behind flags and the GUI's
 Options window, never in the way of the plain repair.
 
+## Agent skills (read first)
+
+Two skill files in `.claude/skills/` are the single source of truth for how
+agents work in this repo. Claude Code loads them automatically; OpenCode and
+other agents must read them before starting:
+
+- `.claude/skills/sutura-dev/SKILL.md` — daily rules: graphify-first code
+  navigation (`graphify query`, `graphify update .` after commits), worker
+  discipline, shape-based validation, product defaults, git hygiene.
+- `.claude/skills/sutura-release/SKILL.md` — the full release checklist.
+- `.claude/skills/sutura-verify/SKILL.md` — independent shape-based
+  verification of any repair change (default vs opt-out: holes, non-manifold,
+  components/shells, Orca parts+manifold, two-sided distance, leak, runtime);
+  the harness lives in its `scripts/`.
+- `.claude/skills/sutura-new-method/SKILL.md` — the end-to-end checklist for
+  adding a repair method (registry, CLI flag + env opt-out, GUI checkbox +
+  tooltip EN/TR + Use-method menu, packaging lists, CI-safe tests, READMEs).
+
+When a rule changes, edit the skill file; do not duplicate it here.
+
 ## How it runs
 
 - Real entry point is `sutura/repair.py` (JSON report to stdout; `--human` for a readable report; exit 0 on success or a stage-1-only partial, exit 1 on a hard error like malformed input). `bin/sutura` is only a bash wrapper: `exec $HOME/.local/share/sutura/venv/bin/python .../repair.py "$@"`. Two read-only modes share the same entry point: `sutura validate model.stl` (first positional arg `validate`) analyzes without repairing, and `sutura model.stl --dry-run` reports the would-do plan — both write NO output file. Mode/eşik resolution for repair AND dry-run comes from the shared `repair.resolve_mode_params(mode, type, conf)` (single source of truth, like classification.py).
@@ -383,11 +403,11 @@ The new method immediately participates in `--list-methods`, `--analyze` recomme
 - **Extreme extra passes (Stage C).** Only in `extreme` mode, after the main chain (`repair.extreme_extra_passes`), VCG selects self-intersecting faces (`compute_selection_by_self_intersections_per_face`), removes them (`meshing_remove_selected_faces` + `meshing_remove_unreferenced_vertices`) and runs the main chain ONE more time with the same thresholds to catch the newly exposed holes/debris. No self-intersections -> the block is skipped harmlessly. The report carries `extreme_passes_applied` (true/false; also on `--human` as an "Extreme passes" line) plus `self_intersections_found`/`self_intersections_removed` when they ran. `meshing_isotropic_explicit_remeshing` (full remesh) is deliberately OUT OF SCOPE — it can unpredictably change topology; do not add it.
 - **Join-closest-components prototype (`repair.join_small_components`, flag `--experimental-join-components`).** FAZ4 prototype, NOT in the default chain: when the flag is set, `stage1_chain`/`delete_fallback_chain` DROP the `meshing_remove_connected_component_by_face_number` step and `repair_mesh_from_arrays` instead moves every connected component below `mincomponentsize` onto the nearest larger component (union-find components; each small component is translated so its closest vertex coincides with the nearest larger-component vertex, then duplicate vertices are merged, non-manifold vertices repaired and holes re-closed). It is a deliberate geometry change (debris is MOVED, not deleted) so it must stay behind the flag; the report carries `experimental_join_components` ({moved, remaining_small}) when it runs. Threaded through `repair_file`/`repair_3mf`/`process_file`; GUI batch-wide checkbox `chk_join_components` (FAZ14, same pattern as `chk_edge_tiebreak`). Regression-tested by `tests/test_join_components.py` (default deletes the small component, flag moves it onto the cube; the GUI checkbox test runs in a subprocess because pymeshlab + a QMainWindow in one process segfaults at shutdown).
 - Smoke: `python3 tests/make_broken_stl.py /tmp/broken.stl && sutura /tmp/broken.stl --human` — generates a cube with missing face, inverted winding, duplicate/degenerate/self-intersecting triangles.
-- `~/.local/share/sutura/venv/bin/python tests/torture_tests.py` — manual torture harness (5M-sphere timing, thin wall, multi-part, scan mesh, and a self-intersecting-pair scenario run in `--mode extreme` that must report `extreme_passes_applied=True` and drop self-intersections to 0). Uses `$SUTURA` if set, else the installed `~/.local/bin/sutura`.
-- `python3 tests/make_layered_multiobject_3mf.py --check` — layered/folded-vertex 3MF regression. It now generates THREE objects (two layered + one clean closed cube), honors `$SUTURA` (fallback: the installed CLI), and asserts every object repairs two-manifold with no soup corruption. The layered objects only survive because `stage1_chain`/`delete_fallback_chain` run a SECOND `meshing_remove_duplicate_faces` right after `meshing_remove_duplicate_vertices` (vertex dedup is what *creates* the duplicate faces on a layered mesh); without it, `meshing_repair_non_manifold_edges` sees a per-edge face soup and deletes the mesh (the macOS "all faces are degenerate" failure, documented in `docs/stage2-3mf-per-object.md` Investigation A).
+- `~/.local/share/sutura/venv/bin/python tests/torture_tests.py` — manual torture harness (5M-sphere timing, thin wall, multi-part, scan mesh, and a self-intersecting-pair scenario run in `--mode extreme` that must report `extreme_passes_applied=True` and drop self-intersections to 0). Uses `$SUTURA` if set, else the in-repo entry point (this interpreter running `sutura/repair.py`).
+- `~/.local/share/sutura/venv/bin/python tests/make_layered_multiobject_3mf.py --check` — layered/folded-vertex 3MF regression. It now generates THREE objects (two layered + one clean closed cube), honors `$SUTURA` (fallback: the in-repo entry point, this interpreter running `sutura/repair.py`), and asserts every object repairs two-manifold with no soup corruption. The layered objects only survive because `stage1_chain`/`delete_fallback_chain` run a SECOND `meshing_remove_duplicate_faces` right after `meshing_remove_duplicate_vertices` (vertex dedup is what *creates* the duplicate faces on a layered mesh); without it, `meshing_repair_non_manifold_edges` sees a per-edge face soup and deletes the mesh (the macOS "all faces are degenerate" failure, documented in `docs/stage2-3mf-per-object.md` Investigation A).
 - `~/.local/share/sutura/venv/bin/python tests/test_pinched_vertices.py` — pinched-vertex split on a closed stage-1 result: synthetic bowtie becomes two-manifold (vertex duplicated, faces and holes unchanged), a clean and an open cube are left alone, and thingi10k_145065 repairs two-manifold (category `watertight` when stage 2 is available).
 - `~/.local/share/sutura/venv/bin/python tests/test_deep_repair.py` — deep-repair ladder: `full` equals the pre-ladder output (also with a faked fTetWild tier), `off` reports `deep_repair.available` on thingi10k_100827 and nothing on a clean cube, `local` keeps every face outside the deleted region (sphere with a cap removed) and its guard rejects a result that moves them, mode resolution precedence and the CLI flag / `--human` line. No fTetWild needed.
-- `python3 tests/test_adversarial.py` — malformed-input rejection; it expects the **installed** CLI at `~/.local/bin/sutura`, not the repo copy.
+- `~/.local/share/sutura/venv/bin/python tests/test_adversarial.py` — malformed-input rejection; the CLI defaults to the **in-repo** entry point (this interpreter running `sutura/repair.py`, so it never silently uses a stale global install); set `$SUTURA` to run it against an installed CLI instead.
 - `python3 tests/test_updater.py` — auto-update license-boundary logic: `crosses_license_boundary()` stops a v0.1.x install from silently jumping to v0.2.0+, allows post-boundary patches, and never fires on malformed input.
 - `python3 tests/test_classification.py` — classification stdlib-only rule (importing it must not pull in numpy/pymeshlab) plus the documented category/issue scenarios (watertight, volume warning, stage 2 skipped/error, partial, malformed).
 - `python3 tests/test_defects.py` — defects stdlib+numpy-only rule plus hole/non-manifold detection on a clean cube and a cube with a removed face / duplicated face.
@@ -414,7 +434,7 @@ The new method immediately participates in `--list-methods`, `--analyze` recomme
 - VCG chain lives in `stage1_chain`; `delete_fallback_chain` is tried only when the main chain leaves non-manifold edges/vertices, and is kept only if it improves them.
 - **CLI/GUI feature parity (standing rule, FAZ14):** every feature available in the CLI must also be available in the GUI, and vice versa. When adding a feature, add it to BOTH by default; only if one side is technically impossible (e.g. a GUI-only visual feature) is it omitted — and that must be explicitly noted (see `docs/cli-gui-parity-notes.md`). A new CLI flag with no GUI control, or a GUI control with no CLI flag, is a gap unless documented.
 - **Documentation tone (standing rule):** documentation — README.md, README.tr.md, CHANGELOG.md, `docs/*` and AGENTS.md included — is written in an academic/professional, third-person, neutral engineering-report tone. Casual or first-person narration ("I did", "we tried", "yaptim", "denedim") and real personal names or nicknames are not used; the same tone is kept when adding a new FAZ/section.
-- **Git commit identity:** user.name `Krateian`, user.email `arifgokdas@gmail.com` (bu Sutura repo'su icin local git config'te ayarli). Gecmis commit'lerde bazi yanlis/eskimis kimlik girdileri var (ornegin `<krateian@MacBook-Air-2.local>`; eskiden gercek isimle atilanlar da dahil) - gecmis duzeltilmedi, bundan sonraki TUM commit'ler Krateian kimligiyle atilmali. Yeni bir makinede/ortamda calisirken once `git config --get user.name` / `user.email` kontrol edilmeli, yanlissa yukarida verilen degerlerle duzeltilmeli.
+- **Git commit identity:** user.name `Krateian`, user.email `arifgokdas@gmail.com` (bu Sutura repo'su icin local git config'te ayarli). Gecmis commit'lerde bazi yanlis/eskimis kimlik girdileri var (ornegin `<krateian@<hostname>.local>`; eskiden gercek isimle atilanlar da dahil) - gecmis duzeltilmedi, bundan sonraki TUM commit'ler Krateian kimligiyle atilmali. Yeni bir makinede/ortamda calisirken once `git config --get user.name` / `user.email` kontrol edilmeli, yanlissa yukarida verilen degerlerle duzeltilmeli.
 
 ## Process discipline
 
@@ -507,6 +527,9 @@ The new method immediately participates in `--list-methods`, `--analyze` recomme
   every release — the user does not need to ask or remind.
 
 ## Release checklist
+
+> The canonical, current checklist is `.claude/skills/sutura-release/SKILL.md`.
+> Read it first; the notes below are older background.
 
 Get the user's explicit go-ahead to start a release, asked for by name
 ("should I cut vX.Y.Z now?"), before step 1 — green CI, a merged PR, or
