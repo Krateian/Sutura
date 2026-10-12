@@ -36,6 +36,7 @@ import time
 import numpy as np
 
 import sutura_geom
+import topology
 from defects import detect as detect_defects
 from sutura_engine.graft import (
     _as_f64,
@@ -594,13 +595,9 @@ def _qem_decimate(ml, v, t, target_faces):
 
 def _exact_si(v, t):
     """Rust exact proper self-intersection count, or ``None`` above the cap."""
-    if len(t) == 0 or len(t) > SI_MAX_FACES:
+    if len(t) == 0:
         return None
-    try:
-        _mask, count = sutura_geom.self_intersecting_faces(v, t)
-        return int(count)
-    except Exception:  # noqa: BLE001
-        return None
+    return topology.si_face_count(v, t)
 
 
 def si_face_count(v, t):

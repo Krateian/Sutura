@@ -260,16 +260,18 @@ def extreme_extra_passes(ms, ml, params):
     if topology.native_si_enabled():
         m = ms.current_mesh()
         mask, found = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-        found = max(int(found), 0)
-        if found == 0:
-            return False, 0, 0, 0, {}
-        before_removal = m.face_number()
-        topology.select_self_intersections_ms(ms, ml, mask=mask, count=found)
-        ms.apply_filter('meshing_remove_selected_faces')
-        removed = max(before_removal - ms.current_mesh().face_number(), 0)
-        _remove_unref_vertices_ms(ms, ml)
-        applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
-        return True, found, removed, applied2, skipped2
+        if int(found) >= 0:
+            if int(found) == 0:
+                return False, 0, 0, 0, {}
+            before_removal = m.face_number()
+            topology.select_self_intersections_ms(ms, ml, mask=mask, count=int(found))
+            ms.apply_filter('meshing_remove_selected_faces')
+            removed = max(before_removal - ms.current_mesh().face_number(), 0)
+            _remove_unref_vertices_ms(ms, ml)
+            applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
+            return True, int(found), removed, applied2, skipped2
+        # Classifier skip sentinel (-1, mesh above the cap): fall through to
+        # the PyMeshLab path rather than treating the mesh as SI-free.
     ms.apply_filter('compute_selection_by_self_intersections_per_face')
     found = int(ms.current_mesh().face_selection_array().sum())
     if found == 0:
@@ -392,7 +394,9 @@ def _si_count_and_mask(ms):
     if topology.native_si_enabled():
         m = ms.current_mesh()
         mask, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-        return max(int(count), 0), mask
+        if int(count) >= 0:
+            return int(count), mask
+        # Classifier skip sentinel (-1): fall through to the PyMeshLab path.
     ms.apply_filter('compute_selection_by_self_intersections_per_face')
     mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
     n = int(mask.sum())

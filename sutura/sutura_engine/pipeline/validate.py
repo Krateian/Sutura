@@ -53,7 +53,7 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental',
         self_intersections = None
     elif topology.native_si_enabled():
         _, count = topology.self_intersecting_faces(v, t)
-        self_intersections = max(int(count), 0)
+        self_intersections = None if int(count) < 0 else int(count)
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
@@ -172,7 +172,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
         self_intersections = None
     elif topology.native_si_enabled():
         _, count = topology.self_intersecting_faces(v, t)
-        self_intersections = max(int(count), 0)
+        self_intersections = None if int(count) < 0 else int(count)
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
