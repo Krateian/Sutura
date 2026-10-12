@@ -723,6 +723,11 @@ contains severe damage or complex topological defects.
    never selects an arbitrary resolution: if the preset budget would not fit, Graft falls
    back once to the Balanced grid (reported in the output) and only a case where even that
    does not fit skips Graft with a clear `low_memory` message.
+6. **Deterministic closing ladder**: The closing-radius ladder stops on a deterministic
+   work budget derived from the input grid and the preset, not on a wall clock, so the
+   same input and preset give the same mesh on a fast or a loaded machine. The wall-clock
+   budget is only an outer safety abort: if it trips, Graft is abandoned, the stage-1
+   result is kept, and both the report and the GUI say so plainly.
 
 #### Dressing (variable-viscosity volumetric skin, #16)
 

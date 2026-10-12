@@ -96,6 +96,31 @@ R_STEP = 1.6                     # grow x1.6 while not reload-watertight
 R_MAX_DIAG_FRACTION = 0.02       # hard upper cap: 2 % of the bbox diagonal
 MAX_TRIES = 3
 
+# --- deterministic inner work budget ---------------------------------------
+# The r-ladder stop is a DETERMINISTIC work budget, not a wall clock: the total
+# cell-work (sum of the grid cell count over attempts) may not exceed the
+# preset's budget.  It is a pure function of the input's grid + the preset, so
+# the number of attempts -- and therefore the produced mesh -- is identical on
+# every machine regardless of CPU speed or load.  The values allow the full
+# nominal ladder (Pass 0 + up to MAX_TRIES closing rungs) at the preset grid
+# budget, so current outputs are unchanged; a custom short ladder or future grid
+# growth is still bounded.  The wall clock survives ONLY as an outer
+# all-or-nothing abort (``time_budget``), which keeps the stage-1 result.
+GRAFT_WORK_MAX_ATTEMPTS = MAX_TRIES + 1
+GRAFT_WORK_BUDGET_BY_INTENSITY = {
+    'quick': GRAFT_WORK_MAX_ATTEMPTS * 1_500_000,
+    'balanced': GRAFT_WORK_MAX_ATTEMPTS * 1_500_000,
+    'thorough': GRAFT_WORK_MAX_ATTEMPTS * 10_000_000,
+    'extreme': GRAFT_WORK_MAX_ATTEMPTS * 25_000_000,
+}
+# Outer wall-clock abort message (shared by the report and the human/GUI line).
+GRAFT_ABORT_MESSAGE = (
+    "Graft was stopped for time (%s budget, checked between attempts); "
+    "the stage-1 result was kept")
+GRAFT_ABORT_MESSAGE_TR = (
+    "Graft süre nedeniyle durduruldu (%s bütçe, denemeler arasında "
+    "denetlenir); Aşama 1 sonucu korundu")
+
 # --- wrap / projection -----------------------------------------------------
 HEALTHY_DIST_FACTOR = 1.5        # project when distance < 1.5 r ...
 HEALTHY_NORMAL_DOT = 0.5         # ... and the normals agree (dot > 0.5)
@@ -416,6 +441,18 @@ def _auto_voxel(v, t, diag, grid_budget):
             break
         voxel *= 1.15
     return float(voxel)
+
+
+def _grid_cell_count(v, voxel):
+    """Number of grid cells a whole-mesh morph_close at ``voxel`` allocates
+    (same formula as ``_auto_voxel``'s budget check).  Pure function of the
+    input bbox and the voxel; used as the deterministic work unit."""
+    if len(v) == 0 or not (voxel > 0.0):
+        return 0
+    ext = v.max(axis=0) - v.min(axis=0)
+    dims = np.ceil(np.maximum(ext, 0.0) / float(voxel)) + 1 + 2 * BUDGET_PAD
+    dims = np.maximum(dims, 3)
+    return int(np.prod(dims))
 
 
 def _gap_estimate(verts, tris):
@@ -929,12 +966,16 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     reported as ``grid_fallback`` with a clear warning; only when even Balanced
     does not fit is the tier refused with a ``low_memory`` message and the input
     returned unchanged.  The resolution is never silently coarsened.  Explicit
-    ``grid_budget=`` values are honoured verbatim.  ``time_budget`` (seconds)
-    bounds the closing
-    ladder: once a candidate exists and the budget is spent the loop stops and
-    returns the best candidate so far (``budget_exceeded`` is set in the
-    report).  A single ``morph_close`` attempt is not interruptible, so callers
-    pair it with an input face cap for a hard bound.  ``sign_field`` (or
+    ``grid_budget=`` values are honoured verbatim.  The r-ladder stops on a
+    DETERMINISTIC work budget (``GRAFT_WORK_BUDGET_BY_INTENSITY``; sum of grid
+    cells over attempts), so the produced mesh does not depend on CPU speed or
+    load.  ``time_budget`` (seconds) is only an OUTER wall-clock abort, checked
+    between attempts: when it trips, Graft is abandoned entirely, the input is
+    returned unchanged, ``aborted=True`` / ``reject_reason='aborted_time'`` is
+    reported, and the caller keeps the stage-1 result (it never returns a
+    partial-ladder mesh).  A single ``morph_close`` attempt is not
+    interruptible, so callers pair it with an input face cap for a hard bound.
+    ``sign_field`` (or
     ``SUTURA_GRAFT_SIGN_FIELD``)
     enables sign-field Pass 0; it is OFF by default (opt-in) and falls back to
     the closing ladder whenever the r = 0 result is not watertight and faithful.
@@ -970,6 +1011,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "intensity": intensity,
         "time_budget": (float(time_budget) if time_budget else None),
         "budget_exceeded": False,
+        "budget_limited_by": None,
+        "work_budget": None,
+        "aborted": False,
         "low_memory": False,
         "grid_fallback": None,
         "reject_reason": None,
@@ -1090,15 +1134,40 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         local_box = None
 
     rng = np.random.default_rng(20260928)
+    per_attempt_cost = _grid_cell_count(v0, voxel)
+    work_budget = int(GRAFT_WORK_BUDGET_BY_INTENSITY.get(
+        intensity, GRAFT_WORK_BUDGET_BY_INTENSITY['balanced']))
+    report["work_budget"] = work_budget
+    spent_work = 0
     best = None
     for attempt, rval in enumerate(ladder):
-        # Stop between attempts once the tier budget is spent.  A candidate
-        # must already exist (otherwise stopping would return no geometry);
-        # the outcome stays the best found so far, never a broken mesh.
-        if deadline is not None and best is not None \
-                and time.perf_counter() >= deadline:
+        # Outer wall-clock abort (safety only, all-or-nothing): a single
+        # morph_close is not interruptible, so it is checked between attempts.
+        # When hit, Graft is abandoned entirely and the stage-1 result is kept
+        # -- never a partial-ladder mesh that would depend on machine speed.
+        if deadline is not None and time.perf_counter() >= deadline:
+            report["aborted"] = True
+            report["reject_reason"] = "aborted_time"
+            report["reason"] = GRAFT_ABORT_MESSAGE % (
+                ('%g s' % float(time_budget)) if time_budget else 'time')
+            report["warnings"] = [{
+                "code": "aborted_time",
+                "message": report["reason"],
+                "message_en": report["reason"],
+                "message_tr": GRAFT_ABORT_MESSAGE_TR % (
+                    ('%g sn' % float(time_budget)) if time_budget else 'süre'),
+            }]
+            report["seconds"] = round(time.perf_counter() - t_start, 3)
+            return v0, t0, report
+        # Deterministic inner work budget: stop between attempts once the
+        # accumulated grid-cell work would exceed the preset budget.  A
+        # candidate must already exist; the outcome is the best found so far
+        # (a pure function of the input + preset, never of the wall clock).
+        if best is not None and (spent_work + per_attempt_cost) > work_budget:
             report["budget_exceeded"] = True
+            report["budget_limited_by"] = "work"
             break
+        spent_work += per_attempt_cost
         report["tries"] = attempt + 1
         is_sign = float(rval) <= 0.0
         # A sign field is a global isosurface; a local window is meaningless

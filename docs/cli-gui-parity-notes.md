@@ -158,6 +158,10 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   (`grid_fallback`, with a clear message), and only a budget where even Balanced does not
   fit is refused (`reject_reason='low_memory'`); the resolution is never silently coarsened.
   It is automatic pipeline behaviour for both CLI and GUI, so it needs no separate control.
+  The closing ladder also stops on a deterministic work budget (input grid + preset), not a
+  wall clock; the wall-clock budget is only an outer all-or-nothing abort whose message is
+  printed by `--human` and shown by the GUI repair log (`repair_log_graft_aborted`), so the
+  two surfaces stay identical.
 - **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
   environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
   flag and a GUI control together, per the parity rule.

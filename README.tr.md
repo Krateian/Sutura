@@ -730,6 +730,11 @@ sadakatli bir morfoloji kabuk sarma katmanıdır.
    çözünürlük seçmez: ön ayar bütçesi sığmazsa Graft bir kez Balanced ızgarasına geri
    döner (çıktıda bildirilir) ve yalnızca bunun da sığmadığı durumda açık bir
    `low_memory` mesajıyla atlanır.
+6. **Belirleyici kapama merdiveni**: Kapatma yarıçapı merdiveni, duvar saatine göre değil
+   girdi ızgarasından ve ön ayardan türeyen belirleyici bir iş bütçesine göre durur; aynı
+   girdi ve ön ayar hızlı ya da yüklü makinede aynı ağı verir. Duvar-saati bütçesi yalnızca
+   dış bir güvenlik kesintisidir: tetiklenirse Graft tümüyle bırakılır, Aşama 1 sonucu
+   korunur ve hem rapor hem GUI bunu açıkça söyler.
 
 #### Pansuman (değişken viskoziteli hacimsel kaplama, #16)
 
