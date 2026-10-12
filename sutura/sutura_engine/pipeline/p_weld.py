@@ -1,12 +1,12 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: Apache-2.0
-"""P-WELD reload-safe seam healing and P-HONEST verdict (P1a split).
+"""P-WELD reload-safe seam healing and P-HONEST verdict.
 
-Moves the repair.py copies of the float32-collision split, the welded-topology
-repair, the reload-equivalent watertight metric and enforce_reload_verdict
-verbatim. NOTE: these are the implementations the pipeline and graft/dressing
-actually use; the pre-existing sutura_engine.stitch/xray copies differ and are
-deliberately NOT retargeted here (P1a is behaviour-preserving).
+The single implementation of the float32-collision split, the welded-topology
+repair, the reload-equivalent watertight metric and enforce_reload_verdict used
+by the pipeline and the graft/dressing tiers. The former duplicate copies in
+``sutura_engine.stitch`` / ``sutura_engine.xray`` had no live caller and were
+removed.
 """
 import numpy as np
 
