@@ -1,13 +1,53 @@
 #!/usr/bin/env bash
 # Sutura uninstaller. Removes everything installed by install.sh.
+# User data (repair history + learning under data/) is kept by default; pass
+# --purge to remove it too.
 set -euo pipefail
 
 APP_DIR="$HOME/.local/share/sutura"
 BIN_DIR="$HOME/.local/bin"
 SERVICE_DIR="$HOME/.local/share/kio/servicemenus"
 
-echo "Removing $APP_DIR"
-rm -rf "$APP_DIR"
+PURGE=0
+for arg in "$@"; do
+    case "$arg" in
+        --purge) PURGE=1 ;;
+        -h|--help)
+            echo "Usage: uninstall.sh [--purge]"
+            echo "  --purge   also remove user data ($APP_DIR/data)"
+            exit 0 ;;
+        *) echo "uninstall.sh: unknown option: $arg" >&2; exit 2 ;;
+    esac
+done
+
+if [ "$PURGE" -eq 1 ]; then
+    echo "==> removing $APP_DIR (including user data)"
+    if [ -t 0 ]; then
+        printf 'This permanently removes your Sutura user data (repair history and learning). Continue? [y/N] '
+        read -r reply
+        case "$reply" in
+            [yY]|[yY][eE][sS]) ;;
+            *) echo "Aborted."; exit 1 ;;
+        esac
+    fi
+    rm -rf "$APP_DIR"
+else
+    echo "==> removing $APP_DIR (keeping user data)"
+    if [ -d "$APP_DIR" ]; then
+        shopt -s dotglob nullglob
+        for entry in "$APP_DIR"/*; do
+            base="$(basename "$entry")"
+            [ "$base" = "data" ] && continue
+            rm -rf "$entry"
+        done
+        shopt -u dotglob nullglob
+    fi
+    if [ -d "$APP_DIR/data" ]; then
+        echo "User data kept at $APP_DIR/data (re-run with --purge to remove it)"
+    else
+        rmdir "$APP_DIR" 2>/dev/null || true
+    fi
+fi
 
 echo "Removing $BIN_DIR/sutura"
 rm -f "$BIN_DIR/sutura"

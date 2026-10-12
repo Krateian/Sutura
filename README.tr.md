@@ -2127,6 +2127,12 @@ ayarı ve daha az kaçırılan uç durum demek.
   kayıtlarını tek komutla basar — bir GitHub issue'suna yapıştırmaya hazır.
   `--summary-only` ile yalnızca özet, `--last N` ile son N kayıt,
   `--clear` ile dosyayı temizleyebilirsiniz. Hiçbir şey otomatik yüklenmez.
+* **Nerede tutulur:** veri dosyaları (`history.jsonl`,
+  `triage_learning.json`) uygulama kodundan ayrı olarak
+  `~/.local/share/sutura/data/` altında saklanır; başka bir yerde tutmak için
+  `SUTURA_DATA_DIR` ayarlayın (paketli kod bağlaması salt-okunur olan
+  AppImage için kullanışlıdır). Kaldırıcı bu dizini varsayılan olarak korur;
+  `uninstall.sh --purge` ise siler.
 
 ## Katkı
 

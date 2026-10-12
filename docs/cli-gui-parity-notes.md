@@ -218,3 +218,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `repair_log_ftetwild_aborted`), so there is no separate flag or control and parity is
   automatic. The proposed P1 (content-addressed result cache) and P4 (deterministic
   replacement tier) are NOT implemented.
+- **User-data directory (`SUTURA_DATA_DIR`, unreleased):** the runtime data path
+  (`~/.local/share/sutura/data/`, holding `history.jsonl` and
+  `triage_learning.json`) is overridden with an environment variable only. It is a
+  process-level path setting (like `SUTURA_DIR`, `HOME` or `XDG_*`), not a repair
+  option, so it needs no CLI flag or GUI control and the CLI and GUI resolve the
+  same directory through the shared `sutura_engine/paths.py`. The uninstaller's
+  `--purge` (which removes that directory) is an installer-script flag with no
+  in-app counterpart, matching the other install/uninstall-time options.

@@ -19,14 +19,14 @@ import tempfile
 
 import numpy as np
 
-# Same data directory as history.py (SUTURA_DIR, else the user data dir). Both
-# modules resolve it independently so learning.py stays importable without
-# history.py.
-HISTORY_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
+from . import paths
+
+# Runtime user data lives in <data>/, never in the code/install dir (SUTURA_DIR).
+HISTORY_DIR = paths.data_dir()
 
 # Per (template, method) success/time counts, kept in its own file so it can be
 # reset from the CLI/GUI Options without touching the usage history.
-LEARNING_PATH = os.path.join(HISTORY_DIR, 'triage_learning.json')
+LEARNING_PATH = paths.data_file('triage_learning.json')
 LEARNING_SCHEMA_VERSION = 1
 LEARNING_MAX_BONUS = 0.05          # hard cap on the rank bonus [0..1]
 LEARNING_PRIOR = 2.0               # Beta(2, 2) prior -> 0.5 with no data
@@ -101,6 +101,7 @@ def _load_learning():
 def _save_learning(data):
     try:
         data['schema_version'] = LEARNING_SCHEMA_VERSION
+        paths.ensure_data_dir()
         os.makedirs(HISTORY_DIR, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=HISTORY_DIR, prefix='.learning-',
                                    suffix='.tmp')

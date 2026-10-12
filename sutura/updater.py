@@ -578,16 +578,66 @@ def health_check(expected_version):
 
 # ---------------------------------------------------------------- backup / rollback
 
+def _protected_app_entries():
+    """Top-level entry names inside APP_DIR the updater must never touch.
+
+    The runtime user-data directory (history.jsonl / triage_learning.json)
+    lives under APP_DIR/data by default. The self-update backup/restore must
+    leave it alone so newer learning survives a rollback. When
+    SUTURA_DATA_DIR points elsewhere it is outside APP_DIR anyway; the literal
+    ``data`` name is always protected as a safety net.
+    """
+    protected = {'data'}
+    try:
+        from sutura_engine import paths as _paths
+        data_path = os.path.abspath(_paths.data_dir())
+    except Exception:
+        data_path = os.path.abspath(os.path.join(APP_DIR, 'data'))
+    app_abs = os.path.abspath(APP_DIR)
+    prefix = app_abs + os.sep
+    if data_path.startswith(prefix):
+        protected.add(os.path.relpath(data_path, app_abs).split(os.sep)[0])
+    return protected
+
+
 def backup_install():
     if os.path.exists(BACKUP_DIR):
         shutil.rmtree(BACKUP_DIR)
-    shutil.copytree(APP_DIR, BACKUP_DIR, symlinks=True)
+    protected = _protected_app_entries()
+    ignore = lambda dir, names: (
+        [n for n in names if n in protected]
+        if os.path.abspath(dir) == os.path.abspath(APP_DIR) else [])
+    shutil.copytree(APP_DIR, BACKUP_DIR, symlinks=True, ignore=ignore)
 
 
 def rollback(previous_version):
+    # Remove every APP_DIR entry EXCEPT the protected user data, then restore
+    # every backup entry except the same. data/ is never rmtree'd here, so
+    # newer learning written after the backup survives a rollback byte-for-byte.
+    protected = _protected_app_entries()
     if os.path.exists(APP_DIR):
-        shutil.rmtree(APP_DIR)
-    shutil.copytree(BACKUP_DIR, APP_DIR, symlinks=True)
+        for name in os.listdir(APP_DIR):
+            if name in protected:
+                continue
+            path = os.path.join(APP_DIR, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    else:
+        os.makedirs(APP_DIR, exist_ok=True)
+    for name in os.listdir(BACKUP_DIR):
+        if name in protected:
+            continue
+        src = os.path.join(BACKUP_DIR, name)
+        dst = os.path.join(APP_DIR, name)
+        if os.path.isdir(src) and not os.path.islink(src):
+            shutil.copytree(src, dst, symlinks=True)
+        else:
+            shutil.copy2(src, dst, follow_symlinks=False)
     return previous_version
 
 

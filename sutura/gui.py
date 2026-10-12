@@ -5735,6 +5735,13 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    try:
+        from sutura_engine import paths as _paths
+        _data = _paths.ensure_data_dir()
+        for _err in _data.get('errors', []):
+            sys.stderr.write('sutura: user-data migration warning: %s\n' % _err)
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     apply_dark_theme(app)
     win = MainWindow()

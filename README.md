@@ -2120,6 +2120,12 @@ fewer edge cases missed.
   `--summary-only` for just the summary, `--last N` to limit to the most
   recent records, and `--clear` to wipe the file. Nothing is ever uploaded
   automatically.
+* **Where it lives:** the data files (`history.jsonl`,
+  `triage_learning.json`) live in `~/.local/share/sutura/data/`, separate
+  from the application code; set `SUTURA_DATA_DIR` to store them elsewhere
+  (useful for the AppImage, whose bundled code mount is read-only). The
+  uninstaller keeps this directory by default; `uninstall.sh --purge`
+  removes it.
 
 ## Contributing
 
