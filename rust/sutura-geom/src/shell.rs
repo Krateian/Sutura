@@ -2882,4 +2882,149 @@ mod tests {
         assert_eq!(nm, 0, "Must have 0 non-manifold edges, found {}", nm);
         assert_eq!(parts, 1, "Must be 1 single part, found {}", parts);
     }
+
+    // --- Conforming edge-split convergence (fix/shell-split-convergence) ---
+
+    /// Squared norm of a triangle's 3D cross product (2 x area), used to
+    /// reject zero-area faces.
+    fn tri_norm_sq(verts: &[[f64; 3]], t: [u32; 3]) -> f64 {
+        let n = cross3(
+            sub3(verts[t[1] as usize], verts[t[0] as usize]),
+            sub3(verts[t[2] as usize], verts[t[0] as usize]),
+        );
+        norm3_sq(n)
+    }
+
+    /// A point is strictly inside segment ``ab`` (not an endpoint) when the
+    /// cross product vanishes and the projection parameter lies in (tol, 1-tol).
+    fn point_on_segment_interior(a: [f64; 3], b: [f64; 3], p: [f64; 3], tol: f64) -> bool {
+        let ab = sub3(b, a);
+        let lsq = norm3_sq(ab);
+        if lsq <= 1e-24 {
+            return false;
+        }
+        if norm3(cross3(ab, sub3(p, a))) > tol * norm3(ab) {
+            return false;
+        }
+        let t = dot3(sub3(p, a), ab) / lsq;
+        t > tol && t < 1.0 - tol
+    }
+
+    fn all_edges(tris: &[[u32; 3]]) -> std::collections::HashSet<(u32, u32)> {
+        let mut ce = std::collections::HashSet::new();
+        for t in tris {
+            for k in 0..3 {
+                let (u, v) = (t[k], t[(k + 1) % 3]);
+                ce.insert((u.min(v), u.max(v)));
+            }
+        }
+        ce
+    }
+
+    /// (a) A triangle with one collinear split point on each of two edges used
+    /// to re-split its interior triangulation chords (a non-converging cascade).
+    /// With the constraint-edge rule the split must converge in <= 2 passes and
+    /// never emit a zero-area face.
+    #[test]
+    fn test_conforming_split_two_edges_converges_no_zero_area() {
+        let verts = vec![
+            [0.0, 0.0, 0.0], // 0 A
+            [4.0, 0.0, 0.0], // 1 B
+            [0.0, 4.0, 0.0], // 2 C
+            [2.0, 0.0, 0.0], // 3 collinear split on AB
+            [0.0, 2.0, 0.0], // 4 collinear split on CA
+        ];
+        let tris = vec![[0u32, 1, 2]];
+        let mut ce = all_edges(&tris);
+
+        let pass1 = conforming_edge_split(&verts, &tris, &mut ce);
+        assert!(
+            pass1.len() > tris.len(),
+            "both split edges must be resolved, got {} faces",
+            pass1.len()
+        );
+        let pass2 = conforming_edge_split(&verts, &pass1, &mut ce);
+        assert_eq!(
+            pass2.len(),
+            pass1.len(),
+            "split did not converge in <= 2 passes: {} -> {}",
+            pass1.len(),
+            pass2.len()
+        );
+        for t in &pass1 {
+            assert!(tri_norm_sq(&verts, *t) > 1e-16, "zero-area face {:?}", t);
+        }
+    }
+
+    /// (b) Ear clipping a polygon with collinear boundary runs yields exactly
+    /// n - 2 triangles, and no internal chord (a triangle edge that is not a
+    /// polygon side) may pass through a boundary vertex -- that is what keeps a
+    /// collinear run on one edge from being split by a diagonal.
+    #[test]
+    fn test_ear_clip_collinear_runs_n_minus_2_and_no_chord_through_vertex() {
+        // Unit square with a collinear midpoint on the bottom and top edges.
+        let verts = vec![
+            [0.0, 0.0, 0.0], // 0
+            [2.0, 0.0, 0.0], // 1 midpoint of bottom
+            [4.0, 0.0, 0.0], // 2
+            [4.0, 4.0, 0.0], // 3
+            [2.0, 4.0, 0.0], // 4 midpoint of top
+            [0.0, 4.0, 0.0], // 5
+        ];
+        let t = [0u32, 2, 5]; // non-degenerate in-plane parent triangle
+        let poly = vec![0u32, 1, 2, 3, 4, 5];
+        let out = ear_clip_polygon_uv(&verts, t, &poly);
+
+        assert_eq!(out.len(), poly.len() - 2, "expected n-2 triangles, got {}", out.len());
+
+        let mut sides = std::collections::HashSet::new();
+        for k in 0..poly.len() {
+            let (a, b) = (poly[k], poly[(k + 1) % poly.len()]);
+            sides.insert((a.min(b), a.max(b)));
+        }
+        for tri in &out {
+            assert!(tri_norm_sq(&verts, *tri) > 1e-16, "zero-area face {:?}", tri);
+            for k in 0..3 {
+                let (a, b) = (tri[k], tri[(k + 1) % 3]);
+                let key = (a.min(b), a.max(b));
+                if sides.contains(&key) {
+                    continue; // polygon side, not a chord
+                }
+                for &w in &poly {
+                    if w == a || w == b {
+                        continue;
+                    }
+                    assert!(
+                        !point_on_segment_interior(
+                            verts[a as usize], verts[b as usize], verts[w as usize], 1e-9),
+                        "chord {:?} passes through boundary vertex {}",
+                        (a, b),
+                        w
+                    );
+                }
+            }
+        }
+    }
+
+    /// (c) The split pass is idempotent: running it a second time on its own
+    /// output (the interior chords must be ineligible) returns the same faces
+    /// unchanged.
+    #[test]
+    fn test_conforming_split_is_idempotent() {
+        let verts = vec![
+            [0.0, 0.0, 0.0], // 0 A
+            [4.0, 0.0, 0.0], // 1 B
+            [0.0, 4.0, 0.0], // 2 C
+            [2.0, 0.0, 0.0], // 3 split on AB
+            [2.0, 2.0, 0.0], // 4 split on BC
+            [0.0, 2.0, 0.0], // 5 split on CA
+        ];
+        let tris = vec![[0u32, 1, 2]];
+        let mut ce = all_edges(&tris);
+
+        let pass1 = conforming_edge_split(&verts, &tris, &mut ce);
+        assert_eq!(pass1.len(), 4, "a 6-gon splits into 4 faces");
+        let pass2 = conforming_edge_split(&verts, &pass1, &mut ce);
+        assert_eq!(pass2, pass1, "second pass must return the same faces");
+    }
 }
