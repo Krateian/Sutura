@@ -182,6 +182,29 @@ def test_parity_layered_3mf(tmp):
     _parity_fixture(tmp, 'layered', _make_3mf, '.3mf', compare_bytes=False)
 
 
+def test_parity_layered_3mf_with_rust_extension_blocked(tmp):
+    """A missing OPTIONAL dependency (sutura_geom) is a skip, not an error:
+    the repair still produces output and method_health.errors stays empty."""
+    src = os.path.join(tmp, 'layered_nog.3mf')
+    _make_3mf(src)
+    out = os.path.join(tmp, 'nog.3mf')
+    env = dict(os.environ, SUTURA_DIR=SUTURA)
+    launcher = (
+        "import sys; sys.path.insert(0, %r); sys.modules['sutura_geom'] = None; "
+        "sys.argv = %r; "
+        "exec(compile(open(%r, 'r', encoding='utf-8').read(), %r, 'exec'))"
+        % (SUTURA, [REPAIR_PY] + ARGS + ['-o', out, src], REPAIR_PY, REPAIR_PY))
+    r = subprocess.run([sys.executable, '-c', launcher],
+                       capture_output=True, text=True, timeout=600, env=env)
+    assert r.returncode == 0, r.stderr[-1200:]
+    d = _json(r)
+    mh = d['method_health']
+    assert mh['errors'] == [], mh
+    assert mh.get('skips'), mh                       # the rule fired
+    assert all(s.get('kind') == 'skipped' for s in mh['skips']), mh['skips']
+    assert os.path.isfile(out) and os.path.getsize(out) > 0
+
+
 # --- in-process isolation -------------------------------------------------
 
 def _import_engine():

@@ -4,6 +4,25 @@
 import importlib.util
 from typing import Optional, Tuple
 
+# The single source of truth for the import names this layer treats as
+# OPTIONAL: when one of them is absent the affected method reports SKIP, never
+# FAIL. `sutura_engine/health.py` reuses this exact tuple so that an
+# optional-dependency ImportError is recorded as a skip instead of an error
+# (do not maintain a second copy of this list).
+OPTIONAL_IMPORT_MODULES = (
+    'sutura_geom',            # Rust core (exact predicates, morphology, ...)
+    'indirect_bridge',        # exact indirect-predicate tier
+    'sutura_engine.dressing', 'dressing',
+    'sutura_engine.tamponade', 'tamponade',
+    'sutura_engine.graft', 'shell_wrap',
+    'sutura_engine.mirror', 'mirror_repair',
+    'sutura_engine.wall', 'wall_thickness',
+    'sutura_engine.methods.closing', 'closing',
+    'sutura_engine.methods.proxy', 'proxy_repair',
+    'sutura_engine.methods.repeat', 'repeat_repair',
+    'pytetwild', 'pyvista', 'vtk',   # the fTetWild addon
+)
+
 
 def always_available() -> Tuple[bool, Optional[str]]:
     return True, None

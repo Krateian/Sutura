@@ -14,8 +14,13 @@ so there is only ONE availability checker and ONE error type in the project):
       Enum of a method's state: ``OK`` / ``SKIP`` / ``FAIL``.
   ``MethodError``
       Frozen dataclass ``{method, stage, kind, message}`` for one failed run.
-  ``KIND_IMPORT`` / ``KIND_MISSING_SYMBOL`` / ``KIND_TIMEOUT`` / ``KIND_EXCEPTION``
-      The ``kind`` values ``MethodError`` uses.
+  ``KIND_IMPORT`` / ``KIND_MISSING_SYMBOL`` / ``KIND_TIMEOUT`` / ``KIND_EXCEPTION`` / ``KIND_SKIPPED``
+      The ``kind`` values ``MethodError`` uses.  An ``ImportError`` for an
+      OPTIONAL dependency (the shared ``OPTIONAL_IMPORT_MODULES`` list from
+      ``sutura_engine.methods.availability``: the Rust extension, the fTetWild
+      addon, ...) is recorded as ``KIND_SKIPPED`` in ``collector.skips`` and
+      never in ``collector.errors``; a missing SYMBOL in a present extension
+      stays an error.  This is one rule inside ``tier_guard``/``guard``.
   ``check_availability() -> dict[str, Status]``
       Per registered method id, its availability state.  A missing optional
       addon (e.g. fTetWild) is ``SKIP``; a broken availability check is
@@ -70,6 +75,7 @@ KIND_IMPORT = 'import'
 KIND_MISSING_SYMBOL = 'missing_symbol'
 KIND_TIMEOUT = 'timeout'
 KIND_EXCEPTION = 'exception'
+KIND_SKIPPED = 'skipped'   # an OPTIONAL dependency is absent: skip, not error
 
 _ENV_VAR = 'SUTURA_METHOD_HEALTH'
 
@@ -114,11 +120,16 @@ def classify_exception(exc: BaseException) -> str:
 
 
 class _Collector:
-    """Per-run list of ``MethodError`` records (thread/context local)."""
-    __slots__ = ('errors',)
+    """Per-run ``MethodError`` records (thread/context local).
+
+    ``errors`` holds real failures; ``skips`` holds optional dependencies that
+    were simply absent (kind ``skipped``) and must never count as failures.
+    """
+    __slots__ = ('errors', 'skips')
 
     def __init__(self) -> None:
         self.errors: List[MethodError] = []
+        self.skips: List[MethodError] = []
 
     def to_dicts(self) -> List[Dict[str, str]]:
         return [e.to_dict() for e in self.errors]
@@ -197,6 +208,56 @@ def record_missing_symbol(method: str, stage: str, symbol: str) -> Optional[Meth
     return err
 
 
+_OPTIONAL_MODULES_CACHE: Optional[frozenset] = None
+
+
+def _optional_import_modules() -> frozenset:
+    """The optional-import list, owned by the availability layer (no copy here)."""
+    global _OPTIONAL_MODULES_CACHE
+    if _OPTIONAL_MODULES_CACHE is None:
+        try:
+            from sutura_engine.methods import availability as _av
+            _OPTIONAL_MODULES_CACHE = frozenset(
+                getattr(_av, 'OPTIONAL_IMPORT_MODULES', ()))
+        except Exception:  # noqa: BLE001 - never let health reporting crash
+            _OPTIONAL_MODULES_CACHE = frozenset()
+    return _OPTIONAL_MODULES_CACHE
+
+
+def _is_optional_import_error(exc: BaseException) -> bool:
+    """True when ``exc`` is an ImportError for an OPTIONAL dependency.
+
+    A missing optional addon (the Rust extension, fTetWild, ...) is a SKIP, not
+    a failure.  A missing SYMBOL in a present sutura_geom is NOT an ImportError
+    and therefore still stays an error.
+    """
+    if not isinstance(exc, ImportError):
+        return False
+    name = getattr(exc, 'name', None) or ''
+    if not name:
+        return False
+    return any(name == m or name.startswith(m + '.')
+               for m in _optional_import_modules())
+
+
+def record_skip(method: str, stage: str, exc: BaseException) -> Optional[MethodError]:
+    """Record an absent OPTIONAL dependency as a skip (kept out of ``errors``)."""
+    if not enabled():
+        return None
+    err = MethodError(str(method), str(stage), KIND_SKIPPED,
+                      '%s: %s' % (type(exc).__name__, exc))
+    current().skips.append(err)
+    return err
+
+
+def _record_failure(method: str, stage: str, exc: BaseException) -> None:
+    """One rule for every guarded call: optional-addon ImportError -> skip."""
+    if _is_optional_import_error(exc):
+        record_skip(method, stage, exc)
+    else:
+        record_error(method, stage, exc)
+
+
 class _TierGuard:
     """Context manager that catches a tier body, records it and swallows it."""
     __slots__ = ('method', 'stage', 'error')
@@ -215,7 +276,7 @@ class _TierGuard:
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             return False  # never swallow an operator interrupt / clean exit
         self.error = exc
-        record_error(self.method, self.stage, exc)
+        _record_failure(self.method, self.stage, exc)
         return True
 
 
@@ -235,7 +296,7 @@ def guard(method: str, stage: str, fn, *args, **kwargs):
     except (KeyboardInterrupt, SystemExit):
         raise
     except BaseException as exc:  # noqa: BLE001 - the wrapper is the sole catch
-        record_error(method, stage, exc)
+        _record_failure(method, stage, exc)
         return False, exc
 
 
@@ -288,6 +349,9 @@ def build_report(collector: Optional[_Collector] = None,
         'skipped': skipped,
         'methods': methods,
         'errors': [e.to_dict() for e in errors],
+        # Optional dependencies that were simply absent (kind 'skipped'): they
+        # are informational and never count as failures.
+        'skips': [e.to_dict() for e in collector.skips],
     }
 
 
