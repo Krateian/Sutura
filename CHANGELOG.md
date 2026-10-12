@@ -6,13 +6,6 @@ All notable changes to this project are documented here.
 
 ### Changed
 
-- **fTetWild fallback runs single-threaded and its retry rule is now
-  deterministic.** The bridge pins `num_threads=1` (plus the fixed `simplify` /
-  `epsilon` / `stop_energy` / `coarsen` defaults) in `DEFAULT_PARAMS`, removing
-  the parallel-order variance. Measured cost ~2.2x on the dense samples
-  (`thingi10k_46012` 6.7 s -> 15 s, `thingi10k_100281` 16 s -> 35 s) with
-  comparable boundary quality; note fTetWild is still not byte-deterministic
-  even single-threaded.
 - **The fTetWild retry no longer depends on the wall clock.** The second
   (optimize) attempt now runs whenever the first boundary fails the
   holes/non-manifold guard -- a pure function of that verdict -- instead of only

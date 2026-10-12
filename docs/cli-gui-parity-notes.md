@@ -207,6 +207,5 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   keeps the previous stage result. Both are automatic pipeline behaviour (the CLI
   `--human` line and the GUI repair log show the abort plainly, the GUI via
   `repair_log_ftetwild_aborted`), so there is no separate flag or control and parity is
-  automatic. The single-thread `num_threads=1` pin is also automatic (no control).
-  The proposed P1 (content-addressed result cache) and P4 (deterministic replacement
-  tier) are NOT implemented.
+  automatic. The proposed P1 (content-addressed result cache) and P4 (deterministic
+  replacement tier) are NOT implemented.
