@@ -314,6 +314,11 @@ taramasında thingi10k_46012'yi 34 sn'den 6 sn'ye indirdi, Hausdorff mesafesi
 %0,09 oldu; artec_metal-nut ise bütçeyi yine aştı. Yukarıdaki süreler ve
 sayılar optimizasyon açıkken ölçülmüştür.
 
+v0.9.1'den beri delik/non-manifold kontrolünü geçemeyen sınır sonrası yeniden
+deneme belirleyicidir (kalan duvar saatine bağlı değildir) ve zaman bütçesi
+yalnızca, önceki aşama sonucunu koruyan dış bir tümü-ya-da-hiç kesintisidir.
+Çıktı yine de çalıştırmadan çalıştırmaya bayt-birebir değildir.
+
 ### Triage Engine yoğunluk presetleri ve adlandırılmış profiller
 
 Aşama 1'den *sonra* harcanan çaba — derin-onarım merdiveni, fTetWild

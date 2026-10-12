@@ -307,6 +307,11 @@ from 34 s to 6 s with a 0.09 % Hausdorff distance, while artec_metal-nut
 still exceeded the budget. The run times and counts above were measured
 with the optimisation on.
 
+Since v0.9.1 the retry after a boundary that fails the holes/non-manifold check
+is deterministic (it no longer depends on the remaining wall clock), and the
+time budget is only an outer all-or-nothing abort that keeps the previous stage
+result. The output is still not byte-identical run to run.
+
 ### Triage Engine intensity presets and named profiles
 
 The effort spent *after* Stage 1 — the deep-repair ladder, the fTetWild

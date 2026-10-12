@@ -210,3 +210,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   PyMeshLab's). It has deliberately NO CLI flag or GUI control, so the CLI and the
   GUI behave identically (parity by construction, like the ray-stab vote); when it
   is proven it gets a CLI flag and a GUI control together.
+- **fTetWild deterministic retry + time abort (v0.9.1):** the retry after a boundary
+  that fails the holes/non-manifold guard is a pure function of that verdict (no
+  wall-clock gate), and `FTETWILD_TIMEOUT` is only an outer all-or-nothing abort that
+  keeps the previous stage result. Both are automatic pipeline behaviour (the CLI
+  `--human` line and the GUI repair log show the abort plainly, the GUI via
+  `repair_log_ftetwild_aborted`), so there is no separate flag or control and parity is
+  automatic. The proposed P1 (content-addressed result cache) and P4 (deterministic
+  replacement tier) are NOT implemented.

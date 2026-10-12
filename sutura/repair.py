@@ -1965,12 +1965,22 @@ FTETWILD_MAX_HAUSDORFF_REL = 0.01
 
 # Second fTetWild attempt: when the default (optimize=False) boundary fails
 # the holes/non-manifold guard even after the manifold3d post-process, the
-# mesh is tetrahedralized once more with the quality optimisation on, within
-# what is left of FTETWILD_TIMEOUT (skipped when less than
-# FTETWILD_RETRY_MIN_SECONDS remain). thingi10k_1038444 was adopted with the
-# optimisation and rejected ('holes_nm') without it (macOS, 2026-09-26).
+# mesh is tetrahedralized once more with the quality optimisation on.  The
+# retry rule is DETERMINISTIC (it depends only on the first boundary's
+# holes/non-manifold verdict, never on the elapsed wall clock).
+# thingi10k_1038444 was adopted with the optimisation and rejected
+# ('holes_nm') without it (macOS, 2026-09-26).
 FTETWILD_RETRY_PARAMS = {'optimize': True}
-FTETWILD_RETRY_MIN_SECONDS = 10.0
+# Outer wall-clock abort message (shared by the report and the human/GUI line).
+# The wall clock only bounds the WHOLE tier; when it trips the tier is
+# abandoned all-or-nothing and the previous stage (stage-1 / deep-ladder)
+# result is kept -- it never picks a different (partial) attempt.
+FTETWILD_ABORT_MESSAGE = (
+    "fTetWild was stopped for time (%s budget, checked between attempts); "
+    "the previous stage result was kept")
+FTETWILD_ABORT_MESSAGE_TR = (
+    "fTetWild süre nedeniyle durduruldu (%s bütçe, denemeler arasında "
+    "denetlenir); önceki aşama sonucu korundu")
 
 # Input size above which the fTetWild tier is not started
 # (reject_reason='too_large'). The limit follows from the budget: the
@@ -2948,11 +2958,15 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
     Skipped for inputs above the intensity spec's fTetWild size cap
     (reject_reason 'too_large'; None means no cap). The first attempt uses the
     bridge defaults (optimize=False); when its boundary fails the
-    holes/non-manifold guard, one retry with FTETWILD_RETRY_PARAMS runs within
-    the remaining budget. ``attempts`` lists every run, ``adopted_attempt``
-    names the adopted one; the top-level report fields describe the adopted
-    (or else the last) attempt. An adopted result far from the input is
-    flagged (``shape_changed``), not rejected."""
+    holes/non-manifold guard, one retry with FTETWILD_RETRY_PARAMS runs -- a
+    DETERMINISTIC rule (never a function of the elapsed wall clock).
+    ``attempts`` lists every run, ``adopted_attempt`` names the adopted one;
+    the top-level report fields describe the adopted (or else the last)
+    attempt. ``FTETWILD_TIMEOUT`` is only an outer all-or-nothing abort checked
+    between attempts: when it trips, the tier is abandoned and the previous
+    stage result is kept (``aborted=True`` / ``reject_reason='aborted_time'``),
+    never a partial attempt. An adopted result far from the input is flagged
+    (``shape_changed``), not rejected."""
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     stats['experimental_ftetwild'] = False
@@ -2987,6 +3001,7 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                 plan = ([('optimize', user_params)] if user_params else
                         [('default', None), ('optimize', FTETWILD_RETRY_PARAMS)])
                 chosen = None
+                aborted = False
                 for tag, params in plan:
                     if attempts:
                         last = attempts[-1]
@@ -2995,29 +3010,46 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                         if (tag == 'optimize'
                                 and (last.get('optimize_retry') or {}).get('ran')):
                             break
-                        # retry only when the first boundary exists but
-                        # fails the holes/non-manifold guard
+                        # retry only when the first boundary exists but fails
+                        # the holes/non-manifold guard; DETERMINISTIC (never a
+                        # function of the elapsed wall clock)
                         if last.get('reject_reason') != 'holes_nm':
                             break
-                        remaining = spec.ftetwild_timeout - (time.perf_counter() - t_start)
-                        if remaining < FTETWILD_RETRY_MIN_SECONDS:
-                            last['retry_skipped'] = 'budget'
-                            break
-                    else:
-                        remaining = spec.ftetwild_timeout
+                    # Outer wall-clock abort (all-or-nothing): the budget bounds
+                    # the WHOLE ladder.  When it is spent the tier is abandoned
+                    # and the previous stage result is kept, never a partial
+                    # attempt; a single attempt still gets the remaining budget
+                    # so it cannot run unbounded.
+                    remaining = spec.ftetwild_timeout - (
+                        time.perf_counter() - t_start)
+                    if remaining <= 0.0:
+                        aborted = True
+                        break
                     att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag,
                                                   params, remaining, v, t, spec)
                     attempts.append(att)
+                    if att.get('error') == 'timeout':
+                        aborted = True
+                        break
                     if cand is None:
                         continue
                     if cand[4] <= cur_holes and cand[5] <= cur_nm:
                         chosen = (att, cand)
                         break
                     att['reject_reason'] = 'holes_nm'
-                final = chosen[0] if chosen else attempts[-1]
-                ft_rep.update({k: val for k, val in final.items() if k != 'attempt'})
+                if attempts:
+                    final = chosen[0] if chosen else attempts[-1]
+                    ft_rep.update(
+                        {k: val for k, val in final.items() if k != 'attempt'})
                 ft_rep['attempts'] = attempts
                 ft_rep['adopted'] = chosen is not None
+                if aborted:
+                    ft_rep['adopted'] = False
+                    ft_rep['aborted'] = True
+                    ft_rep['reject_reason'] = 'aborted_time'
+                    ft_rep['reason'] = FTETWILD_ABORT_MESSAGE % (
+                        ('%g s' % float(spec.ftetwild_timeout))
+                        if spec.ftetwild_timeout else 'time')
                 if chosen:
                     att, (cand_v, cand_t, cand_ms, cand_after, _h, _n) = chosen
                     ft_rep['adopted_attempt'] = att['attempt']
@@ -6765,6 +6797,10 @@ def human_report(r, show_defects=False, show_diff=False):
         if ft_r.get('reject_reason') == 'too_large':
             lines.append('  fTetWild fallback : skipped (%d faces, limit %d)'
                          % (ft_r.get('input_faces', 0), ft_r.get('max_faces', 0)))
+        elif ft_r.get('aborted'):
+            lines.append('  fTetWild fallback : %s'
+                         % (ft_r.get('reason')
+                            or 'stopped for time; previous stage kept'))
         elif ft_r.get('ran') and 'error' in ft_r:
             lines.append('  fTetWild fallback : error (%s)'
                          % ft_r['error'][:60])

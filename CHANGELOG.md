@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **The fTetWild retry no longer depends on the wall clock.** The second
+  (optimize) attempt now runs whenever the first boundary fails the
+  holes/non-manifold guard -- a pure function of that verdict -- instead of only
+  when more than 10 s of budget remained. `FTETWILD_TIMEOUT` is now only an
+  outer all-or-nothing abort checked between attempts: when it trips the tier is
+  abandoned and the previous stage result is kept
+  (`report['experimental_ftetwild']['aborted']=True`,
+  `reject_reason='aborted_time'`), never a partial attempt; `--human` and the
+  GUI state this plainly.
+
 ### Fixed
 
 - **Graft's closing ladder is deterministic (no wall-clock in the result).**
