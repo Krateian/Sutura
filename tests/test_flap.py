@@ -21,6 +21,7 @@ import pymeshlab as ml  # noqa: E402
 import trimesh  # noqa: E402
 
 import repair  # noqa: E402
+import sutura_engine.pipeline.service as service_mod  # noqa: E402
 from sutura_engine import flap  # noqa: E402
 from defects import detect  # noqa: E402
 
@@ -344,7 +345,7 @@ def test_flap_safety_net_does_not_rerun_tamponade():
     m.export(src)
 
     seen = []
-    real = repair.repair_mesh_from_arrays
+    real = service_mod.repair_mesh_from_arrays
 
     def fake(v, t, tmpdir, **kw):
         seen.append(kw.get('tamponade'))
@@ -355,13 +356,13 @@ def test_flap_safety_net_does_not_rerun_tamponade():
         # so P-WELD (STL-only, can cap a one-triangle hole) does not intervene.
         return {'flap': {'adopted': True}}, v, t[:-1]
 
-    repair.repair_mesh_from_arrays = fake
+    service_mod.repair_mesh_from_arrays = fake
     try:
         repair.repair_file(src, os.path.join(work, 'cube_fixed.obj'), work,
                            mode='medium', deep_repair='off', ftetwild=False,
                            graft=False, flap=True, tamponade=True)
     finally:
-        repair.repair_mesh_from_arrays = real
+        service_mod.repair_mesh_from_arrays = real
 
     assert seen and seen[0] is True, seen
     assert len(seen) == 2 and seen[1] is False, seen
