@@ -7543,6 +7543,10 @@ def main():
                              'names or paths)')
     parser.add_argument('--no-cache', action='store_true',
                         help='disable content-addressed Sutura Chart cache (~/.cache/sutura/)')
+    parser.add_argument('--diagnostics', metavar='ZIP_FILE', default=None,
+                        help='collect system diagnostics, extension symbols, method '
+                             'availability, sanitized config, and last repair history '
+                             'into a ZIP archive and exit')
     parser.add_argument('--max-geometry-change', type=float, default=None,
                         metavar='PCT',
                         help='repair budget: warn/block when the actual geometry '
@@ -7858,6 +7862,14 @@ def main():
             cache.set_cache_enabled(False)
         except Exception:
             pass
+
+    if getattr(args, 'diagnostics', None):
+        try:
+            from sutura.diagnostics import run_diagnostics_cli
+        except ImportError:
+            from diagnostics import run_diagnostics_cli
+        code = run_diagnostics_cli(args.diagnostics)
+        sys.exit(code)
 
     # 'clear-cache' as the first positional argument clears ~/.cache/sutura/
     if files and files[0] == 'clear-cache':

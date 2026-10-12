@@ -89,6 +89,7 @@ APP_MODULES = (
     'before_after_render.py',
     'viewer_common.py',
     'viewer_data_render.py',
+    'diagnostics.py',
 )
 # __init__.py is copied by the updater although install.sh deliberately omits
 # it for the flat install layout (the AppImage/macOS packages copy it too).

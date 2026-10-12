@@ -186,6 +186,7 @@ install -m 0755 "$SRC/sutura/heatmap_render.py"  "$APP_DIR/heatmap_render.py"
 install -m 0755 "$SRC/sutura/before_after_render.py" "$APP_DIR/before_after_render.py"
 install -m 0755 "$SRC/sutura/viewer_common.py"       "$APP_DIR/viewer_common.py"
 install -m 0755 "$SRC/sutura/viewer_data_render.py"  "$APP_DIR/viewer_data_render.py"
+install -m 0755 "$SRC/sutura/diagnostics.py"         "$APP_DIR/diagnostics.py"
 install -m 0755 "$SRC/sutura/open.sh"            "$APP_DIR/open.sh"
 install -m 0644 "$SRC/LICENSE"                   "$APP_DIR/LICENSE"
 
