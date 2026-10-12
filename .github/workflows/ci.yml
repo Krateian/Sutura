@@ -134,6 +134,9 @@ jobs:
       - name: "Test: method tagging GUI (offscreen)"
         run: ./venv/bin/python tests/test_methods_gui.py
 
+      - name: "Test: health-banner diagnostics export (offscreen)"
+        run: ./venv/bin/python tests/test_gui_diagnostics.py
+
       - name: "Test: scan closing"
         run: ./venv/bin/python tests/test_closing.py
 

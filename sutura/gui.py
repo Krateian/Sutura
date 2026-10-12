@@ -695,6 +695,7 @@ STRINGS = {
         'health_diag_btn': 'Diagnostics',
         'save_diagnostics_title': 'Save Diagnostics Archive',
         'diagnostics_saved': 'Diagnostics written to %s',
+        'diagnostics_failed': 'Could not write diagnostics: %s',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -1332,6 +1333,7 @@ STRINGS = {
         'health_diag_btn': 'Tanılama',
         'save_diagnostics_title': 'Tanılama Arşivini Kaydet',
         'diagnostics_saved': 'Tanılama %s konumuna yazıldı',
+        'diagnostics_failed': 'Tanılama yazılamadı: %s',
     },
 }
 
@@ -4235,29 +4237,31 @@ class MainWindow(QMainWindow):
     def _on_health_diag_clicked(self):
         """Export diagnostics archive when requested from the failure banner."""
         try:
-            from sutura.diagnostics import collect_diagnostics
-        except ImportError:
-            from diagnostics import collect_diagnostics
+            try:
+                from sutura.diagnostics import create_diagnostics_zip
+            except ImportError:
+                from diagnostics import create_diagnostics_zip
+        except Exception as exc:
+            QMessageBox.warning(self, _t('app_title'),
+                                _t('diagnostics_failed', str(exc)))
+            return
+        import time as _time
         fn, _ = QFileDialog.getSaveFileName(
             self,
             _t('save_diagnostics_title'),
-            f"sutura-diagnostics-{int(time.time())}.zip",
+            f"sutura-diagnostics-{int(_time.time())}.zip",
             "Zip Archive (*.zip)",
         )
-        if fn:
-            try:
-                collect_diagnostics(fn)
-                QMessageBox.information(
-                    self,
-                    _t('app_title'),
-                    _t('diagnostics_saved', fn),
-                )
-            except Exception as exc:
-                QMessageBox.warning(
-                    self,
-                    _t('app_title'),
-                    str(exc),
-                )
+        if not fn:
+            return
+        try:
+            res = create_diagnostics_zip(fn)
+            if not isinstance(res, dict) or not res.get('ok'):
+                msg = res.get('error') if isinstance(res, dict) else None
+                raise RuntimeError(msg or 'diagnostics export failed')
+            QMessageBox.information(self, _t('app_title'), _t('diagnostics_saved', fn))
+        except Exception as exc:
+            QMessageBox.warning(self, _t('app_title'), _t('diagnostics_failed', str(exc)))
 
     def _maybe_ask_update_on_first_run(self):
         """Ask once (on first run, no config) about update checks and the
