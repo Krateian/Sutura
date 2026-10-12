@@ -276,6 +276,8 @@ STRINGS = {
         'repair_log_graft_warn': 'Graft detail loss: %s',
         'repair_log_graft_aborted': 'Graft: stopped for time; stage-1 result kept',
         'repair_log_graft_budget': 'Graft: hit its deterministic work budget; stage-1 result kept',
+        'repair_log_graft_low_memory': 'Graft: grid would not fit in RAM; stage-1 result kept',
+        'repair_log_graft_grid_fallback': 'Graft: %s grid does not fit in RAM; used the Balanced grid',
         'repair_log_dressing': 'Dressing (viscosity coat): %d faces, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Dressing fidelity: %s',
         'repair_log_tamponade': 'Tamponade (interior plug): %s plugs, %s faces, holes %s->%s',
@@ -900,6 +902,8 @@ STRINGS = {
         'repair_log_graft_warn': 'Graft detay kaybı: %s',
         'repair_log_graft_aborted': 'Graft: süre nedeniyle durduruldu; Aşama 1 sonucu korundu',
         'repair_log_graft_budget': 'Graft: belirleyici iş bütçesine ulaştı; Aşama 1 sonucu korundu',
+        'repair_log_graft_low_memory': 'Graft: ızgara RAM\'e sığmadı; Aşama 1 sonucu korundu',
+        'repair_log_graft_grid_fallback': 'Graft: %s ızgara RAM\'e sığmadı; Dengeli ızgara kullanıldı',
         'repair_log_dressing': 'Pansuman (Dressing): %d yüz, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Pansuman sadakati: %s',
         'repair_log_tamponade': 'Tampon (içeriden tıkaç): %s tıkaç, %s yüz, delik %s->%s',
@@ -4957,12 +4961,18 @@ class MainWindow(QMainWindow):
         if gr_r and gr_r.get('ran'):
             if gr_r.get('aborted'):
                 lines.append(_t('repair_log_graft_aborted'))
+            elif gr_r.get('low_memory'):
+                lines.append(_t('repair_log_graft_low_memory'))
             elif gr_r.get('budget_limited_by') == 'work' \
-                    and not gr_r.get('adopted'):
+                    and not gr_r.get('adopted') and not gr_r.get('grid_fallback'):
                 lines.append(_t('repair_log_graft_budget'))
             else:
                 lines.append(_t('repair_log_graft', gr_r.get('faces', 0),
                                 gr_r.get('r_used'), gr_r.get('mode')))
+                _gfb = gr_r.get('grid_fallback')
+                if _gfb:
+                    lines.append(_t('repair_log_graft_grid_fallback',
+                                    (_gfb.get('intensity') or 'preset').capitalize()))
                 _warns = gr_r.get('warnings') or []
                 if _warns:
                     _is_tr = QLocale.system().name().startswith('tr')

@@ -306,6 +306,11 @@ jobs:
       - name: "Test: Graft / shell wrap (method #13)"
         run: ./.venv/bin/python tests/test_shell_wrap.py
 
+      # Pins Graft's deterministic grid budget and work-budget stop (the
+      # RAM guard fallback/refusal and the wall-clock abort semantics).
+      - name: "Test: Graft budget"
+        run: ./.venv/bin/python tests/test_graft_budget.py
+
       # Pins the Rust topology kernel (edge_table / weld_vertices /
       # weld_reload_equivalent) against the numpy oracle bit-for-bit, and
       # proves the transparent numpy fallback for a wheel without the kernel.
