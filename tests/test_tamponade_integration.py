@@ -485,7 +485,11 @@ def test_final_guard_flags_bbox_collapse():
     reason2, m2 = repair._tamponade_final_needs_off(
         in_v, _CUBE_F, _CUBE_V * 13.0, _CUBE_F)
     assert reason2 is None, (reason2, m2)
-    assert m2['coverage'] > repair.TAMP_COLLAPSE_BBOX_FRAC, m2
+    # The no-trigger path MAY skip the (costly) damage metrics and return
+    # ``metrics=None`` (lazy-metrics optimization); when they are returned the
+    # full-size result must cover the input bbox.
+    if m2 is not None:
+        assert m2['coverage'] > repair.TAMP_COLLAPSE_BBOX_FRAC, m2
     print('ok  final guard flags a bbox collapse and passes a full result')
 
 
