@@ -100,16 +100,18 @@ def collect_system_info() -> Dict[str, Any]:
 def collect_methods_availability() -> List[Dict[str, Any]]:
     results = []
     try:
+        from sutura_engine import health
         from sutura_engine.methods import all_methods
-        for m in all_methods():
-            ok, reason = m.available()
+        method_map = {m.id: m for m in all_methods()}
+        details = health.check_availability_detail()
+        for mid, (status, reason) in details.items():
+            m = method_map.get(mid)
             results.append({
-                'num': m.num,
-                'id': m.id,
-                'name': m.name,
-                'display_name': getattr(m, 'display_name', m.name),
-                'family': getattr(m, 'family', 'unknown'),
-                'available': bool(ok),
+                'num': getattr(m, 'num', None),
+                'id': mid,
+                'name': getattr(m, 'name', mid),
+                'status': status.value,
+                'available': (status == health.Status.OK),
                 'reason': reason,
             })
     except Exception as e:
@@ -132,8 +134,13 @@ def collect_sanitized_config() -> Dict[str, Any]:
 
 
 def collect_last_repair_history() -> Dict[str, Any]:
-    history_dir = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
-    history_path = os.path.join(history_dir, 'history.jsonl')
+    try:
+        from sutura_engine import paths
+        history_path = paths.data_file('history.jsonl')
+    except Exception:
+        history_dir = os.environ.get('SUTURA_DATA_DIR', os.path.expanduser('~/.local/share/sutura/data'))
+        history_path = os.path.join(history_dir, 'history.jsonl')
+
     if not os.path.isfile(history_path):
         return {'status': 'not_found'}
     try:
