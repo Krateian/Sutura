@@ -433,6 +433,14 @@ def apply_chain(ms, chain):
             elif name == 'meshing_invert_face_orientation':
                 _invert_faces_ms(ms, ml)
                 handled = True
+            elif name == 'meshing_repair_non_manifold_edges':
+                if topology.native_nme_enabled():
+                    _repair_nme_ms(ms, ml)
+                    handled = True
+            elif name == 'meshing_re_orient_faces_coherently':
+                if topology.native_orient_enabled():
+                    _re_orient_faces_ms(ms, ml)
+                    handled = True
 
             if not handled:
                 ms.apply_filter(name, **params)
@@ -473,6 +481,28 @@ def _invert_faces_ms(ms, ml):
         ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
     except Exception:
         ms.apply_filter('meshing_invert_face_orientation')
+
+
+def _re_orient_faces_ms(ms, ml):
+    """Re-orient faces coherently on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.re_orient_faces_coherently(t)
+    if not np.array_equal(t_new, t):
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+
+
+def _repair_nme_ms(ms, ml):
+    """Repair non-manifold edges on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.repair_non_manifold_edges(v, t)
+    if len(t_new) < len(t):
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
 
 
 def extreme_extra_passes(ms, ml, params):
@@ -702,7 +732,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 break
             ms.apply_filter('meshing_remove_selected_faces')
             _remove_unref_vertices_ms(ms, ml)
-            ms.apply_filter('meshing_repair_non_manifold_edges')
+            if topology.native_nme_enabled():
+                _repair_nme_ms(ms, ml)
+            else:
+                ms.apply_filter('meshing_repair_non_manifold_edges')
             ms.apply_filter('meshing_repair_non_manifold_vertices')
             close_kwargs = {'maxholesize': maxholesize,
                             'newfaceselected': False,
@@ -1408,7 +1441,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     before = before_ms.apply_filter('get_topological_measures')
-    before_geom = before_ms.apply_filter('get_geometric_measures')
+    if topology.native_measures_enabled():
+        before_geom = topology.mesh_geometric_measures(v, t)
+    else:
+        before_geom = before_ms.apply_filter('get_geometric_measures')
     before_volume = before_geom.get('mesh_volume', 0)
     before_area = surface_area(v, t)
     before_verts = before.get('vertices_number', 0)
@@ -1778,10 +1814,25 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if skipped:
         stats['stage1']['skipped'] = skipped
 
-    geom = ms.apply_filter('get_geometric_measures')
-    if geom.get('mesh_volume', 0) < 0:
-        _invert_faces_ms(ms, ml)
+    if topology.native_measures_enabled():
+        m_cur = ms.current_mesh()
+        cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
+        cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+        geom = topology.mesh_geometric_measures(cur_v, cur_t)
+        if geom.get('mesh_volume', 0) < 0:
+            _invert_faces_ms(ms, ml)
+            m_cur = ms.current_mesh()
+            cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
+            cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+            geom = topology.mesh_geometric_measures(cur_v, cur_t)
+    else:
         geom = ms.apply_filter('get_geometric_measures')
+        if geom.get('mesh_volume', 0) < 0:
+            _invert_faces_ms(ms, ml)
+            geom = ms.apply_filter('get_geometric_measures')
+            if geom.get('mesh_volume', 0) < 0:
+                _invert_faces_ms(ms, ml)
+                geom = ms.apply_filter('get_geometric_measures')
     after_volume = geom.get('mesh_volume', 0)
 
     new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
@@ -3378,8 +3429,6 @@ def _local_si_rise(base_v, base_t, cand_v, cand_t):
         return base_local, cand_local, bool(cand_local > base_local), True
     except Exception:  # noqa: BLE001 - a classifier failure is not fatal
         return None, None, None, False
-
-
 def _umbrella_fair(verts, tris, first_free, steps):
     """Umbrella-operator smoothing (each vertex moves to the mean of its
     1-ring neighbours) of the vertices with index >= ``first_free``; all

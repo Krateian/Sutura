@@ -97,7 +97,10 @@ def _run_all(topo_engine):
         unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
         rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
         inv_t = topology.invert_face_orientation(t)
+        rnme_t = topology.repair_non_manifold_edges(v, t)
         topo_dict = topology.mesh_topology(v, t)
+        geom_dict = topology.mesh_geometric_measures(v, t)
+        geom_rounded = {k: round(val, 4) if isinstance(val, float) else val for k, val in geom_dict.items()}
         if len(t) <= 5000:
             si_mask, si_cnt = topology.self_intersecting_faces(v, t)
             si_entry = (si_mask.tobytes(), int(si_cnt))
@@ -122,7 +125,9 @@ def _run_all(topo_engine):
             'remove_unreferenced_vertices': (unv_v.tobytes(), unv_t.tobytes()),
             'remove_connected_components': (rcc_v.tobytes(), rcc_t.tobytes()),
             'invert_face_orientation': inv_t.tobytes(),
+            'repair_non_manifold_edges': rnme_t.tobytes(),
             'mesh_topology': json.dumps(topo_dict, sort_keys=True),
+            'mesh_geometric_measures': json.dumps(geom_rounded, sort_keys=True),
             'self_intersecting_faces': si_entry,
         })
     return results
@@ -189,8 +194,16 @@ def test_fallback_when_kernel_missing():
             assert rcc_v.tobytes() == exp_rcc_v.tobytes() and rcc_t.tobytes() == exp_rcc_t.tobytes()
             inv_t = topology.invert_face_orientation(t)
             assert inv_t.tobytes() == topology._invert_face_orientation_numpy(t).tobytes()
+            rnme_t = topology.repair_non_manifold_edges(v, t)
+            exp_rnme_t = topology._repair_non_manifold_edges_numpy(v, t)
+            assert rnme_t.tobytes() == exp_rnme_t.tobytes()
             topo_dict = topology.mesh_topology(v, t)
             assert topo_dict == topology._mesh_topology_numpy(v, t)
+            geom_dict = topology.mesh_geometric_measures(v, t)
+            exp_geom = topology._mesh_geometric_measures_numpy(v, t)
+            assert abs(geom_dict['surface_area'] - exp_geom['surface_area']) < 1e-4
+            if 'mesh_volume' in exp_geom:
+                assert abs(geom_dict['mesh_volume'] - exp_geom['mesh_volume']) < 1e-4
             si_mask, si_cnt = topology.self_intersecting_faces(v, t)
             exp_si_mask, exp_si_cnt = topology._self_intersecting_faces_numpy(v, t)
             assert si_mask.tobytes() == exp_si_mask.tobytes() and si_cnt == exp_si_cnt
@@ -200,12 +213,77 @@ def test_fallback_when_kernel_missing():
     print('fallback OK (missing kernel -> numpy oracle)')
 
 
+def test_re_orient_parity():
+    v, t = _cube()
+    t_inv = t.copy()
+    t_inv[1] = [t_inv[1, 1], t_inv[1, 0], t_inv[1, 2]]
+
+    out_np = topology._re_orient_faces_coherently_numpy(t_inv)
+    if topology._has_rust('re_orient_faces_coherently'):
+        out_rs = topology._geom.re_orient_faces_coherently(t_inv)
+        assert np.array_equal(out_np, out_rs), f"mismatch: np=\n{out_np}\nrs=\n{out_rs}"
+
+    t_nm = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=np.int64)
+    np_err = None
+    try:
+        topology._re_orient_faces_coherently_numpy(t_nm)
+    except Exception as e:
+        np_err = type(e)
+    rs_err = None
+    if topology._has_rust('re_orient_faces_coherently'):
+        try:
+            topology._geom.re_orient_faces_coherently(t_nm)
+        except Exception as e:
+            rs_err = type(e)
+        assert np_err == rs_err == ValueError
+    print('re_orient_faces_coherently parity OK (Rust == numpy oracle, bit-for-bit)')
+
+
+def test_repair_nme_parity():
+    v = np.array([
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),  # area 0.5
+        (0.0, 2.0, 0.0),  # area 1.0
+        (0.0, 0.1, 0.0),  # area 0.05 (smallest)
+    ], dtype=np.float32)
+    t = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=np.int64)
+
+    out_np = topology._repair_non_manifold_edges_numpy(v, t)
+    if topology._has_rust('repair_non_manifold_edges'):
+        out_rs = topology._geom.repair_non_manifold_edges(v, t)
+        assert np.array_equal(out_np, out_rs), f"mismatch: np=\n{out_np}\nrs=\n{out_rs}"
+        assert len(out_rs) == 2
+        assert np.array_equal(out_rs, [[0, 1, 2], [0, 1, 3]])
+    print('repair_non_manifold_edges parity OK (Rust == numpy oracle, bit-for-bit)')
+
+
+def test_geometric_measures_parity():
+    v, t = _cube()
+    m_np = topology._mesh_geometric_measures_numpy(v, t)
+    assert abs(m_np['surface_area'] - 6.0) < 1e-6
+    assert abs(m_np['mesh_volume'] - 1.0) < 1e-6
+
+    if topology._has_rust('mesh_geometric_measures'):
+        m_rs = topology._geom.mesh_geometric_measures(v, t)
+        assert abs(m_rs['surface_area'] - 6.0) < 1e-6
+        assert abs(m_rs['mesh_volume'] - 1.0) < 1e-6
+        assert abs(m_rs['surface_area'] - m_np['surface_area']) < 1e-12
+        assert abs(m_rs['mesh_volume'] - m_np['mesh_volume']) < 1e-12
+    print('mesh_geometric_measures parity OK (Rust == numpy oracle, bit-for-bit)')
+
+
 def main():
     test_parity()
+    test_re_orient_parity()
+    test_repair_nme_parity()
+    test_geometric_measures_parity()
     test_fallback_when_kernel_missing()
     topology.set_engine('auto')
     print('topology parity tests passed')
 
 
 if __name__ == '__main__':
+
     main()
+
