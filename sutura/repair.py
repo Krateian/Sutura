@@ -7547,6 +7547,9 @@ def main():
                         help='collect system diagnostics, extension symbols, method '
                              'availability, sanitized config, and last repair history '
                              'into a ZIP archive and exit')
+    parser.add_argument('--self-repair', action='store_true',
+                        help='verify installed application files against the release '
+                             'manifest and safely download replacements')
     parser.add_argument('--max-geometry-change', type=float, default=None,
                         metavar='PCT',
                         help='repair budget: warn/block when the actual geometry '
@@ -7571,9 +7574,9 @@ def main():
     parser.add_argument('--dry-run', action='store_true',
                         help='do not repair: report what would be done and '
                              'write no output file')
-    parser.add_argument('--yes', action='store_true',
-                        help='ftetwild install|uninstall: confirm without an '
-                             'interactive prompt')
+    parser.add_argument('-y', '--yes', action='store_true',
+                        help='confirm self-repair or ftetwild install/uninstall '
+                             'without an interactive prompt')
     parser.add_argument('--experimental-join-components', action='store_true',
                         help='experimental prototype: move small connected '
                              'components onto the nearest larger component '
@@ -7869,6 +7872,14 @@ def main():
         except ImportError:
             from diagnostics import run_diagnostics_cli
         code = run_diagnostics_cli(args.diagnostics)
+        sys.exit(code)
+
+    if getattr(args, 'self_repair', False):
+        try:
+            from sutura.self_repair import run_self_repair_cli
+        except ImportError:
+            from self_repair import run_self_repair_cli
+        code = run_self_repair_cli(force_yes=getattr(args, 'yes', False))
         sys.exit(code)
 
     # 'clear-cache' as the first positional argument clears ~/.cache/sutura/
