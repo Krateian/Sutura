@@ -16,6 +16,10 @@ from typing import Any, Dict, List, Optional, Tuple
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
 
+# L3 hard cap: a manifest may never declare more than this many files. It is
+# a policy ceiling, not a real count (real releases ship well under 100).
+MAX_MANIFEST_FILES = 1000
+
 
 def get_shipped_file_keys(repo_or_sutura_dir: str) -> List[str]:
     """Return sorted list of manifest-relative paths for all shipped files.
@@ -147,6 +151,57 @@ def verify_manifest(app_dir: str, manifest: Dict[str, Any]) -> Tuple[bool, List[
 
     all_match = (len(mismatches) == 0 and len(missing) == 0)
     return all_match, sorted(mismatches), sorted(missing)
+
+
+def _bad_key_reason(key, app_dir: str) -> Optional[str]:
+    """Return a rejection reason for a manifest key, or None when it is safe.
+
+    A key is safe only when it is a plain POSIX relative path made of ordinary
+    segments that stays inside ``app_dir`` after normalisation. Absolute keys,
+    ``..`` segments, backslashes, drive letters and empty segments are all
+    rejected (H1): act on the manifest only when every key is safe.
+    """
+    if not isinstance(key, str):
+        return 'key is not a string'
+    if not key or key in ('.', '..'):
+        return 'empty or dot key'
+    if '\\' in key:
+        return 'backslash in key'
+    if key.startswith('/'):
+        return 'absolute key'
+    if len(key) >= 2 and key[1] == ':':
+        return 'drive-letter key'
+    parts = key.split('/')
+    if any(p == '..' for p in parts):
+        return "'..' path segment"
+    if any(p == '' for p in parts):
+        return 'empty path segment'
+    root = os.path.normpath(app_dir)
+    target = os.path.normpath(os.path.join(root, key))
+    if target != root and not target.startswith(root + os.sep):
+        return 'resolves outside app_dir'
+    return None
+
+
+def validate_manifest(manifest: Dict[str, Any], app_dir: str) -> List[Tuple[str, str]]:
+    """Validate the WHOLE manifest before any filesystem I/O (H1).
+
+    Returns a list of ``(key, reason)`` for every unsafe entry; an empty list
+    means the manifest is safe to act on. The caller must refuse the entire
+    manifest when anything is returned.
+    """
+    files = manifest.get('files')
+    if not isinstance(files, dict):
+        return [('<files>', 'manifest has no files mapping')]
+    bad: List[Tuple[str, str]] = []
+    if len(files) > MAX_MANIFEST_FILES:
+        bad.append(('<files>', 'too many files (%d > %d)'
+                    % (len(files), MAX_MANIFEST_FILES)))
+    for key in files:
+        reason = _bad_key_reason(key, app_dir)
+        if reason:
+            bad.append((key, reason))
+    return bad
 
 
 def main():
