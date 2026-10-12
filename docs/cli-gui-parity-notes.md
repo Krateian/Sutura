@@ -151,8 +151,12 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   OFF by default and is an opt-in evaluation switch (`SUTURA_GRAFT_SIGN_FIELD=1`), like the
   ray-stab vote — env-only, no CLI flag or GUI control by design (it is not proven; on
   ornate-frame it fails both gates and costs ~326 s). The grid budget is derived
-  automatically from the Triage intensity preset, which both the CLI (`--intensity`) and
-  the GUI (batch-wide *Intensity* picker) already set, so parity is automatic.
+  automatically from the Triage intensity preset alone (never from free RAM, so the
+  grid is deterministic), which both the CLI (`--intensity`) and the GUI (batch-wide
+  *Intensity* picker) already set, so parity is automatic. Free RAM is a refusal-only
+  safety guard (a budget that would not fit yields `reject_reason='low_memory'` with a
+  clear message instead of a coarser grid); it is automatic pipeline behaviour for both
+  CLI and GUI, so it needs no separate control.
 - **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
   environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
   flag and a GUI control together, per the parity rule.

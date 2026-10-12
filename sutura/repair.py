@@ -4707,6 +4707,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
            'faces': None, 'holes': None, 'non_manifold': None,
            'warnings': [], 'reason': None,
            'skipped_budget': False, 'timed_out': False,
+           'low_memory': False,
            'reject_reason': None,
            'input_faces': None,
            'max_faces': int(cap) if cap is not None else None,
@@ -4739,6 +4740,19 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         if rec['budget_exceeded']:
             rec['timed_out'] = True
             rec['reject_reason'] = 'budget'
+        if grec.get('low_memory'):
+            # RAM guard: the deterministic grid budget did not fit, so Graft
+            # refused rather than coarsening.  Keep the stage-1 result and
+            # surface the clear message (never a silently different shape).
+            rec['low_memory'] = True
+            rec['reject_reason'] = 'low_memory'
+            rec['reason'] = grec.get('reason')
+            rec['warnings'] = list(grec.get('warnings') or [])
+            rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
+            rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining')
+            stats['graft'] = rec
+            return ms, after
         rec['fidelity_ok'] = grec.get('fidelity_ok')
         rec['input_coverage'] = grec.get('input_coverage')
         rec['coverage_ok'] = grec.get('coverage_ok')

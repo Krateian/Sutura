@@ -351,25 +351,70 @@ def test_no_time_budget_runs_full_ladder():
     assert calls["n"] == 4, calls
 
 
-def test_resolve_grid_budget_scales_with_intensity_and_ram():
+def test_resolve_grid_budget_is_a_pure_function_of_intensity():
+    from sutura_engine import graft as graft_mod
     from sutura_engine.graft import resolve_grid_budget
-    big = 1 << 40
-    assert resolve_grid_budget("quick", big) == 1_500_000
-    assert resolve_grid_budget("balanced", big) == 1_500_000
-    assert resolve_grid_budget("thorough", big) == 10_000_000
-    assert resolve_grid_budget("extreme", big) == 25_000_000
+    assert resolve_grid_budget("quick") == 1_500_000
+    assert resolve_grid_budget("balanced") == 1_500_000
+    assert resolve_grid_budget("thorough") == 10_000_000
+    assert resolve_grid_budget("extreme") == 25_000_000
     # Unknown/None falls back to the balanced target.
-    assert resolve_grid_budget(None, big) == 1_500_000
-    assert resolve_grid_budget("custom-profile", big) == 1_500_000
-    # A tiny machine must clamp BELOW the nominal floor: the RAM-safe limit is
-    # an absolute ceiling down to MIN_GRID_DIV**3 (BUG-03).
-    from sutura_engine.graft import MIN_GRID_DIV
-    floor = MIN_GRID_DIV ** 3
-    assert resolve_grid_budget("extreme", 1_000_000) == floor
-    assert resolve_grid_budget("balanced", 1_000_000) == floor
-    assert resolve_grid_budget("extreme", 10**12) == 25_000_000
-    # A mid-size machine still gets the nominal target when it fits.
-    assert resolve_grid_budget("balanced", 10**12) == 1_500_000
+    assert resolve_grid_budget(None) == 1_500_000
+    assert resolve_grid_budget("custom-profile") == 1_500_000
+    # The free-RAM probe must not influence the resolved budget at all.
+    real_probe = graft_mod._available_memory_bytes
+    try:
+        graft_mod._available_memory_bytes = lambda: 4 * 1024 * 1024
+        low = resolve_grid_budget("extreme")
+        graft_mod._available_memory_bytes = lambda: 1 << 50
+        high = resolve_grid_budget("extreme")
+    finally:
+        graft_mod._available_memory_bytes = real_probe
+    assert low == high == 25_000_000
+
+
+def test_shell_wrap_grid_params_identical_under_different_free_ram():
+    """Two very different free-RAM values must yield identical grid params.
+
+    The RAM probe is a refusal guard only: it can skip Graft with a clear
+    ``low_memory`` message but must never pick a different resolution.
+    """
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    real_probe = graft_mod._available_memory_bytes
+    real_close = graft_mod.sutura_geom.morph_close
+
+    def stub_close(*args, **kwargs):
+        # Keep the topology (a stub envelope); only the early grid params are
+        # under test here.
+        return v, f, {}
+
+    def run_with_ram(ram):
+        graft_mod._available_memory_bytes = lambda: ram
+        graft_mod.sutura_geom.morph_close = stub_close
+        try:
+            return shell_wrap(v, f, intensity="balanced")
+        finally:
+            graft_mod.sutura_geom.morph_close = real_close
+
+    try:
+        _a, _b, rep_small = run_with_ram(4 * 1024 ** 3)      # 4 GiB
+        _c, _d, rep_big = run_with_ram(256 * 1024 ** 3)      # 256 GiB
+        _e, _f, rep_tiny = run_with_ram(64 * 1024 ** 2)      # 64 MiB -> refuse
+    finally:
+        graft_mod._available_memory_bytes = real_probe
+
+    assert rep_small["grid_budget"] == rep_big["grid_budget"]
+    assert rep_small["voxel"] == rep_big["voxel"]
+    assert rep_small["low_memory"] is False
+    assert rep_big["low_memory"] is False
+    # The low-memory refusal keeps the SAME deterministic budget -- it never
+    # silently coarsens the grid.
+    assert rep_tiny["grid_budget"] == rep_small["grid_budget"]
+    assert rep_tiny["low_memory"] is True
+    assert rep_tiny["reject_reason"] == "low_memory"
+    assert rep_tiny["reason"]
 
 
 if __name__ == "__main__":

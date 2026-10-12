@@ -6,6 +6,15 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Graft output is now deterministic.** The morphology grid budget was clamped
+  to the free RAM available when the tier ran, so the same input produced a
+  different (still valid) envelope on different runs or machines. The budget is
+  now a pure function of the explicit intensity preset (`resolve_grid_budget`,
+  Quick/Balanced 1.5M cells, Thorough 10M, Extreme 25M; no free-RAM term), so the
+  grid resolution depends only on the input and the options. Free RAM is a safety
+  guard only: if the deterministic budget would not fit, Graft is skipped with a
+  clear `low_memory` message (`report['graft']['reject_reason']='low_memory'`)
+  and the stage-1 result is kept, instead of silently coarsening the grid.
 - **Graft could adopt a collapsed fragment.** Graft's adoption only checked
   watertightness and the healthy-region deviation, so a candidate that rebuilt
   the object into a small fragment passed (`thingi10k_100827`: a 37 mm scan
