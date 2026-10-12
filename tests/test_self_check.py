@@ -18,7 +18,6 @@ from PySide6.QtWidgets import QApplication
 _APP = QApplication.instance() or QApplication([])
 
 import numpy as np
-import pytest
 
 from sutura.self_check import (
     AVAILABILITY_ONLY_METHODS,
