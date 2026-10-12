@@ -152,7 +152,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 
 class ExtremeRemovedAllError(ValueError):
