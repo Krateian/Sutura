@@ -42,7 +42,9 @@ All notable changes to this project are documented here.
   back once to the Balanced budget (1.5M cells, reported as
   `report['graft']['grid_fallback']` with a clear message), and only if even
   Balanced does not fit is the tier refused (`reject_reason='low_memory'`) and
-  the stage-1 result kept. The resolution is never silently coarsened.
+  the stage-1 result kept. The resolution is never silently coarsened. The GUI
+  repair log now shows both the Balanced grid fallback and the low-memory
+  refusal, matching the `--human` output.
 - **Graft could adopt a collapsed fragment.** Graft's adoption only checked
   watertightness and the healthy-region deviation, so a candidate that rebuilt
   the object into a small fragment passed (`thingi10k_100827`: a 37 mm scan
@@ -480,8 +482,10 @@ Meshes; no third-party code is used.
   (Quick/Balanced 1.5M, Thorough 10M, Extreme 25M; RAM-safe cap at 35 % of available memory
   and a hard 25M ceiling; 1.5M floor). Balanced keeps the historical 1.5M budget after the
   40-mesh corpus regression check showed the 5M target doubled Graft time for no watertight
-  gain. Explicit `grid_budget=` values are honoured verbatim. The report carries the effective
-  `grid_budget`, `intensity` and chosen `voxel`.
+  gain. Explicit `grid_budget=` values are honoured verbatim. The `shell_wrap`
+  report carries the effective `grid_budget`, `intensity` and chosen `voxel`
+  (the top-level `report['graft']` surfaces the guard outcomes, not `grid_budget`
+  itself).
 
 ### Fixed
 
