@@ -314,6 +314,15 @@ taramasında thingi10k_46012'yi 34 sn'den 6 sn'ye indirdi, Hausdorff mesafesi
 %0,09 oldu; artec_metal-nut ise bütçeyi yine aştı. Yukarıdaki süreler ve
 sayılar optimizasyon açıkken ölçülmüştür.
 
+v0.9.1'den beri katman tek iş parçacığıyla çalışır (`num_threads=1`;
+`simplify`/`epsilon`/`stop_energy`/`coarsen` varsayılanları sabitlenmiştir),
+böylece paralel sıralama kaynaklı varyans kalkar — yoğun mesh'lerde yaklaşık
+iki kat süreyle (thingi10k_46012 6,7 sn → 15 sn, thingi10k_100281 16 sn → 35 sn)
+ve benzer kaliteyle. Delik/non-manifold kontrolünü geçemeyen sınır sonrası
+yeniden deneme artık belirleyicidir (kalan duvar saatine bağlı değildir) ve
+zaman bütçesi yalnızca, önceki aşama sonucunu koruyan dış bir tümü-ya-da-hiç
+kesintisidir. Çıktı yine de çalıştırmadan çalıştırmaya bayt-birebir değildir.
+
 ### Triage Engine yoğunluk presetleri ve adlandırılmış profiller
 
 Aşama 1'den *sonra* harcanan çaba — derin-onarım merdiveni, fTetWild

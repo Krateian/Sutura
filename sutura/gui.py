@@ -272,6 +272,7 @@ STRINGS = {
         'repair_log_pinched': 'Split %d pinched vertex(es) (closed mesh made two-manifold)',
         'repair_log_ftetwild': 'fTetWild fallback: %d faces, %ds (adopted)' ,
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
+        'repair_log_ftetwild_aborted': 'fTetWild: stopped for time; previous stage kept',
         'repair_log_graft': 'Graft (shell wrap): %d faces, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detail loss: %s',
         'repair_log_dressing': 'Dressing (viscosity coat): %d faces, voxel=%s, r=%s',
@@ -894,6 +895,7 @@ STRINGS = {
         'repair_log_pinched': '%d sıkışmış vertex ayrıldı (kapalı mesh two-manifold yapıldı)',
         'repair_log_ftetwild': 'fTetWild fallback: %d yüz, %ds (uygulandı)',
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
+        'repair_log_ftetwild_aborted': 'fTetWild: süre nedeniyle durduruldu; önceki aşama korundu',
         'repair_log_graft': 'Graft (kabuk sarma): %d yüz, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detay kaybı: %s',
         'repair_log_dressing': 'Pansuman (Dressing): %d yüz, voxel=%s, r=%s',
@@ -4945,7 +4947,9 @@ class MainWindow(QMainWindow):
         if data.get('extreme_passes_applied') and data.get('self_intersections_removed'):
             lines.append(_t('repair_log_extreme', data['self_intersections_removed']))
         ft_r = data.get('experimental_ftetwild')
-        if ft_r and ft_r.get('ran') and 'error' not in ft_r:
+        if ft_r and ft_r.get('aborted'):
+            lines.append(_t('repair_log_ftetwild_aborted'))
+        elif ft_r and ft_r.get('ran') and 'error' not in ft_r:
             key = 'repair_log_ftetwild' if ft_r.get('adopted') \
                 else 'repair_log_ftetwild_not'
             lines.append(_t(key, ft_r.get('output_faces', 0), ft_r.get('time', 0)))

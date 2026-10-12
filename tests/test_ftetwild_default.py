@@ -288,14 +288,16 @@ def test_bowtie_with_real_stage2():
 
 
 def test_bridge_default_params_and_override():
-    """fTetWild runs with optimize=False unless the caller overrides it."""
+    """fTetWild runs with the pinned single-thread defaults unless overridden."""
     import ftetwild_bridge
-    assert ftetwild_bridge.DEFAULT_PARAMS == {'optimize': False}
-    assert ftetwild_bridge.tetrahedralize_params() == {'optimize': False}
+    pinned = {'optimize': False, 'num_threads': 1, 'simplify': True,
+              'epsilon': 0.001, 'stop_energy': 10.0, 'coarsen': False}
+    assert ftetwild_bridge.DEFAULT_PARAMS == pinned
+    assert ftetwild_bridge.tetrahedralize_params() == pinned
     assert ftetwild_bridge.tetrahedralize_params(
-        {'optimize': True, 'edge_length_fac': 0.1}) == {
-            'optimize': True, 'edge_length_fac': 0.1}
-    assert ftetwild_bridge.DEFAULT_PARAMS == {'optimize': False}  # not mutated
+        {'optimize': True, 'edge_length_fac': 0.1}) == dict(
+            pinned, optimize=True, edge_length_fac=0.1)
+    assert ftetwild_bridge.DEFAULT_PARAMS == pinned  # not mutated
 
 
 def test_run_ftetwild_passes_params_to_the_bridge():

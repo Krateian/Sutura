@@ -307,6 +307,15 @@ from 34 s to 6 s with a 0.09 % Hausdorff distance, while artec_metal-nut
 still exceeded the budget. The run times and counts above were measured
 with the optimisation on.
 
+Since v0.9.1 the tier runs single-threaded (`num_threads=1`, with the
+`simplify`/`epsilon`/`stop_energy`/`coarsen` defaults pinned) to remove the
+parallel-order variance — at roughly twice the run time on dense meshes
+(thingi10k_46012 6.7 s → 15 s, thingi10k_100281 16 s → 35 s) with comparable
+quality. The retry after a boundary that fails the holes/non-manifold check is
+now deterministic (it no longer depends on the remaining wall clock), and the
+time budget is only an outer all-or-nothing abort that keeps the previous stage
+result. The output is still not byte-identical run to run.
+
 ### Triage Engine intensity presets and named profiles
 
 The effort spent *after* Stage 1 — the deep-repair ladder, the fTetWild

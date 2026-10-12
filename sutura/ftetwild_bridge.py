@@ -26,13 +26,27 @@ import time
 import numpy as np
 
 # pytetwild.tetrahedralize keyword arguments used unless the caller passes
-# its own. optimize=False skips fTetWild's mesh-quality optimisation, which
-# only improves the (discarded) interior tets: measured on macOS
-# (2026-09-26), thingi10k_46012 took 6 s instead of 34 s, with a one-sided
-# output-to-input Hausdorff distance of 0.09 % of the bounding-box diagonal.
-# The unoptimised boundary can carry non-manifold edges; the manifold3d
-# post-process in repair.py removes them.
-DEFAULT_PARAMS = {'optimize': False}
+# its own.  Determinism (P2, v0.9.1): ``num_threads=1`` pins fTetWild to a
+# single thread so the parallel-order variance is removed (it does NOT make the
+# output byte-identical -- fTetWild is nondeterministic even single-threaded;
+# measured 2026-10 -- but it reduces the spread).  The remaining parameters are
+# pinned to pytetwild's defaults so the run is a fixed, documented set.
+# ``optimize=False`` skips fTetWild's mesh-quality optimisation, which only
+# improves the (discarded) interior tets: measured on macOS (2026-09-26),
+# thingi10k_46012 took 6 s instead of 34 s, with a one-sided output-to-input
+# Hausdorff distance of 0.09 % of the bounding-box diagonal.  The unoptimised
+# boundary can carry non-manifold edges; the manifold3d post-process in
+# repair.py removes them.  Runtime cost of num_threads=1: measured ~2.2x on the
+# dense samples (thingi10k_46012 6.7 s -> 15 s, thingi10k_100281 16 s -> 35 s);
+# quality (boundary holes / non-manifold / Hausdorff) stayed comparable.
+DEFAULT_PARAMS = {
+    'optimize': False,
+    'num_threads': 1,
+    'simplify': True,
+    'epsilon': 0.001,
+    'stop_energy': 10.0,
+    'coarsen': False,
+}
 
 
 def tetrahedralize_params(params=None):

@@ -4,6 +4,25 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **fTetWild fallback runs single-threaded and its retry rule is now
+  deterministic.** The bridge pins `num_threads=1` (plus the fixed `simplify` /
+  `epsilon` / `stop_energy` / `coarsen` defaults) in `DEFAULT_PARAMS`, removing
+  the parallel-order variance. Measured cost ~2.2x on the dense samples
+  (`thingi10k_46012` 6.7 s -> 15 s, `thingi10k_100281` 16 s -> 35 s) with
+  comparable boundary quality; note fTetWild is still not byte-deterministic
+  even single-threaded.
+- **The fTetWild retry no longer depends on the wall clock.** The second
+  (optimize) attempt now runs whenever the first boundary fails the
+  holes/non-manifold guard -- a pure function of that verdict -- instead of only
+  when more than 10 s of budget remained. `FTETWILD_TIMEOUT` is now only an
+  outer all-or-nothing abort checked between attempts: when it trips the tier is
+  abandoned and the previous stage result is kept
+  (`report['experimental_ftetwild']['aborted']=True`,
+  `reject_reason='aborted_time'`), never a partial attempt; `--human` and the
+  GUI state this plainly.
+
 ### Fixed
 
 - **Graft could adopt a collapsed fragment.** Graft's adoption only checked
