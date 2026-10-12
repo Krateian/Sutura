@@ -45,7 +45,7 @@ from sutura_engine.graft import (
     _one_sided_hausdorff,
     _p_weld,
 )
-from repair import reload_strict_holes_nm
+from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
 
 METHOD_NUMBER = 16
 DISPLAY_NAME = "Dressing"

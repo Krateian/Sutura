@@ -25,6 +25,7 @@ sys.path.insert(0, SUTURA)
 import numpy as np  # noqa: E402
 
 import repair  # noqa: E402
+import sutura_engine.pipeline.tiers.tamponade as tamp_mod  # noqa: E402
 import methods as method_registry  # noqa: E402
 from sutura_engine import tamponade as tamp  # noqa: E402
 
@@ -280,17 +281,17 @@ def test_tier_adopts_si_only_improvement():
     # Review C2: a closed mesh whose holes/non-manifold are already 0 but whose
     # exact self-intersections fall must still be adopted (melt-only win).
     calls = {'n': 0}
-    real = repair._exact_si_face_count
+    real = tamp_mod._exact_si_face_count
 
     def fake_si(verts, tris):
         calls['n'] += 1
         return 10 if calls['n'] == 1 else 4
 
-    repair._exact_si_face_count = fake_si
+    tamp_mod._exact_si_face_count = fake_si
     try:
         rec = _tier(_CUBE_F, healthy=len(_CUBE_F), intensity='thorough')
     finally:
-        repair._exact_si_face_count = real
+        tamp_mod._exact_si_face_count = real
     assert rec['ran'] is True and rec['adopted'] is True, rec
     assert rec['input_holes'] == 0 and rec['input_non_manifold'] == 0, rec
     assert rec['input_self_intersections'] == 10, rec
@@ -321,8 +322,8 @@ def test_prepass_uses_local_si_guard_not_full_scan():
     # the full exact scan of both meshes and report si_method='full'; this is
     # the environment the CI Python jobs run in, so both branches are asserted.
     calls = {'n': 0}
-    real = repair._exact_si_face_count
-    repair._exact_si_face_count = lambda v, t: calls.__setitem__(
+    real = tamp_mod._exact_si_face_count
+    tamp_mod._exact_si_face_count = lambda v, t: calls.__setitem__(
         'n', calls['n'] + 1) or 7
     ml = _FakeML()
     ms = _FakeMeshSet(_CUBE_V, _OPEN1_F)   # one boundary loop -> the prepass runs
@@ -335,7 +336,7 @@ def test_prepass_uses_local_si_guard_not_full_scan():
         rec = stats['tamponade']
     finally:
         tamp.run_tamponade = _REAL_RUN_TAMPONADE
-        repair._exact_si_face_count = real
+        tamp_mod._exact_si_face_count = real
     assert rec['ran'] is True, rec
     if _subset_si_available():
         assert rec['si_method'] == 'local', rec
@@ -378,12 +379,12 @@ def test_prepass_budget_zero_skips():
 
 def test_tier_skips_closed_si_free_mesh():
     # A closed mesh with no measured self-intersections must still skip.
-    real = repair._exact_si_face_count
-    repair._exact_si_face_count = lambda v, t: 0
+    real = tamp_mod._exact_si_face_count
+    tamp_mod._exact_si_face_count = lambda v, t: 0
     try:
         rec = _tier(_CUBE_F, healthy=len(_CUBE_F))
     finally:
-        repair._exact_si_face_count = real
+        tamp_mod._exact_si_face_count = real
     assert rec['ran'] is False, rec
     print('ok  tier skips a closed SI-free mesh')
 
@@ -416,17 +417,17 @@ def test_resolve_prepass_budget():
 
 def test_tier_closed_balanced_skips_without_scan():
     calls = {'n': 0}
-    real = repair._exact_si_face_count
+    real = tamp_mod._exact_si_face_count
 
     def fake(verts, tris):
         calls['n'] += 1
         return 5
 
-    repair._exact_si_face_count = fake
+    tamp_mod._exact_si_face_count = fake
     try:
         rec = _tier(_CUBE_F, healthy=len(_CUBE_F), intensity='balanced')
     finally:
-        repair._exact_si_face_count = real
+        tamp_mod._exact_si_face_count = real
     assert rec['ran'] is False and rec['melt_enabled'] is False, rec
     assert calls['n'] == 0, calls
     print('ok  closed mesh at balanced skips without an SI scan')

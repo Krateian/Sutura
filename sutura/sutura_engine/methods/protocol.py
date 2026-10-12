@@ -18,9 +18,14 @@ Recommendation.__new__.__defaults__ = (None, ())
 
 
 def _repair_mod():
-    """Lazy import so ``repair.py`` can import ``methods`` at module top."""
-    import repair
-    return repair
+    """The canonical pipeline facade (single implementation instance).
+
+    Points at ``sutura_engine.pipeline`` rather than ``repair`` so the CLI,
+    which runs repair.py as ``__main__``, no longer loads a second copy of the
+    pipeline. The facade re-exports every symbol the callers here need.
+    """
+    from sutura_engine import pipeline
+    return pipeline
 
 
 @dataclass

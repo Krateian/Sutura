@@ -33,6 +33,7 @@ from _qt_test_env import ensure_qt_plugins  # noqa: E402
 ensure_qt_plugins()
 
 import repair  # noqa: E402
+import sutura_engine.pipeline.tiers.ftetwild as ftetwild_mod  # noqa: E402
 
 # Stage 1 leaves this 80-face mesh open (strict watertight only with fTetWild).
 OPEN_AFTER_STAGE1 = os.path.join(SAMPLES, 'thingi10k_100827.stl')
@@ -80,26 +81,26 @@ def test_cli_flags_wired():
 
 
 def test_auto_is_a_no_op_without_the_extra():
-    saved = repair._FTETWILD_AVAILABLE
-    repair._FTETWILD_AVAILABLE = False
+    saved = ftetwild_mod._FTETWILD_AVAILABLE
+    ftetwild_mod._FTETWILD_AVAILABLE = False
     try:
         rep = _repair(OPEN_AFTER_STAGE1, 'auto')
     finally:
-        repair._FTETWILD_AVAILABLE = saved
+        ftetwild_mod._FTETWILD_AVAILABLE = saved
     assert rep.get('experimental_ftetwild') is False, rep.get('experimental_ftetwild')
 
 
 def test_auto_is_a_no_op_without_the_bridge_module():
     """A stale install can have pytetwild but no ftetwild_bridge.py; the
     default must then stay silent instead of reporting an error."""
-    saved = (repair._FTETWILD_AVAILABLE, repair.FTETWILD_BRIDGE)
-    repair._FTETWILD_AVAILABLE = None
-    repair.FTETWILD_BRIDGE = os.path.join(SUTURA, 'no-such-bridge.py')
+    saved = (ftetwild_mod._FTETWILD_AVAILABLE, ftetwild_mod.FTETWILD_BRIDGE)
+    ftetwild_mod._FTETWILD_AVAILABLE = None
+    ftetwild_mod.FTETWILD_BRIDGE = os.path.join(SUTURA, 'no-such-bridge.py')
     try:
-        assert repair.ftetwild_available() is False
+        assert ftetwild_mod.ftetwild_available() is False
         rep = _repair(OPEN_AFTER_STAGE1, 'auto')
     finally:
-        repair._FTETWILD_AVAILABLE, repair.FTETWILD_BRIDGE = saved
+        ftetwild_mod._FTETWILD_AVAILABLE, ftetwild_mod.FTETWILD_BRIDGE = saved
     assert rep.get('experimental_ftetwild') is False, rep.get('experimental_ftetwild')
 
 
@@ -109,7 +110,7 @@ def test_off_never_runs():
 
 
 def test_auto_closes_open_result_when_installed():
-    if not repair.ftetwild_available():
+    if not ftetwild_mod.ftetwild_available():
         print('   (skipped: fTetWild extra not installed)')
         return
     rep = _repair(OPEN_AFTER_STAGE1, 'auto')
@@ -124,7 +125,7 @@ def test_cli_default_leaves_no_file_in_cwd():
     """fTetWild writes __tracked_surface.stl into its working directory; the
     CLI must run it elsewhere, so a repair started from the user's folder
     (e.g. a file-manager right-click) leaves only the _fixed output there."""
-    if not repair.ftetwild_available():
+    if not ftetwild_mod.ftetwild_available():
         print('   (skipped: fTetWild extra not installed)')
         return
     with tempfile.TemporaryDirectory(prefix='sutura-ftw-cwd-') as cwd:
@@ -138,7 +139,7 @@ def test_cli_default_leaves_no_file_in_cwd():
 
 
 def test_auto_leaves_closed_si_result_alone():
-    if not repair.ftetwild_available():
+    if not ftetwild_mod.ftetwild_available():
         print('   (skipped: fTetWild extra not installed)')
         return
     with tempfile.TemporaryDirectory(prefix='sutura-si-fixture-') as d:
@@ -224,15 +225,15 @@ def _measure(v, t):
 def _postprocess(v, t, fake_stage2):
     import pymeshlab as ml
     ms, topo, holes, nm = _measure(v, t)
-    saved = repair.run_stage2
+    saved = ftetwild_mod.run_stage2
     if fake_stage2 is not None:
-        repair.run_stage2 = fake_stage2
+        ftetwild_mod.run_stage2 = fake_stage2
     try:
         with tempfile.TemporaryDirectory(prefix='sutura-bowtie-') as tmp:
-            return repair._ftetwild_manifold_postprocess(
+            return ftetwild_mod._ftetwild_manifold_postprocess(
                 ml, tmp, v, t, ms, topo, holes, nm)
     finally:
-        repair.run_stage2 = saved
+        ftetwild_mod.run_stage2 = saved
 
 
 def test_bowtie_fixture_is_closed_but_not_two_manifold():

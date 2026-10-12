@@ -51,12 +51,12 @@ import trimesh
 import sutura_geom
 import topology
 from defects import detect as detect_defects
-from repair import (
-    _damaged_region,
-    _referenced_only,
+from sutura_engine.pipeline.p_weld import (
     _separate_weld_collisions,
     reload_strict_holes_nm,
 )
+from sutura_engine.pipeline.tiers.local_remesh import _damaged_region
+from sutura_engine.pipeline.utils import _referenced_only
 
 METHOD_NUMBER = 13
 DISPLAY_NAME = "Graft"
