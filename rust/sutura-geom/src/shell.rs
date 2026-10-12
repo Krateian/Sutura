@@ -21,7 +21,7 @@ use crate::raycast::{Stabber, DEFAULT_DIRS};
 use crate::winding::MeshBvh;
 use num_rational::BigRational;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Classification of an individual face in the mesh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1440,7 +1440,12 @@ pub fn resolve_coplanar_contacts(
     let h_med = median_edge_length(verts, tris);
 
     // Group triangles by plane key
-    let mut plane_map: HashMap<(i64, i64, i64, i64), Vec<usize>> = HashMap::new();
+    // BTreeMap, not HashMap: iteration order must be the sorted plane key so the
+    // per-plane appended vertices (new_verts) and faces (new_tris) below are
+    // emitted in a deterministic order. A HashMap here made the whole output
+    // byte-order depend on the process-random hash seed whenever >= 2 planes
+    // produced a cross-shell overlay (same output geometry, unstable bytes).
+    let mut plane_map: BTreeMap<(i64, i64, i64, i64), Vec<usize>> = BTreeMap::new();
     for (i, &t) in tris.iter().enumerate() {
         let v0 = verts[t[0] as usize];
         let v1 = verts[t[1] as usize];
@@ -1454,6 +1459,7 @@ pub fn resolve_coplanar_contacts(
     }
 
     let mut any_modified = false;
+    let mut modified_planes = 0usize;
     let mut replaced_tris: HashSet<usize> = HashSet::new();
     let mut new_verts: Vec<[f64; 3]> = Vec::new();
     let mut new_tris: Vec<[u32; 3]> = Vec::new();
@@ -1795,7 +1801,11 @@ pub fn resolve_coplanar_contacts(
                 replaced_tris.insert(plane_tris[ci]);
             }
             any_modified = true;
+            modified_planes += 1;
         }
+    }
+    if std::env::var("SUTURA_SHELL_DEBUG").is_ok() {
+        eprintln!("[shell_coplanar] modified_planes={}", modified_planes);
     }
 
     if !any_modified {
@@ -1828,8 +1838,28 @@ pub fn resolve_coplanar_contacts(
     (final_verts, final_tris, true)
 }
 
+/// Relative area tolerance under which two coplanar clusters that share an
+/// identical boundary loop are treated as the SAME planar region (so one
+/// duplicate may be dropped). A shared boundary alone does not prove the two
+/// clusters cover the same region; a real area difference means the overlap is
+/// ambiguous and neither is dropped.
+const COPLANAR_CLUSTER_AREA_TOL: f64 = 1e-4;
+
+/// Sum of the 3D triangle areas of a cluster.
+fn cluster_tri_area(verts: &[[f64; 3]], tris: &[[u32; 3]], cluster: &[usize]) -> f64 {
+    let mut area = 0.0;
+    for &fi in cluster {
+        let t = tris[fi];
+        let v0 = verts[t[0] as usize];
+        let v1 = verts[t[1] as usize];
+        let v2 = verts[t[2] as usize];
+        area += 0.5 * norm3(cross3(sub3(v1, v0), sub3(v2, v0)));
+    }
+    area
+}
+
 fn deduplicate_coplanar_outer_clusters(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     // 1. Build edge usage
     let mut edge_faces: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
@@ -1860,9 +1890,14 @@ fn deduplicate_coplanar_outer_clusters(verts: &[[f64; 3]], tris: &[[u32; 3]]) ->
         }
     }
 
-    // 3. Group by plane
+    // 3. Group by plane. `cand_fi` is iterated in sorted face-index order so
+    // each `planes[key]` face list (and therefore the cluster discovery order
+    // below) is reproducible: a HashSet here made the drop selection depend on
+    // the process-random hash seed.
     let mut planes: HashMap<(i64, i64, i64, i64), Vec<usize>> = HashMap::new();
-    for &fi in &cand_fi {
+    let mut cand_sorted: Vec<usize> = cand_fi.into_iter().collect();
+    cand_sorted.sort_unstable();
+    for &fi in &cand_sorted {
         let tri = tris[fi];
         let v0 = verts[tri[0] as usize];
         let v1 = verts[tri[1] as usize];
@@ -1884,6 +1919,8 @@ fn deduplicate_coplanar_outer_clusters(verts: &[[f64; 3]], tris: &[[u32; 3]]) ->
     }
 
     let mut to_drop = HashSet::new();
+    let mut dedup_dropped = 0usize;
+    let mut dedup_area_mismatch = 0usize;
 
     for (_plane_key, flist) in planes {
         if flist.len() <= 1 {
@@ -1942,7 +1979,22 @@ fn deduplicate_coplanar_outer_clusters(verts: &[[f64; 3]], tris: &[[u32; 3]]) ->
             cluster_boundaries.push(b_edges);
         }
 
-        // Check pairs of clusters with identical boundary edges where all boundary edges are NM edges
+        // Check pairs of clusters with identical boundary edges where all
+        // boundary edges are NM edges. An identical boundary does NOT by itself
+        // prove the two clusters cover the same planar region, so a drop also
+        // requires equal area (same region). Among equal-area duplicates the
+        // cluster with the LARGER minimum face index is dropped: the min-index
+        // is stable (both callers build the face list in increasing index
+        // order) and pairwise "larger-min loses" leaves the globally
+        // smallest-min cluster regardless of cluster iteration order.
+        let cluster_min: Vec<usize> = clusters
+            .iter()
+            .map(|c| c.iter().copied().min().unwrap_or(0))
+            .collect();
+        let cluster_area: Vec<f64> = clusters
+            .iter()
+            .map(|c| cluster_tri_area(verts, tris, c))
+            .collect();
         for i in 0..clusters.len() {
             if to_drop.iter().any(|f| clusters[i].contains(f)) {
                 continue;
@@ -1955,11 +2007,31 @@ fn deduplicate_coplanar_outer_clusters(verts: &[[f64; 3]], tris: &[[u32; 3]]) ->
                     && cluster_boundaries[i] == cluster_boundaries[j]
                     && cluster_boundaries[i].iter().all(|e| nm_edges.contains(e))
                 {
-                    // Drop cluster j
-                    to_drop.extend(clusters[j].iter().copied());
+                    let amax = cluster_area[i].max(cluster_area[j]);
+                    if amax <= 1e-12
+                        || (cluster_area[i] - cluster_area[j]).abs()
+                            <= COPLANAR_CLUSTER_AREA_TOL * amax
+                    {
+                        let loser = if cluster_min[i] <= cluster_min[j] { j } else { i };
+                        to_drop.extend(clusters[loser].iter().copied());
+                        dedup_dropped += 1;
+                        if loser == i {
+                            break;
+                        }
+                    } else {
+                        // Same boundary, different region -> ambiguous, keep both.
+                        dedup_area_mismatch += 1;
+                    }
                 }
             }
         }
+    }
+
+    if std::env::var("SUTURA_SHELL_DEBUG").is_ok() {
+        eprintln!(
+            "[shell_dedup] dropped={} area_mismatch_kept={}",
+            dedup_dropped, dedup_area_mismatch
+        );
     }
 
     if to_drop.is_empty() {
@@ -3026,5 +3098,56 @@ mod tests {
         assert_eq!(pass1.len(), 4, "a 6-gon splits into 4 faces");
         let pass2 = conforming_edge_split(&verts, &pass1, &mut ce);
         assert_eq!(pass2, pass1, "second pass must return the same faces");
+    }
+
+    /// Three identical coplanar triangles: every edge has 3 incident faces
+    /// (non-manifold), so the dedup pass runs. Each triangle is its own cluster
+    /// with the same boundary and the same area; exactly the smallest-index
+    /// cluster must survive, independent of HashMap iteration order.
+    #[test]
+    fn dedup_drops_duplicate_equal_area_clusters_deterministically() {
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ];
+        let tris = vec![[0u32, 1, 2], [0, 1, 2], [0, 1, 2]];
+        let out = deduplicate_coplanar_outer_clusters(&verts, &tris);
+        assert_eq!(out.len(), 1, "two of three identical clusters are dropped");
+        assert_eq!(out[0], tris[0], "the smallest-index cluster survives");
+    }
+
+    /// Clusters A and B share the boundary {ab, bc, ca} and every boundary edge
+    /// is non-manifold, but B covers a larger area (three triangles fanning out
+    /// to an external coplanar point). A shared boundary does not prove the same
+    /// region, so neither cluster may be dropped and the mesh is returned
+    /// unchanged.
+    #[test]
+    fn dedup_keeps_clusters_with_same_boundary_but_different_area() {
+        let verts = vec![
+            [0.0, 0.0, 0.0], // 0 a
+            [2.0, 0.0, 0.0], // 1 b
+            [0.0, 2.0, 0.0], // 2 c
+            [4.0, 4.0, 0.0], // 3 p (outside triangle abc, coplanar)
+            [0.0, 0.0, 1.0], // 4 d
+            [2.0, 0.0, 1.0], // 5 e
+            [0.0, 2.0, 1.0], // 6 f
+        ];
+        let tris = vec![
+            [0u32, 1, 2], // A
+            [0, 1, 3],    // B (three triangles, boundary {ab,bc,ca})
+            [1, 2, 3],
+            [2, 0, 3],
+            [0, 1, 4], // make ab / bc / ca each non-manifold (3 faces)
+            [1, 2, 5],
+            [2, 0, 6],
+        ];
+        let out = deduplicate_coplanar_outer_clusters(&verts, &tris);
+        assert_eq!(
+            out.len(),
+            tris.len(),
+            "same boundary, different area: nothing may be dropped"
+        );
+        assert_eq!(out, tris);
     }
 }

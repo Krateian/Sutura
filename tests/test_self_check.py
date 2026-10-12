@@ -6,9 +6,13 @@ import sys
 from unittest.mock import MagicMock, patch
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+# Self-sufficient import path (no PYTHONPATH needed): REPO_DIR makes the
+# dotted `sutura.*` package importable, REPO_DIR/sutura makes the bare `gui`
+# and `sutura_engine` modules importable. Same bootstrap as test_dressing.py.
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if os.path.join(REPO_DIR, 'sutura') not in sys.path:
-    sys.path.insert(0, os.path.join(REPO_DIR, 'sutura'))
+for _path in (REPO_DIR, os.path.join(REPO_DIR, 'sutura')):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 from PySide6.QtWidgets import QApplication
 _APP = QApplication.instance() or QApplication([])

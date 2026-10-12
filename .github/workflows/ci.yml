@@ -137,6 +137,9 @@ jobs:
       - name: "Test: health-banner diagnostics export (offscreen)"
         run: ./venv/bin/python tests/test_gui_diagnostics.py
 
+      - name: "Test: self-check / health verification (offscreen)"
+        run: ./venv/bin/python tests/test_self_check.py
+
       - name: "Test: scan closing"
         run: ./venv/bin/python tests/test_closing.py
 

@@ -14,6 +14,11 @@ All notable changes to this project are documented here.
 ### Fixed
 
 - **Repair history and learning now survive updates, uninstalls and the AppImage.** Runtime user data (`history.jsonl`, `triage_learning.json`) moved out of the code/install directory into a dedicated `~/.local/share/sutura/data/` (override with `SUTURA_DATA_DIR`), with a one-time idempotent migration of the legacy files. This fixes the AppImage, whose bundled code mount is read-only, silently failing to persist usage history. The self-updater no longer copies or removes `data/` during backup/rollback, so newer learning survives a rollback; `uninstall.sh` keeps the data directory by default (`--purge` removes it).
+- **Shell analysis output is now byte-deterministic (Rust).** The coincident-coplanar handling in `shell_analyze_and_filter` iterated process-random `HashMap`/`HashSet`s, so the same input produced different output bytes from run to run (identical geometry and counts, a few triangles re-fanned). `deduplicate_coplanar_outer_clusters` now iterates the candidate faces in sorted index order and drops a duplicate only when the two clusters share a boundary **and** cover the same region (equal area within `1e-4` relative); the surviving duplicate is chosen by the smallest minimum face index so the result is independent of iteration order, and a same-boundary/different-area pair drops neither (`SUTURA_SHELL_DEBUG` counts it). `resolve_coplanar_contacts` now iterates its plane overlay in sorted plane-key order so the appended vertices and faces are emitted deterministically. Measured on `thingi10k_100045`: one output hash over repeated runs, where there were previously two.
+
+### Internal
+
+- `tests/test_self_check.py` is now self-sufficient (it adds both the repository root and `sutura/` to `sys.path`, like the other suites) and is wired into CI, so the `--self-check` health verification runs on every build.
 
 ## [0.9.1] - 2026-10-12
 
