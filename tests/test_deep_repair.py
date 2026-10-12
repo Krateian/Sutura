@@ -32,6 +32,7 @@ import numpy as np  # noqa: E402
 import pymeshlab as ml  # noqa: E402
 
 import repair  # noqa: E402
+import sutura_engine.pipeline.tiers.ftetwild as ft_mod  # noqa: E402
 
 OPEN_SAMPLE = os.path.join(REPO, 'tests', 'real-world-samples', 'thingi10k_100827.stl')
 CUBE_V = [(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)]
@@ -92,8 +93,8 @@ def test_full_equals_pre_ladder_output():
     """Without fTetWild: fTetWild is not deterministic, so with the extra
     installed two real 'auto' runs can differ. The fTetWild path is covered
     with a fake bridge below."""
-    saved = repair.ftetwild_available
-    repair.ftetwild_available = lambda: False
+    saved = ft_mod.ftetwild_available
+    ft_mod.ftetwild_available = lambda: False
     try:
         v, t = _load(OPEN_SAMPLE)
         _same_output(_repair(v, t, ftetwild='auto'),
@@ -101,7 +102,7 @@ def test_full_equals_pre_ladder_output():
         _same_output(_repair(v, t, ftetwild=False),
                      _repair(v, t, ftetwild=False, deep_repair='full'))
     finally:
-        repair.ftetwild_available = saved
+        ft_mod.ftetwild_available = saved
 
 
 def test_full_equals_pre_ladder_with_fake_ftetwild():
@@ -111,14 +112,14 @@ def test_full_equals_pre_ladder_with_fake_ftetwild():
         repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
                          np.asarray(CUBE_T, np.int32))
         return {'ok': True, 'output_faces': 12}, True
-    saved = repair.ftetwild_available, repair.run_ftetwild
-    repair.ftetwild_available, repair.run_ftetwild = (lambda: True), fake_run
+    saved = ft_mod.ftetwild_available, ft_mod.run_ftetwild
+    ft_mod.ftetwild_available, ft_mod.run_ftetwild = (lambda: True), fake_run
     try:
         v, t = _load(OPEN_SAMPLE)
         a = _repair(v, t, ftetwild='auto')
         b = _repair(v, t, ftetwild='auto', deep_repair='full')
     finally:
-        repair.ftetwild_available, repair.run_ftetwild = saved
+        ft_mod.ftetwild_available, ft_mod.run_ftetwild = saved
     assert a[0]['experimental_ftetwild']['adopted'], a[0]['experimental_ftetwild']
     _same_output(a, b)
     dr = b[0]['deep_repair']
@@ -136,13 +137,13 @@ def test_ftetwild_shape_change_is_flagged_not_rejected():
         repair.write_obj(out_obj, np.asarray(CUBE_V, np.float32),
                          np.asarray(CUBE_T, np.int32))
         return {'ok': True, 'output_faces': 12}, True
-    saved = repair.ftetwild_available, repair.run_ftetwild
-    repair.ftetwild_available, repair.run_ftetwild = (lambda: True), fake_run
+    saved = ft_mod.ftetwild_available, ft_mod.run_ftetwild
+    ft_mod.ftetwild_available, ft_mod.run_ftetwild = (lambda: True), fake_run
     try:
         v, t = _load(OPEN_SAMPLE)
         rep, _ov, ot = _repair(v, t, ftetwild='auto', deep_repair='full')
     finally:
-        repair.ftetwild_available, repair.run_ftetwild = saved
+        ft_mod.ftetwild_available, ft_mod.run_ftetwild = saved
     ft = rep['experimental_ftetwild']
     assert ft['ran'] and ft['adopted'] and ft['shape_changed'], ft
     assert ft['hausdorff_rel'] > repair.FTETWILD_MAX_HAUSDORFF_REL, ft
@@ -173,20 +174,20 @@ def _run_with_fake_ftetwild(fake_run, **patch):
         if key in patch:
             spec_over[key] = patch.pop(key)
     spec = dataclasses.replace(repair.triage.PRESETS['balanced'], **spec_over)
-    names = ['ftetwild_available', 'run_ftetwild', 'run_stage2'] + list(patch)
-    saved = {n: getattr(repair, n) for n in names}
-    repair.ftetwild_available = lambda: True
-    repair.run_ftetwild = fake_run
-    repair.run_stage2 = lambda inter, out: ({'error': 'disabled in test'}, False)
+    names = ['run_stage2'] + list(patch)
+    saved = {n: getattr(ft_mod, n) for n in names}
+    ft_mod.ftetwild_available = lambda: True
+    ft_mod.run_ftetwild = fake_run
+    ft_mod.run_stage2 = lambda inter, out: ({'error': 'disabled in test'}, False)
     for n, val in patch.items():
-        setattr(repair, n, val)
+        setattr(ft_mod, n, val)
     try:
         v, t = _load(OPEN_SAMPLE)
         return _repair(v, t, ftetwild='auto', deep_repair='full',
                        triage_spec=spec)[0]
     finally:
         for n, val in saved.items():
-            setattr(repair, n, val)
+            setattr(ft_mod, n, val)
 
 
 def test_ftetwild_retries_with_the_optimisation_on():
@@ -279,13 +280,13 @@ def test_ftetwild_skipped_for_large_inputs():
     import dataclasses
     off_spec = dataclasses.replace(repair.triage.PRESETS['balanced'],
                                    ftetwild_max_faces=10)
-    saved = repair.ftetwild_available
-    repair.ftetwild_available = lambda: True
+    saved = ft_mod.ftetwild_available
+    ft_mod.ftetwild_available = lambda: True
     try:
         v, t = _load(OPEN_SAMPLE)
         off = _repair(v, t, deep_repair='off', triage_spec=off_spec)[0]
     finally:
-        repair.ftetwild_available = saved
+        ft_mod.ftetwild_available = saved
     assert off['deep_repair']['available']['tiers'] == ['local'], off['deep_repair']
 
 
@@ -461,7 +462,7 @@ def test_off_reports_available():
     assert av and av['holes_remaining'] == s1['holes_remaining'] > 0, av
     assert av['nm_remaining'] == s1['non_manifold_edges_remaining']
     assert 'local' in av['tiers'] and av['estimate_s']['local'] > 0, av
-    assert ('ftetwild' in av['tiers']) == repair.ftetwild_available()
+    assert ('ftetwild' in av['tiers']) == ft_mod.ftetwild_available()
 
 
 def test_off_on_a_clean_mesh_offers_nothing():

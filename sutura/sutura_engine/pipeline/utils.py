@@ -11,6 +11,7 @@ from collections import defaultdict
 import numpy as np
 
 import topology
+from sutura_engine.pipeline.presets import HAUSDORFF_SAMPLES
 
 
 def surface_area(verts, tris):
@@ -267,3 +268,44 @@ def _count_vertex_components(n_verts, tris):
                 parent[rb] = ra
     used = np.unique(tris)
     return int(len({find(int(i)) for i in used.tolist()}))
+
+
+def _hausdorff_rel(ml, in_v, in_t, out_v, out_t, samples=HAUSDORFF_SAMPLES):
+    """One-sided Hausdorff distance, samples on the output, distance to the
+    input, relative to the input bounding-box diagonal: ``(max, mean)``, or
+    ``(None, None)`` for an empty mesh or a zero diagonal. Also used by
+    scripts/benchmark_repair_corpus.py.
+
+    Both meshes are reduced to the vertices their faces reference first:
+    ``get_hausdorff_distance(samplevert=True)`` also samples unreferenced
+    vertices, and the fTetWild bridge output carries every tetrahedron
+    vertex, interior ones included (a closed sphere plus random interior
+    points measures ~26 % instead of 0)."""
+    if len(in_t) == 0 or len(out_t) == 0:
+        return None, None
+    in_v, in_t = _referenced_only(in_v, in_t)
+    out_v, out_t = _referenced_only(out_v, out_t)
+    diag = float(np.linalg.norm(in_v.max(0) - in_v.min(0)))
+    if not diag:
+        return None, None
+    # The filter's ``maxdist`` is a ``PercentageValue`` and CLIPS every
+    # distance above it, reporting exactly the cap (a raw and a decimated
+    # candidate would then look equally far from the input). It is hard-capped
+    # at 100 by pymeshlab (``InvalidPercentageException`` above that), and
+    # 100 % is measured against the UNION bounding box of the two meshes, i.e.
+    # exactly the largest possible point-to-point distance between them
+    # (verified: displacements of 1.5x-100x the input diagonal come back
+    # unclipped). ``PercentageValue(100)`` is therefore the maximum the API
+    # allows AND provably clipping-free; smaller values do clip (5 %/50 %
+    # return a capped or empty result). Do not lower it.
+    hd = ml.MeshSet()
+    hd.add_mesh(ml.Mesh(vertex_matrix=in_v,
+                        face_matrix=np.asarray(in_t, np.int32)))      # id 0
+    hd.add_mesh(ml.Mesh(vertex_matrix=np.asarray(out_v, np.float64),
+                        face_matrix=np.asarray(out_t, np.int32)))     # id 1
+    r = hd.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
+                        samplevert=True, sampleface=True,
+                        samplenum=samples,
+                        maxdist=ml.PercentageValue(100))
+    return (round(float(r.get('max') or 0) / diag, 6),
+            round(float(r.get('mean') or 0) / diag, 6))
