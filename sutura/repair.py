@@ -7455,6 +7455,13 @@ def run_ftetwild_cli(args, dry_run=False, yes=False, human=False):
 
 
 def main():
+    try:
+        from sutura_engine import paths as _paths
+        _data = _paths.ensure_data_dir()
+        for _err in _data.get('errors', []):
+            sys.stderr.write('sutura: user-data migration warning: %s\n' % _err)
+    except Exception:
+        pass
     import argparse
     parser = argparse.ArgumentParser(
         prog='sutura',

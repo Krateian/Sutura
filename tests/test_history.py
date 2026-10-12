@@ -23,6 +23,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
+# Never touch (or migrate into) the real user-data directory during tests.
+os.environ['SUTURA_DATA_DIR'] = tempfile.mkdtemp(prefix='sutura-history-data-')
+
 import numpy as np  # noqa: E402
 
 import history  # noqa: E402

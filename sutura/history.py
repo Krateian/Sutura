@@ -34,8 +34,11 @@ from sutura_engine.learning import (  # noqa: F401 - legacy re-export
     learning_summary_text,
 )
 
-HISTORY_DIR = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
-HISTORY_PATH = os.path.join(HISTORY_DIR, 'history.jsonl')
+from sutura_engine import paths  # noqa: E402
+
+# Runtime user data lives in <data>/, never in the code/install dir (SUTURA_DIR).
+HISTORY_DIR = paths.data_dir()
+HISTORY_PATH = paths.data_file('history.jsonl')
 SCHEMA_VERSION = 1
 
 # A filename is only ever used to derive the mesh FORMAT ('stl'/'obj'/'3mf').
@@ -165,6 +168,7 @@ def pop_fingerprints(result):
 def append_record(record):
     """Append one record line, assigning its sequence number. Never raises."""
     try:
+        paths.ensure_data_dir()
         os.makedirs(HISTORY_DIR, exist_ok=True)
         seq = 1
         if os.path.exists(HISTORY_PATH):

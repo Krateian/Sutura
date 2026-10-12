@@ -39,7 +39,7 @@ FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
 
 
 def _env(tmp):
-    env = dict(os.environ, SUTURA_DIR=SUTURA)
+    env = dict(os.environ, SUTURA_DIR=SUTURA, SUTURA_DATA_DIR=tmp)
     env.pop('SUTURA_INTENSITY', None)
     return env
 

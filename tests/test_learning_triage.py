@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for learning triage (local (template, method) success/time bonus).
 
-Uses a temporary SUTURA_DIR so the real usage history is never touched. No
+Uses a temporary SUTURA_DATA_DIR so the real usage history is never touched. No
 repair runs: record_learning is fed synthetic methods_tried entries and the
 ranking bonus is checked on an ObjectAnalysis.
 
@@ -17,7 +17,7 @@ SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
 _TMP = tempfile.mkdtemp(prefix='sutura-learning-')
-os.environ['SUTURA_DIR'] = _TMP
+os.environ['SUTURA_DATA_DIR'] = _TMP
 os.environ.pop('SUTURA_LEARNING_TRIAGE', None)
 
 import history  # noqa: E402
