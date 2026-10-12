@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
     QCheckBox, QDoubleSpinBox, QSpinBox, QLineEdit, QInputDialog,
     QFormLayout, QGroupBox, QListWidget, QMenu,
-    QTabWidget, QTextBrowser, QComboBox)
+    QTabWidget, QTextBrowser, QComboBox, QFrame)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -286,6 +286,8 @@ STRINGS = {
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
+        'repair_log_methods': 'Methods: %d/%d OK (%d failed, %d skipped)',
+        'repair_log_methods_fail': 'Failed: %s',
         'edge_tiebreak_label': 'Edge-tiebreak classifier',
         'edge_tiebreak_tip': 'Opt-in 11-feature classifier head (base + 5 '
                              'strong scan signals). NOT the default; the gain is '
@@ -689,6 +691,11 @@ STRINGS = {
         'sug_low_conf': 'Trying the next mode up and comparing results could help.',
         'sug_extreme_caveat': ('Extreme can delete parts with fewer than 20 faces '
                                'entirely — be careful with assembly-type models.'),
+        'health_banner_msg': '%s. Some repair capabilities failed availability checks.',
+        'health_diag_btn': 'Diagnostics',
+        'save_diagnostics_title': 'Save Diagnostics Archive',
+        'diagnostics_saved': 'Diagnostics written to %s',
+        'diagnostics_failed': 'Could not write diagnostics: %s',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -913,6 +920,8 @@ STRINGS = {
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
+        'repair_log_methods': 'Yöntemler: %d/%d tamam (%d hata, %d atlandı)',
+        'repair_log_methods_fail': 'Hatalı: %s',
         'edge_tiebreak_label': 'Edge-tiebreak sınıflandırıcı',
         'edge_tiebreak_tip': '11-özellikli sınıflandırıcı kafası (temel + 5 güçlü '
                              'tarama sinyali). Varsayılan değil; kazanç marjinal '
@@ -1320,6 +1329,11 @@ STRINGS = {
         'sug_low_conf': 'Bir üst mod denenip sonucu karşılaştırmak faydalı olabilir.',
         'sug_extreme_caveat': ('Extreme, 20 yüzden küçük parçaları tamamen silebilir — '
                                'montaj tipi modellerde dikkatli olun.'),
+        'health_banner_msg': '%s. Bazı onarım yöntemleri kullanılabilirlik testinde başarısız oldu.',
+        'health_diag_btn': 'Tanılama',
+        'save_diagnostics_title': 'Tanılama Arşivini Kaydet',
+        'diagnostics_saved': 'Tanılama %s konumuna yazıldı',
+        'diagnostics_failed': 'Tanılama yazılamadı: %s',
     },
 }
 
@@ -3702,6 +3716,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._apply_accent()
+        self._check_method_health()
         self._maybe_ask_update_on_first_run()
         self._maybe_check_updates()
 
@@ -3710,6 +3725,29 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+
+        # Method health failure banner (hidden by default; visible only on failure)
+        self.health_banner = QFrame()
+        self.health_banner.setObjectName("healthBanner")
+        self.health_banner.setStyleSheet(
+            "QFrame#healthBanner { background-color: #7f1d1d; color: #fecaca; "
+            "border: 1px solid #dc2626; border-radius: 4px; padding: 4px 8px; margin: 4px 0; }"
+        )
+        banner_layout = QHBoxLayout(self.health_banner)
+        banner_layout.setContentsMargins(8, 4, 8, 4)
+        banner_layout.setSpacing(8)
+        self.health_banner_label = QLabel()
+        self.health_banner_label.setStyleSheet("color: #fecaca; font-weight: bold;")
+        banner_layout.addWidget(self.health_banner_label, 1)
+        self.btn_health_diag = QPushButton(_t('health_diag_btn'))
+        self.btn_health_diag.clicked.connect(self._on_health_diag_clicked)
+        banner_layout.addWidget(self.btn_health_diag)
+        self.btn_health_dismiss = QPushButton("✕")
+        self.btn_health_dismiss.setFixedSize(20, 20)
+        self.btn_health_dismiss.clicked.connect(lambda: self.health_banner.hide())
+        banner_layout.addWidget(self.btn_health_dismiss)
+        self.health_banner.hide()
+        layout.addWidget(self.health_banner)
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
@@ -4177,6 +4215,53 @@ class MainWindow(QMainWindow):
             self._ftetwild = True
         else:
             self._ftetwild = 'auto'
+
+    def _check_method_health(self):
+        """Run fast availability-only check at GUI start. Banner is shown ONLY on failure."""
+        try:
+            from sutura_engine.health import Status, check_availability_detail
+            avail = check_availability_detail()
+            fails = [mid for mid, (st, _r) in avail.items() if st == Status.FAIL]
+            if fails:
+                fail_count = len(fails)
+                cnt = (f"{fail_count} hata"
+                       if QLocale.system().name().startswith('tr')
+                       else f"{fail_count} failure{'s' if fail_count > 1 else ''}")
+                self.health_banner_label.setText(_t('health_banner_msg', cnt))
+                self.health_banner.show()
+            else:
+                self.health_banner.hide()
+        except Exception:
+            pass
+
+    def _on_health_diag_clicked(self):
+        """Export diagnostics archive when requested from the failure banner."""
+        try:
+            try:
+                from sutura.diagnostics import create_diagnostics_zip
+            except ImportError:
+                from diagnostics import create_diagnostics_zip
+        except Exception as exc:
+            QMessageBox.warning(self, _t('app_title'),
+                                _t('diagnostics_failed', str(exc)))
+            return
+        import time as _time
+        fn, _ = QFileDialog.getSaveFileName(
+            self,
+            _t('save_diagnostics_title'),
+            f"sutura-diagnostics-{int(_time.time())}.zip",
+            "Zip Archive (*.zip)",
+        )
+        if not fn:
+            return
+        try:
+            res = create_diagnostics_zip(fn)
+            if not isinstance(res, dict) or not res.get('ok'):
+                msg = res.get('error') if isinstance(res, dict) else None
+                raise RuntimeError(msg or 'diagnostics export failed')
+            QMessageBox.information(self, _t('app_title'), _t('diagnostics_saved', fn))
+        except Exception as exc:
+            QMessageBox.warning(self, _t('app_title'), _t('diagnostics_failed', str(exc)))
 
     def _maybe_ask_update_on_first_run(self):
         """Ask once (on first run, no config) about update checks and the
@@ -5031,6 +5116,14 @@ class MainWindow(QMainWindow):
         if len(nums) > 1:
             lines.append(_t('repair_log_method_tried',
                             ' \u2192 '.join('#%s' % n for n in nums)))
+        mh = data.get('method_health') or {}
+        if mh.get('total'):
+            lines.append(_t('repair_log_methods', mh.get('ok', 0),
+                            mh.get('total', 0), mh.get('failed', 0),
+                            mh.get('skipped', 0)))
+            _fails = sorted({e.get('method', '?') for e in (mh.get('errors') or [])})
+            if _fails:
+                lines.append(_t('repair_log_methods_fail', ', '.join(_fails)))
         self.repair_log.setPlainText('\n'.join(lines))
 
     # --- method tagging / per-file recommendations (P3) --------------------
@@ -5735,6 +5828,13 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    try:
+        from sutura_engine import paths as _paths
+        _data = _paths.ensure_data_dir()
+        for _err in _data.get('errors', []):
+            sys.stderr.write('sutura: user-data migration warning: %s\n' % _err)
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     apply_dark_theme(app)
     win = MainWindow()

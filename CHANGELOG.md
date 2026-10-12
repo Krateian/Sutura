@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Method health: every repair method's failure is isolated and reported.** All seventeen repair methods, and the tier/method calls inside the pipeline, now run behind a single central wrapper (`sutura_engine/health.py`) that catches a method's failure, records a structured error and lets the repair continue instead of aborting it. Every report carries `method_health` (per-run availability overlaid with the run's errors: `total`/`ok`/`failed`/`skipped`/`methods`/`errors`) and `method_errors` (always present, empty when clean); `--human` prints a `Methods: N/17 OK (X failed, Y skipped)` line and the GUI repair log shows the same. A missing optional addon (for example fTetWild) is reported as skipped, not failed. `SUTURA_METHOD_HEALTH=0` disables the recording only and leaves the repair result byte-identical.
+- **`sutura --self-check`.** A deterministic health check that exercises the registered repair methods on a tiny built-in mesh and prints `Methods: N/17 OK (X failed, Y skipped)` in about two seconds (exit 1 if any method fails). Fast methods run on the fixture; the iterative and interactive ones (Balloon/Poisson, Scaffold/proxy, Mirror Complete, fTetWild, Transplant+) are checked for availability, and a missing optional addon is skipped, not failed. The GUI runs the same availability check at startup and shows a dismissible banner only when a method is unavailable. The full check is CLI-only; the GUI reports the banner and can be extended later.
+- **`sutura --diagnostics ZIP_FILE`.** Collects a single troubleshooting archive: system and Python runtime information, the `sutura_geom` extension symbols, the availability of all seventeen methods, the user configuration, and the most recent repair record. Personal paths and user names are scrubbed (home replaced with `~`, user name with `<user>`); the archive contains no file names or personal paths, so it is safe to attach to a bug report.
+- **`sutura --self-repair`.** Verifies the installed application files against the release manifest for the currently installed version, reports missing or modified files, asks for confirmation before replacing anything, backs up the affected files and rolls back if the post-repair verification fails. It never touches user data (history, learning, configuration). It targets deployed Linux pip-installs; AppImage and macOS `.app` installs print a pointer to the releases page instead of repairing in place (their filesystems are read-only), and a development git checkout is refused in favour of `git checkout`. `--yes`/`-y` answers the confirmation non-interactively.
+
+### Fixed
+
+- **Repair history and learning now survive updates, uninstalls and the AppImage.** Runtime user data (`history.jsonl`, `triage_learning.json`) moved out of the code/install directory into a dedicated `~/.local/share/sutura/data/` (override with `SUTURA_DATA_DIR`), with a one-time idempotent migration of the legacy files. This fixes the AppImage, whose bundled code mount is read-only, silently failing to persist usage history. The self-updater no longer copies or removes `data/` during backup/rollback, so newer learning survives a rollback; `uninstall.sh` keeps the data directory by default (`--purge` removes it).
+
 ## [0.9.1] - 2026-10-12
 
 ### Changed
