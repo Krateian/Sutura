@@ -309,3 +309,42 @@ def _hausdorff_rel(ml, in_v, in_t, out_v, out_t, samples=HAUSDORFF_SAMPLES):
                         maxdist=ml.PercentageValue(100))
     return (round(float(r.get('max') or 0) / diag, 6),
             round(float(r.get('mean') or 0) / diag, 6))
+
+
+def _obj_closed_result(r):
+    """True when one object's stage-1 output is a closed manifold (local copy
+    of ``classification._obj_closed`` so repair.py does not import a private
+    helper)."""
+    s1 = r.get('stage1', {}) if isinstance(r, dict) else {}
+    return bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0
+
+
+def _not_watertight_result(report):
+    """True when the FINAL repaired geometry is open or non-manifold.
+
+    The verdict is the post-ladder topology in ``stage1`` (``two_manifold`` /
+    ``holes_remaining`` / ``non_manifold_edges_remaining``), which
+    ``repair_mesh_from_arrays`` rewrites after every tier, so it describes the
+    mesh actually saved.  A residual self-intersection count is NOT a
+    "not watertight" signal: SI is reported, not repaired, under the default
+    ``si_mode='report'`` (a closed, SI-carrying result must not get a "Not
+    watertight" hint).  A hard error or a declined budget save is not a "try
+    Dressing" situation either.  Multi-object 3MF is judged across every
+    object."""
+    if not isinstance(report, dict):
+        return False
+    if report.get('error') or report.get('status') == 'budget_declined':
+        return False
+    reports = report.get('object_reports')
+    if reports:
+        return any(not _obj_closed_result(r) for r in reports)
+    s1 = report.get('stage1')
+    if not isinstance(s1, dict) or not s1:
+        return False
+    if not s1.get('two_manifold'):
+        return True
+    if s1.get('holes_remaining', 0):
+        return True
+    if s1.get('non_manifold_edges_remaining', 0):
+        return True
+    return False
