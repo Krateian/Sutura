@@ -724,6 +724,17 @@ sadakatli bir morfoloji kabuk sarma katmanıdır.
    kabul edilir. Sağlıklı yüzeydeki sapma eşiği aşarsa (`fidelity_ok == False`),
    otomatik triyaj fTetWild'ı da dener ve sağlıklı yüzey sapması daha düşük olanı
    benimser. Ayrıntı kaybı raporda (`graft.warnings`) gösterilir.
+5. **Belirleyici çözünürlük**: Izgara bütçesi yalnızca açık yoğunluk ön ayarının
+   (Quick/Balanced 1,5M hücre, Thorough 10M, Extreme 25M) saf bir fonksiyonudur; aynı
+   girdi ve seçenekler her makinede aynı zarfı üretir. Boş RAM hiçbir zaman keyfî bir
+   çözünürlük seçmez: ön ayar bütçesi sığmazsa Graft bir kez Balanced ızgarasına geri
+   döner (çıktıda bildirilir) ve yalnızca bunun da sığmadığı durumda açık bir
+   `low_memory` mesajıyla atlanır.
+6. **Belirleyici kapama merdiveni**: Kapatma yarıçapı merdiveni, duvar saatine göre değil
+   girdi ızgarasından ve ön ayardan türeyen belirleyici bir iş bütçesine göre durur; aynı
+   girdi ve ön ayar hızlı ya da yüklü makinede aynı ağı verir. Duvar-saati bütçesi yalnızca
+   dış bir güvenlik kesintisidir: tetiklenirse Graft tümüyle bırakılır, Aşama 1 sonucu
+   korunur ve hem rapor hem GUI bunu açıkça söyler.
 
 #### Pansuman (değişken viskoziteli hacimsel kaplama, #16)
 

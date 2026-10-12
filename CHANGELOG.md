@@ -6,6 +6,31 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- **Graft's closing ladder is deterministic (no wall-clock in the result).**
+  The r-ladder used to stop between attempts once a wall-clock `time_budget`
+  was spent, so a slow or loaded machine could return a different (shorter)
+  best-so-far mesh than a fast one. The ladder now stops on a deterministic
+  WORK budget (`GRAFT_WORK_BUDGET_BY_INTENSITY`, the sum of grid cells over
+  attempts -- a pure function of the input grid + preset), so the same input
+  and preset produce the same mesh regardless of CPU speed or load. The
+  wall-clock budget survives only as an outer, all-or-nothing abort: when it
+  trips, Graft is abandoned entirely, the input is returned unchanged and the
+  stage-1 result is kept (`report['graft']['aborted']=True`,
+  `reject_reason='aborted_time'`), never a partial-ladder mesh. The `--human`
+  and GUI lines state plainly that Graft was stopped for time and stage-1 was
+  kept. A deterministic work-budget stop (which current presets do not reach)
+  is reported as `budget_limited_by='work'`.
+- **Graft output is now deterministic.** The morphology grid budget was clamped
+  to the free RAM available when the tier ran, so the same input produced a
+  different (still valid) envelope on different runs or machines. The budget is
+  now a pure function of the explicit intensity preset (`resolve_grid_budget`,
+  Quick/Balanced 1.5M cells, Thorough 10M, Extreme 25M; no free-RAM term), so the
+  grid resolution depends only on the input and the options. Free RAM is a
+  discrete fallback guard only: if the preset budget would not fit, Graft falls
+  back once to the Balanced budget (1.5M cells, reported as
+  `report['graft']['grid_fallback']` with a clear message), and only if even
+  Balanced does not fit is the tier refused (`reject_reason='low_memory'`) and
+  the stage-1 result kept. The resolution is never silently coarsened.
 - **Graft could adopt a collapsed fragment.** Graft's adoption only checked
   watertightness and the healthy-region deviation, so a candidate that rebuilt
   the object into a small fragment passed (`thingi10k_100827`: a 37 mm scan

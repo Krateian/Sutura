@@ -4734,13 +4734,17 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
     warnings the CLI/GUI surface; the auto policy reads ``fidelity_ok`` to
     decide whether to also try fTetWild.
 
-    The tier is bounded like the fTetWild tier: ``spec`` (the Triage
-    ``IntensitySpec``) supplies ``graft_max_faces`` (a hard input cap; a single
-    ``morph_close`` attempt is not interruptible) and ``graft_timeout`` (the
-    wall-clock budget for the closing ladder).  Inputs above the cap, or
-    ladders that spend the budget before finding a watertight candidate, are
-    reported honestly (``skipped_budget`` / ``timed_out`` / ``reject_reason``)
-    and keep the stage-1 result.  Never raises.
+    The tier is bounded two ways: ``spec`` (the Triage ``IntensitySpec``)
+    supplies ``graft_max_faces`` (a hard input cap; a single ``morph_close``
+    attempt is not interruptible) and ``graft_timeout`` (an OUTER wall-clock
+    abort checked between ladder attempts).  The r-ladder itself stops on a
+    DETERMINISTIC work budget inside ``shell_wrap`` (a pure function of the
+    input grid + preset), so the produced mesh does not depend on CPU speed or
+    load.  Inputs above the cap, a work-budget stop, and a wall-clock abort are
+    reported honestly (``skipped_budget`` / ``budget_limited_by`` / ``aborted``
+    / ``reject_reason``) and keep the stage-1 result.  An abort is
+    all-or-nothing: the partial ladder is discarded, never returned.  Never
+    raises.
     """
     if not graft:
         return ms, after
@@ -4756,6 +4760,9 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
            'faces': None, 'holes': None, 'non_manifold': None,
            'warnings': [], 'reason': None,
            'skipped_budget': False, 'timed_out': False,
+           'low_memory': False, 'aborted': False,
+           'grid_fallback': None,
+           'budget_limited_by': None, 'work_budget': None,
            'reject_reason': None,
            'input_faces': None,
            'max_faces': int(cap) if cap is not None else None,
@@ -4785,9 +4792,38 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
                                                  time_budget=timeout)
         rec['ran'] = True
         rec['budget_exceeded'] = bool(grec.get('budget_exceeded'))
-        if rec['budget_exceeded']:
+        rec['budget_limited_by'] = grec.get('budget_limited_by')
+        rec['work_budget'] = grec.get('work_budget')
+        rec['grid_fallback'] = grec.get('grid_fallback')
+        if grec.get('aborted'):
+            # Outer wall-clock abort: Graft was stopped for time and the
+            # stage-1 result is kept (never a partial-ladder mesh).
+            rec['aborted'] = True
             rec['timed_out'] = True
+            rec['reject_reason'] = 'aborted_time'
+            rec['reason'] = grec.get('reason')
+            rec['warnings'] = list(grec.get('warnings') or [])
+            rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
+            rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining')
+            stats['graft'] = rec
+            return ms, after
+        if rec['budget_exceeded']:
+            # Deterministic inner work budget: keep stage-1 if not adopted.
             rec['reject_reason'] = 'budget'
+        if grec.get('low_memory'):
+            # RAM guard: the deterministic grid budget did not fit, so Graft
+            # refused rather than coarsening.  Keep the stage-1 result and
+            # surface the clear message (never a silently different shape).
+            rec['low_memory'] = True
+            rec['reject_reason'] = 'low_memory'
+            rec['reason'] = grec.get('reason')
+            rec['warnings'] = list(grec.get('warnings') or [])
+            rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
+            rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining')
+            stats['graft'] = rec
+            return ms, after
         rec['fidelity_ok'] = grec.get('fidelity_ok')
         rec['input_coverage'] = grec.get('input_coverage')
         rec['coverage_ok'] = grec.get('coverage_ok')
@@ -4824,20 +4860,23 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         else:
             rec['reason'] = 'graft returned no geometry'
         if rec['adopted']:
-            # A watertight candidate was found before the budget ran out.
+            # A watertight candidate was found before the work budget ran out.
             rec['timed_out'] = False
             rec['reject_reason'] = None
-        elif rec.get('timed_out'):
-            # Budget spent without a watertight candidate: keep stage 1.
+        elif rec.get('budget_exceeded'):
+            # Deterministic inner work budget spent without a watertight
+            # candidate: keep stage 1.  Machine-independent (a pure function of
+            # the input grid + preset), unlike the old wall-clock truncation.
             rec['skipped_budget'] = True
             if rec['holes'] is None:
                 rec['holes'] = (stats.get('stage1') or {}).get(
                     'holes_remaining')
                 rec['non_manifold'] = (stats.get('stage1') or {}).get(
                     'non_manifold_edges_remaining')
-            rec['reason'] = ('Graft exceeded its %ss budget before a '
-                             'watertight candidate; stage-1 result kept'
-                             % (('%g' % timeout) if timeout else '?'))
+            rec['reason'] = ('Graft hit its deterministic work budget (%s '
+                             'cell-attempts) before a watertight candidate; '
+                             'stage-1 result kept'
+                             % (rec.get('work_budget') or '?'))
     except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
         # PyO3 surfaces a Rust panic as pyo3_runtime.PanicException, which
         # subclasses BaseException (not Exception); a tier must degrade to its
@@ -6747,6 +6786,21 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('  Graft (shell wrap)      : %s faces in %.2fs, r=%s, %s%s'
                      % (gr.get('faces', 0), gr.get('seconds', 0),
                         gr.get('r_used'), gr.get('mode'), state))
+        _gf = gr.get('grid_fallback')
+        if _gf:
+            lines.append('    Graft grid            : %s grid does not fit '
+                         'in RAM; used Balanced grid'
+                         % (_gf.get('intensity') or 'preset').capitalize())
+        elif gr.get('low_memory'):
+            lines.append('    Graft grid            : %s'
+                         % (gr.get('reason') or 'low memory'))
+        elif gr.get('aborted'):
+            lines.append('    Graft                 : %s'
+                         % (gr.get('reason')
+                            or 'stopped for time; stage-1 result kept'))
+        elif gr.get('budget_limited_by') == 'work':
+            lines.append('    Graft                 : hit its deterministic '
+                         'work budget; stage-1 result kept')
     dr_r = r.get('dressing')
     if dr_r and dr_r.get('ran'):
         if dr_r.get('adopted'):

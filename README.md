@@ -717,6 +717,17 @@ contains severe damage or complex topological defects.
    the healthy surface deviation exceeds threshold (`fidelity_ok == False`), auto-triage
    evaluates fTetWild in parallel and adopts whichever candidate achieves lower
    healthy-surface deviation. Detail loss is flagged in the report (`graft.warnings`).
+5. **Deterministic resolution**: The grid budget is a pure function of the explicit
+   intensity preset (Quick/Balanced 1.5M cells, Thorough 10M, Extreme 25M), so the same
+   input plus the same options always produce the same envelope on any machine. Free RAM
+   never selects an arbitrary resolution: if the preset budget would not fit, Graft falls
+   back once to the Balanced grid (reported in the output) and only a case where even that
+   does not fit skips Graft with a clear `low_memory` message.
+6. **Deterministic closing ladder**: The closing-radius ladder stops on a deterministic
+   work budget derived from the input grid and the preset, not on a wall clock, so the
+   same input and preset give the same mesh on a fast or a loaded machine. The wall-clock
+   budget is only an outer safety abort: if it trips, Graft is abandoned, the stage-1
+   result is kept, and both the report and the GUI say so plainly.
 
 #### Dressing (variable-viscosity volumetric skin, #16)
 
