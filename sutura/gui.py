@@ -286,6 +286,8 @@ STRINGS = {
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d faces (not adopted)',
         'repair_log_objects': '3MF: %d/%d object(s) watertight',
+        'repair_log_methods': 'Methods: %d/%d OK (%d failed, %d skipped)',
+        'repair_log_methods_fail': 'Failed: %s',
         'edge_tiebreak_label': 'Edge-tiebreak classifier',
         'edge_tiebreak_tip': 'Opt-in 11-feature classifier head (base + 5 '
                              'strong scan signals). NOT the default; the gain is '
@@ -913,6 +915,8 @@ STRINGS = {
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
         'repair_log_indirect_not': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulanmadı)',
         'repair_log_objects': '3MF: %d/%d nesne su geçirmez',
+        'repair_log_methods': 'Yöntemler: %d/%d tamam (%d hata, %d atlandı)',
+        'repair_log_methods_fail': 'Hatalı: %s',
         'edge_tiebreak_label': 'Edge-tiebreak sınıflandırıcı',
         'edge_tiebreak_tip': '11-özellikli sınıflandırıcı kafası (temel + 5 güçlü '
                              'tarama sinyali). Varsayılan değil; kazanç marjinal '
@@ -5031,6 +5035,14 @@ class MainWindow(QMainWindow):
         if len(nums) > 1:
             lines.append(_t('repair_log_method_tried',
                             ' \u2192 '.join('#%s' % n for n in nums)))
+        mh = data.get('method_health') or {}
+        if mh.get('total'):
+            lines.append(_t('repair_log_methods', mh.get('ok', 0),
+                            mh.get('total', 0), mh.get('failed', 0),
+                            mh.get('skipped', 0)))
+            _fails = sorted({e.get('method', '?') for e in (mh.get('errors') or [])})
+            if _fails:
+                lines.append(_t('repair_log_methods_fail', ', '.join(_fails)))
         self.repair_log.setPlainText('\n'.join(lines))
 
     # --- method tagging / per-file recommendations (P3) --------------------

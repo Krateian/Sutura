@@ -36,6 +36,7 @@ import local_exact
 import topology
 import triage
 import methods as method_registry
+from sutura_engine import health as method_health
 
 # The Balanced intensity preset is the pre-triage behaviour; the module
 # constants below keep their names for backward compatibility and are derived
@@ -445,12 +446,15 @@ def apply_chain(ms, chain):
             if not handled:
                 ms.apply_filter(name, **params)
             applied += 1
-        except Exception as e:
-            try:
-                ms.apply_filter(name, **params)
+        except Exception:
+            # Central wrapper: a native-path miss falls back to PyMeshLab; only
+            # a failure of THAT fallback is a real (recorded) method error.
+            _ok, _err = method_health.guard(
+                'stage1:' + name, 'filter', ms.apply_filter, name, **params)
+            if _ok:
                 applied += 1
-            except Exception as e2:
-                skipped[name] = str(e2)
+            else:
+                skipped[name] = str(_err)
     return applied, skipped
 
 
@@ -683,10 +687,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
         'seconds': 0.0, 'history': [],
     }
     init_mask = None
-    try:
+    with method_health.tier_guard('si_excise', 'tier') as _g0:
         report['initial_si'], init_mask = _si_count_and_mask(ms)
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
-        report['reason'] = 'error: %s' % e
+    if _g0.error is not None:
+        report['reason'] = 'error: %s' % _g0.error
         return ms, report
     if report['initial_si'] == 0:
         report['reason'] = 'no_si'
@@ -712,7 +716,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                      + int(topo_before.get('non_two_manifold_vertices', 0) or 0))
         saved_v = ms.current_mesh().vertex_matrix().copy()
         saved_t = ms.current_mesh().face_matrix().copy()
-        try:
+        with method_health.tier_guard('si_excise', 'round') as _gr:
             if topology.native_si_enabled():
                 if round_idx == 0 and init_mask is not None:
                     topology.select_self_intersections_ms(ms, ml, mask=init_mask, count=current_si)
@@ -751,7 +755,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
             nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)
                         + int(topo_after.get('non_two_manifold_vertices', 0) or 0))
             si_after = _si_count(ms)
-        except Exception:  # noqa: BLE001 - reject and roll back on any error
+        if _gr.error is not None:
             ms.clear()
             ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
             report['reason'] = 'rollback'
@@ -1259,6 +1263,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     (library default) keeps the output byte-identical.
     """
     import pymeshlab as ml
+    method_health.reset_if_unscoped()
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
 
@@ -1336,12 +1341,12 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             _t_analyze_s = 0.0
             _t_topo_s = 0.0
             _shell_analyze = None
-            try:
+            with method_health.tier_guard('shell_analyze', 'import') as _gi:
                 import sutura_geom
                 _shell_analyze = getattr(sutura_geom, 'shell_analyze', None)
-            except Exception as _e:
+            if _gi.error is not None:
                 _shell_phase = 'error'
-                _shell_reason = str(_e)
+                _shell_reason = str(_gi.error)
             if _shell_analyze is None:
                 # Stale extension without the shell-analyze binding: skip the
                 # prepass cleanly (report the API gap, not a caught
@@ -1349,8 +1354,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 if _shell_phase is None:
                     _shell_phase = 'api_unavailable'
                     _shell_reason = 'shell_analyze_unavailable'
+                    method_health.record_missing_symbol(
+                        'shell_analyze', 'import', 'shell_analyze')
             else:
-                try:
+                with method_health.tier_guard('shell_analyze', 'tier') as _gs:
                     import defects as _defects
                     _t0 = time.time()
                     _cand_v, _cand_t, _sinfo = _shell_analyze(
@@ -1412,10 +1419,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                     else:
                         _shell_phase = 'P-c_penetrating' if _sinfo['reason'] == 'unresolved_coplanar_overlapping' else 'fallback'
                         _shell_reason = _sinfo['reason']
-                except Exception as _e:
+                if _gs.error is not None:
                     _shell_adopted = False
                     _shell_phase = 'error'
-                    _shell_reason = str(_e)
+                    _shell_reason = str(_gs.error)
 
             _t_shell_total = time.time() - _t_shell_start
             stats['tamponade_shell_prepass'] = {
@@ -1441,7 +1448,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
         # Any phase that is not adopted -> today's path unchanged
         if not _shell_adopted:
-            try:
+            with method_health.tier_guard('outer_shell', 'tier') as _go:
                 import repeat_repair as _rr
                 _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
                 if len(_shell_t) > 0:
@@ -1449,8 +1456,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                     tris = np.asarray(_shell_t, dtype=np.int32)
                     v, t = verts, tris
                     stats['outer_shell_extracted'] = True
-            except Exception:
-                pass
+            # on error the guard records it and the input is kept unchanged
 
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
@@ -1541,7 +1547,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         ar_v = np.asarray(v, dtype=np.float64)
         ar_t = np.asarray(t, dtype=np.int64)
         ar_rep = {'skipped': False}
-        try:
+        with method_health.tier_guard('autorefine', 'tier') as _ga:
             # Imported here, inside the guard: autorefine uses
             # sutura_geom.orient3d exact predicates, and any unexpected error
             # must be caught and reported, never crashing the repair.
@@ -1567,8 +1573,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 if adopted:
                     ms = ms_cand
                     after = cand_after
-        except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
-            ar_rep['error'] = str(e)
+        if _ga.error is not None:
+            ar_rep['error'] = str(_ga.error)
         stats['experimental_autorefine'] = ar_rep
 
     # --experimental-indirect-autorefine (Phase B): exact arrangement-lite
@@ -1583,13 +1589,13 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     stats['experimental_indirect_autorefine'] = False
     if indirect_autorefine and len(t) > 0:
         ia_rep = {'skipped': False}
-        try:
+        with method_health.tier_guard('indirect_autorefine', 'import') as _gii:
             import indirect_bridge
-        except Exception as e:  # noqa: BLE001
+        if _gii.error is not None:
             ia_rep['skipped'] = True
-            ia_rep['error'] = 'indirect bridge unavailable: %s' % e
+            ia_rep['error'] = 'indirect bridge unavailable: %s' % _gii.error
         else:
-            try:
+            with method_health.tier_guard('indirect_autorefine', 'tier') as _gi:
                 ia_v, ia_t, al_info = indirect_bridge.arrangement_lite_arrays(v, t)
                 ia_rep.update(al_info)
                 if len(ia_t) > 0:
@@ -1611,12 +1617,13 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                     if adopted:
                         ms = ms_cand
                         after = cand_after
-            except ImportError as e:
-                ia_rep['skipped'] = True
-                ia_rep['error'] = ('indirect autorefine skipped: sutura_geom '
-                                   'extension unavailable (%s)' % e)
-            except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
-                ia_rep['error'] = str(e)
+            if _gi.error is not None:
+                if isinstance(_gi.error, ImportError):
+                    ia_rep['skipped'] = True
+                    ia_rep['error'] = ('indirect autorefine skipped: sutura_geom '
+                                       'extension unavailable (%s)' % _gi.error)
+                else:
+                    ia_rep['error'] = str(_gi.error)
         stats['experimental_indirect_autorefine'] = ia_rep
 
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
@@ -1909,6 +1916,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         stats['stage1']['self_intersections_remaining'] = int(
             ms.current_mesh().face_selection_array().sum())
+    stats['method_errors'] = method_health.current().to_dicts()
     return stats, new_verts, new_tris
 
 
@@ -2470,7 +2478,7 @@ def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,
     for name in engine_placement_order(engines, chain, placement):
         eng = engines[name]
         entry = {'name': name, 'placement': placement, 'adopted': False}
-        try:
+        with method_health.tier_guard('engine:' + name, placement) as _g:
             in_path = os.path.join(tmpdir,
                                    'engine_%s_in.%s' % (name, eng.input_format))
             out_path = os.path.join(tmpdir,
@@ -2518,8 +2526,8 @@ def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,
                 entries.append(entry)
                 return cand_v, cand_t, True
             entry['reject_reason'] = 'holes_nm'
-        except Exception as e:  # noqa: BLE001 - an engine never fails a repair
-            entry['reject_reason'] = 'error: %s' % e
+        if _g.error is not None:
+            entry['reject_reason'] = 'error: %s' % _g.error
         entries.append(entry)
     return None, None, False
 
@@ -2990,7 +2998,7 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                     'max_faces': spec.ftetwild_max_faces,
                     'trigger': ft_rep['trigger']}
                 return ms, after
-            try:
+            with method_health.tier_guard('ftetwild', 'tier') as _g:
                 inter = os.path.join(tmpdir, 'ftetwild_in.obj')
                 write_obj(inter, v, t)
                 attempts = []
@@ -3070,8 +3078,8 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                         stats['shape_changed'] = True
                     ms = cand_ms
                     after = cand_after
-            except Exception as e:  # noqa: BLE001 - the prototype never crashes a repair
-                ft_rep['error'] = str(e)
+            if _g.error is not None:
+                ft_rep['error'] = str(_g.error)
             stats['experimental_ftetwild'] = ft_rep
     return ms, after
 
@@ -3548,7 +3556,7 @@ def _local_remesh_tier(ml, ms, after):
     remap = -np.ones(len(v), dtype=np.int64)
     remap[used] = np.arange(len(used))
     kv, kt = v[used], remap[kept]
-    try:
+    with method_health.tier_guard('local_remesh', 'tier') as _g:
         trial = ml.MeshSet()
         trial.add_mesh(ml.Mesh(vertex_matrix=kv, face_matrix=kt.astype(np.int32)))
         trial.apply_filter('meshing_repair_non_manifold_vertices')
@@ -3601,8 +3609,8 @@ def _local_remesh_tier(ml, ms, after):
             rep['adopted'] = True
             rep['time'] = round(time.perf_counter() - t0, 3)
             return trial, t_after, rep
-    except Exception as e:  # noqa: BLE001 - a prototype never crashes a repair
-        rep['error'] = str(e)
+    if _g.error is not None:
+        rep['error'] = str(_g.error)
     rep['time'] = round(time.perf_counter() - t0, 3)
     return ms, after, rep
 
@@ -4132,20 +4140,20 @@ def _flap_step(ml, ms, after, stats, _p=None):
            'new_vertices': None, 'time_s': None, 'cache_hit': False,
            'budget_s': None, 'max_orig_vertex_move_mm': None}
     stats['flap'] = rec
-    try:
+    with method_health.tier_guard('flap', 'tier') as _g:
         return _flap_step_impl(ml, ms, after, stats, rec)
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
-        rec['reason'] = 'flap error: %s' % e
+    if _g.error is not None:
+        rec['reason'] = 'flap error: %s' % _g.error
         return ms, after
 
 
 def _flap_step_impl(ml, ms, after, stats, rec):
     base_v = np.asarray(ms.current_mesh().vertex_matrix())
     base_t = np.asarray(ms.current_mesh().face_matrix())
-    try:
+    with method_health.tier_guard('flap', 'measure') as _gm:
         base_holes, base_nm = reload_strict_holes_nm(base_v, base_t)
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
-        rec['reason'] = 'baseline measure failed: %s' % e
+    if _gm.error is not None:
+        rec['reason'] = 'baseline measure failed: %s' % _gm.error
         return ms, after
     rec['baseline_holes'] = int(base_holes)
     rec['baseline_non_manifold'] = int(base_nm)
@@ -4170,13 +4178,13 @@ def _flap_step_impl(ml, ms, after, stats, rec):
         rec['time_s'] = prev_time
     else:
         t0 = time.perf_counter()
-        try:
+        with method_health.tier_guard('flap', 'tier') as _gf:
             from sutura_engine import flap as _flap
             cand_v, cand_t, frep = _flap.flap_fill(base_v, base_t,
                                                    separate_stl=False,
                                                    time_budget=budget)
-        except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
-            rec['reason'] = 'flap error: %s' % e
+        if _gf.error is not None:
+            rec['reason'] = 'flap error: %s' % _gf.error
             return ms, after
         rec['ran'] = True
         rec['time_s'] = round(time.perf_counter() - t0, 3)
@@ -4196,10 +4204,10 @@ def _flap_step_impl(ml, ms, after, stats, rec):
     if not len(cand_t):
         rec['reason'] = 'flap returned no geometry'
         return ms, after
-    try:
+    with method_health.tier_guard('flap', 'measure') as _gc:
         cand_holes, cand_nm = reload_strict_holes_nm(cand_v, cand_t)
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
-        rec['reason'] = 'candidate measure failed: %s' % e
+    if _gc.error is not None:
+        rec['reason'] = 'candidate measure failed: %s' % _gc.error
         return ms, after
     rec['candidate_holes'] = int(cand_holes)
     rec['candidate_non_manifold'] = int(cand_nm)
@@ -4278,7 +4286,7 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
     error. Returns ``(verts, tris, info)``; ``info['dropped']`` logs every removed
     component (faces, volume, thickness, diag, centroid).
     """
-    try:
+    with method_health.tier_guard('flap_debris', 'cleanup') as _g:
         iv, _it = weld_reload_equivalent(in_verts, in_tris)
         wv, wt = weld_reload_equivalent(out_verts, out_tris)
         if len(iv) == 0 or len(wt) == 0:
@@ -4338,8 +4346,7 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
             'dropped': dropped,
         }
         return cv, ct, info
-    except Exception:  # noqa: BLE001 - a cleanup never crashes a repair
-        return out_verts, out_tris, None
+    return out_verts, out_tris, None
 
 
 def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
@@ -4373,7 +4380,7 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
     rec = {'tier': tier, 'ran': True, 'adopted': False, 'watertight': False,
            'holes': None, 'non_manifold': None, 'faces': None,
            'notes': [], 'reason': None}
-    try:
+    with method_health.tier_guard('closing', 'tier') as _g:
         in_v = np.asarray(v, dtype=np.float64)
         in_t = np.asarray(t, dtype=np.int64)
         if proxy_template:
@@ -4432,9 +4439,9 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                  % (cand_holes, cand_nm))
         else:
             rec['reason'] = 'module returned no geometry'
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+    if _g.error is not None:
         rec['ran'] = False
-        rec['reason'] = 'error: %s' % e
+        rec['reason'] = 'error: %s' % _g.error
     stats['closing'] = rec
     return ms, after
 
@@ -4536,7 +4543,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
            'prepass_seconds': None}
     if 'tamponade_shell_prepass' in stats:
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
-    try:
+    with method_health.tier_guard('tamponade', 'tier') as _g:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
         cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
         dump_dir = os.environ.get('SUTURA_TAMP_DUMP')
@@ -4787,9 +4794,6 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 reasons.append('no geometry')
             rec['reason'] = 'not adopted (%s)' % '; '.join(reasons or ['?'])
             rec['reject_reason'] = ', '.join(reasons or ['?'])
-    except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
-        if isinstance(e, (KeyboardInterrupt, SystemExit)):
-            raise
     if 'tamponade_shell_prepass' in stats:
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
     stats['tamponade'] = rec
@@ -4841,7 +4845,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
            'input_faces': None,
            'max_faces': int(cap) if cap is not None else None,
            'time_budget': (float(timeout) if timeout else None)}
-    try:
+    with method_health.tier_guard('graft', 'tier') as _g:
         try:
             from sutura_engine import graft as _graft
         except Exception:  # noqa: BLE001
@@ -4951,13 +4955,11 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
                              'cell-attempts) before a watertight candidate; '
                              'stage-1 result kept'
                              % (rec.get('work_budget') or '?'))
-    except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
+    if _g.error is not None:
         # PyO3 surfaces a Rust panic as pyo3_runtime.PanicException, which
         # subclasses BaseException (not Exception); a tier must degrade to its
         # reason field rather than abort the whole repair.
-        if isinstance(e, (KeyboardInterrupt, SystemExit)):
-            raise
-        rec['reason'] = 'error: %s: %s' % (type(e).__name__, e)
+        rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['graft'] = rec
     return ms, after
 
@@ -5127,7 +5129,7 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
         rec['reason'] = 'sutura_engine.dressing unavailable: %s' % e
         stats['dressing'] = rec
         return ms, after
-    try:
+    with method_health.tier_guard('dressing', 'tier') as _g:
         in_v = np.asarray(v, dtype=np.float64)
         in_t = np.asarray(t, dtype=np.int64)
         cand_v, cand_t, drec = _dressing.dressing_coat(
@@ -5248,10 +5250,8 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
                 rec['reason'] = ('candidate not adopted (%s)'
                                  % ', '.join(reasons) if reasons
                                  else 'candidate not adopted')
-    except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
-        if isinstance(e, (KeyboardInterrupt, SystemExit)):
-            raise
-        rec['reason'] = 'error: %s: %s' % (type(e).__name__, e)
+    if _g.error is not None:
+        rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['dressing'] = rec
     return ms, after
 
@@ -5271,7 +5271,7 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
            'watertight': False, 'min_before': None, 'min_after': None,
            'min_thickness': None, 'delta': None, 'thin_before': None,
            'faces': None, 'notes': [], 'reason': None}
-    try:
+    with method_health.tier_guard('wall_thicken', 'tier') as _g:
         import wall_thickness as _wt
         base_v = np.asarray(ms.current_mesh().vertex_matrix())
         base_t = np.asarray(ms.current_mesh().face_matrix())
@@ -5314,9 +5314,9 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
                                  % (cand_holes, cand_nm))
         elif rec['reason'] is None:
             rec['reason'] = 'module returned no geometry'
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+    if _g.error is not None:
         rec['ran'] = False
-        rec['reason'] = 'error: %s' % e
+        rec['reason'] = 'error: %s' % _g.error
     stats['wall_thicken'] = rec
     return ms, after
 
@@ -5369,7 +5369,7 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
     rec = {'mode': mode, 'ran': False, 'adopted': False, 'watertight': False,
            'pattern_type': None, 'positions_repaired': None,
            'hausdorff_outside': None, 'notes': [], 'reason': None}
-    try:
+    with method_health.tier_guard('repeat', 'tier') as _g:
         cur_v = np.asarray(ms.current_mesh().vertex_matrix())
         cur_t = np.asarray(ms.current_mesh().face_matrix())
         holes = boundary_loop_stats(cur_v, cur_t)[0]
@@ -5447,9 +5447,9 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
                 rec['reason'] = ('candidate not strict-watertight '
                                  '(holes=%d non-manifold=%d)'
                                  % (cand_holes, cand_nm))
-    except Exception as e:  # noqa: BLE001 - a tier never crashes a repair
+    if _g.error is not None:
         rec['ran'] = False
-        rec['reason'] = 'error: %s' % e
+        rec['reason'] = 'error: %s' % _g.error
     stats['repeat'] = rec
     return ms, after
 
@@ -6726,6 +6726,12 @@ def human_report(r, show_defects=False, show_diff=False):
             'n/a' if rh is None else rh,
             'n/a' if rk is None else rk,
             r.get('repair_status', 'n/a')))
+    mh = r.get('method_health')
+    if mh:
+        lines.append(method_health.human_line(mh))
+        for _e in mh.get('errors') or []:
+            lines.append('  ! %s [%s]: %s' % (
+                _e.get('method'), _e.get('stage'), _e.get('message')))
     b = r.get('budget')
     if b is not None:
         lines.append('Budget: geometry change %s%% (limit %s) · risk %s '
@@ -7202,6 +7208,10 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     if engine_warnings:
         result['engine_warnings'] = list(engine_warnings)
     t0 = time.perf_counter()
+    # One central error-isolation scope for this file: every tier/method run
+    # records its failure through sutura_engine.health; the run is summarised
+    # below as result['method_health'].
+    method_health.begin()
     try:
         # Method registry / exec policy (sutura/methods.py): with methods=None
         # this is auto mode -- it runs today's default pipeline first and only
@@ -7281,6 +7291,11 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
         result['error'] = 'repair failed: %s' % e
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+    # Central method-health section: availability of every registered method
+    # overlaid with this run's recorded failures (the wrapper wrote them into
+    # the scope opened above).
+    result['method_health'] = method_health.build_report()
+    method_health.end()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     category, issues, _summary = classify(result)

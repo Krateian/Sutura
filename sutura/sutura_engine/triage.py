@@ -22,6 +22,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import zipfile
 
 import classification
+from sutura_engine import health as method_health
+
 
 def _repair_mod():
     for name in ('repair', '__main__'):
@@ -596,14 +598,15 @@ def _evaluate(result, path, multi, in_objs, method):
 
 def _attempt(src, out, tmpdir, kwargs, multi):
     repair = _repair_mod()
-    try:
+    with method_health.tier_guard('pipeline', 'attempt') as _g:
         if multi:
             return repair.repair_3mf(src, out, tmpdir, **kwargs)
         return repair.repair_file(src, out, tmpdir, **kwargs)
-    except Exception as e:
-        if isinstance(e, getattr(repair, 'ExtremeRemovedAllError', ())):
-            raise
-        return {'input': src, 'output': out, 'error': 'repair failed: %s' % e}
+    if _g.error is not None:
+        if isinstance(_g.error, getattr(repair, 'ExtremeRemovedAllError', ())):
+            raise _g.error
+        return {'input': src, 'output': out,
+                'error': 'repair failed: %s' % _g.error}
 
 
 def _baseline_num(kwargs):
@@ -756,15 +759,15 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
             attempts += 1
 
             _t0 = time.monotonic()
-            try:
+            with method_health.tier_guard('method:%s' % method.id, 'run') as _gm:
                 trial_rep = method.run(in_v, in_t, tmpdir, ctx)
                 trial_v = trial_rep.pop('_verts')
                 trial_t = trial_rep.pop('_tris')
-            except Exception as e:
+            if _gm.error is not None:
                 tried.append({'num': method.num, 'id': method.id, 'name': method.name,
                               'outcome': 'rejected', 'watertight': False, 'holes': None,
                               'non_manifold': None, 'hausdorff_rel': None,
-                              'geom_change_pct': None, 'reason': str(e),
+                              'geom_change_pct': None, 'reason': str(_gm.error),
                               'template': rec.template,
                               'elapsed_ms': int((time.monotonic() - _t0) * 1000)})
                 continue
