@@ -228,7 +228,7 @@ def test_ftetwild_no_retry_after_success_or_timeout():
     assert calls == [None] and not ft['adopted'] and ft['error'] == 'timeout', ft
 
 
-def test_ftetwild_retry_needs_budget():
+def test_ftetwild_retry_is_deterministic_not_budget_gated():
     calls = []
 
     def fake_run(inter, out_obj, params=None, timeout=None):
@@ -236,10 +236,31 @@ def test_ftetwild_retry_needs_budget():
         cv, ct = _cube_with_fin()
         repair.write_obj(out_obj, cv, ct)
         return {'ok': True, 'output_faces': len(ct)}, True
-    ft = _run_with_fake_ftetwild(fake_run, ftetwild_timeout=5)['experimental_ftetwild']
-    assert calls == [None], calls
+    # The retry is DETERMINISTIC (the first boundary failed holes_nm), so it
+    # runs regardless of how little wall-clock budget is left, and no
+    # 'retry_skipped' is recorded.
+    ft = _run_with_fake_ftetwild(fake_run,
+                                 ftetwild_timeout=5)['experimental_ftetwild']
+    assert calls == [None, repair.FTETWILD_RETRY_PARAMS], calls
     assert not ft['adopted'] and ft['reject_reason'] == 'holes_nm', ft
-    assert ft['attempts'][0]['retry_skipped'] == 'budget', ft
+    assert 'retry_skipped' not in ft['attempts'][0], ft
+
+
+def test_ftetwild_outer_abort_keeps_previous_stage():
+    calls = []
+
+    def fake_run(inter, out_obj, params=None, timeout=None):
+        calls.append(params)
+        return {'error': 'must not run'}, False
+    # A non-positive outer budget aborts all-or-nothing BEFORE the first
+    # attempt: the tier runs nothing and the previous stage result is kept.
+    ft = _run_with_fake_ftetwild(fake_run,
+                                 ftetwild_timeout=0.0)['experimental_ftetwild']
+    assert calls == [], calls
+    assert ft['ran'] is True, ft
+    assert ft['aborted'] is True and ft['adopted'] is False, ft
+    assert ft['reject_reason'] == 'aborted_time', ft
+    assert 'stopped for time' in (ft.get('reason') or ''), ft
 
 
 def test_ftetwild_skipped_for_large_inputs():

@@ -152,7 +152,7 @@ BRIDGE = _resolve_bridge()
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()
 INDIRECT_BRIDGE = _resolve_indirect_bridge()
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 
 class ExtremeRemovedAllError(ValueError):
@@ -433,6 +433,14 @@ def apply_chain(ms, chain):
             elif name == 'meshing_invert_face_orientation':
                 _invert_faces_ms(ms, ml)
                 handled = True
+            elif name == 'meshing_repair_non_manifold_edges':
+                if topology.native_nme_enabled():
+                    _repair_nme_ms(ms, ml)
+                    handled = True
+            elif name == 'meshing_re_orient_faces_coherently':
+                if topology.native_orient_enabled():
+                    _re_orient_faces_ms(ms, ml)
+                    handled = True
 
             if not handled:
                 ms.apply_filter(name, **params)
@@ -473,6 +481,28 @@ def _invert_faces_ms(ms, ml):
         ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
     except Exception:
         ms.apply_filter('meshing_invert_face_orientation')
+
+
+def _re_orient_faces_ms(ms, ml):
+    """Re-orient faces coherently on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.re_orient_faces_coherently(t)
+    if not np.array_equal(t_new, t):
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+
+
+def _repair_nme_ms(ms, ml):
+    """Repair non-manifold edges on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.repair_non_manifold_edges(v, t)
+    if len(t_new) < len(t):
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
 
 
 def extreme_extra_passes(ms, ml, params):
@@ -702,7 +732,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 break
             ms.apply_filter('meshing_remove_selected_faces')
             _remove_unref_vertices_ms(ms, ml)
-            ms.apply_filter('meshing_repair_non_manifold_edges')
+            if topology.native_nme_enabled():
+                _repair_nme_ms(ms, ml)
+            else:
+                ms.apply_filter('meshing_repair_non_manifold_edges')
             ms.apply_filter('meshing_repair_non_manifold_vertices')
             close_kwargs = {'maxholesize': maxholesize,
                             'newfaceselected': False,
@@ -1302,73 +1335,87 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             _t_shell_start = time.time()
             _t_analyze_s = 0.0
             _t_topo_s = 0.0
+            _shell_analyze = None
             try:
                 import sutura_geom
-                import defects as _defects
-                _t0 = time.time()
-                _cand_v, _cand_t, _sinfo = sutura_geom.shell_analyze(
-                    np.asarray(verts, dtype=np.float64),
-                    np.asarray(tris, dtype=np.int32),
-                )
-                _t_analyze_s = time.time() - _t0
-                _t0 = time.time()
-                _in_holes = boundary_loop_stats(verts, tris)[0]
-                _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
-                _in_parts = _count_vertex_components(len(verts), tris)
-                _t_topo_s = time.time() - _t0
-
-                # Phase P-a: DISJOINT parts (60916-type):
-                # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
-                # no buried faces, no coincident opposite walls, no internal walls.
-                _is_p_a = _sinfo.get('is_disjoint', False)
-
-                if _is_p_a:
-                    _shell_adopted = True
-                    _shell_phase = 'P-a_disjoint'
-                    _shell_reason = 'disjoint_parts_no_overlap'
-
-                # Phase P-b: exactly coincident opposite walls -> dissolve both (C2)
-                elif (_sinfo['coincident_opp_count'] > 0
-                        and not _sinfo['has_internal_walls']
-                        and _sinfo['internal_walls_count'] == 0
-                        and _sinfo['unresolved_coincident_count'] == 0
-                        and _sinfo['reason'] == 'ok'):
-                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
-                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
-                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
-                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
-                        _shell_adopted = True
-                        _shell_phase = 'P-b_coincident'
-                        _shell_reason = 'coincident_opposite_dissolved'
-                        verts = np.asarray(_cand_v, dtype=np.float32)
-                        tris = np.asarray(_cand_t, dtype=np.int32)
-                        v, t = verts, tris
-                    else:
-                        _shell_phase = 'P-b_coincident'
-                        _shell_reason = 'rejected_holes_or_parts_rose'
-
-                # Phase P-c: penetrating bodies (100045-type) -> exact clip + stitch (C1)
-                elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok':
-                    _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
-                    _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
-                    _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
-                    if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
-                        _shell_adopted = True
-                        _shell_phase = 'P-c_penetrating'
-                        _shell_reason = 'penetrating_bodies_clipped_and_stitched'
-                        verts = np.asarray(_cand_v, dtype=np.float32)
-                        tris = np.asarray(_cand_t, dtype=np.int32)
-                        v, t = verts, tris
-                    else:
-                        _shell_phase = 'P-c_penetrating'
-                        _shell_reason = 'rejected_holes_or_parts_rose'
-                else:
-                    _shell_phase = 'P-c_penetrating' if _sinfo['reason'] == 'unresolved_coplanar_overlapping' else 'fallback'
-                    _shell_reason = _sinfo['reason']
+                _shell_analyze = getattr(sutura_geom, 'shell_analyze', None)
             except Exception as _e:
-                _shell_adopted = False
                 _shell_phase = 'error'
                 _shell_reason = str(_e)
+            if _shell_analyze is None:
+                # Stale extension without the shell-analyze binding: skip the
+                # prepass cleanly (report the API gap, not a caught
+                # AttributeError) and fall through to extract_outer_shell.
+                if _shell_phase is None:
+                    _shell_phase = 'api_unavailable'
+                    _shell_reason = 'shell_analyze_unavailable'
+            else:
+                try:
+                    import defects as _defects
+                    _t0 = time.time()
+                    _cand_v, _cand_t, _sinfo = _shell_analyze(
+                        np.asarray(verts, dtype=np.float64),
+                        np.asarray(tris, dtype=np.int32),
+                    )
+                    _t_analyze_s = time.time() - _t0
+                    _t0 = time.time()
+                    _in_holes = boundary_loop_stats(verts, tris)[0]
+                    _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
+                    _in_parts = _count_vertex_components(len(verts), tris)
+                    _t_topo_s = time.time() - _t0
+
+                    # Phase P-a: DISJOINT parts (60916-type):
+                    # parts are strictly disjoint: no cross-part proper SI, volume overlap < 0.1%,
+                    # no buried faces, no coincident opposite walls, no internal walls.
+                    _is_p_a = _sinfo.get('is_disjoint', False)
+
+                    if _is_p_a:
+                        _shell_adopted = True
+                        _shell_phase = 'P-a_disjoint'
+                        _shell_reason = 'disjoint_parts_no_overlap'
+
+                    # Phase P-b: exactly coincident opposite walls -> dissolve both (C2)
+                    elif (_sinfo['coincident_opp_count'] > 0
+                            and not _sinfo['has_internal_walls']
+                            and _sinfo['internal_walls_count'] == 0
+                            and _sinfo['unresolved_coincident_count'] == 0
+                            and _sinfo['reason'] == 'ok'):
+                        _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                        _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                        _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                        if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                            _shell_adopted = True
+                            _shell_phase = 'P-b_coincident'
+                            _shell_reason = 'coincident_opposite_dissolved'
+                            verts = np.asarray(_cand_v, dtype=np.float32)
+                            tris = np.asarray(_cand_t, dtype=np.int32)
+                            v, t = verts, tris
+                        else:
+                            _shell_phase = 'P-b_coincident'
+                            _shell_reason = 'rejected_holes_or_parts_rose'
+
+                    # Phase P-c: penetrating bodies (100045-type) -> exact clip + stitch (C1)
+                    elif not _sinfo['has_internal_walls'] and _sinfo['reason'] == 'ok':
+                        _cand_holes = boundary_loop_stats(_cand_v, _cand_t)[0]
+                        _cand_nm = len(_defects.detect(_cand_v, _cand_t).get('non_manifold', []))
+                        _cand_parts = _count_vertex_components(len(_cand_v), _cand_t)
+                        if _cand_holes <= _in_holes and _cand_nm <= _in_nm and _cand_parts <= _in_parts:
+                            _shell_adopted = True
+                            _shell_phase = 'P-c_penetrating'
+                            _shell_reason = 'penetrating_bodies_clipped_and_stitched'
+                            verts = np.asarray(_cand_v, dtype=np.float32)
+                            tris = np.asarray(_cand_t, dtype=np.int32)
+                            v, t = verts, tris
+                        else:
+                            _shell_phase = 'P-c_penetrating'
+                            _shell_reason = 'rejected_holes_or_parts_rose'
+                    else:
+                        _shell_phase = 'P-c_penetrating' if _sinfo['reason'] == 'unresolved_coplanar_overlapping' else 'fallback'
+                        _shell_reason = _sinfo['reason']
+                except Exception as _e:
+                    _shell_adopted = False
+                    _shell_phase = 'error'
+                    _shell_reason = str(_e)
 
             _t_shell_total = time.time() - _t_shell_start
             stats['tamponade_shell_prepass'] = {
@@ -1408,7 +1455,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     before_ms = ml.MeshSet()
     before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     before = before_ms.apply_filter('get_topological_measures')
-    before_geom = before_ms.apply_filter('get_geometric_measures')
+    if topology.native_measures_enabled():
+        before_geom = topology.mesh_geometric_measures(v, t)
+    else:
+        before_geom = before_ms.apply_filter('get_geometric_measures')
     before_volume = before_geom.get('mesh_volume', 0)
     before_area = surface_area(v, t)
     before_verts = before.get('vertices_number', 0)
@@ -1778,10 +1828,25 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if skipped:
         stats['stage1']['skipped'] = skipped
 
-    geom = ms.apply_filter('get_geometric_measures')
-    if geom.get('mesh_volume', 0) < 0:
-        _invert_faces_ms(ms, ml)
+    if topology.native_measures_enabled():
+        m_cur = ms.current_mesh()
+        cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
+        cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+        geom = topology.mesh_geometric_measures(cur_v, cur_t)
+        if geom.get('mesh_volume', 0) < 0:
+            _invert_faces_ms(ms, ml)
+            m_cur = ms.current_mesh()
+            cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
+            cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+            geom = topology.mesh_geometric_measures(cur_v, cur_t)
+    else:
         geom = ms.apply_filter('get_geometric_measures')
+        if geom.get('mesh_volume', 0) < 0:
+            _invert_faces_ms(ms, ml)
+            geom = ms.apply_filter('get_geometric_measures')
+            if geom.get('mesh_volume', 0) < 0:
+                _invert_faces_ms(ms, ml)
+                geom = ms.apply_filter('get_geometric_measures')
     after_volume = geom.get('mesh_volume', 0)
 
     new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
@@ -1900,12 +1965,22 @@ FTETWILD_MAX_HAUSDORFF_REL = 0.01
 
 # Second fTetWild attempt: when the default (optimize=False) boundary fails
 # the holes/non-manifold guard even after the manifold3d post-process, the
-# mesh is tetrahedralized once more with the quality optimisation on, within
-# what is left of FTETWILD_TIMEOUT (skipped when less than
-# FTETWILD_RETRY_MIN_SECONDS remain). thingi10k_1038444 was adopted with the
-# optimisation and rejected ('holes_nm') without it (macOS, 2026-09-26).
+# mesh is tetrahedralized once more with the quality optimisation on.  The
+# retry rule is DETERMINISTIC (it depends only on the first boundary's
+# holes/non-manifold verdict, never on the elapsed wall clock).
+# thingi10k_1038444 was adopted with the optimisation and rejected
+# ('holes_nm') without it (macOS, 2026-09-26).
 FTETWILD_RETRY_PARAMS = {'optimize': True}
-FTETWILD_RETRY_MIN_SECONDS = 10.0
+# Outer wall-clock abort message (shared by the report and the human/GUI line).
+# The wall clock only bounds the WHOLE tier; when it trips the tier is
+# abandoned all-or-nothing and the previous stage (stage-1 / deep-ladder)
+# result is kept -- it never picks a different (partial) attempt.
+FTETWILD_ABORT_MESSAGE = (
+    "fTetWild was stopped for time (%s budget, checked between attempts); "
+    "the previous stage result was kept")
+FTETWILD_ABORT_MESSAGE_TR = (
+    "fTetWild süre nedeniyle durduruldu (%s bütçe, denemeler arasında "
+    "denetlenir); önceki aşama sonucu korundu")
 
 # Input size above which the fTetWild tier is not started
 # (reject_reason='too_large'). The limit follows from the budget: the
@@ -2883,11 +2958,15 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
     Skipped for inputs above the intensity spec's fTetWild size cap
     (reject_reason 'too_large'; None means no cap). The first attempt uses the
     bridge defaults (optimize=False); when its boundary fails the
-    holes/non-manifold guard, one retry with FTETWILD_RETRY_PARAMS runs within
-    the remaining budget. ``attempts`` lists every run, ``adopted_attempt``
-    names the adopted one; the top-level report fields describe the adopted
-    (or else the last) attempt. An adopted result far from the input is
-    flagged (``shape_changed``), not rejected."""
+    holes/non-manifold guard, one retry with FTETWILD_RETRY_PARAMS runs -- a
+    DETERMINISTIC rule (never a function of the elapsed wall clock).
+    ``attempts`` lists every run, ``adopted_attempt`` names the adopted one;
+    the top-level report fields describe the adopted (or else the last)
+    attempt. ``FTETWILD_TIMEOUT`` is only an outer all-or-nothing abort checked
+    between attempts: when it trips, the tier is abandoned and the previous
+    stage result is kept (``aborted=True`` / ``reject_reason='aborted_time'``),
+    never a partial attempt. An adopted result far from the input is flagged
+    (``shape_changed``), not rejected."""
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     stats['experimental_ftetwild'] = False
@@ -2922,6 +3001,7 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                 plan = ([('optimize', user_params)] if user_params else
                         [('default', None), ('optimize', FTETWILD_RETRY_PARAMS)])
                 chosen = None
+                aborted = False
                 for tag, params in plan:
                     if attempts:
                         last = attempts[-1]
@@ -2930,29 +3010,46 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                         if (tag == 'optimize'
                                 and (last.get('optimize_retry') or {}).get('ran')):
                             break
-                        # retry only when the first boundary exists but
-                        # fails the holes/non-manifold guard
+                        # retry only when the first boundary exists but fails
+                        # the holes/non-manifold guard; DETERMINISTIC (never a
+                        # function of the elapsed wall clock)
                         if last.get('reject_reason') != 'holes_nm':
                             break
-                        remaining = spec.ftetwild_timeout - (time.perf_counter() - t_start)
-                        if remaining < FTETWILD_RETRY_MIN_SECONDS:
-                            last['retry_skipped'] = 'budget'
-                            break
-                    else:
-                        remaining = spec.ftetwild_timeout
+                    # Outer wall-clock abort (all-or-nothing): the budget bounds
+                    # the WHOLE ladder.  When it is spent the tier is abandoned
+                    # and the previous stage result is kept, never a partial
+                    # attempt; a single attempt still gets the remaining budget
+                    # so it cannot run unbounded.
+                    remaining = spec.ftetwild_timeout - (
+                        time.perf_counter() - t_start)
+                    if remaining <= 0.0:
+                        aborted = True
+                        break
                     att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag,
                                                   params, remaining, v, t, spec)
                     attempts.append(att)
+                    if att.get('error') == 'timeout':
+                        aborted = True
+                        break
                     if cand is None:
                         continue
                     if cand[4] <= cur_holes and cand[5] <= cur_nm:
                         chosen = (att, cand)
                         break
                     att['reject_reason'] = 'holes_nm'
-                final = chosen[0] if chosen else attempts[-1]
-                ft_rep.update({k: val for k, val in final.items() if k != 'attempt'})
+                if attempts:
+                    final = chosen[0] if chosen else attempts[-1]
+                    ft_rep.update(
+                        {k: val for k, val in final.items() if k != 'attempt'})
                 ft_rep['attempts'] = attempts
                 ft_rep['adopted'] = chosen is not None
+                if aborted:
+                    ft_rep['adopted'] = False
+                    ft_rep['aborted'] = True
+                    ft_rep['reject_reason'] = 'aborted_time'
+                    ft_rep['reason'] = FTETWILD_ABORT_MESSAGE % (
+                        ('%g s' % float(spec.ftetwild_timeout))
+                        if spec.ftetwild_timeout else 'time')
                 if chosen:
                     att, (cand_v, cand_t, cand_ms, cand_after, _h, _n) = chosen
                     ft_rep['adopted_attempt'] = att['attempt']
@@ -3378,8 +3475,6 @@ def _local_si_rise(base_v, base_t, cand_v, cand_t):
         return base_local, cand_local, bool(cand_local > base_local), True
     except Exception:  # noqa: BLE001 - a classifier failure is not fatal
         return None, None, None, False
-
-
 def _umbrella_fair(verts, tris, first_free, steps):
     """Umbrella-operator smoothing (each vertex moves to the mean of its
     1-ring neighbours) of the vertices with index >= ``first_free``; all
@@ -3887,20 +3982,31 @@ def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
         if not add_mask.any():
             return 0.0, 0
         add_v = ov[np.unique(ot[add_mask])]
-        bvh = sutura_geom.PyMeshBvh(iv, it)
-        w = np.asarray(bvh.winding_points(add_v))
+        # The cheap closest-point pass runs first and cheaply answers "is any
+        # added vertex farther than the tolerance from the input?"; only the
+        # far vertices can ever be a leak, so the winding BVH (the expensive
+        # part) is built and queried on that subset alone. Identical result: a
+        # vertex with ``dist <= tol`` can never satisfy ``bad``.
         _q, dist, _f = sutura_geom.closest_points(iv, it, add_v)
         dist = np.asarray(dist, dtype=np.float64)
         tol = min(max(in_diag / 10000.0, 0.0125), 0.05)
-        bad = (w < 0.5) & (dist > tol)
+        far = dist > tol
+        if not far.any():
+            return 0.0, 0
+        far_v = add_v[far]
+        far_dist = dist[far]
+        bvh = sutura_geom.PyMeshBvh(iv, it)
+        w = np.asarray(bvh.winding_points(far_v))
+        bad = w < 0.5
         if not bad.any():
             return 0.0, 0
-        return float(dist[bad].max()), int(bad.sum())
+        return float(far_dist[bad].max()), int(bad.sum())
     except Exception:  # noqa: BLE001 - a metric failure is not fatal
         return 0.0, 0
 
 
-def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
+def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris,
+                               force_metrics=False):
     """Whether a Tamponade-adopted FINAL mesh warrants a Tamponade-OFF re-run.
 
     Returns ``(reason, metrics)`` with ``reason`` None when the result is
@@ -3909,28 +4015,37 @@ def _tamponade_final_needs_off(in_verts, in_tris, out_verts, out_tris):
     the object) and an outside-the-input leak above ``TAMP_LEAK_TRIGGER_FRAC``
     of the diagonal. ``metrics`` carries the reload-honest damage, the
     component count and the leak so the OFF candidate can be compared.
+
+    The damage metrics (holes / non-manifold / components) are only consumed
+    when a trigger fires and the OFF comparison runs, so on the common
+    no-trigger path they are skipped and ``(None, None)`` is returned. The
+    OFF-side call sets ``force_metrics=True`` so its metrics dict is always
+    built (the comparison reads it unconditionally).
     """
     in_diag = _bbox_diagonal(in_verts)
     out_diag = _bbox_diagonal(out_verts)
     coverage = (out_diag / in_diag) if in_diag else 1.0
+    leak_mm, leak_pts = _tamponade_shape_leak(
+        in_verts, in_tris, out_verts, out_tris, in_diag)
+    reason = None
+    if in_diag and coverage < TAMP_COLLAPSE_BBOX_FRAC:
+        reason = 'bbox_collapse'
+    elif in_diag and (leak_mm / in_diag) > TAMP_LEAK_TRIGGER_FRAC:
+        reason = 'shape_leak'
+    if reason is None and not force_metrics:
+        return None, None
     try:
         holes, nm = reload_strict_holes_nm(out_verts, out_tris)
         wv, wt = weld_reload_equivalent(out_verts, out_tris)
         parts = _count_vertex_components(len(wv), wt)
     except Exception:  # noqa: BLE001 - metrics are best-effort
         holes = nm = parts = None
-    leak_mm, leak_pts = _tamponade_shape_leak(
-        in_verts, in_tris, out_verts, out_tris, in_diag)
     metrics = {'input_diag_mm': round(in_diag, 4),
                'output_diag_mm': round(out_diag, 4),
                'coverage': round(coverage, 4),
                'leak_mm': round(leak_mm, 4), 'leak_pts': leak_pts,
                'holes': holes, 'non_manifold': nm, 'parts': parts}
-    if in_diag and coverage < TAMP_COLLAPSE_BBOX_FRAC:
-        return 'bbox_collapse', metrics
-    if in_diag and (leak_mm / in_diag) > TAMP_LEAK_TRIGGER_FRAC:
-        return 'shape_leak', metrics
-    return None, metrics
+    return reason, metrics
 
 
 def _tamponade_off_preferred(on_metrics, off_metrics):
@@ -4576,6 +4691,14 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 rec['cand_local_si'] = cand_local
                 si_fall = bool(cand_local < base_local)
                 si_ok = bool(not si_rise)
+            elif base_holes == 0 and base_nm == 0:
+                # Stale extension without the SI-subset binding and an already
+                # closed base: there is no holes/non-manifold fall the prepass
+                # could adopt on, so skip the two full exact scans. The prepass
+                # is an optimization only, so not adopting here is always safe.
+                rec['si_method'] = 'unavailable'
+                si_fall = False
+                si_ok = False
             else:
                 base_si_exact = _exact_si_face_count(wb_v, wb_t)
                 rec['input_self_intersections'] = base_si_exact
@@ -4685,13 +4808,17 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
     warnings the CLI/GUI surface; the auto policy reads ``fidelity_ok`` to
     decide whether to also try fTetWild.
 
-    The tier is bounded like the fTetWild tier: ``spec`` (the Triage
-    ``IntensitySpec``) supplies ``graft_max_faces`` (a hard input cap; a single
-    ``morph_close`` attempt is not interruptible) and ``graft_timeout`` (the
-    wall-clock budget for the closing ladder).  Inputs above the cap, or
-    ladders that spend the budget before finding a watertight candidate, are
-    reported honestly (``skipped_budget`` / ``timed_out`` / ``reject_reason``)
-    and keep the stage-1 result.  Never raises.
+    The tier is bounded two ways: ``spec`` (the Triage ``IntensitySpec``)
+    supplies ``graft_max_faces`` (a hard input cap; a single ``morph_close``
+    attempt is not interruptible) and ``graft_timeout`` (an OUTER wall-clock
+    abort checked between ladder attempts).  The r-ladder itself stops on a
+    DETERMINISTIC work budget inside ``shell_wrap`` (a pure function of the
+    input grid + preset), so the produced mesh does not depend on CPU speed or
+    load.  Inputs above the cap, a work-budget stop, and a wall-clock abort are
+    reported honestly (``skipped_budget`` / ``budget_limited_by`` / ``aborted``
+    / ``reject_reason``) and keep the stage-1 result.  An abort is
+    all-or-nothing: the partial ladder is discarded, never returned.  Never
+    raises.
     """
     if not graft:
         return ms, after
@@ -4707,6 +4834,9 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
            'faces': None, 'holes': None, 'non_manifold': None,
            'warnings': [], 'reason': None,
            'skipped_budget': False, 'timed_out': False,
+           'low_memory': False, 'aborted': False,
+           'grid_fallback': None,
+           'budget_limited_by': None, 'work_budget': None,
            'reject_reason': None,
            'input_faces': None,
            'max_faces': int(cap) if cap is not None else None,
@@ -4736,9 +4866,38 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
                                                  time_budget=timeout)
         rec['ran'] = True
         rec['budget_exceeded'] = bool(grec.get('budget_exceeded'))
-        if rec['budget_exceeded']:
+        rec['budget_limited_by'] = grec.get('budget_limited_by')
+        rec['work_budget'] = grec.get('work_budget')
+        rec['grid_fallback'] = grec.get('grid_fallback')
+        if grec.get('aborted'):
+            # Outer wall-clock abort: Graft was stopped for time and the
+            # stage-1 result is kept (never a partial-ladder mesh).
+            rec['aborted'] = True
             rec['timed_out'] = True
+            rec['reject_reason'] = 'aborted_time'
+            rec['reason'] = grec.get('reason')
+            rec['warnings'] = list(grec.get('warnings') or [])
+            rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
+            rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining')
+            stats['graft'] = rec
+            return ms, after
+        if rec['budget_exceeded']:
+            # Deterministic inner work budget: keep stage-1 if not adopted.
             rec['reject_reason'] = 'budget'
+        if grec.get('low_memory'):
+            # RAM guard: the deterministic grid budget did not fit, so Graft
+            # refused rather than coarsening.  Keep the stage-1 result and
+            # surface the clear message (never a silently different shape).
+            rec['low_memory'] = True
+            rec['reject_reason'] = 'low_memory'
+            rec['reason'] = grec.get('reason')
+            rec['warnings'] = list(grec.get('warnings') or [])
+            rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
+            rec['non_manifold'] = (stats.get('stage1') or {}).get(
+                'non_manifold_edges_remaining')
+            stats['graft'] = rec
+            return ms, after
         rec['fidelity_ok'] = grec.get('fidelity_ok')
         rec['input_coverage'] = grec.get('input_coverage')
         rec['coverage_ok'] = grec.get('coverage_ok')
@@ -4775,20 +4934,23 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         else:
             rec['reason'] = 'graft returned no geometry'
         if rec['adopted']:
-            # A watertight candidate was found before the budget ran out.
+            # A watertight candidate was found before the work budget ran out.
             rec['timed_out'] = False
             rec['reject_reason'] = None
-        elif rec.get('timed_out'):
-            # Budget spent without a watertight candidate: keep stage 1.
+        elif rec.get('budget_exceeded'):
+            # Deterministic inner work budget spent without a watertight
+            # candidate: keep stage 1.  Machine-independent (a pure function of
+            # the input grid + preset), unlike the old wall-clock truncation.
             rec['skipped_budget'] = True
             if rec['holes'] is None:
                 rec['holes'] = (stats.get('stage1') or {}).get(
                     'holes_remaining')
                 rec['non_manifold'] = (stats.get('stage1') or {}).get(
                     'non_manifold_edges_remaining')
-            rec['reason'] = ('Graft exceeded its %ss budget before a '
-                             'watertight candidate; stage-1 result kept'
-                             % (('%g' % timeout) if timeout else '?'))
+            rec['reason'] = ('Graft hit its deterministic work budget (%s '
+                             'cell-attempts) before a watertight candidate; '
+                             'stage-1 result kept'
+                             % (rec.get('work_budget') or '?'))
     except BaseException as e:  # noqa: BLE001 - a tier never crashes a repair
         # PyO3 surfaces a Rust panic as pyo3_runtime.PanicException, which
         # subclasses BaseException (not Exception); a tier must degrade to its
@@ -5994,7 +6156,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             try:
                 off_report, off_v, off_t = _run(flap, run_tamponade=False)
                 _, off_metrics = _tamponade_final_needs_off(
-                    verts, tris, off_v, off_t)
+                    verts, tris, off_v, off_t, force_metrics=True)
                 fallback['ran'] = True
                 fallback['off'] = off_metrics
                 use_off = _tamponade_off_preferred(on_metrics, off_metrics)
@@ -6635,6 +6797,10 @@ def human_report(r, show_defects=False, show_diff=False):
         if ft_r.get('reject_reason') == 'too_large':
             lines.append('  fTetWild fallback : skipped (%d faces, limit %d)'
                          % (ft_r.get('input_faces', 0), ft_r.get('max_faces', 0)))
+        elif ft_r.get('aborted'):
+            lines.append('  fTetWild fallback : %s'
+                         % (ft_r.get('reason')
+                            or 'stopped for time; previous stage kept'))
         elif ft_r.get('ran') and 'error' in ft_r:
             lines.append('  fTetWild fallback : error (%s)'
                          % ft_r['error'][:60])
@@ -6698,6 +6864,21 @@ def human_report(r, show_defects=False, show_diff=False):
         lines.append('  Graft (shell wrap)      : %s faces in %.2fs, r=%s, %s%s'
                      % (gr.get('faces', 0), gr.get('seconds', 0),
                         gr.get('r_used'), gr.get('mode'), state))
+        _gf = gr.get('grid_fallback')
+        if _gf:
+            lines.append('    Graft grid            : %s grid does not fit '
+                         'in RAM; used Balanced grid'
+                         % (_gf.get('intensity') or 'preset').capitalize())
+        elif gr.get('low_memory'):
+            lines.append('    Graft grid            : %s'
+                         % (gr.get('reason') or 'low memory'))
+        elif gr.get('aborted'):
+            lines.append('    Graft                 : %s'
+                         % (gr.get('reason')
+                            or 'stopped for time; stage-1 result kept'))
+        elif gr.get('budget_limited_by') == 'work':
+            lines.append('    Graft                 : hit its deterministic '
+                         'work budget; stage-1 result kept')
     dr_r = r.get('dressing')
     if dr_r and dr_r.get('ran'):
         if dr_r.get('adopted'):

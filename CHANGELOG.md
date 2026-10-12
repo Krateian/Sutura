@@ -2,34 +2,29 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.9.1] - 2026-10-12
+
+### Changed
+
+- **The fTetWild retry no longer depends on the wall clock.** The second fTetWild attempt (with `optimize=True`) is now a pure function of the first attempt's holes/non-manifold verdict: it runs whenever the first boundary fails the adopt guard, regardless of how long the first attempt took. The old `FTETWILD_RETRY_MIN_SECONDS=10` gate and its `retry_skipped='budget'` state were removed, so a fast machine and a slow machine now make the same retry decision. `FTETWILD_TIMEOUT` is only an outer all-or-nothing abort: when it trips the tier is abandoned, the previous stage result is kept, and the report carries `experimental_ftetwild['aborted']=True` / `reject_reason='aborted_time'` with the `FTETWILD_ABORT_MESSAGE` (shown in `--human` and as `repair_log_ftetwild_aborted` in the GUI); a partial attempt is never adopted.
 
 ### Fixed
 
-- **Graft could adopt a collapsed fragment.** Graft's adoption only checked
-  watertightness and the healthy-region deviation, so a candidate that rebuilt
-  the object into a small fragment passed (`thingi10k_100827`: a 37 mm scan
-  reduced to a 7 mm fragment, `holes 0 / nm 0 / fidelity_ok true`). Graft now
-  computes the **input coverage** (the fraction of input surface samples within
-  tolerance of the result) and reports `input_coverage` / `coverage_ok`; the
-  auto ladder no longer adopts a watertight candidate whose coverage is below
-  `GRAFT_MIN_INPUT_COVERAGE` (0.5, chosen from the measured 17-mesh A18 gap:
-  every accepted Graft candidate scores 0.625-1.000, the fragment 0.013) and
-  falls through to fTetWild / the next tier. Accepted results are unchanged
-  (the gate only rejects the collapse class).
-- **Tamponade could make the final shape worse than `--no-tamponade`.** The
-  Tamponade adoption gate is topological-only (the reload-honest holes +
-  non-manifold count must fall) and is decided on the pre-chain / stage-1 mesh,
-  so it could not observe that a later deep tier rebuilt the object into a
-  small fragment (thingi10k_100827). `repair_file` adds a final safety net that
-  mirrors the Flap one: when Tamponade was adopted and the saved result either
-  collapses below `TAMP_COLLAPSE_BBOX_FRAC` (0.5) of the input's bounding-box
-  diagonal OR leaks material outside the input solid beyond
-  `TAMP_LEAK_TRIGGER_FRAC` (1 % of the diagonal; the 100827 leak was 4.9 %), it
-  re-runs once with Tamponade OFF and keeps the candidate that does not leak
-  further and covers more of the input. Tamponade is discarded only when the
-  no-tamponade result is actually better, so every existing adoption stays
-  byte-identical.
+- **Graft output is now deterministic.** The morphology grid/voxel budget is a pure function of the explicit intensity preset (Quick/Balanced 1.5M cells, Thorough 10M, Extreme 25M) and the input grid, with no free-RAM input, so the same file plus the same options always produce the same envelope on every run and machine. The RAM guard is a discrete fallback: when the preset budget would not fit, Graft falls back once to the Balanced grid (`report['grid_fallback']` + a `grid_fallback` warning) and continues, and only a case where even Balanced does not fit returns the input unchanged with `report['low_memory']=True`, `reject_reason='low_memory'` and a clear message while keeping the stage-1 result. The GUI repair log now shows both the Balanced grid fallback and the low-memory refusal, matching the `--human` output.
+- **Graft's closing ladder is deterministic (no wall-clock in the result).** The closing-radius ladder stops on a deterministic work budget (`GRAFT_WORK_BUDGET_BY_INTENSITY`, the sum of grid cells over attempts, a pure function of the input grid and the preset) instead of on elapsed time; a work-budget stop is reported as `budget_limited_by='work'` / `reject_reason='budget'`. The wall clock survives only as an outer all-or-nothing abort checked between attempts: when it trips, the partial ladder is discarded, the input is returned unchanged with `report['aborted']=True` / `reject_reason='aborted_time'` and `GRAFT_ABORT_MESSAGE`, and the stage-1 result is kept (`graft_tier` sets `rec['aborted']`/`rec['timed_out']`, `--human` prints the message and the GUI shows `repair_log_graft_aborted`). The same input and preset now give the same mesh on a fast or a loaded machine.
+- **The conforming edge-split cascade in shell analysis could fail to converge (Rust).** The `conforming_edge_split` cascade that triangulates a host triangle around its intersection segments was not convergent: each pass could roughly double the face count and spawn new splits (measured on `thingi10k_100045`: 1,356 → 1,864 → 3,206 → 8,602 → 29,666 → 107,970 faces, ~6.4 s; `thingi10k_1038439` grew toward ~217M faces and effectively hung). The fix replaces the growing fan with a UV ear-clip triangulation, tracks the constrained edges explicitly so an edge is split at most once, and adds a divergence guard that abandons an over-growing host. On the reference meshes the shell analysis dropped from 6.89 s to 0.34 s on `thingi10k_100045` (end-to-end CLI 7.49 s → 1.44 s), `thingi10k_1038439` went from a >180 s time-out to 8.42 s, and on the integration 8-mesh smoke set the total CLI repair time fell from 171.7 s to 146.2 s (`thingi10k_40886`: 62.4 s → 37.4 s). Interleaved re-measurement confirmed no regression (integ 19.0% faster on `artec_bovine-heart`, 4.3% faster on `thingi10k_46012`).
+
+### Performance
+
+- **Tamponade's final safety net computes its leak/damage metrics lazily.** The post-tier comparison that guards against a clean-but-worse plug only needed the metrics on the paths where a trigger was possible, so the leak and damage scans are now computed on demand: ~0.84 s → ~0.14 s on `thingi10k_46012`, with the output unchanged.
+- **Tamponade's missing-API fallbacks are hardened.** On an older `sutura_geom` extension that lacks the metrics API, the final guard skips the pre-pass self-intersection scan when there are already zero holes and non-manifold edges, so the degraded path stays both correct and cheap instead of running a redundant scan.
+
+### Internal
+
+- Graft's budget/guard test (`tests/test_graft_budget.py`) is now wired into CI, and the GUI repair log surfaces the Graft grid guards (the Balanced fallback and the `low_memory` refusal) and the Graft/fTetWild time-abort lines.
+- The fTetWild single-thread default pin (P2) was evaluated and reverted: forcing `num_threads=1` gave no determinism benefit (fTetWild is still not byte-deterministic) and cost about 2.2× the run time, so the default thread behaviour is unchanged and only the wall-clock-independent retry (P3) was kept.
+- The `sutura-verify` shape harness had an O(N²) set rebuild in `verify_repair_shape`; the offending set is now hoisted out of the loop.
+- The dependency reduction was re-verified against `main` after the Phase 3b branch sync: `psutil` and `pyrobust-predicates` are no longer dependencies (neither appears in any `requirements*.txt`), and the connected-component labelling formerly done by `scipy.sparse.csgraph` now uses the stdlib/numpy `topology.connected_components`. The default-off native topology kernel (`SUTURA_NATIVE_SI`/`_ORIENT`/`_NME`/`_MEASURES`) is still opt-in and byte-identical to the fallback when the flags are off; no behaviour change relative to v0.9.0.
 
 ## [0.9.0] - 2026-10-11
 
@@ -183,6 +178,13 @@ Meshes; no third-party code is used.
 
 ### Fixed
 
+- **Graft could adopt a collapsed fragment.** Graft's adoption only checked the
+  healthy-surface deviation, so a result that covered well under half of the
+  input's real extent could still be accepted if its remaining deviation was
+  small. Adoption now also checks the input coverage
+  (`graft.GRAFT_MIN_INPUT_COVERAGE=0.5`) and reports `input_coverage` /
+  `coverage_ok`, so a heavily collapsed envelope is rejected and the stage-1
+  result is kept instead.
 - **README license-rationale paragraph placement.** Moved the license-rationale
   paragraph ("The reason for this change: ...") from the end of `README.md`,
   where it sat after the version history, into the `## License` section
@@ -443,8 +445,10 @@ Meshes; no third-party code is used.
   (Quick/Balanced 1.5M, Thorough 10M, Extreme 25M; RAM-safe cap at 35 % of available memory
   and a hard 25M ceiling; 1.5M floor). Balanced keeps the historical 1.5M budget after the
   40-mesh corpus regression check showed the 5M target doubled Graft time for no watertight
-  gain. Explicit `grid_budget=` values are honoured verbatim. The report carries the effective
-  `grid_budget`, `intensity` and chosen `voxel`.
+  gain. Explicit `grid_budget=` values are honoured verbatim. The `shell_wrap`
+  report carries the effective `grid_budget`, `intensity` and chosen `voxel`
+  (the top-level `report['graft']` surfaces the guard outcomes, not `grid_budget`
+  itself).
 
 ### Fixed
 

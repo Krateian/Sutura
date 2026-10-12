@@ -351,9 +351,10 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
     tol = min(max(bbox_diag / 10000.0, 0.0125), 0.05)
 
     in_keys = tri_keys(in_raw)
+    in_set = set(in_keys)
     out_set = set(tri_keys(out_raw))
     healthy = sum(1 for k in in_keys if k in out_set)
-    added = [j for j, k in enumerate(tri_keys(out_raw)) if k not in set(in_keys)]
+    added = [j for j, k in enumerate(tri_keys(out_raw)) if k not in in_set]
 
     from defects import detect
     rep = detect(vo, to)

@@ -151,8 +151,17 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   OFF by default and is an opt-in evaluation switch (`SUTURA_GRAFT_SIGN_FIELD=1`), like the
   ray-stab vote — env-only, no CLI flag or GUI control by design (it is not proven; on
   ornate-frame it fails both gates and costs ~326 s). The grid budget is derived
-  automatically from the Triage intensity preset, which both the CLI (`--intensity`) and
-  the GUI (batch-wide *Intensity* picker) already set, so parity is automatic.
+  automatically from the Triage intensity preset alone (never from free RAM, so the
+  grid is deterministic), which both the CLI (`--intensity`) and the GUI (batch-wide
+  *Intensity* picker) already set, so parity is automatic. Free RAM is a discrete
+  fallback guard: a preset budget that would not fit falls back once to the Balanced grid
+  (`grid_fallback`, with a clear message), and only a budget where even Balanced does not
+  fit is refused (`reject_reason='low_memory'`); the resolution is never silently coarsened.
+  It is automatic pipeline behaviour for both CLI and GUI, so it needs no separate control.
+  The closing ladder also stops on a deterministic work budget (input grid + preset), not a
+  wall clock; the wall-clock budget is only an outer all-or-nothing abort whose message is
+  printed by `--human` and shown by the GUI repair log (`repair_log_graft_aborted`), so the
+  two surfaces stay identical.
 - **Ray-stabbing (+ sign-field disambiguation) CLI/GUI control:** both votes remain
   environment/library-only until a real-world-corpus measurement; the follow-up adds a CLI
   flag and a GUI control together, per the parity rule.
@@ -201,3 +210,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   PyMeshLab's). It has deliberately NO CLI flag or GUI control, so the CLI and the
   GUI behave identically (parity by construction, like the ray-stab vote); when it
   is proven it gets a CLI flag and a GUI control together.
+- **fTetWild deterministic retry + time abort (v0.9.1):** the retry after a boundary
+  that fails the holes/non-manifold guard is a pure function of that verdict (no
+  wall-clock gate), and `FTETWILD_TIMEOUT` is only an outer all-or-nothing abort that
+  keeps the previous stage result. Both are automatic pipeline behaviour (the CLI
+  `--human` line and the GUI repair log show the abort plainly, the GUI via
+  `repair_log_ftetwild_aborted`), so there is no separate flag or control and parity is
+  automatic. The proposed P1 (content-addressed result cache) and P4 (deterministic
+  replacement tier) are NOT implemented.

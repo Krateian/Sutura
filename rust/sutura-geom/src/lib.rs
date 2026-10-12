@@ -985,36 +985,11 @@ fn self_intersecting_faces<'py>(
 
 /// Core self-intersection scan (no Python): `(mask, count, skipped)`.
 fn self_intersections_core(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> (Vec<bool>, i64, bool) {
-    let f = tris.len();
-    if f == 0 {
-        return (Vec::new(), 0, false);
+    if tris.len() > SI_MAX_FACES {
+        return (vec![false; tris.len()], -1, true);
     }
-    if f > SI_MAX_FACES {
-        return (vec![false; f], -1, true);
-    }
-    let triangles: Vec<triangle_intersection::Triangle> = tris
-        .iter()
-        .map(|t| triangle_intersection::Triangle::explicit(verts[t[0]], verts[t[1]], verts[t[2]]))
-        .collect();
-    let pairs = arrangement::broad_phase_candidates(verts, tris);
-    let mut mask = vec![false; f];
-    for (i, j) in pairs {
-        let (a, b) = (tris[i], tris[j]);
-        let adjacent = a.iter().any(|x| b.contains(x));
-        if adjacent {
-            continue;
-        }
-        match triangle_intersection::intersect_triangles(&triangles[i], &triangles[j]) {
-            triangle_intersection::TriangleIntersection::ProperSegment { .. }
-            | triangle_intersection::TriangleIntersection::CoplanarOverlap => {
-                mask[i] = true;
-                mask[j] = true;
-            }
-            _ => {}
-        }
-    }
-    let count = mask.iter().filter(|&&b| b).count() as i64;
-    (mask, count, false)
+    let bvh = winding::MeshBvh::from_arrays(verts, tris);
+    bvh.self_intersections(verts, tris)
 }
 
 /// Self-intersections counted only from a face SUBSET.
@@ -1280,7 +1255,10 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::remove_unreferenced_vertices, m)?)?;
     m.add_function(wrap_pyfunction!(topology::remove_connected_components, m)?)?;
     m.add_function(wrap_pyfunction!(topology::invert_face_orientation, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::re_orient_faces_coherently, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::repair_non_manifold_edges, m)?)?;
     m.add_function(wrap_pyfunction!(topology::mesh_topology, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::mesh_geometric_measures, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;

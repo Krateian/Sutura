@@ -272,8 +272,13 @@ STRINGS = {
         'repair_log_pinched': 'Split %d pinched vertex(es) (closed mesh made two-manifold)',
         'repair_log_ftetwild': 'fTetWild fallback: %d faces, %ds (adopted)' ,
         'repair_log_ftetwild_not': 'fTetWild fallback: %d faces, %ds (not adopted)',
+        'repair_log_ftetwild_aborted': 'fTetWild: stopped for time; previous stage kept',
         'repair_log_graft': 'Graft (shell wrap): %d faces, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detail loss: %s',
+        'repair_log_graft_aborted': 'Graft: stopped for time; stage-1 result kept',
+        'repair_log_graft_budget': 'Graft: hit its deterministic work budget; stage-1 result kept',
+        'repair_log_graft_low_memory': 'Graft: grid would not fit in RAM; stage-1 result kept',
+        'repair_log_graft_grid_fallback': 'Graft: %s grid does not fit in RAM; used the Balanced grid',
         'repair_log_dressing': 'Dressing (viscosity coat): %d faces, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Dressing fidelity: %s',
         'repair_log_tamponade': 'Tamponade (interior plug): %s plugs, %s faces, holes %s->%s',
@@ -894,8 +899,13 @@ STRINGS = {
         'repair_log_pinched': '%d sıkışmış vertex ayrıldı (kapalı mesh two-manifold yapıldı)',
         'repair_log_ftetwild': 'fTetWild fallback: %d yüz, %ds (uygulandı)',
         'repair_log_ftetwild_not': 'fTetWild fallback: %d yüz, %ds (uygulanmadı)',
+        'repair_log_ftetwild_aborted': 'fTetWild: süre nedeniyle durduruldu; önceki aşama korundu',
         'repair_log_graft': 'Graft (kabuk sarma): %d yüz, r=%s (%s)',
         'repair_log_graft_warn': 'Graft detay kaybı: %s',
+        'repair_log_graft_aborted': 'Graft: süre nedeniyle durduruldu; Aşama 1 sonucu korundu',
+        'repair_log_graft_budget': 'Graft: belirleyici iş bütçesine ulaştı; Aşama 1 sonucu korundu',
+        'repair_log_graft_low_memory': 'Graft: ızgara RAM\'e sığmadı; Aşama 1 sonucu korundu',
+        'repair_log_graft_grid_fallback': 'Graft: %s ızgara RAM\'e sığmadı; Dengeli ızgara kullanıldı',
         'repair_log_dressing': 'Pansuman (Dressing): %d yüz, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Pansuman sadakati: %s',
         'repair_log_tamponade': 'Tampon (içeriden tıkaç): %s tıkaç, %s yüz, delik %s->%s',
@@ -4945,20 +4955,34 @@ class MainWindow(QMainWindow):
         if data.get('extreme_passes_applied') and data.get('self_intersections_removed'):
             lines.append(_t('repair_log_extreme', data['self_intersections_removed']))
         ft_r = data.get('experimental_ftetwild')
-        if ft_r and ft_r.get('ran') and 'error' not in ft_r:
+        if ft_r and ft_r.get('aborted'):
+            lines.append(_t('repair_log_ftetwild_aborted'))
+        elif ft_r and ft_r.get('ran') and 'error' not in ft_r:
             key = 'repair_log_ftetwild' if ft_r.get('adopted') \
                 else 'repair_log_ftetwild_not'
             lines.append(_t(key, ft_r.get('output_faces', 0), ft_r.get('time', 0)))
         gr_r = data.get('graft')
         if gr_r and gr_r.get('ran'):
-            lines.append(_t('repair_log_graft', gr_r.get('faces', 0),
-                            gr_r.get('r_used'), gr_r.get('mode')))
-            _warns = gr_r.get('warnings') or []
-            if _warns:
-                _is_tr = QLocale.system().name().startswith('tr')
-                _msg = _warns[0].get('message_tr' if _is_tr else 'message_en') \
-                    or _warns[0].get('message_en', '')
-                lines.append(_t('repair_log_graft_warn', _msg))
+            if gr_r.get('aborted'):
+                lines.append(_t('repair_log_graft_aborted'))
+            elif gr_r.get('low_memory'):
+                lines.append(_t('repair_log_graft_low_memory'))
+            elif gr_r.get('budget_limited_by') == 'work' \
+                    and not gr_r.get('adopted') and not gr_r.get('grid_fallback'):
+                lines.append(_t('repair_log_graft_budget'))
+            else:
+                lines.append(_t('repair_log_graft', gr_r.get('faces', 0),
+                                gr_r.get('r_used'), gr_r.get('mode')))
+                _gfb = gr_r.get('grid_fallback')
+                if _gfb:
+                    lines.append(_t('repair_log_graft_grid_fallback',
+                                    (_gfb.get('intensity') or 'preset').capitalize()))
+                _warns = gr_r.get('warnings') or []
+                if _warns:
+                    _is_tr = QLocale.system().name().startswith('tr')
+                    _msg = _warns[0].get('message_tr' if _is_tr else 'message_en') \
+                        or _warns[0].get('message_en', '')
+                    lines.append(_t('repair_log_graft_warn', _msg))
         dr_r = data.get('dressing')
         if dr_r and dr_r.get('ran'):
             lines.append(_t('repair_log_dressing',

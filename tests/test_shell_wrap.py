@@ -279,43 +279,127 @@ def test_sign_field_pass0_not_adopted_when_fidelity_fails():
     assert rep["mode"] != "sign_field", rep
 
 
-def test_time_budget_stops_between_attempts():
-    """A spent budget stops the closing ladder after the current attempt and
-    returns the best candidate found so far (never hangs, never a crash)."""
-    import time as _time
+def test_time_budget_aborts_all_or_nothing():
+    """A spent outer time budget aborts Graft entirely and keeps the input
+    (stage-1), never a partial-ladder mesh that depends on machine speed."""
     import sutura_engine.graft as graft_mod
 
     v, f = sphere_with_hole()
     calls = {"n": 0}
     real_close = graft_mod.sutura_geom.morph_close
     real_ladder = graft_mod._r_ladder
-    real_max = graft_mod.HEALTHY_HAUSDORFF_MAX
+    real_perf = graft_mod.time.perf_counter
+    clock = {"n": 0}
 
     def fake_ladder(gap, voxel, diag, max_tries):
         return [1e-4, 2e-4, 4e-4, 8e-4]
 
     def fake_close(*args, **kwargs):
         calls["n"] += 1
-        _time.sleep(0.02)
         return real_close(*args, **kwargs)
 
-    # Force the fidelity gate to fail so no rung can break early; only the
-    # budget may stop the ladder.
-    graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0
+    def slow_clock():
+        clock["n"] += 1
+        return 100.0 * clock["n"]
+
     graft_mod._r_ladder = fake_ladder
     graft_mod.sutura_geom.morph_close = fake_close
+    graft_mod.time.perf_counter = slow_clock
     try:
-        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
-                                   guard=True, time_budget=1e-6)
+        ov, ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                 guard=True, time_budget=1.0)
     finally:
         graft_mod._r_ladder = real_ladder
         graft_mod.sutura_geom.morph_close = real_close
-        graft_mod.HEALTHY_HAUSDORFF_MAX = real_max
+        graft_mod.time.perf_counter = real_perf
+
+    assert rep["aborted"] is True
+    assert rep["reject_reason"] == "aborted_time"
+    assert rep["budget_exceeded"] is False
+    assert rep["tries"] == 0
+    assert calls["n"] == 0, calls
+    assert "stopped for time" in rep["reason"]
+    # The input is returned unchanged (stage-1 result kept).
+    assert np.array_equal(np.asarray(ov), np.asarray(v, np.float64))
+    assert np.array_equal(np.asarray(ot), np.asarray(f, np.int64))
+
+
+def test_ladder_result_is_independent_of_wall_clock():
+    """The produced mesh must not depend on the clock: a 'slow' clock under a
+    generous outer budget gives the same result as no time budget at all."""
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    real_close = graft_mod.sutura_geom.morph_close
+    real_ladder = graft_mod._r_ladder
+    real_max = graft_mod.HEALTHY_HAUSDORFF_MAX
+    real_perf = graft_mod.time.perf_counter
+
+    def fake_ladder(gap, voxel, diag, max_tries):
+        return [1e-4, 2e-4, 4e-4, 8e-4]
+
+    def fake_close(*args, **kwargs):
+        return real_close(*args, **kwargs)
+
+    def run(time_budget, clock=None):
+        graft_mod._r_ladder = fake_ladder
+        graft_mod.sutura_geom.morph_close = fake_close
+        graft_mod.HEALTHY_HAUSDORFF_MAX = 0.0
+        if clock is not None:
+            graft_mod.time.perf_counter = clock
+        try:
+            return shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                              guard=True, time_budget=time_budget)
+        finally:
+            graft_mod._r_ladder = real_ladder
+            graft_mod.sutura_geom.morph_close = real_close
+            graft_mod.HEALTHY_HAUSDORFF_MAX = real_max
+            graft_mod.time.perf_counter = real_perf
+
+    tick = {"n": 0}
+
+    def slow_clock():
+        tick["n"] += 1
+        return 100.0 * tick["n"]
+
+    ov0, ot0, rep0 = run(None)
+    ov1, ot1, rep1 = run(3600.0, clock=slow_clock)
+
+    assert rep0["tries"] == rep1["tries"] == 4
+    assert rep1["aborted"] is False
+    assert np.array_equal(np.asarray(ov0), np.asarray(ov1))
+    assert np.array_equal(np.asarray(ot0), np.asarray(ot1))
+
+
+def test_work_budget_stops_deterministically():
+    """The inner r-ladder stop is a deterministic cell-work budget, not the
+    wall clock: a tiny budget stops after the first candidate."""
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    real_close = graft_mod.sutura_geom.morph_close
+    real_ladder = graft_mod._r_ladder
+    real_budget = graft_mod.GRAFT_WORK_BUDGET_BY_INTENSITY
+
+    def fake_ladder(gap, voxel, diag, max_tries):
+        return [1e-4, 2e-4, 4e-4, 8e-4]
+
+    graft_mod._r_ladder = fake_ladder
+    graft_mod.sutura_geom.morph_close = real_close
+    graft_mod.GRAFT_WORK_BUDGET_BY_INTENSITY = {
+        k: 1 for k in real_budget}
+    try:
+        _ov, _ot, rep = shell_wrap(v, f, grid_budget=BUDGET, voxel=0.08,
+                                   guard=True)
+    finally:
+        graft_mod._r_ladder = real_ladder
+        graft_mod.sutura_geom.morph_close = real_close
+        graft_mod.GRAFT_WORK_BUDGET_BY_INTENSITY = real_budget
 
     assert rep["budget_exceeded"] is True
+    assert rep["budget_limited_by"] == "work"
+    assert rep["aborted"] is False
     assert rep["tries"] == 1, rep["tries"]
-    assert calls["n"] == 1, calls
-    assert rep["time_budget"] == 1e-6
 
 
 def test_no_time_budget_runs_full_ladder():
@@ -351,25 +435,87 @@ def test_no_time_budget_runs_full_ladder():
     assert calls["n"] == 4, calls
 
 
-def test_resolve_grid_budget_scales_with_intensity_and_ram():
+def test_resolve_grid_budget_is_a_pure_function_of_intensity():
+    from sutura_engine import graft as graft_mod
     from sutura_engine.graft import resolve_grid_budget
-    big = 1 << 40
-    assert resolve_grid_budget("quick", big) == 1_500_000
-    assert resolve_grid_budget("balanced", big) == 1_500_000
-    assert resolve_grid_budget("thorough", big) == 10_000_000
-    assert resolve_grid_budget("extreme", big) == 25_000_000
+    assert resolve_grid_budget("quick") == 1_500_000
+    assert resolve_grid_budget("balanced") == 1_500_000
+    assert resolve_grid_budget("thorough") == 10_000_000
+    assert resolve_grid_budget("extreme") == 25_000_000
     # Unknown/None falls back to the balanced target.
-    assert resolve_grid_budget(None, big) == 1_500_000
-    assert resolve_grid_budget("custom-profile", big) == 1_500_000
-    # A tiny machine must clamp BELOW the nominal floor: the RAM-safe limit is
-    # an absolute ceiling down to MIN_GRID_DIV**3 (BUG-03).
-    from sutura_engine.graft import MIN_GRID_DIV
-    floor = MIN_GRID_DIV ** 3
-    assert resolve_grid_budget("extreme", 1_000_000) == floor
-    assert resolve_grid_budget("balanced", 1_000_000) == floor
-    assert resolve_grid_budget("extreme", 10**12) == 25_000_000
-    # A mid-size machine still gets the nominal target when it fits.
-    assert resolve_grid_budget("balanced", 10**12) == 1_500_000
+    assert resolve_grid_budget(None) == 1_500_000
+    assert resolve_grid_budget("custom-profile") == 1_500_000
+    # The free-RAM probe must not influence the resolved budget at all.
+    real_probe = graft_mod._available_memory_bytes
+    try:
+        graft_mod._available_memory_bytes = lambda: 4 * 1024 * 1024
+        low = resolve_grid_budget("extreme")
+        graft_mod._available_memory_bytes = lambda: 1 << 50
+        high = resolve_grid_budget("extreme")
+    finally:
+        graft_mod._available_memory_bytes = real_probe
+    assert low == high == 25_000_000
+
+
+def test_shell_wrap_grid_params_identical_under_different_free_ram():
+    """The free-RAM guard is discrete and deterministic.
+
+    Enough RAM -> the preset budget (identical for any ample value); a preset
+    that does not fit -> a reported fallback to the Balanced budget; only when
+    even Balanced does not fit -> refuse.  It never picks an arbitrary
+    resolution.
+    """
+    import sutura_engine.graft as graft_mod
+
+    v, f = sphere_with_hole()
+    real_probe = graft_mod._available_memory_bytes
+    real_close = graft_mod.sutura_geom.morph_close
+
+    def stub_close(*args, **kwargs):
+        # Keep the topology (a stub envelope); only the early grid params are
+        # under test here.
+        return v, f, {}
+
+    def run_with_ram(ram, intensity):
+        graft_mod._available_memory_bytes = lambda: ram
+        graft_mod.sutura_geom.morph_close = stub_close
+        try:
+            return shell_wrap(v, f, intensity=intensity)
+        finally:
+            graft_mod.sutura_geom.morph_close = real_close
+
+    try:
+        _a, _b, rep_bal_hi = run_with_ram(256 * 1024 ** 3, "balanced")
+        _c, _d, rep_bal_lo = run_with_ram(4 * 1024 ** 3, "balanced")
+        _e, _f, rep_ext_hi = run_with_ram(256 * 1024 ** 3, "extreme")
+        _g, _h, rep_ext_mid = run_with_ram(2 * 1024 ** 3, "extreme")
+        _i, _j, rep_tiny = run_with_ram(64 * 1024 ** 2, "extreme")
+    finally:
+        graft_mod._available_memory_bytes = real_probe
+
+    # Enough RAM: identical grid for a huge vs an ample value, preset used.
+    assert rep_bal_hi["grid_budget"] == rep_bal_lo["grid_budget"] == 1_500_000
+    assert rep_bal_hi["voxel"] == rep_bal_lo["voxel"]
+    assert rep_bal_hi["low_memory"] is False
+    assert rep_ext_hi["grid_budget"] == 25_000_000
+    assert rep_ext_hi["grid_fallback"] is None
+
+    # Mid RAM: Extreme does not fit -> reported fallback to Balanced (not a
+    # refusal, not a silent arbitrary coarsening).
+    assert rep_ext_mid["grid_budget"] == 1_500_000
+    assert rep_ext_mid["low_memory"] is False
+    assert rep_ext_mid["reject_reason"] is None
+    assert rep_ext_mid["grid_fallback"] == {
+        "from": 25_000_000, "to": 1_500_000, "intensity": "extreme"}
+    assert any(w.get("code") == "grid_fallback"
+               for w in rep_ext_mid["warnings"])
+
+    # Tiny RAM: even Balanced does not fit -> refuse with the preset budget
+    # left untouched.
+    assert rep_tiny["grid_budget"] == 25_000_000
+    assert rep_tiny["low_memory"] is True
+    assert rep_tiny["reject_reason"] == "low_memory"
+    assert rep_tiny["reason"]
 
 
 if __name__ == "__main__":

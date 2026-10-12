@@ -90,7 +90,8 @@ def test_graft_tier_under_cap_runs_shell_wrap_with_budget():
     rec = stats['graft']
     assert seen.get('time_budget') == 300.0
     assert rec['ran'] is True
-    assert rec['timed_out'] is True
+    assert rec['budget_exceeded'] is True
+    assert rec['timed_out'] is False
     assert rec['skipped_budget'] is True
     assert rec['reject_reason'] == 'budget'
     assert rec['holes'] == 3 and rec['non_manifold'] == 1
