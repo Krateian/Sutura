@@ -149,7 +149,10 @@ def _count_si(ml, ms):
     if topology.native_si_enabled():
         m = ms.current_mesh()
         _, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-        return max(int(count), 0)
+        if int(count) >= 0:
+            return int(count)
+        # Classifier skip sentinel (-1, mesh above the cap): fall through to the
+        # PyMeshLab filter rather than silently reporting 0 flags.
     ms.apply_filter('compute_selection_by_self_intersections_per_face')
     n = int(ms.current_mesh().face_selection_array().sum())
     ms.apply_filter('set_selection_none')
@@ -162,21 +165,7 @@ def _exact_si_face_count(verts, tris):
     Returns ``None`` when the classifier is unavailable or skipped (mesh above
     the classifier's face cap); the same metric the independent verifier uses.
     """
-    try:
-        import sutura_geom
-    except Exception:  # noqa: BLE001 - no extension is a normal case
-        return None
-    if not hasattr(sutura_geom, 'self_intersecting_faces'):
-        return None
-    try:
-        t = np.asarray(tris, dtype=np.int32)
-        if len(t) == 0:
-            return 0
-        _mask, count = sutura_geom.self_intersecting_faces(
-            np.asarray(verts, dtype=np.float64), t)
-        return None if count < 0 else int(count)
-    except Exception:  # noqa: BLE001 - a classifier failure is not fatal
-        return None
+    return topology.si_face_count(verts, tris)
 
 
 def _internal_wall_count(verts, tris):

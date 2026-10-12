@@ -771,7 +771,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         stats['stage1']['self_intersections_remaining'] = None
     elif topology.native_si_enabled():
         _, count = topology.self_intersecting_faces(new_verts, new_tris)
-        stats['stage1']['self_intersections_remaining'] = max(int(count), 0)
+        stats['stage1']['self_intersections_remaining'] = (
+            None if int(count) < 0 else int(count))
     else:
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         stats['stage1']['self_intersections_remaining'] = int(

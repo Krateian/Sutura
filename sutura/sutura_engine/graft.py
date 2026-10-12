@@ -725,14 +725,9 @@ def _isotropic_remesh(v, t, target):
 # self-intersection rollback
 # --------------------------------------------------------------------------- #
 def _si_count(v, t):
-    limit = min(SI_MAX_FACES, SHELL_WRAP_SI_MAX_FACES)
-    if len(t) == 0 or len(t) > limit:
+    if len(t) == 0:
         return None
-    try:
-        _mask, count = sutura_geom.self_intersecting_faces(v, t)
-        return int(count)
-    except Exception:  # noqa: BLE001
-        return None
+    return topology.si_face_count(v, t, limit=SHELL_WRAP_SI_MAX_FACES)
 
 
 def _si_rollback(v_remesh, t_remesh, v_wrap, t_wrap, si_before):

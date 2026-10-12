@@ -50,6 +50,8 @@ import time
 
 import numpy as np
 
+import topology
+
 # Per-intensity wall-clock budget for the tier (seconds); quick disables it.
 LOCAL_EXACT_BUDGET_BY_INTENSITY = {
     'quick': 0.0,
@@ -113,7 +115,7 @@ def detect_si_face_mask(ml, verts, tris):
     except Exception:  # noqa: BLE001 - extension optional
         geom = None
     if geom is not None:
-        cap = int(getattr(geom, 'SI_MAX_FACES', 150000))
+        cap = int(getattr(geom, 'SI_MAX_FACES', topology.SI_MAX_FACES))
         if F <= cap:
             try:
                 mask, count = geom.self_intersecting_faces(

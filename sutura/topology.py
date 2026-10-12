@@ -904,35 +904,46 @@ def native_measures_enabled():
     return env in ('1', 'true', 'yes', 'on')
 
 
-# Session BVH and SI cache to avoid redundant builds when geometry is unchanged
-_BVH_CACHE = {
-    'verts_ref': None,
-    'tris_ref': None,
-    'verts_ptr': None,
-    'tris_ptr': None,
-    'verts_shape': None,
-    'tris_shape': None,
-    'v_sample': None,
-    't_sample': None,
-    'bvh': None,
-    'mask': None,
-    'count': None,
-}
+# Exact self-intersection face-count policy cap.  The Rust extension's own
+# ``SI_MAX_FACES`` (2,000,000 as of sutura_geom 0.1.0) overrides it; this is
+# only the fallback for an older wheel that does not export the attribute.
+SI_MAX_FACES = 2_000_000
 
 
-def clear_bvh_cache():
-    """Clear cached BVH and SI results."""
-    _BVH_CACHE['verts_ref'] = None
-    _BVH_CACHE['tris_ref'] = None
-    _BVH_CACHE['verts_ptr'] = None
-    _BVH_CACHE['tris_ptr'] = None
-    _BVH_CACHE['verts_shape'] = None
-    _BVH_CACHE['tris_shape'] = None
-    _BVH_CACHE['v_sample'] = None
-    _BVH_CACHE['t_sample'] = None
-    _BVH_CACHE['bvh'] = None
-    _BVH_CACHE['mask'] = None
-    _BVH_CACHE['count'] = None
+def _policy_cap():
+    """Face cap above which the exact SI classifier reports 'unmeasurable'."""
+    if _geom is None:
+        return SI_MAX_FACES
+    return int(getattr(_geom, 'SI_MAX_FACES', SI_MAX_FACES))
+
+
+def si_face_count(verts, tris, limit=None):
+    """Exact proper-crossing self-intersection face count, or ``None``.
+
+    ``None`` means *unmeasurable*: no Rust kernel, more than ``limit`` faces
+    (default :func:`_policy_cap`), or the classifier's own skip sentinel.
+    ``0`` means *measured, no crossings* -- never the old silent ``-1 -> 0``.
+
+    This is the count-only entry point used by the exact-count callers
+    (``pipeline.utils._exact_si_face_count``, Graft, Dressing); the
+    mask-based dispatcher :func:`self_intersecting_faces` keeps the same
+    sentinel but also returns the (possibly numpy) mask.
+    """
+    t = np.asarray(tris, dtype=np.int32)
+    if len(t) == 0:
+        return 0
+    if limit is None:
+        limit = _policy_cap()
+    if len(t) > limit:
+        return None
+    if _geom is None or not hasattr(_geom, 'self_intersecting_faces'):
+        return None
+    try:
+        v = np.asarray(verts, dtype=np.float64)
+        _mask, count = _geom.self_intersecting_faces(v, t)
+    except Exception:  # noqa: BLE001 - a classifier failure is not fatal
+        return None
+    return None if int(count) < 0 else int(count)
 
 
 def self_intersecting_faces(verts, tris, bvh=None):
@@ -950,30 +961,6 @@ def self_intersecting_faces(verts, tris, bvh=None):
     if len(t) < 2:
         return np.zeros(len(t), dtype=bool), 0
 
-    if bvh is None:
-        v_ptr = v.__array_interface__['data'][0]
-        t_ptr = t.__array_interface__['data'][0]
-        is_hit = False
-        if verts is _BVH_CACHE['verts_ref'] and tris is _BVH_CACHE['tris_ref']:
-            is_hit = True
-        elif (
-            v_ptr == _BVH_CACHE['verts_ptr']
-            and t_ptr == _BVH_CACHE['tris_ptr']
-            and v.shape == _BVH_CACHE['verts_shape']
-            and t.shape == _BVH_CACHE['tris_shape']
-            and _BVH_CACHE['mask'] is not None
-        ):
-            if (
-                _BVH_CACHE['v_sample'] is not None
-                and _BVH_CACHE['t_sample'] is not None
-                and np.array_equal(v[:min(4, len(v))], _BVH_CACHE['v_sample'])
-                and np.array_equal(t[:min(4, len(t))], _BVH_CACHE['t_sample'])
-            ):
-                is_hit = True
-
-        if is_hit and _BVH_CACHE['mask'] is not None and len(_BVH_CACHE['mask']) == len(t):
-            return _BVH_CACHE['mask'].copy(), _BVH_CACHE['count']
-
     if _has_rust('self_intersecting_faces'):
         try:
             if bvh is not None:
@@ -989,22 +976,8 @@ def self_intersecting_faces(verts, tris, bvh=None):
                     new_bvh = None
 
             if new_bvh is not None and hasattr(new_bvh, 'self_intersecting_faces'):
-                mask, count = new_bvh.self_intersecting_faces()
-            else:
-                mask, count = _geom.self_intersecting_faces(v, t)
-
-            _BVH_CACHE['verts_ref'] = verts
-            _BVH_CACHE['tris_ref'] = tris
-            _BVH_CACHE['verts_ptr'] = v.__array_interface__['data'][0]
-            _BVH_CACHE['tris_ptr'] = t.__array_interface__['data'][0]
-            _BVH_CACHE['verts_shape'] = v.shape
-            _BVH_CACHE['tris_shape'] = t.shape
-            _BVH_CACHE['v_sample'] = v[:min(4, len(v))].copy()
-            _BVH_CACHE['t_sample'] = t[:min(4, len(t))].copy()
-            _BVH_CACHE['bvh'] = new_bvh
-            _BVH_CACHE['mask'] = mask
-            _BVH_CACHE['count'] = count
-            return mask, count
+                return new_bvh.self_intersecting_faces()
+            return _geom.self_intersecting_faces(v, t)
         except Exception:
             pass
     return _self_intersecting_faces_numpy(v, t)
@@ -1032,7 +1005,7 @@ def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
 
     try:
         ms.apply_filter('set_selection_none')
-        if count > 0:
+        if count is not None and int(count) > 0:
             m.add_face_custom_scalar_attribute(mask.astype(np.float64), '_native_si')
             ms.apply_filter('compute_selection_by_condition_per_face', condselect='_native_si > 0.5')
     except Exception:
@@ -1149,7 +1122,8 @@ __all__ = [
     'native_measures_enabled',
     'self_intersecting_faces',
     'select_self_intersections_ms',
-    'clear_bvh_cache',
+    'si_face_count',
+    'SI_MAX_FACES',
     'engine',
     'set_engine',
 ]
