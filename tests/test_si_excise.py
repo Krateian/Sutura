@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regression tests for the guarded Stage-1 self-intersection excise + re-cap
-(repair.si_excise_recap, Full Mend path, SUTURA_SI_EXCISE).
+(pipeline_mod.si_excise_recap, Full Mend path, SUTURA_SI_EXCISE).
 
 Needs the venv (pymeshlab). pytest-compatible; runnable directly:
     ~/.local/share/sutura/venv/bin/python tests/test_si_excise.py
@@ -19,6 +19,7 @@ import pymeshlab as ml  # noqa: E402
 import trimesh  # noqa: E402
 
 import repair  # noqa: E402
+import sutura_engine.pipeline.pipeline as pipeline_mod  # noqa: E402
 
 
 def _sphere_with_blade(subdiv=3):
@@ -63,7 +64,7 @@ def test_clean_mesh_is_noop():
     cube = trimesh.creation.box()
     ms = _meshset(cube.vertices, cube.faces)
     v0, t0 = _arrays(ms)
-    _ms, rep = repair.si_excise_recap(ms, ml)
+    _ms, rep = pipeline_mod.si_excise_recap(ms, ml)
     assert rep['ran'] is False and rep['initial_si'] == 0, rep
     assert rep['reason'] == 'no_si', rep
     v1, t1 = _arrays(ms)
@@ -75,7 +76,7 @@ def test_excise_reduces_si_and_preserves_topology():
     ms = _meshset(v, t)
     si_before = _si(ms)
     assert si_before > 0, 'fixture must self-intersect'
-    ms, rep = repair.si_excise_recap(ms, ml, time_budget=30.0)
+    ms, rep = pipeline_mod.si_excise_recap(ms, ml, time_budget=30.0)
     assert rep['applied'] and rep['rounds'] >= 1, rep
     assert rep['si_after'] == 0, rep
     assert rep['removed_si'] == rep['initial_si'], rep
@@ -92,7 +93,7 @@ def test_rollback_on_failed_recap_restores_mesh():
     v0, t0 = _arrays(ms)
     # maxholesize=1 cannot close the excised loops -> the guard must reject the
     # round and restore the pre-round mesh byte-for-byte.
-    ms, rep = repair.si_excise_recap(ms, ml, maxholesize=1, time_budget=30.0)
+    ms, rep = pipeline_mod.si_excise_recap(ms, ml, maxholesize=1, time_budget=30.0)
     assert rep['applied'] is False, rep
     assert rep['rounds'] == 0, rep
     assert rep['reason'] in ('rollback', 'scope'), rep
@@ -104,7 +105,7 @@ def test_budget_zero_skips():
     v, t = _sphere_with_blade(3)
     ms = _meshset(v, t)
     v0, t0 = _arrays(ms)
-    _ms, rep = repair.si_excise_recap(ms, ml, time_budget=0.0)
+    _ms, rep = pipeline_mod.si_excise_recap(ms, ml, time_budget=0.0)
     assert rep['ran'] is False and rep['reason'] == 'budget', rep
     v1, t1 = _arrays(ms)
     assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
@@ -151,12 +152,12 @@ def test_full_path_plumbs_a_positive_result():
                'budget_s': time_budget, 'seconds': 0.1, 'history': []}
         return ms, rec
 
-    saved = repair.si_excise_recap
-    repair.si_excise_recap = fake_recap
+    saved = pipeline_mod.si_excise_recap
+    pipeline_mod.si_excise_recap = fake_recap
     try:
         rep, _v, _t = _repair_cube(mode='medium', deep_repair='full')
     finally:
-        repair.si_excise_recap = saved
+        pipeline_mod.si_excise_recap = saved
     assert rep['si_excise']['applied'] is True, rep.get('si_excise')
     assert rep['si_excise']['removed_si'] == 7, rep['si_excise']
     assert seen.get('maxholesize'), seen
