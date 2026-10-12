@@ -92,6 +92,7 @@ APP_MODULES = (
     'diagnostics.py',
     'manifest.py',
     'self_repair.py',
+    'self_check.py',
 )
 # __init__.py is copied by the updater although install.sh deliberately omits
 # it for the flat install layout (the AppImage/macOS packages copy it too).

@@ -7572,6 +7572,8 @@ def main():
     parser.add_argument('--self-repair', action='store_true',
                         help='verify installed application files against the release '
                              'manifest and safely download replacements')
+    parser.add_argument('--self-check', action='store_true',
+                        help='run health and self-check diagnostics on all registered repair methods')
     parser.add_argument('--max-geometry-change', type=float, default=None,
                         metavar='PCT',
                         help='repair budget: warn/block when the actual geometry '
@@ -7902,6 +7904,14 @@ def main():
         except ImportError:
             from self_repair import run_self_repair_cli
         code = run_self_repair_cli(force_yes=getattr(args, 'yes', False))
+        sys.exit(code)
+
+    if getattr(args, 'self_check', False):
+        try:
+            from sutura.self_check import run_self_check_cli
+        except ImportError:
+            from self_check import run_self_check_cli
+        code = run_self_check_cli()
         sys.exit(code)
 
     # 'clear-cache' as the first positional argument clears ~/.cache/sutura/

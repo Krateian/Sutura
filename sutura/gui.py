@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QDialog, QSlider, QStyle, QButtonGroup, QRadioButton,
     QCheckBox, QDoubleSpinBox, QSpinBox, QLineEdit, QInputDialog,
     QFormLayout, QGroupBox, QListWidget, QMenu,
-    QTabWidget, QTextBrowser, QComboBox)
+    QTabWidget, QTextBrowser, QComboBox, QFrame)
 
 # the updater/repair modules live beside this file in both the repo and the
 # installed layout, so put this directory on the path and import them flat.
@@ -691,6 +691,10 @@ STRINGS = {
         'sug_low_conf': 'Trying the next mode up and comparing results could help.',
         'sug_extreme_caveat': ('Extreme can delete parts with fewer than 20 faces '
                                'entirely — be careful with assembly-type models.'),
+        'health_banner_msg': '%s. Some repair capabilities failed availability checks.',
+        'health_diag_btn': 'Diagnostics',
+        'save_diagnostics_title': 'Save Diagnostics Archive',
+        'diagnostics_saved': 'Diagnostics written to %s',
     },
     'tr': {
         'app_title': 'Sutura',
@@ -1324,6 +1328,10 @@ STRINGS = {
         'sug_low_conf': 'Bir üst mod denenip sonucu karşılaştırmak faydalı olabilir.',
         'sug_extreme_caveat': ('Extreme, 20 yüzden küçük parçaları tamamen silebilir — '
                                'montaj tipi modellerde dikkatli olun.'),
+        'health_banner_msg': '%s. Bazı onarım yöntemleri kullanılabilirlik testinde başarısız oldu.',
+        'health_diag_btn': 'Tanılama',
+        'save_diagnostics_title': 'Tanılama Arşivini Kaydet',
+        'diagnostics_saved': 'Tanılama %s konumuna yazıldı',
     },
 }
 
@@ -3706,6 +3714,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._apply_accent()
+        self._check_method_health()
         self._maybe_ask_update_on_first_run()
         self._maybe_check_updates()
 
@@ -3714,6 +3723,29 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
+
+        # Method health failure banner (hidden by default; visible only on failure)
+        self.health_banner = QFrame()
+        self.health_banner.setObjectName("healthBanner")
+        self.health_banner.setStyleSheet(
+            "QFrame#healthBanner { background-color: #7f1d1d; color: #fecaca; "
+            "border: 1px solid #dc2626; border-radius: 4px; padding: 4px 8px; margin: 4px 0; }"
+        )
+        banner_layout = QHBoxLayout(self.health_banner)
+        banner_layout.setContentsMargins(8, 4, 8, 4)
+        banner_layout.setSpacing(8)
+        self.health_banner_label = QLabel()
+        self.health_banner_label.setStyleSheet("color: #fecaca; font-weight: bold;")
+        banner_layout.addWidget(self.health_banner_label, 1)
+        self.btn_health_diag = QPushButton(_t('health_diag_btn'))
+        self.btn_health_diag.clicked.connect(self._on_health_diag_clicked)
+        banner_layout.addWidget(self.btn_health_diag)
+        self.btn_health_dismiss = QPushButton("✕")
+        self.btn_health_dismiss.setFixedSize(20, 20)
+        self.btn_health_dismiss.clicked.connect(lambda: self.health_banner.hide())
+        banner_layout.addWidget(self.btn_health_dismiss)
+        self.health_banner.hide()
+        layout.addWidget(self.health_banner)
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
@@ -4181,6 +4213,51 @@ class MainWindow(QMainWindow):
             self._ftetwild = True
         else:
             self._ftetwild = 'auto'
+
+    def _check_method_health(self):
+        """Run fast availability-only check at GUI start. Banner is shown ONLY on failure."""
+        try:
+            from sutura_engine.health import Status, check_availability_detail
+            avail = check_availability_detail()
+            fails = [mid for mid, (st, _r) in avail.items() if st == Status.FAIL]
+            if fails:
+                fail_count = len(fails)
+                cnt = (f"{fail_count} hata"
+                       if QLocale.system().name().startswith('tr')
+                       else f"{fail_count} failure{'s' if fail_count > 1 else ''}")
+                self.health_banner_label.setText(_t('health_banner_msg', cnt))
+                self.health_banner.show()
+            else:
+                self.health_banner.hide()
+        except Exception:
+            pass
+
+    def _on_health_diag_clicked(self):
+        """Export diagnostics archive when requested from the failure banner."""
+        try:
+            from sutura.diagnostics import collect_diagnostics
+        except ImportError:
+            from diagnostics import collect_diagnostics
+        fn, _ = QFileDialog.getSaveFileName(
+            self,
+            _t('save_diagnostics_title'),
+            f"sutura-diagnostics-{int(time.time())}.zip",
+            "Zip Archive (*.zip)",
+        )
+        if fn:
+            try:
+                collect_diagnostics(fn)
+                QMessageBox.information(
+                    self,
+                    _t('app_title'),
+                    _t('diagnostics_saved', fn),
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    _t('app_title'),
+                    str(exc),
+                )
 
     def _maybe_ask_update_on_first_run(self):
         """Ask once (on first run, no config) about update checks and the
