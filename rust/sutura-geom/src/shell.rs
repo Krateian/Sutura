@@ -1051,9 +1051,174 @@ fn weld_points_tol(verts: &[[f64; 3]], tris: &[[u32; 3]], tol: f64) -> (Vec<[f64
     (uniq_verts, out_tris)
 }
 
+/// Triangulate a simple planar polygon with collinear boundary vertices in the UV
+/// space of parent triangle `t` using ear clipping.
+///
+/// Collinear chords and zero-area triangles are strictly rejected (cr > 1e-12, norm3_sq > 1e-16).
+fn ear_clip_polygon_uv(
+    verts: &[[f64; 3]],
+    t: [u32; 3],
+    poly: &[u32],
+) -> Vec<[u32; 3]> {
+    let m = poly.len();
+    if m < 3 {
+        return Vec::new();
+    }
+    if m == 3 {
+        let p0 = verts[poly[0] as usize];
+        let p1 = verts[poly[1] as usize];
+        let p2 = verts[poly[2] as usize];
+        let n = cross3(sub3(p1, p0), sub3(p2, p0));
+        if norm3_sq(n) > 1e-16 {
+            return vec![[poly[0], poly[1], poly[2]]];
+        } else {
+            return Vec::new();
+        }
+    }
+
+    // Compute parent triangle's orthonormal UV basis
+    let pt0 = verts[t[0] as usize];
+    let pt1 = verts[t[1] as usize];
+    let pt2 = verts[t[2] as usize];
+
+    let e1 = sub3(pt1, pt0);
+    let l1 = norm3(e1);
+    if l1 < 1e-12 {
+        return Vec::new();
+    }
+    let u_axis = scale3(e1, 1.0 / l1);
+    let norm_vec = cross3(e1, sub3(pt2, pt0));
+    let ln = norm3(norm_vec);
+    if ln < 1e-12 {
+        return Vec::new();
+    }
+    let n_axis = scale3(norm_vec, 1.0 / ln);
+    let v_axis = cross3(n_axis, u_axis);
+
+    // Project polygon vertices into 2D UV
+    let mut pts_2d: Vec<[f64; 2]> = Vec::with_capacity(m);
+    for &idx in poly {
+        let p = verts[idx as usize];
+        let d = sub3(p, pt0);
+        pts_2d.push([dot3(d, u_axis), dot3(d, v_axis)]);
+    }
+
+    let mut order: Vec<usize> = (0..m).collect();
+    let mut out: Vec<[u32; 3]> = Vec::with_capacity(m - 2);
+
+    let mut guard = 0usize;
+    while order.len() > 3 {
+        guard += 1;
+        if guard > m * m + 10 {
+            break;
+        }
+        let l = order.len();
+        let mut best_i = None;
+        let mut best_cr = 0.0f64;
+
+        for i in 0..l {
+            let ia = order[(i + l - 1) % l];
+            let ib = order[i];
+            let ic = order[(i + 1) % l];
+
+            let a = pts_2d[ia];
+            let b = pts_2d[ib];
+            let c = pts_2d[ic];
+
+            // 2D cross product: must be strictly positive (strictly turning left).
+            // Collinear boundary vertices on the same edge have cr == 0, so they are never clipped.
+            let cr = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+            if cr <= 1e-12 {
+                continue;
+            }
+
+            // Check if any other vertex in the active polygon lies inside or on the boundary
+            let mut ok = true;
+            for &j in &order {
+                if j == ia || j == ib || j == ic {
+                    continue;
+                }
+                let q = pts_2d[j];
+                let d1 = (b[0] - a[0]) * (q[1] - a[1]) - (b[1] - a[1]) * (q[0] - a[0]);
+                let d2 = (c[0] - b[0]) * (q[1] - b[1]) - (c[1] - b[1]) * (q[0] - b[0]);
+                let d3 = (a[0] - c[0]) * (q[1] - c[1]) - (a[1] - c[1]) * (q[0] - c[0]);
+
+                // If q is inside or on the boundary of triangle abc (including chord ac)
+                if d1 >= -1e-14 && d2 >= -1e-14 && d3 >= -1e-14 {
+                    ok = false;
+                    break;
+                }
+            }
+
+            if ok && cr > best_cr {
+                best_cr = cr;
+                best_i = Some(i);
+            }
+        }
+
+        if let Some(i) = best_i {
+            let ia = order[(i + l - 1) % l];
+            let ib = order[i];
+            let ic = order[(i + 1) % l];
+            let v_a = poly[ia];
+            let v_b = poly[ib];
+            let v_c = poly[ic];
+
+            // 3D area check: reject degenerate zero-area triangles
+            let pa = verts[v_a as usize];
+            let pb = verts[v_b as usize];
+            let pc = verts[v_c as usize];
+            let n = cross3(sub3(pb, pa), sub3(pc, pa));
+            if norm3_sq(n) > 1e-16 {
+                out.push([v_a, v_b, v_c]);
+            }
+            order.remove(i);
+        } else {
+            // No valid ear found with strict bounds; break to fallback
+            break;
+        }
+    }
+
+    if order.len() == 3 {
+        let v_a = poly[order[0]];
+        let v_b = poly[order[1]];
+        let v_c = poly[order[2]];
+        let pa = verts[v_a as usize];
+        let pb = verts[v_b as usize];
+        let pc = verts[v_c as usize];
+        let n = cross3(sub3(pb, pa), sub3(pc, pa));
+        if norm3_sq(n) > 1e-16 {
+            out.push([v_a, v_b, v_c]);
+        }
+    } else if order.len() > 3 {
+        // Fallback: fan from order[0] only to non-collinear vertices with positive area
+        let p0_idx = poly[order[0]];
+        let pa = verts[p0_idx as usize];
+        for k in 1..order.len() - 1 {
+            let u_idx = poly[order[k]];
+            let v_idx = poly[order[k + 1]];
+            let pb = verts[u_idx as usize];
+            let pc = verts[v_idx as usize];
+            let n = cross3(sub3(pb, pa), sub3(pc, pa));
+            if norm3_sq(n) > 1e-16 {
+                out.push([p0_idx, u_idx, v_idx]);
+            }
+        }
+    }
+
+    out
+}
+
 /// Subdivide triangles along edges where intermediate vertices lie strictly
 /// on the edge interior, preventing T-junctions along intersection seams.
-fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]> {
+///
+/// Only input/sub-segment constraint edges are eligible for splitting; internal
+/// subdivision chords are excluded from re-splitting to prevent cascades.
+fn conforming_edge_split(
+    verts: &[[f64; 3]],
+    tris: &[[u32; 3]],
+    constraint_edges: &mut HashSet<(u32, u32)>,
+) -> Vec<[u32; 3]> {
     let tol = 1e-5;
     let mut all_edges: HashMap<(u32, u32), Vec<(f64, u32)>> = HashMap::new();
 
@@ -1062,7 +1227,10 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
             let u = t[k];
             let v = t[(k + 1) % 3];
             let key = (u.min(v), u.max(v));
-            all_edges.entry(key).or_default();
+            // Only input / sub-segment edges are eligible for splitting
+            if constraint_edges.contains(&key) {
+                all_edges.entry(key).or_default();
+            }
         }
     }
 
@@ -1119,6 +1287,19 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
         }
     }
 
+    // Update constraint edges: replace split parent edges with their consecutive sub-segments
+    for (&(u, v), splits) in &edge_splits {
+        constraint_edges.remove(&(u, v));
+        let mut chain = Vec::with_capacity(splits.len() + 2);
+        chain.push(u);
+        chain.extend_from_slice(splits);
+        chain.push(v);
+        for w in chain.windows(2) {
+            let sub_key = (w[0].min(w[1]), w[0].max(w[1]));
+            constraint_edges.insert(sub_key);
+        }
+    }
+
     let mut out_tris = Vec::with_capacity(tris.len());
     for t in tris {
         let e0_key = (t[0].min(t[1]), t[0].max(t[1]));
@@ -1130,7 +1311,13 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
 
         let split_count = s0.is_some() as usize + s1.is_some() as usize + s2.is_some() as usize;
         if split_count == 0 {
-            out_tris.push(*t);
+            let norm = cross3(
+                sub3(verts[t[1] as usize], verts[t[0] as usize]),
+                sub3(verts[t[2] as usize], verts[t[0] as usize]),
+            );
+            if norm3_sq(norm) > 1e-16 {
+                out_tris.push(*t);
+            }
         } else if split_count == 1 {
             if let Some(splits) = s0 {
                 let mut w = vec![t[0]];
@@ -1143,7 +1330,13 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
                 }
                 w.push(t[1]);
                 for j in 0..w.len() - 1 {
-                    out_tris.push([w[j], w[j + 1], t[2]]);
+                    let norm = cross3(
+                        sub3(verts[w[j + 1] as usize], verts[w[j] as usize]),
+                        sub3(verts[t[2] as usize], verts[w[j] as usize]),
+                    );
+                    if norm3_sq(norm) > 1e-16 {
+                        out_tris.push([w[j], w[j + 1], t[2]]);
+                    }
                 }
             } else if let Some(splits) = s1 {
                 let mut w = vec![t[1]];
@@ -1156,7 +1349,13 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
                 }
                 w.push(t[2]);
                 for j in 0..w.len() - 1 {
-                    out_tris.push([t[0], w[j], w[j + 1]]);
+                    let norm = cross3(
+                        sub3(verts[w[j] as usize], verts[t[0] as usize]),
+                        sub3(verts[w[j + 1] as usize], verts[t[0] as usize]),
+                    );
+                    if norm3_sq(norm) > 1e-16 {
+                        out_tris.push([t[0], w[j], w[j + 1]]);
+                    }
                 }
             } else if let Some(splits) = s2 {
                 let mut w = vec![t[2]];
@@ -1169,7 +1368,13 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
                 }
                 w.push(t[0]);
                 for j in 0..w.len() - 1 {
-                    out_tris.push([w[j], w[j + 1], t[1]]);
+                    let norm = cross3(
+                        sub3(verts[w[j + 1] as usize], verts[w[j] as usize]),
+                        sub3(verts[t[1] as usize], verts[w[j] as usize]),
+                    );
+                    if norm3_sq(norm) > 1e-16 {
+                        out_tris.push([w[j], w[j + 1], t[1]]);
+                    }
                 }
             }
         } else {
@@ -1189,23 +1394,12 @@ fn conforming_edge_split(verts: &[[f64; 3]], tris: &[[u32; 3]]) -> Vec<[u32; 3]>
                     }
                 }
             }
-            let mut min_idx = 0;
-            for (idx, &v_idx) in poly.iter().enumerate().skip(1) {
-                let p_min = verts[poly[min_idx] as usize];
-                let p_cur = verts[v_idx as usize];
-                if p_cur < p_min {
-                    min_idx = idx;
-                }
+            poly.dedup();
+            if poly.len() > 1 && poly.first() == poly.last() {
+                poly.pop();
             }
-            let p0 = poly[min_idx];
-            let n_poly = poly.len();
-            for i in 1..n_poly - 1 {
-                let u = poly[(min_idx + i) % n_poly];
-                let v = poly[(min_idx + i + 1) % n_poly];
-                if p0 != u && u != v && v != p0 {
-                    out_tris.push([p0, u, v]);
-                }
-            }
+            let clipped = ear_clip_polygon_uv(verts, *t, &poly);
+            out_tris.extend(clipped);
         }
     }
 
@@ -1620,7 +1814,15 @@ pub fn resolve_coplanar_contacts(
     all_tris.extend(new_tris);
 
     let (welded_verts, welded_tris) = weld_points_f64(&all_verts, &all_tris);
-    let conformed_tris = conforming_edge_split(&welded_verts, &welded_tris);
+    let mut constraint_edges: HashSet<(u32, u32)> = HashSet::new();
+    for t in &welded_tris {
+        for k in 0..3 {
+            let u = t[k];
+            let v = t[(k + 1) % 3];
+            constraint_edges.insert((u.min(v), u.max(v)));
+        }
+    }
+    let conformed_tris = conforming_edge_split(&welded_verts, &welded_tris, &mut constraint_edges);
     let (final_verts, final_tris) = weld_points_f64(&welded_verts, &conformed_tris);
 
     (final_verts, final_tris, true)
@@ -1803,12 +2005,33 @@ pub fn shell_analyze_and_filter(
                     let raw_verts: Vec<[f64; 3]> = pool.iter().map(crate::arrangement::rat3_to_f64).collect();
                     let raw_tris: Vec<[u32; 3]> = out_tris.iter().map(|t| [t[0] as u32, t[1] as u32, t[2] as u32]).collect();
                     let (mut stitched_verts, mut stitched_tris) = weld_points_tol(&raw_verts, &raw_tris, 1e-6);
-                    for _ in 0..5 {
-                        let next_tris = conforming_edge_split(&stitched_verts, &stitched_tris);
+                    let mut constraint_edges: HashSet<(u32, u32)> = HashSet::new();
+                    for t in &stitched_tris {
+                        for k in 0..3 {
+                            let u = t[k];
+                            let v = t[(k + 1) % 3];
+                            constraint_edges.insert((u.min(v), u.max(v)));
+                        }
+                    }
+                    if std::env::var("SUTURA_SPLIT_PROFILE").is_ok() {
+                        eprintln!("[split_pass] initial stitched_tris: {}", stitched_tris.len());
+                    }
+                    for pass in 0..5 {
+                        let next_tris = conforming_edge_split(&stitched_verts, &stitched_tris, &mut constraint_edges);
                         let (w_v, w_t) = weld_points_tol(&stitched_verts, &next_tris, 1e-6);
+                        if std::env::var("SUTURA_SPLIT_PROFILE").is_ok() {
+                            eprintln!("[split_pass] pass {}: in={} next={} welded={}", pass, stitched_tris.len(), next_tris.len(), w_t.len());
+                        }
                         if w_t.len() == stitched_tris.len() {
                             stitched_verts = w_v;
                             stitched_tris = w_t;
+                            break;
+                        }
+                        // Divergence guard as a last-resort safety:
+                        if pass > 0 && w_t.len() > stitched_tris.len() * 2 {
+                            if std::env::var("SUTURA_SPLIT_PROFILE").is_ok() {
+                                eprintln!("[split_pass] divergence guard triggered at pass {}", pass);
+                            }
                             break;
                         }
                         stitched_verts = w_v;
