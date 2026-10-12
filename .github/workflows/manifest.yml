@@ -1,0 +1,55 @@
+name: Release manifest
+
+# Generates manifest.json containing SHA-256 digests of all shipped Python
+# application and engine files and attaches it to the published GitHub Release.
+#
+# Triggers on `release: published` (or workflow_dispatch with a tag) so it
+# runs after `gh release create` has created the release, never racing to
+# create a placeholder release.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach manifest to (e.g. v0.9.1)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  manifest:
+    name: Generate and upload release manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate manifest.json
+        run: |
+          PYTHONPATH=. python3 -m sutura.manifest --out manifest.json
+          cat manifest.json
+
+      - name: Upload manifest.json to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.tag.outputs.ref }}
+          files: manifest.json
+          overwrite_files: true
