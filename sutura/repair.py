@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Sutura Triage Engine: a staged PyMeshLab + manifold3d mesh-repair pipeline with 16 ranked repair methods.
+"""Sutura repair CLI entry point and compatibility shim.
 
-Stage 1 (PyMeshLab/VCG): clean up, orient, close holes, drop debris.
-Stage 2 (manifold3d): rebuild the closed mesh as a watertight solid and
-merge overlapping shells.
-
-Multi-object 3MF files are repaired per object and written back, so no
-object is lost. Meshes are handled in memory as numpy arrays to preserve
-the original vertex structure. Output is a new file; the input is never
-overwritten.
+The implementation lives in the ``sutura_engine.pipeline`` package (P1a split):
+presets, mesh I/O, Stage 1/2, P-WELD, the repair tiers, the central pipeline,
+validation/report helpers and the CLI helpers. This module re-exports those
+symbols (so ``import repair`` and the installed flat layout keep working),
+defines the ``VERSION`` literal the release tooling parses, and carries the
+``main`` entry point plus ``process_file`` (the batch driver). The input is
+never overwritten; multi-object 3MF files are repaired per object.
 """
 import sys
 import os
@@ -103,12 +102,11 @@ from sutura_engine.pipeline.p_weld import (
     enforce_reload_verdict, P_WELD_MAX_NUDGE_ATTEMPTS, P_WELD_MAX_HOLE,
     P_WELD_MIN_FACE_FRACTION,
 )
-from sutura_engine.pipeline.tiers import ftetwild as _ftetwild_mod
 from sutura_engine.pipeline.tiers.ftetwild import (
     ftetwild_available, run_ftetwild, _ftetwild_manifold_postprocess,
     _ftetwild_candidate, _decimate_boundary,
     _ftetwild_decimate_and_postprocess, _ftetwild_boundary,
-    _ftetwild_attempt, _ftetwild_tier,
+    _ftetwild_attempt, _ftetwild_tier, _FTETWILD_AVAILABLE,
 )
 from sutura_engine.pipeline.tiers.local_remesh import (
     _damaged_region, _umbrella_fair, _local_remesh_tier, _local_si_rise,
