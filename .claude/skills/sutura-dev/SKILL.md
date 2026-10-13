@@ -81,7 +81,7 @@ Single source of truth for Claude, OpenCode workers and other agents.
   are fine and credited as "inspired by".
 
 ## Git
-- Commit identity Krateian <arifgokdas@gmail.com>; commit by explicit paths
+- Commit identity Krateian <294938791+Krateian@users.noreply.github.com>; commit by explicit paths
   only (no `git add -A`, no `commit -a`, no stash). English commit messages
   with a human-readable body. No AI attribution anywhere.
 - Never push, tag, release or bump the version without the maintainer's
