@@ -12,7 +12,14 @@ Single source of truth for Claude, OpenCode workers and other agents.
   `graphify path <a> <b>`) to find code before any grep or file crawl.
   Narrow with context filters when the answer is too long.
 - Run `graphify update .` after every commit so the graph stays current
-  (git hooks also refresh graphify-out/).
+  (git hooks also refresh graphify-out/; `graphify hook install` writes only
+  post-commit/post-checkout, so a local `post-merge` hook refreshes after
+  fast-forward merges/pulls, which fire neither).
+- Graphify is AST-only: its call liveness misses `getattr`/dynamic dispatch,
+  module-attribute calls (`m.close()`), and names re-exported through star
+  shims (`sutura/wall_thickness.py`: `from sutura_engine.wall import *`).
+  For deletion claims, confirm with a targeted `git grep '<symbol>'` of the
+  symbol name and check the star re-export shims before deleting.
 - Every worker prompt must tell the worker to use graphify and to refresh it
   after commits.
 
