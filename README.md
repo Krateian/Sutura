@@ -11,6 +11,7 @@
   <img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL">
   <img src="https://img.shields.io/github/v/release/Krateian/Sutura" alt="Latest release">
   <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue" alt="License">
+  <a href="https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform"><img src="https://img.shields.io/badge/Commercial%20license-Request%20form-blue" alt="Commercial license"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational" alt="Platforms">
   <img src="https://img.shields.io/badge/Rust-core-dea584?logo=rust&logoColor=white" alt="Rust core">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
