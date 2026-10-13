@@ -12,6 +12,7 @@ import topology
 import triage
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.mesh_io import check_units, should_extract_outer_shell
+from sutura_engine.pipeline.order import FINAL_TIER_PRECEDENCE
 from sutura_engine.pipeline.presets import (
     ExtremeRemovedAllError, cad_likeness, classify_with_engine,
     estimate_deep_repair_time, resolve_mode_params, resolve_si_mode,
@@ -842,6 +843,11 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     tiers_run = []
+    # The attempted tiers follow the canonical order in
+    # sutura_engine.pipeline.order (DEEP_TIER_ORDER = 'local', 'graft',
+    # 'dressing', 'ftetwild'). This function expresses it procedurally -- local
+    # first, then the full-mode Graft -> Dressing -> fTetWild chain; the order
+    # and its tie-breaks are pinned by tests/test_pipeline_order.py.
     cad = None
     dmg = None
     cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
@@ -1027,14 +1033,16 @@ def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):
     if not dr:
         return
     final = 'stage1'
-    if (dr.get('ftetwild') or {}).get('adopted'):
-        final = 'ftetwild'
-    elif (stats.get('graft') or {}).get('adopted'):
-        final = 'graft'
-    elif (stats.get('dressing') or {}).get('adopted'):
-        final = 'dressing'
-    elif (dr.get('local') or {}).get('adopted'):
-        final = 'local'
+    _adopted_reports = {
+        'ftetwild': dr.get('ftetwild'),
+        'graft': stats.get('graft'),
+        'dressing': stats.get('dressing'),
+        'local': dr.get('local'),
+    }
+    for _tier in FINAL_TIER_PRECEDENCE:
+        if (_adopted_reports.get(_tier) or {}).get('adopted'):
+            final = _tier
+            break
     dr['final_tier'] = final
     if holes == 0 and nm == 0:
         return
