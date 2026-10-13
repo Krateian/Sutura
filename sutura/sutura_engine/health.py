@@ -64,7 +64,6 @@ run, and wrapping them would change bookkeeping the top level relies on):
   * ``RepairMethod.available`` -- already never raises; consumed directly by
     ``check_availability``.
 """
-import contextlib
 import contextvars
 import enum
 import os
@@ -168,23 +167,6 @@ def reset_if_unscoped() -> None:
     """Start a fresh collector for a direct library call with no open scope."""
     if not _SCOPED.get():
         _CURRENT.set(_Collector())
-
-
-@contextlib.contextmanager
-def collecting():
-    """Nested-safe collection scope; reuses the active collector when present."""
-    existing = _CURRENT.get()
-    if existing is not None:
-        yield existing
-        return
-    c = _Collector()
-    tok_c = _CURRENT.set(c)
-    tok_s = _SCOPED.set(True)
-    try:
-        yield c
-    finally:
-        _CURRENT.reset(tok_c)
-        _SCOPED.reset(tok_s)
 
 
 def record_error(method: str, stage: str, exc: BaseException) -> Optional[MethodError]:

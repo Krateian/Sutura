@@ -239,16 +239,6 @@ def _edge_keys(tris, nverts):
     return s, s[:, 0].astype(np.int64) * np.int64(nverts) + s[:, 1].astype(np.int64)
 
 
-def non_manifold_stats(tris, nverts):
-    _s, keys = _edge_keys(np.asarray(tris, np.int64), nverts)
-    _u, ct = np.unique(keys, return_counts=True)
-    return {
-        "boundary_edges": int((ct == 1).sum()),
-        "non_manifold_edges": int((ct > 2).sum()),
-        "faces_on_nm_edges": int(ct[ct > 2].sum()) if (ct > 2).any() else 0,
-    }
-
-
 def split_non_manifold(verts, tris):
     """Cut the mesh along every non-manifold edge and vertex so all remaining
     edges are manifold and the non-manifold fans become boundary loops.

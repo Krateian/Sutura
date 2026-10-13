@@ -2,7 +2,7 @@
 """Regression test for sutura_engine.cache module.
 
 Checks:
-  1. hash_arrays, hash_file, hash_settings stability.
+  1. hash_arrays, hash_settings stability.
   2. Cache hit/miss for analysis data.
   3. Automatic cache invalidation when engine version changes.
   4. LRU pruning when cache size exceeds threshold.

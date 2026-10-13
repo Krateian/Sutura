@@ -9,7 +9,6 @@ The module stays language-neutral: classify() returns stable machine-readable
 codes/keys. The CLI (English, not localized) formats them via ISSUE_LABELS;
 the GUI localizes them through its own EN/TR dictionary.
 """
-import re
 
 # Machine-readable issue codes, with a human-readable English label for the
 # CLI's --human summary (the GUI localizes these separately).
@@ -200,11 +199,3 @@ def summary_args(data):
 def issue_label(code):
     """English human-readable label for an issue code (CLI --human)."""
     return ISSUE_LABELS.get(code, code)
-
-
-def is_stage2_skipped(data):
-    """True if the report says stage 2 was skipped (used for the summary)."""
-    s2 = data.get('stage2')
-    return bool(
-        s2 and isinstance(s2.get('error'), str)
-        and re.match(r'^Stage 2 skipped', s2.get('error', '')))
