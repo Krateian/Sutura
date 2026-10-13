@@ -23,6 +23,24 @@ Single source of truth for Claude, OpenCode workers and other agents.
 - Every worker prompt must tell the worker to use graphify and to refresh it
   after commits.
 
+## Anatomy / dead-code rule
+- `scripts/anatomy.sh` cross-checks vulture (static, `--min-confidence 60`)
+  against coverage.py (dynamic) over `sutura/`. It writes `vulture.txt`,
+  `vulture_whitelisted.txt`, the coverage HTML/summary and
+  `dead_code_candidates.txt` (symbols vulture flags AND coverage never ran)
+  under `SUTURA_ANATOMY_OUT` (default `/tmp/sutura-anatomy`). Read-only.
+- `scripts/vulture_whitelist.py` suppresses only framework false positives:
+  Qt event handlers, PEP 562 `__getattr__` shims and protocol dunders. Do not
+  add real code to it to quiet a finding.
+- Delete a symbol only when ALL four hold:
+  1. vulture flags it (`vulture_whitelisted.txt`);
+  2. coverage never executed it (`dead_code_candidates.txt`);
+  3. `git grep -w '<name>'` is clean of call sites, re-exports and tests;
+  4. the import walk is clean — no dynamic `getattr`/registry string, no star
+     shim (`sutura/wall_thickness.py`, `mirror_repair.py`).
+  Any single failed check means keep it. The candidates list is a starting
+  point for manual review, never an auto-delete list.
+
 ## Workers (tmux session `sutura`)
 - Claude plans, reviews and decides; workers execute. Grunt work (long test
   runs, repetitive verification) goes to a worker; Claude spot-checks the real
