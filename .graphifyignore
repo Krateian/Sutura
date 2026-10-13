@@ -1,4 +1,5 @@
-tests/
+# tests/ is indexed: the graph covers the whole project (binary fixtures below
+# are still excluded).
 *.stl
 *.3mf
 docs/screenshots/
