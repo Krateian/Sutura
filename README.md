@@ -2093,8 +2093,6 @@ Sutura is organized as a modular engine (`sutura_engine`) designed for reliabili
 * **`sutura_engine.core`** — Generic geometry and validation: mesh array I/O (STL, OBJ, 3MF), topological measurements, and Hausdorff distance guards; re-exports the specialised passes.
 * **`sutura_engine.diagnosis`** — Surface and defect diagnostics: component analysis, extensible geometric templates (mechanical, organic, reliefs, thin sheets, lattices), and mesh classifier integration.
 * **`sutura_engine.chart`** — Content-addressed SHA-256 caching under `~/.cache/sutura/` with 500 MB LRU eviction, automatic invalidation across version updates, and CLI (`--no-cache`, `sutura clear-cache`) / GUI options.
-* **`sutura_engine.stitch`** — Reload-safe seam healing pass (`P-WELD`) that makes saved float32 meshes reload strict-watertight without changing their faces.
-* **`sutura_engine.xray`** — Reload-honest strict watertight verdict (`P-HONEST`) that never claims watertight for a mesh that is not strict-watertight after reload.
 * **`sutura_engine.hull`** — Outer-surface shell extraction for multi-component assemblies.
 * **`sutura_engine.cast`** — Thin wrapper around the Rust `sutura_geom` extension (exact predicates, `arrangement_lite`).
 * **`sutura_engine.methods`** — Pluggable repair methods conforming to `RepairMethodProtocol`: built-in methods (`#1` Quick Clean through `#17` Tamponade) discovered automatically from one named module per method, plus closing, proxy, morphology graft, and repeated-element repair tiers.

@@ -7,10 +7,8 @@ Contains:
   - Validation: boundary_loop_stats, scan_bad_coordinates, signed_volume, check_units.
   - Hausdorff scan preservation helpers: one_sided_hausdorff.
 
-Specialised passes live in dedicated modules and are re-exported here for
-backward compatibility:
-  - ``sutura_engine.xray``  - reload-honest strict watertight checks (P-HONEST).
-  - ``sutura_engine.stitch`` - reload-safe seam healing pass (P-WELD).
+Specialised passes live in dedicated modules; ``sutura_engine.hull`` is
+re-exported here for backward compatibility:
   - ``sutura_engine.hull``  - outer-shell extraction.
 
 Rule: This module must NOT import pymeshlab at module load time.
@@ -270,22 +268,7 @@ def check_units(verts: np.ndarray, declared_unit: Optional[str] = None) -> Optio
     return None
 
 
-# --- Reload-Equivalent Welding (P-WELD) & Honest Verdict (P-HONEST) ---------
-from sutura_engine.xray import (
-    weld_reload_equivalent,
-    reload_strict_holes_nm,
-    _is_strict_watertight,
-    enforce_reload_verdict,
-)
-from sutura_engine.stitch import (
-    P_WELD_MAX_NUDGE_ATTEMPTS,
-    P_WELD_MAX_HOLE,
-    P_WELD_MIN_FACE_FRACTION,
-    _separate_weld_collisions,
-    _repair_welded_topology,
-    _close_small_holes,
-    p_weld_final,
-)
+# --- Outer-Shell Extraction -------------------------------------------------
 from sutura_engine.hull import extract_outer_shell
 
 

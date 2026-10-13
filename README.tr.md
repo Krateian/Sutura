@@ -2103,8 +2103,6 @@ Sutura, güvenilirlik, katman izolasyonu ve genişletilebilirlik için tasarlanm
 * **`sutura_engine.core`** — Genel geometri ve doğrulama: mesh dizi G/Ç (STL, OBJ, 3MF), topolojik ölçümler ve Hausdorff mesafe kontrolleri; özelleşmiş geçişleri yeniden dışa aktarır.
 * **`sutura_engine.diagnosis`** — Yüzey ve kusur analizleri: parça analizi, genişletilebilir geometrik şablonlar (mekanik, organik, rölyefler, ince yüzeyler, kafesler) ve mesh sınıflandırıcı entegrasyonu.
 * **`sutura_engine.chart`** — `~/.cache/sutura/` altında 500 MB LRU boyut sınırına sahip SHA-256 içerik adresli önbellek; sürüm güncellemelerinde otomatik geçersiz kılma, CLI (`--no-cache`, `sutura clear-cache`) ve GUI seçenekleri.
-* **`sutura_engine.stitch`** — Kaydettiğiniz float32 mesh'lerin yüzlerini değiştirmeden yeniden yüklenince su geçirmez olmasını sağlayan güvenli dikiş onarımı (`P-WELD`).
-* **`sutura_engine.xray`** — Yeniden yüklemeye dürüst katı su geçirmezlik kararı (`P-HONEST`): yeniden yüklemede su geçirmez olmayan bir mesh için asla su geçirmez iddia etmez.
 * **`sutura_engine.hull`** — Çok bileşenli montajlar için dış yüzey kabuğu çıkarımı.
 * **`sutura_engine.cast`** — Rust `sutura_geom` uzantısı etrafında ince sarmalayıcı (kesin yüklemler, `arrangement_lite`).
 * **`sutura_engine.methods`** — `RepairMethodProtocol` standardına uyan eklenebilir onarım yöntemleri: yöntem başına bir adlandırılmış modülden otomatik olarak keşfedilen yerleşik yöntemler (`#1` Hızlı Temizlik - `#17` Tamponad), tarama kapatma, vekil şablon, morfoloji graft ve tekrarlayan geometri katmanları.

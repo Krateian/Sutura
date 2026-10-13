@@ -188,8 +188,6 @@ The core repair functionality is organized under `sutura/sutura_engine/`. Instal
 - `sutura_engine.core`: Generic low-level mesh I/O (STL, OBJ, 3MF arrays), geometric validation, and Hausdorff distance computations. Re-exports the specialised passes below for backward compatibility.
 - `sutura_engine.diagnosis`: Object feature analysis (`analyze_mesh`/`analyze_file`, `ObjectAnalysis`), geometric template matching (`Template`, `SCORE_TEMPLATES`), and classifier glue (`classify_with_engine`).
 - `sutura_engine.chart`: Content-addressed cache located in `~/.cache/sutura/`. Keys are SHA-256 hashes of input mesh arrays + engine version + parameters. Enforces a 500 MB LRU size limit, auto-invalidates on version change, and supports `--no-cache` CLI flag and GUI Options toggle/button.
-- `sutura_engine.stitch`: Reload-safe seam healing pass (P-WELD: `p_weld_final`, `_separate_weld_collisions`), split out of `core`.
-- `sutura_engine.xray`: Reload-honest strict watertight verdict (P-HONEST: `weld_reload_equivalent`, `reload_strict_holes_nm`, `enforce_reload_verdict`), split out of `core`.
 - `sutura_engine.hull`: Outer-surface shell extraction (`extract_outer_shell`).
 - `sutura_engine.cast`: Thin wrapper around the Rust `sutura_geom` extension (exact `orient3d`/`insphere`, `arrangement_lite`).
 - `sutura_engine.mirror`: Mirror-plane completion for single-sided scans (method #14): `detect_mirror_plane` / `mirror_close` (reflect, weld, `extract_outer_shell`, Poisson fallback). `sutura/mirror_repair.py` re-exports it.

@@ -657,7 +657,7 @@ def weld_vertices(verts):
 
 def weld_reload_equivalent(verts, tris):
     """STL save/reload-equivalent weld (P-HONEST).  Bit-for-bit parity with the
-    numpy oracle.  See ``sutura_engine.xray.weld_reload_equivalent``."""
+    numpy oracle.  See ``sutura_engine.pipeline.p_weld.weld_reload_equivalent``."""
     v = np.ascontiguousarray(verts, dtype=np.float32)
     t = np.ascontiguousarray(tris, dtype=np.int64)
     finite = v.size == 0 or bool(np.isfinite(v).all())
