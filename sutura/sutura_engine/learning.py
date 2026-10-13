@@ -252,19 +252,3 @@ def clear_learning():
         return True
     except OSError:
         return False
-
-
-def learning_summary_text(stats=None):
-    """Short human/CLI summary of what has been learned."""
-    stats = triage_stats() if stats is None else stats
-    rows = []
-    for template, methods in sorted(stats.items()):
-        for method_id, b in sorted((methods or {}).items()):
-            if not isinstance(b, dict) or not b.get('n'):
-                continue
-            rows.append('  %-20s %-18s n=%d ok=%d avg=%.0fms'
-                        % (template, method_id, b['n'], b['ok'],
-                           (b.get('total_ms') or 0) / b['n']))
-    if not rows:
-        return 'no learning data yet'
-    return 'learning triage data (template, method):\n' + '\n'.join(rows)

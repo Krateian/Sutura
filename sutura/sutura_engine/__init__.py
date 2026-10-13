@@ -51,10 +51,6 @@ class Report(dict):
         return bool(self.get('method_reached_watertight', False))
 
     @property
-    def method_used(self) -> Optional[dict]:
-        return self.get('method_used')
-
-    @property
     def verts(self):
         return self.get('_verts')
 

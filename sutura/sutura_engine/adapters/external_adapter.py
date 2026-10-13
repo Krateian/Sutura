@@ -59,30 +59,6 @@ class ChainConfig:
     source_path: Path | None = None
 
 
-@dataclass
-class EngineResult:
-    success: bool
-    engine: str
-    returncode: int | None
-    duration_sec: float
-    stdout_tail: str
-    stderr_tail: str
-    error: str | None
-    output_exists: bool
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "success": self.success,
-            "engine": self.engine,
-            "returncode": self.returncode,
-            "duration_sec": self.duration_sec,
-            "stdout_tail": self.stdout_tail,
-            "stderr_tail": self.stderr_tail,
-            "error": self.error,
-            "output_exists": self.output_exists,
-        }
-
-
 def get_engines_dir() -> Path:
     """Return the base directory for engine configurations, honouring XDG_CONFIG_HOME."""
     xdg = os.environ.get("XDG_CONFIG_HOME")

@@ -31,7 +31,6 @@ from sutura_engine.learning import (  # noqa: F401 - legacy re-export
     triage_stats,
     learning_bonus,
     clear_learning,
-    learning_summary_text,
 )
 
 from sutura_engine import paths  # noqa: E402
