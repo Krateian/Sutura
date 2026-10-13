@@ -90,7 +90,7 @@ compatible, open an issue and ask before contributing it.
 - Tests pass (including the suites relevant to the change).
 - User-visible behaviour changes update README.md, README.tr.md and, for
   feature additions, the "Version history" section; CHANGELOG.md is updated.
-- Commit identity is `Krateian <arifgokdas@gmail.com>`; commits are in
+- Commit identity is `Krateian <294938791+Krateian@users.noreply.github.com>`; commits are in
   English, one logical change each.
 - No secrets, no large corpus files (the benchmark corpus lives outside the
   repo and is published as a release asset), no copied copyleft code.

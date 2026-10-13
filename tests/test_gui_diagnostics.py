@@ -6,6 +6,7 @@ not import repair). A temp HOME/XDG_CONFIG_HOME isolates config/history.
 
 Usage: QT_QPA_PLATFORM=offscreen <venv>/bin/python tests/test_gui_diagnostics.py
 """
+import contextlib
 import os
 import sys
 import tempfile
@@ -62,6 +63,22 @@ def _reset():
     _FakeMessageBox.warn = 0
 
 
+def _diag_modules():
+    """Every module object ``create_diagnostics_zip`` may be resolved from.
+
+    ``gui._on_health_diag_clicked`` prefers ``from sutura.diagnostics import ...``
+    and falls back to the top-level ``diagnostics``. Both are distinct module
+    objects for the same file, and which one wins depends on whether the repo
+    root is on ``sys.path`` -- so the test must patch all of them.
+    """
+    mods = [diagnostics]
+    with contextlib.suppress(ImportError):
+        import sutura.diagnostics as _pkg
+        if _pkg is not diagnostics:
+            mods.append(_pkg)
+    return mods
+
+
 def test_health_banner_export_creates_zip():
     out = os.path.join(_TMP, 'diag.zip')
     _FakeFileDialog.path = out
@@ -80,10 +97,13 @@ def test_health_banner_export_creates_zip():
 def test_health_banner_export_failure_is_shown_not_raised():
     _FakeFileDialog.path = os.path.join(_TMP, 'bad.zip')
     _reset()
-    with patch.object(gui, 'QFileDialog', _FakeFileDialog), \
-            patch.object(gui, 'QMessageBox', _FakeMessageBox), \
-            patch.object(diagnostics, 'create_diagnostics_zip',
-                         side_effect=RuntimeError('boom')):
+    boom = RuntimeError('boom')
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch.object(gui, 'QFileDialog', _FakeFileDialog))
+        stack.enter_context(patch.object(gui, 'QMessageBox', _FakeMessageBox))
+        for mod in _diag_modules():
+            stack.enter_context(
+                patch.object(mod, 'create_diagnostics_zip', side_effect=boom))
         gui.MainWindow._on_health_diag_clicked(QWidget())  # must not raise
     assert _FakeMessageBox.warn == 1, _FakeMessageBox.warn
     assert _FakeMessageBox.info == 0
