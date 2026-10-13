@@ -44,6 +44,13 @@ Invariant: this module must NEVER import pymeshlab / trimesh / scipy.
 """
 import numpy as np
 
+# Single classifier identity, shared with the classic engine (used in the
+# analysis cache key; see sutura_engine.diagnosis.analyze_mesh).
+try:
+    from mesh_classifier import CLASSIFIER_VERSION  # noqa: F401
+except ImportError:
+    from sutura.mesh_classifier import CLASSIFIER_VERSION  # noqa: F401
+
 # --------------------------------------------------------------------------
 # Classic engine constants (copied verbatim from mesh_classifier.py -- keep in
 # sync if the classic engine is ever recalibrated; classic itself must not be

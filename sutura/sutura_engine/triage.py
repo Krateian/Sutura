@@ -734,7 +734,9 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
 
         obj_analysis = analysis_objects[idx] if idx < len(analysis_objects) else None
         if obj_analysis is None:
-            obj_analysis = _analysis_mod().analyze_mesh(in_v, in_t)
+            obj_analysis = _analysis_mod().analyze_mesh(
+                in_v, in_t, engine=ctx.get('engine', 'experimental'),
+                extra_features=ctx.get('extra_features', False))
 
         recs = rank_fn(obj_analysis)
         # NOTE: unlike single-mesh _auto, this multi-object path does NOT
