@@ -2190,7 +2190,9 @@ Sutura bir baskını ya da zamanını kurtardıysa,
 Sutura, v0.2.0'dan itibaren [PolyForm Noncommercial 1.0.0](LICENSE)
 ile lisanslanır. Kişisel, ticari olmayan kullanım (hobi, araştırma,
 eğitim, kişisel 3D baskı vb.) her zaman ücretsiz kalacak — bu kalıcı
-bir taahhüttür. Ticari kullanım için maintainer ile iletişime geçin.
+bir taahhüttür. Ticari kullanım için
+[Ticari Lisans Talep Formu'nu doldurun](https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform)
+(yanıtlar gizlidir).
 
 v0.1.0 - v0.1.9 arası yayınlanmış sürümler kalıcı olarak
 [Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE)
@@ -2203,8 +2205,9 @@ Kişisel, ticari olmayan kullanım için Sutura her zaman ücretsiz kalacak —
 bu bir pazarlama sözü değil, kalıcı bir taahhüt. Ama ilerleyen geliştirme
 daha fazla zaman ve kaynak gerektirecek ve bir şirketin ücretsiz şekilde
 ticari olarak kullanması maintainer için adil olmayacaktır; proje bir
-hayır kurumu değildir. Bu yüzden ticari kullanım isteyenlerin maintainer
-ile iletişime geçmesi gerekecek. İleride bir noktada projeye zaman
+hayır kurumu değildir. Bu yüzden ticari kullanım isteyenlerin
+[Ticari Lisans Talep Formu'nu doldurması](https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform)
+gerekecek (yanıtlar gizlidir). İleride bir noktada projeye zaman
 ayıramaz hale gelinirse, plan Sutura'yı tamamen açık kaynağa çevirip
 topluluğa bırakmaktır — ama şimdilik böyle devam.
 
