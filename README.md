@@ -11,6 +11,7 @@
   <img src="https://github.com/Krateian/Sutura/actions/workflows/codeql.yml/badge.svg" alt="CodeQL">
   <img src="https://img.shields.io/github/v/release/Krateian/Sutura" alt="Latest release">
   <img src="https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-blue" alt="License">
+  <a href="https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform"><img src="https://img.shields.io/badge/Commercial%20license-Request%20form-blue" alt="Commercial license"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational" alt="Platforms">
   <img src="https://img.shields.io/badge/Rust-core-dea584?logo=rust&logoColor=white" alt="Rust core">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
@@ -2179,7 +2180,9 @@ If Sutura has saved you time or a broken print, you can
 Starting with v0.2.0, Sutura is licensed under the
 [PolyForm Noncommercial 1.0.0](LICENSE). Personal, non-commercial use (hobby,
 research, education, personal 3D printing, etc.) will always remain free — this
-is a permanent commitment. For commercial use, please contact the maintainer.
+is a permanent commitment. For commercial use, fill in the
+[Commercial License Request form](https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform)
+— answers are private.
 
 Versions released between v0.1.0 and v0.1.9 remain permanently licensed under
 [Apache 2.0](https://github.com/Krateian/Sutura/blob/v0.1.9/LICENSE).
@@ -2191,7 +2194,9 @@ non-commercial use, Sutura will always remain free — this is not a marketing
 promise but a permanent commitment. Future development will require more
 time and resources, and allowing a company to use it commercially for free
 would not be fair to the maintainer; the project is not a charity.
-Commercial use therefore requires contacting the maintainer. If the
+Commercial use therefore requires filling in the
+[Commercial License Request form](https://docs.google.com/forms/d/e/1FAIpQLSdqFrO11fjIBACrFwovOKGPpKVdnPcwxW0VRaQfwCqGayfJig/viewform)
+— answers are private. If the
 maintainer can no longer dedicate time to the project at some point in the
 future, the plan is to release Sutura fully open source and hand it to the
 community — but for now, it will continue like this.

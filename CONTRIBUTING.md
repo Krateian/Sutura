@@ -27,9 +27,9 @@ does not obligate the project to keep it.
 
 **Scope of use.** Personal and non-commercial use of Sutura (hobby, research,
 education, personal 3D printing) is permitted under the license. Commercial
-use requires separate permission from the maintainer; contributors are not
-exempt from this and should not assume that contributing grants a commercial
-license.
+use requires a separate agreement (fill in the Commercial License Request form);
+contributors are not exempt from this and should not assume that contributing
+grants a commercial license.
 
 ## 2. License compatibility — copyleft dependency policy
 
