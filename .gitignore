@@ -15,6 +15,10 @@ target/
 history.jsonl
 triage_learning.json
 
+# coverage.py data produced by scripts/anatomy.sh
+.coverage
+.coverage.*
+
 # fTetWild debug artifacts / generated test meshes that must never be committed
 __tracked_surface.stl
 __*.stl

@@ -1,0 +1,21 @@
+# Coverage configuration for the "anatomy" (dead-code) pass.
+#
+# The goal is an honest executed/never-executed map to cross-check against
+# vulture, not a coverage target. Nothing is omitted to make numbers look
+# better: dead-code decisions come from the vulture + coverage cross-check.
+
+[run]
+parallel = true
+source = sutura
+relative_files = true
+
+[paths]
+source =
+    sutura
+    */sutura
+    */site-packages/sutura
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__:
