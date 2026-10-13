@@ -21,13 +21,27 @@ import numpy as np
 
 from . import paths
 
+# Classifier identity shared with the analysis cache (sutura.mesh_classifier).
+# Every (template, method) bucket is stamped with the classifier version whose
+# counters it holds, so a later classifier revision never reuses a previous
+# one's counters. Defensive import: when the module is unavailable the version
+# is None and the gate is DISABLED (every bucket is counted) - never replaced
+# by a concrete value that would zero existing bonuses.
+try:
+    from mesh_classifier import CLASSIFIER_VERSION
+except ImportError:
+    try:
+        from sutura.mesh_classifier import CLASSIFIER_VERSION
+    except ImportError:
+        CLASSIFIER_VERSION = None
+
 # Runtime user data lives in <data>/, never in the code/install dir (SUTURA_DIR).
 HISTORY_DIR = paths.data_dir()
 
 # Per (template, method) success/time counts, kept in its own file so it can be
 # reset from the CLI/GUI Options without touching the usage history.
 LEARNING_PATH = paths.data_file('triage_learning.json')
-LEARNING_SCHEMA_VERSION = 1
+LEARNING_SCHEMA_VERSION = 2
 LEARNING_MAX_BONUS = 0.05          # hard cap on the rank bonus [0..1]
 LEARNING_PRIOR = 2.0               # Beta(2, 2) prior -> 0.5 with no data
 LEARNING_ENV = 'SUTURA_LEARNING_TRIAGE'
@@ -52,6 +66,52 @@ def learning_enabled():
     return _learning_enabled_from_config()
 
 
+def _is_other_version(bucket):
+    """True when a bucket holds a KNOWN classifier version different from the
+    current one (older or newer), so its counters must be ignored.
+
+    A missing stamp is legacy data written before versioning: it is treated as
+    current and counted. When the classifier version is unavailable the gate is
+    disabled entirely (every bucket counted)."""
+    if CLASSIFIER_VERSION is None:
+        return False
+    cv = bucket.get('cv')
+    return cv is not None and cv != CLASSIFIER_VERSION
+
+
+def _merge_bucket(dest, src):
+    """Add ``src``'s counters into ``dest`` without losing either count."""
+    dest['n'] = int(dest.get('n') or 0) + int(src.get('n') or 0)
+    dest['ok'] = int(dest.get('ok') or 0) + int(src.get('ok') or 0)
+    dest['total_ms'] = int(dest.get('total_ms') or 0) + int(src.get('total_ms') or 0)
+    if src.get('cv') is not None:
+        dest['cv'] = src['cv']
+
+
+def _filter_stats(raw):
+    """Counted buckets only.
+
+    Drops the ``method_id@cv`` relocation keys (stale buckets preserved on disk
+    but never counted) and any bucket stamped with a different known classifier
+    version. Legacy (unstamped) buckets are kept."""
+    filtered = {}
+    if not isinstance(raw, dict):
+        return filtered
+    for template, methods in raw.items():
+        if not isinstance(methods, dict):
+            continue
+        kept = {}
+        for method_id, bucket in methods.items():
+            if not isinstance(bucket, dict) or '@' in method_id:
+                continue
+            if _is_other_version(bucket):
+                continue
+            kept[method_id] = bucket
+        if kept:
+            filtered[template] = kept
+    return filtered
+
+
 def record_learning(result, methods_tried=None):
     """Accumulate per (template, method) success/time counts. Never raises."""
     try:
@@ -72,8 +132,25 @@ def record_learning(result, methods_tried=None):
             if outcome not in ('accepted', 'rejected', 'best'):
                 continue
             template = entry.get('template') or '_none_'
-            bucket = templates.setdefault(template, {}).setdefault(
-                method_id, {'n': 0, 'ok': 0, 'total_ms': 0})
+            methods = templates.setdefault(template, {})
+            bucket = methods.get(method_id)
+            if isinstance(bucket, dict) and _is_other_version(bucket):
+                # Preserve a bucket from a different known classifier version
+                # non-destructively under a version-qualified key, merging on
+                # collision (never overwrite an existing count), then start a
+                # fresh current-version bucket below.
+                stale_key = '%s@%s' % (method_id, bucket['cv'])
+                existing = methods.get(stale_key)
+                if isinstance(existing, dict):
+                    _merge_bucket(existing, bucket)
+                else:
+                    methods[stale_key] = bucket
+                bucket = None
+            if not isinstance(bucket, dict):
+                bucket = {'n': 0, 'ok': 0, 'total_ms': 0}
+                methods[method_id] = bucket
+            if CLASSIFIER_VERSION is not None:
+                bucket['cv'] = CLASSIFIER_VERSION
             bucket['n'] += 1
             if outcome in ('accepted', 'best'):
                 bucket['ok'] += 1
@@ -124,7 +201,7 @@ def triage_stats():
         mtime = None
     if _LEARNING_CACHE['mtime'] == mtime and _LEARNING_CACHE['stats'] is not None:
         return _LEARNING_CACHE['stats']
-    stats = _load_learning().get('templates', {})
+    stats = _filter_stats(_load_learning().get('templates', {}))
     _LEARNING_CACHE['mtime'] = mtime
     _LEARNING_CACHE['stats'] = stats
     return stats
@@ -140,7 +217,9 @@ def learning_bonus(template, method_id, stats=None):
     """
     if not template or not method_id:
         return 0.0
-    stats = triage_stats() if stats is None else stats
+    # Filter even an externally supplied stats map, so a stale or relocation
+    # bucket can never enter the looked-up bucket or the speed median below.
+    stats = _filter_stats(triage_stats() if stats is None else stats)
     per_template = stats.get(template) or {}
     bucket = per_template.get(method_id)
     if not bucket:
