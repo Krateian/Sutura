@@ -58,18 +58,6 @@ def _ensure_dir(subdir: str) -> str:
     return path
 
 
-def hash_file(path: str) -> str:
-    """Compute SHA-256 hash of a file on disk."""
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        while True:
-            chunk = f.read(65536)
-            if not chunk:
-                break
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def hash_arrays(verts: np.ndarray, tris: np.ndarray) -> str:
     """Compute SHA-256 hash of vertex and triangle numpy arrays."""
     h = hashlib.sha256()

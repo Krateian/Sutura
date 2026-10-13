@@ -156,7 +156,6 @@ SI_MAX_FACES = int(getattr(sutura_geom, "SI_MAX_FACES", 150_000))
 # The exact SI classifier is super-linear on large projected envelopes; above
 # this the SI rollback is skipped (reported as None) to keep the tier fast.
 SHELL_WRAP_SI_MAX_FACES = 20_000
-SI_ROLLBACK = True
 HYBRID_MAX_HOLE = 200_000       # pymeshlab close_holes budget for the hybrid
 REFINE_MAX_FACES = 300_000      # do not adopt a refinement past this size
 REFINE_FACE_FACTOR = 4          # ... nor past this multiple of the input faces
@@ -728,17 +727,6 @@ def _si_count(v, t):
     if len(t) == 0:
         return None
     return topology.si_face_count(v, t, limit=SHELL_WRAP_SI_MAX_FACES)
-
-
-def _si_rollback(v_remesh, t_remesh, v_wrap, t_wrap, si_before):
-    if not SI_ROLLBACK:
-        return v_remesh, t_remesh, _si_count(v_remesh, t_remesh), False
-    si_after = _si_count(v_remesh, t_remesh)
-    if si_after is None:
-        return v_remesh, t_remesh, None, False
-    if si_before is not None and si_after > si_before:
-        return v_wrap, t_wrap, si_before, True
-    return v_remesh, t_remesh, si_after, False
 
 
 # --------------------------------------------------------------------------- #
