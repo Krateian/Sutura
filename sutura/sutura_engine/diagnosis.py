@@ -21,6 +21,10 @@ try:
 except ImportError:
     from sutura import defects
 try:
+    from mesh_classifier import CLASSIFIER_VERSION
+except ImportError:
+    from sutura.mesh_classifier import CLASSIFIER_VERSION
+try:
     from sutura_engine import chart
 except ImportError:
     from sutura.sutura_engine import chart
@@ -65,6 +69,8 @@ class ObjectAnalysis:
     bbox_diagonal: float = 0.0
     surface_area: float = 0.0
     model: Optional[str] = None
+    classifier_engine: str = ''
+    classifier_version: str = ''
 
 
 # --- Classifier Glue --------------------------------------------------------
@@ -351,10 +357,19 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         except Exception:
             pass
 
+    # The cache key includes the requested engine, the extra-feature mode and
+    # the classifier revision, so a cached analysis is never served across
+    # engines, feature modes or a classifier change. The v2 -> classic fallback
+    # is deterministic for a given mesh, so the requested engine is a
+    # sufficient discriminator (the engine actually used is recorded below).
     m_hash = None
+    cache_key = None
     if use_cache and cache.is_cache_enabled():
         m_hash = cache.hash_arrays(v, t)
-        cached_dict = cache.get_cached_analysis(m_hash, version)
+        cache_key = '%s|%s|%d|%s' % (version, engine,
+                                     1 if extra_features else 0,
+                                     CLASSIFIER_VERSION)
+        cached_dict = cache.get_cached_analysis(m_hash, cache_key)
         if cached_dict is not None:
             # Rehydrate from cached dict
             for k, val in cached_dict.items():
@@ -399,11 +414,14 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
                 pass
 
     try:
-        cls, _ = classify_with_engine(v, t, engine, extra_features=extra_features)
-        analysis.mesh_type = cls.get('type', 'unknown')
-        analysis.type_confidence = round(float(cls.get('confidence', 0.0)), 3)
+        cls, used_engine = classify_with_engine(v, t, engine,
+                                                extra_features=extra_features)
     except Exception:
-        pass
+        cls, used_engine = {}, engine
+    analysis.classifier_engine = used_engine
+    analysis.classifier_version = CLASSIFIER_VERSION
+    analysis.mesh_type = cls.get('type', 'unknown')
+    analysis.type_confidence = round(float(cls.get('confidence', 0.0)), 3)
 
     if len(t) <= REPETITION_MAX_FACES:
         try:
@@ -417,7 +435,7 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
                 pass
 
     if use_cache and m_hash and cache.is_cache_enabled():
-        cache.put_cached_analysis(m_hash, version, to_dict(analysis))
+        cache.put_cached_analysis(m_hash, cache_key, to_dict(analysis))
 
     return analysis
 
@@ -479,4 +497,6 @@ def to_dict(analysis: ObjectAnalysis) -> dict:
         'bbox_diagonal': round(float(analysis.bbox_diagonal), 4),
         'surface_area': round(float(analysis.surface_area), 3),
         'model': analysis.model,
+        'classifier_engine': analysis.classifier_engine,
+        'classifier_version': analysis.classifier_version,
     }

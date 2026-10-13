@@ -39,6 +39,12 @@ reading mechanical: their dihedrals are ~2-5 deg, i.e. `gentle`, not `flat`.
 """
 import numpy as np
 
+# Classifier identity for cache/learning keying. Part of the analysis cache key
+# (see sutura_engine.diagnosis.analyze_mesh) so a cached analysis is never
+# reused across a classifier change; bump it when either engine's decisions
+# change. Shared by both engines (classic and the experimental v2 copy).
+CLASSIFIER_VERSION = '1'
+
 # Sigmoid midpoints/widths, re-derived on the CORRECTED dihedral metric (the
 # old values were calibrated against the pre-`i % F`-fix garbage distribution).
 # After the fix the corrected bands separate cleanly:
