@@ -3,9 +3,17 @@
 # The goal is an honest executed/never-executed map to cross-check against
 # vulture, not a coverage target. Nothing is omitted to make numbers look
 # better: dead-code decisions come from the vulture + coverage cross-check.
+#
+# The corpus-style tests exercise the CLI as a subprocess, so an in-process
+# run only measures the test harness (previously ~21%). "patch = subprocess"
+# (coverage >= 7.10, shipped with the a1_coverage.pth startup hook) makes
+# every child inherit COVERAGE_PROCESS_CONFIG, so the CLI's own execution is
+# measured and combined. "sigterm" records the child on SIGTERM.
 
 [run]
 parallel = true
+patch = subprocess
+sigterm = true
 source = sutura
 relative_files = true
 
