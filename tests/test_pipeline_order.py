@@ -187,12 +187,13 @@ def test_auto_deferred_graft_tiebreak_higher_ft_deviation_keeps_graft():
 
 
 def test_auto_deferred_graft_none_deviation_edges():
-    """Pins the two None edges of the deferred comparison:
-    - a present fTetWild deviation beats a None Graft deviation;
+    """Pins the two None edges of the UNIFIED (ladder) tie-break:
+    - a None Graft deviation now KEEPS Graft (it was: fTetWild won this edge
+      under the old _auto rule; this is the deliberate normalization);
     - a None fTetWild deviation never beats a present Graft deviation."""
     h = _AutoHarness(rank_nums=[13], graft_fidelity_ok=False,
                      graft_hdev=None, ft_watertight=True, ft_hdev=0.02)
-    assert h.run()['method_used']['num'] == 7
+    assert h.run()['method_used']['num'] == 13
 
     h = _AutoHarness(rank_nums=[13], graft_fidelity_ok=False,
                      graft_hdev=0.05, ft_watertight=True, ft_hdev=None)
@@ -376,6 +377,31 @@ def test_order_graft_before_ftetwild_helper():
         [_Rec(13), _Rec(2), _Rec(7)])] == [13, 2, 7]
     assert [r.num for r in order.order_graft_before_ftetwild(
         [_Rec(7)])] == [7]
+
+
+def test_ftetwild_supersedes_graft_helper():
+    """The one shared tie-break: fTetWild wins only when both deviations are
+    known and lower, or on an input-coverage failure; otherwise Graft is kept."""
+    import sutura_engine.pipeline.order as order
+    f = order.ftetwild_supersedes_graft
+    assert f(0.02, 0.05) is True          # both present, ft lower -> fTetWild
+    assert f(0.05, 0.02) is False         # both present, ft higher -> Graft
+    assert f(0.02, 0.02) is False         # equal -> keep Graft
+    assert f(None, 0.05) is False         # ft deviation unknown -> keep Graft
+    assert f(0.02, None) is False         # graft deviation unknown -> keep Graft
+    assert f(None, None) is False
+    assert f(0.09, 0.05, coverage_failed=True) is True   # coverage override
+    assert f(None, None, coverage_failed=True) is True
+
+
+def test_hausdorff_samples_match_at_default_intensity():
+    """C5: the unified tie-break compares two deviations, so at the default
+    intensity the _evaluate side and the ladder fTetWild tier must sample the
+    same number of points (they diverge only at thorough/extreme)."""
+    import repair
+    from sutura_engine import triage
+    spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
+    assert repair.HAUSDORFF_SAMPLES == spec.ftetwild_hausdorff_samples
 
 
 if __name__ == '__main__':

@@ -19,6 +19,7 @@ All notable changes to this project are documented here.
 ### Internal
 
 - `tests/test_self_check.py` is now self-sufficient (it adds both the repository root and `sutura/` to `sys.path`, like the other suites) and is wired into CI, so the `--self-check` health verification runs on every build.
+- **One Graft/fTetWild healthy-deviation tie-break.** `deep_repair_ladder` and `triage._auto` now share `pipeline.order.ftetwild_supersedes_graft`: fTetWild supersedes a held-aside Graft only when both healthy deviations are known and lower, or — in the ladder only — on an input-coverage failure. The single behaviour change is the `_auto` `None`-deviation edge (a present fTetWild deviation no longer beats a `None` Graft deviation, so Graft is kept); it is a normalization and no corpus or multi-object fixture reaches the auto escalation (the baseline ladder closes them; see `unify-measure.md`). `triage._auto_multi` keeps its documented divergence (no Graft re-order / tie-break) because no in-repo multi-object fixture reaches Graft/fTetWild; a code comment records it.
 
 ## [0.9.1] - 2026-10-12
 

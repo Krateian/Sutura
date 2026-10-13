@@ -16,6 +16,11 @@ as bare literals in several places. This module gathers them:
 - ``FINAL_TIER_PRECEDENCE`` is the order in which ``_deep_repair_offer`` names
   the reported ``final_tier``; it is the ladder's precedence list, not the run
   order.
+- ``ftetwild_supersedes_graft`` is the one healthy-deviation tie-break used when
+  a Graft candidate and an fTetWild candidate both close: fTetWild wins only
+  when both deviations are known and lower, or on an input-coverage failure.
+  The coverage argument is used by the ladder only; the triage auto paths have
+  no coverage concept and always keep Graft when a deviation is unknown.
 
 This module is a stdlib-only leaf (no numpy / pymeshlab / third-party import)
 so ``triage`` can import it without pulling anything in.
@@ -79,3 +84,18 @@ def order_graft_before_ftetwild(recs):
                    out.pop(nums.index(GRAFT_METHOD_NUM)))
         return out
     return list(recs)
+
+
+def ftetwild_supersedes_graft(ft_dev, graft_dev, coverage_failed=False):
+    """Whether fTetWild should supersede a held-aside Graft candidate.
+
+    The single tie-break rule (ladder semantics): an input-coverage failure
+    always lets fTetWild win; otherwise fTetWild wins only when BOTH healthy
+    deviations are known and ``ft_dev < graft_dev``. When either deviation is
+    ``None``, Graft is kept. The auto paths (``triage._auto``) pass no coverage
+    flag -- they have no coverage concept -- so only the ladder uses it.
+    """
+    if coverage_failed:
+        return True
+    return (ft_dev is not None and graft_dev is not None
+            and ft_dev < graft_dev)

@@ -12,7 +12,9 @@ import topology
 import triage
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.mesh_io import check_units, should_extract_outer_shell
-from sutura_engine.pipeline.order import FINAL_TIER_PRECEDENCE
+from sutura_engine.pipeline.order import (
+    FINAL_TIER_PRECEDENCE, ftetwild_supersedes_graft,
+)
 from sutura_engine.pipeline.presets import (
     ExtremeRemovedAllError, cad_likeness, classify_with_engine,
     estimate_deep_repair_time, resolve_mode_params, resolve_si_mode,
@@ -970,9 +972,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     ft_adopted = bool((stats.get('experimental_ftetwild')
                                        or {}).get('adopted'))
                     if (not ft_adopted
-                            or graft_cov_failed
-                            or (ft_dev is not None and graft_dev is not None
-                                and ft_dev < graft_dev)):
+                            or ftetwild_supersedes_graft(ft_dev, graft_dev,
+                                                         graft_cov_failed)):
                         stats['graft']['adopted'] = False
                         stats['graft']['reason'] = (
                             'superseded by fTetWild (input coverage below '

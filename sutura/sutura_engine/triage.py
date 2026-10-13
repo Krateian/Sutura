@@ -737,6 +737,12 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
             obj_analysis = _analysis_mod().analyze_mesh(in_v, in_t)
 
         recs = rank_fn(obj_analysis)
+        # NOTE: unlike single-mesh _auto, this multi-object path does NOT
+        # re-order Graft (#13) before fTetWild (#7) nor apply the shared
+        # healthy-deviation tie-break. The deep-repair ladder runs per object
+        # in the baseline, so no in-repo fixture reaches #13/#7 here; the
+        # divergence is documented rather than changed without a measurement
+        # (see the C6 feasibility gate in P1b findings).
         attempts = 0
         adopted = False
 
@@ -902,7 +908,8 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     # Imported lazily: sutura_engine.pipeline's package __init__ imports the
     # top-level ``triage`` shim, so a module-level import here would be circular.
     from sutura_engine.pipeline.order import (
-        FTETWILD_METHOD_NUM, GRAFT_METHOD_NUM, order_graft_before_ftetwild,
+        FTETWILD_METHOD_NUM, GRAFT_METHOD_NUM, ftetwild_supersedes_graft,
+        order_graft_before_ftetwild,
     )
 
     base_method = _methods_mod().get_method(_baseline_num(ctx))
@@ -1030,7 +1037,12 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                                  elapsed_ms=(time.monotonic() - _t0) * 1000))
             if ft_eval['watertight']:
                 fdev = ft_eval.get('hausdorff_rel')
-                if fdev is not None and (hdev is None or fdev < hdev):
+                # One shared tie-break (order.ftetwild_supersedes_graft): a
+                # present fTetWild deviation no longer beats a None Graft
+                # deviation (the ladder keeps Graft when either is None). The
+                # auto paths carry no coverage concept, so coverage_failed is
+                # left at its default.
+                if ftetwild_supersedes_graft(fdev, hdev):
                     shutil.copyfile(ft_out, out)
                     _attach(ft_trial, ft, tried, analysis_objects, recs,
                             note='lower healthy deviation than Graft',
