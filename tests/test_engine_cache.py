@@ -3,11 +3,10 @@
 
 Checks:
   1. hash_arrays, hash_file, hash_settings stability.
-  2. Cache hit/miss for analysis and repeat data.
+  2. Cache hit/miss for analysis data.
   3. Automatic cache invalidation when engine version changes.
-  4. Method result caching (numpy arrays + report dict).
-  5. LRU pruning when cache size exceeds threshold.
-  6. clear_cache() and cache opt-out (set_cache_enabled / SUTURA_NO_CACHE).
+  4. LRU pruning when cache size exceeds threshold.
+  5. clear_cache() and cache opt-out (set_cache_enabled / SUTURA_NO_CACHE).
 
 Usage:
   ~/.local/share/sutura/venv/bin/python tests/test_engine_cache.py
@@ -74,34 +73,6 @@ def test_analysis_and_invalidation():
                 os.environ.pop('XDG_CACHE_HOME', None)
 
 
-def test_method_caching():
-    with tempfile.TemporaryDirectory() as td:
-        orig_xdg = os.environ.get('XDG_CACHE_HOME')
-        os.environ['XDG_CACHE_HOME'] = td
-        try:
-            mesh_id = 'cube_mesh'
-            v = '0.6.1'
-            verts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
-            tris = np.array([[0, 1, 2]], dtype=np.int32)
-            report = {'method_used': {'num': 1, 'name': 'fast'}, 'watertight': True}
-
-            assert cache.get_cached_method(mesh_id, 1, 'cfg1', v) is None
-            cache.put_cached_method(mesh_id, 1, 'cfg1', v, verts, tris, report)
-
-            cached = cache.get_cached_method(mesh_id, 1, 'cfg1', v)
-            assert cached is not None
-            c_verts, c_tris, c_rep = cached
-            assert np.array_equal(c_verts, verts)
-            assert np.array_equal(c_tris, tris)
-            assert c_rep == report
-            print('ok  test_method_caching')
-        finally:
-            if orig_xdg:
-                os.environ['XDG_CACHE_HOME'] = orig_xdg
-            else:
-                os.environ.pop('XDG_CACHE_HOME', None)
-
-
 def test_pruning_and_clear():
     with tempfile.TemporaryDirectory() as td:
         orig_xdg = os.environ.get('XDG_CACHE_HOME')
@@ -152,7 +123,6 @@ def test_no_cache_opt_out():
 if __name__ == '__main__':
     test_hashing()
     test_analysis_and_invalidation()
-    test_method_caching()
     test_pruning_and_clear()
     test_no_cache_opt_out()
     print('all cache tests passed')

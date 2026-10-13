@@ -21,7 +21,7 @@ import json
 import os
 import shutil
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 import numpy as np
 
@@ -126,102 +126,6 @@ def put_cached_analysis(mesh_id: str, version: str, payload: dict) -> None:
         tmp_path = fpath + f'.tmp.{os.getpid()}'
         with gzip.open(tmp_path, 'wt', encoding='utf-8') as f:
             json.dump(data, f)
-        os.replace(tmp_path, fpath)
-        prune_cache()
-    except Exception:
-        pass
-
-
-def get_cached_repeat(mesh_id: str, version: str) -> Optional[dict]:
-    """Retrieve cached repetition detection result if valid and version matches."""
-    if not is_cache_enabled():
-        return None
-    d = os.path.join(get_cache_dir(), 'repeat')
-    fpath = os.path.join(d, f'{mesh_id}.json.gz')
-    if not os.path.isfile(fpath):
-        return None
-    try:
-        with gzip.open(fpath, 'rt', encoding='utf-8') as f:
-            data = json.load(f)
-        if data.get('_cache_version') != version:
-            try:
-                os.remove(fpath)
-            except OSError:
-                pass
-            return None
-        os.utime(fpath, None)
-        return data.get('payload')
-    except Exception:
-        return None
-
-
-def put_cached_repeat(mesh_id: str, version: str, payload: dict) -> None:
-    """Store repetition detection result in the cache."""
-    if not is_cache_enabled():
-        return
-    try:
-        d = _ensure_dir('repeat')
-        fpath = os.path.join(d, f'{mesh_id}.json.gz')
-        data = {
-            '_cache_version': version,
-            '_created_at': time.time(),
-            'payload': payload,
-        }
-        tmp_path = fpath + f'.tmp.{os.getpid()}'
-        with gzip.open(tmp_path, 'wt', encoding='utf-8') as f:
-            json.dump(data, f)
-        os.replace(tmp_path, fpath)
-        prune_cache()
-    except Exception:
-        pass
-
-
-def get_cached_method(mesh_id: str, method_num: int, settings_digest: str,
-                      version: str) -> Optional[Tuple[np.ndarray, np.ndarray, dict]]:
-    """Retrieve cached repair output (verts, tris, report) for a specific method."""
-    if not is_cache_enabled():
-        return None
-    key = f'{mesh_id}_m{method_num}_{settings_digest}'
-    d = os.path.join(get_cache_dir(), 'methods')
-    fpath = os.path.join(d, f'{key}.npz')
-    if not os.path.isfile(fpath):
-        return None
-    try:
-        with np.load(fpath, allow_pickle=False) as npz:
-            cached_version = str(npz['version'])
-            if cached_version != version:
-                try:
-                    os.remove(fpath)
-                except OSError:
-                    pass
-                return None
-            verts = npz['verts']
-            tris = npz['tris']
-            report = json.loads(str(npz['report']))
-            os.utime(fpath, None)
-            return verts, tris, report
-    except Exception:
-        return None
-
-
-def put_cached_method(mesh_id: str, method_num: int, settings_digest: str,
-                      version: str, verts: np.ndarray, tris: np.ndarray,
-                      report: dict) -> None:
-    """Store method repair output in the cache."""
-    if not is_cache_enabled():
-        return
-    try:
-        key = f'{mesh_id}_m{method_num}_{settings_digest}'
-        d = _ensure_dir('methods')
-        fpath = os.path.join(d, f'{key}.npz')
-        tmp_path = fpath + f'.tmp.{os.getpid()}.npz'
-        np.savez_compressed(
-            tmp_path,
-            version=version,
-            verts=np.ascontiguousarray(verts, dtype=np.float32),
-            tris=np.ascontiguousarray(tris, dtype=np.int32),
-            report=json.dumps(report, default=str),
-        )
         os.replace(tmp_path, fpath)
         prune_cache()
     except Exception:
