@@ -185,7 +185,7 @@ When a rule changes, edit the skill file; do not duplicate it here.
 
 The core repair functionality is organized under `sutura/sutura_engine/`. Installed and AppImage layouts copy it to a top-level `sutura_engine` package; in a source checkout the repo-root `sutura_engine/__init__.py` bootstrap provides `import sutura_engine` (and `import sutura_engine.<submodule>`) from the repository root, replacing the former root symlink (symlinks are not portable across AppImage, zip archives and Windows). The bootstrap only adds `sutura/` to `sys.path` and points `__path__` at `sutura/sutura_engine`; PyInstaller leaves that explicit `__path__` untouched (`--hidden-import sutura_engine` + `--collect-submodules` still resolve the real package because `--paths sutura` is in the spec). The engine enforces strict layer separation, lazy third-party imports, content-addressed caching, and a pluggable method registry:
 
-- `sutura_engine.core`: Generic low-level mesh I/O (STL, OBJ, 3MF arrays), geometric validation, and Hausdorff distance computations. Re-exports the specialised passes below for backward compatibility.
+- `sutura_engine.core`: Generic low-level mesh I/O (STL, OBJ, 3MF arrays) and geometric validation (`load_meshes`, `stl_write_binary`, `parse_3mf_meshes`, `scan_bad_coordinates`, `check_units`). Re-exports the specialised passes below for backward compatibility. Mesh measures live in `sutura_engine.pipeline.utils` (see below).
 - `sutura_engine.diagnosis`: Object feature analysis (`analyze_mesh`/`analyze_file`, `ObjectAnalysis`), geometric template matching (`Template`, `SCORE_TEMPLATES`), and classifier glue (`classify_with_engine`).
 - `sutura_engine.chart`: Content-addressed cache located in `~/.cache/sutura/`. Keys are SHA-256 hashes of input mesh arrays + engine version + parameters. Enforces a 500 MB LRU size limit, auto-invalidates on version change, and supports `--no-cache` CLI flag and GUI Options toggle/button.
 - `sutura_engine.hull`: Outer-surface shell extraction (`extract_outer_shell`).
@@ -203,6 +203,17 @@ The core repair functionality is organized under `sutura/sutura_engine/`. Instal
   - `external_adapter`: User-configured external CLI repair engines (`~/.config/sutura/engines/*.toml`).
 - Public Python API: `sutura_engine.repair(path_or_arrays, methods=None, intensity=..., ...) -> Report`.
 - Backward Compatibility: Shims exist at the previous engine paths   (`sutura_engine/analysis.py` -> `diagnosis`, `sutura_engine/cache.py` -> `chart`) and the legacy top-level modules (`closing.py`, `proxy_repair.py`, `repeat_repair.py`, `mirror_repair.py` -> `sutura_engine.mirror`, `wall_thickness.py` -> `sutura_engine.wall`, `object_analysis.py`, `templates.py`, `engines.py`, `methods.py`, `triage.py`) re-export from `sutura_engine`. `history.py` is a real top-level module but re-exports the learning-triage API from `sutura_engine.learning`.
+
+### Measure helpers: one home, and the differences that are deliberate
+
+Shared measures have a single home. `sutura_engine/pipeline/utils.py` (pure numpy + stdlib, importable without pymeshlab) is canonical for `surface_area`, `signed_volume`, `_bbox_diagonal` and `_hausdorff_rel`; `topology.py` for the topology/geometric measures (Rust `sutura_geom` kernel with a bit-for-bit numpy oracle, `tests/test_topology_parity.py`); `flap.py` is the oracle for `sutura_geom.flap_fill` (`tests/test_flap_rust_parity.py`). The Rust/numpy oracle pairs are load-bearing — never delete one side. `closing._check_validity` / `closing.one_sided_hausdorff` are shared with the proxy tier, and `dressing.signed_volume` is `pipeline.utils.signed_volume`.
+
+These measure copies differ on purpose — do not collapse them without a measured switch:
+- **Hausdorff direction and sample count.** `pipeline.utils._hausdorff_rel` samples the *output* toward the input over `HAUSDORFF_SAMPLES` (Balanced 200000); `closing.one_sided_hausdorff` samples the *input* toward the output over 100000. The direction is selected per method (`guard_input_to_output` in `triage._evaluate`) and the values feed the shape-adoption gates.
+- **`graft._one_sided_hausdorff`** is a cheap stochastic in-loop estimator (4000 area-weighted samples, `sutura_geom.closest_points`), not the pymeshlab filter; `repeat._compute_hausdorff_outside` and `viewer_data_render._hausdorff` measure different things again (masked region / unnormalised viewer metric).
+- **Median edge length** differs by construction: `graft._median_edge_length` (unique undirected edges) vs `tamponade._median_edge_length` (all three edges per face) vs the Rust tiers (subsample ~5000 faces, empty -> 1.0, clamp 1e-6).
+- **Surface area / bbox diagonal** in `sutura_engine.diagnosis` and `methods/closing.py` cast differently from `pipeline/utils.py` (float64 vs float32), so they are float-bits different and were left in place.
+- **`heatmap._face_normals`** duplicates `graft._face_normals` but stays local: `heatmap.py` must import no pymeshlab/trimesh.
 
 ### Method naming
 

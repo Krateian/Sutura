@@ -4,8 +4,7 @@
 
 Contains:
   - Mesh arrays I/O helpers: load_meshes, stl_write_binary, parse_3mf_meshes.
-  - Validation: boundary_loop_stats, scan_bad_coordinates, signed_volume, check_units.
-  - Hausdorff scan preservation helpers: one_sided_hausdorff.
+  - Validation: scan_bad_coordinates, check_units.
 
 Specialised passes live in dedicated modules; ``sutura_engine.hull`` is
 re-exported here for backward compatibility:
@@ -13,7 +12,6 @@ re-exported here for backward compatibility:
 
 Rule: This module must NOT import pymeshlab at module load time.
 """
-from collections import defaultdict
 import math
 import os
 import re
@@ -137,43 +135,6 @@ def stl_write_binary(path: str, verts: np.ndarray, tris: np.ndarray) -> None:
 
 # --- Geometry & Validation Helpers ------------------------------------------
 
-def boundary_loop_stats(verts: np.ndarray, tris: np.ndarray) -> Tuple[int, int]:
-    """(n_loops, max_loop_len) of the mesh boundary. Pure numpy + dict."""
-    t = np.asarray(tris, dtype=np.int64)
-    if len(t) == 0:
-        return 0, 0
-    f0, f1, f2 = t[:, 0], t[:, 1], t[:, 2]
-    max_v = int(t.max()) + 1
-    keys = np.concatenate([
-        np.minimum(f0, f1) * max_v + np.maximum(f0, f1),
-        np.minimum(f1, f2) * max_v + np.maximum(f1, f2),
-        np.minimum(f0, f2) * max_v + np.maximum(f0, f2),
-    ]).astype(np.int64)
-    uniq, counts = np.unique(keys, return_counts=True)
-    bkeys = uniq[counts == 1]
-    if len(bkeys) == 0:
-        return 0, 0
-    ba, bb = bkeys // max_v, bkeys % max_v
-    adj = defaultdict(list)
-    for a, c in zip(ba.tolist(), bb.tolist()):
-        adj[a].append(c)
-        adj[c].append(a)
-    seen, loops = set(), []
-    for s in adj:
-        if s in seen:
-            continue
-        n, cur, prev = 0, s, None
-        while cur not in seen:
-            seen.add(cur)
-            n += 1
-            nxt = [x for x in adj[cur] if x != prev]
-            if not nxt:
-                break
-            prev, cur = cur, nxt[0]
-        loops.append(n)
-    return len(loops), (max(loops) if loops else 0)
-
-
 def scan_bad_coordinates(path: str) -> Optional[str]:
     """Return a description of NaN/Inf coordinates in STL/OBJ files, or None."""
     ext = os.path.splitext(path)[1].lower()
@@ -224,18 +185,6 @@ def scan_bad_coordinates(path: str) -> Optional[str]:
     return None
 
 
-def signed_volume(verts: np.ndarray, tris: np.ndarray) -> float:
-    """Signed volume of a triangle mesh (sum of origin-tetrahedra volumes)."""
-    if len(tris) == 0 or len(verts) == 0:
-        return 0.0
-    v = np.asarray(verts, dtype=np.float64)
-    t = np.asarray(tris, dtype=np.int64)
-    a = v[t[:, 0]]
-    b = v[t[:, 1]]
-    c = v[t[:, 2]]
-    return float(np.sum(np.einsum('ij,ij->i', a, np.cross(b, c))) / 6.0)
-
-
 def check_units(verts: np.ndarray, declared_unit: Optional[str] = None) -> Optional[dict]:
     """Return a unit warning dict or None based on bounding-box heuristics."""
     v = np.asarray(verts, dtype=np.float32)
@@ -271,38 +220,3 @@ def check_units(verts: np.ndarray, declared_unit: Optional[str] = None) -> Optio
 # --- Outer-Shell Extraction -------------------------------------------------
 from sutura_engine.hull import extract_outer_shell
 
-
-# --- Hausdorff Scan-Preservation Helpers ------------------------------------
-
-def one_sided_hausdorff(in_v: np.ndarray, in_t: np.ndarray,
-                        out_v: np.ndarray, out_t: np.ndarray,
-                        samples: int = 100000) -> Tuple[Optional[float], Optional[float]]:
-    """Distance from input surface samples to output relative to input bbox diagonal: (max, mean)."""
-    in_v = np.asarray(in_v, dtype=np.float64)
-    in_t = np.asarray(in_t, dtype=np.int32)
-    out_v = np.asarray(out_v, dtype=np.float64)
-    out_t = np.asarray(out_t, dtype=np.int32)
-    if len(in_t) == 0 or len(out_t) == 0:
-        return None, None
-    diag = float(np.linalg.norm(in_v.max(axis=0) - in_v.min(axis=0)))
-    if diag <= 1e-12:
-        return None, None
-    try:
-        import pymeshlab as ml
-        hd = ml.MeshSet()
-        hd.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=in_t))
-        hd.add_mesh(ml.Mesh(vertex_matrix=out_v, face_matrix=out_t))
-        r = hd.apply_filter(
-            'get_hausdorff_distance',
-            sampledmesh=0,
-            targetmesh=1,
-            samplevert=True,
-            sampleface=True,
-            samplenum=samples,
-            maxdist=ml.PercentageValue(100),
-        )
-        max_d = float(r.get('max') or 0.0) / diag
-        mean_d = float(r.get('mean') or 0.0) / diag
-        return round(max_d, 6), round(mean_d, 6)
-    except Exception:
-        return None, None

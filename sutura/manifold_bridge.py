@@ -13,12 +13,6 @@ import trimesh
 import manifold3d as m3d
 
 
-def bbox_diag(verts):
-    lo = verts.min(axis=0)
-    hi = verts.max(axis=0)
-    return float(np.linalg.norm(hi - lo))
-
-
 # Stage-1 hole filling can leave flat, effectively zero-volume "debris" shells.
 # manifold3d ingests them as degenerate 2D sheets, but its boolean union cuts
 # through them and plants thousands of residual self-intersections that the
