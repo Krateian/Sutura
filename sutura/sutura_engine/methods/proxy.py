@@ -16,6 +16,11 @@ Pipeline:
 
 import numpy as np
 
+# Shared with the closing tier: the pure-numpy watertight verdict and the
+# input->output one-sided Hausdorff. Kept as a single implementation (bit-identical
+# code previously lived in both tiers).
+from sutura_engine.methods.closing import _check_validity, one_sided_hausdorff
+
 # Threshold constants
 DEFAULT_VOXEL_DIVISOR = 80
 MIN_GRID_CELLS = 32
@@ -203,56 +208,6 @@ def _referenced_only(verts, tris):
     remap = np.full(len(verts), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
     return verts[used], remap[tris]
-
-
-def _check_validity(verts, tris):
-    """Dependency-free watertight validity check: 2-manifold, 0 boundary edges,
-    consistent orientation and positive volume.
-
-    Deliberately pure numpy, no ``manifold3d``: the main venv (Linux/AppImage)
-    has no manifold3d (it ships wheels only up to Python 3.13 and lives in the
-    stage-2 venv behind ``manifold_bridge.py``), so an in-process import would
-    make this tier unusable there. This mirrors the manifold3d verdict:
-      - every undirected edge is used by exactly two triangles (0 boundary, 0
-        non-manifold edges);
-      - the two uses of each interior edge are oppositely directed (consistent
-        orientation -- a directed edge reused by two faces means a flipped
-        face);
-      - the signed volume is positive (outward normals).
-    """
-    if len(verts) < 4 or len(tris) < 4:
-        return False, "Too few vertices or faces"
-
-    verts = np.asarray(verts, dtype=np.float64)
-    tris = np.asarray(tris, dtype=np.int64)
-
-    edges = np.vstack([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
-    und = np.sort(edges, axis=1)
-    n = int(und.max()) + 1
-    keys = und[:, 0] * n + und[:, 1]
-    uniq, counts = np.unique(keys, return_counts=True)
-    if not np.all(counts == 2):
-        n_open = int(np.sum(counts == 1))
-        n_nm = int(np.sum(counts > 2))
-        return False, f"Not 2-manifold: {n_open} boundary edges, {n_nm} non-manifold edges"
-
-    # Consistent orientation: for a closed 2-manifold each directed edge is
-    # traversed by at most one face (the two faces sharing an edge traverse it
-    # in opposite directions).
-    dkeys = edges[:, 0] * n + edges[:, 1]
-    _duniq, dcounts = np.unique(dkeys, return_counts=True)
-    if np.any(dcounts > 1):
-        return False, ("Inconsistent face orientation: %d directed edge(s) "
-                       "traversed twice" % int(np.sum(dcounts > 1)))
-
-    v0 = verts[tris[:, 0]]
-    v1 = verts[tris[:, 1]]
-    v2 = verts[tris[:, 2]]
-    vol = float(np.sum(np.einsum('ij,ij->i', v0, np.cross(v1, v2))) / 6.0)
-    if vol <= 0.0:
-        return False, "Non-positive volume (%.6g): inverted or flat shell" % vol
-
-    return True, ""
 
 
 def _filter_debris_components(verts, tris, min_faces=MIN_DEBRIS_COMPONENT_FACES):
@@ -514,47 +469,6 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
                 healthy[f_idx] = False
 
     return healthy
-
-
-def one_sided_hausdorff(in_v, in_t, out_v, out_t, samples=100000):
-    """Distance from healthy input surface samples to output surface relative to bbox diag: (max, mean)."""
-    in_v = np.asarray(in_v, dtype=np.float64)
-    in_t = np.asarray(in_t, dtype=np.int32)
-    out_v = np.asarray(out_v, dtype=np.float64)
-    out_t = np.asarray(out_t, dtype=np.int32)
-
-    if len(in_t) == 0 or len(out_t) == 0:
-        return None, None
-
-    in_v, in_t = _referenced_only(in_v, in_t)
-    out_v, out_t = _referenced_only(out_v, out_t)
-
-    diag = float(np.linalg.norm(in_v.max(axis=0) - in_v.min(axis=0)))
-    if diag <= 1e-12:
-        return None, None
-
-    try:
-        import pymeshlab as ml
-
-        hd = ml.MeshSet()
-        hd.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=in_t))
-        hd.add_mesh(ml.Mesh(vertex_matrix=out_v, face_matrix=out_t))
-
-        r = hd.apply_filter(
-            'get_hausdorff_distance',
-            sampledmesh=0,
-            targetmesh=1,
-            samplevert=True,
-            sampleface=True,
-            samplenum=samples,
-            maxdist=ml.PercentageValue(100),
-        )
-        max_d = float(r.get('max') or 0.0) / diag
-        mean_d = float(r.get('mean') or 0.0) / diag
-        return round(max_d, 6), round(mean_d, 6)
-
-    except Exception:
-        return None, None
 
 
 def proxy_template_repair(verts, tris, voxel=None, max_iters=3):

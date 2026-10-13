@@ -47,6 +47,7 @@ from sutura_engine.graft import (
     _p_weld,
 )
 from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
+from sutura_engine.pipeline.utils import signed_volume
 
 METHOD_NUMBER = 16
 DISPLAY_NAME = "Dressing"
@@ -607,16 +608,6 @@ def si_face_count(v, t):
     exact classifier as the adoption gate.
     """
     return _exact_si(_as_f64(v), _as_i64(t))
-
-
-def signed_volume(verts, tris):
-    """Signed volume of a triangle soup (float; orientation-sensitive)."""
-    t = _as_i64(tris)
-    if len(t) == 0:
-        return 0.0
-    v = _as_f64(verts)
-    a, b, c = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
-    return float(np.einsum('ij,ij->i', a, np.cross(b, c)).sum() / 6.0)
 
 
 def count_components(tris):

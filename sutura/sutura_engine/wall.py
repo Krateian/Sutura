@@ -78,22 +78,6 @@ def sample_surface(verts, tris, n_samples=DEFAULT_SAMPLES, seed=0):
     return pts, normals
 
 
-def vertex_normals(verts, tris):
-    """Area-weighted per-vertex normals."""
-    verts = np.asarray(verts, dtype=np.float64)
-    tris = np.asarray(tris, dtype=np.int64)
-    n = np.zeros_like(verts)
-    if len(tris) == 0:
-        return n
-    v0, v1, v2 = verts[tris[:, 0]], verts[tris[:, 1]], verts[tris[:, 2]]
-    fn = np.cross(v1 - v0, v2 - v0)  # area-weighted (2*area) normals
-    for k in range(3):
-        np.add.at(n, tris[:, k], fn)
-    norm = np.linalg.norm(n, axis=1, keepdims=True)
-    norm[norm < 1e-30] = 1.0
-    return n / norm
-
-
 def build_sdf_grid(verts, tris, resolution=DEFAULT_GRID_RESOLUTION,
                    samples=DEFAULT_SAMPLES, seed=0, extra_pad=0.0):
     """Signed-distance grid sampled from the surface.
