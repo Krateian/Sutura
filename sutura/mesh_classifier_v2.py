@@ -161,11 +161,6 @@ def _class_scores(near90, flat, gentle):
 # --------------------------------------------------------------------------
 # (A) RANSAC plane segmentation (experimental).
 # --------------------------------------------------------------------------
-def _face_areas(n):
-    """Per-face area from (already normalized) face normals ``n``."""
-    return np.linalg.norm(n, axis=1) * 0.5
-
-
 def _ransac_plane_features(verts, tris):
     """Detect robust planar patches via RANSAC.
 

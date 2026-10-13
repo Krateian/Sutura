@@ -106,45 +106,6 @@ def _component_stats(v2, t2, f_rfc, f_ffo, f_frs, angle_deg=2.0):
     return labels, vol_c, area_c, flat_c
 
 
-def _overlap_area_2d(P2, Q2):
-    """Intersection area of two 2-D polygons (Sutherland-Hodgman)."""
-    def clip(poly, a, b):
-        out = []
-        nx, ny = len(poly), len(poly)
-        for i in range(nx):
-            cur = poly[i]
-            nxt = poly[(i + 1) % ny]
-            dc = (b[0] - a[0]) * (cur[1] - a[1]) - (b[1] - a[1]) * (cur[0] - a[0])
-            dn = (b[0] - a[0]) * (nxt[1] - a[1]) - (b[1] - a[1]) * (nxt[0] - a[0])
-            if dc >= -1e-12:
-                out.append(cur)
-            if (dc > 1e-12 and dn < -1e-12) or (dc < -1e-12 and dn > 1e-12):
-                t = dc / (dc - dn)
-                out.append((cur[0] + t * (nxt[0] - cur[0]),
-                            cur[1] + t * (nxt[1] - cur[1])))
-        return out
-    if len(P2) < 3 or len(Q2) < 3:
-        return 0.0
-    poly = [tuple(p) for p in P2]
-    for i in range(len(Q2)):
-        if not poly:
-            return 0.0
-        poly = clip(poly, Q2[i], Q2[(i + 1) % len(Q2)])
-    if len(poly) < 3:
-        return 0.0
-    area = 0.0
-    for i in range(len(poly)):
-        x1, y1 = poly[i]
-        x2, y2 = poly[(i + 1) % len(poly)]
-        area += x1 * y2 - x2 * y1
-    return abs(area) * 0.5
-
-
-def _tri_area2d(T):
-    return 0.5 * abs((T[1, 0] - T[0, 0]) * (T[2, 1] - T[0, 1]) -
-                     (T[2, 0] - T[0, 0]) * (T[1, 1] - T[0, 1]))
-
-
 def _pairs_overlap(tri_a, tri_b, rn_b, chunk=200000, eps_rel=1e-9):
     """Vectorized positive-area overlap test for batches of coplanar triangle
     pairs (separating-axis theorem, projected into each B triangle's plane).
@@ -523,10 +484,6 @@ def _fair_fraction(m):
     """Fairing strength as a multiple of the surrounding edge length (see the
     FAIR_* rationale: a uniform gain beat the tested loop-size ramp)."""
     return FAIR_LARGE + (FAIR_SMALL - FAIR_LARGE) * float(np.exp(-(m - 3.0) / FAIR_RAMP))
-
-
-def _tri_area(pi, pk, pj):
-    return 0.5 * float(np.linalg.norm(np.cross(pk - pi, pj - pi)))
 
 
 def min_area_triangulation(P, cap=1200, forbidden=None):
