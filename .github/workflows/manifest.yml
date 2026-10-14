@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # For workflow_dispatch, build the manifest from the requested tag so
           # its hashes match the tagged release (L4).  For `release: published`
