@@ -61,7 +61,10 @@ jobs:
             target: x86_64
             manylinux: manylinux_2_28
           - name: linux-aarch64
-            os: ubuntu-latest
+            # Native arm64 runner: the C++ Manifold build must not be
+            # cross-compiled (a host x86_64 cmake build produces objects the
+            # aarch64 linker rejects).
+            os: ubuntu-24.04-arm
             target: aarch64
             manylinux: manylinux_2_28
           - name: macos-universal2
