@@ -27,6 +27,9 @@ from sutura_engine.pipeline.p_weld import (
     enforce_reload_verdict, p_weld_final, reload_strict_holes_nm,
 )
 from sutura_engine.pipeline.pipeline import repair_mesh_from_arrays
+from sutura_engine.pipeline.report import (
+    aggregate_print_reports, build_print_report,
+)
 from sutura_engine.pipeline.stage1 import (
     _local_exact_budget, _should_run_local_exact,
 )
@@ -250,6 +253,9 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             else:
                 report['tamponade']['final_fallback'] = fallback
 
+    report['print_report'] = build_print_report(
+        report, in_arrays=(verts, tris), out_arrays=(new_v, new_t))
+
     report.setdefault('timings', {})
     report['timings']['file_total'] = round(time.perf_counter() - _t_file, 3)
     report['timings']['flap_off_rerun'] = bool(
@@ -361,6 +367,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
             # archive (reload-equivalent form) before the confidence/score
             # below, so those see the honest verdict too.
             enforce_reload_verdict(rep, new_v, new_t)
+            rep['print_report'] = build_print_report(
+                rep, in_arrays=(verts, tris), out_arrays=(new_v, new_t))
             _rc = repair_confidence(rep)
             rep['repair_confidence'] = _rc['score']
             rep['repair_confidence_label'] = _rc['label']
@@ -381,6 +389,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
         rep['triangle_attributes'] = st
 
     agg = {'objects': len(blocks), 'object_reports': reports}
+    agg['print_report'] = aggregate_print_reports(
+        [r.get('print_report') for r in reports])
     if reports:
         # backward compat: the top-level stage1 stays object-0's (classification
         # now evaluates object_reports directly for multi-object files).
