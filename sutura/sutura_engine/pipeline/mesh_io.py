@@ -191,6 +191,50 @@ def read_obj(path):
     return np.array(verts, dtype=np.float32), np.array(tris, dtype=np.int32)
 
 
+def _read_stl_ascii(path):
+    verts = []
+    with open(path, 'r', errors='ignore') as f:
+        for line in f:
+            s = line.strip()
+            if s.startswith('vertex'):
+                p = s.split()
+                verts.append((float(p[1]), float(p[2]), float(p[3])))
+    v = np.asarray(verts, dtype=np.float32)
+    n = len(v) // 3
+    return v, np.arange(n * 3, dtype=np.int32).reshape(n, 3)
+
+
+def read_stl(path):
+    """Read a binary or ASCII STL into (verts float32, tris int32).
+
+    Binary is detected by the exact ``84 + 50 * n`` byte layout: an ASCII file
+    may also start with the word ``solid``, so the header word alone is not a
+    reliable discriminator.
+    """
+    with open(path, 'rb') as f:
+        head = f.read(84)
+        if len(head) == 84:
+            n = struct.unpack('<I', head[80:84])[0]
+            f.seek(0, os.SEEK_END)
+            if f.tell() == 84 + 50 * n:
+                f.seek(84)
+                arr = np.frombuffer(f.read(50 * n), dtype=np.uint8).reshape(n, 50)
+                tri = arr[:, 12:48].copy().view(np.float32).reshape(n, 3, 3)
+                return (tri.reshape(-1, 3).astype(np.float32),
+                        np.arange(3 * n, dtype=np.int32).reshape(n, 3))
+    return _read_stl_ascii(path)
+
+
+def read_mesh(path):
+    """Read an STL or OBJ file into (verts float32, tris int32) by extension."""
+    ext = os.path.splitext(str(path))[1].lower()
+    if ext == '.obj':
+        return read_obj(path)
+    if ext == '.stl':
+        return read_stl(path)
+    raise ValueError('unsupported mesh extension for reading: %s' % ext)
+
+
 def stl_write_binary(path, verts, tris):
     with open(path, 'wb') as f:
         f.write(b'Sutura intermediate'.ljust(80, b'\0'))
