@@ -723,6 +723,20 @@ def flat_back_close(verts, tris, thickness=None):
         }
 
 
+def _has_positive_area(verts, tris, diag):
+    """True when at least one face has non-zero area (float64 safe)."""
+    if len(tris) == 0 or diag <= 0.0:
+        return False
+    a = verts[tris[:, 0]]
+    b = verts[tris[:, 1]]
+    c = verts[tris[:, 2]]
+    cross = np.cross(b - a, c - a)
+    # Relative threshold: a genuinely zero-area (collinear) face is exactly 0
+    # for the meshes that reach this path; the scale term only rejects
+    # numerically degenerate slivers that pymeshlab cannot sample safely.
+    return bool(np.any(np.linalg.norm(cross, axis=1) > 1e-12 * diag * diag))
+
+
 def one_sided_hausdorff(in_v, in_t, out_v, out_t, samples=100000):
     """Distance from input surface samples to output, relative to input bbox diagonal: (max, mean).
 
@@ -738,9 +752,20 @@ def one_sided_hausdorff(in_v, in_t, out_v, out_t, samples=100000):
 
     in_v, in_t = _referenced_only(in_v, in_t)
     out_v, out_t = _referenced_only(out_v, out_t)
+    if len(in_t) == 0 or len(out_t) == 0:
+        return None, None
 
     diag = float(np.linalg.norm(in_v.max(axis=0) - in_v.min(axis=0)))
     if diag <= 1e-12:
+        return None, None
+
+    # pymeshlab's get_hausdorff_distance segfaults on a zero-area sampled
+    # mesh (observed with a single collinear "healthy" triangle in Proxy
+    # repair on thingi10k_100827).  There is no meaningful distance to
+    # report in that case, so skip the native call entirely.
+    out_diag = float(np.linalg.norm(out_v.max(axis=0) - out_v.min(axis=0)))
+    if not _has_positive_area(in_v, in_t, diag) or not _has_positive_area(
+            out_v, out_t, out_diag):
         return None, None
 
     try:

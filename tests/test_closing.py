@@ -178,6 +178,22 @@ def test_flat_back_close_relief():
     print(f"  ✓ test_flat_back_close_relief passed (faces: {len(t_out)}, H_max: {h_max})")
 
 
+def test_one_sided_hausdorff_degenerate_inputs():
+    # A collinear "healthy" triangle has zero area; pymeshlab's
+    # get_hausdorff_distance segfaults on it.  The helper must return
+    # (None, None) instead of calling the native filter.
+    degenerate_v = np.array([[-5.0, 0.0, 31.0],
+                             [-3.0, 1.5, 31.5],
+                             [-1.0, 3.0, 32.0]])
+    degenerate_t = np.array([[0, 2, 1]])
+    v = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0],
+                  [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    t = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
+    assert cl.one_sided_hausdorff(degenerate_v, degenerate_t, v, t) == (None, None)
+    assert cl.one_sided_hausdorff(v, t, degenerate_v, degenerate_t) == (None, None)
+    print("  ✓ test_one_sided_hausdorff_degenerate_inputs passed")
+
+
 def test_flat_back_secondary_hole():
     """Ensure small secondary hole in relief is closed by pymeshlab before flat back."""
     v_rel, t_rel = _make_relief(nx=10, ny=10)
