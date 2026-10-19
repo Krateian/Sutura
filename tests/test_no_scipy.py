@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Guard against SciPy creeping back into the runtime.
 
-SciPy is no longer a Sutura dependency.  The only allowed import is the
-research-only alpha-wrap prototype under ``scripts/experiments``.
+SciPy is no longer a Sutura dependency.  The guard scans Sutura's own
+sources only (``sutura/`` excluding any bundled virtualenv or
+``site-packages``, plus ``scripts/`` and Rust Python shims); third-party
+packages are not inspected.  The only allowed import is the research-only
+alpha-wrap prototype under ``scripts/experiments``.
 """
 import ast
 import importlib
@@ -29,9 +32,17 @@ def _scipy_imports(path):
                 yield node.lineno, module
 
 
+_SKIP_DIRS = {'__pycache__', '.git', 'build', 'dist', 'node_modules'}
+
+
+def _is_third_party(name):
+    return name == 'site-packages' or name.startswith('venv')
+
+
 def _python_files(root):
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d != '__pycache__']
+        dirnames[:] = [d for d in dirnames
+                       if d not in _SKIP_DIRS and not _is_third_party(d)]
         for name in filenames:
             if name.endswith('.py'):
                 yield os.path.join(dirpath, name)
@@ -41,7 +52,9 @@ def test_runtime_has_no_scipy_imports():
     allowed = {os.path.join(REPO, 'scripts', 'experiments',
                             'alpha_wrap_prototype.py')}
     offenders = []
-    for root in (os.path.join(REPO, 'sutura'), os.path.join(REPO, 'scripts')):
+    for root in (os.path.join(REPO, 'sutura'),
+                 os.path.join(REPO, 'scripts'),
+                 os.path.join(REPO, 'rust')):
         for path in _python_files(root):
             if path in allowed:
                 continue
