@@ -10,6 +10,328 @@ import numpy as np
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.tiers.dressing import _dressing_suggestion_text
 
+# --- Print-impact report ---------------------------------------------------
+#
+# A per-defect decomposition of an already-built repair report: what was FIXED,
+# what is LEFT and how each remaining condition affects an FDM print, plus the
+# geometry-change numbers (volume/surface/deviation). It is assembled here (the
+# existing report home) and never re-measures the defects themselves: every
+# count comes from ``stage1`` / ``stage2`` / ``p_weld`` / the tier reports. The
+# single top-line "is it good" verdict stays repair_score's Status; this layer
+# only explains the individual conditions behind it.
+#
+# Severity language (three levels, stable codes; the GUI localizes them):
+SEVERITY_BREAKS = 'breaks'          # breaks the print
+SEVERITY_MAY = 'may_affect'         # may affect the print
+SEVERITY_COSMETIC = 'cosmetic'      # cosmetic, slicers ignore it
+_SEVERITY_RANK = {SEVERITY_BREAKS: 0, SEVERITY_MAY: 1, SEVERITY_COSMETIC: 2}
+
+# Deviation gate: above this face count the per-repair point-to-mesh deviation
+# is not measured; the report records it under ``not_assessed`` to keep the
+# repair fast on huge scans. Measured with the Rust ``sutura_geom`` BVH
+# (``closest_points``), sampling the result surface toward the input.
+DEVIATION_MAX_FACES = 150_000
+DEVIATION_SAMPLES = 20_000
+
+# Heuristic thresholds (NOT read from the mesh literature or the repo; they are
+# engineering estimates, flagged ``heuristic`` in the issue detail so the UI can
+# label them as estimates). Volume change alone is repo-grounded: the existing
+# volume_warning fires above 15 % (pipeline.stage1), reused here as the breaks
+# level.
+_VOLUME_MAY_PCT = 5.0
+_VOLUME_BREAKS_PCT = 15.0        # matches the existing volume_warning threshold
+_DEVIATION_MAY_FRAC = 0.01       # 1 % of the bounding-box diagonal
+_DEVIATION_BREAKS_FRAC = 0.05    # 5 % of the bounding-box diagonal
+
+
+def _bbox_diagonal(verts):
+    """Bounding-box space diagonal of an (N, 3) vertex array, or 0.0."""
+    if verts is None:
+        return 0.0
+    v = np.asarray(verts, dtype=np.float64)
+    if v.size == 0:
+        return 0.0
+    lo = v.min(axis=0)
+    hi = v.max(axis=0)
+    return float(np.linalg.norm(hi - lo))
+
+
+def _deviation_pct(report, in_arrays, out_arrays):
+    """Result-to-input deviation as a % of the input bbox diagonal, or None.
+
+    Reuses a tier's already-computed per-vertex deviation when present (Graft's
+    ``per_vertex_deviation`` or Dressing's ``hausdorff_rel_max``); otherwise
+    measures a fresh sampled point-to-mesh distance with the Rust BVH
+    (``sutura_geom.closest_points``, result surface -> input surface). Returns
+    None past the face gate (``DEVIATION_MAX_FACES``) so the caller can report
+    it as ``not_assessed`` rather than pay the cost on a huge mesh.
+    """
+    in_v = _as_f64(in_arrays[0]) if in_arrays else None
+    in_t = _as_i32(in_arrays[1]) if in_arrays else None
+    diag = _bbox_diagonal(in_v)
+    if diag > 0:
+        g = report.get('graft') or {}
+        pvd = g.get('per_vertex_deviation')
+        if pvd is None:
+            pvd = report.get('per_vertex_deviation')
+        if pvd is not None:
+            d = np.abs(np.asarray(pvd, dtype=np.float64))
+            if d.size:
+                return {'max_pct': round(float(d.max()) / diag * 100, 4),
+                        'mean_pct': round(float(d.mean()) / diag * 100, 4),
+                        'samples': int(d.size), 'source': 'graft'}
+        dr = report.get('dressing') or {}
+        hr = dr.get('hausdorff_rel_max')
+        if isinstance(hr, (int, float)) and not isinstance(hr, bool):
+            return {'max_pct': round(float(hr) * 100, 4),
+                    'mean_pct': None, 'samples': None, 'source': 'dressing'}
+    out_v = _as_f64(out_arrays[0]) if out_arrays else None
+    out_t = _as_i32(out_arrays[1]) if out_arrays else None
+    if in_v is None or in_t is None or out_v is None or out_t is None or diag <= 0:
+        return None
+    if out_t.shape[0] > DEVIATION_MAX_FACES or in_t.shape[0] > DEVIATION_MAX_FACES:
+        return None
+    try:
+        import sutura_geom
+        if out_v.shape[0] > DEVIATION_SAMPLES:
+            idx = np.linspace(0, out_v.shape[0] - 1,
+                              DEVIATION_SAMPLES).astype(np.int64)
+            pts = out_v[idx]
+        else:
+            pts = out_v
+        _q, d, _f = sutura_geom.closest_points(in_v, in_t, pts)
+        d = np.asarray(d, dtype=np.float64)
+        if d.size == 0:
+            return None
+        return {'max_pct': round(float(d.max()) / diag * 100, 4),
+                'mean_pct': round(float(d.mean()) / diag * 100, 4),
+                'samples': int(d.size), 'source': 'measured'}
+    except Exception:  # noqa: BLE001 - deviation is informational, never fatal
+        return None
+
+
+def _as_f64(a):
+    return None if a is None else np.asarray(a, dtype=np.float64)
+
+
+def _as_i32(a):
+    return None if a is None else np.asarray(a, dtype=np.int32)
+
+
+def _volume_issue(vol):
+    """Severity-coded issue for a |volume change| above the heuristic bands."""
+    if not isinstance(vol, (int, float)) or isinstance(vol, bool):
+        return None
+    a = abs(float(vol))
+    if a > _VOLUME_BREAKS_PCT:
+        sev = SEVERITY_BREAKS
+    elif a > _VOLUME_MAY_PCT:
+        sev = SEVERITY_MAY
+    else:
+        return None
+    return {'code': 'volume_change', 'severity': sev, 'count': None,
+            'message_key': 'pr_volume_change',
+            'detail': {'pct': round(float(vol), 2), 'heuristic': True}}
+
+
+def _deviation_issue(dev_pct):
+    """Severity-coded issue for a |deviation| above the heuristic bands."""
+    if not isinstance(dev_pct, (int, float)) or isinstance(dev_pct, bool):
+        return None
+    a = abs(float(dev_pct))
+    if a > _DEVIATION_BREAKS_FRAC * 100:
+        sev = SEVERITY_BREAKS
+    elif a > _DEVIATION_MAY_FRAC * 100:
+        sev = SEVERITY_MAY
+    else:
+        return None
+    return {'code': 'shape_deviation', 'severity': sev, 'count': None,
+            'message_key': 'pr_shape_deviation',
+            'detail': {'pct': round(float(dev_pct), 3), 'heuristic': True}}
+
+
+def build_print_report(report, in_arrays=None, out_arrays=None):
+    """Per-defect print-impact decomposition of a finished repair report.
+
+    Returns ``{'issues': [...], 'fixed': [...], 'geometry': {...},
+    'not_assessed': [...]}`` or None when there is no stage-1 result to
+    describe (hard error, missing report). Pure mapping over already-computed
+    fields; the only optional measurement is the sampled deviation in
+    ``_deviation_pct`` (Rust BVH, gated by ``DEVIATION_MAX_FACES``).
+    """
+    s1 = report.get('stage1')
+    if not isinstance(s1, dict):
+        return None
+
+    issues = []
+    fixed = []
+
+    holes_rem = _int(s1.get('holes_remaining'))
+    if holes_rem > 0:
+        issues.append({'code': 'holes_remaining', 'severity': SEVERITY_BREAKS,
+                       'count': holes_rem, 'message_key': 'pr_holes_remaining',
+                       'detail': {'two_manifold': bool(s1.get('two_manifold'))}})
+    nm_rem = _int(s1.get('non_manifold_edges_remaining'))
+    if nm_rem > 0:
+        issues.append({'code': 'non_manifold_remaining',
+                       'severity': SEVERITY_BREAKS, 'count': nm_rem,
+                       'message_key': 'pr_non_manifold_remaining'})
+    si = s1.get('self_intersections_remaining')
+    if isinstance(si, (int, float)) and not isinstance(si, bool) and si > 0:
+        issues.append({'code': 'self_intersections_remaining',
+                       'severity': SEVERITY_COSMETIC, 'count': int(si),
+                       'message_key': 'pr_self_intersections_remaining',
+                       'detail': {'note': 'even_odd_double_wall_caveat'}})
+
+    comp = s1.get('components')
+    comp_before = s1.get('components_before')
+    if _int(comp) > 1:
+        issues.append({'code': 'multiple_shells', 'severity': SEVERITY_MAY,
+                       'count': _int(comp), 'message_key': 'pr_multiple_shells'})
+    removed_shells = max(_int(comp_before) - _int(comp), 0)
+    if removed_shells > 0:
+        fixed.append({'code': 'shells_removed', 'count': removed_shells})
+
+    hc = _int(s1.get('holes_closed'))
+    if hc > 0:
+        fixed.append({'code': 'holes_closed', 'count': hc})
+    nmf = _int(s1.get('non_manifold_edges_fixed'))
+    if nmf > 0:
+        fixed.append({'code': 'non_manifold_fixed', 'count': nmf})
+    fr = _int(s1.get('faces_removed'))
+    if fr > 0:
+        fixed.append({'code': 'faces_removed', 'count': fr})
+    vb = s1.get('volume_before')
+    va = s1.get('volume_after')
+    if (isinstance(vb, (int, float)) and not isinstance(vb, bool)
+            and isinstance(va, (int, float)) and not isinstance(va, bool)
+            and vb < 0 and va > 0):
+        fixed.append({'code': 'orientation_corrected', 'count': 1})
+
+    vol = s1.get('volume_change_percent')
+    vi = _volume_issue(vol)
+    if vi:
+        issues.append(vi)
+
+    not_assessed = []
+    dev = _deviation_pct(report, in_arrays, out_arrays)
+    if dev is None:
+        not_assessed.append('deviation')
+    else:
+        di = _deviation_issue(dev.get('max_pct'))
+        if di:
+            issues.append(di)
+
+    issues.sort(key=lambda it: _SEVERITY_RANK.get(it.get('severity'), 9))
+    geometry = {
+        'volume_change_pct': vol,
+        'surface_area_change_pct': s1.get('surface_area_change_percent'),
+        'deviation_max_pct': None if dev is None else dev.get('max_pct'),
+        'deviation_mean_pct': None if dev is None else dev.get('mean_pct'),
+        'deviation_source': None if dev is None else dev.get('source'),
+        'faces_before': s1.get('faces_before'),
+        'faces_after': s1.get('faces_after'),
+        'components_before': comp_before,
+        'components_after': comp,
+    }
+    return {'issues': issues, 'fixed': fixed, 'geometry': geometry,
+            'not_assessed': not_assessed}
+
+
+def aggregate_print_reports(prs):
+    """Merge per-object print reports into one file-level report.
+
+    The worst object drives the issue severities; counts are summed and the
+    geometry block takes the object with the largest absolute volume change
+    (a single representative worst case). Returns None when empty.
+    """
+    prs = [p for p in prs if p]
+    if not prs:
+        return None
+    issues = {}
+    fixed = {}
+    not_assessed = set()
+    for p in prs:
+        for it in p.get('issues', []):
+            cur = issues.get(it['code'])
+            if cur is None:
+                issues[it['code']] = dict(it)
+            else:
+                cur['count'] = (cur.get('count') or 0) + (it.get('count') or 0)
+                if _SEVERITY_RANK.get(it.get('severity'), 9) < \
+                        _SEVERITY_RANK.get(cur.get('severity'), 9):
+                    cur['severity'] = it['severity']
+        for f in p.get('fixed', []):
+            fixed[f['code']] = fixed.get(f['code'], 0) + (f.get('count') or 0)
+        not_assessed.update(p.get('not_assessed', []))
+    worst = max(prs, key=lambda p: abs(
+        (p.get('geometry') or {}).get('volume_change_pct') or 0.0))
+    return {
+        'issues': sorted(issues.values(),
+                         key=lambda it: _SEVERITY_RANK.get(it.get('severity'), 9)),
+        'fixed': [{'code': k, 'count': v} for k, v in sorted(fixed.items())],
+        'geometry': worst.get('geometry'),
+        'not_assessed': sorted(not_assessed),
+    }
+
+
+def _int(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def human_print_report(pr):
+    """Render the print-impact block for --human mode (English labels)."""
+    if not pr:
+        return None
+    lines = ['', 'Print impact:']
+    fixed = pr.get('fixed') or []
+    if fixed:
+        labels = {
+            'holes_closed': 'hole(s) closed',
+            'non_manifold_fixed': 'non-manifold edge(s) fixed',
+            'faces_removed': 'bad face(s) removed',
+            'shells_removed': 'loose shell(s) removed',
+            'orientation_corrected': 'orientation corrected',
+        }
+        lines.append('  Fixed : ' + ', '.join(
+            '%d %s' % (f.get('count'), labels.get(f['code'], f['code']))
+            for f in fixed))
+    else:
+        lines.append('  Fixed : nothing (input was already sound)')
+    issues = pr.get('issues') or []
+    _sev = {SEVERITY_BREAKS: 'breaks the print',
+            SEVERITY_MAY: 'may affect the print',
+            SEVERITY_COSMETIC: 'cosmetic, slicers ignore it'}
+    if issues:
+        parts = []
+        for it in issues:
+            n = it.get('count')
+            name = it['code'].replace('_', ' ')
+            if n is not None:
+                parts.append('%d %s [%s]' % (n, name, _sev.get(it.get('severity'), '?')))
+            else:
+                parts.append('%s [%s]' % (name, _sev.get(it.get('severity'), '?')))
+        lines.append('  Remaining: ' + ', '.join(parts))
+    else:
+        lines.append('  Remaining: none')
+    g = pr.get('geometry') or {}
+    seg = []
+    if g.get('volume_change_pct') is not None:
+        seg.append('volume %s%%' % g['volume_change_pct'])
+    if g.get('deviation_max_pct') is not None:
+        seg.append('deviation max %s%% of size' % g['deviation_max_pct'])
+    if seg:
+        lines.append('  Geometry: ' + ', '.join(seg))
+    na = pr.get('not_assessed') or []
+    if na:
+        lines.append('  Not assessed: ' + ', '.join(na))
+    return '\n'.join(lines)
+
 
 def _geom_change_pct(s1):
     """Geometry-change magnitude % for a stage1 dict, or None.
@@ -170,6 +492,11 @@ def human_report(r, show_defects=False, show_diff=False):
             'n/a' if rh is None else rh,
             'n/a' if rk is None else rk,
             r.get('repair_status', 'n/a')))
+    pr = r.get('print_report')
+    if pr:
+        block = human_print_report(pr)
+        if block:
+            lines.append(block)
     mh = r.get('method_health')
     if mh:
         lines.append(method_health.human_line(mh))

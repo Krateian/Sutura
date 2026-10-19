@@ -253,6 +253,28 @@ STRINGS = {
         'issue_extreme_removed_object': ('Extreme mode removed all geometry '
                                          '(component below size threshold) — try '
                                          'a less aggressive mode'),
+        'print_impact_header': 'Print impact:',
+        'print_fixed': 'Fixed: %s',
+        'print_left': 'Remaining: %s',
+        'print_nothing': 'none',
+        'print_fixed_none': 'nothing (input was already sound)',
+        'print_sev_breaks': 'breaks the print',
+        'print_sev_may': 'may affect the print',
+        'print_sev_cosmetic': 'cosmetic, slicers ignore it',
+        'print_issue_holes_remaining': '%d hole(s) remaining',
+        'print_issue_non_manifold_remaining': '%d non-manifold edge(s) remaining',
+        'print_issue_self_intersections_remaining': '%d self-intersection(s) remaining',
+        'print_issue_multiple_shells': '%d separate shell(s)',
+        'print_issue_volume_change': 'volume change %s%%',
+        'print_issue_shape_deviation': 'shape deviation %s%%',
+        'print_fixed_holes_closed': '%d hole(s) closed',
+        'print_fixed_non_manifold_fixed': '%d non-manifold edge(s) fixed',
+        'print_fixed_faces_removed': '%d bad face(s) removed',
+        'print_fixed_shells_removed': '%d loose shell(s) removed',
+        'print_fixed_orientation_corrected': 'orientation corrected',
+        'print_geometry': 'Geometry: %s',
+        'print_not_assessed': 'Not assessed: %s',
+        'print_na': 'n/a',
         'defects_header': 'Input defects (selected file):',
         'repair_log_header': 'What changed (repair log):',
         'repair_log_empty': 'Repair a file to see the operations applied.',
@@ -887,6 +909,28 @@ STRINGS = {
         'issue_extreme_removed_object': ('Extreme mod tüm geometriyi sildi '
                                          '(bileşen boyut eşiğinin altında) — '
                                          'daha az agresif bir mod deneyin'),
+        'print_impact_header': 'Baskı etkisi:',
+        'print_fixed': 'Düzeltildi: %s',
+        'print_left': 'Kalan: %s',
+        'print_nothing': 'yok',
+        'print_fixed_none': 'yok (girdi zaten sağlamdı)',
+        'print_sev_breaks': 'baskıyı bozar',
+        'print_sev_may': 'baskıyı etkileyebilir',
+        'print_sev_cosmetic': 'kozmetik, dilimleyiciler yok sayar',
+        'print_issue_holes_remaining': '%d delik kaldı',
+        'print_issue_non_manifold_remaining': '%d manifold-olmayan kenar kaldı',
+        'print_issue_self_intersections_remaining': '%d kendini-kesişme kaldı',
+        'print_issue_multiple_shells': '%d ayrı kabuk',
+        'print_issue_volume_change': 'hacim değişimi %s%%',
+        'print_issue_shape_deviation': 'şekil sapması %s%%',
+        'print_fixed_holes_closed': '%d delik kapatıldı',
+        'print_fixed_non_manifold_fixed': '%d manifold-olmayan kenar düzeltildi',
+        'print_fixed_faces_removed': '%d bozuk yüz kaldırıldı',
+        'print_fixed_shells_removed': '%d gevşek kabuk kaldırıldı',
+        'print_fixed_orientation_corrected': 'yön düzeltildi',
+        'print_geometry': 'Geometri: %s',
+        'print_not_assessed': 'Değerlendirilmedi: %s',
+        'print_na': 'yok',
         'defects_header': 'Girdi kusurları (seçili dosya):',
         'repair_log_header': 'Ne değişti (onarım günlüğü):',
         'repair_log_empty': 'Uygulanan işlemleri görmek için bir dosya onarın.',
@@ -1343,6 +1387,64 @@ def _t(key, *args):
     table = STRINGS.get(lang, STRINGS['en'])
     s = table.get(key, STRINGS['en'].get(key, key))
     return s % args if args else s
+
+
+def _print_impact_lines(pr):
+    """Localize a ``print_report`` dict into repair-log lines (EN/TR)."""
+    if not pr:
+        return []
+    lines = [_t('print_impact_header')]
+    _fl = {'holes_closed': 'print_fixed_holes_closed',
+           'non_manifold_fixed': 'print_fixed_non_manifold_fixed',
+           'faces_removed': 'print_fixed_faces_removed',
+           'shells_removed': 'print_fixed_shells_removed',
+           'orientation_corrected': 'print_fixed_orientation_corrected'}
+    parts = []
+    for f in pr.get('fixed') or []:
+        key = _fl.get(f.get('code'))
+        if key is None:
+            continue
+        parts.append(_t(key) if key == 'print_fixed_orientation_corrected'
+                     else _t(key, f.get('count', 0)))
+    lines.append(_t('print_fixed',
+                    ', '.join(parts) if parts else _t('print_fixed_none')))
+    _sev = {'breaks': 'print_sev_breaks', 'may_affect': 'print_sev_may',
+            'cosmetic': 'print_sev_cosmetic'}
+    _ik = {'holes_remaining': 'print_issue_holes_remaining',
+           'non_manifold_remaining': 'print_issue_non_manifold_remaining',
+           'self_intersections_remaining':
+               'print_issue_self_intersections_remaining',
+           'multiple_shells': 'print_issue_multiple_shells'}
+    parts = []
+    for it in pr.get('issues') or []:
+        code = it.get('code')
+        sev = _t(_sev.get(it.get('severity'), 'print_sev_cosmetic'))
+        if code in _ik:
+            name = _t(_ik[code], it.get('count') or 0)
+        elif code == 'volume_change':
+            name = _t('print_issue_volume_change',
+                      (it.get('detail') or {}).get('pct'))
+        elif code == 'shape_deviation':
+            name = _t('print_issue_shape_deviation',
+                      (it.get('detail') or {}).get('pct'))
+        else:
+            name = code
+        parts.append('%s [%s]' % (name, sev))
+    lines.append(_t('print_left',
+                    ', '.join(parts) if parts else _t('print_nothing')))
+    g = pr.get('geometry') or {}
+    seg = []
+    if g.get('volume_change_pct') is not None:
+        seg.append(_t('print_issue_volume_change', g['volume_change_pct']))
+    if g.get('deviation_max_pct') is not None:
+        seg.append(_t('print_issue_shape_deviation', g['deviation_max_pct']))
+    if seg:
+        lines.append(_t('print_geometry', ', '.join(seg)))
+    na = pr.get('not_assessed') or []
+    if na:
+        lines.append(_t('print_not_assessed', ', '.join(na)))
+    lines.append('')
+    return lines
 
 
 def _method_name(num):
@@ -5014,7 +5116,7 @@ class MainWindow(QMainWindow):
             self.repair_log.setPlainText('')
             return
         s1 = data.get('stage1', {})
-        lines = []
+        lines = _print_impact_lines(data.get('print_report'))
         hc = s1.get('holes_closed', 0)
         hr = s1.get('holes_remaining', 0)
         lines.append(_t('repair_log_closed', hc))

@@ -238,6 +238,31 @@ def main():
     assert '123' in gui._rec_reason(rr), gui._rec_reason(rr)
     print('ok  summary/recommendation i18n keys')
 
+    # 7.3: print-impact report strings localize (EN + TR) and render
+    for _k in ('print_impact_header', 'print_fixed', 'print_left',
+               'print_sev_breaks', 'print_issue_holes_remaining',
+               'print_issue_self_intersections_remaining',
+               'print_fixed_holes_closed', 'print_geometry',
+               'print_not_assessed'):
+        assert _k in gui.STRINGS['en'], 'EN string missing: %s' % _k
+        assert _k in gui.STRINGS['tr'], 'TR string missing: %s' % _k
+        assert gui._t(_k) != _k, _k
+    _pr = {'issues': [
+        {'code': 'holes_remaining', 'severity': 'breaks', 'count': 3,
+         'message_key': 'pr_holes_remaining'},
+        {'code': 'self_intersections_remaining', 'severity': 'cosmetic',
+         'count': 9, 'message_key': 'pr_self_intersections_remaining'}],
+        'fixed': [{'code': 'holes_closed', 'count': 5}],
+        'geometry': {'volume_change_pct': -2.0, 'deviation_max_pct': 0.4},
+        'not_assessed': ['deviation']}
+    _lines = gui._print_impact_lines(_pr)
+    _text = '\n'.join(_lines)
+    assert gui._t('print_impact_header') in _text, _text
+    assert '3' in _text and '5' in _text, _text
+    assert gui._t('print_not_assessed', 'deviation') in _text, _text
+    assert gui._print_impact_lines(None) == []
+    print('ok  print-impact report i18n keys and rendering')
+
     # Repeat picker dialog (P-REP): builds offscreen and maps clicks to points
     import numpy as _np
     dv = _np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],

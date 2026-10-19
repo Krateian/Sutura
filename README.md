@@ -953,6 +953,7 @@ Sutura and where you should still double-check the output.
 | Mesh type-aware repair | ~75% | Heuristic mechanical/organic guess tunes two Stage 1 thresholds, gated by a per-class confidence gate (mechanical ≥ 0.75, organic ≥ 0.70) and measured by a calibration harness (`scripts/calibrate_classifier.py`). The **default** engine is the **experimental** one (`sutura/mesh_classifier_v2.py`): RANSAC plane segmentation + a curvature developability signal + a small trained head. On the 40-mesh real-world corpus (36 labeled) it scores 29/36 vs classic's 16/36 (mechanical recall 16/20 vs 2/20 — the classic scanner-bias limitation is much more visible on the expanded corpus), LOO-CV on the 71-mesh labeled set 0.845 vs classic 0.648. It classifies curved-but-mechanical parts (cylinders, tubes, fillets) that classic reads as unknown, and falls back to classic silently on exceptions/invalid results; `--classifier-engine classic` / `SUTURA_CLASSIFIER_ENGINE=classic` still selects the old engine. A **near-boundary classic-agreement fallback** keeps the head's class but inherits classic's confidence when the head is a coin-flip (`\|p_mech − 0.5\|·2 < 0.15`) and classic strongly agrees (class-score ≥ 0.70), so a strong agreeing signal is never lost to the tuning gate (this restored `artec_metal-nut.stl` to watertight — 103/115 on the scan corpus). Experimental: the per-type values are estimated starting points, hard free-form/curved samples (a bent pipe, a spiral pipe, a curved hook, decorative bowls read as mechanical) are still missed, and a confident-but-wrong v2 prediction is not re-checked against classic — treat the detected type on scan-derived input with caution. |
 | Repair confidence score | ~70% (beta) | Combines existing repair signals (stage 2 outcome, remaining holes, classifier confidence, tuning status, repair mode, self-intersections, volume change) into a single 0–100 score with a High/Medium/Low label: `repair_confidence` on repaired files, `estimated_confidence` on validate / --dry-run (with a "result may differ" caveat). Regression-tested (`tests/test_confidence.py`). Experimental: the weighting model is new and not yet validated against real user feedback. |
 | Repair Health / Risk | ~60% (new) | A separate, additive scoring system on top of the classic confidence: `repair_health` (0–100, final-mesh soundness: watertight + no non-manifold/self-intersections/holes) and `repair_risk` (0–100, how much the repair altered the mesh: face/vertex/component/volume deltas), plus a two-axis status label (`safe`/`review`/`caution`/`failed`/`unavailable`) derived from a config lookup table. Weights/thresholds live in `sutura/repair_score_config.json`, not code; fail-silent (never breaks a repair); regression-tested (`tests/test_repair_score.py`). Experimental: the weight values and tier boundaries are starting points. |
+| Print-impact report | ~65% (new) | A `print_report` block decomposing a finished repair into what was `fixed` and what `issues` remain, each remaining condition tagged `breaks` / `may_affect` / `cosmetic` for FDM printing, plus a `geometry` block (volume/surface change %, result-to-input shape deviation) and a `not_assessed` list. Adds no rival top-line verdict (the existing Repair Health / Risk / Status stays); deviation reuses a tier's per-vertex value or is measured with the Rust `sutura_geom` BVH, gated at 150 000 faces; severity thresholds are labelled heuristics. `--human` prints a `Print impact:` section and the GUI shows the same in the "What changed" log. Regression-tested (`tests/test_print_report.py`); experimental (heuristic thresholds, no print-corpus calibration). |
 | Repair budget (`--max-geometry-change` / `--max-risk` / `--force`) | ~60% (new) | Optional guard-rails: when the actual geometry change (max of \|volume\|/\|surface\| change %) or the `repair_risk` score exceeds the budget, the output is never saved silently — interactive `[y/N]` prompt on a TTY, else the save is declined with the explicit `"status": "budget_declined"` marker (issue `budget_exceeded`, exit 1), and `--force` saves without asking. Within budget the numbers are still reported (`budget` block). Reuses the existing volume/surface/risk metrics (no recomputation); the GUI offers the same budgets and re-runs declined files with `--force` after confirmation. Regression-tested (`tests/test_budget.py`). Experimental: 0 = no limit, and a declined save means the file is simply not written. |
 | Unit detection warning | ~60% (new) | Non-blocking bounding-box heuristic that flags models probably authored in inches/centimetres instead of millimetres (`unit_warning` + `unit_hint` in JSON, a `WARNING:` line in `--human`, and shown in the GUI log / analysis pane / defect panel). 3MF `<model unit="...">` declarations are honoured: a declared inch/centimetre unit is reported as-is, a declared millimetre unit (the spec default) is trusted and suppresses the heuristic. Never changes the repair — informational only. Regression-tested (`tests/test_units.py`). Experimental: the 25–400 mm "plausible printable part" range and the inches-before-centimetres ordering are heuristics, not calibration. |
 | Cross-platform (Linux/macOS) | ~80% | Linux (install.sh + AppImage) and macOS (conda) both work, CI covers both; each release also ships an unsigned macOS `.dmg` (`Build macOS .app/.dmg` workflow) and macOS installs get a native `~/Applications/Sutura.app` so the GUI launches from Spotlight (Cmd+Space → "Sutura"), plus a Finder **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) for right-click repair. Gaps: the AppImage/GUI cannot self-update in place (read-only squashfs), the .dmg is not notarized (shows Gatekeeper's "unidentified developer" warning), and macOS has no standalone uninstall script (see "Removing a macOS install" below). |
@@ -1369,6 +1370,44 @@ Scoring is fail-silent: any missing/invalid metric is skipped (its weight
 redistributed), and scoring never breaks a repair. Multi-object 3MF reports
 carry these per object. The GUI defect panel shows them in the selected
 file's header line.
+
+### Print-impact report
+
+Every repair report carries a `print_report` block that decomposes the outcome
+into individual conditions and states how each one affects an FDM print. It is
+a pure view over already-computed measurements — it never re-measures the mesh
+— and it deliberately adds no rival "is it good" verdict: the single top-line
+judgement stays the existing Repair Health / Risk / Status above. The block has
+four parts:
+
+- `fixed` — what the repair actually did, with counts: holes closed,
+  non-manifold edges fixed, bad faces removed, loose shells removed, and
+  whether the winding orientation was corrected.
+- `issues` — the conditions that remain, each tagged with a severity:
+  `breaks` (the mesh is not printable as-is, e.g. remaining holes or
+  non-manifold edges), `may_affect` (e.g. several separate shells, a large
+  volume change), or `cosmetic` (self-intersections, which slicers resolve at
+  slice time with the even/odd rule and so do not change the printed part).
+- `geometry` — volume change %, surface-area change % and the shape deviation
+  (`deviation_max_pct` / `deviation_mean_pct`, the result surface toward the
+  input, as a % of the bounding-box diagonal).
+- `not_assessed` — measurements that were deliberately skipped, today the
+  shape deviation on meshes above 150 000 faces (the gate keeps the repair fast
+  on large scans).
+
+The shape deviation is measured with the Rust `sutura_geom` point-to-mesh BVH
+when the repair did not already produce one (Graft's per-vertex deviation or
+Dressing's `hausdorff_rel_max` are reused when present). The severity
+thresholds for the volume change (5 % may, 15 % breaks — the latter matching
+the existing volume-warning threshold) and the deviation (1 % / 5 % of the
+bounding-box diagonal) are engineering estimates, not calibration against a
+print corpus, and each issue records `"heuristic": true` so the UI can label
+them as such. Multi-object 3MF reports carry the block per object and an
+aggregate that takes the worst object.
+
+`--human` prints the block as a `Print impact:` section (`Fixed:` / `Remaining:` /
+`Geometry:` / `Not assessed:`), and the GUI renders the same at the top of the
+"What changed" repair log.
 
 With multiple files, every input is repaired in turn and a summary is
 printed (`N watertight, M with warnings, K failed`), including a breakdown of
