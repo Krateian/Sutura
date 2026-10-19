@@ -13,13 +13,11 @@ import dataclasses
 from dataclasses import dataclass
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-import zipfile
 
 import classification
 from sutura_engine import health as method_health
@@ -669,26 +667,13 @@ def _is_obj_watertight(rep):
     return bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0 and bool(s2.get('ok'))
 
 
-def _replace_3mf_meshes(in_3mf, out_3mf, mesh_list, tmpdir=None):
-    mesh_iter = iter(mesh_list)
+def _replace_3mf_meshes(in_3mf, out_3mf, mesh_list, tmpdir=None,
+                        attr_source=None):
     repair = _repair_mod()
-    with zipfile.ZipFile(in_3mf, 'r') as zin:
-        items = []
-        for name in zin.namelist():
-            data = zin.read(name)
-            if name.endswith('.model'):
-                xml = data.decode('utf-8', errors='replace')
-                def repl(_m):
-                    v, t = next(mesh_iter)
-                    return repair.build_mesh_block(v, t)
-                new_xml = re.sub(r'<mesh>.*?</mesh>', repl, xml, flags=re.S)
-                data = new_xml.encode('utf-8')
-            items.append((name, data))
-    tmp_target = os.path.join(tmpdir, 'updated_3mf.zip') if tmpdir else out_3mf + '.tmp'
-    with zipfile.ZipFile(tmp_target, 'w', zipfile.ZIP_DEFLATED) as zout:
-        for name, data in items:
-            zout.writestr(name, data)
-    os.replace(tmp_target, out_3mf)
+    container = out_3mf if os.path.exists(out_3mf) else in_3mf
+    return repair.rewrite_3mf_meshes(
+        container, out_3mf, list(mesh_list),
+        attr_source=attr_source or in_3mf)
 
 
 def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
@@ -836,7 +821,10 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
                 final_meshes.append((out_objs[idx][1], out_objs[idx][2]))
 
     if any_escalated and len(final_meshes) == n_objs:
-        _replace_3mf_meshes(out, out, final_meshes, tmpdir)
+        stats = _replace_3mf_meshes(
+            out, out, final_meshes, tmpdir, attr_source=src)
+        for rep, st in zip(object_reports, stats or []):
+            rep['triangle_attributes'] = st
 
     result['object_reports'] = object_reports
     if object_reports:
@@ -879,7 +867,8 @@ def repair_with_methods(src: str, out: str, tmpdir: str, methods: Optional[list]
     ctx = dict(kwargs)
     ext = os.path.splitext(src)[1].lower()
     multi = (ext == '.3mf'
-             and len(_repair_mod().parse_3mf_meshes(src)) > 1)
+             and sum(len(v) for v in
+                     _repair_mod().parse_3mf_meshes(src).values()) > 1)
     if methods is None:
         return _auto(src, out, tmpdir, ctx, multi, ext, bool(auto_escalation))
     return _explicit(src, out, tmpdir, ctx, multi, ext, list(methods))

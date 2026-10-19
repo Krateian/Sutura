@@ -6,12 +6,16 @@ STL/OBJ/3MF reading and writing, unit handling, 3MF object parsing and the
 bridge-module path resolution. Moved verbatim from sutura/repair.py; no logic
 change.
 """
+import copy
 import math
 import os
 import re
+import shutil
 import struct
 import sys
+import tempfile
 import zipfile
+from collections import defaultdict, namedtuple
 
 import numpy as np
 
@@ -382,43 +386,293 @@ def obj_has_material_refs(path):
     return False
 
 
-def parse_3mf_meshes(path):
-    """Return {model_name: [(verts, tris, (start,end))]} for every <mesh> block."""
+MeshBlock = namedtuple(
+    'MeshBlock',
+    'model_name index span open_tag close_tag prefix verts tris triangle_attrs')
+
+_MESH_TAG_RE = re.compile(
+    r'<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)mesh\b'
+    r'(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=prefix)mesh\s*>', re.S)
+_ATTR_RE = re.compile(
+    r"""([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+_VERTEX_TAG_RE = re.compile(
+    r'<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)vertex\b(?P<attrs>[^>]*?)/?>',
+    re.S)
+_TRIANGLE_TAG_RE = re.compile(
+    r'<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)triangle\b(?P<attrs>[^>]*?)/?>',
+    re.S)
+
+
+def _attrs_dict(text):
     out = {}
-    with zipfile.ZipFile(path) as z:
-        for name in z.namelist():
-            if not name.endswith('.model'):
-                continue
-            xml = _read_zip_entry(z, name).decode('utf-8', errors='replace')
-            blocks = []
-            for m in re.finditer(r'<mesh>.*?</mesh>', xml, re.S):
-                block = m.group(0)
-                vs = np.array([
-                    list(map(float, v)) for v in re.findall(
-                        r'<vertex\s+x="(-?[\d.eE+-]+)"\s+y="(-?[\d.eE+-]+)"\s+z="(-?[\d.eE+-]+)"\s*/>', block)
-                ], dtype=np.float32)
-                ts = np.array([
-                    list(map(int, t)) for t in re.findall(
-                        r'<triangle\s+v1="(\d+)"\s+v2="(\d+)"\s+v3="(\d+)"[^>]*/>', block)
-                ], dtype=np.int32)
-                if len(vs) and len(ts):
-                    blocks.append((vs, ts, m.span()))
-            if blocks:
-                out[name] = blocks
+    for m in _ATTR_RE.finditer(text):
+        value = m.group(2) if m.group(2) is not None else m.group(3)
+        out[m.group(1)] = value
     return out
 
 
-def build_mesh_block(verts, tris):
-    lines = ['<mesh>', '    <vertices>']
+def _extra_triangle_attrs(text):
+    parts = []
+    for m in _ATTR_RE.finditer(text):
+        if m.group(1) not in ('v1', 'v2', 'v3'):
+            parts.append(m.group(0))
+    return ' ' + ' '.join(parts) if parts else None
+
+
+def _parse_mesh_body(body):
+    vs = []
+    ts = []
+    tri_attrs = []
+    for m in _VERTEX_TAG_RE.finditer(body):
+        a = _attrs_dict(m.group('attrs'))
+        if not all(k in a for k in ('x', 'y', 'z')):
+            continue
+        try:
+            vs.append((float(a['x']), float(a['y']), float(a['z'])))
+        except ValueError:
+            continue
+    for m in _TRIANGLE_TAG_RE.finditer(body):
+        a = _attrs_dict(m.group('attrs'))
+        if not all(k in a for k in ('v1', 'v2', 'v3')):
+            continue
+        try:
+            ts.append((int(a['v1']), int(a['v2']), int(a['v3'])))
+        except ValueError:
+            continue
+        tri_attrs.append(_extra_triangle_attrs(m.group('attrs')))
+    return (np.asarray(vs, dtype=np.float32),
+            np.asarray(ts, dtype=np.int32),
+            tri_attrs)
+
+
+def parse_3mf_mesh_blocks(path):
+    """Return ordered MeshBlock records for every <mesh> in every .model file.
+
+    Each record keeps the original mesh span and open/close tags so a repair can
+    replace only the vertices/triangles and leave the rest of the XML untouched.
+    ``triangle_attrs`` holds every non-index triangle attribute (paint_color,
+    paint_seam, slic3rpe:mmu_segmentation, pid, ...) verbatim, or None.
+    """
+    blocks = []
+    with zipfile.ZipFile(path) as z:
+        for info in z.infolist():
+            name = info.filename
+            if not name.endswith('.model'):
+                continue
+            xml = _read_zip_info(z, info).decode('utf-8', errors='replace')
+            for index, m in enumerate(_MESH_TAG_RE.finditer(xml)):
+                vs, ts, tri_attrs = _parse_mesh_body(m.group('body'))
+                if not len(vs) or not len(ts):
+                    continue
+                blocks.append(MeshBlock(
+                    model_name=name,
+                    index=index,
+                    span=m.span(),
+                    open_tag=xml[m.start():m.start('body')],
+                    close_tag=xml[m.end('body'):m.end()],
+                    prefix=m.group('prefix') or '',
+                    verts=vs,
+                    tris=ts,
+                    triangle_attrs=tri_attrs,
+                ))
+    return blocks
+
+
+def parse_3mf_meshes(path):
+    """Return {model_name: [(verts, tris, (start,end))]} for every <mesh> block."""
+    out = {}
+    for block in parse_3mf_mesh_blocks(path):
+        out.setdefault(block.model_name, []).append(
+            (block.verts, block.tris, block.span))
+    return out
+
+
+def _mesh_inner(prefix, verts, tris, tri_attrs=None):
+    p = prefix or ''
+    lines = ['    <%svertices>' % p]
     for v in verts:
-        lines.append('     <vertex x="%.7g" y="%.7g" z="%.7g"/>' % (v[0], v[1], v[2]))
-    lines.append('    </vertices>')
-    lines.append('    <triangles>')
-    for t in tris:
-        lines.append('     <triangle v1="%d" v2="%d" v3="%d"/>' % (t[0], t[1], t[2]))
-    lines.append('    </triangles>')
-    lines.append('</mesh>')
+        lines.append('     <%svertex x="%.7g" y="%.7g" z="%.7g"/>'
+                     % (p, v[0], v[1], v[2]))
+    lines.append('    </%svertices>' % p)
+    lines.append('    <%striangles>' % p)
+    for i, t in enumerate(tris):
+        extra = ''
+        if tri_attrs is not None and i < len(tri_attrs) and tri_attrs[i]:
+            extra = tri_attrs[i]
+        lines.append('     <%striangle v1="%d" v2="%d" v3="%d"%s/>'
+                     % (p, t[0], t[1], t[2], extra))
+    lines.append('    </%striangles>' % p)
     return '\n'.join(lines)
+
+
+def build_mesh_block(verts, tris, tri_attrs=None):
+    return '\n'.join([
+        '<mesh>',
+        _mesh_inner('', verts, tris, tri_attrs),
+        '</mesh>',
+    ])
+
+
+def _tri_key(a, b, c):
+    return min((a, b, c), (b, c, a), (c, a, b))
+
+
+def match_triangle_attributes(orig_verts, orig_tris, orig_attrs,
+                              new_verts, new_tris):
+    """Phase 1: keep triangle attributes on exact-coordinate survivors.
+
+    Returns ``(attrs_for_new_tris, stats)``. Matching is cyclic-rotation
+    invariant and uses float32 coordinates. Duplicate coordinate triangles are
+    paired one-to-one, preferring an original that carries attributes.
+    """
+    ov = [(float(x), float(y), float(z))
+          for x, y, z in np.asarray(orig_verts, dtype=np.float32)]
+    nv = [(float(x), float(y), float(z))
+          for x, y, z in np.asarray(new_verts, dtype=np.float32)]
+    lookup = defaultdict(list)
+    attrs = list(orig_attrs or [])
+    for i, t in enumerate(np.asarray(orig_tris, dtype=np.int64)):
+        try:
+            key = _tri_key(ov[int(t[0])], ov[int(t[1])], ov[int(t[2])])
+        except (IndexError, ValueError):
+            continue
+        lookup[key].append(attrs[i] if i < len(attrs) else None)
+    out = [None] * len(new_tris)
+    kept = 0
+    for j, t in enumerate(np.asarray(new_tris, dtype=np.int64)):
+        try:
+            key = _tri_key(nv[int(t[0])], nv[int(t[1])], nv[int(t[2])])
+        except (IndexError, ValueError):
+            continue
+        bucket = lookup.get(key)
+        if not bucket:
+            continue
+        pick = next((n for n, a in enumerate(bucket) if a), 0)
+        attr = bucket.pop(pick)
+        if attr:
+            out[j] = attr
+            kept += 1
+    original_attributed = sum(1 for a in attrs if a)
+    return out, {
+        'original_attributed': original_attributed,
+        'kept': kept,
+        'dropped': original_attributed - kept,
+        'output_triangles': int(len(new_tris)),
+        'method': 'exact_vertex_coordinates',
+    }
+
+
+def _format_mesh_block(block, verts, tris, tri_attrs):
+    return '\n'.join([
+        block.open_tag,
+        _mesh_inner(block.prefix, verts, tris, tri_attrs),
+        block.close_tag,
+    ])
+
+
+def rewrite_3mf_meshes(container_src, out, updates, attr_source=None):
+    """Rewrite only repaired mesh blocks in a 3MF ZIP.
+
+    ``updates`` is an ordered list of ``(verts, tris)`` aligned with the mesh
+    blocks of ``container_src``. Every other entry is copied byte-for-byte on
+    decompression, preserving order, names, compression type and ZIP metadata.
+    ``attr_source`` optionally supplies the original triangles for phase-1
+    attribute matching (the triage escalation path passes the original input
+    while the container is the intermediate output). Returns one stats dict per
+    updated block.
+    """
+    updates = list(updates)
+    container_blocks = parse_3mf_mesh_blocks(container_src)
+    if len(updates) != len(container_blocks):
+        raise ValueError(
+            '3MF update count (%d) does not match mesh block count (%d)'
+            % (len(updates), len(container_blocks)))
+    if attr_source is None or os.path.abspath(attr_source) == \
+            os.path.abspath(container_src):
+        attr_blocks = container_blocks
+    else:
+        attr_blocks = parse_3mf_mesh_blocks(attr_source)
+    attr_by_key = {(b.model_name, b.index): b for b in attr_blocks}
+
+    replacements = defaultdict(list)
+    stats = []
+    for block, (new_v, new_t) in zip(container_blocks, updates):
+        orig = attr_by_key.get((block.model_name, block.index), block)
+        tri_attrs, st = match_triangle_attributes(
+            orig.verts, orig.tris, orig.triangle_attrs, new_v, new_t)
+        st['model'] = block.model_name
+        st['block'] = block.index
+        stats.append(st)
+        replacements[block.model_name].append(
+            (block.span[0], block.span[1],
+             _format_mesh_block(block, new_v, new_t, tri_attrs)))
+
+    out_dir = os.path.dirname(os.path.abspath(out)) or '.'
+    os.makedirs(out_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix='.sutura-3mf-', suffix='.tmp', dir=out_dir)
+    os.close(fd)
+    try:
+        import xml.etree.ElementTree as ET
+        with zipfile.ZipFile(container_src) as zin, \
+                zipfile.ZipFile(tmp_path, 'w',
+                                compression=zipfile.ZIP_DEFLATED) as zout:
+            zout.comment = zin.comment
+            for info in zin.infolist():
+                zinfo = copy.copy(info)
+                reps = replacements.get(info.filename)
+                if not reps:
+                    with zin.open(info) as src, \
+                            zout.open(zinfo, 'w',
+                                      force_zip64=info.file_size > 0x7FFFFFFF) as dst:
+                        # ZipFile.open() replaces a falsy external_attr with
+                        # 0o600<<16; the central directory is written later,
+                        # so restore the source value before close.
+                        zinfo.external_attr = info.external_attr
+                        shutil.copyfileobj(src, dst, length=1024 * 1024)
+                    continue
+                data = _read_zip_info(zin, info)
+                xml = data.decode('utf-8', errors='replace')
+                parts = []
+                pos = 0
+                for start, end, text in sorted(reps):
+                    if not 0 <= start <= end <= len(xml):
+                        raise ValueError(
+                            'invalid mesh span for 3MF entry "%s"' % info.filename)
+                    parts.append(xml[pos:start])
+                    parts.append(text)
+                    pos = end
+                parts.append(xml[pos:])
+                new_xml = ''.join(parts)
+                try:
+                    ET.fromstring(xml)
+                except ET.ParseError:
+                    original_ok = False
+                else:
+                    original_ok = True
+                if original_ok:
+                    try:
+                        ET.fromstring(new_xml)
+                    except ET.ParseError as e:
+                        raise ValueError(
+                            'rebuilt 3MF XML is not well-formed in "%s": %s'
+                            % (info.filename, e))
+                with zout.open(
+                        zinfo, 'w',
+                        force_zip64=len(new_xml) > 0x7FFFFFFF) as dst:
+                    zinfo.external_attr = info.external_attr
+                    dst.write(new_xml.encode('utf-8'))
+        bad = zipfile.ZipFile(tmp_path).testzip()
+        if bad is not None:
+            raise ValueError('rebuilt 3MF entry failed CRC: %s' % bad)
+        os.replace(tmp_path, out)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    return stats
 
 
 # Decompressed-size cap for any single 3MF archive entry (FAZ14 zip-bomb
@@ -428,19 +682,22 @@ def build_mesh_block(verts, tris):
 _3MF_MAX_ENTRY_BYTES = 1 << 30  # 1 GiB
 
 
+def _read_zip_info(z, info):
+    if info.file_size > _3MF_MAX_ENTRY_BYTES:
+        raise ValueError(
+            '3MF entry "%s" declares %d bytes uncompressed '
+            '(> %d): suspicious compression ratio / oversized input.'
+            % (info.filename, info.file_size, _3MF_MAX_ENTRY_BYTES))
+    return z.read(info)
+
+
 def _read_zip_entry(z, name):
     """Read one 3MF zip entry, bounded by the decompressed-size cap.
 
     Checks the zip header's declared ``file_size`` BEFORE reading so a crafted
     entry (tiny compressed, huge declared uncompressed) fails with a controlled
     ValueError instead of exhausting memory (FAZ14 zip-bomb guard)."""
-    info = z.getinfo(name)
-    if info.file_size > _3MF_MAX_ENTRY_BYTES:
-        raise ValueError(
-            '3MF entry "%s" declares %d bytes uncompressed '
-            '(> %d): suspicious compression ratio / oversized input.'
-            % (name, info.file_size, _3MF_MAX_ENTRY_BYTES))
-    return z.read(name)
+    return _read_zip_info(z, z.getinfo(name))
 
 
 def load_meshes(src):
