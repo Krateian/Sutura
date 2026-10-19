@@ -113,6 +113,18 @@ fi
 
 # --- 2. build from source ----------------------------------------------------
 if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ] && command -v cargo >/dev/null 2>&1; then
+    # rustup's cargo shim exists even when no default toolchain is selected
+    # (common after a HOME change). Probe it so the failure names the fix
+    # instead of a generic build error.
+    cargo_probe="$(cargo --version 2>&1)" || true
+    if ! cargo --version >/dev/null 2>&1; then
+        case "$cargo_probe" in
+            *[Nn]o\ default*|*could\ not\ choose*|*no\ toolchain*|*not\ installed*)
+                finish_fail "cargo is present but rustup has no default toolchain; run 'rustup default stable' and re-run" ;;
+            *)
+                finish_fail "cargo is not usable: $cargo_probe" ;;
+        esac
+    fi
     note "building from rust/sutura-geom (cargo found; ~1 min, pulls maturin ~10 MB)"
     if "$PY" -m pip install --quiet --force-reinstall --no-deps "$SRC/rust/sutura-geom" && import_ok; then
         note "built and installed from source"

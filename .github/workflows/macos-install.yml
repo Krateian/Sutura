@@ -41,6 +41,13 @@ jobs:
           mkdir -p /tmp/fresh-home
           echo "HOME=/tmp/fresh-home" >> "$GITHUB_ENV"
 
+      # The fresh HOME above hides the runner's preinstalled rustup toolchain,
+      # so install a stable one for the required sutura_geom source build.
+      - name: Set up Rust toolchain for sutura_geom
+        run: |
+          rustup default stable
+          cargo --version
+
       - name: Run installer non-interactively
         env:
           SUTURA_WITH_FTETWILD: "1"
