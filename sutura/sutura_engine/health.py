@@ -317,7 +317,8 @@ def check_required_geometry() -> Tuple[bool, Optional[str]]:
     try:
         import sutura_geom  # noqa: F401
         return True, None
-    except BaseException:  # noqa: BLE001 - absence is the answer, never a crash
+    except Exception:  # noqa: BLE001 - absence is the answer, never a crash
+        # KeyboardInterrupt / SystemExit deliberately propagate.
         return False, GEOM_REQUIRED_MESSAGE
 
 
