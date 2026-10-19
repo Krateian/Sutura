@@ -1,5 +1,5 @@
 pymeshlab==2025.7.post1
-numpy>=2.4.0,<2.6
+numpy>=2.4.6,<2.6
 # Nearest-neighbour, EDT, dilation, mesh IO and the pure-Python geometry
 # helpers all live in the in-repo engine (sutura_engine) or the Rust
 # sutura_geom core. Neither SciPy, rtree nor trimesh is required (trimesh is
