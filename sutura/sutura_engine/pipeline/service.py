@@ -9,7 +9,6 @@ Moved verbatim from sutura/repair.py; no logic change.
 """
 import os
 import time
-import zipfile
 
 import numpy as np
 
@@ -21,8 +20,8 @@ from confidence import repair_confidence
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.mesh_io import (
-    _read_zip_entry, build_mesh_block, obj_has_material_refs,
-    parse_3mf_meshes, read_3mf_units, save_mesh, scan_bad_coordinates,
+    obj_has_material_refs, parse_3mf_mesh_blocks, read_3mf_units,
+    rewrite_3mf_meshes, save_mesh, scan_bad_coordinates,
 )
 from sutura_engine.pipeline.p_weld import (
     enforce_reload_verdict, p_weld_final, reload_strict_holes_nm,
@@ -60,17 +59,26 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
     if bad_coords:
         raise ValueError('input mesh contains %s' % bad_coords)
 
-    load_ms = ml.MeshSet()
-    load_ms.load_new_mesh(src)
-    verts = np.asarray(load_ms.current_mesh().vertex_matrix(), dtype=np.float32)
-    tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
-
     ext = os.path.splitext(src)[1].lower()
     declared_unit = None
+    mesh_block = None
     if ext == '.3mf':
-        units = read_3mf_units(src)
-        if units:
-            declared_unit = next(iter(units.values()))
+        blocks = parse_3mf_mesh_blocks(src)
+        if len(blocks) != 1:
+            raise ValueError(
+                'repair_file expects a single-object 3MF (%d mesh blocks found); '
+                'use repair_3mf for multi-object files' % len(blocks))
+        mesh_block = blocks[0]
+        verts = np.asarray(mesh_block.verts, dtype=np.float32)
+        tris = np.asarray(mesh_block.tris, dtype=np.int32)
+        declared_unit = read_3mf_units(src).get(
+            mesh_block.model_name, 'millimeter')
+    else:
+        load_ms = ml.MeshSet()
+        load_ms.load_new_mesh(src)
+        verts = np.asarray(load_ms.current_mesh().vertex_matrix(),
+                           dtype=np.float32)
+        tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
     def _run(flap_value, run_tamponade=None):
         """Repair the loaded mesh with Flap on/off, through P-HONEST.
@@ -248,7 +256,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         (report.get('flap') or {}).get('final_fallback', {}).get('ran'))
     report['timings']['tamponade_off_rerun'] = bool(
         (report.get('tamponade') or {}).get('final_fallback', {}).get('ran'))
-    save_mesh(out, new_v, new_t)
+    if ext == '.3mf':
+        stats = rewrite_3mf_meshes(src, out, [(new_v, new_t)])
+        report['triangle_attributes'] = stats[0]
+    else:
+        save_mesh(out, new_v, new_t)
     return report
 
 
@@ -274,111 +286,101 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     written as stage-1 output, mirroring the single-mesh behaviour.
     """
     import pymeshlab as ml
-    meshes = parse_3mf_meshes(src)
-    if not meshes:
+    blocks = parse_3mf_mesh_blocks(src)
+    if not blocks:
         return {'error': 'no mesh objects found in 3MF'}
-
-    with zipfile.ZipFile(src) as z:
-        items = []
-        for name in z.namelist():
-            items.append((name, _read_zip_entry(z, name)))
 
     units = read_3mf_units(src)
     reports = []
+    updates = []
     cache = {}
-    for model_name, blocks in meshes.items():
-        declared = units.get(model_name, 'millimeter')
-        for idx, (verts, tris, span) in enumerate(blocks):
-            key = (verts.tobytes(), tris.tobytes())
-            if key in cache:
-                # byte-identical geometry -> reuse the repair AND its report;
-                # each object still gets its own per-object report (incl. the
-                # stage2 outcome, which is a pure function of the geometry).
-                new_v, new_t, rep = cache[key]
-                reports.append(dict(rep))
-            else:
-                rep, new_v, new_t = repair_mesh_from_arrays(
-                    verts, tris, tmpdir, mode=mode, profile=profile,
-                    engine=engine, declared_unit=declared,
-                    join_components=join_components,
-                    autorefine=autorefine,
-                    ftetwild=ftetwild,
-                    indirect_autorefine=indirect_autorefine,
-                    extra_features=extra_features,
-                    deep_repair=deep_repair,
-                    triage_spec=triage_spec, engines=engines,
-                    engine_chain=engine_chain,
-                    closing=closing, proxy_template=proxy_template,
-                    repeat=repeat, repeat_source=repeat_source,
-                    repeat_target=repeat_target, wall_thicken=wall_thicken,
-                    wall_min_thickness=wall_min_thickness, graft=graft,
-                    flap=flap,
-                    dressing=dressing, dressing_drain=dressing_drain,
-                    dressing_defects=dressing_defects,
-                    dressing_rmax_scale=dressing_rmax_scale,
-                    dressing_sigma_scale=dressing_sigma_scale,
-                    tamponade=tamponade,
-                    si_mode=si_mode,
-                    dressing_force_adopt=dressing_force_adopt)
-                rep['defects'] = detect_defects(verts, tris)
-                rep['_fp'] = history.mesh_fingerprint(verts, tris)
-                # Per-object stage 2 first: closed objects get a watertight
-                # rebuild (same helper/gate as the single-mesh path), and the
-                # confidence/health/risk below then see the stage2 outcome.
-                new_v, new_t = maybe_run_stage2(rep, new_v, new_t, tmpdir)
-                if engines:
-                    new_v, new_t = run_after_stage2_engines(
-                        ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
-                        triage_spec or triage.resolve_intensity(None))
-                if _should_run_local_exact(rep, triage_spec):
-                    _lse_spec = triage_spec or triage.resolve_intensity(None)
-                    new_v, new_t, _lse = local_exact.local_exact_self_union(
-                        ml, new_v, new_t,
-                        time_budget=_local_exact_budget(_lse_spec))
-                    if _lse.get('ran'):
-                        rep['local_exact'] = _lse
-                # Flap debris cleanup (only when Flap was adopted); see the
-                # single-mesh path and drop_flap_debris.
-                if (rep.get('flap') or {}).get('adopted'):
-                    _cl_v, _cl_t, _cl_info = drop_flap_debris(
-                        verts, tris, new_v, new_t)
-                    if _cl_info:
-                        _bh, _bnm = reload_strict_holes_nm(new_v, new_t)
-                        _ch, _cnm = reload_strict_holes_nm(_cl_v, _cl_t)
-                        if _ch <= _bh and _cnm <= _bnm:
-                            new_v, new_t = _cl_v, _cl_t
-                            rep['flap']['debris_cleanup'] = _cl_info
-                # P-HONEST: judge the per-object mesh actually written into the
-                # archive (reload-equivalent form) before the confidence/score
-                # below, so those see the honest verdict too.
-                enforce_reload_verdict(rep, new_v, new_t)
-                _rc = repair_confidence(rep)
-                rep['repair_confidence'] = _rc['score']
-                rep['repair_confidence_label'] = _rc['label']
-                rep['repair_confidence_factors'] = _rc['factors']
-                _rs = repair_score.compute_scores(rep)
-                rep['repair_health'] = _rs['health']
-                rep['repair_health_factors'] = _rs['health_factors']
-                rep['repair_risk'] = _rs['risk']
-                rep['repair_risk_factors'] = _rs['risk_factors']
-                rep['repair_status'] = _rs['status']
-                rep['repair_status_code'] = _rs['status_code']
-                reports.append(rep)
-                cache[key] = (new_v, new_t, rep)
+    for block in blocks:
+        verts = np.asarray(block.verts, dtype=np.float32)
+        tris = np.asarray(block.tris, dtype=np.int32)
+        declared = units.get(block.model_name, 'millimeter')
+        key = (verts.tobytes(), tris.tobytes())
+        if key in cache:
+            # byte-identical geometry -> reuse the repair AND its report;
+            # each object still gets its own per-object report (incl. the
+            # stage2 outcome, which is a pure function of the geometry).
+            new_v, new_t, rep = cache[key]
+            reports.append(dict(rep))
+        else:
+            rep, new_v, new_t = repair_mesh_from_arrays(
+                verts, tris, tmpdir, mode=mode, profile=profile,
+                engine=engine, declared_unit=declared,
+                join_components=join_components,
+                autorefine=autorefine,
+                ftetwild=ftetwild,
+                indirect_autorefine=indirect_autorefine,
+                extra_features=extra_features,
+                deep_repair=deep_repair,
+                triage_spec=triage_spec, engines=engines,
+                engine_chain=engine_chain,
+                closing=closing, proxy_template=proxy_template,
+                repeat=repeat, repeat_source=repeat_source,
+                repeat_target=repeat_target, wall_thicken=wall_thicken,
+                wall_min_thickness=wall_min_thickness, graft=graft,
+                flap=flap,
+                dressing=dressing, dressing_drain=dressing_drain,
+                dressing_defects=dressing_defects,
+                dressing_rmax_scale=dressing_rmax_scale,
+                dressing_sigma_scale=dressing_sigma_scale,
+                tamponade=tamponade,
+                si_mode=si_mode,
+                dressing_force_adopt=dressing_force_adopt)
+            rep['defects'] = detect_defects(verts, tris)
+            rep['_fp'] = history.mesh_fingerprint(verts, tris)
+            # Per-object stage 2 first: closed objects get a watertight
+            # rebuild (same helper/gate as the single-mesh path), and the
+            # confidence/health/risk below then see the stage2 outcome.
+            new_v, new_t = maybe_run_stage2(rep, new_v, new_t, tmpdir)
+            if engines:
+                new_v, new_t = run_after_stage2_engines(
+                    ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
+                    triage_spec or triage.resolve_intensity(None))
+            if _should_run_local_exact(rep, triage_spec):
+                _lse_spec = triage_spec or triage.resolve_intensity(None)
+                new_v, new_t, _lse = local_exact.local_exact_self_union(
+                    ml, new_v, new_t,
+                    time_budget=_local_exact_budget(_lse_spec))
+                if _lse.get('ran'):
+                    rep['local_exact'] = _lse
+            # Flap debris cleanup (only when Flap was adopted); see the
+            # single-mesh path and drop_flap_debris.
+            if (rep.get('flap') or {}).get('adopted'):
+                _cl_v, _cl_t, _cl_info = drop_flap_debris(
+                    verts, tris, new_v, new_t)
+                if _cl_info:
+                    _bh, _bnm = reload_strict_holes_nm(new_v, new_t)
+                    _ch, _cnm = reload_strict_holes_nm(_cl_v, _cl_t)
+                    if _ch <= _bh and _cnm <= _bnm:
+                        new_v, new_t = _cl_v, _cl_t
+                        rep['flap']['debris_cleanup'] = _cl_info
+            # P-HONEST: judge the per-object mesh actually written into the
+            # archive (reload-equivalent form) before the confidence/score
+            # below, so those see the honest verdict too.
+            enforce_reload_verdict(rep, new_v, new_t)
+            _rc = repair_confidence(rep)
+            rep['repair_confidence'] = _rc['score']
+            rep['repair_confidence_label'] = _rc['label']
+            rep['repair_confidence_factors'] = _rc['factors']
+            _rs = repair_score.compute_scores(rep)
+            rep['repair_health'] = _rs['health']
+            rep['repair_health_factors'] = _rs['health_factors']
+            rep['repair_risk'] = _rs['risk']
+            rep['repair_risk_factors'] = _rs['risk_factors']
+            rep['repair_status'] = _rs['status']
+            rep['repair_status_code'] = _rs['status_code']
+            reports.append(rep)
+            cache[key] = (new_v, new_t, rep)
+        updates.append((new_v, new_t))
 
-            for i, (fname, fdata) in enumerate(items):
-                if fname != model_name:
-                    continue
-                xml = fdata.decode('utf-8', errors='replace')
-                rebuilt = list(xml)
-                rebuilt[span[0]:span[1]] = build_mesh_block(new_v, new_t)
-                items[i] = (fname, ''.join(rebuilt).encode('utf-8'))
+    stats = rewrite_3mf_meshes(src, out, updates)
+    for rep, st in zip(reports, stats):
+        rep['triangle_attributes'] = st
 
-    with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-        for fname, fdata in items:
-            z.writestr(fname, fdata)
-
-    agg = {'objects': len(meshes), 'object_reports': reports}
+    agg = {'objects': len(blocks), 'object_reports': reports}
     if reports:
         # backward compat: the top-level stage1 stays object-0's (classification
         # now evaluates object_reports directly for multi-object files).
@@ -393,6 +395,18 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
         s2 = next((r['stage2'] for r in reports if 'stage2' in r), None)
         if s2 is not None:
             agg['stage2'] = s2
+        _attrs = [r['triangle_attributes'] for r in reports
+                  if isinstance(r.get('triangle_attributes'), dict)]
+        if _attrs:
+            agg['triangle_attributes'] = {
+                'original_attributed': sum(
+                    a.get('original_attributed', 0) for a in _attrs),
+                'kept': sum(a.get('kept', 0) for a in _attrs),
+                'dropped': sum(a.get('dropped', 0) for a in _attrs),
+                'output_triangles': sum(
+                    a.get('output_triangles', 0) for a in _attrs),
+                'method': 'exact_vertex_coordinates',
+            }
         # Flap aggregate (only when Flap was requested, so an OFF multi-object
         # file keeps the pre-flap aggregate byte-identical): lets a 3MF batch be
         # scanned for the Flap outcome without walking object_reports.
