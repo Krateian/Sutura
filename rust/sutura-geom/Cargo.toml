@@ -33,6 +33,9 @@ rayon = "1.12"
 # Sparse direct LU for the Flap fairing normal-equation system.
 # Pure Rust, MIT; no C/LAPACK/system dependency in the default build.
 faer = { version = "0.24", features = ["sparse-linalg"] }
+# Point-cloud nearest-neighbour queries (replaces scipy.spatial.cKDTree).
+# Pure Rust, MIT OR Apache-2.0; MSRV 1.89.
+kiddo = "6.3"
 
 [dev-dependencies]
 rand = "0.8"

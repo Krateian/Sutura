@@ -8,7 +8,7 @@
 //! exact predicates on explicit and implicit points (`orient3d`, `orient2d`,
 //! `incircle`), and the predicate core for the future arrangement-lite engine.
 
-use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2};
+use numpy::{AllowTypeChange, PyArrayLike1, PyArrayLike2, PyArrayLike3};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
@@ -26,6 +26,7 @@ pub mod mincut;
 pub mod morph;
 pub mod octree;
 pub mod point;
+pub mod pointcloud;
 pub mod predicates2d;
 pub mod predicates3d;
 pub mod profile;
@@ -915,6 +916,174 @@ fn shell_analyze_py<'py>(
     Ok((verts_np, tris_np, d))
 }
 
+fn parse_point_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
+    let view = arr.as_array();
+    if view.ncols() != 3 {
+        return Err(PyValueError::new_err("array must be Nx3"));
+    }
+    if let Some(s) = view.as_slice() {
+        Ok(s.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
+    } else {
+        Ok((0..view.nrows())
+            .map(|i| [view[[i, 0]], view[[i, 1]], view[[i, 2]]])
+            .collect())
+    }
+}
+
+fn nearest_output<'py>(
+    py: Python<'py>,
+    dist: Vec<f64>,
+    idx: Vec<i32>,
+    take: usize,
+    n_queries: usize,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    if take == 1 {
+        return Ok((
+            PyArray1::from_vec(py, dist).into_any(),
+            PyArray1::from_vec(py, idx).into_any(),
+        ));
+    }
+    if n_queries == 0 {
+        let d = numpy::ndarray::Array2::<f64>::zeros((0, take));
+        let i = numpy::ndarray::Array2::<i32>::zeros((0, take));
+        return Ok((
+            PyArray2::from_owned_array(py, d).into_any(),
+            PyArray2::from_owned_array(py, i).into_any(),
+        ));
+    }
+    let d_rows: Vec<Vec<f64>> = dist.chunks(take).map(|c| c.to_vec()).collect();
+    let i_rows: Vec<Vec<i32>> = idx.chunks(take).map(|c| c.to_vec()).collect();
+    Ok((
+        PyArray2::from_vec2(py, &d_rows)?.into_any(),
+        PyArray2::from_vec2(py, &i_rows)?.into_any(),
+    ))
+}
+
+/// Nearest neighbours in a point cloud for every query point.
+///
+/// Returns `(distances, indices)`.  With `k == 1` both arrays are 1-D
+/// `(M,)`; with `k > 1` they are 2-D `(M, k)` sorted by distance.  Distances
+/// are exact f64 Euclidean distances.  Exact ties select the smallest source
+/// index, so the result is deterministic.
+#[pyfunction]
+#[pyo3(signature = (points, queries, k = 1))]
+fn nearest_points<'py>(
+    py: Python<'py>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    queries: PyArrayLike2<'py, f64, AllowTypeChange>,
+    k: usize,
+) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+    let pts = parse_point_rows(&points)?;
+    let qs = parse_point_rows(&queries)?;
+    if pts.is_empty() && !qs.is_empty() {
+        return Err(PyValueError::new_err("points must be non-empty"));
+    }
+    if pts.is_empty() {
+        return Ok((
+            PyArray1::<f64>::from_vec(py, Vec::new()).into_any(),
+            PyArray1::<i32>::from_vec(py, Vec::new()).into_any(),
+        ));
+    }
+    let tree = pointcloud::build_tree(&pts)
+        .ok_or_else(|| PyValueError::new_err("could not build the point tree"))?;
+    let (dist, idx, take) = pointcloud::query_neighbours(&tree, pts.len(), &qs, k);
+    nearest_output(py, dist, idx, take, qs.len())
+}
+
+/// Reusable nearest-neighbour tree over a fixed point cloud.
+///
+/// Build once and call `query(queries, k=1)` in a loop (for example an ICP
+/// iteration) so the tree is not rebuilt for every batch.
+#[pyclass(name = "KdTree")]
+struct PyKdTree {
+    inner: pointcloud::PointTree,
+    point_count: usize,
+}
+
+#[pymethods]
+impl PyKdTree {
+    #[new]
+    fn new(points: PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Self> {
+        let pts = parse_point_rows(&points)?;
+        if pts.is_empty() {
+            return Err(PyValueError::new_err("points must be non-empty"));
+        }
+        let inner = pointcloud::build_tree(&pts)
+            .ok_or_else(|| PyValueError::new_err("could not build the point tree"))?;
+        Ok(Self {
+            inner,
+            point_count: pts.len(),
+        })
+    }
+
+    #[pyo3(signature = (queries, k = 1))]
+    fn query<'py>(
+        &self,
+        py: Python<'py>,
+        queries: PyArrayLike2<'py, f64, AllowTypeChange>,
+        k: usize,
+    ) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let qs = parse_point_rows(&queries)?;
+        let (dist, idx, take) = pointcloud::query_neighbours(&self.inner, self.point_count, &qs, k);
+        nearest_output(py, dist, idx, take, qs.len())
+    }
+
+    fn __len__(&self) -> usize {
+        self.point_count
+    }
+}
+
+/// Exact Euclidean distance transform of a 3-D seed mask.
+///
+/// `seed_mask[i] != 0` marks a seed (distance 0).  Returns `(nx, ny, nz)`
+/// float32 distances in cell units.  Replaces
+/// `scipy.ndimage.distance_transform_edt(~mask)`.
+#[pyfunction]
+fn edt_grid<'py>(
+    py: Python<'py>,
+    seed_mask: PyArrayLike3<'py, u8, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray3<f32>>> {
+    let view = seed_mask.as_array();
+    let dims = [view.shape()[0], view.shape()[1], view.shape()[2]];
+    // Rust grid kernels use i-fastest order (`i + nx*(j + ny*k)`); numpy is
+    // C-order, so flatten explicitly instead of relying on `.iter()`.
+    let mut seed = Vec::with_capacity(dims[0] * dims[1] * dims[2]);
+    for k in 0..dims[2] {
+        for j in 0..dims[1] {
+            for i in 0..dims[0] {
+                seed.push(u8::from(view[[i, j, k]] != 0));
+            }
+        }
+    }
+    let out = morph::edt_grid(&seed, dims);
+    vec_to_pyarray3(py, out, dims)
+}
+
+/// Binary dilation of a 3-D occupancy field by an integer cell radius.
+///
+/// Uses the exact Euclidean ball structuring element.  Replaces
+/// `scipy.ndimage.binary_dilation(occ, structure=ball(radius))`.
+#[pyfunction]
+#[pyo3(signature = (occupancy, radius = 1))]
+fn dilate_occupancy<'py>(
+    py: Python<'py>,
+    occupancy: PyArrayLike3<'py, u8, AllowTypeChange>,
+    radius: u32,
+) -> PyResult<Bound<'py, PyArray3<u8>>> {
+    let view = occupancy.as_array();
+    let dims = [view.shape()[0], view.shape()[1], view.shape()[2]];
+    let mut occ = Vec::with_capacity(dims[0] * dims[1] * dims[2]);
+    for k in 0..dims[2] {
+        for j in 0..dims[1] {
+            for i in 0..dims[0] {
+                occ.push(u8::from(view[[i, j, k]] != 0));
+            }
+        }
+    }
+    let out = morph::dilate_occupancy_ball(&occ, dims, radius);
+    vec_to_pyarray3_u8(py, out, dims)
+}
+
 /// Closest point on the triangle soup for every query point.
 ///
 /// Returns `(xyz, distance, face_index)`; each query gives the closest point
@@ -1241,6 +1410,10 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sdf_grid, m)?)?;
     m.add_function(wrap_pyfunction!(morph_close, m)?)?;
     m.add_function(wrap_pyfunction!(dressing_coat, m)?)?;
+    m.add_function(wrap_pyfunction!(nearest_points, m)?)?;
+    m.add_class::<PyKdTree>()?;
+    m.add_function(wrap_pyfunction!(edt_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(dilate_occupancy, m)?)?;
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;

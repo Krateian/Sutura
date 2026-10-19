@@ -138,6 +138,41 @@ pub fn dilate_occupancy(sdf: &[f32], r: f32) -> Vec<u8> {
         .collect()
 }
 
+/// Exact Euclidean distance (in cells) to the nearest seed cell.
+///
+/// `seed[i] != 0` marks a seed (distance 0).  This is the SciPy-free
+/// replacement for `scipy.ndimage.distance_transform_edt(~mask)`.
+pub fn edt_grid(seed: &[u8], dims: [usize; 3]) -> Vec<f32> {
+    let mut f = vec![EDT_INF; seed.len()];
+    for (fi, &s) in f.iter_mut().zip(seed.iter()) {
+        if s != 0 {
+            *fi = 0.0;
+        }
+    }
+    edt_3d(&mut f, dims);
+    f.into_iter().map(|d| d.sqrt()).collect()
+}
+
+/// Binary dilation of an occupancy field by an integer radius (cells).
+///
+/// The structuring element is the exact Euclidean ball
+/// `dx^2 + dy^2 + dz^2 <= radius^2`, matching
+/// `scipy.ndimage.binary_dilation(occ, structure=ball(radius))`.
+pub fn dilate_occupancy_ball(occ: &[u8], dims: [usize; 3], radius: u32) -> Vec<u8> {
+    if radius == 0 {
+        return occ.iter().map(|&v| u8::from(v != 0)).collect();
+    }
+    let mut f = vec![EDT_INF; occ.len()];
+    for (fi, &o) in f.iter_mut().zip(occ.iter()) {
+        if o != 0 {
+            *fi = 0.0;
+        }
+    }
+    edt_3d(&mut f, dims);
+    let r2 = (radius as f32) * (radius as f32);
+    f.iter().map(|&d| u8::from(d <= r2)).collect()
+}
+
 /// Closing of the solid by `r`: dilate, re-distance with a true EDT of the
 /// dilated occupancy, then erode by `r`.  `voxel` converts the index-unit EDT
 /// into physical units.  Returns a physical-ish SDF on the same grid.
@@ -239,6 +274,57 @@ mod tests {
         // A neighbour just outside -> +1.
         let d = sd[2 + 5 * 2 + 25 * 3];
         assert!((d - 1.0).abs() < 1e-5, "outside distance {d}");
+    }
+
+    #[test]
+    fn edt_grid_matches_brute_force() {
+        let dims = [4, 3, 3];
+        let mut seed = vec![0u8; dims[0] * dims[1] * dims[2]];
+        seed[1 + 4 * 1 + 12 * 1] = 1;
+        seed[3 + 4 * 2 + 12 * 0] = 1;
+        let d = edt_grid(&seed, dims);
+        for k in 0..dims[2] {
+            for j in 0..dims[1] {
+                for i in 0..dims[0] {
+                    let mut best = f32::INFINITY;
+                    for kk in 0..dims[2] {
+                        for jj in 0..dims[1] {
+                            for ii in 0..dims[0] {
+                                if seed[ii + 4 * jj + 12 * kk] != 0 {
+                                    let dx = (i as f32) - (ii as f32);
+                                    let dy = (j as f32) - (jj as f32);
+                                    let dz = (k as f32) - (kk as f32);
+                                    best = best.min((dx * dx + dy * dy + dz * dz).sqrt());
+                                }
+                            }
+                        }
+                    }
+                    let got = d[i + 4 * j + 12 * k];
+                    assert!((got - best).abs() < 1e-6, "cell {i},{j},{k}: {got} vs {best}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dilate_occupancy_ball_matches_brute_force() {
+        let dims = [5, 5, 5];
+        let mut occ = vec![0u8; 125];
+        occ[2 + 5 * 2 + 25 * 2] = 1;
+        let out = dilate_occupancy_ball(&occ, dims, 2);
+        for k in 0..5 {
+            for j in 0..5 {
+                for i in 0..5 {
+                    let dx = i as i32 - 2;
+                    let dy = j as i32 - 2;
+                    let dz = k as i32 - 2;
+                    let inside = dx * dx + dy * dy + dz * dz <= 4;
+                    assert_eq!(out[i + 5 * j + 25 * k] != 0, inside, "cell {i},{j},{k}");
+                }
+            }
+        }
+        // Radius 0 must be the identity.
+        assert_eq!(dilate_occupancy_ball(&occ, dims, 0), occ);
     }
 
     #[test]
