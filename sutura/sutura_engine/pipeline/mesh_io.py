@@ -22,26 +22,8 @@ import numpy as np
 from sutura_engine.pipeline.presets import SUTURA_DIR
 
 
-def _resolve_bridge():
-    """Locate manifold_bridge.py.
-
-    Prefers a copy bundled next to the executable in a PyInstaller bundle
-    (onefile: ``<dir>/manifold_bridge.py``; onedir: ``<dir>/<tool>/``), so a
-    standalone .app can run stage 2 in-process with no system install. Falls
-    back to the standard ``SUTURA_DIR`` layout (unchanged) outside bundles.
-    """
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(os.path.abspath(sys.executable))
-        for cand in (os.path.join(base, 'manifold_bridge.py'),
-                     os.path.join(base, '..', 'manifold_bridge.py')):
-            cand = os.path.abspath(cand)
-            if os.path.isfile(cand):
-                return cand
-    return os.path.join(SUTURA_DIR, 'manifold_bridge.py')
-
-
 def _resolve_ftetwild_bridge():
-    """Locate ftetwild_bridge.py (bundled-copy aware, same as _resolve_bridge)."""
+    """Locate ftetwild_bridge.py (bundled-copy aware)."""
     if getattr(sys, 'frozen', False):
         base = os.path.dirname(os.path.abspath(sys.executable))
         for cand in (os.path.join(base, 'ftetwild_bridge.py'),
@@ -53,7 +35,7 @@ def _resolve_ftetwild_bridge():
 
 
 def _resolve_indirect_bridge():
-    """Locate indirect_bridge.py (bundled-copy aware, same as _resolve_bridge)."""
+    """Locate indirect_bridge.py (bundled-copy aware)."""
     if getattr(sys, 'frozen', False):
         base = os.path.dirname(os.path.abspath(sys.executable))
         for cand in (os.path.join(base, 'indirect_bridge.py'),
@@ -62,9 +44,6 @@ def _resolve_indirect_bridge():
             if os.path.isfile(cand):
                 return cand
     return os.path.join(SUTURA_DIR, 'indirect_bridge.py')
-
-
-BRIDGE = _resolve_bridge()
 
 
 FTETWILD_BRIDGE = _resolve_ftetwild_bridge()

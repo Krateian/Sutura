@@ -32,7 +32,6 @@ FTETWILD_ROOT_NAMES = {'pytetwild', 'pyvista'}
 # Known base packages that must never be removed on uninstall
 CANONICAL_BASE_PACKAGES = {
     'pymeshlab',
-    'manifold3d',
     'numpy',
     'pyside6',
     'pyside6-essentials',
@@ -126,7 +125,7 @@ def _parse_requirements_file(filepath):
 def _get_base_package_names():
     """Return the set of package names required by base Sutura."""
     names = set(CANONICAL_BASE_PACKAGES)
-    for fname in ('requirements.txt', 'requirements-gui.txt', 'requirements-311.txt'):
+    for fname in ('requirements.txt', 'requirements-gui.txt'):
         fpath = _find_requirements_file(fname)
         if fpath:
             names.update(_parse_requirements_file(fpath))

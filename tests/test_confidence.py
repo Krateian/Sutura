@@ -3,7 +3,7 @@
 
 Checks that:
   1. confidence.py is stdlib-only (importing it must NOT pull in
-     numpy/pymeshlab/manifold3d), so the GUI and the PyMeshLab CLI venv can
+     numpy/pymeshlab/sutura_geom), so the GUI and the PyMeshLab CLI venv can
      both import it regardless of interpreter.
   2. repair_confidence() produces high/medium/low scores for synthetic
      reports (watertight, watertight-with-caveats, partial, error) and forces
@@ -29,7 +29,7 @@ def test_stdlib_only():
     import subprocess
     code = (
         "import sys; sys.path.insert(0, %r); import confidence; "
-        "bad=[m for m in ('numpy','pymeshlab','manifold3d') if m in sys.modules]; "
+        "bad=[m for m in ('numpy','pymeshlab','sutura_geom') if m in sys.modules]; "
         "print('OK' if not bad else 'BAD:'+','.join(bad))" % SUTURA
     )
     out = subprocess.run([sys.executable, '-c', code],

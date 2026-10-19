@@ -55,7 +55,6 @@ LICENSE_BOUNDARY_VERSION = '0.2.0'
 # at its old version. tests/test_updater.py asserts this equals install.sh.
 APP_MODULES = (
     'repair.py',
-    'manifold_bridge.py',
     'ftetwild_bridge.py',
     'indirect_bridge.py',
     'classification.py',
@@ -79,7 +78,6 @@ APP_MODULES = (
     'mirror_repair.py',
     'wall_thickness.py',
     'shell_wrap.py',
-    'csg_bridge.py',
     'history.py',
     'repair_score.py',
     'updater.py',
@@ -415,7 +413,7 @@ def _install_linux(src_dir, req_files):
         src = os.path.join(src_dir, f)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(APP_DIR, f))
-    for f in ('requirements.txt', 'requirements-gui.txt', 'requirements-311.txt'):
+    for f in ('requirements.txt', 'requirements-gui.txt'):
         src = os.path.join(src_dir, f)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(APP_DIR, f))
@@ -481,7 +479,6 @@ def _install_macos(src_dir, req_files):
         # (sutura_geom powers nearest-neighbour, EDT and the exact predicates;
         # SciPy and trimesh are no longer required).
         subprocess.run(['conda', 'run', '-n', env_name, 'pip', 'install',
-                        'manifold3d',
                         'PySide6-Essentials==6.11.2'], check=True)
     _install_macos_geom(src_dir)
 
@@ -491,7 +488,7 @@ def _install_macos_geom(src_dir):
 
     The Darwin prebuilt wheel is universal2. `conda run` activates the env so
     the helper's bare `python` resolves to it (no pip into conda-forge
-    packages; the extension is pip-only, like manifold3d). The extension is
+    packages; the extension is pip-only). The extension is
     REQUIRED: a missing helper or a failed install raises, so perform_update's
     existing handler rolls back with the actionable message. A missing conda
     binary is still a silent skip (a GUI launched from Finder may have a
@@ -520,7 +517,7 @@ def _install_macos_geom(src_dir):
 
 def install_source(src_dir):
     """Copy the new source into place and refresh dependencies if needed."""
-    req_files = ('requirements.txt', 'requirements-gui.txt', 'requirements-311.txt')
+    req_files = ('requirements.txt', 'requirements-gui.txt')
     if sys.platform == 'darwin':
         _install_macos(src_dir, req_files)
     else:

@@ -2,7 +2,7 @@
 """Regression test for sutura/mesh_classifier.py (organic vs mechanical).
 
 Checks that:
-  1. mesh_classifier.py is stdlib+numpy only (no pymeshlab/trimesh/manifold3d).
+  1. mesh_classifier.py is stdlib+numpy only (no pymeshlab/trimesh/Manifold).
   2. classify_mesh() returns the calibrated decisions for synthetic meshes:
      mechanical cubes/boxes, organic spheres/torus/capsule, and unknown for
      a curved-but-not-organically-clear cylinder.
@@ -50,7 +50,7 @@ def test_stdlib_only():
     import subprocess
     code = (
         "import sys; sys.path.insert(0, %r); import mesh_classifier; "
-        "bad=[m for m in ('pymeshlab','trimesh','manifold3d') if m in sys.modules]; "
+        "bad=[m for m in ('pymeshlab','trimesh','sutura_geom') if m in sys.modules]; "
         "print('OK' if not bad else 'BAD:'+','.join(bad))" % SUTURA
     )
     out = subprocess.run([sys.executable, '-c', code],

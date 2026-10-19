@@ -3,7 +3,7 @@
 
 Checks that:
   1. classification.py is stdlib-only (importing it must NOT pull in
-     numpy/pymeshlab/manifold3d), so the GUI and the PyMeshLab CLI venv can
+     numpy/pymeshlab/Manifold), so the GUI and the PyMeshLab CLI venv can
      both import it regardless of interpreter.
   2. classify() produces the expected categories/issues for the documented
      scenarios (watertight, volume warning, stage 2 skipped, partial,
@@ -20,7 +20,7 @@ sys.path.insert(0, SUTURA)
 
 def test_stdlib_only():
     import classification  # noqa: F401
-    for heavy in ('numpy', 'pymeshlab', 'manifold3d'):
+    for heavy in ('numpy', 'pymeshlab', 'sutura_geom'):
         assert heavy not in sys.modules, (
             'classification import pulled in %s; it must stay stdlib-only' % heavy)
 
@@ -70,7 +70,7 @@ def test_stage2_skipped_is_warning():
     from classification import classify
     data = {
         'stage1': {'two_manifold': True, 'holes_remaining': 0},
-        'stage2': {'error': 'Stage 2 skipped: manifold3d not available in this environment.'},
+        'stage2': {'error': 'Stage 2 skipped: Manifold not available in this environment.'},
     }
     cat, issues, key = classify(data)
     assert cat == 'warning', cat
@@ -82,7 +82,7 @@ def test_stage2_error():
     from classification import classify
     data = {
         'stage1': {'two_manifold': True, 'holes_remaining': 0},
-        'stage2': {'error': 'manifold3d could not process the input'},
+        'stage2': {'error': 'Manifold could not process the input'},
     }
     cat, issues, key = classify(data)
     assert cat == 'warning', cat

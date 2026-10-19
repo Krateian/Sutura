@@ -2,7 +2,7 @@
 """Regression test for sutura/history.py (anonymous usage history).
 
 Checks that:
-  1. history.py is stdlib+numpy only (no pymeshlab/trimesh/manifold3d).
+  1. history.py is stdlib+numpy only (no pymeshlab/trimesh/Manifold).
   2. mesh_fingerprint() is deterministic for identical geometry and changes
      when the geometry changes.
   3. A history record NEVER leaks identifying data: its key set is exactly the

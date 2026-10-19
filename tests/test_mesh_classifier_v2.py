@@ -4,7 +4,7 @@
 The v2 engine is an opt-in COPY of the classic engine plus RANSAC plane
 features and a small trained head. This test guards the invariants:
 
-  1. mesh_classifier_v2.py is stdlib+numpy only (no pymeshlab/trimesh/manifold3d).
+  1. mesh_classifier_v2.py is stdlib+numpy only (no pymeshlab/trimesh/Manifold).
   2. classify_mesh() keeps the classic drop-in return shape
      {'type', 'confidence', 'metrics'} and never crashes on empty/degenerate
      input (robustness rule: malformed meshes must not crash the classifier).
@@ -39,7 +39,7 @@ def test_stdlib_only():
     import subprocess
     code = (
         "import sys; sys.path.insert(0, %r); import mesh_classifier_v2; "
-        "bad=[m for m in ('pymeshlab','trimesh','manifold3d','scipy') "
+        "bad=[m for m in ('pymeshlab','trimesh','sutura_geom','scipy') "
         "if m in sys.modules]; "
         "print('OK' if not bad else 'BAD:'+','.join(bad))" % SUTURA
     )

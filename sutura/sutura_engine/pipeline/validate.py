@@ -11,8 +11,9 @@ import triage
 from confidence import estimate_confidence_pre_repair
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
+from sutura_engine.adapters.manifold_adapter import is_manifold_available
 from sutura_engine.pipeline.mesh_io import (
-    BRIDGE, check_units, load_meshes, read_3mf_units, scan_bad_coordinates,
+    check_units, load_meshes, read_3mf_units, scan_bad_coordinates,
 )
 from sutura_engine.pipeline.presets import (
     classify_with_engine, resolve_mode_params, resolve_si_mode,
@@ -59,7 +60,7 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental',
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
 
     vol = signed_volume(v, t)
-    bridge = bool(os.path.exists(BRIDGE))
+    bridge = bool(is_manifold_available())
     validation = {
         'vertices': int(v.shape[0]),
         'faces': int(t.shape[0]),
@@ -203,7 +204,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
         'holes': len(holes),
         'non_manifold': len(nm),
         'self_intersections': self_intersections,
-        'stage2_bridge_available': bool(os.path.exists(BRIDGE)),
+        'stage2_bridge_available': bool(is_manifold_available()),
     })
 
     result = {
@@ -220,7 +221,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
         'debris_faces_removable': debris_faces,
         'self_intersections': self_intersections,
         'connected_components': int(topo.get('connected_components_number', 1)),
-        'stage2_bridge_available': bool(os.path.exists(BRIDGE)),
+        'stage2_bridge_available': bool(is_manifold_available()),
         'estimated_confidence': est['score'],
         'estimated_confidence_label': est['label'],
         'estimated_confidence_factors': est['factors'],

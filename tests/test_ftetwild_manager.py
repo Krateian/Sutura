@@ -206,7 +206,7 @@ def test_status_not_installed():
         }
         # Only base packages installed
         _create_mock_dist_info(sp_dir, 'numpy', '2.0.0')
-        _create_mock_dist_info(sp_dir, 'manifold3d', '3.5.3')
+        _create_mock_dist_info(sp_dir, 'trimesh', '5.1.1')
 
         st = mgr.status(env_info)
         assert not st['installed']
@@ -251,9 +251,9 @@ def test_compute_ftetwild_removal_set():
             'pip_path': os.path.join(td, 'pip'),
         }
 
-        # Base packages: manifold3d and numpy
+        # Base packages: trimesh and numpy
         _create_mock_dist_info(sp_dir, 'numpy', '2.0.0', files={'numpy/n.py': 'a' * 1000})
-        _create_mock_dist_info(sp_dir, 'manifold3d', '3.5.3', requires=['numpy'], files={'m3d.py': 'b' * 1000})
+        _create_mock_dist_info(sp_dir, 'trimesh', '5.1.1', requires=['numpy'], files={'trimesh.py': 'b' * 1000})
 
         # fTetWild packages: pytetwild, pyvista (requires numpy, vtk, pyvista-validation), vtk
         _create_mock_dist_info(sp_dir, 'pytetwild', '0.4.2', requires=['numpy'], files={'ptw.py': 'p' * 5000})
@@ -270,9 +270,9 @@ def test_compute_ftetwild_removal_set():
         assert 'vtk' in to_remove
         assert 'pyvista-validation' in to_remove
 
-        # MUST NEVER remove numpy or manifold3d
+        # MUST NEVER remove numpy or trimesh
         assert 'numpy' not in to_remove
-        assert 'manifold3d' not in to_remove
+        assert 'trimesh' not in to_remove
 
         # Freed bytes must include vtk size
         assert freed >= 517000
