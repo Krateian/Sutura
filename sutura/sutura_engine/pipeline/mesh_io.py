@@ -131,6 +131,23 @@ def check_units(verts, declared_unit=None):
                           % (L, 25.4 * L, 10.0 * L))}
 
 
+_ASCII_LOWER = {c: c.lower() for c in map(chr, range(65, 91))}
+
+
+def _ascii_lower(s):
+    """Lowercase ASCII A-Z only; never folds non-ASCII (OPC part-name rule)."""
+    return ''.join(_ASCII_LOWER.get(c, c) for c in s)
+
+
+def _is_model_part(name):
+    """True when a 3MF part name ends in ``.model``.
+
+    OPC part names are compared case-insensitively over ASCII, so ``.MODEL``
+    (and any ASCII-case variant) is a valid model part.
+    """
+    return _ascii_lower(name[-6:]) == '.model'
+
+
 def read_3mf_units(path):
     """Return {model_name: declared_unit} for every .model file in a 3MF.
 
@@ -143,10 +160,16 @@ def read_3mf_units(path):
     try:
         with zipfile.ZipFile(path) as z:
             for name in z.namelist():
-                if not name.endswith('.model'):
+                if not _is_model_part(name):
                     continue
                 xml = _read_zip_entry(z, name).decode('utf-8', errors='replace')
-                m = re.search(r'<model\b[^>]*\bunit="([^"]+)"', xml)
+                # Optional namespace prefix and either quoting style; [^>]*? is
+                # bounded by the start tag's '>' so it cannot cross elements.
+                m = re.search(
+                    r'<(?:[\w.-]+:)?model\b[^>]*?\bunit\s*=\s*"([^"]+)"', xml)
+                if m is None:
+                    m = re.search(
+                        r"<(?:[\w.-]+:)?model\b[^>]*?\bunit\s*=\s*'([^']+)'", xml)
                 out[name] = m.group(1) if m else 'millimeter'
     except Exception:
         return {}
@@ -393,14 +416,30 @@ MeshBlock = namedtuple(
 _MESH_TAG_RE = re.compile(
     r'<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)mesh\b'
     r'(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=prefix)mesh\s*>', re.S)
+_COMMENT_RE = re.compile(r'<!--.*?-->', re.S)
+# XML NameStartChar (word char, not a digit) + NameChar ([:\w.-]); Unicode-aware
+# \w accepts non-ASCII attribute names such as "özel_renk" or "颜色".
 _ATTR_RE = re.compile(
-    r"""([A-Za-z_][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
+    r"""([^\W\d][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')""")
 _VERTEX_TAG_RE = re.compile(
     r'<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)vertex\b(?P<attrs>[^>]*?)/?>',
     re.S)
 _TRIANGLE_TAG_RE = re.compile(
     r'<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)triangle\b(?P<attrs>[^>]*?)/?>',
     re.S)
+
+
+def _mask_comments(xml):
+    """Blank out XML comments on a length-preserving copy.
+
+    A comment such as ``<!-- <mesh></mesh> -->`` must not be mistaken for a real
+    tag, yet every kept span/offset must still index the ORIGINAL text. Each
+    comment is replaced by spaces of the same length, so offsets are unchanged.
+    Unterminated comments (malformed XML) are left as-is.
+    """
+    if '<!--' not in xml:
+        return xml
+    return _COMMENT_RE.sub(lambda m: ' ' * (m.end() - m.start()), xml)
 
 
 def _attrs_dict(text):
@@ -457,10 +496,13 @@ def parse_3mf_mesh_blocks(path):
     with zipfile.ZipFile(path) as z:
         for info in z.infolist():
             name = info.filename
-            if not name.endswith('.model'):
+            if not _is_model_part(name):
                 continue
             xml = _read_zip_info(z, info).decode('utf-8', errors='replace')
-            for index, m in enumerate(_MESH_TAG_RE.finditer(xml)):
+            # Locate tags/spans on a comment-masked copy (offsets preserved),
+            # but splice open/close tags out of the ORIGINAL xml.
+            masked = _mask_comments(xml)
+            for index, m in enumerate(_MESH_TAG_RE.finditer(masked)):
                 vs, ts, tri_attrs = _parse_mesh_body(m.group('body'))
                 if not len(vs) or not len(ts):
                     continue
@@ -558,6 +600,28 @@ def match_triangle_attributes(orig_verts, orig_tris, orig_attrs,
         'kept': kept,
         'dropped': original_attributed - kept,
         'output_triangles': int(len(new_tris)),
+        'method': 'exact_vertex_coordinates',
+    }
+
+
+def aggregate_triangle_attributes(reports):
+    """Sum per-object ``triangle_attributes`` stats into one aggregate dict.
+
+    Single source of truth shared by ``service.repair_3mf`` (baseline) and the
+    triage escalation path, so the top-level aggregate can never drift from the
+    per-object stats it summarises. Returns ``None`` when no report carries a
+    stats dict.
+    """
+    attrs = [r['triangle_attributes'] for r in reports
+             if isinstance(r.get('triangle_attributes'), dict)]
+    if not attrs:
+        return None
+    return {
+        'original_attributed': sum(
+            a.get('original_attributed', 0) for a in attrs),
+        'kept': sum(a.get('kept', 0) for a in attrs),
+        'dropped': sum(a.get('dropped', 0) for a in attrs),
+        'output_triangles': sum(a.get('output_triangles', 0) for a in attrs),
         'method': 'exact_vertex_coordinates',
     }
 

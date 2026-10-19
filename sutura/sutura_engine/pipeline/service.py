@@ -20,7 +20,8 @@ from confidence import repair_confidence
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.mesh_io import (
-    obj_has_material_refs, parse_3mf_mesh_blocks, read_3mf_units,
+    aggregate_triangle_attributes, obj_has_material_refs,
+    parse_3mf_mesh_blocks, read_3mf_units,
     rewrite_3mf_meshes, save_mesh, scan_bad_coordinates,
 )
 from sutura_engine.pipeline.p_weld import (
@@ -67,6 +68,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
     mesh_block = None
     if ext == '.3mf':
         blocks = parse_3mf_mesh_blocks(src)
+        if not blocks:
+            raise ValueError('no mesh objects found in 3MF')
         if len(blocks) != 1:
             raise ValueError(
                 'repair_file expects a single-object 3MF (%d mesh blocks found); '
@@ -405,18 +408,9 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
         s2 = next((r['stage2'] for r in reports if 'stage2' in r), None)
         if s2 is not None:
             agg['stage2'] = s2
-        _attrs = [r['triangle_attributes'] for r in reports
-                  if isinstance(r.get('triangle_attributes'), dict)]
-        if _attrs:
-            agg['triangle_attributes'] = {
-                'original_attributed': sum(
-                    a.get('original_attributed', 0) for a in _attrs),
-                'kept': sum(a.get('kept', 0) for a in _attrs),
-                'dropped': sum(a.get('dropped', 0) for a in _attrs),
-                'output_triangles': sum(
-                    a.get('output_triangles', 0) for a in _attrs),
-                'method': 'exact_vertex_coordinates',
-            }
+        _agg_attrs = aggregate_triangle_attributes(reports)
+        if _agg_attrs is not None:
+            agg['triangle_attributes'] = _agg_attrs
         # Flap aggregate (only when Flap was requested, so an OFF multi-object
         # file keeps the pre-flap aggregate byte-identical): lets a 3MF batch be
         # scanned for the Flap outcome without walking object_reports.
