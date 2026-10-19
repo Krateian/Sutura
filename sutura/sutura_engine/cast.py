@@ -14,6 +14,7 @@ Provides:
   - arrangement_lite(): Exact self-intersection split on triangle meshes
   - raystab_points(): Ray-stabbing inside/outside vote for arbitrary points
   - raystab_grid(): Full-grid ray-stabbing inside mask (analysis/tests)
+  - antipodal_points(): Robust (antipodal) generalized winding number
   - set_cdt_experimental(): Developer hook for experimental CDT options
 """
 from typing import Any, Dict, Optional, Tuple
@@ -107,6 +108,27 @@ def raystab_grid(verts: np.ndarray, tris: np.ndarray, voxel: Optional[float] = N
                               seed=seed, parity=parity, escape_weight=escape_weight)
 
 
+def antipodal_supported() -> bool:
+    """Return True when the robust antipodal GWN entry is present in the extension."""
+    return _AVAILABLE and hasattr(_geom, 'antipodal_points')
+
+
+def antipodal_points(verts: np.ndarray, tris: np.ndarray,
+                     points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Robust (antipodal) generalized winding number at query points.
+
+    The value is the exact signed ``-x`` ray-crossing count plus the exact
+    boundary term, coupled through one exact determinant so the field cannot
+    jump by ~+-1 near the surface.  Deterministic and order-independent.
+
+    Returns:
+        (inside, winding): ``inside`` is a ``(M,)`` bool array (``winding > 0.5``)
+        and ``winding`` a ``(M,)`` float64 array, in turns.
+    """
+    _require_geom()
+    return _geom.antipodal_points(verts, tris, points)
+
+
 __all__ = [
     'is_available',
     'version',
@@ -115,5 +137,7 @@ __all__ = [
     'arrangement_lite',
     'raystab_points',
     'raystab_grid',
+    'antipodal_supported',
+    'antipodal_points',
     'set_cdt_experimental',
 ]

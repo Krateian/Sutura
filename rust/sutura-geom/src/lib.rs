@@ -14,6 +14,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyModule};
 use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 
+pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
 pub mod dressing;
@@ -437,6 +438,19 @@ fn raystab_info<'py>(
     Ok(d)
 }
 
+fn antipodal_info<'py>(
+    py: Python<'py>,
+    stats: &antipodal::AntipodalStats,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("enabled", true)?;
+    d.set_item("boundary_segments", stats.boundary_segments)?;
+    d.set_item("cells_ambiguous", stats.cells_ambiguous)?;
+    d.set_item("cells_flipped", stats.cells_flipped)?;
+    d.set_item("seconds", stats.seconds)?;
+    Ok(d)
+}
+
 /// Signed/unsigned/winding distance grids over the mesh (or a sub-box).
 ///
 /// Returns `(winding, unsigned, signed, info)` where each grid is a 3-D f32
@@ -448,8 +462,14 @@ fn raystab_info<'py>(
 /// with the ray-stabbing vote (see `raycast`); `info['raystab']` then records
 /// the pass.  With `raystab=False` (the default) the output is byte-identical
 /// to the winding-only field.
+///
+/// `antipodal=True` overrides the same band with the robust (antipodal)
+/// generalized winding number (`antipodal`), deterministically and exactly at
+/// grazing configurations; `info['antipodal']` records the pass.  When both are
+/// requested the antipodal pass runs last and wins.  With `antipodal=False` (the
+/// default) the output is byte-identical to the winding-only field.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, voxel=None, r#box=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false))]
+#[pyo3(signature = (verts, tris, voxel=None, r#box=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=false))]
 fn sdf_grid<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -460,6 +480,7 @@ fn sdf_grid<'py>(
     raystab_dirs: Option<usize>,
     raystab_seed: u64,
     raystab_parity: bool,
+    antipodal: bool,
 ) -> PyResult<(
     Bound<'py, PyArray3<f32>>,
     Bound<'py, PyArray3<f32>>,
@@ -494,6 +515,21 @@ fn sdf_grid<'py>(
             raycast::AMBIG_HI,
         ));
     }
+    let mut antipodal_stats = None;
+    if antipodal {
+        let gwn = antipodal::AntipodalGwn::build(&rv, &rt);
+        antipodal_stats = Some(antipodal::disambiguate_sdf(
+            &gwn,
+            &w,
+            &u,
+            &mut s,
+            origin,
+            voxel,
+            dims,
+            raycast::AMBIG_LO,
+            raycast::AMBIG_HI,
+        ));
+    }
 
     let info = PyDict::new(py);
     info.set_item("dims", dims_to_list(py, dims)?)?;
@@ -513,6 +549,9 @@ fn sdf_grid<'py>(
                 &st,
             )?,
         )?;
+    }
+    if let Some(st) = antipodal_stats {
+        info.set_item("antipodal", antipodal_info(py, &st)?)?;
     }
 
     Ok((
@@ -539,8 +578,14 @@ fn sdf_grid<'py>(
 /// ray-stabbing vote in the ambiguous band before the closing; `info['raystab']`
 /// records the pass.  With `raystab=False` (the default) the output is
 /// byte-identical to the winding-only path.
+///
+/// `antipodal=True` disambiguates the same band with the robust (antipodal)
+/// generalized winding number instead; `info['antipodal']` records the pass and
+/// the two are mutually compatible (antipodal runs last and wins).  With
+/// `antipodal=False` (the default) the output is byte-identical to the
+/// winding-only path.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false))]
+#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=false))]
 fn morph_close<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -554,6 +599,7 @@ fn morph_close<'py>(
     raystab_dirs: Option<usize>,
     raystab_seed: u64,
     raystab_parity: bool,
+    antipodal: bool,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -612,8 +658,23 @@ fn morph_close<'py>(
             raycast::AMBIG_HI,
         ));
     }
+    let mut antipodal_stats = None;
+    if antipodal {
+        let gwn = antipodal::AntipodalGwn::build(&rv, &rt);
+        antipodal_stats = Some(antipodal::disambiguate_sdf(
+            &gwn,
+            &w,
+            &u,
+            &mut s,
+            origin,
+            voxel,
+            dims,
+            raycast::AMBIG_LO,
+            raycast::AMBIG_HI,
+        ));
+    }
     // r == 0 selects the sign-field path: the raw signed field (GWN sign,
-    // optionally ray-stab-corrected) feeds dual contouring directly, with no
+    // optionally band-corrected) feeds dual contouring directly, with no
     // dilation/erosion.  This keeps real gaps open instead of bridging them.
     let field = if r > 0.0 {
         let closed = morph::close_sdf(&s, dims, r as f32, voxel as f32);
@@ -661,6 +722,9 @@ fn morph_close<'py>(
     info.set_item("surface", if use_tets { "tets" } else { "dual" })?;
     if let Some(st) = stab_stats {
         info.set_item("raystab", raystab_info(py, st.dirs, raystab_seed, st.parity, &st)?)?;
+    }
+    if let Some(st) = antipodal_stats {
+        info.set_item("antipodal", antipodal_info(py, &st)?)?;
     }
     Ok((verts_np, tris_np, info))
 }
@@ -1279,6 +1343,44 @@ fn raystab_points<'py>(
     ))
 }
 
+/// Robust generalized winding number (antipodal method) for arbitrary query
+/// points.
+///
+/// Returns `(inside, winding)`: `inside` is a `(M,)` bool array (`winding >
+/// 0.5`) and `winding` is a `(M,)` float64 array, in turns.  The value is the
+/// sum of an exact signed `-x` ray/surface crossing count and an exact boundary
+/// term, coupled through one exact determinant so the field cannot jump by
+/// ~+-1 near the surface (Martens, Trettner & Bessmeltsev, ACM TOG 45(4), 2026,
+/// art. 43).  Deterministic and independent of triangle/vertex ordering.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, points))]
+fn antipodal_points<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    points: PyArrayLike2<'py, f64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray1<bool>>, Bound<'py, PyArray1<f64>>)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    if rv.is_empty() || rt.is_empty() {
+        return Err(PyValueError::new_err("empty mesh"));
+    }
+    let pp = points.as_array();
+    if pp.ncols() != 3 {
+        return Err(PyValueError::new_err("points must be Mx3"));
+    }
+    let m = pp.nrows();
+    let evaluator = antipodal::AntipodalGwn::build(&rv, &rt);
+    let pts: Vec<[f64; 3]> = (0..m)
+        .map(|i| [pp[[i, 0]], pp[[i, 1]], pp[[i, 2]]])
+        .collect();
+    let winding = evaluator.winding_points_par(&pts);
+    let inside: Vec<bool> = winding.iter().map(|w| *w > 0.5).collect();
+    Ok((
+        PyArray1::from_vec(py, inside),
+        PyArray1::from_vec(py, winding),
+    ))
+}
+
 /// Full-grid ray-stabbing inside mask (analysis / tests).
 ///
 /// Returns `(inside, score, info)`: `inside` is a 3-D uint8 grid (1 = inside),
@@ -1400,6 +1502,25 @@ impl PyMeshBvh {
             .collect();
         Ok(PyArray1::from_vec(py, self.inner.winding_points_par(&pts)))
     }
+
+    /// Robust generalized winding number (antipodal method) for `(M, 3)` query
+    /// points, parallel across all CPU cores.  Returns a `(M,)` float64 array.
+    /// See `antipodal_points`.
+    fn winding_robust_points<'py>(
+        &self,
+        py: Python<'py>,
+        points: PyArrayLike2<'py, f64, AllowTypeChange>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let pp = points.as_array();
+        if pp.ncols() != 3 {
+            return Err(PyValueError::new_err("points must be Mx3"));
+        }
+        let pts: Vec<[f64; 3]> = (0..pp.nrows())
+            .map(|i| [pp[[i, 0]], pp[[i, 1]], pp[[i, 2]]])
+            .collect();
+        let evaluator = antipodal::AntipodalGwn::build(&self.verts, &self.tris);
+        Ok(PyArray1::from_vec(py, evaluator.winding_points_par(&pts)))
+    }
 }
 
 #[pymodule]
@@ -1425,6 +1546,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(antipodal_points, m)?)?;
     m.add_function(wrap_pyfunction!(topology::edge_table, m)?)?;
     m.add_function(wrap_pyfunction!(topology::weld_vertices, m)?)?;
     m.add_function(wrap_pyfunction!(topology::weld_reload_equivalent, m)?)?;
@@ -1449,6 +1571,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("RAYSTAB_MAX_DIRS", raycast::MAX_DIRS)?;
     m.add("SIGN_FIELD_SUPPORTED", true)?;
     m.add("TAMPONADE_SUPPORTED", true)?;
+    m.add("ANTIPODAL_SUPPORTED", true)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

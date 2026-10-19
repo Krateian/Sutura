@@ -429,6 +429,44 @@ impl MeshBvh {
             .unwrap_or_else(Aabb::empty)
     }
 
+    /// Visit every triangle whose AABB can intersect the axis-aligned ray
+    /// `p + t * (-x)` for `t >= 0`, in BVH order.
+    ///
+    /// The broad phase is exact: a node is entered only when its `(y, z)` extent
+    /// contains `p.yz` (closed interval) and its `x` minimum is `<= p.x`.  Any
+    /// triangle accepted by the antipodal in-projection predicate has `p.yz`
+    /// inside its `(y, z)` AABB and a hit depth `<= p.x`, so no candidate is
+    /// missed; false positives are harmless (the caller's exact predicate
+    /// rejects them).  Used by `antipodal::AntipodalGwn` in place of the
+    /// reference implementation's Embree user geometry.
+    pub(crate) fn for_each_x_ray_candidate<F: FnMut(&Tri)>(&self, p: [f64; 3], f: &mut F) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        self.x_ray_node(0, p, f);
+    }
+
+    fn x_ray_node<F: FnMut(&Tri)>(&self, idx: usize, p: [f64; 3], f: &mut F) {
+        let n = &self.nodes[idx];
+        if p[1] < n.bbox.min[1]
+            || p[1] > n.bbox.max[1]
+            || p[2] < n.bbox.min[2]
+            || p[2] > n.bbox.max[2]
+            || n.bbox.min[0] > p[0]
+        {
+            return;
+        }
+        if n.left < 0 {
+            let start = n.start as usize;
+            for k in start..start + n.count as usize {
+                f(&self.tris[self.order[k] as usize]);
+            }
+            return;
+        }
+        self.x_ray_node(n.left as usize, p, f);
+        self.x_ray_node(n.right as usize, p, f);
+    }
+
     /// Generalized winding number at `p`; ~1 inside a closed shell, ~0 outside.
     pub fn winding_at(&self, p: [f64; 3]) -> f64 {
         if self.nodes.is_empty() {

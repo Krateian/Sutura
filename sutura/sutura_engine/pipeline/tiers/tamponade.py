@@ -87,8 +87,16 @@ def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
             return 0.0, 0
         far_v = add_v[far]
         far_dist = dist[far]
-        bvh = sutura_geom.PyMeshBvh(iv, it)
-        w = np.asarray(bvh.winding_points(far_v))
+        if (sutura_geom.__dict__.get("ANTIPODAL_SUPPORTED", False)
+                and os.environ.get("SUTURA_ANTIPODAL", "").strip().lower()
+                in ("1", "true", "yes", "on")):
+            # Robust (antipodal) winding number for the ambiguous band; opt-in
+            # and byte-identical to the winding-only metric when off.
+            _inside, _w = sutura_geom.antipodal_points(iv, it, far_v)
+            w = np.asarray(_w, dtype=np.float64)
+        else:
+            bvh = sutura_geom.PyMeshBvh(iv, it)
+            w = np.asarray(bvh.winding_points(far_v))
         bad = w < 0.5
         if not bad.any():
             return 0.0, 0
