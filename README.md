@@ -1037,7 +1037,7 @@ needed.
 * **Standalone .app: stage 2 reports skipped / low confidence.** Stage 2
   (manifold3d) needs `manifold_bridge.py` next to the bundled CLI (e.g.
   `Sutura.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) with
-  `manifold3d`/`trimesh` bundled; otherwise `stage2_bridge_available=false`
+  `manifold3d` bundled; otherwise `stage2_bridge_available=false`
   and confidence drops ~25 points.
 
 If a repair fails, or a method looks unavailable, three commands help diagnose
@@ -1156,7 +1156,7 @@ cd Sutura
 
 `install-macos.sh` checks for Homebrew, installs Miniforge via Homebrew if
 conda is missing, creates a `sutura-env` conda environment (Python 3.11),
-installs pymeshlab from conda-forge and manifold3d/trimesh/PySide6 from pip,
+installs pymeshlab from conda-forge and manifold3d/PySide6 from pip,
 verifies the imports, copies the app files to `~/.local/share/sutura/`, and
 creates `~/.local/bin/sutura` (CLI) and `~/.local/bin/sutura-gui` launchers.
 It also creates a native **`~/Applications/Sutura.app`** so you can launch the
@@ -2077,13 +2077,15 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 | PyMeshLab | stage 1 filter chain | VCG-based, proven for print repair, fills holes of any size, Python 3.14 wheel available |
 | manifold3d | stage 2 solid rebuild | watertight guarantee, robust boolean, same engine as Bambu Studio |
 | numpy | pipeline-wide | array math for the CLI, GUI, defect detection, history and every pure-python tier; the required `sutura_geom` Rust extension is NOT optional and the Flap path has no numpy fallback |
-| trimesh | stage 2 IO + method registry | OBJ/mesh loading in the manifold venv, mesh IO and surface sampling in the closing, proxy and repeated-element tiers, and IO in the Graft/Dressing tiers (~4.6 MB installed); nearest-point projection uses `sutura_geom.closest_points` |
 | pytetwild + pyvista | fTetWild fallback tier (optional extra) | fTetWild tetrahedralization (MPL-2.0); pyvista brings VTK, ~1.1 GB installed, so it is opt-in via `SUTURA_WITH_FTETWILD=1` |
 | sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, morphology, nearest-neighbour, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module, point-cloud nearest neighbours (`kiddo`), exact EDT/dilation, and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
 
 Pinned in `requirements.txt`, `requirements-311.txt` and (optional)
 `requirements-ftetwild.txt`; Rust dependencies in `rust/sutura-geom/Cargo.toml`
-(source builds require Rust >= 1.89, the `kiddo` 6.3 MSRV).
+(source builds require Rust >= 1.89, the `kiddo` 6.3 MSRV). `trimesh` is no
+longer a runtime dependency: mesh IO and the pure-Python geometry helpers live
+in the engine, and the test suite / developer scripts install `trimesh` through
+the dev-only `requirements-dev.txt`.
 
 ## Known limitations
 

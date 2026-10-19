@@ -1,10 +1,9 @@
 pymeshlab==2025.7.post1
 numpy>=2.4.0,<2.6
-# Scan-closing / proxy-template tiers (registry methods 8/9/10, P-INT):
-# trimesh powers mesh IO and the remaining pure-Python helpers. Nearest-
-# neighbour, EDT and dilation queries live in the Rust sutura_geom core, so
-# SciPy is not required. rtree is NOT required.
-trimesh==5.1.1
+# Nearest-neighbour, EDT, dilation, mesh IO and the pure-Python geometry
+# helpers all live in the in-repo engine (sutura_engine) or the Rust
+# sutura_geom core. Neither SciPy, rtree nor trimesh is required (trimesh is
+# a development/test-only dependency, see requirements-dev.txt).
 # Optional/heavy cross-validation dependency (FAZ10): manifold3d powers the
 # independent watertight check in scripts/benchmark_repair_corpus.py (and stage
 # 2). It ships prebuilt wheels only up to Python 3.13, so it CANNOT be added to

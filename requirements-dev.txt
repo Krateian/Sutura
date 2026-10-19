@@ -1,0 +1,10 @@
+# Development / test-only dependencies.
+#
+# trimesh is NOT a Sutura runtime dependency: mesh IO and the pure-Python
+# geometry helpers now live in sutura/ (sutura_engine.pipeline.mesh_io,
+# sutura_engine.hull, sutura_engine.wall, ...).  The test suite and the
+# developer scripts under scripts/ still use trimesh as an independent
+# oracle/builder, so it is installed for development and CI test runs only.
+# The runtime guard tests/test_no_trimesh.py enforces that sutura/ imports
+# no trimesh.
+trimesh==5.1.1

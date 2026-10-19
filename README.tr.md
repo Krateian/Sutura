@@ -1041,7 +1041,7 @@ Diğer dağıtımlarda, varsayılan `python3` *3.11 ise* ek kurulum gerekmez.
 * **Standalone .app: stage 2 atlandı / düşük güven.** Aşama 2 (manifold3d)
   bundled CLI'nin yanında `manifold_bridge.py` ister (ör.
   `Sutura.app/Contents/MacOS/sutura-cli/manifold_bridge.py`) ve
-  `manifold3d`/`trimesh` bundle içinde olmalı; aksi halde
+  `manifold3d` bundle içinde olmalı; aksi halde
   `stage2_bridge_available=false` olur ve güven ~25 puan düşer.
 
 Bir onarım başarısız olursa veya bir yöntem kullanılamıyor görünürse, üç komut
@@ -1165,7 +1165,7 @@ cd Sutura
 
 `install-macos.sh` Homebrew'i kontrol eder, conda yoksa Homebrew üzerinden
 Miniforge kurar, `sutura-env` conda ortamını oluşturur (Python 3.11),
-pymeshlab'ı conda-forge'dan, manifold3d/trimesh/PySide6'yı pip'ten kurar,
+pymeshlab'ı conda-forge'dan, manifold3d/PySide6'yı pip'ten kurar,
 import'ları doğrular, uygulama dosyalarını `~/.local/share/sutura/`'ya kopyalar
 ve `~/.local/bin/sutura` (CLI) ile `~/.local/bin/sutura-gui` başlatıcılarını
 oluşturur. Ayrıca yerel bir **`~/Applications/Sutura.app`** oluşturur — GUI'yi
@@ -2082,14 +2082,16 @@ güvenilir şekilde algılayabilir.
 | PyMeshLab | aşama 1 filtre zinciri | VCG tabanlı, baskı onarımı için kanıtlanmış, her boyuttaki deliği doldurur, Python 3.14 wheel'i mevcut |
 | manifold3d | aşama 2 katı yeniden kurma | su geçirmezlik garantisi, sağlam boolean, Bambu Studio ile aynı motor |
 | numpy | hat geneli | CLI, GUI, kusur tespiti, geçmiş ve tüm saf-Python katmanlar için dizi matematiği; zorunlu `sutura_geom` Rust eklentisi isteğe bağlı değildir ve Flap yolunun numpy geri dönüşü yoktur |
-| trimesh | aşama 2 G/Ç + yöntem kayıt defteri | manifold venv'inde OBJ/mesh yükleme, ayrıca kapama, vekil ve yinelenen öge katmanlarında mesh G/Ç ve yüzey örnekleme, Graft/Dressing katmanlarında G/Ç (kurulumda ~4,6 MB); en yakın-nokta izdüşümü `sutura_geom.closest_points` kullanır |
 | pytetwild + pyvista | fTetWild yedek katmanı (isteğe bağlı ek) | fTetWild tetrahedralizasyonu (MPL-2.0); pyvista VTK'yı getirir, kurulu ~1,1 GB, bu yüzden `SUTURA_WITH_FTETWILD=1` ile isteğe bağlıdır |
 | sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, morfoloji, en yakın komşu, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü, nokta-bulutu en yakın komşuları (`kiddo`), exact EDT/dilasyon ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
 
 `requirements.txt`, `requirements-311.txt` ve (isteğe bağlı)
 `requirements-ftetwild.txt` içinde sabitlenmiştir; Rust bağımlılıkları
 `rust/sutura-geom/Cargo.toml` içindedir (kaynaktan derleme Rust >= 1.89,
-`kiddo` 6.3 MSRV gerektirir).
+`kiddo` 6.3 MSRV gerektirir). `trimesh` artık bir çalışma-zamanı bağımlılığı
+değildir: mesh G/Ç ve saf-Python geometri yardımcıları motorun içinde yer alır
+ve test takımı / geliştirici betikleri `trimesh`'i yalnızca geliştiriciye özel
+`requirements-dev.txt` üzerinden kurar.
 
 ## Bilinen sınırlamalar
 

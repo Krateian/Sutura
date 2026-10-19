@@ -70,7 +70,7 @@ def proxy_available() -> Tuple[bool, Optional[str]]:
         if (importlib.util.find_spec('sutura_engine.methods.proxy') is None and
                 importlib.util.find_spec('proxy_repair') is None):
             return False, 'proxy_repair is not available'
-        for mod in ('numpy', 'trimesh', 'sutura_geom'):
+        for mod in ('numpy', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
@@ -117,7 +117,7 @@ def repeat_available() -> Tuple[bool, Optional[str]]:
         if (importlib.util.find_spec('sutura_engine.methods.repeat') is None and
                 importlib.util.find_spec('repeat_repair') is None):
             return False, 'repeat_repair is not available'
-        for mod in ('numpy', 'trimesh', 'sutura_geom'):
+        for mod in ('numpy', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
@@ -207,7 +207,7 @@ def graft_available() -> Tuple[bool, Optional[str]]:
                 return False, 'sutura_geom has no morph_close (rebuild needed)'
         except Exception as e:
             return False, 'sutura_geom import failed: %s' % e
-        for mod in ('numpy', 'trimesh', 'sutura_geom'):
+        for mod in ('numpy', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
