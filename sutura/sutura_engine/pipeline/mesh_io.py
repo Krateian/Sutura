@@ -181,19 +181,57 @@ def _obj_vertex_index(token, vertex_count):
             raise ValueError('OBJ negative vertex index %d is out of range '
                              '(%d vertices defined)' % (idx, vertex_count))
         return resolved
+    if idx > vertex_count:
+        raise ValueError('OBJ vertex index %d is out of range '
+                         '(%d vertices defined)' % (idx, vertex_count))
     return idx - 1
+
+
+def _iter_obj_lines(f):
+    """Yield ``(first_line_no, logical_line)`` for OBJ statements.
+
+    Inline ``#`` comments are stripped and a trailing backslash joins the
+    next physical line (Wavefront continuation syntax). The reported line
+    number is the first physical line of the logical statement.
+    """
+    buf = None
+    start = 0
+    for line_no, raw in enumerate(f, 1):
+        text = raw.split('#', 1)[0].rstrip('\r\n')
+        stripped = text.rstrip()
+        continued = stripped.endswith('\\')
+        if continued:
+            stripped = stripped[:-1]
+        if buf is None:
+            buf = stripped
+            start = line_no
+        else:
+            buf += ' ' + stripped
+        if continued:
+            continue
+        yield start, buf
+        buf = None
+    if buf is not None and buf.strip():
+        yield start, buf
 
 
 def read_obj(path):
     verts = []
     tris = []
-    with open(path) as f:
-        for line_no, line in enumerate(f, 1):
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line_no, line in _iter_obj_lines(f):
             parts = line.split()
             if not parts:
                 continue
             if parts[0] == 'v':
-                verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
+                if len(parts) < 4:
+                    raise ValueError('%s:%d: OBJ vertex needs at least 3 '
+                                     'coordinates' % (path, line_no))
+                try:
+                    verts.append((float(parts[1]), float(parts[2]),
+                                  float(parts[3])))
+                except ValueError as exc:
+                    raise ValueError('%s:%d: %s' % (path, line_no, exc))
             elif parts[0] == 'f':
                 try:
                     idxs = [_obj_vertex_index(tok, len(verts))
@@ -207,14 +245,25 @@ def read_obj(path):
                 for i in range(1, len(idxs) - 1):
                     tris.append((idxs[0], idxs[i], idxs[i + 1]))
     if not verts:
+        if tris:
+            raise ValueError('%s: OBJ has face records but no vertex '
+                             'definitions' % path)
         return (np.zeros((0, 3), dtype=np.float32),
                 np.zeros((0, 3), dtype=np.int32))
-    return (np.asarray(verts, dtype=np.float32),
-            np.asarray(tris, dtype=np.int32).reshape(-1, 3))
+    out_verts = np.asarray(verts, dtype=np.float32)
+    out_tris = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
+    if out_tris.size and int(out_tris.max()) >= len(out_verts):
+        raise ValueError('%s: OBJ face index %d is out of range '
+                         '(%d vertices)' % (path, int(out_tris.max()) + 1,
+                                            len(out_verts)))
+    return out_verts, out_tris
 
 
 def _read_stl_ascii(path):
     verts = []
+    saw_solid = False
+    saw_endsolid = False
+    saw_facet = False
     with open(path, 'r', errors='ignore') as f:
         for line in f:
             p = line.split()
@@ -222,7 +271,17 @@ def _read_stl_ascii(path):
                 continue
             # ASCII STL keywords are case-insensitive and may be separated by
             # any whitespace/tabs.
-            if p[0].lower() != 'vertex':
+            keyword = p[0].lower()
+            if keyword == 'solid':
+                saw_solid = True
+                continue
+            if keyword == 'endsolid':
+                saw_endsolid = True
+                continue
+            if keyword == 'facet':
+                saw_facet = True
+                continue
+            if keyword != 'vertex':
                 continue
             if len(p) < 4:
                 raise MalformedSTLError(
@@ -233,6 +292,9 @@ def _read_stl_ascii(path):
                 raise MalformedSTLError(
                     'Malformed STL: non-numeric vertex line %r' % line.strip())
     if not verts:
+        if saw_solid and saw_endsolid and not saw_facet:
+            return (np.zeros((0, 3), dtype=np.float32),
+                    np.zeros((0, 3), dtype=np.int32))
         raise MalformedSTLError(
             'Malformed STL: no vertex records found in binary or ASCII form')
     if len(verts) % 3 != 0:
@@ -244,26 +306,50 @@ def _read_stl_ascii(path):
     return v, np.arange(n * 3, dtype=np.int32).reshape(n, 3)
 
 
+def _looks_like_ascii_stl(path, limit=64 * 1024):
+    """True when the file prefix contains ASCII facet structure."""
+    try:
+        with open(path, 'rb') as f:
+            chunk = f.read(limit)
+    except OSError:
+        return False
+    text = chunk.decode('latin-1').lower()
+    return 'facet' in text or 'outer loop' in text
+
+
+def _read_stl_binary_records(f, n):
+    f.seek(84)
+    data = f.read(50 * n)
+    if len(data) != 50 * n:
+        raise MalformedSTLError('Malformed STL: truncated binary records')
+    arr = np.frombuffer(data, dtype=np.uint8).reshape(n, 50)
+    tri = arr[:, 12:48].copy().view(np.float32).reshape(n, 3, 3)
+    return (tri.reshape(-1, 3).astype(np.float32),
+            np.arange(3 * n, dtype=np.int32).reshape(n, 3))
+
+
 def read_stl(path):
     """Read a binary or ASCII STL into (verts float32, tris int32).
 
     Binary is detected by the exact ``84 + 50 * n`` byte layout first: an
     ASCII file may also start with the word ``solid`` and a binary header may
     contain it, so the header word alone is not a reliable discriminator.
-    Files matching neither layout raise :class:`MalformedSTLError` instead of
-    silently returning an empty mesh.
+    A binary file longer than its records (trailing metadata/padding) is
+    accepted when it carries no ASCII facet structure. Files matching neither
+    layout raise :class:`MalformedSTLError` instead of silently returning an
+    empty mesh.
     """
     with open(path, 'rb') as f:
         head = f.read(84)
         if len(head) == 84:
             n = struct.unpack('<I', head[80:84])[0]
             f.seek(0, os.SEEK_END)
-            if f.tell() == 84 + 50 * n:
-                f.seek(84)
-                arr = np.frombuffer(f.read(50 * n), dtype=np.uint8).reshape(n, 50)
-                tri = arr[:, 12:48].copy().view(np.float32).reshape(n, 3, 3)
-                return (tri.reshape(-1, 3).astype(np.float32),
-                        np.arange(3 * n, dtype=np.int32).reshape(n, 3))
+            size = f.tell()
+            if size == 84 + 50 * n:
+                return _read_stl_binary_records(f, n)
+            if (size > 84 + 50 * n and n > 0
+                    and not _looks_like_ascii_stl(path)):
+                return _read_stl_binary_records(f, n)
     return _read_stl_ascii(path)
 
 
