@@ -57,9 +57,9 @@ jobs:
         run: |
           conda install -y -c conda-forge pymeshlab
           pip install --quiet \
-            trimesh PySide6-Essentials==6.11.2 pyinstaller numpy
+            PySide6-Essentials==6.11.2 pyinstaller numpy
           python -c \
-            "import pymeshlab, trimesh, PySide6, sutura_geom; print('deps OK')"
+            "import pymeshlab, PySide6; print('deps OK')"
 
       # The Rust extension (rust/sutura-geom, abi3-py311) is needed by Graft
       # (#13), Exact Refine (#6) and the indirect tier. Install it into the
@@ -107,7 +107,6 @@ jobs:
           PYS=("--noconfirm" "--log-level" "WARN"
             "--paths" "sutura"
             "--hidden-import" "pymeshlab"
-            "--hidden-import" "trimesh"
             "--hidden-import" "classification" "--hidden-import" "confidence"
             "--hidden-import" "defects" "--hidden-import" "topology" "--hidden-import" "mesh_classifier"
             "--hidden-import" "history" "--hidden-import" "heatmap"
@@ -154,7 +153,6 @@ jobs:
             --paths . --paths sutura \
             --hidden-import sutura \
             --hidden-import pymeshlab \
-            --hidden-import trimesh \
             --hidden-import classification --hidden-import confidence \
             --hidden-import defects --hidden-import topology --hidden-import mesh_classifier \
             --hidden-import history --hidden-import heatmap \

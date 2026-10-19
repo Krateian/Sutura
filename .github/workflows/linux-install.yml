@@ -207,7 +207,7 @@ jobs:
     steps:
       - name: Install base dependencies
         run: |
-          pacman -Syu --noconfirm base-devel git python desktop-file-utils sudo libglvnd fontconfig
+          pacman -Syu --noconfirm base-devel git python desktop-file-utils sudo libglvnd fontconfig cmake rust
 
       - uses: actions/checkout@v7
 
@@ -219,7 +219,7 @@ jobs:
 
       - name: Run install.sh and verify the Rust Manifold core
         run: |
-          su - archuser -c "cd '$GITHUB_WORKSPACE' && ./install.sh"
+          su - archuser -c "cd '$GITHUB_WORKSPACE' && SUTURA_GEOM_FROM_SOURCE=1 ./install.sh"
           # A default install no longer needs Python 3.11: Stage 2 runs in
           # sutura_geom. venv311 is created only for the optional fTetWild extra.
           su - archuser -c "test ! -e ~/.local/share/sutura/python311"
