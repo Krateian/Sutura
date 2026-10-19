@@ -24,9 +24,16 @@ so there is only ONE availability checker and ONE error type in the project):
   ``check_availability() -> dict[str, Status]``
       Per registered method id, its availability state.  A missing optional
       addon (e.g. fTetWild) is ``SKIP``; a broken availability check is
-      ``FAIL``; everything present is ``OK``.
+      ``FAIL``; everything present is ``OK``.  The required Rust extension
+      (``sutura_geom``) is never a skip: when it is absent every method that
+      depends on it is ``FAIL``.
   ``check_availability_detail() -> dict[str, (Status, reason|None)]``
       Same, with the human-readable reason for ``SKIP``/``FAIL``.
+  ``check_required_geometry() -> (bool, reason|None)``
+      The ONE central check for the required ``sutura_geom`` Rust extension.
+      ``(False, GEOM_REQUIRED_MESSAGE)`` when it cannot be imported; the
+      startup gate, ``--self-check`` and the GUI health banner all read it
+      through the availability checker, so no tier needs its own gate.
   ``record_error(method, stage, exc) -> MethodError | None``
       Classify ``exc`` and append one ``MethodError`` to the active collector.
       The whole pipeline uses this; it is the single recording point.
@@ -77,6 +84,27 @@ KIND_EXCEPTION = 'exception'
 KIND_SKIPPED = 'skipped'   # an OPTIONAL dependency is absent: skip, not error
 
 _ENV_VAR = 'SUTURA_METHOD_HEALTH'
+
+# The required Rust extension. Its absence is a hard, named failure of the
+# runtime (installer + startup + --self-check), never a skip.
+GEOM_REQUIRED_MESSAGE = (
+    'sutura_geom Rust extension is required but not installed; '
+    'reinstall Sutura or install Rust (https://rustup.rs) and re-run the '
+    'installer')
+GEOM_SYMBOL_MISSING_MESSAGE = (
+    'sutura_geom is installed but lacks %s (rebuild needed)')
+
+# Symbols the runtime calls with NO fallback. They are checked by the central
+# gate so a stale wheel (the installer resolves a release wheel by VERSION and
+# may reuse an older one) cannot silently degrade: Flap always uses the Rust
+# core, Graft uses morph_close, and Tamponade runs on by default with no numpy
+# path. Optional bindings (dressing_coat, orient3d, shell_analyze, ...) are
+# feature-detected by their callers and are intentionally NOT in this list.
+REQUIRED_GEOM_SYMBOLS = ('flap_fill', 'morph_close', 'tamponade')
+
+
+class GeometryRequiredError(RuntimeError):
+    """The required ``sutura_geom`` extension (or symbol) is unavailable."""
 
 
 class Status(str, enum.Enum):
@@ -209,9 +237,10 @@ def _optional_import_modules() -> frozenset:
 def _is_optional_import_error(exc: BaseException) -> bool:
     """True when ``exc`` is an ImportError for an OPTIONAL dependency.
 
-    A missing optional addon (the Rust extension, fTetWild, ...) is a SKIP, not
-    a failure.  A missing SYMBOL in a present sutura_geom is NOT an ImportError
-    and therefore still stays an error.
+    A missing optional addon (fTetWild, the proxy/repeat/mirror tiers, ...) is
+    a SKIP, not a failure.  ``sutura_geom`` is NOT optional: its absence is a
+    FAIL recorded as an error.  A missing SYMBOL in a present sutura_geom is
+    NOT an ImportError either and therefore still stays an error.
     """
     if not isinstance(exc, ImportError):
         return False
@@ -291,11 +320,49 @@ def _registered_methods() -> List[Any]:
         return []
 
 
+def check_required_geometry() -> Tuple[bool, Optional[str]]:
+    """The ONE central check for the required ``sutura_geom`` Rust extension.
+
+    Returns ``(True, None)`` when the extension imports AND exposes every
+    symbol the runtime calls without a fallback, otherwise
+    ``(False, reason)``: ``GEOM_REQUIRED_MESSAGE`` for a missing extension,
+    ``GEOM_SYMBOL_MISSING_MESSAGE`` for a stale/incomplete one.  Never raises:
+    a blocked/poisoned import (``sys.modules['sutura_geom'] = None``) is
+    reported as absent.  KeyboardInterrupt / SystemExit deliberately propagate.
+    """
+    try:
+        import sutura_geom
+    except Exception:  # noqa: BLE001 - absence is the answer, never a crash
+        return False, GEOM_REQUIRED_MESSAGE
+    missing = [name for name in REQUIRED_GEOM_SYMBOLS
+               if not callable(getattr(sutura_geom, name, None))]
+    if missing:
+        return False, GEOM_SYMBOL_MISSING_MESSAGE % ', '.join(missing)
+    return True, None
+
+
+def require_geometry() -> None:
+    """Raise :class:`GeometryRequiredError` when the central check fails.
+
+    Used by the narrowest shared library entry (``repair_mesh_from_arrays``)
+    so a direct Python API call cannot run with a missing/stale extension.
+    """
+    ok, reason = check_required_geometry()
+    if not ok:
+        raise GeometryRequiredError(reason)
+
+
 def check_availability_detail() -> Dict[str, Tuple[Status, Optional[str]]]:
     """Per method id: ``(Status, reason|None)``.  The single availability checker."""
     out: Dict[str, Tuple[Status, Optional[str]]] = {}
+    geom_ok, geom_reason = check_required_geometry()
     for m in _registered_methods():
         mid = getattr(m, 'id', None) or str(getattr(m, 'num', '?'))
+        if not geom_ok:
+            # The extension is required by the runtime: a missing core is a
+            # named FAIL for every method, never a skip.
+            out[mid] = (Status.FAIL, geom_reason)
+            continue
         try:
             ok, reason = m.available()
         except BaseException as exc:  # noqa: BLE001 - report, never crash

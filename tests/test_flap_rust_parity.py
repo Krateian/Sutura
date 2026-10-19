@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Rust/numpy parity test for the Flap hole-filler port.
+"""Golden-fixture regression for the Flap hole-filler Rust core.
 
-``sutura_geom.flap_fill`` (rust/sutura-geom/src/flap) is the Rust port of the
-numpy oracle in ``sutura_engine.flap``. The port is exposed through
-``sutura_engine.flap.flap_fill`` (feature-detected, numpy fallback). This test
-pins the contract the port must keep: on a synthetic holed mesh the two engines
-produce the SAME triangles and vertices within 1e-8.
+``sutura_geom.flap_fill`` (rust/sutura-geom/src/flap) is the only Flap
+implementation; the pure-Python oracle has been removed. This test pins the
+contract against a committed fixture generated once from that oracle (before
+its deletion) with ``SUTURA_FLAP_SELECT=0``: on a synthetic holed mesh and a
+closed box, the Rust binding and the ``sutura_engine.flap.flap_fill``
+dispatcher must reproduce the stored vertices and triangles within 1e-8, keep
+the one-to-one vertex map and the report keys.
 
-Skips (exit 0) when the extension is absent or predates the binding, so
-installs without the Rust build still pass.
+The extension is required, so a missing ``sutura_geom`` FAILS this test
+instead of skipping it.
 
 Needs the venv (trimesh/scipy). pytest-compatible; runnable directly:
     ~/.local/share/sutura/venv/bin/python tests/test_flap_rust_parity.py
@@ -23,9 +25,9 @@ for p in (SUTURA, REPO):
         sys.path.insert(0, p)
 
 # The per-loop candidate selector (SUTURA_FLAP_SELECT) is a Rust-only extension
-# with no numpy-oracle counterpart: it never changes a loop the thin-plate
-# primary fills, but it can fill loops the oracle leaves to Stage-1. Pin it off
-# so this test keeps verifying the pure port, not the selector.
+# with no oracle counterpart: it never changes a loop the thin-plate primary
+# fills, but it can fill loops the oracle leaves to Stage-1. Pin it off so the
+# fixture keeps verifying the pure port, not the selector.
 os.environ['SUTURA_FLAP_SELECT'] = '0'
 
 import numpy as np  # noqa: E402
@@ -33,37 +35,27 @@ from scipy.spatial import cKDTree  # noqa: E402
 
 from sutura_engine import flap  # noqa: E402
 
-try:
-    import pytest  # noqa: E402
-except ImportError:  # pragma: no cover - direct-script runs may lack pytest
-    pytest = None
+FIXTURE = os.path.join(REPO, 'tests', 'fixtures', 'flap_golden.npz')
 
 
 def _require_rust():
     rfn = flap._load_rust_flap()
     if rfn is None:
-        msg = ('sutura_geom.flap_fill unavailable (extension absent or '
-               'predates the binding) - skipping parity test')
-        if pytest is not None:
-            pytest.skip(msg)
-        print('SKIP: ' + msg)
-        sys.exit(0)
+        raise AssertionError(
+            'sutura_geom.flap_fill is required (the Python oracle was removed); '
+            'install the Rust extension')
     return rfn
 
 
-def _holed_sphere(subdiv=4, radius=5.0, cut=4.0):
-    import trimesh
-    m = trimesh.creation.icosphere(subdivisions=subdiv, radius=radius)
-    v = np.asarray(m.vertices, np.float64)
-    t = np.asarray(m.faces, np.int64)
-    c = v[t].mean(axis=1)
-    return v, t[c[:, 2] < cut]
+def _fixture():
+    with np.load(FIXTURE) as data:
+        return {k: np.asarray(data[k]) for k in data.files}
 
 
 def _assert_same_mesh(v_py, t_py, v_rs, t_rs, tol=1e-8):
     assert v_rs.shape[0] == v_py.shape[0], (v_rs.shape, v_py.shape)
     assert t_rs.shape[0] == t_py.shape[0], (t_rs.shape, t_py.shape)
-    # Rust vertices must coincide with the numpy ones within tol, one-to-one,
+    # Rust vertices must coincide with the stored ones within tol, one-to-one,
     # so the two meshes are the same geometry with a (possibly) permuted
     # vertex numbering.
     dist, idx = cKDTree(v_py).query(v_rs)
@@ -79,32 +71,36 @@ def _face_set(tris):
     return set(map(tuple, np.sort(t, axis=1).tolist()))
 
 
-def test_rust_matches_python_on_holed_mesh():
-    rfn = _require_rust()
-    v, t = _holed_sphere()
-    pv, pt, prep = flap.flap_fill_python(v, t, separate_stl=False)
+def _check_case(name, rfn, data):
+    v = data[name + '_in_v']
+    t = data[name + '_in_t']
+    exp_v = data[name + '_out_v']
+    exp_t = data[name + '_out_t']
     # Call the Rust binding directly (not the dispatcher) so the comparison
-    # cannot pass via a silent numpy fallback.
+    # cannot pass through any other path.
     rv, rt, rrep = rfn(v, t, separate_stl=False)
-    _assert_same_mesh(pv, pt, np.asarray(rv), np.asarray(rt))
+    _assert_same_mesh(exp_v, exp_t, np.asarray(rv), np.asarray(rt))
     for key in ('loops_found', 'loops_filled', 'patch_faces', 'new_vertices'):
-        assert int(rrep[key]) == int(prep[key]), (key, rrep.get(key), prep.get(key))
-    assert prep['loops_found'] == 1 and prep['patch_faces'] > 0, prep
+        assert int(rrep[key]) == int(data[name + '_' + key]), (
+            key, rrep.get(key), int(data[name + '_' + key]))
     # The public dispatcher must route to the same Rust result.
     dv, dt, _ = flap.flap_fill(v, t, separate_stl=False)
-    _assert_same_mesh(pv, pt, np.asarray(dv), np.asarray(dt))
+    _assert_same_mesh(exp_v, exp_t, np.asarray(dv), np.asarray(dt))
 
 
-def test_rust_matches_python_noop_on_closed_mesh():
+def test_rust_matches_golden_on_holed_mesh():
     rfn = _require_rust()
-    import trimesh
-    m = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
-    v = np.asarray(m.vertices, np.float64)
-    t = np.asarray(m.faces, np.int64)
-    pv, pt, prep = flap.flap_fill_python(v, t, separate_stl=False)
-    rv, rt, rrep = rfn(v, t, separate_stl=False)
-    _assert_same_mesh(pv, pt, np.asarray(rv), np.asarray(rt))
-    assert prep['loops_found'] == 0 and rrep['loops_found'] == 0
+    data = _fixture()
+    _check_case('holed', rfn, data)
+    assert int(data['holed_loops_found']) == 1
+    assert int(data['holed_patch_faces']) > 0
+
+
+def test_rust_matches_golden_noop_on_closed_mesh():
+    rfn = _require_rust()
+    data = _fixture()
+    _check_case('box', rfn, data)
+    assert int(data['box_loops_found']) == 0
 
 
 if __name__ == '__main__':

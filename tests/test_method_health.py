@@ -183,8 +183,8 @@ def test_parity_layered_3mf(tmp):
 
 
 def test_parity_layered_3mf_with_rust_extension_blocked(tmp):
-    """A missing OPTIONAL dependency (sutura_geom) is a skip, not an error:
-    the repair still produces output and method_health.errors stays empty."""
+    """A missing REQUIRED dependency (sutura_geom) is a hard, named error:
+    the CLI exits 1 with a JSON error and writes no output file."""
     src = os.path.join(tmp, 'layered_nog.3mf')
     _make_3mf(src)
     out = os.path.join(tmp, 'nog.3mf')
@@ -196,13 +196,11 @@ def test_parity_layered_3mf_with_rust_extension_blocked(tmp):
         % (SUTURA, [REPAIR_PY] + ARGS + ['-o', out, src], REPAIR_PY, REPAIR_PY))
     r = subprocess.run([sys.executable, '-c', launcher],
                        capture_output=True, text=True, timeout=600, env=env)
-    assert r.returncode == 0, r.stderr[-1200:]
+    assert r.returncode == 1, (r.returncode, r.stderr[-1200:])
     d = _json(r)
-    mh = d['method_health']
-    assert mh['errors'] == [], mh
-    assert mh.get('skips'), mh                       # the rule fired
-    assert all(s.get('kind') == 'skipped' for s in mh['skips']), mh['skips']
-    assert os.path.isfile(out) and os.path.getsize(out) > 0
+    assert 'error' in d, d
+    assert 'sutura_geom' in d['error'] and 'required' in d['error'], d['error']
+    assert not os.path.exists(out)
 
 
 # --- in-process isolation -------------------------------------------------
@@ -273,6 +271,34 @@ def test_missing_symbol_is_classified(tmp):
 
 def _raise_importerror():
     raise ImportError('no such module')
+
+
+def test_required_symbols_gate(tmp):
+    """A stale wheel that imports but lacks a no-fallback symbol is a named
+    FAIL, and every method / method listing reports unavailable."""
+    _repair, health, _triage = _import_engine()
+    import types
+    from sutura_engine import methods
+    real = sys.modules.get('sutura_geom')
+    fake = types.ModuleType('sutura_geom')
+    fake.flap_fill = lambda *a, **k: None
+    sys.modules['sutura_geom'] = fake
+    try:
+        ok, reason = health.check_required_geometry()
+        assert ok is False, reason
+        assert 'morph_close' in reason and 'tamponade' in reason, reason
+        assert health.GEOM_SYMBOL_MISSING_MESSAGE.split('%s')[0] in reason
+        assert all(not m.available()[0] for m in methods.all_methods()), \
+            [(m.id, m.available()) for m in methods.all_methods()
+             if m.available()[0]]
+        assert all(not row['available'] for row in methods.methods_json())
+        code = health.check_availability_detail()
+        assert all(st == health.Status.FAIL for st, _r in code.values()), code
+    finally:
+        if real is None:
+            sys.modules.pop('sutura_geom', None)
+        else:
+            sys.modules['sutura_geom'] = real
 
 
 def test_triage_attempt_isolates_pipeline_error(tmp):

@@ -9,8 +9,10 @@ from typing import Optional, Tuple
 # FAIL. `sutura_engine/health.py` reuses this exact tuple so that an
 # optional-dependency ImportError is recorded as a skip instead of an error
 # (do not maintain a second copy of this list).
+#
+# ``sutura_geom`` is deliberately NOT in this list: the Rust extension is a
+# hard requirement of the runtime, so its absence is a FAIL, never a skip.
 OPTIONAL_IMPORT_MODULES = (
-    'sutura_geom',            # Rust core (exact predicates, morphology, ...)
     'indirect_bridge',        # exact indirect-predicate tier
     'sutura_engine.dressing', 'dressing',
     'sutura_engine.tamponade', 'tamponade',

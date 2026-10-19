@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **`sutura_geom` is now a hard requirement.** The install helper fails with a named, actionable message (detected `uname -s`/`-m`, the rustup link, and the `SUTURA_GEOM_WHEEL` alternative) when neither a prebuilt wheel nor a Rust source build is available; `install.sh` and `install-macos.sh` no longer swallow that failure. At runtime a single central check (`health.check_required_geometry`) makes a missing extension — or a stale one lacking `flap_fill`/`morph_close`/`tamponade` — a named failure: the CLI exits 1 with a JSON error before any mesh work (`validate`/`--dry-run` included), the narrowest shared library entry (`repair_mesh_from_arrays`) raises `GeometryRequiredError` so direct API/`repair_file` calls cannot silently degrade, `--list-methods`/`methods_json()`/the GUI *Use method* menu report every method unavailable (matching `sutura --self-check`, 0/17, exit 1), and the GUI banner shows the failure instead of a skip; `--help`/`--version` and the informational subcommands keep working. A `sutura_geom` install failure during self-update is now fatal and triggers the existing rollback with the actionable message. The `SUTURA_NO_GEOM=1` opt-out is removed (empty/`0` mean unset; any other value exits with an explanation), and `sutura_geom` is no longer treated as an optional import, so a tier ImportError for it is recorded as an error.
+
+### Removed
+
+- **The pure-Python Flap oracle.** `sutura_engine.flap.flap_fill_python` and its ~1,900 lines of numpy/scipy helpers are deleted; `flap_fill` always calls the Rust core and raises the named `FlapUnavailableError` when the extension or its binding is absent, so the tier can never silently no-op. The Rust parity regression is now pinned to the committed golden fixture `tests/fixtures/flap_golden.npz`. The OrcaSlicer plugin needs no change: it repairs through the installed CLI, and a successful install now implies the extension.
+
 ### Added
 
 - **Method health: every repair method's failure is isolated and reported.** All seventeen repair methods, and the tier/method calls inside the pipeline, now run behind a single central wrapper (`sutura_engine/health.py`) that catches a method's failure, records a structured error and lets the repair continue instead of aborting it. Every report carries `method_health` (per-run availability overlaid with the run's errors: `total`/`ok`/`failed`/`skipped`/`methods`/`errors`) and `method_errors` (always present, empty when clean); `--human` prints a `Methods: N/17 OK (X failed, Y skipped)` line and the GUI repair log shows the same. A missing optional addon (for example fTetWild) is reported as skipped, not failed. `SUTURA_METHOD_HEALTH=0` disables the recording only and leaves the repair result byte-identical.

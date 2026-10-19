@@ -4,23 +4,22 @@
 #
 #   scripts/install_sutura_geom.sh <python> [<repo-src-dir>]
 #
-# Order of attempts:
+# The extension is REQUIRED. Order of attempts:
 #   1. prebuilt abi3 wheel from the GitHub release matching the Sutura version
 #      (falls back to the latest release), SHA-256 checked against the
 #      sutura_geom-SHA256SUMS asset published by build-sutura-geom.yml
 #      (~0.7 MB download);
 #   2. build from rust/sutura-geom with pip + maturin when cargo is on PATH;
-#   3. otherwise skip with a notice: Sutura still works, Graft is listed as
-#      unavailable and auto repair falls back to fTetWild.
+#   3. otherwise fail with a named, actionable message.
 #
 # Environment:
-#   SUTURA_NO_GEOM=1           skip entirely
 #   SUTURA_GEOM_FROM_SOURCE=1  skip the wheel download, build from source
-#   SUTURA_GEOM_REQUIRED=1     treat failure as fatal (package builds)
 #   SUTURA_GEOM_WHEEL=<path>   install this local wheel file
 #   SUTURA_RELEASE_BASE=<url>  override https://github.com/Krateian/Sutura/releases
 #
-# The script never aborts the calling installer unless SUTURA_GEOM_REQUIRED=1.
+# SUTURA_NO_GEOM is no longer supported: the extension is mandatory, so setting
+# it is an error. SUTURA_GEOM_REQUIRED is accepted for compatibility; a failure
+# is always fatal.
 set -uo pipefail
 
 PY="${1:?usage: install_sutura_geom.sh <python> [<repo-src-dir>]}"
@@ -31,23 +30,25 @@ SUMS_NAME="sutura_geom-SHA256SUMS"
 note() { echo "    sutura_geom: $*"; }
 
 finish_fail() {
-    if [ "${SUTURA_GEOM_REQUIRED:-0}" = "1" ]; then
-        echo "error: sutura_geom could not be installed ($*)" >&2
-        exit 1
-    fi
-    note "not installed ($*)."
-    note "Sutura works without it; Graft (#13) is listed as unavailable."
-    exit 0
+    echo "error: sutura_geom is required but could not be installed ($*)." >&2
+    echo "       Platform: $(uname -s)/$(uname -m)" >&2
+    echo "       Install Rust (https://rustup.rs) so the extension can be built from" >&2
+    echo "       source, or set SUTURA_GEOM_WHEEL=<path> to a compatible wheel," >&2
+    echo "       then re-run the installer." >&2
+    exit 1
 }
 
 import_ok() {
     "$PY" -c 'import sutura_geom' >/dev/null 2>&1
 }
 
-if [ "${SUTURA_NO_GEOM:-0}" = "1" ]; then
-    note "skipped (SUTURA_NO_GEOM=1)"
-    exit 0
-fi
+case "${SUTURA_NO_GEOM:-}" in
+    ''|0) ;;   # unset / empty / 0 mean "not requested"
+    *)
+        echo "error: sutura_geom is now required; SUTURA_NO_GEOM is no longer supported." >&2
+        exit 1
+        ;;
+esac
 
 pip_install() {
     "$PY" -m pip install --quiet --force-reinstall --no-deps "$@"
@@ -115,6 +116,18 @@ fi
 
 # --- 2. build from source ----------------------------------------------------
 if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ] && command -v cargo >/dev/null 2>&1; then
+    # rustup's cargo shim exists even when no default toolchain is selected
+    # (common after a HOME change). Probe it so the failure names the fix
+    # instead of a generic build error.
+    cargo_probe="$(cargo --version 2>&1)" || true
+    if ! cargo --version >/dev/null 2>&1; then
+        case "$cargo_probe" in
+            *[Nn]o\ default*|*could\ not\ choose*|*no\ toolchain*|*not\ installed*)
+                finish_fail "cargo is present but rustup has no default toolchain; run 'rustup default stable' and re-run" ;;
+            *)
+                finish_fail "cargo is not usable: $cargo_probe" ;;
+        esac
+    fi
     note "building from rust/sutura-geom (cargo found; ~1 min, pulls maturin ~10 MB)"
     if "$PY" -m pip install --quiet --force-reinstall --no-deps "$SRC/rust/sutura-geom" && import_ok; then
         note "built and installed from source"
@@ -123,4 +136,4 @@ if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ] && command -v cargo >/dev/null 
     finish_fail "source build failed"
 fi
 
-finish_fail "no prebuilt wheel for $(uname -s)/$(uname -m) and no Rust toolchain"
+finish_fail "no prebuilt wheel for $(uname -s)/$(uname -m) and no Rust toolchain (cargo not found)"

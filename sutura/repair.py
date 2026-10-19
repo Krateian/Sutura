@@ -824,6 +824,19 @@ def main():
                                clear=args.clear)
         sys.exit(0)
 
+    # Required Rust extension: ONE central check before any mesh work.
+    # Informational subcommands above (--list-*, clear-cache, clear-learning,
+    # export-history, --diagnostics, --self-repair, --self-check) do not need
+    # it; --self-check reports the failure itself. --help/--version are handled
+    # by argparse before this point.
+    _geom_ok, _geom_reason = method_health.check_required_geometry()
+    if not _geom_ok:
+        if human:
+            print('error: %s' % _geom_reason)
+        else:
+            print(json.dumps({'error': _geom_reason}))
+        sys.exit(1)
+
     # 'validate' as the first positional argument switches to validate-only
     # mode: analyze the mesh(es) without repairing or writing anything.
     if files and files[0] == 'validate':

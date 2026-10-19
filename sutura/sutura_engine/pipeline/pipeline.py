@@ -125,6 +125,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     pre-tier faces; a watertight adoption then skips the deep tiers. False
     (library default) keeps the output byte-identical.
     """
+    # The narrowest shared library entry: every repair path (CLI, GUI, methods,
+    # direct API) funnels through here, so a missing/stale sutura_geom cannot
+    # silently degrade when the function is called as a library.
+    method_health.require_geometry()
     import pymeshlab as ml
     method_health.reset_if_unscoped()
     v = np.asarray(verts, dtype=np.float32)

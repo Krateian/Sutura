@@ -195,22 +195,27 @@ def test_install_linux_runs_geom_helper_for_both_venvs():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_install_linux_geom_helper_nonzero_is_non_fatal():
-    """The geom install never aborts the update: a non-zero helper exit is
-    swallowed (Graft simply stays unavailable)."""
+def test_install_linux_geom_helper_nonzero_is_fatal():
+    """A failing geom install aborts the update (the extension is required), so
+    perform_update's handler can roll back with the actionable message."""
     import tempfile
     import shutil
     tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
     try:
         src, app = _geom_install_fixture(tmp)
-        _run_install_linux(src, app, lambda cmd, *a, **k: _RunResult(1))
+        try:
+            _run_install_linux(src, app, lambda cmd, *a, **k: _RunResult(1))
+        except RuntimeError as e:
+            assert 'sutura_geom' in str(e) and 'exit 1' in str(e), e
+        else:
+            raise AssertionError('a failed geom install must be fatal')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_install_linux_missing_geom_helper_skips():
-    """An old tarball without scripts/install_sutura_geom.sh makes the update
-    skip the geom step entirely (no subprocess call, no failure)."""
+def test_install_linux_missing_geom_helper_is_fatal():
+    """An update tarball without scripts/install_sutura_geom.sh cannot satisfy
+    the required extension, so the update fails instead of skipping it."""
     import tempfile
     import shutil
     tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
@@ -218,12 +223,53 @@ def test_install_linux_missing_geom_helper_skips():
         src, app = _geom_install_fixture(tmp)
         os.remove(os.path.join(src, 'scripts', 'install_sutura_geom.sh'))
         calls = []
-        _run_install_linux(
-            src, app,
-            lambda cmd, *a, **k: (calls.append(cmd), _RunResult(0))[1])
+        try:
+            _run_install_linux(
+                src, app,
+                lambda cmd, *a, **k: (calls.append(cmd), _RunResult(0))[1])
+        except RuntimeError as e:
+            assert 'install_sutura_geom.sh' in str(e), e
+        else:
+            raise AssertionError('a missing geom helper must be fatal')
         assert calls == [], calls
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_perform_update_geom_failure_rolls_back():
+    """A geom install failure during self-update triggers the existing
+    rollback and surfaces the named error instead of an opaque health-check
+    failure after the fact."""
+    import updater
+    calls = []
+    orig = (updater.VERSION, updater.is_appimage,
+            updater.crosses_license_boundary, updater.backup_install,
+            updater.download_source, updater.install_source,
+            updater.health_check, updater.rollback)
+    updater.VERSION = '0.9.1'
+    updater.is_appimage = lambda: False
+    updater.crosses_license_boundary = lambda v, t: False
+    updater.backup_install = lambda: calls.append('backup')
+    updater.download_source = lambda tag, d: (
+        calls.append('download'), '/tmp/fake-src')[1]
+    def _fail_install(_src):
+        calls.append('install')
+        raise RuntimeError('sutura_geom is required but the install into venv '
+                           'failed (exit 1)')
+    updater.install_source = _fail_install
+    updater.health_check = lambda tag: (True, 'ok')
+    updater.rollback = lambda v: calls.append('rollback:' + v)
+    try:
+        ok, msg, prev = updater.perform_update('0.9.2')
+    finally:
+        (updater.VERSION, updater.is_appimage,
+         updater.crosses_license_boundary, updater.backup_install,
+         updater.download_source, updater.install_source,
+         updater.health_check, updater.rollback) = orig
+    assert ok is False, (ok, msg)
+    assert prev == '0.9.1', prev
+    assert calls == ['backup', 'download', 'install', 'rollback:0.9.1'], calls
+    assert 'sutura_geom' in msg, msg
 
 
 def main():
