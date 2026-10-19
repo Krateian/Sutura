@@ -33,7 +33,6 @@ FTETWILD_ROOT_NAMES = {'pytetwild', 'pyvista'}
 CANONICAL_BASE_PACKAGES = {
     'pymeshlab',
     'manifold3d',
-    'trimesh',
     'numpy',
     'pyside6',
     'pyside6-essentials',

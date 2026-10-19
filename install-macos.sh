@@ -60,7 +60,7 @@ fi
 # 5) install dependencies ---------------------------------------------------
 echo "==> installing packages into $ENV_NAME"
 conda install -y -n "$ENV_NAME" -c conda-forge pymeshlab
-conda run -n "$ENV_NAME" pip install manifold3d trimesh PySide6-Essentials==6.11.2
+conda run -n "$ENV_NAME" pip install manifold3d PySide6-Essentials==6.11.2
 if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
     echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
     conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"
@@ -80,7 +80,7 @@ bash "$REPO_DIR/scripts/install_sutura_geom.sh" "$ENV_PY" "$REPO_DIR"
 
 # 6) verify ----------------------------------------------------------------
 if ! conda run -n "$ENV_NAME" python -c \
-    "import pymeshlab, manifold3d, trimesh; from PySide6 import QtWidgets; print('OK')"; then
+    "import pymeshlab, manifold3d, numpy; from PySide6 import QtWidgets; print('OK')"; then
     die "import check failed - dependencies not usable in $ENV_NAME"
 fi
 if ! conda run -n "$ENV_NAME" python -c 'import sutura_geom' >/dev/null 2>&1; then

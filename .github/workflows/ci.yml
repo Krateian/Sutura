@@ -43,7 +43,7 @@ jobs:
         run: |
           python -m venv venv
           ./venv/bin/pip install --quiet --upgrade pip
-          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-gui.txt
+          ./venv/bin/pip install --quiet -r requirements.txt -r requirements-gui.txt -r requirements-dev.txt
 
       # sutura_geom is a hard runtime requirement (repair.py exits 1 without
       # it). Build it from rust/sutura-geom into ./venv, the same way the
@@ -217,6 +217,9 @@ jobs:
 
       - name: "Test: no SciPy imports in the runtime"
         run: ./venv/bin/python tests/test_no_scipy.py
+
+      - name: "Test: no trimesh imports in the runtime"
+        run: ./venv/bin/python tests/test_no_trimesh.py
 
       - name: "Test: update-check shutdown"
         run: ./venv/bin/python tests/test_update_check_shutdown.py

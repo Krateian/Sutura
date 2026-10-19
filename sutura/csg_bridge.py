@@ -11,7 +11,6 @@ import sys
 import os
 import json
 import numpy as np
-import trimesh
 import manifold3d as m3d
 
 
@@ -30,8 +29,9 @@ def load_mesh(path):
     if path.endswith('.npz'):
         data = np.load(path)
         return np.asarray(data['verts'], dtype=np.float64), np.asarray(data['tris'], dtype=np.int32)
-    mesh = trimesh.load(path, force='mesh')
-    return np.asarray(mesh.vertices, dtype=np.float64), np.asarray(mesh.faces, dtype=np.int32)
+    from sutura_engine.pipeline.mesh_io import read_mesh
+    verts, tris = read_mesh(path)
+    return np.asarray(verts, dtype=np.float64), np.asarray(tris, dtype=np.int32)
 
 
 def save_mesh(path, verts, tris):

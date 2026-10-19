@@ -1142,9 +1142,8 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
 if __name__ == '__main__':
     import sys
     import json
-    import trimesh
+    from sutura_engine.pipeline.mesh_io import read_mesh
     path = sys.argv[1]
-    _m = trimesh.load(path, force="mesh")
-    ov, ot, rep = dressing_coat(np.asarray(_m.vertices, np.float64),
-                                np.asarray(_m.faces, np.int64))
+    ov, ot = read_mesh(path)
+    ov, ot, rep = dressing_coat(ov, ot)
     print(json.dumps(rep, indent=2, default=str))
