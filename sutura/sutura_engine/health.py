@@ -24,9 +24,16 @@ so there is only ONE availability checker and ONE error type in the project):
   ``check_availability() -> dict[str, Status]``
       Per registered method id, its availability state.  A missing optional
       addon (e.g. fTetWild) is ``SKIP``; a broken availability check is
-      ``FAIL``; everything present is ``OK``.
+      ``FAIL``; everything present is ``OK``.  The required Rust extension
+      (``sutura_geom``) is never a skip: when it is absent every method that
+      depends on it is ``FAIL``.
   ``check_availability_detail() -> dict[str, (Status, reason|None)]``
       Same, with the human-readable reason for ``SKIP``/``FAIL``.
+  ``check_required_geometry() -> (bool, reason|None)``
+      The ONE central check for the required ``sutura_geom`` Rust extension.
+      ``(False, GEOM_REQUIRED_MESSAGE)`` when it cannot be imported; the
+      startup gate, ``--self-check`` and the GUI health banner all read it
+      through the availability checker, so no tier needs its own gate.
   ``record_error(method, stage, exc) -> MethodError | None``
       Classify ``exc`` and append one ``MethodError`` to the active collector.
       The whole pipeline uses this; it is the single recording point.
@@ -77,6 +84,15 @@ KIND_EXCEPTION = 'exception'
 KIND_SKIPPED = 'skipped'   # an OPTIONAL dependency is absent: skip, not error
 
 _ENV_VAR = 'SUTURA_METHOD_HEALTH'
+
+# The required Rust extension. Its absence is a hard, named failure of the
+# runtime (installer + startup + --self-check), never a skip.
+GEOM_REQUIRED_MESSAGE = (
+    'sutura_geom Rust extension is required but not installed; '
+    'reinstall Sutura or install Rust (https://rustup.rs) and re-run the '
+    'installer')
+GEOM_SYMBOL_MISSING_MESSAGE = (
+    'sutura_geom is installed but lacks %s (rebuild needed)')
 
 
 class Status(str, enum.Enum):
@@ -291,11 +307,31 @@ def _registered_methods() -> List[Any]:
         return []
 
 
+def check_required_geometry() -> Tuple[bool, Optional[str]]:
+    """The ONE central check for the required ``sutura_geom`` Rust extension.
+
+    Returns ``(True, None)`` when the extension imports, otherwise
+    ``(False, GEOM_REQUIRED_MESSAGE)``.  Never raises: a blocked/poisoned
+    import (``sys.modules['sutura_geom'] = None``) is reported as absent.
+    """
+    try:
+        import sutura_geom  # noqa: F401
+        return True, None
+    except BaseException:  # noqa: BLE001 - absence is the answer, never a crash
+        return False, GEOM_REQUIRED_MESSAGE
+
+
 def check_availability_detail() -> Dict[str, Tuple[Status, Optional[str]]]:
     """Per method id: ``(Status, reason|None)``.  The single availability checker."""
     out: Dict[str, Tuple[Status, Optional[str]]] = {}
+    geom_ok, geom_reason = check_required_geometry()
     for m in _registered_methods():
         mid = getattr(m, 'id', None) or str(getattr(m, 'num', '?'))
+        if not geom_ok:
+            # The extension is required by the runtime: a missing core is a
+            # named FAIL for every method, never a skip.
+            out[mid] = (Status.FAIL, geom_reason)
+            continue
         try:
             ok, reason = m.available()
         except BaseException as exc:  # noqa: BLE001 - report, never crash

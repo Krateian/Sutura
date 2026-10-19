@@ -39,6 +39,9 @@ jobs:
       - name: Run installer non-interactively
         env:
           SUTURA_WITH_FTETWILD: "1"
+          # sutura_geom is required. Build it from source so the install never
+          # depends on a live GitHub-release wheel download.
+          SUTURA_GEOM_FROM_SOURCE: "1"
         run: ./install.sh
 
       - name: "Check a: CLI repair on broken mesh and 3 real-world samples"
