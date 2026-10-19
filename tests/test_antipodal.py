@@ -208,13 +208,22 @@ def manifold_ok(tris):
     return True
 
 
-def test_sdf_grid_antipodal_off_is_identical():
+def test_sdf_grid_antipodal_default_on_and_opt_out():
     v, f = cube_with_hole_arrays()
     a = sutura_geom.sdf_grid(v, f, 0.08)
+    assert "antipodal" in a[3], "default sdf_grid did not enable antipodal"
+
     b = sutura_geom.sdf_grid(v, f, 0.08, antipodal=False)
-    for arr_a, arr_b in zip(a[:3], b[:3]):
-        assert bits(arr_a) == bits(arr_b), "antipodal=False changed the field"
-    assert "antipodal" not in a[3] and "antipodal" not in b[3]
+    assert "antipodal" not in b[3], "antipodal=False still reported antipodal"
+
+    os.environ["SUTURA_ANTIPODAL"] = "0"
+    try:
+        c = sutura_geom.sdf_grid(v, f, 0.08)
+        assert "antipodal" not in c[3], "SUTURA_ANTIPODAL=0 did not opt out"
+        for arr_b, arr_c in zip(b[:3], c[:3]):
+            assert bits(arr_b) == bits(arr_c), "SUTURA_ANTIPODAL=0 differs from antipodal=False"
+    finally:
+        del os.environ["SUTURA_ANTIPODAL"]
 
 
 def test_sdf_grid_antipodal_on_reports_and_keeps_shape():
@@ -233,12 +242,23 @@ def test_sdf_grid_antipodal_is_deterministic():
     assert bits(a) == bits(b)
 
 
-def test_morph_close_antipodal_off_is_identical():
+def test_morph_close_antipodal_default_on_and_opt_out():
     v, f = cube_with_hole_arrays()
-    a_v, a_t, _ = sutura_geom.morph_close(v, f, 0.15, 0.08, None, False)
-    b_v, b_t, _ = sutura_geom.morph_close(v, f, 0.15, 0.08, None, False,
+    a_v, a_t, a_info = sutura_geom.morph_close(v, f, 0.15, 0.08, None, False)
+    assert "antipodal" in a_info, "default morph_close did not enable antipodal"
+    assert a_info["manifold"], "default morph_close not manifold"
+
+    b_v, b_t, b_info = sutura_geom.morph_close(v, f, 0.15, 0.08, None, False,
                                           antipodal=False)
-    assert bits(a_v) == bits(b_v) and bits(a_t) == bits(b_t)
+    assert "antipodal" not in b_info
+
+    os.environ["SUTURA_ANTIPODAL"] = "0"
+    try:
+        c_v, c_t, c_info = sutura_geom.morph_close(v, f, 0.15, 0.08, None, False)
+        assert "antipodal" not in c_info
+        assert bits(b_v) == bits(c_v) and bits(b_t) == bits(c_t)
+    finally:
+        del os.environ["SUTURA_ANTIPODAL"]
 
 
 def test_morph_close_antipodal_on_is_manifold():
@@ -251,9 +271,9 @@ def test_morph_close_antipodal_on_is_manifold():
 
 
 # --------------------------------------------------------------------------- #
-# Graft opt-in wiring (shell_wrap, SUTURA_ANTIPODAL)
+# Graft default ON wiring (shell_wrap, SUTURA_ANTIPODAL)
 # --------------------------------------------------------------------------- #
-def test_graft_antipodal_off_is_identical_and_on_reports():
+def test_graft_antipodal_default_on_and_opt_out():
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "sutura"))
     from sutura_engine.graft import shell_wrap  # noqa: E402
@@ -261,18 +281,16 @@ def test_graft_antipodal_off_is_identical_and_on_reports():
     kw = dict(voxel=0.12, max_tries=1, remesh=False, guard=False,
               grid_budget=80_000)
     av, at, arep = shell_wrap(v, f, **kw)
+    assert arep.get("antipodal") is not None, "default shell_wrap did not report antipodal"
+
     bv, bt, brep = shell_wrap(v, f, antipodal=False, **kw)
-    assert bits(av) == bits(bv) and bits(at) == bits(bt)
-    assert arep.get("antipodal") is None and brep.get("antipodal") is None
+    assert brep.get("antipodal") is None, "antipodal=False reported antipodal"
 
-    cv, ct, crep = shell_wrap(v, f, antipodal=True, **kw)
-    assert crep.get("antipodal") is not None
-    assert len(ct) > 0
-
-    os.environ["SUTURA_ANTIPODAL"] = "1"
+    os.environ["SUTURA_ANTIPODAL"] = "0"
     try:
         dv, dt, drep = shell_wrap(v, f, **kw)
-        assert drep.get("antipodal") is not None
+        assert drep.get("antipodal") is None
+        assert bits(bv) == bits(dv) and bits(bt) == bits(dt)
     finally:
         del os.environ["SUTURA_ANTIPODAL"]
 
