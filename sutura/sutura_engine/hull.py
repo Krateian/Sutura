@@ -10,6 +10,65 @@ from typing import Optional, Tuple
 import numpy as np
 
 
+def _split_face_components(verts, tris):
+    """Split a triangle soup into edge-connected face components.
+
+    Pure-numpy replacement for ``trimesh.Trimesh.split`` (whose graph engine
+    prefers ``scipy.sparse.csgraph``).  Faces are joined when they share an
+    edge used by exactly two faces.  Returns a list of ``(vertices, faces)``
+    with unreferenced vertices dropped, matching trimesh's reindexed submesh.
+    """
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
+    n = len(tris)
+    if n == 0:
+        return []
+    face_of_edge = np.tile(np.arange(n, dtype=np.int64), 3)
+    edges = np.sort(np.concatenate(
+        [tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0), axis=1)
+    order = np.lexsort((edges[:, 1], edges[:, 0]))
+    edges = edges[order]
+    face_of_edge = face_of_edge[order]
+    starts = np.concatenate(
+        [[0], np.nonzero(np.any(edges[1:] != edges[:-1], axis=1))[0] + 1])
+    sizes = np.diff(np.append(starts, len(edges)))
+    pair = starts[sizes == 2]
+    a = face_of_edge[pair]
+    b = face_of_edge[pair + 1]
+
+    parent = np.arange(n, dtype=np.int64)
+    while len(a):
+        ra = parent[a]
+        rb = parent[b]
+        low = np.minimum(ra, rb)
+        new_parent = parent.copy()
+        np.minimum.at(new_parent, ra, low)
+        np.minimum.at(new_parent, rb, low)
+        new_parent = new_parent[new_parent]
+        if np.array_equal(new_parent, parent):
+            break
+        parent = new_parent
+    roots = parent.copy()
+    while True:
+        nxt = roots[roots]
+        if np.array_equal(nxt, roots):
+            break
+        roots = nxt
+    _, labels = np.unique(roots, return_inverse=True)
+    n_comp = int(labels.max()) + 1
+
+    order = np.argsort(labels, kind='stable')
+    bounds = np.searchsorted(labels[order], np.arange(n_comp + 1))
+    out = []
+    for label in range(n_comp):
+        faces = order[bounds[label]:bounds[label + 1]]
+        used = np.unique(tris[faces])
+        remap = np.full(len(verts), -1, dtype=np.int64)
+        remap[used] = np.arange(len(used))
+        out.append((verts[used], remap[tris[faces]]))
+    return out
+
+
 def extract_outer_shell(verts: np.ndarray, tris: np.ndarray, dilation: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
     """Extract the outer surface shell of a multi-component mesh, removing internal geometry.
 
@@ -35,8 +94,8 @@ def extract_outer_shell(verts: np.ndarray, tris: np.ndarray, dilation: Optional[
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int32)
 
-    tm = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
-    comps = tm.split(only_watertight=False)
+    comps = [trimesh.Trimesh(vertices=v, faces=t, process=False)
+             for v, t in _split_face_components(verts, tris)]
     if len(comps) <= 1:
         return verts, tris
 
@@ -75,8 +134,8 @@ def extract_outer_shell(verts: np.ndarray, tris: np.ndarray, dilation: Optional[
     v_out = np.asarray(out_m.vert_properties, dtype=np.float64)
     t_out = np.asarray(out_m.tri_verts, dtype=np.int64)
 
-    tm_out = trimesh.Trimesh(vertices=v_out, faces=t_out, process=False)
-    sub_comps = tm_out.split(only_watertight=False)
+    sub_comps = [trimesh.Trimesh(vertices=v, faces=t, process=False)
+                 for v, t in _split_face_components(v_out, t_out)]
     if not sub_comps:
         return v_out, t_out
 

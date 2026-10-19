@@ -16,6 +16,8 @@ Pipeline:
 
 import numpy as np
 
+import sutura_geom
+
 # Shared with the closing tier: the pure-numpy watertight verdict and the
 # input->output one-sided Hausdorff. Kept as a single implementation (bit-identical
 # code previously lived in both tiers).
@@ -577,10 +579,10 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
                 pass
 
         # 5. Proximity & projection onto healthy original surface
-        all_mesh = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
         proxy_mesh = trimesh.Trimesh(vertices=pv, faces=pt, process=False)
 
-        closest_pts, distances, triangle_indices = trimesh.proximity.closest_point(all_mesh, pv)
+        closest_pts, distances, triangle_indices = sutura_geom.closest_points(
+            verts, tris, pv)
 
         # Subset of proxy vertices whose nearest source point lies on a healthy face
         nearest_is_healthy = h_mask[triangle_indices]

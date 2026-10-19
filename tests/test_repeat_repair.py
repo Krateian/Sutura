@@ -29,6 +29,7 @@ except ImportError:
     manifold3d = None
 import trimesh  # noqa: E402
 import sutura.repeat_repair as rr  # noqa: E402
+from sutura_engine import hull as hull_mod  # noqa: E402
 
 
 def _make_knurl_cylinder(damaged_idx=3):
@@ -375,7 +376,8 @@ def test_extract_outer_shell():
     sv, st = rr.extract_outer_shell(v_combined, t_combined)
     tm = trimesh.Trimesh(vertices=sv, faces=st, process=False)
     assert tm.is_watertight, "Extracted outer shell must be watertight"
-    assert len(tm.split(only_watertight=False)) == 1, "Must be a single outer component"
+    assert len(hull_mod._split_face_components(sv, st)) == 1, \
+        "Must be a single outer component"
     assert 1.9 < tm.volume < 2.3, f"Unexpected volume: {tm.volume}"
     print(f"  ✓ test_extract_outer_shell passed (verts: {len(sv)}, faces: {len(st)}, vol: {tm.volume:.3f})")
 

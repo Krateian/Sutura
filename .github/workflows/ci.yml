@@ -206,14 +206,17 @@ jobs:
       - name: "Test: Tamponade integration (method #17)"
         run: ./venv/bin/python tests/test_tamponade_integration.py
 
-      # topology.connected_components replaces scipy.sparse.csgraph (Phase 1);
-      # pin it against a scipy oracle. Runs without the Rust extension (the
-      # rust-geom job covers the Rust kernel), exercising the numpy fallback.
-      - name: "Test: connected components (scipy parity)"
+      # topology.connected_components is checked against a brute-force BFS
+      # reference. Runs without the Rust extension (the rust-geom job covers
+      # the Rust kernel), exercising the numpy fallback.
+      - name: "Test: connected components (brute-force parity)"
         run: ./venv/bin/python tests/test_connected_components.py
 
       - name: "Test: topology parity (numpy fallback, no extension)"
         run: ./venv/bin/python tests/test_topology_parity.py
+
+      - name: "Test: no SciPy imports in the runtime"
+        run: ./venv/bin/python tests/test_no_scipy.py
 
       - name: "Test: update-check shutdown"
         run: ./venv/bin/python tests/test_update_check_shutdown.py
@@ -323,10 +326,10 @@ jobs:
       - name: "Test: sutura_geom arrangement"
         run: ./.venv/bin/python tests/test_sutura_geom_arrangement.py
 
-      # Graft (#13) needs the Rust extension plus trimesh/scipy; the real
-      # repair venv has pymeshlab (the verbatim-hybrid test skips without it).
+      # Graft (#13) needs the Rust extension plus trimesh; the real repair
+      # venv has pymeshlab (the verbatim-hybrid test skips without it).
       - name: Install Graft test deps
-        run: ./.venv/bin/pip install --quiet trimesh scipy manifold3d
+        run: ./.venv/bin/pip install --quiet trimesh manifold3d
 
       - name: "Test: Graft / shell wrap (method #13)"
         run: ./.venv/bin/python tests/test_shell_wrap.py

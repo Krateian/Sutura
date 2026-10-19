@@ -17,13 +17,14 @@ of the solid volume:
      erode) fills gaps narrower than the target, and a dependency-free marching
      tetrahedra extraction returns the new surface.
 
-numpy + scipy only (no pymeshlab at import time); the public method that wraps
-this module is registry method #15 ``wall_thicken``.
+numpy + sutura_geom only (no pymeshlab at import time); the public method that
+wraps this module is registry method #15 ``wall_thicken``.
 """
 from collections import deque
 
 import numpy as np
-from scipy.spatial import cKDTree
+
+import sutura_geom
 
 # Grid defaults: coarse enough to stay fast on a normal mesh, fine enough to
 # resolve typical thin walls.
@@ -108,8 +109,7 @@ def build_sdf_grid(verts, tris, resolution=DEFAULT_GRID_RESOLUTION,
     if len(pts) == 0:
         return {'origin': lo, 'spacing': spacing, 'dims': dims,
                 'sdf': np.full(dims, np.inf)}
-    tree = cKDTree(pts)
-    dist, idx = tree.query(grid_pts, k=1)
+    dist, idx = sutura_geom.nearest_points(pts, grid_pts, k=1)
     sign = np.sign(np.einsum('ij,ij->i', grid_pts - pts[idx], nrm[idx]))
     sign[sign == 0.0] = 1.0
     sdf = (dist * sign).reshape(dims)
@@ -193,12 +193,11 @@ def _nearest_opposite(grid, points, normals):
     nrm = grid.get('_sample_normals')
     if pts is None or len(pts) == 0:
         return np.full(len(points), np.nan)
-    tree = cKDTree(pts)
     k = min(12, len(pts))
-    dist, idx = tree.query(points, k=k)
+    dist, idx = sutura_geom.nearest_points(pts, points, k=k)
     if k == 1:
-        dist = dist[:, None]
-        idx = idx[:, None]
+        dist = np.asarray(dist)[:, None]
+        idx = np.asarray(idx)[:, None]
     out = np.full(len(points), np.nan)
     for i in range(len(points)):
         cand = (nrm[idx[i]] @ normals[i]) < -0.3
@@ -268,17 +267,11 @@ _TETS = ((0, 1, 3, 7), (0, 1, 5, 7), (0, 4, 5, 7),
 _TET_CORNER = np.array([(k & 1, (k >> 1) & 1, (k >> 2) & 1) for k in range(8)])
 
 
-def _ball_structuring(radius):
-    r = int(max(1, radius))
-    rng = np.arange(-r, r + 1)
-    zz, yy, xx = np.meshgrid(rng, rng, rng, indexing='ij')
-    return (xx * xx + yy * yy + zz * zz) <= r * r
-
-
 def _morphological_dilate(occupancy, radius):
     """Binary dilation: offset the solid outward by ``radius`` cells."""
-    from scipy import ndimage
-    return ndimage.binary_dilation(occupancy, structure=_ball_structuring(radius))
+    occ = np.ascontiguousarray(occupancy, dtype=np.uint8)
+    out = sutura_geom.dilate_occupancy(occ, radius=int(radius))
+    return np.asarray(out, dtype=bool)
 
 
 def _interp(p0, p1, v0, v1, iso):

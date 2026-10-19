@@ -123,7 +123,7 @@ def test_register_method_hook(tmp):
 
 def test_repeat_methods_registered(tmp):
     """Methods 11/12 are now real (repeat_repair): available when the module
-    and its scipy/trimesh deps are importable; 12 needs user input, 11 invents
+    and its numpy/trimesh/sutura_geom deps are importable; 12 needs user input, 11 invents
     geometry."""
     import methods
     for num in (11, 12):
@@ -135,7 +135,7 @@ def test_repeat_methods_registered(tmp):
 
 def test_closing_methods_available(tmp):
     import methods
-    # 8/9 need closing.py, 10 needs proxy_repair + scipy + trimesh; in the test
+    # 8/9 need closing.py, 10 needs proxy_repair + numpy/trimesh/sutura_geom; in the test
     # environment all are installed, so each reports available with no reason.
     for num in (8, 9, 10):
         ok, reason = methods.get_method(num).available()

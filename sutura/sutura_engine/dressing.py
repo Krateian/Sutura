@@ -436,7 +436,6 @@ def _variable_radius(dims, origin, voxel, defect_idx, verts, r_base, r_max, sigm
     healthy surface, ``~1`` at a defect).  ``g`` is reused by the drain so the
     numpy path matches the Rust core's ``F = s - r + drain * (1 - g)``.
     """
-    from scipy import ndimage
     dx, dy, dz = int(dims[0]), int(dims[1]), int(dims[2])
     if len(defect_idx) == 0:
         return (np.full((dx, dy, dz), np.float32(r_base)),
@@ -447,7 +446,8 @@ def _variable_radius(dims, origin, voxel, defect_idx, verts, r_base, r_max, sigm
     gk = np.clip(np.round(dvx[:, 2]).astype(np.int64), 0, dz - 1)
     mask = np.zeros((dx, dy, dz), dtype=bool)
     mask[gi, gj, gk] = True
-    d_defect = ndimage.distance_transform_edt(~mask).astype(np.float32) * np.float32(voxel)
+    d_defect = (np.asarray(sutura_geom.edt_grid(mask.astype(np.uint8)),
+                           dtype=np.float32) * np.float32(voxel))
     g = np.exp(-0.5 * (d_defect / sigma) ** 2).astype(np.float32)
     r_grid = (r_base + (r_max - r_base) * g).astype(np.float32)
     return r_grid, g
@@ -611,7 +611,7 @@ def si_face_count(v, t):
 
 
 def count_components(tris):
-    """Vertex-connected face components (``None`` when scipy is unavailable)."""
+    """Vertex-connected face components (``None`` when topology is unavailable)."""
     labels = _component_labels(_as_i64(tris))
     if labels is None:
         return None
@@ -640,8 +640,8 @@ def normal_angle_deviation(wv, wt, v0, t0, defect_idx=None):
     surface normal; comparing to a single input FACE normal would report ~55°
     at every sharp corner even for an identical mesh.  Returns ``{'p50',
     'p95', 'p99', 'max', 'n'}`` in degrees over the HEALTHY coat vertices
-    (whose nearest input vertex is not a defect vertex), or ``None`` when scipy
-    is unavailable.  This is the surface-direction counterpart of the Hausdorff
+    (whose nearest input vertex is not a defect vertex), or ``None`` when the
+    nearest-neighbour backend is unavailable.  This is the surface-direction counterpart of the Hausdorff
     fidelity gate: a voxel staircase / fluting loss keeps the position within
     tolerance but tilts the normals, which this metric exposes.
     """
@@ -652,10 +652,9 @@ def normal_angle_deviation(wv, wt, v0, t0, defect_idx=None):
     if len(t0) == 0 or len(wt) == 0 or len(wv) == 0:
         return None
     try:
-        from scipy.spatial import cKDTree
         ivn = _vertex_normals(v0, t0)
         cvn = _vertex_normals(wv, wt)
-        _dist, idx = cKDTree(v0).query(wv, k=1)
+        _dist, idx = sutura_geom.nearest_points(v0, wv, k=1)
         idx = np.asarray(idx, np.int64)
         cosang = np.abs(np.einsum('ij,ij->i', cvn, ivn[idx]))
         ang = np.degrees(np.arccos(np.clip(cosang, 0.0, 1.0)))
@@ -796,7 +795,7 @@ def _clean_coat_components(v0, t0, cv, ct, voxel):
     labels = _component_labels(ct)
     if labels is None:
         info['ran'] = False
-        info['reason'] = 'scipy unavailable'
+        info['reason'] = 'topology unavailable'
         return cv, ct, info
     uniq, inv = np.unique(labels, return_inverse=True)
     ncomp = int(len(uniq))

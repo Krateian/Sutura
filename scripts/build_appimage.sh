@@ -113,7 +113,7 @@ cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura/sutura_engine"
 echo "==> smoke check: Graft (#13) available in the bundled runtime"
 # The .so being present is not enough; the bundled repair.py must actually
 # report the Graft method as available (which exercises graft_available() ->
-# sutura_geom.morph_close + numpy/trimesh/scipy in this runtime).
+# sutura_geom.morph_close + numpy/trimesh in this runtime).
 if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
         | awk '$1==13 && $4=="yes" {ok=1} END {exit !ok}'; then
     echo "error: Graft (#13) is not reported available in the AppImage runtime:" >&2
@@ -131,7 +131,7 @@ else
     echo "    Tamponade (#17) not available in the bundled runtime" >&2
 fi
 # The stage-2 runtime must also load the extension (abl3 wheel, no pymeshlab
-# there); graft_available only needs sutura_geom + numpy/trimesh/scipy, all
+# there); graft_available only needs sutura_geom + numpy/trimesh, all
 # present in requirements-311.txt. PYTHONPATH=$LIB seeds sys.path (a -c
 # invocation has no script dir to add it).
 if ! PYTHONPATH="$LIB" "$LIB/venv311/bin/python" -c \

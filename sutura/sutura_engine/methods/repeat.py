@@ -20,8 +20,9 @@ import shutil
 import tempfile
 import subprocess
 import numpy as np
-from scipy.spatial import cKDTree
 import trimesh
+
+import sutura_geom
 
 import topology
 
@@ -290,7 +291,7 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
     ]
     signs = proper_signs + (improper_signs if allow_reflection else [])
 
-    tree = cKDTree(dst_pts)
+    tree = sutura_geom.KdTree(dst_pts)
     best_msd = float('inf')
     best_R = np.eye(3)
     best_t = c_dst - c_src
@@ -299,7 +300,7 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
         R_cand = r_dst @ S @ r_src.T
         t_cand = c_dst - R_cand @ c_src
         transformed = (src_scaled @ R_cand.T) + t_cand
-        dists, _ = tree.query(transformed)
+        dists, _ = tree.query(transformed, k=1)
         msd = float(np.mean(dists ** 2))
         if msd < best_msd:
             best_msd = msd
@@ -312,7 +313,7 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
     current_pts = (src_scaled @ R_total.T) + t_total
 
     for _ in range(max_iters):
-        dists, idxs = tree.query(current_pts)
+        dists, idxs = tree.query(current_pts, k=1)
         target_pts = dst_pts[idxs]
 
         p_bar = np.mean(current_pts, axis=0)
@@ -341,7 +342,7 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
     T[:3, :3] = scale_factor * R_total
     T[:3, 3] = t_total + (1.0 - scale_factor) * (R_total @ c_src)
 
-    dists, _ = tree.query(current_pts)
+    dists, _ = tree.query(current_pts, k=1)
     rms = float(np.sqrt(np.mean(dists ** 2)))
     orig_scale = float(np.linalg.norm(dst_pts.max(axis=0) - dst_pts.min(axis=0)))
     rel_rms = rms / (orig_scale + 1e-12)
@@ -628,7 +629,7 @@ def _compute_hausdorff_outside(orig_tm, result_tm, dst_boxes, samples=5000):
     if diag <= 1e-12:
         return 0.0
 
-    _, dists, _ = trimesh.proximity.closest_point(result_tm, outside_pts)
+    _, dists, _ = sutura_geom.closest_points(result_tm.vertices, result_tm.faces, outside_pts)
     return float(np.max(dists)) / diag
 
 
@@ -638,7 +639,7 @@ from sutura_engine.hull import extract_outer_shell
 def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     """Segmentation-free detection of rotational symmetry ($C_n$) across candidate orders.
 
-    Estimates candidate axes from PCA, samples the mesh surface, and uses cKDTree
+    Estimates candidate axes from PCA, samples the mesh surface, and uses the nearest-neighbour tree
     overlap testing across candidate rotation orders with multi-step verification.
 
     Returns:
@@ -663,7 +664,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     tol = 0.015 * diag
     cov = (dense_pts - c).T @ (dense_pts - c) / max(len(dense_pts), 1)
     _, eigvecs = np.linalg.eigh(cov)
-    tree = cKDTree(dense_pts)
+    tree = sutura_geom.KdTree(dense_pts)
 
     candidate_orders = list(range(2, max_order + 1)) + [72, 80, 90, 100, 120]
     best_match = None
@@ -676,7 +677,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     ] + [eigvecs[:, i] for i in range(3)]
 
     # The per-candidate surface-distance lookups dominate the runtime (a few
-    # hundred exact cKDTree queries of the sampled query points). Build every
+    # hundred exact nearest-neighbour queries of the sampled query points). Build every
     # candidate rotation one at a time with the original scalar expression (so
     # the resulting coordinates and distances are bit-identical to the scalar
     # loop) but defer the lookups into TWO batched, threaded KD-tree queries:
@@ -709,7 +710,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
 
     if candidates:
         rot_stack = np.stack([cand[5] for cand in candidates])
-        all_dists = tree.query(rot_stack.reshape(-1, 3), workers=-1)[0].reshape(len(candidates), -1)
+        all_dists = tree.query(rot_stack.reshape(-1, 3), k=1)[0].reshape(len(candidates), -1)
     else:
         all_dists = np.zeros((0, len(query_pts)))
 
@@ -737,7 +738,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
         flat_steps = []
         for _i, step_rots in step_jobs:
             flat_steps.extend(step_rots)
-        step_dists = tree.query(np.stack(flat_steps).reshape(-1, 3), workers=-1)[0].reshape(len(flat_steps), -1)
+        step_dists = tree.query(np.stack(flat_steps).reshape(-1, 3), k=1)[0].reshape(len(flat_steps), -1)
         k = 0
         for _i, step_rots in step_jobs:
             step_frac_by_i[_i] = [float((step_dists[k + j] < tol).mean()) for j in range(len(step_rots))]
@@ -1241,7 +1242,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             c_templ = np.mean(template_pts, axis=0)
             def _calc_deviation(pred_pts):
                 # Forward distance: clean template to target mesh (detects dents / missing features)
-                _, dists_fwd, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                _, dists_fwd, _ = sutura_geom.closest_points(orig_mesh.vertices, orig_mesh.faces, pred_pts)
                 dev_dent = float(np.sqrt(np.mean(dists_fwd ** 2))) / (elem_diag + 1e-12)
 
                 # Reverse distance: target member patch to template (detects bumps / extra features)
@@ -1250,8 +1251,8 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                 if min(d_m) <= 0.5 * elem_diag:
                     best_m = members[int(np.argmin(d_m))]
                     m_pts = verts[best_m['verts_idx']]
-                    tree_p = cKDTree(pred_pts)
-                    d_rev, _ = tree_p.query(m_pts)
+                    tree_p = sutura_geom.KdTree(pred_pts)
+                    d_rev, _ = tree_p.query(m_pts, k=1)
                     dev_bump = float(np.sqrt(np.mean(d_rev ** 2))) / (elem_diag + 1e-12)
                 else:
                     dev_bump = 0.0
@@ -1399,7 +1400,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
 
                 R_step = trimesh.transformations.rotation_matrix(step_angle, axis, point=c_rot)[:3, :3]
                 pred_pts = (pts_k - c_rot) @ R_step.T + c_rot
-                _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                _, dists, _ = sutura_geom.closest_points(orig_mesh.vertices, orig_mesh.faces, pred_pts)
                 dev = float(np.mean(dists))
                 sector_devs.append(dev)
 
@@ -1418,7 +1419,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                 else:
                     T_k = R_k
                 pred_pts = (template_pts @ T_k[:3, :3].T) + T_k[:3, 3]
-                _, dists, _ = trimesh.proximity.closest_point(orig_mesh, pred_pts)
+                _, dists, _ = sutura_geom.closest_points(orig_mesh.vertices, orig_mesh.faces, pred_pts)
                 dev = float(np.sqrt(np.mean(dists ** 2))) / elem_diag
                 max_dev = float(np.max(dists)) / elem_diag
                 per_pos_devs.append({'index': k, 'deviation': round(dev, 4)})
