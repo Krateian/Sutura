@@ -173,6 +173,9 @@ jobs:
       - name: "Test: units"
         run: ./venv/bin/python tests/test_units.py
 
+      - name: "Test: mesh IO reader"
+        run: ./venv/bin/python tests/test_mesh_io.py
+
       - name: "Test: OBJ repair"
         run: ./venv/bin/python tests/test_obj_repair.py
 
