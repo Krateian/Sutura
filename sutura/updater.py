@@ -479,7 +479,7 @@ def _install_macos(src_dir, req_files):
         # powers the autorefine exact predicates).
         subprocess.run(['conda', 'run', '-n', env_name, 'pip', 'install',
                         'manifold3d', 'trimesh', 'scipy',
-                        'PySide6-Essentials'], check=True)
+                        'PySide6-Essentials==6.11.2'], check=True)
     _install_macos_geom(src_dir)
 
 

@@ -60,7 +60,7 @@ fi
 # 5) install dependencies ---------------------------------------------------
 echo "==> installing packages into $ENV_NAME"
 conda install -y -n "$ENV_NAME" -c conda-forge pymeshlab
-conda run -n "$ENV_NAME" pip install manifold3d trimesh scipy PySide6-Essentials
+conda run -n "$ENV_NAME" pip install manifold3d trimesh scipy PySide6-Essentials==6.11.2
 if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
     echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
     conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"
