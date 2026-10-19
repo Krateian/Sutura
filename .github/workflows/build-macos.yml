@@ -57,7 +57,7 @@ jobs:
         run: |
           conda install -y -c conda-forge pymeshlab
           pip install --quiet \
-            manifold3d trimesh scipy PySide6-Essentials pyinstaller numpy
+            manifold3d trimesh scipy PySide6-Essentials==6.11.2 pyinstaller numpy
           python -c \
             "import pymeshlab, manifold3d, trimesh, scipy, PySide6; print('deps OK')"
 
