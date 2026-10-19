@@ -71,7 +71,7 @@ compatible, open an issue and ask before contributing it.
 
 - **Setup.** Run `install.sh` (Linux) or `install-macos.sh` (macOS) — each
   creates the two virtual environments (PyMeshLab/VCG stage 1 and
-  manifold3d stage 2) and the `sutura` CLI.
+  Manifold stage 2) and the `sutura` CLI.
 - **Tests.** The suite is script-based (no test framework); run the
   `tests/test_*.py` scripts under the venv, the layered-3MF check
   (`tests/make_layered_multiobject_3mf.py --check`), and the manual harnesses

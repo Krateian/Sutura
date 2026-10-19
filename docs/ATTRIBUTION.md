@@ -100,7 +100,12 @@ their terms):
   3D orientation predicates used by `sutura/autorefine.py` (FAZ16).
 - **PyMeshLab** — GPL-3.0/Commercial (VCG library); used via its Python
   package as the stage-1 engine.
-- **manifold3d** — a permissive license (Apache-2.0/MIT-style); stage 2.
+- **Manifold** — Apache-2.0. The C++ Manifold kernel
+  (https://github.com/elalish/manifold) is compiled statically into
+  `sutura_geom` through the `manifold-csg` Rust crate (Apache-2.0 OR MIT,
+  https://github.com/zmerlynn/manifold-csg). It powers Stage 2, the
+  outer-shell union, the repeated-element CSG transplant and the Graft local
+  stitch. The build uses no TBB (sequential, deterministic).
 - **PySide6 / Qt** — LGPL-3.0; the GUI toolkit.
 - **pyvista / VTK** — BSD-3-Clause; required by `pytetwild` at import time.
 

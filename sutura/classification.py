@@ -1,6 +1,6 @@
 """Batch repair summary - single source of truth for result classification.
 
-stdlib-only by design (no numpy, no pymeshlab, no manifold3d): the CLI runs
+stdlib-only by design (no numpy, no pymeshlab, no Manifold): the CLI runs
 under the PyMeshLab venv while the GUI shells out to it, so both sides can
 import this module regardless of which interpreter is running. Keep it free
 of third-party imports so it stays importable everywhere.

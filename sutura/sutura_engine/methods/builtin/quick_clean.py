@@ -8,7 +8,7 @@ METHOD = RepairMethod(
     id='quick_clean',
     name='Quick Clean',
     display_name='Quick Clean',
-    description='Stage 1 + manifold3d rebuild; no deep repair and no fTetWild.',
+    description='Stage 1 + Manifold rebuild; no deep repair and no fTetWild.',
     family='clean',
     kwargs={'deep_repair': 'off', 'ftetwild': False},
 )

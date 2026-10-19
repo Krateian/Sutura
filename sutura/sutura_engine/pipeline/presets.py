@@ -250,7 +250,7 @@ FTETWILD_MAX_HAUSDORFF_REL = 0.01
 
 
 # Second fTetWild attempt: when the default (optimize=False) boundary fails
-# the holes/non-manifold guard even after the manifold3d post-process, the
+# the holes/non-manifold guard even after the Manifold post-process, the
 # mesh is tetrahedralized once more with the quality optimisation on.  The
 # retry rule is DETERMINISTIC (it depends only on the first boundary's
 # holes/non-manifold verdict, never on the elapsed wall clock).
@@ -310,9 +310,9 @@ GRAFT_TIMEOUT = _BALANCED_INTENSITY.graft_timeout
 # optimize=False can return a boundary far denser than the input (measured on
 # thingi10k_73444: 473,212 output faces at 7,882 input faces, against 14,012
 # with optimize=True at the same solver time); the extra faces cost ~65 s of
-# downstream work (manifold3d, Hausdorff, self-intersection/boundary passes)
+# downstream work (Manifold, Hausdorff, self-intersection/boundary passes)
 # and carry no more shape information. After such an attempt the boundary is
-# decimated with a pymeshlab quadric edge collapse before the manifold3d
+# decimated with a pymeshlab quadric edge collapse before the Manifold
 # post-process. The face counts below are only a SIZE BUDGET (is this output
 # wastefully dense?); the quality gate is the Hausdorff comparison against the
 # raw fTetWild boundary (DECIMATE_HD_MARGIN), so a coarse target is accepted

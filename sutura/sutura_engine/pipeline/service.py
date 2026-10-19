@@ -289,7 +289,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
     remaining holes) is passed through the shared ``maybe_run_stage2`` helper,
-    so a closed object gets a manifold3d watertight rebuild exactly like a
+    so a closed object gets a Manifold watertight rebuild exactly like a
     single-mesh file (the helper sets the per-object ``stage2`` report and
     returns the rebuilt arrays). Objects that remain open after stage 1 are
     written as stage-1 output, mirroring the single-mesh behaviour.

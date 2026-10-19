@@ -11,7 +11,7 @@ Pipeline:
   3. Enforce face budget (output <= max(2x input, 20k) faces) and target edge length.
   4. Project proxy vertices onto healthy original surface (>= 90% of healthy subset projected).
   5. Check and rollback collapsed/inverted faces without false-positive reverts.
-  6. Honest manifold3d validity verification and one-sided Hausdorff reporting.
+  6. Honest Manifold validity verification and one-sided Hausdorff reporting.
 """
 
 import numpy as np
@@ -480,7 +480,7 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
     - Derives target edge length from the healthy input for projection distance threshold.
     - Projects >= 90% of proxy vertices whose nearest source point lies on a healthy face.
     - Rollback loop eliminates inverted/collapsed faces without mass false-positive reverts.
-    - Honest manifold3d validity verification and one-sided Hausdorff reporting.
+    - Honest Manifold validity verification and one-sided Hausdorff reporting.
 
     Returns (repaired_v, repaired_t, report_dict).
     """

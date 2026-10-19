@@ -11,7 +11,7 @@ proper self-intersections.
 
 The bridge imports ``sutura_geom`` lazily and reports an explicit skip (never
 a crash) when the extension is unavailable in the active interpreter.
-Mirrors manifold_bridge.py / ftetwild_bridge.py: a subprocess CLI entry (OBJ
+Mirrors ftetwild_bridge.py: a subprocess CLI entry (OBJ
 in, OBJ out, JSON report) exists for the fixed Linux two-venv layout where the
 extension may only be present under venv311; ``repair.py`` also calls
 ``arrangement_lite_arrays`` in-process on the numpy arrays it already holds.

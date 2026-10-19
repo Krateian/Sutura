@@ -274,7 +274,7 @@ def _flap_step_impl(ml, ms, after, stats, rec):
 # ~zero volume). They are BOTH collapsed sheets (effective thickness 2*V/A far
 # below the part's own bounding-box diagonal) AND effectively zero-volume, and
 # so carry no printable material alone -- exactly the debris
-# ``manifold_bridge._is_debris_part`` already prunes before a union. A genuine
+# the Stage-2 debris filter already prunes before a union. A genuine
 # solid part has 2*V/A ~= its wall thickness (measured 2.0-2.6 on every corpus
 # part) and is never dropped. See ``drop_flap_debris``.
 FLAP_DEBRIS_VOLUME_EPS = 1e-3

@@ -7,11 +7,30 @@ All notable changes to this project are documented here.
 ### Changed
 
 - **trimesh removed from the runtime.** Mesh IO and the remaining pure-Python geometry helpers now live in the engine: `sutura_engine.pipeline.mesh_io` gained a dependency-free `read_obj`/`read_stl`/`read_mesh` (binary and ASCII STL), outer-shell and proxy extraction use numpy centroids/extents and face normals, the repeated-element tier uses its own Rodrigues rotation-matrix helper and delegates surface sampling to `sutura_engine.wall.sample_surface`, Graft's local stitch calls `manifold3d` directly, and the Manifold/CSG/fTetWild bridges read OBJ/STL through `mesh_io`. A numpy edge-count `watertight` test replaces `Trimesh.is_watertight` in the stage-2 report. `trimesh` moves to the new dev-only `requirements-dev.txt` (the test suite and developer scripts keep it as an independent oracle) and is dropped from `requirements.txt`, `requirements-311.txt`, the installers, the self-updater, the AppImage bundle and CI; a new `tests/test_no_trimesh.py` guard (mirroring the SciPy guard) scans the runtime for regressions.
+- **Manifold now runs from the Rust core (`sutura_geom`).** The C++ Manifold
+  kernel (Apache-2.0) is compiled statically into `sutura_geom` through the
+  `manifold-csg` crate and replaces every Python `manifold3d` use: Stage 2
+  rebuild/watertight check, the outer-shell union, the repeated-element CSG
+  transplant and the Graft local stitch. The stage-2 `venv311` subprocess is
+  gone; results were verified against main on the 40-mesh corpus (status,
+  volume, face count, genus and components all match) and on the 9-mesh A/B
+  set. The ordinary install no longer downloads Python 3.11 or installs
+  `manifold3d`; `venv311` is now created only for the optional fTetWild extra
+  (`SUTURA_WITH_FTETWILD=1`). The Graft local stitch works on Linux again
+  (the old `trimesh.boolean(engine="manifold")` path silently failed there
+  because the main venv had no `manifold3d`). Source builds of `sutura_geom`
+  now need cmake and a C++17 compiler; prebuilt linux x86_64/aarch64 and
+  macOS universal2 wheels are built in CI.
+
 - **SciPy removed from the runtime.** Nearest-neighbour queries now use the pure-Rust `kiddo` KD-tree (`sutura_geom.nearest_points` / `KdTree`), and Dressing/Wall reuse the existing exact `morph::edt_3d` kernel for `edt_grid` and `dilate_occupancy`. The hidden SciPy uses behind trimesh were removed too: `trimesh.proximity.closest_point` is replaced by the existing `sutura_geom.closest_points`, and `Trimesh.split` in outer-shell extraction by a pure-numpy face-connected split. This fixes Dressing on macOS conda environments with a broken SciPy (`_caxpy$NEWLAPACK`), drops a ~99 MB installed dependency, and removes SciPy from the requirements, installers, self-updater, PyInstaller bundles and CI. Source builds now require Rust >= 1.89 (the `kiddo` 6.3 MSRV).
 - **`sutura_geom` is now a hard requirement.** The install helper fails with a named, actionable message (detected `uname -s`/`-m`, the rustup link, and the `SUTURA_GEOM_WHEEL` alternative) when neither a prebuilt wheel nor a Rust source build is available; `install.sh` and `install-macos.sh` no longer swallow that failure. At runtime a single central check (`health.check_required_geometry`) makes a missing extension — or a stale one lacking `flap_fill`/`morph_close`/`tamponade` — a named failure: the CLI exits 1 with a JSON error before any mesh work (`validate`/`--dry-run` included), the narrowest shared library entry (`repair_mesh_from_arrays`) raises `GeometryRequiredError` so direct API/`repair_file` calls cannot silently degrade, `--list-methods`/`methods_json()`/the GUI *Use method* menu report every method unavailable (matching `sutura --self-check`, 0/17, exit 1), and the GUI banner shows the failure instead of a skip; `--help`/`--version` and the informational subcommands keep working. A `sutura_geom` install failure during self-update is now fatal and triggers the existing rollback with the actionable message. The `SUTURA_NO_GEOM=1` opt-out is removed (empty/`0` mean unset; any other value exits with an explanation), and `sutura_geom` is no longer treated as an optional import, so a tier ImportError for it is recorded as an error.
 
 ### Removed
 
+- Removed the Python Manifold bridges (`sutura/manifold_bridge.py`,
+  `sutura/csg_bridge.py`), the `requirements-311.txt` stage-2 environment and
+  their installer/PyInstaller/CI wiring. `sutura_geom` is mandatory, so there
+  is no Python fallback for these operations.
 - Removed silent numpy fallbacks now that the Rust core is required; topology, autorefine, cast, indirect bridge and Tamponade call the Rust kernel directly.
 - **The pure-Python Flap oracle.** `sutura_engine.flap.flap_fill_python` and its ~1,900 lines of numpy/scipy helpers are deleted; `flap_fill` always calls the Rust core and raises the named `FlapUnavailableError` when the extension or its binding is absent, so the tier can never silently no-op. The Rust parity regression is now pinned to the committed golden fixture `tests/fixtures/flap_golden.npz`. The OrcaSlicer plugin needs no change: it repairs through the installed CLI, and a successful install now implies the extension.
 

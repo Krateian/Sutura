@@ -765,7 +765,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # work on large meshes. The filter only sets the face-selection array and
     # does not alter geometry, so this cannot disturb anything downstream.
     #
-    # Assumption (documented, not silent): stage 2 (manifold3d) only runs on a
+    # Assumption (documented, not silent): stage 2 (Manifold) only runs on a
     # watertight closed mesh and REBUILDS the watertight solid, so its output
     # is assumed free of self-intersections by construction -- therefore stage
     # 2's output is NOT re-measured here. When stage 2 runs and writes the

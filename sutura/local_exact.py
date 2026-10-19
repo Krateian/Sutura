@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Localized exact self-union of residual self-intersection clusters.
 
-After Stage 2 (manifold3d rebuild) and the reload-safe P-WELD pass a mesh can
-still carry residual proper self-intersections: manifold3d enforces
+After Stage 2 (Manifold rebuild) and the reload-safe P-WELD pass a mesh can
+still carry residual proper self-intersections: Manifold enforces
 combinatorial 2-manifold topology, so intra-shell topological folds and
 overlapping caps are accepted as long as every edge has two incident faces.
 The hypothesis behind this module is that those residuals are spatially
