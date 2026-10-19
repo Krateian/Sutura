@@ -39,6 +39,51 @@ import sutura_engine.pipeline.tiers.ftetwild as ftetwild_mod  # noqa: E402
 OPEN_AFTER_STAGE1 = os.path.join(SAMPLES, 'thingi10k_100827.stl')
 
 
+def _icosphere(subdivisions, radius):
+    """A dependency-free icosphere (numpy only).
+
+    trimesh is a dev-only dependency now and is absent from the installed app
+    env the install-E2E job runs this suite in, so the fixture is built here
+    instead. Connectivity matches ``trimesh.creation.icosphere``: an
+    icosahedron whose faces are midpoint-subdivided ``subdivisions`` times,
+    with shared midpoints welded and every vertex normalised to ``radius``.
+    """
+    import numpy as np
+    phi = (1.0 + 5.0 ** 0.5) / 2.0
+    verts = np.array([
+        [-1, phi, 0], [1, phi, 0], [-1, -phi, 0], [1, -phi, 0],
+        [0, -1, phi], [0, 1, phi], [0, -1, -phi], [0, 1, -phi],
+        [phi, 0, -1], [phi, 0, 1], [-phi, 0, -1], [-phi, 0, 1],
+    ], dtype=np.float64)
+    faces = np.array([
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ], dtype=np.int64)
+    vlist = [v / np.linalg.norm(v) for v in verts]
+    cache = {}
+    for _ in range(subdivisions):
+        cache.clear()
+        next_faces = []
+
+        def mid(a, b):
+            key = (a, b) if a < b else (b, a)
+            idx = cache.get(key)
+            if idx is None:
+                m = vlist[a] + vlist[b]
+                vlist.append(m / np.linalg.norm(m))
+                idx = len(vlist) - 1
+                cache[key] = idx
+            return idx
+
+        for a, b, c in faces:
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            next_faces += [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
+        faces = np.array(next_faces, dtype=np.int64)
+    return np.asarray(vlist, dtype=np.float64) * radius, faces
+
+
 def _write_closed_with_si(path):
     """A closed, topologically manifold mesh that still self-intersects after
     stage 1: an icosphere with the north vertex pulled through to the south
@@ -50,12 +95,10 @@ def _write_closed_with_si(path):
     chain removes its self-intersections, so it no longer exercises the
     trigger.)"""
     import numpy as np
-    import trimesh
-    mesh = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
-    verts = np.asarray(mesh.vertices, dtype=np.float64)
+    from sutura_engine.pipeline.mesh_io import stl_write_binary
+    verts, tris = _icosphere(subdivisions=2, radius=1.0)
     verts[int(np.argmax(verts[:, 2]))] = [0.0, 0.0, -1.3]
-    mesh.vertices = verts
-    mesh.export(path)
+    stl_write_binary(path, verts, tris)
 
 
 def _repair(src, ftetwild):
