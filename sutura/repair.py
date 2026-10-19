@@ -75,7 +75,8 @@ from sutura_engine.pipeline.presets import (
 from sutura_engine.pipeline.mesh_io import (
     write_obj, check_units, read_3mf_units, read_obj, stl_write_binary,
     should_extract_outer_shell, scan_bad_coordinates, _scan_bin_stl,
-    obj_has_material_refs, parse_3mf_meshes, build_mesh_block,
+    obj_has_material_refs, parse_3mf_mesh_blocks, parse_3mf_meshes,
+    build_mesh_block, rewrite_3mf_meshes,
     _3MF_MAX_ENTRY_BYTES, _read_zip_entry, load_meshes, save_mesh,
     _resolve_bridge, _resolve_ftetwild_bridge, _resolve_indirect_bridge,
     BRIDGE, FTETWILD_BRIDGE, INDIRECT_BRIDGE,
