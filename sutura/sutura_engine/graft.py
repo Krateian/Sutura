@@ -20,7 +20,7 @@ faithful does the closing radius ladder run, starting at the smallest useful
 radius (≈1.5 voxel) and growing ×1.6 while the result is not reload-watertight.
 
 The module is intentionally independent of ``methods.py``/the method registry:
-it imports only numpy, trimesh, ``sutura_geom`` and a handful of pure
+it imports only numpy, ``sutura_geom`` and a handful of pure
 helpers from ``repair.py``/``defects.py``, so it can be moved into the engine
 package without rework.  It is a *geometry-inventing* tier (it closes holes and
 openings by adding material), hence ``invents_geometry=True``, the one-sided
@@ -46,7 +46,6 @@ import time
 from collections import defaultdict
 
 import numpy as np
-import trimesh
 
 import sutura_geom
 import topology
@@ -57,6 +56,7 @@ from sutura_engine.pipeline.p_weld import (
 )
 from sutura_engine.pipeline.tiers.local_remesh import _damaged_region
 from sutura_engine.pipeline.utils import _referenced_only
+from sutura_engine.wall import sample_surface as _wall_sample_surface
 
 METHOD_NUMBER = 13
 DISPLAY_NAME = "Graft"
@@ -334,26 +334,17 @@ def _median_edge_length(v, t):
 
 
 def _sample_surface(v, t, n, rng):
+    """Area-weighted surface samples.
+
+    Delegates to the single in-repo sampler (``wall.sample_surface``) so the
+    engine has exactly one sampling implementation; ``rng`` only supplies the
+    per-call seed, keeping the sequence deterministic for a given call order.
+    """
     if len(t) == 0 or n <= 0:
         return np.zeros((0, 3))
-    tri = v[t]
-    area = 0.5 * np.linalg.norm(
-        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
-    tot = float(area.sum())
-    if tot <= 0.0:
-        return np.zeros((0, 3))
-    p = area / tot
-    k = int(min(n, max(len(t), 1) * 8))
-    idx = rng.choice(len(t), size=k, p=p)
-    u = rng.random(k)
-    w = rng.random(k)
-    flip = u + w > 1.0
-    u[flip] = 1.0 - u[flip]
-    w[flip] = 1.0 - w[flip]
-    a = tri[idx, 0]
-    b = tri[idx, 1]
-    c = tri[idx, 2]
-    return a + u[:, None] * (b - a) + w[:, None] * (c - a)
+    seed = int(rng.integers(0, 2 ** 31 - 1))
+    pts, _normals = _wall_sample_surface(v, t, n_samples=n, seed=seed)
+    return pts
 
 
 def _one_sided_hausdorff(va, ta, vb, tb, diag, n=HAUSDORFF_SAMPLES, rng=None):
@@ -852,20 +843,37 @@ def _hybrid_close(v0, t0, region_mask, ml):
 # local-window stitch (boolean union with the untouched rest)
 # --------------------------------------------------------------------------- #
 def _stitch_local(patch_v, patch_t, orig_v, orig_t):
+    """Boolean-union the untouched rest with a local-window patch.
+
+    Uses manifold3d directly (the library ``trimesh.boolean`` wrapped).  The
+    Linux main venv has no manifold3d (it ships only up to Python 3.13, so it
+    lives in the stage-2 venv), so this path is a silent no-op there and the
+    caller keeps the whole-mode result; a Rust union is the planned
+    replacement.
+    """
     try:
-        patch = trimesh.Trimesh(vertices=np.asarray(patch_v, np.float64),
-                                faces=np.asarray(patch_t, np.int64),
-                                process=True)
-        rest = trimesh.Trimesh(vertices=np.asarray(orig_v, np.float64),
-                               faces=np.asarray(orig_t, np.int64),
-                               process=False)
-        if not patch.is_watertight:
+        import manifold3d as m3d
+    except ImportError:
+        return patch_v, patch_t, False
+    try:
+        def _manifold(v, t):
+            return m3d.Manifold(m3d.Mesh(
+                vert_properties=np.asarray(v, np.float32),
+                tri_verts=np.asarray(t, np.int32)))
+
+        patch = _manifold(patch_v, patch_t)
+        if patch.status() != m3d.Error.NoError or patch.is_empty():
             return patch_v, patch_t, False
-        out = trimesh.boolean.union([patch, rest], engine="manifold")
-        if out is None or len(out.faces) == 0:
+        rest = _manifold(orig_v, orig_t)
+        if rest.status() != m3d.Error.NoError or rest.is_empty():
             return patch_v, patch_t, False
-        return (np.asarray(out.vertices, np.float64),
-                np.asarray(out.faces, np.int64), True)
+        out = m3d.Manifold.batch_boolean([patch, rest], m3d.OpType.Add)
+        om = out.to_mesh()
+        ov = np.asarray(om.vert_properties)[:, :3].astype(np.float64)
+        ot = np.asarray(om.tri_verts).astype(np.int64)
+        if len(ot) == 0:
+            return patch_v, patch_t, False
+        return ov, ot, True
     except Exception:  # noqa: BLE001
         return patch_v, patch_t, False
 
@@ -1390,9 +1398,9 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
 if __name__ == "__main__":
     import sys
     import json
+    from sutura_engine.pipeline.mesh_io import read_mesh
     path = sys.argv[1]
-    _m = trimesh.load(path, force="mesh")
-    ov, ot, rep = shell_wrap(np.asarray(_m.vertices, np.float64),
-                             np.asarray(_m.faces, np.int64))
+    ov, ot = read_mesh(path)
+    rep = shell_wrap(ov, ot)
     rep = {k: v for k, v in rep.items() if k != "per_vertex_deviation"}
     print(json.dumps(rep, indent=2, default=str))

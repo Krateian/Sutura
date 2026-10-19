@@ -20,11 +20,12 @@ import shutil
 import tempfile
 import subprocess
 import numpy as np
-import trimesh
 
 import sutura_geom
 
 import topology
+
+from sutura_engine.wall import sample_surface as _surface_sample
 
 # Threshold constants
 DEFAULT_FEATURE_ANGLE_DEG = 30.0
@@ -39,6 +40,34 @@ REPETITION_MIN_MEMBERS = 3
 REPETITION_SIMILARITY_TOL = 0.30
 
 
+def _rotation_matrix(angle, direction, point=None):
+    """4x4 rotation about ``direction`` through ``point`` (Rodrigues, numpy).
+
+    Drop-in for the former ``trimesh.transformations.rotation_matrix``: the
+    rotation part follows Rodrigues' formula and the translation is
+    ``point - R @ point`` so the axis passes through ``point``.
+    """
+    direction = np.asarray(direction, dtype=np.float64)
+    n = float(np.linalg.norm(direction))
+    if n < 1e-12:
+        return np.eye(4)
+    x, y, z = direction / n
+    c = float(np.cos(angle))
+    s = float(np.sin(angle))
+    C = 1.0 - c
+    R = np.array([
+        [c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+        [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+        [z * x * C - y * s, z * y * C + x * s, c + z * z * C],
+    ])
+    M = np.eye(4)
+    M[:3, :3] = R
+    if point is not None:
+        p = np.asarray(point, dtype=np.float64)
+        M[:3, 3] = p - R @ p
+    return M
+
+
 def _referenced_only(verts, tris):
     """Drop unreferenced vertices and remap triangle indices."""
     verts = np.asarray(verts, dtype=np.float64)
@@ -49,6 +78,24 @@ def _referenced_only(verts, tris):
     remap = np.full(len(verts), -1, dtype=np.int64)
     remap[used] = np.arange(len(used))
     return verts[used], remap[tris]
+
+
+def _decimate_faces(verts, tris, target):
+    """Quadric-decimate to ``target`` faces via PyMeshLab (lazy import).
+
+    Replaces the former ``trimesh`` simplifier; PyMeshLab is already a runtime
+    dependency, so the engine needs no ``trimesh`` for this.  Returns
+    ``(verts float64, tris int32)``.
+    """
+    import pymeshlab as ml
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
+                        face_matrix=np.asarray(tris, np.int32)))
+    ms.apply_filter('meshing_decimation_quadric_edge_collapse',
+                    targetfacenum=int(target), preservetopology=True)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32))
 
 
 def check_mesh_validity(verts, tris):
@@ -611,9 +658,10 @@ def _execute_boolean_transplant(verts, tris, template_pts, transforms, margin=OB
     return _execute_boolean_transplant_bridge(verts, tris, template_pts, transforms, margin=margin)
 
 
-def _compute_hausdorff_outside(orig_tm, result_tm, dst_boxes, samples=5000):
-    """Compute one-sided Hausdorff distance from orig mesh to result mesh outside dst_boxes."""
-    sample_pts, _ = trimesh.sample.sample_surface(orig_tm, samples)
+def _compute_hausdorff_outside(orig_v, orig_t, result_v, result_t, dst_boxes, samples=5000):
+    """One-sided Hausdorff distance from the original mesh to the result mesh
+    outside ``dst_boxes`` (operates on plain vertex/triangle arrays)."""
+    sample_pts, _ = _surface_sample(orig_v, orig_t, samples, seed=0)
 
     # Filter out points inside any destination box
     outside = np.ones(len(sample_pts), dtype=bool)
@@ -625,11 +673,11 @@ def _compute_hausdorff_outside(orig_tm, result_tm, dst_boxes, samples=5000):
     if len(outside_pts) == 0:
         return 0.0
 
-    diag = float(np.linalg.norm(orig_tm.extents))
+    diag = float(np.linalg.norm(np.ptp(np.asarray(orig_v), axis=0)))
     if diag <= 1e-12:
         return 0.0
 
-    _, dists, _ = sutura_geom.closest_points(result_tm.vertices, result_tm.faces, outside_pts)
+    _, dists, _ = sutura_geom.closest_points(result_v, result_t, outside_pts)
     return float(np.max(dists)) / diag
 
 
@@ -650,10 +698,9 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
     if len(verts) < 4 or len(tris) < 4:
         return 0.0, {'pattern_type': 'none', 'reason': 'Too few vertices or triangles'}
 
-    tm = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
     n_pts = n_samples
-    dense_pts, _ = trimesh.sample.sample_surface(tm, n_pts * 2, seed=42)
-    query_pts, _ = trimesh.sample.sample_surface(tm, n_pts, seed=123)
+    dense_pts, _ = _surface_sample(verts, tris, n_pts * 2, seed=42)
+    query_pts, _ = _surface_sample(verts, tris, n_pts, seed=123)
 
     c = np.mean(dense_pts, axis=0)
     span = dense_pts.max(axis=0) - dense_pts.min(axis=0)
@@ -703,7 +750,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
 
         for n in candidate_orders:
             th = 2.0 * np.pi / n
-            R = trimesh.transformations.rotation_matrix(th, ax, point=c)[:3, :3]
+            R = _rotation_matrix(th, ax, point=c)[:3, :3]
             rot = q0 @ R.T + c
             move_d = float(np.mean(np.linalg.norm(rot - query_pts, axis=1)))
             candidates.append((ax, u, v_vec, n, th, rot, move_d))
@@ -729,7 +776,7 @@ def detect_rotational_symmetry_free(verts, tris, n_samples=3000, max_order=64):
                 steps_to_check.append(n // 2)
             step_rots = []
             for s_k in steps_to_check:
-                R_k = trimesh.transformations.rotation_matrix(s_k * th, ax, point=c)[:3, :3]
+                R_k = _rotation_matrix(s_k * th, ax, point=c)[:3, :3]
                 step_rots.append(q0 @ R_k.T + c)
             step_jobs.append((i, step_rots))
 
@@ -1061,9 +1108,8 @@ def detect_repetition(verts, tris):
         patch_score, patch_info = _detect_repetition_patches(verts, tris)
     elif len(tris) <= 500000:
         try:
-            tm_full = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
-            tm_low = tm_full.simplify_quadric_decimation(35000)
-            patch_score, patch_info = _detect_repetition_patches(tm_low.vertices, tm_low.faces)
+            dv, dt = _decimate_faces(verts, tris, 35000)
+            patch_score, patch_info = _detect_repetition_patches(dv, dt)
         except Exception:
             patch_score, patch_info = 0.0, {'reason': f'Decimation failed on mesh with {len(tris)} faces'}
     else:
@@ -1104,8 +1150,8 @@ def repair_repeat_manual(verts, tris, source_point, target_point, margin=OBB_EXP
             'notes': [],
         }
 
-    orig_mesh = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
-    diag = float(np.linalg.norm(orig_mesh.extents))
+    orig_v, orig_t = verts, tris
+    diag = float(np.linalg.norm(np.ptp(np.asarray(verts), axis=0)))
 
     # Precondition: must be solid manifold
     is_valid, err_msg = check_mesh_validity(verts, tris)
@@ -1153,8 +1199,7 @@ def repair_repeat_manual(verts, tris, source_point, target_point, margin=OBB_EXP
         rep_v, rep_t, vol_change, dst_boxes, is_watertight = _execute_boolean_transplant(
             verts, tris, src_pts, [T], margin=margin, force_bridge=force_bridge
         )
-        rep_tm = trimesh.Trimesh(vertices=rep_v, faces=rep_t, process=False)
-        h_outside = _compute_hausdorff_outside(orig_mesh, rep_tm, dst_boxes)
+        h_outside = _compute_hausdorff_outside(orig_v, orig_t, rep_v, rep_t, dst_boxes)
 
         return rep_v, rep_t, {
             'watertight': bool(is_watertight),
@@ -1198,7 +1243,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             'notes': [],
         }
 
-    orig_mesh = trimesh.Trimesh(vertices=verts, faces=tris, process=False)
+    orig_v, orig_t = verts, tris
 
     is_valid, err_msg = check_mesh_validity(verts, tris)
     if not is_valid:
@@ -1242,7 +1287,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             c_templ = np.mean(template_pts, axis=0)
             def _calc_deviation(pred_pts):
                 # Forward distance: clean template to target mesh (detects dents / missing features)
-                _, dists_fwd, _ = sutura_geom.closest_points(orig_mesh.vertices, orig_mesh.faces, pred_pts)
+                _, dists_fwd, _ = sutura_geom.closest_points(orig_v, orig_t, pred_pts)
                 dev_dent = float(np.sqrt(np.mean(dists_fwd ** 2))) / (elem_diag + 1e-12)
 
                 # Reverse distance: target member patch to template (detects bumps / extra features)
@@ -1284,7 +1329,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                 for k in range(order):
                     positions_checked += 1
                     rot_angle = (k - k_template) * step_angle
-                    R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_rot)
+                    R_k = _rotation_matrix(rot_angle, axis, point=c_rot)
                     pred_pts = (template_pts @ R_k[:3, :3].T) + R_k[:3, 3]
 
                     dev = _calc_deviation(pred_pts)
@@ -1354,7 +1399,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                     positions_checked += 1
                     delta_k = k_val - template_k
                     rot_angle = delta_k * th_step
-                    R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_circle)
+                    R_k = _rotation_matrix(rot_angle, axis, point=c_circle)
                     T_k = np.eye(4)
                     T_k[:3, :3] = R_k[:3, :3]
                     T_k[:3, 3] = R_k[:3, 3] + delta_k * h_step * axis
@@ -1381,7 +1426,7 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             v_v = np.dot(v_proj, v_ax)
             v_theta = np.arctan2(v_v, v_u) % (2.0 * np.pi)
 
-            diag_total = float(np.linalg.norm(orig_mesh.extents)) or 1.0
+            diag_total = float(np.linalg.norm(np.ptp(np.asarray(verts), axis=0))) or 1.0
             sector_devs = []
             sector_pts_list = []
             positions_checked = 0
@@ -1398,9 +1443,9 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                     sector_devs.append(1.0)
                     continue
 
-                R_step = trimesh.transformations.rotation_matrix(step_angle, axis, point=c_rot)[:3, :3]
+                R_step = _rotation_matrix(step_angle, axis, point=c_rot)[:3, :3]
                 pred_pts = (pts_k - c_rot) @ R_step.T + c_rot
-                _, dists, _ = sutura_geom.closest_points(orig_mesh.vertices, orig_mesh.faces, pred_pts)
+                _, dists, _ = sutura_geom.closest_points(orig_v, orig_t, pred_pts)
                 dev = float(np.mean(dists))
                 sector_devs.append(dev)
 
@@ -1412,14 +1457,14 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
             for k in range(order):
                 positions_checked += 1
                 rot_angle = (k - best_k) * step_angle
-                R_k = trimesh.transformations.rotation_matrix(rot_angle, axis, point=c_rot)
+                R_k = _rotation_matrix(rot_angle, axis, point=c_rot)
                 pts_k = sector_pts_list[k]
                 if len(pts_k) >= 4:
                     T_k, _ = align(template_pts, pts_k, max_iters=5)
                 else:
                     T_k = R_k
                 pred_pts = (template_pts @ T_k[:3, :3].T) + T_k[:3, 3]
-                _, dists, _ = sutura_geom.closest_points(orig_mesh.vertices, orig_mesh.faces, pred_pts)
+                _, dists, _ = sutura_geom.closest_points(orig_v, orig_t, pred_pts)
                 dev = float(np.sqrt(np.mean(dists ** 2))) / elem_diag
                 max_dev = float(np.max(dists)) / elem_diag
                 per_pos_devs.append({'index': k, 'deviation': round(dev, 4)})
@@ -1441,8 +1486,8 @@ def repair_repeat_auto(verts, tris, margin=OBB_EXPANSION_MARGIN, force_bridge=No
                 verts, tris, template_pts, transforms_to_repair, margin=margin, force_bridge=force_bridge
             )
             positions_repaired = len(transforms_to_repair)
-            rep_tm = trimesh.Trimesh(vertices=rep_v, faces=rep_t, process=False)
-            h_outside = _compute_hausdorff_outside(orig_mesh, rep_tm, dst_boxes) if dst_boxes else 0.0
+            h_outside = (_compute_hausdorff_outside(orig_v, orig_t, rep_v, rep_t, dst_boxes)
+                         if dst_boxes else 0.0)
             notes = [f"{positions_repaired} repeated elements were replaced by healthy copies"]
         else:
             rep_v, rep_t = verts, tris

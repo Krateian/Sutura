@@ -500,7 +500,6 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
         }
 
     try:
-        import trimesh
         import pymeshlab as ml
 
         diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
@@ -579,7 +578,10 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
                 pass
 
         # 5. Proximity & projection onto healthy original surface
-        proxy_mesh = trimesh.Trimesh(vertices=pv, faces=pt, process=False)
+        # Unprojected proxy face normals (unnormalised is fine: only the sign
+        # of the alignment dot product below is used).
+        orig_face_normals = np.cross(pv[pt[:, 1]] - pv[pt[:, 0]],
+                                     pv[pt[:, 2]] - pv[pt[:, 0]])
 
         closest_pts, distances, triangle_indices = sutura_geom.closest_points(
             verts, tris, pv)
@@ -603,7 +605,6 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
             v2 = projected_pv[pt[:, 2]]
             face_normals = np.cross(v1 - v0, v2 - v0)
             face_areas = 0.5 * np.linalg.norm(face_normals, axis=1)
-            orig_face_normals = proxy_mesh.face_normals
             dot_align = np.sum(face_normals * orig_face_normals, axis=1)
 
             bad_faces = (face_areas < 1e-8) | (dot_align <= 0.0)
