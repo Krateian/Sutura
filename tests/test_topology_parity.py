@@ -161,22 +161,43 @@ def test_parity():
 
 
 def test_fallback_when_kernel_missing():
-    """An older wheel imports but lacks the kernels: every call must fall back
-    to the numpy oracle transparently, and engine() must report 'python'."""
+    """An older wheel imports but lacks the kernels: in 'auto' or 'rust' mode,
+    calling topology functions must raise a hard RuntimeError, never silently
+    falling back to numpy. Explicit 'python' mode must still use the numpy oracle."""
     saved = topology._geom
     try:
         for replacement in (None, object()):
-            topology.set_engine('auto')
             topology._geom = replacement
-            assert topology.engine() == 'python', topology.engine()
+            # Auto and rust modes must raise
+            for mode in ('auto', 'rust'):
+                topology.set_engine(mode)
+                raised = False
+                try:
+                    topology.engine()
+                except RuntimeError as ex:
+                    assert "sutura_geom topology kernel required" in str(ex)
+                    raised = True
+                assert raised, f"expected RuntimeError in mode {mode}"
+
+                raised = False
+                try:
+                    v, t = _cube()
+                    t = np.ascontiguousarray(t, dtype=np.int64)
+                    topology.edge_table(t)
+                except RuntimeError as ex:
+                    assert "sutura_geom topology kernel required" in str(ex)
+                    raised = True
+                assert raised, f"expected RuntimeError in edge_table with mode {mode}"
+
+            # Explicit python mode must still use the numpy oracle
+            topology.set_engine('python')
+            assert topology.engine() == 'python'
             assert not topology._use_rust()
             v, t = _cube()
             t = np.ascontiguousarray(t, dtype=np.int64)
             e, c, inv = topology.edge_table(t)
             assert e.dtype == np.int64 and c.tobytes() == (
                 topology._edge_table_numpy(t)[1].tobytes())
-            topology.set_engine('rust')  # forced but unavailable -> still numpy
-            assert not topology._use_rust()
             wv, wt = topology.weld_reload_equivalent(v, t)
             assert wv.tobytes() == topology._weld_reload_equivalent_numpy(v, t)[0].tobytes()
             df = topology.remove_duplicate_faces(t)
@@ -210,7 +231,7 @@ def test_fallback_when_kernel_missing():
     finally:
         topology._geom = saved
         topology.set_engine('auto')
-    print('fallback OK (missing kernel -> numpy oracle)')
+    print('hard error OK (missing kernel -> RuntimeError in auto/rust; python oracle works)')
 
 
 def test_re_orient_parity():

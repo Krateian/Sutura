@@ -19,32 +19,24 @@ Provides:
 from typing import Any, Dict, Optional, Tuple
 import numpy as np
 
-try:
-    import sutura_geom as _geom
-    _AVAILABLE = True
-except ImportError:
-    _geom = None
-    _AVAILABLE = False
+import sutura_geom as _geom
+_AVAILABLE = True
 
 
 def is_available() -> bool:
     """Return True if the sutura_geom Rust extension is installed and importable."""
-    return _AVAILABLE
+    return True
 
 
 def version() -> Optional[str]:
     """Return the sutura_geom version string, or None if unavailable."""
-    if _geom is not None and hasattr(_geom, '__version__'):
+    if hasattr(_geom, '__version__'):
         return str(_geom.__version__)
     return None
 
 
 def _require_geom():
-    if not _AVAILABLE or _geom is None:
-        raise RuntimeError(
-            "sutura_geom Rust extension is not available in the active environment. "
-            "Build or install rust/sutura-geom to enable exact geometry predicates."
-        )
+    pass
 
 
 def orient3d(pa: Any, pb: Any, pc: Any, pd: Any) -> float:

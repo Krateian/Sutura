@@ -10,6 +10,7 @@ All notable changes to this project are documented here.
 
 ### Removed
 
+- Removed silent numpy fallbacks now that the Rust core is required; topology, autorefine, cast, indirect bridge and Tamponade call the Rust kernel directly.
 - **The pure-Python Flap oracle.** `sutura_engine.flap.flap_fill_python` and its ~1,900 lines of numpy/scipy helpers are deleted; `flap_fill` always calls the Rust core and raises the named `FlapUnavailableError` when the extension or its binding is absent, so the tier can never silently no-op. The Rust parity regression is now pinned to the committed golden fixture `tests/fixtures/flap_golden.npz`. The OrcaSlicer plugin needs no change: it repairs through the installed CLI, and a successful install now implies the extension.
 
 ### Added

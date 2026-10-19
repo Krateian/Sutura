@@ -34,6 +34,7 @@ import json
 import os
 
 import numpy as np
+import sutura_geom
 
 # Wall-clock budget (seconds) per Triage intensity preset. ``quick`` is 0 and
 # skips the tier entirely; the others match the deep-repair ladder's ordering.
@@ -121,12 +122,8 @@ def resolve_tamponade_prepass_budget(intensity, environ=None):
 def _tamponade_module():
     """Return the ``sutura_geom`` module when it exposes the Tamponade API.
 
-    ``None`` when the extension is missing, does not export ``tamponade`` or
-    does not advertise ``TAMPONADE_SUPPORTED`` (an older build)."""
-    try:
-        import sutura_geom  # type: ignore
-    except Exception:  # noqa: BLE001 - no extension is a normal case
-        return None
+    ``None`` when the extension does not export ``tamponade`` or does not
+    advertise ``TAMPONADE_SUPPORTED`` (an older build)."""
     if not getattr(sutura_geom, 'TAMPONADE_SUPPORTED', False):
         return None
     if not hasattr(sutura_geom, 'tamponade'):
