@@ -20,19 +20,17 @@ import json
 import sys
 
 import numpy as np
+import sutura_geom
 
 
 def arrangement_lite_arrays(verts, tris):
     """Run the exact arrangement-lite split on numpy arrays.
 
-    Returns ``(new_verts, new_tris, report)``.  Raises ``ImportError`` when
-    ``sutura_geom`` is not importable in the active interpreter; the caller
-    catches it and records an explicit skip (never crashes a repair).  The
-    report carries the Phase B §8.3 fields (``si_before``/``si_after``,
-    ``faces_before``/``faces_after``); ``si_after`` is 0 because the split
-    removes every proper intersection by construction.
+    Returns ``(new_verts, new_tris, report)``.  The report carries the Phase B
+    §8.3 fields (``si_before``/``si_after``, ``faces_before``/``faces_after``);
+    ``si_after`` is 0 because the split removes every proper intersection by
+    construction.
     """
-    import sutura_geom  # noqa: F401  (lazy: skip, never crash, when absent)
     try:
         out_v, out_t, report = sutura_geom.arrangement_lite(verts, tris)
     except BaseException as e:  # noqa: BLE001 - a Rust panic (pyo3
@@ -80,15 +78,8 @@ def write_obj(path, verts, tris):
 
 def run_bridge(src, dst):
     """Run arrangement-lite on the OBJ at src, write the split OBJ to dst and
-    return the report dict.  ``ok`` is True on success; never raises for a
-    missing extension (reports an explicit skip instead)."""
+    return the report dict.  ``ok`` is True on success."""
     report = {}
-    try:
-        import sutura_geom  # noqa: F401
-    except ImportError as e:
-        report['error'] = ('indirect autorefine skipped: sutura_geom extension '
-                           'not available in this environment (%s)' % e)
-        return report
     try:
         verts, tris = read_obj(src)
         new_v, new_t, rep = arrangement_lite_arrays(verts, tris)
