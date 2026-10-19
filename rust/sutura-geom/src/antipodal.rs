@@ -25,16 +25,35 @@
 //! within a few orders of magnitude of the mesh, so no clamping is needed.
 
 use rayon::prelude::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use crate::winding::MeshBvh;
+use crate::winding::{Aabb, BoundaryLoop, MeshBvh, Segment, SegmentBvh, FWN_DEFAULT_BETA};
 
 #[inline]
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+#[inline]
+fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+#[inline]
+fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+#[inline]
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 #[inline]
@@ -209,23 +228,12 @@ fn project_into_tri(q: [f64; 3], q0: [f64; 3], q1: [f64; 3], q2: [f64; 3]) -> Tr
     }
 }
 
-/// A weighted, oriented boundary segment (the net of the mesh's open boundary).
-#[derive(Clone, Copy)]
-struct QSeg {
-    pos0: [f64; 3],
-    pos1: [f64; 3],
-    weight: f64,
-}
-
-/// Extract the open boundary of a triangle soup as weighted oriented segments.
-///
-/// Each undirected edge `{min, max}` accumulates `+1` for every `min -> max`
-/// traversal and `-1` for every `max -> min`; interior edges of an oriented
-/// manifold cancel to zero and are dropped, while non-manifold edges keep their
-/// net count as the weight.  Surviving segments are emitted with positive
-/// weight.  Edges are emitted in sorted key order so the fractional-term sum is
-/// deterministic (the reference's `unordered_map` iteration order is not).
-fn build_boundary_segments(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<QSeg> {
+/// Extract the open boundary of a triangle soup as weighted oriented segments and loops,
+/// linked into closed cycles whenever possible to ensure zero net chord per cluster.
+fn build_boundary_segments(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+) -> (Vec<BoundaryLoop>, Vec<Segment>) {
     let mut counts: BTreeMap<(u32, u32), i64> = BTreeMap::new();
     for t in tris {
         let tri = [t[0] as u32, t[1] as u32, t[2] as u32];
@@ -235,21 +243,161 @@ fn build_boundary_segments(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<QSeg>
             *counts.entry(key).or_insert(0) += if u < v { 1 } else { -1 };
         }
     }
-    let mut out = Vec::new();
+    // Adjacency map of directed surviving boundary edges: u -> Vec<(v, weight)>
+    let mut adj: BTreeMap<u32, Vec<(u32, f64)>> = BTreeMap::new();
     for ((lo, hi), sum) in counts {
         if sum == 0 {
             continue;
         }
-        let a = verts[lo as usize];
-        let b = verts[hi as usize];
-        let (pos0, pos1) = if sum > 0 { (a, b) } else { (b, a) };
-        out.push(QSeg {
-            pos0,
-            pos1,
-            weight: sum.unsigned_abs() as f64,
-        });
+        let (u, v) = if sum > 0 { (lo, hi) } else { (hi, lo) };
+        adj.entry(u).or_default().push((v, sum.unsigned_abs() as f64));
     }
-    out
+
+    // Link directed edges into closed cycles deterministically
+    let mut segs = Vec::new();
+    let mut loops = Vec::new();
+    let mut visited: BTreeSet<(u32, u32)> = BTreeSet::new();
+
+    for &start in adj.keys() {
+        if let Some(edges) = adj.get(&start) {
+            for &(v0, _) in edges {
+                if visited.contains(&(start, v0)) {
+                    continue;
+                }
+                let mut curr = start;
+                let loop_start = segs.len() as u32;
+                let mut aabb = Aabb::empty();
+                let mut csum = [0.0f64; 3];
+                let mut area_sum = 0.0f64;
+                let mut chord = [0.0f64; 3];
+
+                loop {
+                    // Find first unvisited outgoing edge from curr
+                    let mut found = None;
+                    if let Some(outgoing) = adj.get(&curr) {
+                        for &(nxt, w) in outgoing {
+                            if !visited.contains(&(curr, nxt)) {
+                                found = Some((nxt, w));
+                                break;
+                            }
+                        }
+                    }
+                    match found {
+                        Some((nxt, w)) => {
+                            visited.insert((curr, nxt));
+                            let p0 = verts[curr as usize];
+                            let p1 = verts[nxt as usize];
+                            // Swapped endpoints (pos1, pos0): atan2_num expects opposite orientation
+                            let seg = Segment::new(p1, p0, w);
+                            aabb.expand_point(p1);
+                            aabb.expand_point(p0);
+                            let seg_len = norm(sub(p0, p1)) * w.abs();
+                            let mid = [
+                                (p0[0] + p1[0]) * 0.5,
+                                (p0[1] + p1[1]) * 0.5,
+                                (p0[2] + p1[2]) * 0.5,
+                            ];
+                            csum = add(csum, scale(mid, seg_len));
+                            area_sum += seg_len;
+                            chord = add(chord, scale(sub(p0, p1), w));
+                            segs.push(seg);
+                            curr = nxt;
+                            if curr == start {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+
+                let loop_count = segs.len() as u32 - loop_start;
+                if loop_count > 0 {
+                    let center = if area_sum > 0.0 {
+                        scale(csum, 1.0 / area_sum)
+                    } else {
+                        aabb.center()
+                    };
+                    let mut vec_area = [0.0f64; 3];
+                    let mut radius = 0.0f64;
+                    for k in loop_start..segs.len() as u32 {
+                        let s = &segs[k as usize];
+                        let v0 = sub(s.pos0, center);
+                        let v1 = sub(s.pos1, center);
+                        vec_area = add(vec_area, scale(cross(v0, v1), 0.5 * s.weight));
+                        let d0 = norm(v0);
+                        let d1 = norm(v1);
+                        if d0 > radius {
+                            radius = d0;
+                        }
+                        if d1 > radius {
+                            radius = d1;
+                        }
+                    }
+                    loops.push(BoundaryLoop {
+                        start: loop_start,
+                        count: loop_count,
+                        aabb,
+                        center,
+                        vec_area,
+                        radius,
+                        chord,
+                        area_sum,
+                    });
+                }
+            }
+        }
+    }
+    (loops, segs)
+}
+
+/// Evaluates a single boundary segment's exact fractional contribution seen from `p`.
+#[inline]
+fn eval_segment_exact(p: [f64; 3], seg: &Segment) -> f64 {
+    let (q0, q1) = (seg.pos0, seg.pos1);
+    let v0 = sub(q0, p);
+    let v1 = sub(q1, p);
+    let l0 = norm(v0);
+    let l1 = norm(v1);
+
+    // atan2 numerator with an exact sign (== -t_real of the edge predicate).
+    let num = atan2_num(p, q0, q1);
+
+    let l_plus_x = |v: [f64; 3], l: f64| -> f64 {
+        if v[0] >= 0.0 {
+            l + v[0]
+        } else {
+            dot_yz(v, v) / (l - v[0])
+        }
+    };
+    let denom = l_plus_x(v0, l0) * l_plus_x(v1, l1) + dot_yz(v0, v1);
+
+    let contrib = if num != 0.0 {
+        num.atan2(denom)
+    } else if v0[1] == 0.0 && v0[2] == 0.0 && v0[0] < 0.0 && (v1[1] != 0.0 || v1[2] != 0.0) {
+        if v1[2] != 0.0 {
+            v1[2].atan2(-v1[1])
+        } else if v1[1] > 0.0 {
+            -PI
+        } else {
+            0.0
+        }
+    } else if v1[1] == 0.0 && v1[2] == 0.0 && v1[0] < 0.0 && (v0[1] != 0.0 || v0[2] != 0.0) {
+        if v0[2] != 0.0 {
+            (-v0[2]).atan2(-v0[1])
+        } else if v0[1] > 0.0 {
+            PI
+        } else {
+            0.0
+        }
+    } else {
+        let sgn = sign_num_perturbed(p, q0, q1) as f64;
+        if denom < 0.0 {
+            sgn * PI
+        } else {
+            0.0
+        }
+    };
+    seg.weight * contrib
 }
 
 /// Prepared robust GWN evaluator for a triangle soup.
@@ -259,25 +407,14 @@ fn build_boundary_segments(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<QSeg>
 /// helper shares one evaluator across threads).
 pub struct AntipodalGwn {
     bvh: MeshBvh,
-    /// Boundary segments with their endpoints swapped (`pos1, pos0`): the exact
-    /// `atan2_num` used by `fractional` expects the opposite orientation to the
-    /// stored boundary, so the swap negates the fractional term to match the
-    /// classical float kernels while keeping the atan2/grazing-sign pair
-    /// internally consistent.
-    boundary: Vec<QSeg>,
+    boundary: SegmentBvh,
 }
 
 impl AntipodalGwn {
     pub fn build(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Self {
         let bvh = MeshBvh::from_arrays(verts, tris);
-        let boundary = build_boundary_segments(verts, tris)
-            .into_iter()
-            .map(|s| QSeg {
-                pos0: s.pos1,
-                pos1: s.pos0,
-                weight: s.weight,
-            })
-            .collect();
+        let (loops, segs) = build_boundary_segments(verts, tris);
+        let boundary = SegmentBvh::from_loops(loops, segs);
         AntipodalGwn { bvh, boundary }
     }
 
@@ -292,12 +429,8 @@ impl AntipodalGwn {
             if hit.sign == 0 {
                 return;
             }
-            // The ray meets the triangle at the barycentric mix of its vertex
-            // depths; that lies between them, so the front/back answer cannot
-            // contradict the in-projection test.
             let hit_x =
                 (hit.w0 * tri.a[0] + hit.w1 * tri.b[0] + hit.w2 * tri.c[0]) / (hit.w0 + hit.w1 + hit.w2);
-            // Ray dir = -x; a tie is in front under the eps1 perturbation.
             if p[0] >= hit_x {
                 sum += -hit.sign;
             }
@@ -305,75 +438,67 @@ impl AntipodalGwn {
         sum
     }
 
+    /// Exact fractional term: sums every boundary segment without far-field approximation.
+    pub fn fractional_exact(&self, p: [f64; 3]) -> f64 {
+        const F_NORM: f64 = 2.0 / (4.0 * PI);
+        let half_area = self.boundary.eval_fractional_exact(|seg| eval_segment_exact(p, seg));
+        half_area * F_NORM
+    }
+
+    /// Accelerated fractional term: evaluates far-field dipoles for distant closed loops.
+    /// Returns `(fractional_turns, accumulated_error_turns)`.
+    pub fn fractional_approx(&self, p: [f64; 3]) -> (f64, f64) {
+        const F_NORM: f64 = 2.0 / (4.0 * PI);
+        let (half_area, err_turns) =
+            self.boundary.eval_fractional(p, FWN_DEFAULT_BETA, |seg| eval_segment_exact(p, seg));
+        (half_area * F_NORM, err_turns)
+    }
+
     /// Fractional term: the signed Van Oosterom-Strackee boundary integral, in
     /// turns.  Exactly `0` for a closed mesh.
     pub fn fractional(&self, p: [f64; 3]) -> f64 {
-        // Folds the factor 2 ("half area") and the 1 / (4 pi) normalization.
-        const F_NORM: f64 = 2.0 / (4.0 * PI);
-        let mut half_area = 0.0f64;
-        for seg in &self.boundary {
-            let (q0, q1) = (seg.pos0, seg.pos1);
-            let v0 = sub(q0, p);
-            let v1 = sub(q1, p);
-            let l0 = norm(v0);
-            let l1 = norm(v1);
-
-            // atan2 numerator with an exact sign (== -t_real of the edge
-            // predicate).
-            let num = atan2_num(p, q0, q1);
-
-            // denom = l0*l1 + v0.x*l1 + v1.x*l0 + dot(v0, v1)
-            //       = (l0 + v0.x) * (l1 + v1.x) + dot_yz(v0, v1).
-            // l + v.x cancels badly when v points almost along -x (an edge seen
-            // along the ray), so there use l + v.x = (v.y^2 + v.z^2)/(l - v.x).
-            let l_plus_x = |v: [f64; 3], l: f64| -> f64 {
-                if v[0] >= 0.0 {
-                    l + v[0]
-                } else {
-                    dot_yz(v, v) / (l - v[0])
-                }
-            };
-            let denom = l_plus_x(v0, l0) * l_plus_x(v1, l1) + dot_yz(v0, v1);
-
-            let contrib = if num != 0.0 {
-                num.atan2(denom)
-            } else if v0[1] == 0.0 && v0[2] == 0.0 && v0[0] < 0.0 && (v1[1] != 0.0 || v1[2] != 0.0) {
-                // The ray passes through pos0, where num and denom both vanish:
-                // take the limit for the perturbed query, as the edge predicate
-                // does.
-                if v1[2] != 0.0 {
-                    v1[2].atan2(-v1[1])
-                } else if v1[1] > 0.0 {
-                    -PI
-                } else {
-                    0.0
-                }
-            } else if v1[1] == 0.0 && v1[2] == 0.0 && v1[0] < 0.0 && (v0[1] != 0.0 || v0[2] != 0.0) {
-                if v0[2] != 0.0 {
-                    (-v0[2]).atan2(-v0[1])
-                } else if v0[1] > 0.0 {
-                    PI
-                } else {
-                    0.0
-                }
-            } else {
-                // Grazing: atan2 -> 0 (denom > 0) or +-pi (denom < 0); the
-                // perturbed sign is locked to the ray/triangle predicate.
-                let sgn = sign_num_perturbed(p, q0, q1) as f64;
-                if denom < 0.0 {
-                    sgn * PI
-                } else {
-                    0.0
-                }
-            };
-            half_area += seg.weight * contrib;
+        if self.boundary.is_empty() {
+            return 0.0;
         }
-        half_area * F_NORM
+        if std::env::var_os("SUTURA_ANTIPODAL_EXACT").is_some() {
+            return self.fractional_exact(p);
+        }
+        self.fractional_approx(p).0
     }
 
     /// The full robust GWN at `p` (fractional + integer), in turns.
     pub fn winding(&self, p: [f64; 3]) -> f64 {
-        self.fractional(p) + self.signed_intersection_count(p) as f64
+        self.winding_with_fallback(p).0
+    }
+
+    /// Full winding number at `p` with condition (a) exact classification check.
+    /// Returns `(winding_in_turns, exact_fallback_needed)`.
+    pub fn winding_with_fallback(&self, p: [f64; 3]) -> (f64, bool) {
+        let int_term = self.signed_intersection_count(p) as f64;
+        if self.boundary.is_empty() {
+            // Closed mesh: boundary is empty, fractional term is identically zero!
+            return (int_term, false);
+        }
+        if std::env::var_os("SUTURA_ANTIPODAL_EXACT").is_some() {
+            return (int_term + self.fractional_exact(p), true);
+        }
+
+        let (frac_approx, err_turns) = self.fractional_approx(p);
+        let w_approx = int_term + frac_approx;
+
+        // Condition (a): keep inside/outside DECISION exact:
+        // if |W - 0.5| < 2 * accumulated_error, recompute with exact per-segment sum!
+        if (w_approx - 0.5).abs() < 2.0 * err_turns {
+            let frac_exact = self.fractional_exact(p);
+            (int_term + frac_exact, true)
+        } else {
+            (w_approx, false)
+        }
+    }
+
+    /// Exact winding number without far-field approximations.
+    pub fn winding_exact(&self, p: [f64; 3]) -> f64 {
+        self.signed_intersection_count(p) as f64 + self.fractional_exact(p)
     }
 
     /// `winding(p) > 0.5`: inside for a closed shell.
@@ -381,15 +506,20 @@ impl AntipodalGwn {
         self.winding(p) > 0.5
     }
 
+    /// Inside with exact fallback reporting.
+    pub fn inside_with_fallback(&self, p: [f64; 3]) -> (bool, bool) {
+        let (w, fallback) = self.winding_with_fallback(p);
+        (w > 0.5, fallback)
+    }
+
     /// Robust GWN for many points, parallel across CPU cores.
     pub fn winding_points_par(&self, points: &[[f64; 3]]) -> Vec<f64> {
         points.par_iter().map(|p| self.winding(*p)).collect()
     }
 
-    /// Number of boundary segments (0 for a closed, manifold soup).  Reported by
-    /// the Python layer as a diagnostic.
+    /// Number of boundary segments (0 for a closed, manifold soup).
     pub fn boundary_segment_count(&self) -> usize {
-        self.boundary.len()
+        self.boundary.segment_count()
     }
 }
 
@@ -399,6 +529,7 @@ pub struct AntipodalStats {
     pub boundary_segments: usize,
     pub cells_ambiguous: u64,
     pub cells_flipped: u64,
+    pub cells_exact_fallback: u64,
     pub seconds: f64,
 }
 
@@ -424,6 +555,7 @@ pub fn disambiguate_sdf(
     let slice = dims[0] * dims[1];
     let ambiguous = AtomicU64::new(0);
     let flipped = AtomicU64::new(0);
+    let fallbacks = AtomicU64::new(0);
     signed
         .par_chunks_mut(slice)
         .enumerate()
@@ -442,7 +574,10 @@ pub fn disambiguate_sdf(
                     }
                     ambiguous.fetch_add(1, Ordering::Relaxed);
                     let x = origin[0] + voxel * i as f64;
-                    let inside = gwn.inside([x, y, z]);
+                    let (inside, fallback) = gwn.inside_with_fallback([x, y, z]);
+                    if fallback {
+                        fallbacks.fetch_add(1, Ordering::Relaxed);
+                    }
                     let s = uch[row + i];
                     // `s` is an UNSIGNED distance (always >= 0); the previous
                     // inside/outside state comes from the SIGNED slice.
@@ -458,6 +593,7 @@ pub fn disambiguate_sdf(
         boundary_segments: gwn.boundary_segment_count(),
         cells_ambiguous: ambiguous.load(Ordering::Relaxed),
         cells_flipped: flipped.load(Ordering::Relaxed),
+        cells_exact_fallback: fallbacks.load(Ordering::Relaxed),
         seconds: t_start.elapsed().as_secs_f64(),
     }
 }
@@ -580,4 +716,51 @@ mod tests {
             assert_eq!(gwn.signed_intersection_count(p), 1, "{p:?}");
         }
     }
+
+    #[test]
+    fn open_cube_exact_vs_fast_parity_and_condition_a() {
+        let mut tris = cube_tris();
+        tris.retain(|t| *t != [4, 5, 6] && *t != [4, 6, 7]);
+        let gwn = AntipodalGwn::build(&cube_verts(), &tris);
+
+        let mut seed = 0x123456789ABCDEF0u64;
+        for _ in 0..1000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let u = ((seed >> 11) as f64) / ((1u64 << 53) as f64);
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let v = ((seed >> 11) as f64) / ((1u64 << 53) as f64);
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let s = ((seed >> 11) as f64) / ((1u64 << 53) as f64);
+            let q = [u * 3.0 - 1.0, v * 3.0 - 1.0, s * 3.0 - 1.0];
+
+            let (w_approx, fallback) = gwn.winding_with_fallback(q);
+            let w_exact = gwn.winding_exact(q);
+
+            // Inside decision must match exactly
+            assert_eq!(
+                gwn.inside(q),
+                w_exact > 0.5,
+                "inside decision mismatch at {q:?}: approx={w_approx}, exact={w_exact}, fallback={fallback}"
+            );
+
+            if fallback {
+                assert_eq!(w_approx, w_exact);
+            } else {
+                // Difference must be within far-field tolerance
+                let diff = (w_approx - w_exact).abs();
+                assert!(diff < 0.05, "approx difference too large at {q:?}: diff={diff}");
+            }
+        }
+    }
+
+    #[test]
+    fn closed_mesh_boundary_is_empty_and_free() {
+        let gwn = AntipodalGwn::build(&cube_verts(), &cube_tris());
+        assert_eq!(gwn.boundary_segment_count(), 0);
+        let q = [0.5, 0.5, 0.5];
+        let (w, fallback) = gwn.winding_with_fallback(q);
+        assert_eq!(w, 1.0);
+        assert!(!fallback, "closed mesh should not require fallback");
+    }
 }
+

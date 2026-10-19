@@ -447,6 +447,7 @@ fn antipodal_info<'py>(
     d.set_item("boundary_segments", stats.boundary_segments)?;
     d.set_item("cells_ambiguous", stats.cells_ambiguous)?;
     d.set_item("cells_flipped", stats.cells_flipped)?;
+    d.set_item("cells_exact_fallback", stats.cells_exact_fallback)?;
     d.set_item("seconds", stats.seconds)?;
     Ok(d)
 }
