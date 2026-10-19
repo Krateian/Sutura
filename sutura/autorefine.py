@@ -47,11 +47,7 @@ Implementation notes:
   this. See docs/alpha-wrap-feasibility-2026-09.md section 4a.
 """
 import numpy as np
-
-try:
-    import sutura_geom
-except ImportError:
-    sutura_geom = None
+import sutura_geom
 
 MAX_ITERATIONS = 5
 DEFAULT_SNAP_BITS = 23  # largest |x| scaled into [2^23, 2^24) -> rel. err <= 2^-24
@@ -84,9 +80,7 @@ def orient3d_adaptive(a, b, c, d):
              + abs(dx - ax) + abs(dy - ay) + abs(dz - az))
     if abs(det) > 1e-14 * max(scale, 1e-300) * max(scale, 1e-300):
         return det
-    if sutura_geom is not None and hasattr(sutura_geom, 'orient3d'):
-        return float(sutura_geom.orient3d(a, b, c, d))
-    return det
+    return float(sutura_geom.orient3d(a, b, c, d))
 
 
 # ---------------------------------------------------------------------------
