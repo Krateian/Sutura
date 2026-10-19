@@ -116,11 +116,15 @@ def _run(src, out, tmp):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
+def _is_model_entry(name):
+    return name.lower().endswith('.model')
+
+
 def _outside_meshes(path):
     """Model XML with every <mesh>...</mesh> span removed."""
     with zipfile.ZipFile(path) as z:
         xml = {n: z.read(n).decode('utf-8', errors='replace')
-               for n in z.namelist() if n.endswith('.model')}
+               for n in z.namelist() if _is_model_entry(n)}
     spans = {}
     for b in repair.parse_3mf_mesh_blocks(path):
         spans.setdefault(b.model_name, []).append(b.span)
@@ -147,7 +151,7 @@ def _assert_preserved(src, out):
             assert ia.external_attr == ib.external_attr, name
             assert ia.comment == ib.comment, name
             assert ia.extra == ib.extra, name
-            if not name.endswith('.model'):
+            if not _is_model_entry(name):
                 assert a.read(name) == b.read(name), name
     assert _outside_meshes(src) == _outside_meshes(out)
 
@@ -330,6 +334,167 @@ def test_escalation_writer_preserves_metadata(tmp):
         src, out, [(b.verts, b.tris) for b in blocks], attr_source=src)
     assert len(stats) == 1, stats
     _assert_preserved(src, out)
+
+
+def test_case_insensitive_model_parts(tmp):
+    src = os.path.join(tmp, 'case_parts.3mf')
+    out = os.path.join(tmp, 'case_parts_fixed.3mf')
+    m1 = _model(_object(1, _mesh(CUBE_V, OPEN_T)), '<item objectid="1"/>')
+    m2 = _model(_object(3, _mesh(CUBE_V, OPEN_T)), '<item objectid="3"/>')
+    _write_zip(src, [
+        _entry('[Content_Types].xml', CONTENT_TYPES),
+        _entry('_rels/.rels', RELS),
+        _entry('3D/3dmodel.model', m1),
+        _entry('3D/Objects/o2.MODEL', m2),
+    ])
+    assert len(repair.parse_3mf_mesh_blocks(src)) == 2
+    rep = _run(src, out, tmp)
+    _assert_preserved(src, out)
+    assert rep['objects'] == 2, rep
+    assert rep['category'] != 'error', rep
+
+    src2 = os.path.join(tmp, 'upper.3mf')
+    out2 = os.path.join(tmp, 'upper_fixed.3mf')
+    _write_zip(src2, [
+        _entry('[Content_Types].xml', CONTENT_TYPES),
+        _entry('_rels/.rels', RELS),
+        _entry('3D/3DMODEL.MODEL',
+               _model(_object(1, _mesh(CUBE_V, OPEN_T)), '<item objectid="1"/>')),
+    ])
+    assert len(repair.parse_3mf_mesh_blocks(src2)) == 1
+    rep2 = _run(src2, out2, tmp)
+    assert rep2['category'] != 'error', rep2
+
+
+def test_non_ascii_attribute_names_preserved(tmp):
+    src = os.path.join(tmp, 'nonascii_attrs.3mf')
+    out = os.path.join(tmp, 'nonascii_attrs_fixed.3mf')
+    v = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+    t = [(0, 1, 2), (0, 2, 3)]
+    attrs = [' \u00f6zel_renk="1"', ' \u989c\u8272="2"']
+    model = _model(_object(1, _mesh(v, t, attrs)), '<item objectid="1"/>')
+    _write_zip(src, [
+        _entry('[Content_Types].xml', CONTENT_TYPES),
+        _entry('_rels/.rels', RELS),
+        _entry('3D/3dmodel.model', model),
+    ])
+    stats = repair.rewrite_3mf_meshes(src, out, [(v, t)], attr_source=src)
+    assert stats[0]['original_attributed'] == 2, stats
+    assert stats[0]['kept'] == 2, stats
+    blocks = repair.parse_3mf_mesh_blocks(out)
+    out_attrs = blocks[0].triangle_attrs
+    assert out_attrs[0] == ' \u00f6zel_renk="1"', out_attrs
+    assert out_attrs[1] == ' \u989c\u8272="2"', out_attrs
+
+
+def test_escalation_refreshes_root_triangle_attributes(tmp):
+    import numpy as np
+    import methods
+    src = os.path.join(tmp, 'escalation_attrs.3mf')
+    out = os.path.join(tmp, 'escalation_attrs_fixed.3mf')
+    nx = ny = 78
+    xs = np.linspace(-1.0, 1.0, nx)
+    ys = np.linspace(-1.0, 1.0, ny)
+    X, Y = np.meshgrid(xs, ys)
+    Z = 0.2 * np.cos(np.pi * X / 2.0) * np.cos(np.pi * Y / 2.0)
+    v1 = [tuple(float(c) for c in row)
+          for row in np.column_stack([X.ravel(), Y.ravel(), Z.ravel()])]
+    t1 = []
+    for i in range(ny - 1):
+        for j in range(nx - 1):
+            a = i * nx + j
+            b = i * nx + (j + 1)
+            c = (i + 1) * nx + j
+            d = (i + 1) * nx + (j + 1)
+            t1.append((a, b, c))
+            t1.append((b, d, c))
+    o0 = _object(1, _mesh(CUBE_V, CUBE_T, [' paint_color="7"'] * len(CUBE_T)))
+    o1 = _object(3, _mesh(v1, t1, [' paint_color="7"'] * len(t1)))
+    _write_zip(src, [
+        _entry('[Content_Types].xml', CONTENT_TYPES),
+        _entry('_rels/.rels', RELS),
+        _entry('3D/Objects/o1.model', _model(o0, '<item objectid="1"/>')),
+        _entry('3D/Objects/o2.model', _model(o1, '<item objectid="3"/>')),
+    ])
+    res = methods.repair_with_methods(
+        src, out, tmp, None, mode='auto', deep_repair='full', ftetwild='auto')
+    reps = res.get('object_reports', [])
+    assert len(reps) == 2, reps
+    sources = [r.get('method_used', {}).get('source') for r in reps]
+    assert 'auto_escalated' in sources, sources
+    root = res.get('triangle_attributes')
+    agg = engine_triage._repair_mod().aggregate_triangle_attributes(reps)
+    assert root == agg, (root, agg)
+    for key in ('original_attributed', 'kept', 'dropped', 'output_triangles'):
+        assert root[key] == sum(
+            r['triangle_attributes'][key] for r in reps), key
+
+
+def test_read_3mf_units_quotes_and_prefix(tmp):
+    src = os.path.join(tmp, 'units_single.3mf')
+    xml = ('<?xml version="1.0"?>'
+           "<model unit='inch' "
+           'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+           '<resources/><build/></model>')
+    _write_zip(src, [_entry('3D/3dmodel.model', xml)])
+    assert repair.read_3mf_units(src) == {'3D/3dmodel.model': 'inch'}
+
+    src2 = os.path.join(tmp, 'units_prefix.3mf')
+    xml2 = ('<?xml version="1.0"?>'
+            '<m:model unit="micron" '
+            'xmlns:m="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+            '<m:resources/><m:build/></m:model>')
+    _write_zip(src2, [_entry('3D/3dmodel.model', xml2)])
+    assert repair.read_3mf_units(src2) == {'3D/3dmodel.model': 'micron'}
+
+
+def test_zero_mesh_3mf_clear_error(tmp):
+    src = os.path.join(tmp, 'empty_mesh.3mf')
+    out = os.path.join(tmp, 'empty_mesh_fixed.3mf')
+    xml = ('<?xml version="1.0"?>'
+           '<model unit="millimeter" '
+           'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">'
+           '<resources/><build/></model>')
+    _write_zip(src, [_entry('3D/3dmodel.model', xml)])
+    env = dict(os.environ)
+    env['XDG_CACHE_HOME'] = os.path.join(tmp, 'cache')
+    env['SUTURA_DATA_DIR'] = os.path.join(tmp, 'data')
+    os.makedirs(env['XDG_CACHE_HOME'], exist_ok=True)
+    os.makedirs(env['SUTURA_DATA_DIR'], exist_ok=True)
+    r = subprocess.run(
+        [sys.executable, REPAIR_PY, src, '-o', out, '--no-history', '--json'],
+        capture_output=True, text=True, timeout=600, env=env)
+    assert r.returncode != 0, (r.returncode, r.stdout, r.stderr)
+    blob = r.stdout + r.stderr
+    assert 'no mesh objects found' in blob, blob
+    assert 'use repair_3mf' not in blob, blob
+
+
+def test_comment_containing_mesh_tag(tmp):
+    src = os.path.join(tmp, 'comment.3mf')
+    out = os.path.join(tmp, 'comment_fixed.3mf')
+    vertices = ''.join('<vertex x="%g" y="%g" z="%g"/>' % p for p in CUBE_V)
+    triangles = ''.join('<triangle v1="%d" v2="%d" v3="%d"/>' % t
+                        for t in OPEN_T)
+    mesh = ('<mesh><!-- old scan: <mesh></mesh> --><vertices>%s</vertices>'
+            '<triangles>%s</triangles></mesh>' % (vertices, triangles))
+    model = _model(_object(1, mesh), '<item objectid="1"/>')
+    _write_zip(src, [
+        _entry('[Content_Types].xml', CONTENT_TYPES),
+        _entry('_rels/.rels', RELS),
+        _entry('Metadata/Slic3r_PE.config', 'x=1\n'),
+        _entry('3D/3dmodel.model', model),
+    ])
+    blocks = repair.parse_3mf_mesh_blocks(src)
+    assert len(blocks) == 1, blocks
+    assert len(blocks[0].verts) == 8, blocks[0].verts
+    rep = _run(src, out, tmp)
+    assert rep['category'] != 'error', rep
+    with zipfile.ZipFile(out) as z:
+        import xml.etree.ElementTree as ET
+        text = z.read('3D/3dmodel.model').decode('utf-8')
+        assert text.count('<mesh>') == 1, text[:200]
+        ET.fromstring(text)
 
 
 def main():
