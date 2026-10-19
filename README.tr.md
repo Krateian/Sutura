@@ -956,6 +956,7 @@ söyler.
 | Mesh türüne duyarlı onarım | ~%75 | Sezgisel mekanik/organik tahmini iki Aşama 1 eşiğine ince ayar yapar; tür başına güven eşiğiyle sınırlanır (mekanik ≥ 0.75, organik ≥ 0.70) ve bir kalibrasyon harness'iyle ölçülür (`scripts/calibrate_classifier.py`). **Varsayılan** motor **experimental**'dir (`sutura/mesh_classifier_v2.py`): RANSAC düzlem segmentasyonu + eğrilik gelişebilirlik sinyali + küçük eğitilmiş başlık. 40 mesh'lik gerçek dünya korpusunda (36 etiketli) 29/36'ya karşı classic 16/36 (mekanik isabet 16/20'ye karşı 2/20 — classic tarayıcı yanlılığı genişletilmiş korpusta çok daha görünür), 71 mesh'lik etiketli sette LOO-CV 0.845'e karşı classic 0.648. Classic'in unknown okuduğu kavisli-ama-mekanik parçaları (silindir, tüp, yuvarlatma) sınıflandırır; istisna/geçersiz sonuçta classic'e sessizce geri döner ve `--classifier-engine classic` / `SUTURA_CLASSIFIER_ENGINE=classic` ile eski motor seçilebilir kalır. Bir **sınır-yakını classic-uzlaşma geri dönüşü**, başlık yazı-tura durumundayken (`\|p_mech − 0.5\|·2 < 0.15`) ve classic seçilen sınıfla güçlü biçimde hemfikirken (sınıf puanı ≥ 0.70) başlığın sınıfını korur ama classic'in güvenini miras alır, böylece güçlü bir hemfikir sinyal ince ayar eşiğinde asla kaybolmaz (bu, `artec_metal-nut.stl`'yi su geçirmezliğe geri getirdi — tarama korpusunda 103/115). Deneysel: tür başına değerler tahmini başlangıç noktalarıdır, zor serbest-form/kavisli örnekler (bükülmüş boru, sarmal boru, kavisli kanca, dekoratif kâseler mekanik okunur) hâlâ ıskalanır ve kendinden emin ama yanlış bir v2 tahmini classic'e karşı yeniden kontrol edilmez — tarama kaynaklı girdide tespit edilen türü temkinli yorumlayın. |
 | Onarım güven skoru | ~%70 (beta) | Mevcut onarım sinyallerini (aşama 2 sonucu, kalan delikler, sınıflandırıcı güveni, eşik ayarı, onarım modu, self-intersection'lar, hacim değişimi) tek bir 0–100 skorda Yüksek/Orta/Düşük etiketiyle birleştirir: onarılan dosyalarda `repair_confidence`, validate / --dry-run'da `estimated_confidence` ("sonuç farklı olabilir" uyarısıyla). Regression testiyle doğrulanır (`tests/test_confidence.py`). Deneysel: ağırlıklandırma modeli yeni ve gerçek kullanıcı geri bildirimiyle henüz doğrulanmadı. |
 | Onarım Sağlığı / Riski | ~%60 (yeni) | Klasik güvenin üzerine ayrı, eklemeli bir skorlama sistemi: `repair_health` (0–100, final mesh sağlamlığı: su geçirmez + non-manifold/self-intersection/delik yok) ve `repair_risk` (0–100, onarımın mesh'i ne kadar değiştirdiği: yüz/vertex/bileşen/hacim deltaları), ayrıca bir config lookup tablosundan türetilen iki-eksenli status etiketi (`safe`/`review`/`caution`/`failed`/`unavailable`). Ağırlıklar/eşikler kodda değil `sutura/repair_score_config.json`'da; fail-silent (onarımı asla bozmaz); regression testiyle doğrulanır (`tests/test_repair_score.py`). Deneysel: ağırlık değerleri ve tier sınırları başlangıç noktalarıdır. |
+| Baskı-etkisi raporu | ~%65 (yeni) | Tamamlanan bir onarımı neyin `fixed` olduğuna ve hangi `issues`'ın kaldığına ayıran bir `print_report` bloğu; kalan her koşul FDM baskısı için `breaks` / `may_affect` / `cosmetic` olarak etiketlenir, ayrıca bir `geometry` bloğu (hacim/yüzey değişimi %, sonuçtan girdiye şekil sapması) ve bir `not_assessed` listesi. Rakip bir üst-düzey hüküm eklemez (mevcut Onarım Sağlığı / Riski / Durumu kalır); sapma bir katmanın vertex-başına değerini yeniden kullanır ya da Rust `sutura_geom` BVH'si ile ölçülür, 150 000 yüzde geçitlenir; önem eşikleri sezgisel olarak etiketlenir. `--human` bir `Print impact:` bölümü yazdırır, GUI aynısını "Ne değişti" günlüğünde gösterir. Regression testiyle doğrulanır (`tests/test_print_report.py`); deneysel (sezgisel eşikler, baskı-korpusu kalibrasyonu yok). |
 | Onarım bütçesi (`--max-geometry-change` / `--max-risk` / `--force`) | ~%60 (yeni) | İsteğe bağlı güvenlik sınırları: gerçek geometri değişimi (max \|hacim\|/\|yüzey\| değişim %) veya `repair_risk` skoru bütçeyi aşarsa çıktı asla sessizce kaydedilmez — TTY'de etkileşimli `[y/N]` istemi, aksi halde kayıt açık `"status": "budget_declined"` işaretiyle (sorun `budget_exceeded`, çıkış 1) reddedilir ve `--force` sormadan kaydeder. Bütçe içindeyken sayılar yine bildirilir (`budget` bloğu). Mevcut hacim/yüzey/risk metriklerini yeniden kullanır (yeniden hesaplamaz); GUI aynı bütçeleri sunar ve onay sonrası reddedilen dosyaları `--force` ile yeniden çalıştırır. Regression testiyle doğrulanır (`tests/test_budget.py`). Deneysel: 0 = sınır yok ve reddedilen kayıt, dosyanın hiç yazılmaması anlamına gelir. |
 | Birim algılama uyarısı | ~%60 (yeni) | Milimetre yerine inç/santimetre cinsinden modellenmiş olabilecek modelleri işaretleyen, engelleyici olmayan bir bounding-box sezgisel kuralı (`unit_warning` + `unit_hint` JSON'da, `--human`'da bir `WARNING:` satırı, GUI log / analiz paneli / kusur panelinde gösterilir). 3MF `<model unit="...">` bildirimleri dikkate alınır: bildirilen inç/santimetre birimi aynen raporlanır, bildirilen milimetre birimi (spec varsayılanı) güvenilir ve sezgisel kural bastırılır. Onarımı asla değiştirmez — yalnızca bilgilendirmedir. Regression testiyle doğrulanır (`tests/test_units.py`). Deneysel: 25–400 mm "makul yazdırılabilir parça" aralığı ve inç-önce-santimetre sıralaması sezgiseldir, kalibrasyon değildir. |
 | Çapraz platform (Linux/macOS) | ~%80 | Hem Linux (install.sh + AppImage) hem macOS (conda) çalışır, CI ikisini de kapsar; her sürümde ayrıca imzasız bir macOS `.dmg` de yayınlanır (`Build macOS .app/.dmg` workflow'u) ve macOS kurulumları yerel bir `~/Applications/Sutura.app` alır — GUI Spotlight'tan açılır (Cmd+Space → "Sutura"), ayrıca Finder'da bir **Quick Action** (`~/Library/Services/Sutura Quick Action.workflow`) sağ tıkla onarım için. Eksikler: AppImage/GUI kendini yerinde güncelleyemez (squashfs salt okunurdur), .dmg notarize edilmemiştir (Gatekeeper "unidentified developer" uyarısı gösterir) ve macOS için ayrı bir kaldırma betiği yoktur (aşağıdaki "macOS kurulumunu kaldırma" bölümüne bakın). |
@@ -1377,6 +1378,43 @@ gösterir. Skorlama fail-silent'tir: eksik/geçersiz metrik atlanır (ağırlı�
 diğerlerine dağıtılır) ve skorlama onarımı asla bozmaz. Çok nesneli 3MF
 raporları bunları nesne başına taşır. GUI kusur paneli seçili dosyanın başlık
 satırında gösterir.
+
+### Baskı-etkisi raporu
+
+Her onarım raporu, sonucu tek tek koşullara ayıran ve her birinin bir FDM
+baskısını nasıl etkilediğini belirten bir `print_report` bloğu taşır. Bu blok
+yalnızca zaten hesaplanmış ölçümlerin bir görünümüdür — mesh'i asla yeniden
+ölçmez — ve bilinçli olarak rakip bir "iyi mi" hükmü eklemez: tek üst-düzey
+yargı yukarıdaki Onarım Sağlığı / Riski / Durumu olarak kalır. Blok dört
+parçadan oluşur:
+
+- `fixed` — onarımın gerçekte ne yaptığı, sayılarla: kapatılan delikler,
+  düzeltilen non-manifold kenarlar, kaldırılan bozuk yüzler, kaldırılan gevşek
+  kabuklar ve yön (winding) düzeltildi mi.
+- `issues` — geriye kalan koşullar, her biri bir önem derecesiyle: `breaks`
+  (mesh olduğu gibi basılamaz, örn. kalan delikler veya non-manifold kenarlar),
+  `may_affect` (örn. birkaç ayrı kabuk, büyük hacim değişimi) veya `cosmetic`
+  (kendini-kesişmeler; dilimleyiciler bunları dilim anında tek/çift kuralıyla
+  çözer ve basılan parçayı değiştirmez).
+- `geometry` — hacim değişimi %, yüzey alanı değişimi % ve şekil sapması
+  (`deviation_max_pct` / `deviation_mean_pct`, sonuç yüzeyinin girdiye doğru,
+  sınırlayıcı kutu köşegeninin %'si olarak).
+- `not_assessed` — bilinçli olarak atlanan ölçümler; bugün 150 000 yüzün
+  üzerindeki mesh'lerde şekil sapması (geçit, büyük taramalarda onarımı hızlı
+  tutar).
+
+Şekil sapması, onarım zaten bir tane üretmediyse Rust `sutura_geom` nokta-mesh
+BVH'si ile ölçülür (Graft'ın vertex-başına sapması veya Dressing'in
+`hausdorff_rel_max` değeri varsa yeniden kullanılır). Hacim değişimi için önem
+eşikleri (5 % may, 15 % breaks — ikincisi mevcut hacim-uyarı eşiğiyle aynı) ve
+sapma için (sınırlayıcı kutu köşegeninin 1 % / 5 %'i) mühendislik tahminleridir,
+bir baskı korpusuna göre kalibre edilmemiştir; her sorun `"heuristic": true`
+kaydeder ki arayüz bunları tahmin olarak etiketleyebilsin. Çok nesneli 3MF
+raporları bloğu nesne başına taşır ve en kötü nesneyi alan bir toplam taşır.
+
+`--human` bloğu bir `Print impact:` bölümü olarak yazdırır (`Fixed:` / `Remaining:` /
+`Geometry:` / `Not assessed:`); GUI aynısını "Ne değişti" onarım günlüğünün
+başında gösterir.
 
 Birden çok dosyada her girdi sırayla onarılır ve bir özet yazdırılır (`N
 su geçirmez, M uyarılı, K başarısız`), oluşan uyarı/hata türlerinin dökümüyle
