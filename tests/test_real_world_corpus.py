@@ -47,8 +47,10 @@ def run(args, path, out=None):
     cmd = _cli.cli_command(args + [path])
     if out is not None:
         cmd += ['-o', out]
+    env = dict(os.environ)
+    env.setdefault('PYTHONFAULTHANDLER', '1')
     r = subprocess.run(cmd, capture_output=True, text=True,
-                       timeout=PER_MESH_TIMEOUT)
+                       timeout=PER_MESH_TIMEOUT, env=env)
     return r
 
 
@@ -77,6 +79,7 @@ def main():
                     ok = False
                     row.append('%s=FAIL(rc%d %s)' % (label, r.returncode,
                                                      r.stderr.strip()[-80:]))
+                    print('    %s stderr:\n%s' % (label, r.stderr))
                 else:
                     row.append('%s=ok' % label)
             print('  %-42s %s' % (name, ' '.join(row[1:])))
