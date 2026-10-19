@@ -7,6 +7,7 @@ Provides:
     the single outer shell, dissolving internal degenerate interfaces.
 """
 from typing import Optional, Tuple
+
 import numpy as np
 
 
@@ -69,24 +70,13 @@ def _split_face_components(verts, tris):
     return out
 
 
-def _area_weighted_centroid(verts, tris):
-    """Area-weighted average of the triangle centres (trimesh's ``centroid``)."""
-    tri = verts[tris]
-    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    area = 0.5 * np.linalg.norm(cross, axis=1)
-    centres = tri.mean(axis=1)
-    total = float(area.sum())
-    if total <= 0.0:
-        return verts.mean(axis=0)
-    return (centres * area[:, None]).sum(axis=0) / total
-
-
 def extract_outer_shell(verts: np.ndarray, tris: np.ndarray, dilation: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
     """Extract the outer surface shell of a multi-component mesh, removing internal geometry.
 
     For assemblies of touching or overlapping watertight parts (e.g. Rubik's cube cubies),
     slightly dilates each component around its centroid so touching interfaces dissolve,
-    performs boolean union via manifold3d, and retains the single largest outer component.
+    performs the boolean union in the Rust core (`sutura_geom.outer_shell_union`) and
+    retains the single largest outer component.
 
     Parameters:
         verts: (N, 3) float64 array of vertex coordinates.
@@ -98,53 +88,9 @@ def extract_outer_shell(verts: np.ndarray, tris: np.ndarray, dilation: Optional[
     Returns:
         (shell_verts, shell_tris)
     """
+    import sutura_geom  # lazy so health.check_required_geometry owns the error
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int32)
-
-    comps = _split_face_components(verts, tris)
-    if len(comps) <= 1:
-        return verts, tris
-
-    diag = float(np.linalg.norm(np.ptp(verts, axis=0)))
-    if dilation is None:
-        dilation = 5e-4 * (diag if diag > 1e-6 else 100.0)
-
-    try:
-        import manifold3d
-    except ImportError:
-        return verts, tris
-
-    mf_list = []
-    for comp_v, comp_t in comps:
-        c = _area_weighted_centroid(comp_v, comp_t)
-        ext = np.ptp(comp_v, axis=0)
-        scale = (ext + dilation) / np.maximum(ext, 1e-6)
-        v_scaled = (comp_v - c) * scale + c
-        v = np.ascontiguousarray(v_scaled, dtype=np.float32)
-        t = np.ascontiguousarray(comp_t, dtype=np.uint32)
-        try:
-            mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v, tri_verts=t))
-            if mf.status() == manifold3d.Error.NoError and not mf.is_empty():
-                mf_list.append(mf)
-        except Exception:
-            continue
-
-    if not mf_list:
-        return verts, tris
-
-    united = mf_list[0]
-    for mf in mf_list[1:]:
-        united = united + mf
-
-    out_m = united.to_mesh()
-    v_out = np.asarray(out_m.vert_properties, dtype=np.float64)
-    t_out = np.asarray(out_m.tri_verts, dtype=np.int64)
-
-    sub_comps = _split_face_components(v_out, t_out)
-    if not sub_comps:
-        return v_out, t_out.astype(np.int32)
-
-    largest_v, largest_t = max(
-        sub_comps, key=lambda c: float(np.prod(np.ptp(c[0], axis=0))))
-    return (np.asarray(largest_v, dtype=np.float64),
-            np.asarray(largest_t, dtype=np.int32))
+    out_v, out_t = sutura_geom.outer_shell_union(verts, tris, dilation)
+    return (np.asarray(out_v, dtype=np.float64),
+            np.asarray(out_t, dtype=np.int32))

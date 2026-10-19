@@ -845,35 +845,33 @@ def _hybrid_close(v0, t0, region_mask, ml):
 def _stitch_local(patch_v, patch_t, orig_v, orig_t):
     """Boolean-union the untouched rest with a local-window patch.
 
-    Uses manifold3d directly (the library ``trimesh.boolean`` wrapped).  The
-    Linux main venv has no manifold3d (it ships only up to Python 3.13, so it
-    lives in the stage-2 venv), so this path is a silent no-op there and the
-    caller keeps the whole-mode result; a Rust union is the planned
-    replacement.
+    The patch is welded and checked with the same Rust Manifold kernel used by
+    Stage 2, then unioned with ``sutura_geom.union_pair``.  This path is
+    identical on Linux and macOS.
     """
     try:
-        import manifold3d as m3d
-    except ImportError:
-        return patch_v, patch_t, False
-    try:
-        def _manifold(v, t):
-            return m3d.Manifold(m3d.Mesh(
-                vert_properties=np.asarray(v, np.float32),
-                tri_verts=np.asarray(t, np.int32)))
+        patch_v = np.asarray(patch_v, dtype=np.float64)
+        patch_t = np.asarray(patch_t, dtype=np.int64)
 
-        patch = _manifold(patch_v, patch_t)
-        if patch.status() != m3d.Error.NoError or patch.is_empty():
+        # The old trimesh path built the patch with process=True; reproduce
+        # that exact-coordinate vertex weld in the Rust core before the union.
+        welded, inverse = sutura_geom.weld_vertices(
+            np.asarray(patch_v, dtype=np.float32))
+        patch_v = np.asarray(welded, dtype=np.float64)
+        patch_t = np.asarray(np.asarray(inverse)[patch_t], dtype=np.int64)
+
+        ok, _ = sutura_geom.watertight_check(patch_v, patch_t)
+        if not ok:
             return patch_v, patch_t, False
-        rest = _manifold(orig_v, orig_t)
-        if rest.status() != m3d.Error.NoError or rest.is_empty():
+
+        out_v, out_t = sutura_geom.union_pair(
+            patch_v, patch_t,
+            np.asarray(orig_v, dtype=np.float64),
+            np.asarray(orig_t, dtype=np.int64))
+        if len(out_t) == 0:
             return patch_v, patch_t, False
-        out = m3d.Manifold.batch_boolean([patch, rest], m3d.OpType.Add)
-        om = out.to_mesh()
-        ov = np.asarray(om.vert_properties)[:, :3].astype(np.float64)
-        ot = np.asarray(om.tri_verts).astype(np.int64)
-        if len(ot) == 0:
-            return patch_v, patch_t, False
-        return ov, ot, True
+        return (np.asarray(out_v, dtype=np.float64),
+                np.asarray(out_t, dtype=np.int64), True)
     except Exception:  # noqa: BLE001
         return patch_v, patch_t, False
 

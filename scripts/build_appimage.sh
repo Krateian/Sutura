@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Build the Sutura AppImage.
 #
-# Bundles two relocatable python-build-standalone runtimes:
-#   * Python 3.14 -> usr/lib/sutura/venv     (pymeshlab + PySide6: stage 1 + GUI)
-#   * Python 3.11 -> usr/lib/sutura/venv311  (manifold3d: stage 2)
+# Bundles one relocatable python-build-standalone runtime:
+#   * Python 3.14 -> usr/lib/sutura/venv     (pymeshlab + PySide6 + sutura_geom)
 # plus the application modules, an AppRun GUI/CLI dispatch entry point, and a
 # .desktop + icon, then packages the whole AppDir with appimagetool.
 #
@@ -26,7 +25,6 @@ APPIMAGE_NAME="${APPIMAGE_NAME:-Sutura-x86_64.AppImage}"
 
 PBS_BASE="https://github.com/indygreg/python-build-standalone/releases/download/$PBS_TAG"
 PBS_314="$PBS_BASE/cpython-3.14.7+$PBS_TAG-x86_64-unknown-linux-gnu-install_only.tar.gz"
-PBS_311="$PBS_BASE/cpython-3.11.16+$PBS_TAG-x86_64-unknown-linux-gnu-install_only.tar.gz"
 APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -43,65 +41,53 @@ mkdir -p "$DL" "$LIB" "$APP_DIR/usr/bin" "$OUT_DIR"
 
 echo "==> downloading python-build-standalone ($PBS_TAG)"
 curl -fL --retry 3 -o "$DL/$(basename "$PBS_314")" "$PBS_314"
-curl -fL --retry 3 -o "$DL/$(basename "$PBS_311")" "$PBS_311"
 
 # Verify SHA-256 against the SHA256SUMS the project publishes on the same
-# release (FAZ14): the two tarballs must both verify OK, else abort. The
+# release (FAZ14): the tarball must verify OK, else abort. The
 # checksum file itself is fetched over HTTPS from the same release URL -- the
 # standard trust anchor for open-source downloads.
 #
 # --ignore-missing is REQUIRED: SHA256SUMS lists ~1000 artifacts but we only
-# download two, and sha256sum -c exits non-zero when entries are missing --
+# download one, and sha256sum -c exits non-zero when entries are missing --
 # under `set -o pipefail` + `set -e` that non-zero exit killed the script at
 # the assignment (FAZ17: CI died silently without the die() message). With
 # --ignore-missing it verifies only the present files and exits 0 when they
 # are all OK. The `|| true` additionally decouples the assignment from `set -e`
 # so a wrong hash (or an unexpected sha256sum behaviour) always reaches the
-# explicit `[ "$pbs_ok" -eq 2 ]` check and produces a real error message.
+# explicit `[ "$pbs_ok" -eq 1 ]` check and produces a real error message.
 echo "==> verifying python-build-standalone SHA-256"
 curl -fL --retry 3 -o "$DL/SHA256SUMS" "$PBS_BASE/SHA256SUMS"
 pbs_ok=$(cd "$DL" && sha256sum -c --ignore-missing SHA256SUMS 2>/dev/null | grep -c ': OK') || true
-[ "$pbs_ok" -eq 2 ] || die "SHA-256 verification failed for python-build-standalone (got $pbs_ok/2 OK)"
+[ "$pbs_ok" -eq 1 ] || die "SHA-256 verification failed for python-build-standalone (got $pbs_ok/1 OK)"
 
 echo "==> installing Python 3.14 runtime (stage 1 + GUI)"
 tar xzf "$DL/$(basename "$PBS_314")" -C "$WORK"
 mv "$WORK/python" "$LIB/venv"
-
-echo "==> installing Python 3.11 runtime (stage 2)"
-tar xzf "$DL/$(basename "$PBS_311")" -C "$WORK"
-mv "$WORK/python" "$LIB/venv311"
 
 echo "==> pip install: stage 1 (pymeshlab + PySide6)"
 "$LIB/venv/bin/python" -m pip install --quiet --upgrade pip
 "$LIB/venv/bin/python" -m pip install --quiet \
     -r "$REPO_ROOT/requirements.txt" -r "$REPO_ROOT/requirements-gui.txt"
 
-echo "==> pip install: stage 2 (manifold3d)"
-"$LIB/venv311/bin/python" -m pip install --quiet --upgrade pip
-"$LIB/venv311/bin/python" -m pip install --quiet -r "$REPO_ROOT/requirements-311.txt"
-
-echo "==> installing sutura_geom (Rust extension) into both runtimes"
-# Graft (#13), Exact Refine (#6) and the indirect tier need the extension in
-# the stage-1 (3.14) runtime AND the stage-2 (3.11) runtime. The abi3 wheel
-# (cp311-abi3) loads on both. SUTURA_GEOM_REQUIRED=1 makes a failure fatal:
-# the bundle must not ship without the extension. In CI the AppImage workflow
+echo "==> installing sutura_geom (Rust extension, includes Manifold)"
+# Graft (#13), Exact Refine (#6), the indirect tier and Stage 2 need the
+# extension in the bundled runtime. SUTURA_GEOM_REQUIRED=1 makes a failure
+# fatal: the bundle must not ship without it. In CI the AppImage workflow
 # passes a prebuilt manylinux wheel via SUTURA_GEOM_WHEEL; locally the helper
 # falls back to downloading the release wheel, then to a cargo build.
 SUTURA_GEOM_REQUIRED=1 "$SCRIPT_DIR/install_sutura_geom.sh" "$LIB/venv/bin/python" "$REPO_ROOT"
-SUTURA_GEOM_REQUIRED=1 "$SCRIPT_DIR/install_sutura_geom.sh" "$LIB/venv311/bin/python" "$REPO_ROOT"
 "$LIB/venv/bin/python" -c "import sutura_geom; print('sutura_geom OK (venv 3.14)')"
-"$LIB/venv311/bin/python" -c "import sutura_geom; print('sutura_geom OK (venv311 3.11)')"
 
 echo "==> copying application modules"
 for f in repair.py gui.py classification.py defects.py topology.py mesh_classifier.py \
-         mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py csg_bridge.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \
+         mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \
          before_after_render.py viewer_common.py viewer_data_render.py \
          confidence.py history.py repair_score.py open.sh __init__.py; do
     install -m 0755 "$REPO_ROOT/sutura/$f" "$LIB/"
 done
 install -m 0644 "$REPO_ROOT/sutura/repair_score_config.json" "$LIB/repair_score_config.json"
 install -m 0644 "$REPO_ROOT/requirements.txt" \
-    "$REPO_ROOT/requirements-gui.txt" "$REPO_ROOT/requirements-311.txt" "$LIB/"
+    "$REPO_ROOT/requirements-gui.txt" "$LIB/"
 install -m 0644 "$REPO_ROOT/LICENSE" "$LIB/LICENSE"
 cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura_engine"
 mkdir -p "$LIB/sutura"
@@ -130,20 +116,6 @@ if "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
 else
     echo "    Tamponade (#17) not available in the bundled runtime" >&2
 fi
-# The stage-2 runtime must also load the extension (abl3 wheel, no pymeshlab
-# there); graft_available only needs sutura_geom + numpy, all
-# present in requirements-311.txt. PYTHONPATH=$LIB seeds sys.path (a -c
-# invocation has no script dir to add it).
-if ! PYTHONPATH="$LIB" "$LIB/venv311/bin/python" -c \
-        "from sutura_engine.methods.availability import graft_available; assert graft_available()[0], graft_available()[1]" \
-        2>/dev/null; then
-    echo "error: Graft availability check failed in the venv311 runtime:" >&2
-    PYTHONPATH="$LIB" "$LIB/venv311/bin/python" -c \
-        "from sutura_engine.methods.availability import graft_available; print(graft_available())" >&2 || true
-    exit 1
-fi
-echo "    Graft (#13) available in the bundled stage-2 runtime"
-
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'
 #!/usr/bin/env bash

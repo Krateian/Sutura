@@ -38,10 +38,7 @@ import classification  # noqa: E402
 import defects  # noqa: E402
 
 import repair  # noqa: E402
-try:  # optional manifold3d cross-validation: n/a when manifold3d is absent
-    import manifold_bridge  # noqa: E402
-except ImportError:
-    manifold_bridge = None
+import sutura_geom  # noqa: E402
 
 
 def load_input(path):
@@ -130,7 +127,7 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False,
         entry['output_self_intersections'] = count_self_intersections(new_v, new_t)
         entry['stage1_si_remaining'] = s1.get('self_intersections_remaining')
         # fTetWild fallback tier (FAZ17) outcome when enabled: whether it ran,
-        # was adopted, and whether a manifold3d post-process was applied.
+        # was adopted, and whether a Manifold post-process was applied.
         ft = rep.get('experimental_ftetwild')
         if isinstance(ft, dict):
             entry['ftetwild_ran'] = bool(ft.get('ran'))
@@ -177,17 +174,13 @@ def run_one(src, tmpdir, autorefine=False, ftetwild=False,
             entry['indirect_adopted'] = bool(ia.get('adopted'))
             entry['indirect_faces_after'] = ia.get('faces_after')
             entry['indirect_error'] = ia.get('error')
-        # Optional manifold3d cross-validation (independent verdict; None when
-        # manifold3d is unavailable -> column reported as n/a).
-        if manifold_bridge is not None:
-            m3_ok, m3_status = manifold_bridge.watertight_check(new_v, new_t)
-        else:
-            m3_ok, m3_status = None, 'manifold3d not importable'
-        entry['manifold3d_watertight'] = m3_ok
-        entry['manifold3d_status'] = m3_status
-        entry['m3d_consistent'] = (
-            None if m3_ok is None
-            else bool(m3_ok == entry['strict_watertight']))
+        # Manifold (Rust core) cross-validation (independent verdict).
+        m_ok, m_status = sutura_geom.watertight_check(new_v, new_t)
+        entry['manifold_watertight'] = m_ok
+        entry['manifold_status'] = m_status
+        entry['manifold_consistent'] = (
+            None if m_ok is None
+            else bool(m_ok == entry['strict_watertight']))
         entry['output_verts'] = int(len(new_v))
         entry['output_faces'] = int(len(new_t))
         return entry, None
@@ -273,10 +266,10 @@ def main():
             print('[%3d/%d] %-48s ERROR %s' % (i, len(files), f[:48], err['error'][:60]), flush=True)
         else:
             results[f] = entry
-            m3 = entry.get('manifold3d_watertight')
+            m3 = entry.get('manifold_watertight')
             m3s = 'WT' if m3 is True else ('OPEN' if m3 is False else 'n/a')
             fta = ' adv' if entry.get('ftetwild_adopted') else (' run' if entry.get('ftetwild_ran') else '')
-            print('[%3d/%d] %-48s cat=%-10s strict=%s m3d=%s (holes=%d nm=%d si=%d->%d)%s' % (
+            print('[%3d/%d] %-48s cat=%-10s strict=%s manifold=%s (holes=%d nm=%d si=%d->%d)%s' % (
                 i, len(files), f[:48], str(entry.get('category')),
                 entry['strict_watertight'], m3s, entry['strict_holes'],
                 entry['strict_non_manifold'],
@@ -315,30 +308,30 @@ def main():
         print('   %-45s cat=%s s2=%s s2err=%s' % (
             f, r.get('category'), r.get('stage2_ok'), (r.get('stage2_error') or '')[:50]))
 
-    # manifold3d cross-validation consistency (independent verdict vs the
-    # defects.detect() strict check). 'n/a' meshes = manifold3d unavailable
+    # Manifold cross-validation consistency (independent verdict vs the
+    # defects.detect() strict check). 'n/a' meshes = unavailable
     # in this environment (Linux py3.14 pymeshlab venv has no wheel).
-    m3_res = [r for r in results.values() if r.get('manifold3d_watertight') is not None]
-    m3_none = sum(1 for r in results.values() if r.get('manifold3d_watertight') is None)
+    m3_res = [r for r in results.values() if r.get('manifold_watertight') is not None]
+    m3_none = sum(1 for r in results.values() if r.get('manifold_watertight') is None)
     if m3_res:
-        agree = sum(1 for r in m3_res if r.get('m3d_consistent'))
+        agree = sum(1 for r in m3_res if r.get('manifold_consistent'))
         disagree = [(f, r) for f, r in results.items()
-                    if r.get('m3d_consistent') is False]
+                    if r.get('manifold_consistent') is False]
         print()
-        print('=== manifold3d cross-validation (independent watertight check) ===')
-        print('checked meshes        : %d (n/a when manifold3d absent: %d)' % (
+        print('=== Manifold cross-validation (independent watertight check) ===')
+        print('checked meshes        : %d (n/a when unavailable: %d)' % (
             len(m3_res), m3_none))
         print('agreement with strict : %d (%.1f%%)' % (
             agree, 100.0 * agree / len(m3_res)))
         print('disagreements         : %d' % len(disagree))
         for f, r in disagree:
-            print('   %-45s strict=%s m3d=%s (%s)' % (
-                f, r.get('strict_watertight'), r.get('manifold3d_watertight'),
-                r.get('manifold3d_status')))
+            print('   %-45s strict=%s manifold=%s (%s)' % (
+                f, r.get('strict_watertight'), r.get('manifold_watertight'),
+                r.get('manifold_status')))
     else:
         print()
-        print('=== manifold3d cross-validation ===')
-        print('manifold3d unavailable in this environment; column is n/a (%d meshes)' % m3_none)
+        print('=== Manifold cross-validation ===')
+        print('Manifold unavailable in this environment; column is n/a (%d meshes)' % m3_none)
 
     # Self-intersections before/after (input SI measured by the harness,
     # output SI measured on the final arrays). Separate signal from the
@@ -380,7 +373,7 @@ def main():
         print('=== fTetWild fallback tier ===')
         print('meshes where it ran      : %d' % len(ft_meshes))
         print('adopted                  : %d' % len(adopted))
-        print('  of which manifold3d post-processed : %d' % len(pp))
+        print('  of which Manifold post-processed : %d' % len(pp))
         print('adopt=False (kept stage-1) : %d' % len(not_adopted))
         print('adopted with shape_changed : %d' % len(shape))
         print('skipped as too large       : %d' % len(too_large))

@@ -3,7 +3,7 @@
 
 Checks that:
   1. defects.py is stdlib+numpy only (importing it must NOT pull in
-     pymeshlab/trimesh/manifold3d), so it stays importable anywhere.
+     pymeshlab/trimesh/Manifold), so it stays importable anywhere.
   2. detect() finds holes and non-manifold regions on a broken mesh, and
      returns nothing for a clean mesh.
   3. detect_non_manifold() pairs each half-edge with the correct face
@@ -34,7 +34,7 @@ def _clean_cube():
 
 def test_stdlib_only():
     import defects  # noqa: F401
-    for heavy in ('pymeshlab', 'trimesh', 'manifold3d'):
+    for heavy in ('pymeshlab', 'trimesh'):
         assert heavy not in sys.modules, (
             'defects import pulled in %s; it must stay stdlib+numpy only' % heavy)
 

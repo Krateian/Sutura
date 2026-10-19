@@ -285,13 +285,13 @@ def test_defensive_error_handling():
     print("  ✓ test_defensive_error_handling passed")
 
 
-def test_csg_bridge_forced():
-    # Force out-of-process csg_bridge execution via force_bridge=True parameter
+def test_transplant_ignores_force_bridge_flag():
+    # force_bridge is a retired compatibility flag; the Rust core always runs.
     v, t = _make_helical_thread_cylinder(damaged_idx=3)
     v_out, t_out, rep = rr.repair_repeat_auto(v, t, force_bridge=True)
 
-    assert rep['watertight'] is True, f"Forced bridge helical repair not watertight: {rep}"
-    assert rep['repaired'] is True, f"Forced bridge helical repair failed: {rep}"
+    assert rep['watertight'] is True, f"Rust transplant helical repair not watertight: {rep}"
+    assert rep['repaired'] is True, f"Rust transplant helical repair failed: {rep}"
     assert rep['positions_repaired'] == 1
     assert rep['hausdorff_outside'] < 1e-4
 
@@ -300,25 +300,25 @@ def test_csg_bridge_forced():
     src_pt = [0.0, 0.0, 1.0]
     dst_pt = [0.0, 3.5, 1.0]
     v_mout, t_mout, rep_m = rr.repair_repeat_manual(v_grid, t_grid, src_pt, dst_pt, force_bridge=True)
-    assert rep_m['watertight'] is True, f"Forced bridge manual repair not watertight: {rep_m}"
+    assert rep_m['watertight'] is True, f"Rust transplant manual repair not watertight: {rep_m}"
     assert rep_m['repaired'] is True
     assert rep_m['hausdorff_outside'] < 1e-4
     assert rep_m['volume_change'] > 0.0
-    print("  ✓ test_csg_bridge_forced passed (both auto and manual through csg_bridge.py)")
+    print("  ✓ test_transplant_ignores_force_bridge_flag passed (Rust core)")
 
 
-def test_csg_bridge_env_var():
-    # Force out-of-process csg_bridge execution via SUTURA_FORCE_CSG_BRIDGE env var
+def test_transplant_ignores_legacy_env_var():
+    # SUTURA_FORCE_CSG_BRIDGE is a retired compatibility env var; the Rust core always runs.
     old_env = os.environ.get('SUTURA_FORCE_CSG_BRIDGE')
     try:
         os.environ['SUTURA_FORCE_CSG_BRIDGE'] = '1'
         v, t = _make_tile_grid(damaged_ij=(1, 2))
         v_out, t_out, rep = rr.repair_repeat_auto(v, t)
-        assert rep['watertight'] is True, f"Env-var forced bridge repair not watertight: {rep}"
-        assert rep['repaired'] is True, f"Env-var forced bridge repair failed: {rep}"
+        assert rep['watertight'] is True, f"Rust transplant repair not watertight: {rep}"
+        assert rep['repaired'] is True, f"Rust transplant repair failed: {rep}"
         assert rep['positions_repaired'] == 1
         assert rep['hausdorff_outside'] < 1e-4
-        print("  ✓ test_csg_bridge_env_var passed (SUTURA_FORCE_CSG_BRIDGE=1)")
+        print("  ✓ test_transplant_ignores_legacy_env_var passed (Rust core)")
     finally:
         if old_env is None:
             os.environ.pop('SUTURA_FORCE_CSG_BRIDGE', None)
@@ -403,8 +403,8 @@ def main():
     test_tile_grid_bump_auto()
     test_helical_cylinder_auto()
     test_manual_repair()
-    test_csg_bridge_forced()
-    test_csg_bridge_env_var()
+    test_transplant_ignores_force_bridge_flag()
+    test_transplant_ignores_legacy_env_var()
     test_defensive_error_handling()
     elapsed = time.time() - t0
     print(f"\nAll tests passed in {elapsed:.2f} s (< 60 s target).")

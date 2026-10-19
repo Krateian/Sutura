@@ -207,7 +207,7 @@ jobs:
     steps:
       - name: Install base dependencies
         run: |
-          pacman -Syu --noconfirm base-devel git python desktop-file-utils sudo libglvnd fontconfig
+          pacman -Syu --noconfirm base-devel git python desktop-file-utils sudo libglvnd fontconfig cmake rust
 
       - uses: actions/checkout@v7
 
@@ -217,11 +217,14 @@ jobs:
           echo "archuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
           chown -R archuser:archuser "$GITHUB_WORKSPACE"
 
-      - name: Run install.sh and verify Python 3.11 standalone runtime
+      - name: Run install.sh and verify the Rust Manifold core
         run: |
-          su - archuser -c "cd '$GITHUB_WORKSPACE' && ./install.sh"
-          su - archuser -c "test -x ~/.local/share/sutura/python311/bin/python3.11"
-          su - archuser -c "~/.local/share/sutura/venv311/bin/python -c \"import sys; assert sys.version_info[:2] == (3, 11), sys.version\""
+          su - archuser -c "cd '$GITHUB_WORKSPACE' && SUTURA_GEOM_FROM_SOURCE=1 ./install.sh"
+          # A default install no longer needs Python 3.11: Stage 2 runs in
+          # sutura_geom. venv311 is created only for the optional fTetWild extra.
+          su - archuser -c "test ! -e ~/.local/share/sutura/python311"
+          su - archuser -c "test ! -e ~/.local/share/sutura/venv311"
+          su - archuser -c "~/.local/share/sutura/venv/bin/python -c \"import sutura_geom; assert hasattr(sutura_geom, 'stage2_rebuild')\""
 
       - name: "Check a: CLI repair (if install succeeded)"
         run: |

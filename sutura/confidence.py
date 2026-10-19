@@ -3,7 +3,7 @@
 stdlib-only by design (same rule as classification.py / defects.py /
 mesh_classifier.py): the CLI runs under the PyMeshLab venv while the GUI
 shells out to it, so both sides can import this module regardless of which
-interpreter is running. Keep it free of numpy/pymeshlab/manifold3d.
+interpreter is running. Keep it free of numpy/pymeshlab/Manifold.
 
 Note: estimate_confidence_pre_repair() sources the class-specific tuning
 gates from repair.py at call time (see _tuning_gates) -- a lazy import, so

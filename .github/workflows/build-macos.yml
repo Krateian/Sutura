@@ -3,7 +3,7 @@ name: Build macOS .app/.dmg
 # Builds the macOS standalone app from the proven onedir recipe: PyMeshLab
 # from conda-forge (no Apple Silicon PyPI wheel), the CLI + render tools as
 # onedir PyInstaller executables (onefile children hang under a Qt GUI
-# parent), manifold_bridge.py shipped beside sutura-cli so stage 2 works
+# parent), sutura_geom ships the Manifold kernel so stage 2 works
 # self-contained, a windowed GUI .app with the tools in Contents/MacOS, and
 # an UDZO .dmg. Runs on published releases like the AppImage workflow; the
 # release is created by the maintainer's `gh` (a user token), never by this
@@ -57,9 +57,9 @@ jobs:
         run: |
           conda install -y -c conda-forge pymeshlab
           pip install --quiet \
-            manifold3d trimesh PySide6-Essentials==6.11.2 pyinstaller numpy
+            PySide6-Essentials==6.11.2 pyinstaller numpy
           python -c \
-            "import pymeshlab, manifold3d, trimesh, PySide6; print('deps OK')"
+            "import pymeshlab, PySide6; print('deps OK')"
 
       # The Rust extension (rust/sutura-geom, abi3-py311) is needed by Graft
       # (#13), Exact Refine (#6) and the indirect tier. Install it into the
@@ -106,8 +106,7 @@ jobs:
           export PYTHONPATH="$GITHUB_WORKSPACE/sutura"
           PYS=("--noconfirm" "--log-level" "WARN"
             "--paths" "sutura"
-            "--hidden-import" "pymeshlab" "--hidden-import" "manifold3d"
-            "--hidden-import" "trimesh"
+            "--hidden-import" "pymeshlab"
             "--hidden-import" "classification" "--hidden-import" "confidence"
             "--hidden-import" "defects" "--hidden-import" "topology" "--hidden-import" "mesh_classifier"
             "--hidden-import" "history" "--hidden-import" "heatmap"
@@ -124,13 +123,12 @@ jobs:
             "--hidden-import" "mirror_repair" "--hidden-import" "wall_thickness"
             "--hidden-import" "shell_wrap"
             "--hidden-import" "sutura_geom" "--collect-all" "sutura_geom"
-            "--hidden-import" "csg_bridge"
-            "--hidden-import" "sutura_engine"
+                        "--hidden-import" "sutura_engine"
             "--collect-submodules" "sutura_engine"
             "--collect-submodules" "sutura.sutura_engine"
             "--paths" "."
             "--exclude-module" "scipy"
-            "--collect-data" "pymeshlab" "--collect-data" "manifold3d")
+            "--collect-data" "pymeshlab")
           for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
                      before-after-render:before_after_render.py \
                      viewer-data-render:viewer_data_render.py \
@@ -138,13 +136,11 @@ jobs:
             name="${t%%:*}"; entry="sutura/${t#*:}"
             python -m PyInstaller "${PYS[@]}" --name "$name" --onedir "$entry"
           done
-          # ship manifold_bridge.py + ftetwild_bridge.py + indirect_bridge.py beside
-          # sutura-cli so the bundle-aware _resolve_bridge() finds them
-          # (stage 2 / fTetWild fallback / indirect autorefine, in-process)
-          cp sutura/manifold_bridge.py dist/sutura-cli/
+          # ship ftetwild_bridge.py + indirect_bridge.py beside sutura-cli so
+          # the bundle-aware resolvers find them (fTetWild fallback / indirect
+          # autorefine, in-process). Stage 2 now runs in sutura_geom.
           cp sutura/ftetwild_bridge.py dist/sutura-cli/
           cp sutura/indirect_bridge.py dist/sutura-cli/
-          cp sutura/csg_bridge.py dist/sutura-cli/
 
       - name: Build GUI .app (windowed onedir)
         run: |
@@ -156,8 +152,7 @@ jobs:
             --noconfirm --log-level WARN \
             --paths . --paths sutura \
             --hidden-import sutura \
-            --hidden-import pymeshlab --hidden-import manifold3d \
-            --hidden-import trimesh \
+            --hidden-import pymeshlab \
             --hidden-import classification --hidden-import confidence \
             --hidden-import defects --hidden-import topology --hidden-import mesh_classifier \
             --hidden-import history --hidden-import heatmap \
@@ -172,12 +167,11 @@ jobs:
             --hidden-import mirror_repair --hidden-import wall_thickness \
             --hidden-import shell_wrap \
             --hidden-import sutura_geom --collect-all sutura_geom \
-            --hidden-import csg_bridge \
             --hidden-import sutura_engine \
             --collect-submodules sutura_engine \
             --collect-submodules sutura.sutura_engine \
             --exclude-module scipy \
-            --collect-data pymeshlab --collect-data manifold3d \
+            --collect-data pymeshlab \
             --name Sutura --windowed --icon assets/icon/Sutura.icns \
             sutura/gui.py
 
@@ -218,7 +212,7 @@ jobs:
       - name: Smoke repair a broken cube via the frozen CLI
         # The frozen CLI must actually repair, not just list methods: run it on
         # a deliberately broken STL and assert the report is watertight. This
-        # also exercises the real pymeshlab + manifold3d + sutura_geom path in
+        # also exercises the real pymeshlab + sutura_geom (including Manifold) path in
         # the frozen app (stage 1, stage 2, and the sutura_engine method
         # registry that repair_with_methods drives). repair.py emits a single
         # JSON object on stdout (repair.py main, single-file branch), so stdout

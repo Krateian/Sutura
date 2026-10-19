@@ -19,7 +19,7 @@ the dominant open boundary loop:
      stitch does not produce a valid solid.
 
 Operates on numpy arrays (verts float64 Nx3, tris int Mx3). numpy + topology
-only at import time; pymeshlab / trimesh / manifold3d are imported lazily
+only at import time; pymeshlab / trimesh are imported lazily
 inside the functions that need them, so the module stays importable anywhere.
 """
 import numpy as np

@@ -99,10 +99,10 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
                 rec['reason'] = notes[0] if notes else 'nothing to repair'
             stats['repeat'] = rec
             return ms, after
-        # Validate the raw manifold3d transplant (in-memory). unlike the
+        # Validate the raw Manifold transplant (in-memory). unlike the
         # closing tiers it is NOT float32-welded here: the CSG output has
         # coincident cut-seam vertices whose pymeshlab weld-repair opens holes,
-        # while the later stage-2 manifold3d rebuild makes the mesh reload-safe
+        # while the later stage-2 Manifold rebuild makes the mesh reload-safe
         # as a side effect. The reload-equivalent counts are still recorded for
         # transparency; the top-level P-HONEST verdict remains authoritative.
         cand_v = np.asarray(rv, dtype=np.float32)

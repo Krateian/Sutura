@@ -36,83 +36,90 @@ else
 fi
 [ -f "$SRC/requirements.txt" ] || die "could not obtain requirements.txt"
 
+WANT_FTETWILD="${SUTURA_WITH_FTETWILD:-0}"
+
 print_python311_instructions() {
-    echo "python3.11 not found."
-    echo "manifold3d (stage 2) ships wheels only up to Python 3.13."
+    echo "python3.11 not found (only needed for the optional fTetWild tier)."
     echo "On Arch:                    python 3.11 is not in the official repos; unset"
     echo "                            SUTURA_NO_PYTHON_DOWNLOAD to let install.sh fetch"
     echo "                            a standalone build, or provide python3.11 yourself"
     echo "                            (e.g. uv python install 3.11)."
     echo "On Debian/Ubuntu (22.04+):  sudo apt install python3.11 python3.11-venv"
     echo "On Fedora:                  sudo dnf install python3.11"
-    echo "Or install the venv311 manually and run install.sh again."
+    echo "Or install the venv311 manually and re-run install.sh with"
+    echo "SUTURA_WITH_FTETWILD=1."
 }
 
-# --- find a python3.11 for the manifold3d venv ----------------------------
-VENV311_PY="$(command -v python3.11 || true)"
-if [ -z "$VENV311_PY" ]; then
-    if "$MAIN_PY" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 11) else 1)' 2>/dev/null; then
-        VENV311_PY="$MAIN_PY"
-    elif [ -x "$APP_DIR/python311/bin/python3.11" ]; then
-        # Reuse existing standalone Python 3.11 from a previous install run
-        VENV311_PY="$APP_DIR/python311/bin/python3.11"
-    else
-        if [ "${SUTURA_NO_PYTHON_DOWNLOAD:-0}" = "1" ]; then
-            print_python311_instructions
-            exit 1
-        fi
-
-        for tool in curl tar sha256sum; do
-            if ! command -v "$tool" >/dev/null 2>&1; then
-                echo "missing tool: $tool"
+# --- optional fTetWild environment ----------------------------------------
+# Python 3.11 is only needed by pytetwild/pyvista. A normal install uses the
+# Rust Manifold core and never downloads it.
+VENV311_PY=""
+if [ "$WANT_FTETWILD" = "1" ]; then
+    VENV311_PY="$(command -v python3.11 || true)"
+    if [ -z "$VENV311_PY" ]; then
+        if "$MAIN_PY" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 11) else 1)' 2>/dev/null; then
+            VENV311_PY="$MAIN_PY"
+        elif [ -x "$APP_DIR/python311/bin/python3.11" ]; then
+            # Reuse existing standalone Python 3.11 from a previous install run
+            VENV311_PY="$APP_DIR/python311/bin/python3.11"
+        else
+            if [ "${SUTURA_NO_PYTHON_DOWNLOAD:-0}" = "1" ]; then
                 print_python311_instructions
                 exit 1
             fi
-        done
 
-        arch="$(uname -m)"
-        case "$arch" in
-            x86_64|aarch64) pbs_arch="$arch" ;;
-            *)
-                echo "automatic python-build-standalone download not supported on $arch"
-                print_python311_instructions
-                exit 1
-                ;;
-        esac
+            for tool in curl tar sha256sum; do
+                if ! command -v "$tool" >/dev/null 2>&1; then
+                    echo "missing tool: $tool"
+                    print_python311_instructions
+                    exit 1
+                fi
+            done
 
-        # python-build-standalone release for fallback Python 3.11 runtime.
-        # NOTE: PBS_TAG and the Python version must be bumped together with
-        # scripts/build_appimage.sh.
-        PBS_TAG="20260814"
-        PBS_VERSION="3.11.16"
-        PBS_BASE="https://github.com/indygreg/python-build-standalone/releases/download/$PBS_TAG"
-        PBS_TARBALL="cpython-${PBS_VERSION}+${PBS_TAG}-${pbs_arch}-unknown-linux-gnu-install_only.tar.gz"
+            arch="$(uname -m)"
+            case "$arch" in
+                x86_64|aarch64) pbs_arch="$arch" ;;
+                *)
+                    echo "automatic python-build-standalone download not supported on $arch"
+                    print_python311_instructions
+                    exit 1
+                    ;;
+            esac
 
-        echo "==> downloading standalone Python 3.11 (~30 MB download, ~100 MB installed)"
-        dl_dir="$(mktemp -d "${TMPDIR:-/tmp}/sutura-py311.XXXXXX")"
-        curl -fL --retry 3 -o "$dl_dir/$PBS_TARBALL" "$PBS_BASE/$PBS_TARBALL"
-        curl -fL --retry 3 -o "$dl_dir/SHA256SUMS" "$PBS_BASE/SHA256SUMS"
+            # python-build-standalone release for fallback Python 3.11 runtime.
+            # NOTE: PBS_TAG and the Python version must be bumped together with
+            # scripts/build_appimage.sh.
+            PBS_TAG="20260814"
+            PBS_VERSION="3.11.16"
+            PBS_BASE="https://github.com/indygreg/python-build-standalone/releases/download/$PBS_TAG"
+            PBS_TARBALL="cpython-${PBS_VERSION}+${PBS_TAG}-${pbs_arch}-unknown-linux-gnu-install_only.tar.gz"
 
-        # Verify SHA-256 against the SHA256SUMS the project publishes on the same
-        # release (FAZ14): the tarball must verify OK, else abort and delete download.
-        # See build_appimage.sh for details on --ignore-missing and || true under set -e.
-        echo "==> verifying python-build-standalone SHA-256"
-        pbs_ok=$(cd "$dl_dir" && sha256sum -c --ignore-missing SHA256SUMS 2>/dev/null | grep -c ': OK') || true
-        if [ "$pbs_ok" -ne 1 ]; then
-            rm -rf "$dl_dir"
-            die "SHA-256 verification failed for python-build-standalone (got $pbs_ok/1 OK)"
+            echo "==> downloading standalone Python 3.11 (~30 MB download, ~100 MB installed)"
+            dl_dir="$(mktemp -d "${TMPDIR:-/tmp}/sutura-py311.XXXXXX")"
+            curl -fL --retry 3 -o "$dl_dir/$PBS_TARBALL" "$PBS_BASE/$PBS_TARBALL"
+            curl -fL --retry 3 -o "$dl_dir/SHA256SUMS" "$PBS_BASE/SHA256SUMS"
+
+            # Verify SHA-256 against the SHA256SUMS the project publishes on the same
+            # release (FAZ14): the tarball must verify OK, else abort and delete download.
+            # See build_appimage.sh for details on --ignore-missing and || true under set -e.
+            echo "==> verifying python-build-standalone SHA-256"
+            pbs_ok=$(cd "$dl_dir" && sha256sum -c --ignore-missing SHA256SUMS 2>/dev/null | grep -c ': OK') || true
+            if [ "$pbs_ok" -ne 1 ]; then
+                rm -rf "$dl_dir"
+                die "SHA-256 verification failed for python-build-standalone (got $pbs_ok/1 OK)"
+            fi
+
+            echo "==> extracting Python 3.11 runtime to $APP_DIR/python311"
+            tmp_extract="$(mktemp -d "${TMPDIR:-/tmp}/sutura-extract.XXXXXX")"
+            tar xzf "$dl_dir/$PBS_TARBALL" -C "$tmp_extract"
+            mkdir -p "$APP_DIR"
+            rm -rf "$APP_DIR/python311"
+            mv "$tmp_extract/python" "$APP_DIR/python311"
+            rm -rf "$tmp_extract" "$dl_dir"
+
+            [ -x "$APP_DIR/python311/bin/python3.11" ] || die "extracted Python 3.11 binary not found at $APP_DIR/python311/bin/python3.11"
+            VENV311_PY="$APP_DIR/python311/bin/python3.11"
         fi
-
-        echo "==> extracting Python 3.11 runtime to $APP_DIR/python311"
-        tmp_extract="$(mktemp -d "${TMPDIR:-/tmp}/sutura-extract.XXXXXX")"
-        tar xzf "$dl_dir/$PBS_TARBALL" -C "$tmp_extract"
-        mkdir -p "$APP_DIR"
-        rm -rf "$APP_DIR/python311"
-        mv "$tmp_extract/python" "$APP_DIR/python311"
-        rm -rf "$tmp_extract" "$dl_dir"
-
-        [ -x "$APP_DIR/python311/bin/python3.11" ] || die "extracted Python 3.11 binary not found at $APP_DIR/python311/bin/python3.11"
-        VENV311_PY="$APP_DIR/python311/bin/python3.11"
     fi
 fi
 command -v "$MAIN_PY" >/dev/null || die "python3 not found"
@@ -125,12 +132,10 @@ echo "==> virtualenv (stage 1: PyMeshLab + GUI) [$MAIN_PY]"
 "$APP_DIR/venv/bin/pip" install --quiet -r "$SRC/requirements.txt"
 "$APP_DIR/venv/bin/pip" install --quiet -r "$SRC/requirements-gui.txt"
 
-echo "==> virtualenv (stage 2: manifold3d) [$VENV311_PY]"
-[ -d "$APP_DIR/venv311" ] || "$VENV311_PY" -m venv "$APP_DIR/venv311"
-"$APP_DIR/venv311/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/venv311/bin/pip" install --quiet -r "$SRC/requirements-311.txt"
-if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
-    echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
+if [ "$WANT_FTETWILD" = "1" ]; then
+    echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed) [$VENV311_PY]"
+    [ -d "$APP_DIR/venv311" ] || "$VENV311_PY" -m venv "$APP_DIR/venv311"
+    "$APP_DIR/venv311/bin/pip" install --quiet --upgrade pip
     "$APP_DIR/venv311/bin/pip" install --quiet -r "$SRC/requirements-ftetwild.txt"
 fi
 
@@ -143,14 +148,15 @@ echo "==> required: sutura_geom Rust extension (Graft #13, ~0.7 MB)"
 [ -f "$SRC/scripts/install_sutura_geom.sh" ] \
     || die "scripts/install_sutura_geom.sh is missing; sutura_geom is required"
 bash "$SRC/scripts/install_sutura_geom.sh" "$APP_DIR/venv/bin/python" "$SRC"
-bash "$SRC/scripts/install_sutura_geom.sh" "$APP_DIR/venv311/bin/python" "$SRC"
+if [ -x "$APP_DIR/venv311/bin/python" ]; then
+    bash "$SRC/scripts/install_sutura_geom.sh" "$APP_DIR/venv311/bin/python" "$SRC"
+fi
 
 echo "==> copying application files"
 # __init__.py is deliberately not copied: the installed layout is flat (no
 # package import), so repair.py/gui.py resolve their flat imports from APP_DIR
 # itself. The AppImage/macOS package layouts copy it separately.
 install -m 0755 "$SRC/sutura/repair.py"          "$APP_DIR/repair.py"
-install -m 0755 "$SRC/sutura/manifold_bridge.py" "$APP_DIR/manifold_bridge.py"
 install -m 0755 "$SRC/sutura/ftetwild_bridge.py" "$APP_DIR/ftetwild_bridge.py"
 install -m 0755 "$SRC/sutura/indirect_bridge.py"  "$APP_DIR/indirect_bridge.py"
 install -m 0755 "$SRC/sutura/classification.py"  "$APP_DIR/classification.py"
@@ -174,7 +180,6 @@ install -m 0755 "$SRC/sutura/repeat_picker_render.py" "$APP_DIR/repeat_picker_re
 install -m 0755 "$SRC/sutura/mirror_repair.py"     "$APP_DIR/mirror_repair.py"
 install -m 0755 "$SRC/sutura/wall_thickness.py"    "$APP_DIR/wall_thickness.py"
 install -m 0755 "$SRC/sutura/shell_wrap.py"        "$APP_DIR/shell_wrap.py"
-install -m 0755 "$SRC/sutura/csg_bridge.py"       "$APP_DIR/csg_bridge.py"
 install -m 0755 "$SRC/sutura/history.py"         "$APP_DIR/history.py"
 install -m 0755 "$SRC/sutura/repair_score.py"     "$APP_DIR/repair_score.py"
 install -m 0644 "$SRC/sutura/repair_score_config.json" "$APP_DIR/repair_score_config.json"

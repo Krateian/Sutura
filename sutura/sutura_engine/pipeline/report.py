@@ -589,7 +589,7 @@ def human_report(r, show_defects=False, show_diff=False):
                 adopted = ' adopted'
             else:
                 adopted = ' NOT adopted (kept stage-1 output)'
-            pp = ' + manifold3d post-process' if ft_r.get('manifold_postprocessed') else ''
+            pp = ' + Manifold post-process' if ft_r.get('manifold_postprocessed') else ''
             if ft_r.get('adopted_attempt') == 'optimize':
                 pp += ' (second attempt, optimisation on)'
             if ft_r.get('ftetwild_decimated'):

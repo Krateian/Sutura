@@ -348,10 +348,8 @@ def _check_validity(verts, tris):
     """Dependency-free watertight validity check: 2-manifold, 0 boundary edges,
     consistent orientation and positive volume.
 
-    Deliberately pure numpy, no ``manifold3d``: the main venv (Linux/AppImage)
-    has no manifold3d (it ships wheels only up to Python 3.13 and lives in the
-    stage-2 venv behind ``manifold_bridge.py``), so an in-process import would
-    make this tier unusable there. This mirrors the manifold3d verdict:
+    Deliberately pure numpy: this is an independent, dependency-free verdict,
+    not a wrapper around the Manifold kernel. It mirrors the Manifold verdict:
       - every undirected edge is used by exactly two triangles (0 boundary, 0
         non-manifold edges);
       - the two uses of each interior edge are oppositely directed (consistent

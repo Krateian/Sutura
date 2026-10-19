@@ -30,6 +30,10 @@ num-traits = "0.2"
 # dependency; ~1.1 MB of source in the lockfile (rayon + rayon-core +
 # crossbeam-deque/epoch + either), MIT OR Apache-2.0.
 rayon = "1.12"
+# The same C++ Manifold kernel the Python manifold3d package uses, called
+# in-process for Stage 2, outer-shell union, repeated-element CSG and the
+# Graft local stitch. Static link, no TBB (sequential, deterministic).
+manifold-csg = { version = "=0.4.1", default-features = false }
 # Sparse direct LU for the Flap fairing normal-equation system.
 # Pure Rust, MIT; no C/LAPACK/system dependency in the default build.
 faer = { version = "0.24", features = ["sparse-linalg"] }

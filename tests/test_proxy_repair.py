@@ -26,10 +26,10 @@ sys.path.insert(0, SUTURA)
 sys.path.insert(0, REPO)
 
 # The in-process stage-2 / proximity stack is optional on the Linux CI legs
-# (manifold3d has no py3.14 wheel): skip cleanly where it is unavailable.
+# (skip cleanly where an optional dependency is unavailable).
 try:
     import trimesh  # noqa: E402
-    import manifold3d  # noqa: E402
+    import sutura_geom  # noqa: E402
     import sutura.proxy_repair as pr  # noqa: E402
 except Exception as _exc:  # noqa: BLE001 - optional test dependency
     print('skip tests/test_proxy_repair.py: %s' % _exc)
@@ -77,8 +77,8 @@ def test_build_proxy():
     pv, pt, info = pr.build_proxy(v, t)
     assert len(pt) >= 100, f"Proxy should have sufficient faces, got {len(pt)}"
 
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=pv, tri_verts=pt))
-    assert mf.status() == manifold3d.Error.NoError, f"Proxy manifold error: {mf.status()}"
+    ok, status = sutura_geom.watertight_check(pv, pt)
+    assert ok, f"Proxy Manifold error: {status}"
     print(f"  ✓ test_build_proxy passed (faces: {len(pt)}, method: {info['method']})")
 
 
@@ -99,8 +99,8 @@ def test_proxy_template_repair_sphere():
         f"Mean Hausdorff distance too high: {rep['hausdorff_mean']}"
     )
 
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"Manifold error: {mf.status()}"
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
     print(
         f"  ✓ test_proxy_template_repair_sphere passed "
         f"(faces: {len(t_out)}, proj_healthy: {rep['projected_fraction_healthy']:.1%}, H_mean: {rep['hausdorff_mean']:.5f})"
@@ -118,9 +118,9 @@ def test_proxy_template_repair_torus():
     assert rep['projected_fraction_healthy'] >= 0.90, (
         f"Healthy subset projection too low: {rep['projected_fraction_healthy']:.1%} (< 90%)"
     )
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"Manifold error: {mf.status()}"
-    print(f"  ✓ test_proxy_template_repair_torus passed (faces: {len(t_out)}, genus: {mf.genus()})")
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
+    print(f"  ✓ test_proxy_template_repair_torus passed (faces: {len(t_out)})")
 
 
 def _make_fan_box(edge=1.0, W=40.0, H=4.0):
@@ -186,8 +186,8 @@ def test_build_proxy_bounded_on_fan_mesh():
         f"expected the alpha-wrap fallback on the hang mesh, got {info['method']}")
     assert len(pt) >= 100, f"alpha-wrap proxy too small: {len(pt)} faces"
     assert elapsed < 25.0, f"build_proxy was not bounded: {elapsed:.1f}s"
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=pv, tri_verts=pt))
-    assert mf.status() == manifold3d.Error.NoError, f"Proxy manifold error: {mf.status()}"
+    ok, status = sutura_geom.watertight_check(pv, pt)
+    assert ok, f"Proxy Manifold error: {status}"
     print(f"  ✓ test_build_proxy_bounded_on_fan_mesh passed "
           f"(method: {info['method']}, faces: {len(pt)}, {elapsed:.1f}s)")
 

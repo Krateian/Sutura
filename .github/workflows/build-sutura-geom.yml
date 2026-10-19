@@ -4,9 +4,14 @@ name: Build sutura_geom wheels
 # abi3-py311) for the three platforms the install helper
 # (scripts/install_sutura_geom.sh) downloads, plus the SHA256SUMS file it
 # verifies against:
-#   * linux x86_64  -> manylinux wheel (manylinux: auto)
-#   * linux aarch64 -> manylinux wheel, cross-compiled (manylinux: auto)
+#   * linux x86_64  -> manylinux_2_28 wheel (cmake + gcc 12 from the image)
+#   * linux aarch64 -> manylinux_2_28 wheel, cross-compiled
 #   * macOS         -> universal2 wheel (--target universal2-apple-darwin)
+#
+# `manifold-csg` compiles the C++ Manifold kernel from source (static link, no
+# TBB). The manylinux_2_28 image is used because C++17 is needed; the default
+# manylinux2014 image's toolchain is too old. `before-script-linux` installs
+# cmake/git if the image does not already provide them.
 #
 # On a published release and on a workflow_dispatch with a `tag` input the
 # wheels + sums are uploaded to the matching GitHub Release; the release is
@@ -54,11 +59,14 @@ jobs:
           - name: linux-x86_64
             os: ubuntu-latest
             target: x86_64
-            manylinux: auto
+            manylinux: manylinux_2_28
           - name: linux-aarch64
-            os: ubuntu-latest
+            # Native arm64 runner: the C++ Manifold build must not be
+            # cross-compiled (a host x86_64 cmake build produces objects the
+            # aarch64 linker rejects).
+            os: ubuntu-24.04-arm
             target: aarch64
-            manylinux: auto
+            manylinux: manylinux_2_28
           - name: macos-universal2
             os: macos-latest
             target: universal2-apple-darwin
@@ -70,12 +78,20 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Configure universal2 C++ build
+        if: matrix.name == 'macos-universal2'
+        run: echo "CMAKE_OSX_ARCHITECTURES=arm64;x86_64" >> "$GITHUB_ENV"
+
       - name: Build wheel (maturin, release)
         uses: PyO3/maturin-action@v1
         with:
           maturin-version: 1.15.0
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
+          before-script-linux: |
+            if ! command -v cmake >/dev/null 2>&1; then
+              (dnf install -y cmake gcc-c++ git || yum install -y cmake gcc-c++ git)
+            fi
           working-directory: rust/sutura-geom
           args: --release --out dist
 

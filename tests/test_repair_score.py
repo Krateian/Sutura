@@ -2,7 +2,7 @@
 """Regression test for sutura/repair_score.py (Repair Health / Repair Risk).
 
 Checks that:
-  1. repair_score.py is stdlib-only (no numpy/pymeshlab/manifold3d).
+  1. repair_score.py is stdlib-only (no numpy/pymeshlab/Manifold).
   2. The shipped config loads and normalizes (health weights sum to 100; the
      status lookup table has all 9 tier combinations).
   3. Health: a clean watertight result is 100; a mesh with remaining holes /
@@ -53,7 +53,7 @@ def test_stdlib_only():
     import subprocess
     code = (
         "import sys; sys.path.insert(0, %r); import repair_score; "
-        "bad=[m for m in ('numpy','pymeshlab','manifold3d','trimesh','scipy') "
+        "bad=[m for m in ('numpy','pymeshlab','sutura_geom','trimesh','scipy') "
         "if m in sys.modules]; "
         "print('OK' if not bad else 'BAD:'+','.join(bad))" % SUTURA
     )

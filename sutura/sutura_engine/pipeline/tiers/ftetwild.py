@@ -4,7 +4,7 @@
 
 Tetrahedralizes the original surface (via the ftetwild_bridge), extracts a
 watertight SI-free boundary, decimates a wastefully dense boundary and
-manifold3d-post-processes a pinched one. Includes the availability probe and
+Manifold-post-processes a pinched one. Includes the availability probe and
 the bridge runner. Moved verbatim from sutura/repair.py; no logic change.
 """
 import importlib.util
@@ -157,7 +157,7 @@ def run_ftetwild(inter, out_obj, params=None, timeout=None):
 
 def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_after,
                                    cand_holes, cand_nm):
-    """manifold3d post-process of the fTetWild boundary.
+    """Manifold post-process of the fTetWild boundary.
 
     fTetWild's raw boundary can carry non-manifold edges on dense-SI scans
     (e.g. thingi10k_1038441: 0 SI / 0 holes but 531 nm edges), and it can be
@@ -194,7 +194,7 @@ def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_aft
 
 
 def _ftetwild_candidate(ml, tmpdir, cand_v, cand_t):
-    """Measure a boundary candidate and run the manifold3d post-process on it.
+    """Measure a boundary candidate and run the Manifold post-process on it.
 
     Returns ``(verts, tris, meshset, topo, holes, nm, postprocessed)``; the
     same measurement/post-process the tier always applied to a single fTetWild
@@ -323,7 +323,7 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t, spec):
             continue
         info.update({'ftetwild_decimated': True,
                      # ``*_faces_final`` is the candidate actually adopted,
-                     # AFTER the in-tier manifold3d post-process (which can
+                     # AFTER the in-tier Manifold post-process (which can
                      # add faces); ``*_faces_decimated`` is the quadric output
                      # before it. Neither is the final file's face count --
                      # stage 2 rebuilds the adopted boundary again.

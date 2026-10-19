@@ -318,16 +318,16 @@ def test_two_manifold_boundary_is_left_unchanged():
 
 
 def test_bowtie_with_real_stage2():
-    """End to end with manifold3d when the stage-2 bridge is usable here."""
+    """End to end with Manifold when the stage-2 Rust core is usable here."""
     with tempfile.TemporaryDirectory(prefix='sutura-bowtie-') as tmp:
         probe_in = os.path.join(tmp, 'probe.obj')
         repair.write_obj(probe_in, _SPLIT_V, _SPLIT_T)
         _rep, ok = repair.run_stage2(probe_in, os.path.join(tmp, 'probe_out.obj'))
     if not ok:
-        print('    (stage 2 unavailable: real manifold3d check skipped)')
+        print('    (stage 2 unavailable: real Manifold check skipped)')
         return
     _v, _t, _ms, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, None)
-    assert done, 'manifold3d post-process not adopted'
+    assert done, 'Manifold post-process not adopted'
     assert holes == 0 and nm == 0 and topo.get('is_mesh_two_manifold')
 
 

@@ -1,8 +1,8 @@
 version: 2
 updates:
-  # Python deps: requirements.txt, requirements-311.txt, requirements-gui.txt
+  # Python deps: requirements.txt, requirements-gui.txt
   # all live in the repo root. Dependabot scans the pip directory for every
-  # requirements*.txt file, so a single "/" entry covers all three.
+  # requirements*.txt file, so a single "/" entry covers both.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
