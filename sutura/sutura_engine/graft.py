@@ -20,7 +20,7 @@ faithful does the closing radius ladder run, starting at the smallest useful
 radius (≈1.5 voxel) and growing ×1.6 while the result is not reload-watertight.
 
 The module is intentionally independent of ``methods.py``/the method registry:
-it imports only numpy, scipy, trimesh, ``sutura_geom`` and a handful of pure
+it imports only numpy, trimesh, ``sutura_geom`` and a handful of pure
 helpers from ``repair.py``/``defects.py``, so it can be moved into the engine
 package without rework.  It is a *geometry-inventing* tier (it closes holes and
 openings by adding material), hence ``invents_geometry=True``, the one-sided

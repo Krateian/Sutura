@@ -70,7 +70,7 @@ def proxy_available() -> Tuple[bool, Optional[str]]:
         if (importlib.util.find_spec('sutura_engine.methods.proxy') is None and
                 importlib.util.find_spec('proxy_repair') is None):
             return False, 'proxy_repair is not available'
-        for mod in ('trimesh', 'scipy'):
+        for mod in ('numpy', 'trimesh', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
@@ -79,7 +79,7 @@ def proxy_available() -> Tuple[bool, Optional[str]]:
 
 
 def mirror_available() -> Tuple[bool, Optional[str]]:
-    """Registry method 14 needs mirror_repair plus its numpy/scipy deps."""
+    """Registry method 14 needs mirror_repair plus numpy and sutura_geom."""
     try:
         if (importlib.util.find_spec('sutura_engine.methods.closing') is None and
                 importlib.util.find_spec('closing') is None):
@@ -88,7 +88,7 @@ def mirror_available() -> Tuple[bool, Optional[str]]:
                 importlib.util.find_spec('mirror_repair') is None and
                 importlib.util.find_spec('sutura.mirror_repair') is None):
             return False, 'sutura_engine.mirror is not available'
-        for mod in ('numpy', 'scipy'):
+        for mod in ('numpy', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
@@ -97,13 +97,13 @@ def mirror_available() -> Tuple[bool, Optional[str]]:
 
 
 def wall_available() -> Tuple[bool, Optional[str]]:
-    """Registry method 15 needs wall_thickness plus numpy/scipy."""
+    """Registry method 15 needs wall_thickness plus numpy and sutura_geom."""
     try:
         if (importlib.util.find_spec('sutura_engine.wall') is None and
                 importlib.util.find_spec('wall_thickness') is None and
                 importlib.util.find_spec('sutura.wall_thickness') is None):
             return False, 'sutura_engine.wall is not available'
-        for mod in ('numpy', 'scipy'):
+        for mod in ('numpy', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
@@ -117,7 +117,7 @@ def repeat_available() -> Tuple[bool, Optional[str]]:
         if (importlib.util.find_spec('sutura_engine.methods.repeat') is None and
                 importlib.util.find_spec('repeat_repair') is None):
             return False, 'repeat_repair is not available'
-        for mod in ('trimesh', 'scipy'):
+        for mod in ('numpy', 'trimesh', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
@@ -128,9 +128,8 @@ def repeat_available() -> Tuple[bool, Optional[str]]:
 def dressing_available() -> Tuple[bool, Optional[str]]:
     """Registry method 16 needs the Dressing tier and its field backend.
 
-    Available when either the Rust ``sutura_geom.dressing_coat`` core exists or
-    the numpy fallback prerequisites are present (``sutura_geom.sdf_grid`` plus
-    scipy, both already required by Graft)."""
+    Available when the Rust ``sutura_geom`` core (``dressing_coat`` or
+    ``sdf_grid``/``edt_grid``) and numpy are present."""
     try:
         if (importlib.util.find_spec('sutura_engine.dressing') is None
                 and importlib.util.find_spec('dressing') is None):
@@ -148,7 +147,7 @@ def dressing_available() -> Tuple[bool, Optional[str]]:
                 return False, 'sutura_geom has neither dressing_coat nor sdf_grid'
         except Exception as e:
             return False, 'sutura_geom import failed: %s' % e
-        for mod in ('numpy', 'scipy'):
+        for mod in ('numpy', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None
@@ -208,7 +207,7 @@ def graft_available() -> Tuple[bool, Optional[str]]:
                 return False, 'sutura_geom has no morph_close (rebuild needed)'
         except Exception as e:
             return False, 'sutura_geom import failed: %s' % e
-        for mod in ('numpy', 'trimesh', 'scipy'):
+        for mod in ('numpy', 'trimesh', 'sutura_geom'):
             if importlib.util.find_spec(mod) is None:
                 return False, '%s is not available' % mod
         return True, None

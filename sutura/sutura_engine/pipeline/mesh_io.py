@@ -184,7 +184,7 @@ def should_extract_outer_shell(verts, tris, mesh_type=None, si_count=0):
     components > 1, and the closed components overlap or touch.
 
     Pure-numpy replacement for the former ``trimesh.Trimesh(...).split()`` path:
-    the unconditional ``import trimesh`` (and its scipy stack) cost ~0.5 s on
+    the unconditional ``import trimesh`` (and its optional stack) cost ~0.5 s on
     every mechanical repair even when this pre-check returned False.  Faces are
     grouped into connected components through edges shared by exactly two faces
     (trimesh's ``face_adjacency`` rule); a component counts as closed only when

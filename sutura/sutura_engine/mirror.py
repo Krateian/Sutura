@@ -18,12 +18,11 @@ the dominant open boundary loop:
      registry method #8) when the symmetry confidence is low or the mirrored
      stitch does not produce a valid solid.
 
-Operates on numpy arrays (verts float64 Nx3, tris int Mx3). numpy + scipy only
-at import time; pymeshlab / trimesh / manifold3d are imported lazily inside the
-functions that need them, so the module stays importable anywhere.
+Operates on numpy arrays (verts float64 Nx3, tris int Mx3). numpy + topology
+only at import time; pymeshlab / trimesh / manifold3d are imported lazily
+inside the functions that need them, so the module stays importable anywhere.
 """
 import numpy as np
-from scipy.spatial import cKDTree
 
 # Plane-fit RMS (relative to bbox diagonal) below which the dominant boundary
 # loop counts as planar (a symmetric cut), and above which it does not.

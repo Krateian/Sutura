@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Regression test for topology.connected_components (disjoint-set union-find).
 
-Verifies full compatibility and parity with
-scipy.sparse.csgraph.connected_components on arbitrary graphs, edge cases, and
-multiple input shapes.  topology.py is stdlib + numpy only, so this suite runs
-without the Rust extension; scipy is used only as an independent oracle and the
-parity checks are skipped if it is absent.
+Verifies compatibility with a brute-force breadth-first search reference on
+arbitrary graphs, edge cases, and multiple input shapes.  topology.py is
+stdlib + numpy only and the reference does not import SciPy.
 Usage: python3 tests/test_connected_components.py
 """
 import os
@@ -57,30 +55,31 @@ def test_tuple_coordinate_format():
     assert labels[3] == labels[4] == 1
 
 
-def test_scipy_sparse_coo_and_csr_formats():
-    try:
-        import scipy.sparse as sp
-    except ImportError:
-        print('skip test_scipy_sparse_coo_and_csr_formats (scipy not installed)')
-        return
-    edges = np.array([[0, 1], [1, 2], [3, 4]])
-    coo = sp.coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(6, 6))
-    csr = coo.tocsr()
+def _reference_components(n_nodes, edges):
+    """Brute-force BFS labelling with the same lowest-node-first convention."""
+    adj = [[] for _ in range(n_nodes)]
+    for u, v in np.asarray(edges, dtype=np.int64):
+        if 0 <= u < n_nodes and 0 <= v < n_nodes and u != v:
+            adj[u].append(v)
+            adj[v].append(u)
+    labels = np.full(n_nodes, -1, dtype=np.int64)
+    n_comp = 0
+    for start in range(n_nodes):
+        if labels[start] != -1:
+            continue
+        labels[start] = n_comp
+        stack = [start]
+        while stack:
+            node = stack.pop()
+            for nxt in adj[node]:
+                if labels[nxt] == -1:
+                    labels[nxt] = n_comp
+                    stack.append(nxt)
+        n_comp += 1
+    return n_comp, labels
 
-    nc_coo, lab_coo = topology.connected_components(coo)
-    nc_csr, lab_csr = topology.connected_components(csr)
-    assert nc_coo == nc_csr == 3
-    assert np.array_equal(lab_coo, lab_csr)
 
-
-def test_randomized_parity_with_scipy():
-    try:
-        import scipy.sparse as sp
-        import scipy.sparse.csgraph as csgraph
-    except ImportError:
-        print('skip test_randomized_parity_with_scipy (scipy not installed)')
-        return
-
+def test_randomized_parity_with_bruteforce():
     rng = np.random.default_rng(1337)
     for _ in range(50):
         n = int(rng.integers(1, 200))
@@ -90,13 +89,25 @@ def test_randomized_parity_with_scipy():
         else:
             edges = np.zeros((0, 2), dtype=int)
 
-        adj = sp.coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
-        sc_nc, sc_lab = csgraph.connected_components(adj, directed=False)
+        ref_nc, ref_lab = _reference_components(n, edges)
         top_nc, top_lab = topology.connected_components((n, edges))
 
-        assert sc_nc == top_nc
-        assert np.array_equal(sc_lab, top_lab)
+        assert ref_nc == top_nc
+        assert np.array_equal(ref_lab, top_lab)
 
+
+def test_sparse_like_coordinate_object():
+    class _Coo:
+        def __init__(self, row, col, shape):
+            self.row = np.asarray(row)
+            self.col = np.asarray(col)
+            self.shape = shape
+
+    edges = np.array([[0, 1], [1, 2], [3, 4]])
+    coo = _Coo(edges[:, 0], edges[:, 1], (6, 6))
+    nc, labels = topology.connected_components(coo)
+    assert nc == 3
+    assert np.array_equal(labels, [0, 0, 0, 1, 1, 2])
 
 def main():
     for name, fn in sorted(globals().items()):

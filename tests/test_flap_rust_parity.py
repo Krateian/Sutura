@@ -12,7 +12,7 @@ the one-to-one vertex map and the report keys.
 The extension is required, so a missing ``sutura_geom`` FAILS this test
 instead of skipping it.
 
-Needs the venv (trimesh/scipy). pytest-compatible; runnable directly:
+Needs the venv (trimesh). pytest-compatible; runnable directly:
     ~/.local/share/sutura/venv/bin/python tests/test_flap_rust_parity.py
 """
 import os
@@ -31,7 +31,6 @@ for p in (SUTURA, REPO):
 os.environ['SUTURA_FLAP_SELECT'] = '0'
 
 import numpy as np  # noqa: E402
-from scipy.spatial import cKDTree  # noqa: E402
 
 from sutura_engine import flap  # noqa: E402
 
@@ -58,7 +57,9 @@ def _assert_same_mesh(v_py, t_py, v_rs, t_rs, tol=1e-8):
     # Rust vertices must coincide with the stored ones within tol, one-to-one,
     # so the two meshes are the same geometry with a (possibly) permuted
     # vertex numbering.
-    dist, idx = cKDTree(v_py).query(v_rs)
+    d2 = ((v_rs[:, None, :] - v_py[None, :, :]) ** 2).sum(axis=2)
+    idx = np.argmin(d2, axis=1)
+    dist = np.sqrt(d2[np.arange(len(v_rs)), idx])
     assert dist.max() <= tol, 'vertex deviation %.3g > %.3g' % (dist.max(), tol)
     assert len(set(idx.tolist())) == v_rs.shape[0], 'vertex map not one-to-one'
     remapped = np.asarray(idx, np.int64)[np.asarray(t_rs, np.int64)]

@@ -30,7 +30,6 @@ sys.path.insert(0, REPO)
 try:
     import trimesh  # noqa: E402
     import manifold3d  # noqa: E402
-    import scipy  # noqa: E402
     import sutura.proxy_repair as pr  # noqa: E402
 except Exception as _exc:  # noqa: BLE001 - optional test dependency
     print('skip tests/test_proxy_repair.py: %s' % _exc)

@@ -6,7 +6,7 @@ find it and a thicken to 2.0 must grow the slab; a solid 4x4x4 cube is already
 above any small target and is returned unchanged. No corpus runs.
 
 Usage: <venv>/bin/python tests/test_wall_thickness.py
-(any interpreter with numpy + scipy + trimesh).
+(any interpreter with numpy + sutura_geom + trimesh).
 """
 import os
 import sys

@@ -2,7 +2,7 @@
 """Regression tests for Dressing (#16, variable-viscosity volumetric skinning).
 
 Runs under the venv with the maturin-built sutura_geom extension.  The field
-build / extraction path needs numpy + scipy + sutura_geom; the tier/adoption
+build / extraction path needs numpy + sutura_geom; the tier/adoption
 checks additionally use pymeshlab and skip when it is unavailable.
 pytest-compatible; runnable directly.
 
