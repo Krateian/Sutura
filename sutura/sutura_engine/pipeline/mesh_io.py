@@ -155,29 +155,90 @@ def read_3mf_units(path):
     return out
 
 
+class MalformedSTLError(ValueError):
+    """Raised when a file is neither a valid binary nor a valid ASCII STL."""
+
+
+def _obj_vertex_index(token, vertex_count):
+    """Resolve one OBJ face token to a 0-based vertex index.
+
+    ``token`` may carry texture/normal suffixes (``v/vt/vn``, ``v//vn``); only
+    the vertex part before the first slash is used. Negative indices are
+    relative to the vertices defined so far (OBJ is 1-based).
+    """
+    raw = token.split('/', 1)[0]
+    if raw == '':
+        raise ValueError('OBJ face token has no vertex index: %r' % token)
+    try:
+        idx = int(raw)
+    except ValueError:
+        raise ValueError('OBJ face token is not an integer: %r' % token)
+    if idx == 0:
+        raise ValueError('OBJ vertex index 0 is invalid (indices are 1-based)')
+    if idx < 0:
+        resolved = vertex_count + idx
+        if resolved < 0:
+            raise ValueError('OBJ negative vertex index %d is out of range '
+                             '(%d vertices defined)' % (idx, vertex_count))
+        return resolved
+    return idx - 1
+
+
 def read_obj(path):
     verts = []
     tris = []
     with open(path) as f:
-        for line in f:
+        for line_no, line in enumerate(f, 1):
             parts = line.split()
             if not parts:
                 continue
             if parts[0] == 'v':
                 verts.append((float(parts[1]), float(parts[2]), float(parts[3])))
             elif parts[0] == 'f':
-                tris.append((int(parts[1]) - 1, int(parts[2]) - 1, int(parts[3]) - 1))
-    return np.array(verts, dtype=np.float32), np.array(tris, dtype=np.int32)
+                try:
+                    idxs = [_obj_vertex_index(tok, len(verts))
+                            for tok in parts[1:]]
+                except ValueError as exc:
+                    raise ValueError('%s:%d: %s' % (path, line_no, exc))
+                if len(idxs) < 3:
+                    raise ValueError('%s:%d: OBJ face needs at least 3 '
+                                     'vertices' % (path, line_no))
+                # Fan-triangulate quads/ngons from the first vertex.
+                for i in range(1, len(idxs) - 1):
+                    tris.append((idxs[0], idxs[i], idxs[i + 1]))
+    if not verts:
+        return (np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 3), dtype=np.int32))
+    return (np.asarray(verts, dtype=np.float32),
+            np.asarray(tris, dtype=np.int32).reshape(-1, 3))
 
 
 def _read_stl_ascii(path):
     verts = []
     with open(path, 'r', errors='ignore') as f:
         for line in f:
-            s = line.strip()
-            if s.startswith('vertex'):
-                p = s.split()
+            p = line.split()
+            if not p:
+                continue
+            # ASCII STL keywords are case-insensitive and may be separated by
+            # any whitespace/tabs.
+            if p[0].lower() != 'vertex':
+                continue
+            if len(p) < 4:
+                raise MalformedSTLError(
+                    'Malformed STL: incomplete vertex line %r' % line.strip())
+            try:
                 verts.append((float(p[1]), float(p[2]), float(p[3])))
+            except ValueError:
+                raise MalformedSTLError(
+                    'Malformed STL: non-numeric vertex line %r' % line.strip())
+    if not verts:
+        raise MalformedSTLError(
+            'Malformed STL: no vertex records found in binary or ASCII form')
+    if len(verts) % 3 != 0:
+        raise MalformedSTLError(
+            'Malformed STL: ASCII vertex count %d is not a multiple of 3'
+            % len(verts))
     v = np.asarray(verts, dtype=np.float32)
     n = len(v) // 3
     return v, np.arange(n * 3, dtype=np.int32).reshape(n, 3)
@@ -186,9 +247,11 @@ def _read_stl_ascii(path):
 def read_stl(path):
     """Read a binary or ASCII STL into (verts float32, tris int32).
 
-    Binary is detected by the exact ``84 + 50 * n`` byte layout: an ASCII file
-    may also start with the word ``solid``, so the header word alone is not a
-    reliable discriminator.
+    Binary is detected by the exact ``84 + 50 * n`` byte layout first: an
+    ASCII file may also start with the word ``solid`` and a binary header may
+    contain it, so the header word alone is not a reliable discriminator.
+    Files matching neither layout raise :class:`MalformedSTLError` instead of
+    silently returning an empty mesh.
     """
     with open(path, 'rb') as f:
         head = f.read(84)
