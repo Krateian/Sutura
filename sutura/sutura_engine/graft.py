@@ -184,20 +184,19 @@ def _resolve_raystab(raystab):
 # --- robust antipodal GWN disambiguation (opt-in, experimental) -------------
 # The robust (antipodal) generalized winding number resolves the same
 # winding-ambiguous band deterministically and exactly at grazing
-# configurations (Martens et al. 2026).  ``antipodal=True`` (or
-# SUTURA_ANTIPODAL=1) selects it for the band.  It is OFF by default and
-# byte-identical to the winding-only path when off; when both raystab and
-# antipodal are on, the antipodal pass runs last and wins.
+# configurations (Martens et al. 2026).  Default ON; opt-out with
+# SUTURA_ANTIPODAL=0 or antipodal=False.
 _ANTIPODAL_SUPPORTED = hasattr(sutura_geom, 'antipodal_points')
+_ANTIPODAL_ENV_FALSE = {'0', 'false', 'no', 'off'}
 
 
 def _resolve_antipodal(antipodal):
-    """Resolve the opt-in from the parameter, then SUTURA_ANTIPODAL, then off.
+    """Resolve the opt-out from the parameter, then SUTURA_ANTIPODAL, then on.
 
     Returns False (a no-op) when the installed extension predates the feature.
     """
     if antipodal is None:
-        antipodal = os.environ.get('SUTURA_ANTIPODAL', '').strip().lower() in _RAYSTAB_ENV_TRUE
+        antipodal = os.environ.get('SUTURA_ANTIPODAL', '').strip().lower() not in _ANTIPODAL_ENV_FALSE
     return bool(antipodal) and _ANTIPODAL_SUPPORTED
 
 
@@ -1109,8 +1108,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
 
     use_antipodal = _resolve_antipodal(antipodal)
     report["antipodal"] = None
-    if use_antipodal:
-        raystab_kwargs["antipodal"] = True
+    raystab_kwargs["antipodal"] = bool(use_antipodal)
 
     use_sign_field = _resolve_sign_field(sign_field)
     report["sign_field"] = use_sign_field

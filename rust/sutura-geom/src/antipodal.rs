@@ -418,6 +418,11 @@ impl AntipodalGwn {
         AntipodalGwn { bvh, boundary }
     }
 
+    /// Access the underlying MeshBvh.
+    pub fn bvh(&self) -> &MeshBvh {
+        &self.bvh
+    }
+
     /// Integer term: the signed ray/surface crossing count along the fixed `-x`
     /// ray from `p`.  A crossing contributes `sign(dir . n) = -sign(n.x)` with
     /// `dir = -x`, so the inside of a closed, consistently outward-oriented
@@ -531,6 +536,17 @@ pub struct AntipodalStats {
     pub cells_flipped: u64,
     pub cells_exact_fallback: u64,
     pub seconds: f64,
+}
+
+/// Returns true if the antipodal oracle is enabled by default (opt-out with SUTURA_ANTIPODAL=0).
+pub fn antipodal_enabled_by_default() -> bool {
+    match std::env::var("SUTURA_ANTIPODAL") {
+        Ok(val) => {
+            let v = val.trim().to_ascii_lowercase();
+            v != "0" && v != "false" && v != "no" && v != "off"
+        }
+        Err(_) => true,
+    }
 }
 
 /// Overwrite the sign of the signed grid for generalized-winding-ambiguous

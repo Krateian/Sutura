@@ -89,9 +89,9 @@ def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
         far_dist = dist[far]
         if (sutura_geom.__dict__.get("ANTIPODAL_SUPPORTED", False)
                 and os.environ.get("SUTURA_ANTIPODAL", "").strip().lower()
-                in ("1", "true", "yes", "on")):
-            # Robust (antipodal) winding number for the ambiguous band; opt-in
-            # and byte-identical to the winding-only metric when off.
+                not in ("0", "false", "no", "off")):
+            # Robust (antipodal) winding number for the ambiguous band; default
+            # on, opt-out with SUTURA_ANTIPODAL=0.
             _inside, _w = sutura_geom.antipodal_points(iv, it, far_v)
             w = np.asarray(_w, dtype=np.float64)
         else:

@@ -470,7 +470,7 @@ fn antipodal_info<'py>(
 /// requested the antipodal pass runs last and wins.  With `antipodal=False` (the
 /// default) the output is byte-identical to the winding-only field.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, voxel=None, r#box=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=false))]
+#[pyo3(signature = (verts, tris, voxel=None, r#box=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None))]
 fn sdf_grid<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -481,7 +481,7 @@ fn sdf_grid<'py>(
     raystab_dirs: Option<usize>,
     raystab_seed: u64,
     raystab_parity: bool,
-    antipodal: bool,
+    antipodal: Option<bool>,
 ) -> PyResult<(
     Bound<'py, PyArray3<f32>>,
     Bound<'py, PyArray3<f32>>,
@@ -498,13 +498,24 @@ fn sdf_grid<'py>(
         None => (mesh_box.min, mesh_box.max),
     };
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, voxel, 96.0, 2);
-    let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
+    let use_antipodal = antipodal.unwrap_or_else(antipodal::antipodal_enabled_by_default);
+    let (gwn, bvh_owned) = if use_antipodal {
+        let g = antipodal::AntipodalGwn::build(&rv, &rt);
+        (Some(g), None)
+    } else {
+        (None, Some(winding::MeshBvh::from_arrays(&rv, &rt)))
+    };
+    let bvh = match (&bvh_owned, &gwn) {
+        (Some(b), _) => b,
+        (_, Some(g)) => g.bvh(),
+        _ => unreachable!(),
+    };
     let (w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
     let mut stab_stats = None;
     if raystab {
-        let stabber = build_stabber(&bvh, raystab_dirs, raystab_seed, raystab_parity);
+        let stabber = build_stabber(bvh, raystab_dirs, raystab_seed, raystab_parity);
         stab_stats = Some(raycast::disambiguate_sdf(
-            &bvh,
+            bvh,
             &w,
             &u,
             &mut s,
@@ -517,10 +528,9 @@ fn sdf_grid<'py>(
         ));
     }
     let mut antipodal_stats = None;
-    if antipodal {
-        let gwn = antipodal::AntipodalGwn::build(&rv, &rt);
+    if let Some(ref g) = gwn {
         antipodal_stats = Some(antipodal::disambiguate_sdf(
-            &gwn,
+            g,
             &w,
             &u,
             &mut s,
@@ -586,7 +596,7 @@ fn sdf_grid<'py>(
 /// `antipodal=False` (the default) the output is byte-identical to the
 /// winding-only path.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=false))]
+#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None))]
 fn morph_close<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -600,7 +610,7 @@ fn morph_close<'py>(
     raystab_dirs: Option<usize>,
     raystab_seed: u64,
     raystab_parity: bool,
-    antipodal: bool,
+    antipodal: Option<bool>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -641,13 +651,24 @@ fn morph_close<'py>(
     };
     let (origin, voxel, dims, coarsened) = plan_grid(bmin, bmax, Some(v0), 96.0, pad);
 
-    let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
+    let use_antipodal = antipodal.unwrap_or_else(antipodal::antipodal_enabled_by_default);
+    let (gwn, bvh_owned) = if use_antipodal {
+        let g = antipodal::AntipodalGwn::build(&rv, &rt);
+        (Some(g), None)
+    } else {
+        (None, Some(winding::MeshBvh::from_arrays(&rv, &rt)))
+    };
+    let bvh = match (&bvh_owned, &gwn) {
+        (Some(b), _) => b,
+        (_, Some(g)) => g.bvh(),
+        _ => unreachable!(),
+    };
     let (w, u, mut s) = bvh.sdf_grid(origin, voxel, dims);
     let mut stab_stats = None;
     if raystab {
-        let stabber = build_stabber(&bvh, raystab_dirs, raystab_seed, raystab_parity);
+        let stabber = build_stabber(bvh, raystab_dirs, raystab_seed, raystab_parity);
         stab_stats = Some(raycast::disambiguate_sdf(
-            &bvh,
+            bvh,
             &w,
             &u,
             &mut s,
@@ -660,10 +681,9 @@ fn morph_close<'py>(
         ));
     }
     let mut antipodal_stats = None;
-    if antipodal {
-        let gwn = antipodal::AntipodalGwn::build(&rv, &rt);
+    if let Some(ref g) = gwn {
         antipodal_stats = Some(antipodal::disambiguate_sdf(
-            &gwn,
+            g,
             &w,
             &u,
             &mut s,
