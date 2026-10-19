@@ -52,7 +52,11 @@ jobs:
         with:
           maturin-version: 1.15.0
           target: x86_64
-          manylinux: auto
+          manylinux: manylinux_2_28
+          before-script-linux: |
+            if ! command -v cmake >/dev/null 2>&1; then
+              (dnf install -y cmake gcc-c++ git || yum install -y cmake gcc-c++ git)
+            fi
           working-directory: rust/sutura-geom
           args: --release --out dist-geom
 

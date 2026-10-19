@@ -32,9 +32,10 @@ note() { echo "    sutura_geom: $*"; }
 finish_fail() {
     echo "error: sutura_geom is required but could not be installed ($*)." >&2
     echo "       Platform: $(uname -s)/$(uname -m)" >&2
-    echo "       Install Rust >= 1.89 (https://rustup.rs) so the extension can be built" >&2
-    echo "       from source, or set SUTURA_GEOM_WHEEL=<path> to a compatible wheel," >&2
-    echo "       then re-run the installer." >&2
+    echo "       Install Rust >= 1.89 (https://rustup.rs), cmake and a C++17 compiler" >&2
+    echo "       (g++/clang++) so the extension can be built from source, or set" >&2
+    echo "       SUTURA_GEOM_WHEEL=<path> to a compatible wheel, then re-run the" >&2
+    echo "       installer. The Manifold kernel is compiled from C++." >&2
     exit 1
 }
 
@@ -116,6 +117,13 @@ fi
 
 # --- 2. build from source ----------------------------------------------------
 if [ -f "$SRC/rust/sutura-geom/pyproject.toml" ] && command -v cargo >/dev/null 2>&1; then
+    missing=""
+    command -v cmake >/dev/null 2>&1 || missing="$missing cmake"
+    if [ -z "${CXX:-}" ]; then
+        command -v c++ >/dev/null 2>&1 || command -v g++ >/dev/null 2>&1 \
+            || command -v clang++ >/dev/null 2>&1 || missing="$missing C++17-compiler"
+    fi
+    [ -z "$missing" ] || finish_fail "missing source-build prerequisites:$missing (the Manifold kernel needs cmake and a C++17 compiler)"
     # rustup's cargo shim exists even when no default toolchain is selected
     # (common after a HOME change). Probe it so the failure names the fix
     # instead of a generic build error.

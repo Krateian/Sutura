@@ -12,17 +12,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      # Every suite is run from the repo: repair.py resolves its bridges and
-      # the stage-2 venv311 relative to SUTURA_DIR, which must be sutura/.
+      # Every suite is run from the repo: repair.py resolves its bridge paths
+      # relative to SUTURA_DIR, which must be sutura/.
       SUTURA_DIR: ${{ github.workspace }}/sutura
       QT_QPA_PLATFORM: offscreen
     strategy:
       fail-fast: false   # report every leg, do not cancel 3.11 when 3.14 fails
       matrix:
-        # 3.11 is the manifold3d (stage 2) target; 3.14 is the current
-        # Python. 3.12/3.13 are not tested: pymeshlab imports on 3.13 but the
-        # VCG repair pipeline segfaults there, root cause not investigated.
-        # See CHANGELOG.md.
+        # 3.11 and 3.14 are both supported. 3.12/3.13 are not tested:
+        # pymeshlab imports on 3.13 but the VCG repair pipeline segfaults
+        # there, root cause not investigated. See CHANGELOG.md.
         python-version: ['3.11', '3.14']
     steps:
       - uses: actions/checkout@v7
@@ -61,14 +60,6 @@ jobs:
 
       - name: Import check (pymeshlab)
         run: ./venv/bin/python -c "import pymeshlab; print('pymeshlab OK')"
-
-      - name: Install manifold3d (stage 2)
-        if: matrix.python-version == '3.11'   # only 3.11 has a wheel
-        run: |
-          python -m venv sutura/venv311
-          ./sutura/venv311/bin/pip install --quiet --upgrade pip
-          ./sutura/venv311/bin/pip install --quiet -r requirements-311.txt
-        continue-on-error: true   # stage 2 is optional for these tests
 
       - name: CLI shim for suites that exec the CLI
         run: |
@@ -269,19 +260,15 @@ jobs:
         run: ./venv/bin/python tests/test_orca_plugin.py
 
       - name: "Test: stage 2 3MF per object"
-        if: matrix.python-version == '3.11'   # needs the stage-2 venv311
         run: ./venv/bin/python tests/test_stage2_3mf.py
 
-      - name: "Test: manifold3d watertight check"
-        if: matrix.python-version == '3.11'
-        run: ./sutura/venv311/bin/python tests/test_manifold3d_watertight.py
+      - name: "Test: Manifold watertight check"
+        run: ./venv/bin/python tests/test_manifold_watertight.py
 
-      - name: "Test: manifold3d post-union debris filter (F-06)"
-        if: matrix.python-version == '3.11'
-        run: ./sutura/venv311/bin/python tests/test_manifold_post_union_debris.py
+      - name: "Test: Manifold post-union debris filter (F-06)"
+        run: ./venv/bin/python tests/test_manifold_post_union_debris.py
 
       - name: "Test: real-world corpus regression (~2 min)"
-        if: matrix.python-version == '3.11'   # expected results assume stage 2
         env:
           SUTURA: /tmp/sutura-wrap
         run: ./venv/bin/python tests/test_real_world_corpus.py
@@ -332,7 +319,7 @@ jobs:
       # Graft (#13) needs the Rust extension plus trimesh; the real repair
       # venv has pymeshlab (the verbatim-hybrid test skips without it).
       - name: Install Graft test deps
-        run: ./.venv/bin/pip install --quiet trimesh manifold3d
+        run: ./.venv/bin/pip install --quiet trimesh
 
       - name: "Test: Graft / shell wrap (method #13)"
         run: ./.venv/bin/python tests/test_shell_wrap.py

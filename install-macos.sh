@@ -60,14 +60,14 @@ fi
 # 5) install dependencies ---------------------------------------------------
 echo "==> installing packages into $ENV_NAME"
 conda install -y -n "$ENV_NAME" -c conda-forge pymeshlab
-conda run -n "$ENV_NAME" pip install manifold3d PySide6-Essentials==6.11.2
+conda run -n "$ENV_NAME" pip install PySide6-Essentials==6.11.2
 if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
     echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
     conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"
 fi
 
 # 5b) required: sutura_geom Rust extension (Graft #13, ~0.7 MB) ------------
-# pip-only into the conda env (like manifold3d); it never installs a
+# pip-only into the conda env (like Sutura's other optional extras); it never installs a
 # conda-forge package, so this does not violate the conda-forge policy. The
 # Darwin prebuilt wheel is universal2. ENV_PY is resolved here so the helper
 # runs before the verify step. The extension is REQUIRED: a failure aborts the
@@ -80,7 +80,7 @@ bash "$REPO_DIR/scripts/install_sutura_geom.sh" "$ENV_PY" "$REPO_DIR"
 
 # 6) verify ----------------------------------------------------------------
 if ! conda run -n "$ENV_NAME" python -c \
-    "import pymeshlab, manifold3d, numpy; from PySide6 import QtWidgets; print('OK')"; then
+    "import pymeshlab, numpy, sutura_geom; from PySide6 import QtWidgets; print('OK')"; then
     die "import check failed - dependencies not usable in $ENV_NAME"
 fi
 if ! conda run -n "$ENV_NAME" python -c 'import sutura_geom' >/dev/null 2>&1; then
@@ -100,12 +100,12 @@ QT_PLUGIN_PATH="$(conda run -n "$ENV_NAME" python -c \
 
 # 7) copy the application files --------------------------------------------
 mkdir -p "$APP_DIR" "$BIN_DIR"
-for f in repair.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py classification.py confidence.py defects.py topology.py mesh_classifier.py mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py csg_bridge.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py diagnostics.py manifest.py self_repair.py self_check.py repair_score_config.json __init__.py; do
+for f in repair.py ftetwild_bridge.py indirect_bridge.py classification.py confidence.py defects.py topology.py mesh_classifier.py mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py diagnostics.py manifest.py self_repair.py self_check.py repair_score_config.json __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/$f"
 done
 # the importable package layout (for 'from sutura import ...' and __init__)
 mkdir -p "$APP_DIR/sutura"
-for f in repair.py manifold_bridge.py ftetwild_bridge.py indirect_bridge.py classification.py confidence.py defects.py topology.py mesh_classifier.py mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py csg_bridge.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py diagnostics.py manifest.py self_repair.py self_check.py repair_score_config.json __init__.py; do
+for f in repair.py ftetwild_bridge.py indirect_bridge.py classification.py confidence.py defects.py topology.py mesh_classifier.py mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py history.py updater.py gui.py heatmap.py heatmap_render.py before_after_render.py viewer_common.py viewer_data_render.py repair_score.py diagnostics.py manifest.py self_repair.py self_check.py repair_score_config.json __init__.py; do
     install -m 0644 "$REPO_DIR/sutura/$f" "$APP_DIR/sutura/$f"
 done
 install -m 0644 "$REPO_DIR/LICENSE" "$APP_DIR/LICENSE"
