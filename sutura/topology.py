@@ -20,10 +20,9 @@ stdlib + numpy only, by design: importable wherever ``defects.py`` is.
 import os
 import time
 import numpy as np
-
-try:  # optional native acceleration
+try:
     import sutura_geom as _geom
-except ImportError:  # pragma: no cover - exercised on installs without Rust
+except ImportError:
     _geom = None
 
 _MODE = None  # None = auto, otherwise 'rust' or 'python'
@@ -33,7 +32,7 @@ def set_engine(mode):
     """Force the topology engine: ``'auto'``, ``'rust'`` or ``'python'``.
 
     Intended for tests and debugging; the default is ``'auto'`` (Rust when the
-    extension is importable, numpy otherwise).  Raises ``ValueError`` on an
+    extension is importable, raising if unavailable).  Raises ``ValueError`` on an
     unknown mode."""
     global _MODE
     if mode not in ('auto', 'rust', 'python'):
@@ -43,12 +42,16 @@ def set_engine(mode):
 
 def engine():
     """Return the active engine name (``'rust'`` or ``'python'``)."""
-    if _MODE in ('rust', 'python'):
-        return _MODE
+    if _MODE == 'python':
+        return 'python'
     env = os.environ.get('SUTURA_TOPOLOGY', '').strip().lower()
-    if env in ('rust', 'python'):
-        return env
-    return 'rust' if _rust_kernel_available() else 'python'
+    if env == 'python':
+        return 'python'
+    if not _rust_kernel_available():
+        raise RuntimeError(
+            "sutura_geom topology kernel required but unavailable in this environment"
+        )
+    return 'rust'
 
 
 _RUST_FNS = (
@@ -67,20 +70,16 @@ _RUST_FNS = (
 
 
 def _rust_kernel_available():
-    """True when the importable extension carries all topology kernel functions.
-
-    An older/pre-kernel wheel imports fine but lacks the functions; the
-    fallback must be transparent, so this is checked rather than assuming the
-    module is enough."""
+    """True when the importable extension carries all topology kernel functions."""
     return _geom is not None and all(hasattr(_geom, f) for f in _RUST_FNS)
 
 
 def _use_rust():
-    return _rust_kernel_available() and engine() == 'rust'
+    return engine() == 'rust'
 
 
 def _has_rust(name):
-    return _geom is not None and hasattr(_geom, name) and engine() == 'rust'
+    return engine() == 'rust' and hasattr(_geom, name)
 
 
 # --- numpy oracle --------------------------------------------------------- #
@@ -631,12 +630,9 @@ def edge_table(tris):
     t = np.ascontiguousarray(tris, dtype=np.int64)
     if t.ndim != 2 or t.shape[1] != 3:
         raise ValueError("tris must be Mx3")
-    if _use_rust():
-        try:
-            return _geom.edge_table(t)
-        except Exception:
-            pass
-    return _edge_table_numpy(t)
+    if engine() == 'python':
+        return _edge_table_numpy(t)
+    return _geom.edge_table(t)
 
 
 def weld_vertices(verts):
@@ -647,12 +643,9 @@ def weld_vertices(verts):
     v = np.ascontiguousarray(verts, dtype=np.float32)
     if v.ndim != 2 or v.shape[1] != 3:
         raise ValueError("verts must be Nx3")
-    if _use_rust() and (v.size == 0 or bool(np.isfinite(v).all())):
-        try:
-            return _geom.weld_vertices(v)
-        except Exception:
-            pass
-    return _weld_vertices_numpy(v)
+    if engine() == 'python' or not (v.size == 0 or bool(np.isfinite(v).all())):
+        return _weld_vertices_numpy(v)
+    return _geom.weld_vertices(v)
 
 
 def weld_reload_equivalent(verts, tris):
@@ -661,12 +654,9 @@ def weld_reload_equivalent(verts, tris):
     v = np.ascontiguousarray(verts, dtype=np.float32)
     t = np.ascontiguousarray(tris, dtype=np.int64)
     finite = v.size == 0 or bool(np.isfinite(v).all())
-    if _use_rust() and finite:
-        try:
-            return _geom.weld_reload_equivalent(v, t)
-        except Exception:
-            pass
-    return _weld_reload_equivalent_numpy(v, t)
+    if engine() == 'python' or not finite:
+        return _weld_reload_equivalent_numpy(v, t)
+    return _geom.weld_reload_equivalent(v, t)
 
 
 def remove_duplicate_faces(tris):
@@ -679,12 +669,9 @@ def remove_duplicate_faces(tris):
         raise ValueError("tris must be Mx3")
     if len(t) <= 1:
         return t
-    if _has_rust('remove_duplicate_faces'):
-        try:
-            return _geom.remove_duplicate_faces(t)
-        except Exception:
-            pass
-    return _remove_duplicate_faces_numpy(t)
+    if engine() == 'python':
+        return _remove_duplicate_faces_numpy(t)
+    return _geom.remove_duplicate_faces(t)
 
 
 def remove_null_faces(verts, tris):
@@ -700,12 +687,9 @@ def remove_null_faces(verts, tris):
         raise ValueError("tris must be Mx3")
     if len(t) == 0:
         return t
-    if _has_rust('remove_null_faces') and (v.size == 0 or bool(np.isfinite(v).all())):
-        try:
-            return _geom.remove_null_faces(v, t)
-        except Exception:
-            pass
-    return _remove_null_faces_numpy(v, t)
+    if engine() == 'python' or not (v.size == 0 or bool(np.isfinite(v).all())):
+        return _remove_null_faces_numpy(v, t)
+    return _geom.remove_null_faces(v, t)
 
 
 def remove_duplicate_vertices(verts, tris):
@@ -722,12 +706,9 @@ def remove_duplicate_vertices(verts, tris):
         raise ValueError("tris must be Mx3")
     if len(v) == 0:
         return v, t
-    if _has_rust('remove_duplicate_vertices') and bool(np.isfinite(v).all()):
-        try:
-            return _geom.remove_duplicate_vertices(v, t)
-        except Exception:
-            pass
-    return _remove_duplicate_vertices_numpy(v, t)
+    if engine() == 'python' or not bool(np.isfinite(v).all()):
+        return _remove_duplicate_vertices_numpy(v, t)
+    return _geom.remove_duplicate_vertices(v, t)
 
 
 def remove_unreferenced_vertices(verts, tris):
@@ -745,12 +726,9 @@ def remove_unreferenced_vertices(verts, tris):
         return v, t
     if len(t) == 0:
         return v[:0], t
-    if _has_rust('remove_unreferenced_vertices'):
-        try:
-            return _geom.remove_unreferenced_vertices(v, t)
-        except Exception:
-            pass
-    return _remove_unreferenced_vertices_numpy(v, t)
+    if engine() == 'python':
+        return _remove_unreferenced_vertices_numpy(v, t)
+    return _geom.remove_unreferenced_vertices(v, t)
 
 
 def remove_connected_components(verts, tris, min_faces=25, remove_unref=True):
@@ -766,12 +744,9 @@ def remove_connected_components(verts, tris, min_faces=25, remove_unref=True):
         raise ValueError("tris must be Mx3")
     if len(t) == 0 or min_faces <= 1:
         return v, t
-    if _has_rust('remove_connected_components'):
-        try:
-            return _geom.remove_connected_components(v, t, int(min_faces), bool(remove_unref))
-        except Exception:
-            pass
-    return _remove_connected_components_numpy(v, t, min_faces=min_faces, remove_unref=remove_unref)
+    if engine() == 'python':
+        return _remove_connected_components_numpy(v, t, min_faces=min_faces, remove_unref=remove_unref)
+    return _geom.remove_connected_components(v, t, int(min_faces), bool(remove_unref))
 
 
 def invert_face_orientation(tris):
@@ -784,12 +759,9 @@ def invert_face_orientation(tris):
         raise ValueError("tris must be Mx3")
     if len(t) == 0:
         return t
-    if _has_rust('invert_face_orientation'):
-        try:
-            return _geom.invert_face_orientation(t)
-        except Exception:
-            pass
-    return _invert_face_orientation_numpy(t)
+    if engine() == 'python':
+        return _invert_face_orientation_numpy(t)
+    return _geom.invert_face_orientation(t)
 
 
 def re_orient_faces_coherently(tris):
@@ -802,12 +774,9 @@ def re_orient_faces_coherently(tris):
         raise ValueError("tris must be Mx3")
     if len(t) <= 1:
         return t
-    if _has_rust('re_orient_faces_coherently'):
-        try:
-            return _geom.re_orient_faces_coherently(t)
-        except Exception:
-            raise
-    return _re_orient_faces_coherently_numpy(t)
+    if engine() == 'python':
+        return _re_orient_faces_coherently_numpy(t)
+    return _geom.re_orient_faces_coherently(t)
 
 
 def repair_non_manifold_edges(verts, tris):
@@ -820,12 +789,9 @@ def repair_non_manifold_edges(verts, tris):
         raise ValueError("tris must be Mx3")
     if len(t) == 0:
         return t
-    if _has_rust('repair_non_manifold_edges'):
-        try:
-            return _geom.repair_non_manifold_edges(v, t)
-        except Exception:
-            pass
-    return _repair_non_manifold_edges_numpy(v, t)
+    if engine() == 'python':
+        return _repair_non_manifold_edges_numpy(v, t)
+    return _geom.repair_non_manifold_edges(v, t)
 
 
 def mesh_topology(verts, tris):
@@ -836,12 +802,9 @@ def mesh_topology(verts, tris):
         raise ValueError("verts must be Nx3")
     if t.ndim != 2 or t.shape[1] != 3:
         raise ValueError("tris must be Mx3")
-    if _has_rust('mesh_topology'):
-        try:
-            return _geom.mesh_topology(v, t)
-        except Exception:
-            pass
-    return _mesh_topology_numpy(v, t)
+    if engine() == 'python':
+        return _mesh_topology_numpy(v, t)
+    return _geom.mesh_topology(v, t)
 
 
 def mesh_geometric_measures(verts, tris):
@@ -852,12 +815,9 @@ def mesh_geometric_measures(verts, tris):
         raise ValueError("verts must be Nx3")
     if t.ndim != 2 or t.shape[1] != 3:
         raise ValueError("tris must be Mx3")
-    if _has_rust('mesh_geometric_measures'):
-        try:
-            return _geom.mesh_geometric_measures(v, t)
-        except Exception:
-            pass
-    return _mesh_geometric_measures_numpy(v, t)
+    if engine() == 'python':
+        return _mesh_geometric_measures_numpy(v, t)
+    return _geom.mesh_geometric_measures(v, t)
 
 
 def native_si_enabled():
@@ -961,26 +921,24 @@ def self_intersecting_faces(verts, tris, bvh=None):
     if len(t) < 2:
         return np.zeros(len(t), dtype=bool), 0
 
-    if _has_rust('self_intersecting_faces'):
+    if engine() == 'python':
+        return _self_intersecting_faces_numpy(v, t)
+
+    if bvh is not None:
+        if hasattr(bvh, 'self_intersecting_faces'):
+            return bvh.self_intersecting_faces()
+        return _geom.self_intersecting_faces(v, t, bvh=bvh)
+
+    new_bvh = None
+    if hasattr(_geom, 'PyMeshBvh'):
         try:
-            if bvh is not None:
-                if hasattr(bvh, 'self_intersecting_faces'):
-                    return bvh.self_intersecting_faces()
-                return _geom.self_intersecting_faces(v, t, bvh=bvh)
-
-            new_bvh = None
-            if hasattr(_geom, 'PyMeshBvh'):
-                try:
-                    new_bvh = _geom.PyMeshBvh(v, t)
-                except Exception:
-                    new_bvh = None
-
-            if new_bvh is not None and hasattr(new_bvh, 'self_intersecting_faces'):
-                return new_bvh.self_intersecting_faces()
-            return _geom.self_intersecting_faces(v, t)
+            new_bvh = _geom.PyMeshBvh(v, t)
         except Exception:
-            pass
-    return _self_intersecting_faces_numpy(v, t)
+            new_bvh = None
+
+    if new_bvh is not None and hasattr(new_bvh, 'self_intersecting_faces'):
+        return new_bvh.self_intersecting_faces()
+    return _geom.self_intersecting_faces(v, t)
 
 
 def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
