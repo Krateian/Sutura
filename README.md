@@ -1121,7 +1121,8 @@ message that shows the detected platform and the fix (install Rust from
 <https://rustup.rs>, or set `SUTURA_GEOM_WHEEL=<path>`); startup and
 `sutura --self-check` likewise fail hard and name the missing extension instead
 of degrading silently. Use `SUTURA_GEOM_FROM_SOURCE=1` to force compilation
-from source. The former `SUTURA_NO_GEOM=1` opt-out has been removed.
+from source. Source builds require Rust >= 1.89 (the `kiddo` 6.3 MSRV).
+The former `SUTURA_NO_GEOM=1` opt-out has been removed.
 
 **Optional extra — fTetWild fallback tier.** The fTetWild fallback needs
 `pytetwild` + `pyvista`, and pyvista pulls in VTK: roughly **1.1 GB
@@ -2076,13 +2077,13 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 | PyMeshLab | stage 1 filter chain | VCG-based, proven for print repair, fills holes of any size, Python 3.14 wheel available |
 | manifold3d | stage 2 solid rebuild | watertight guarantee, robust boolean, same engine as Bambu Studio |
 | numpy | pipeline-wide | array math for the CLI, GUI, defect detection, history and every pure-python tier; the required `sutura_geom` Rust extension is NOT optional and the Flap path has no numpy fallback |
-| trimesh | stage 2 IO + method registry | OBJ/mesh loading in the manifold venv, closest-point projection / mesh IO in the closing, proxy and repeated-element tiers, and IO in the Graft/Dressing tiers (~4.6 MB installed) |
-| scipy | method registry + Flap/Dressing | sparse linear algebra and KD-trees (`scipy.spatial`) for the closing, proxy, repeated-element, Flap and Dressing tiers (~99 MB installed; connected-component labelling previously using `scipy.sparse.csgraph` has been replaced by stdlib/numpy `topology.connected_components`; Phase 1 dependency reduction saves ~2.1 MB installed by dropping `pyrobust-predicates` and `psutil`, preparing the path for Phase 3 SciPy removal) |
+| trimesh | stage 2 IO + method registry | OBJ/mesh loading in the manifold venv, mesh IO and surface sampling in the closing, proxy and repeated-element tiers, and IO in the Graft/Dressing tiers (~4.6 MB installed); nearest-point projection uses `sutura_geom.closest_points` |
 | pytetwild + pyvista | fTetWild fallback tier (optional extra) | fTetWild tetrahedralization (MPL-2.0); pyvista brings VTK, ~1.1 GB installed, so it is opt-in via `SUTURA_WITH_FTETWILD=1` |
-| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `pyo3`, `numpy`) | exact arrangement, morphology, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
+| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, morphology, nearest-neighbour, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module, point-cloud nearest neighbours (`kiddo`), exact EDT/dilation, and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
 
 Pinned in `requirements.txt`, `requirements-311.txt` and (optional)
-`requirements-ftetwild.txt`; Rust crates in `rust/sutura-geom/Cargo.lock`.
+`requirements-ftetwild.txt`; Rust dependencies in `rust/sutura-geom/Cargo.toml`
+(source builds require Rust >= 1.89, the `kiddo` 6.3 MSRV).
 
 ## Known limitations
 

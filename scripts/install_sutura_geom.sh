@@ -32,8 +32,8 @@ note() { echo "    sutura_geom: $*"; }
 finish_fail() {
     echo "error: sutura_geom is required but could not be installed ($*)." >&2
     echo "       Platform: $(uname -s)/$(uname -m)" >&2
-    echo "       Install Rust (https://rustup.rs) so the extension can be built from" >&2
-    echo "       source, or set SUTURA_GEOM_WHEEL=<path> to a compatible wheel," >&2
+    echo "       Install Rust >= 1.89 (https://rustup.rs) so the extension can be built" >&2
+    echo "       from source, or set SUTURA_GEOM_WHEEL=<path> to a compatible wheel," >&2
     echo "       then re-run the installer." >&2
     exit 1
 }

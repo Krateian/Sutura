@@ -1127,8 +1127,9 @@ kurulum, algılanan platformu ve çözümü gösteren adlandırılmış bir mesa
 (<https://rustup.rs> adresinden Rust kurun veya `SUTURA_GEOM_WHEEL=<yol>`
 ayarlayın); başlangıç ve `sutura --self-check` de sessizce geri düşmek yerine
 eksik eklentiyi adıyla bildirerek hata verir. Kaynaktan derlemeye zorlamak için
-`SUTURA_GEOM_FROM_SOURCE=1` kullanılabilir. Eski `SUTURA_NO_GEOM=1` çıkış
-seçeneği kaldırılmıştır.
+`SUTURA_GEOM_FROM_SOURCE=1` kullanılabilir. Kaynaktan derleme Rust >= 1.89
+(`kiddo` 6.3 MSRV) gerektirir. Eski `SUTURA_NO_GEOM=1` çıkış seçeneği
+kaldırılmıştır.
 
 **İsteğe bağlı ek — fTetWild yedek katmanı.** fTetWild yedek katmanı
 `pytetwild` + `pyvista` ister ve pyvista VTK'yı da çeker: kurulu halde
@@ -2081,14 +2082,14 @@ güvenilir şekilde algılayabilir.
 | PyMeshLab | aşama 1 filtre zinciri | VCG tabanlı, baskı onarımı için kanıtlanmış, her boyuttaki deliği doldurur, Python 3.14 wheel'i mevcut |
 | manifold3d | aşama 2 katı yeniden kurma | su geçirmezlik garantisi, sağlam boolean, Bambu Studio ile aynı motor |
 | numpy | hat geneli | CLI, GUI, kusur tespiti, geçmiş ve tüm saf-Python katmanlar için dizi matematiği; zorunlu `sutura_geom` Rust eklentisi isteğe bağlı değildir ve Flap yolunun numpy geri dönüşü yoktur |
-| trimesh | aşama 2 G/Ç + yöntem kayıt defteri | manifold venv'inde OBJ/mesh yükleme, ayrıca kapama, vekil ve yinelenen öge katmanlarında en yakın-nokta izdüşümü / mesh G/Ç ve Graft/Dressing katmanlarında G/Ç (kurulumda ~4,6 MB) |
-| scipy | yöntem kayıt defteri + Flap/Dressing | kapama, vekil, yinelenen öge, Flap ve Dressing katmanları için seyrek doğrusal cebir ve KD-tree'ler (`scipy.spatial`) (kurulumda ~99 MB; daha önce `scipy.sparse.csgraph` kullanan bağlı-bileşen etiketleme stdlib/numpy `topology.connected_components` ile değiştirildi; Faz 1 bağımlılık azaltımı `pyrobust-predicates` ve `psutil` kaldırılarak kurulumda ~2,1 MB tasarruf sağladı ve Faz 3 SciPy kaldırma yolunu açtı) |
+| trimesh | aşama 2 G/Ç + yöntem kayıt defteri | manifold venv'inde OBJ/mesh yükleme, ayrıca kapama, vekil ve yinelenen öge katmanlarında mesh G/Ç ve yüzey örnekleme, Graft/Dressing katmanlarında G/Ç (kurulumda ~4,6 MB); en yakın-nokta izdüşümü `sutura_geom.closest_points` kullanır |
 | pytetwild + pyvista | fTetWild yedek katmanı (isteğe bağlı ek) | fTetWild tetrahedralizasyonu (MPL-2.0); pyvista VTK'yı getirir, kurulu ~1,1 GB, bu yüzden `SUTURA_WITH_FTETWILD=1` ile isteğe bağlıdır |
-| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `pyo3`, `numpy`) | exact arrangement, morfoloji, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
+| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, morfoloji, en yakın komşu, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü, nokta-bulutu en yakın komşuları (`kiddo`), exact EDT/dilasyon ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
 
 `requirements.txt`, `requirements-311.txt` ve (isteğe bağlı)
-`requirements-ftetwild.txt` içinde sabitlenmiştir; Rust crate'leri
-`rust/sutura-geom/Cargo.lock` içindedir.
+`requirements-ftetwild.txt` içinde sabitlenmiştir; Rust bağımlılıkları
+`rust/sutura-geom/Cargo.toml` içindedir (kaynaktan derleme Rust >= 1.89,
+`kiddo` 6.3 MSRV gerektirir).
 
 ## Bilinen sınırlamalar
 

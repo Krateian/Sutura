@@ -1,13 +1,9 @@
 pymeshlab==2025.7.post1
 numpy>=2.4.0,<2.6
 # Scan-closing / proxy-template tiers (registry methods 8/9/10, P-INT):
-# scipy powers sparse linear algebra and KD-trees (scipy.spatial); trimesh powers
-# the closest-point projection in sutura/proxy_repair.py. Both run in the main
-# venv, so they are hard dependencies of the method registry. Approximate
-# installed size: scipy ~99 MB (cp314 manylinux/arm64 wheel ~36-40 MB),
-# trimesh ~4.6 MB. rtree is NOT required (trimesh.proximity.closest_point
-# uses a scipy cKDTree, not rtree).
-scipy>=1.16.3,<1.17
+# trimesh powers mesh IO and the remaining pure-Python helpers. Nearest-
+# neighbour, EDT and dilation queries live in the Rust sutura_geom core, so
+# SciPy is not required. rtree is NOT required.
 trimesh==5.1.1
 # Optional/heavy cross-validation dependency (FAZ10): manifold3d powers the
 # independent watertight check in scripts/benchmark_repair_corpus.py (and stage
