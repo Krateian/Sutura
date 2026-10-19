@@ -42,10 +42,13 @@ import_ok() {
     "$PY" -c 'import sutura_geom' >/dev/null 2>&1
 }
 
-if [ -n "${SUTURA_NO_GEOM:-}" ]; then
-    echo "error: sutura_geom is now required; SUTURA_NO_GEOM is no longer supported." >&2
-    exit 1
-fi
+case "${SUTURA_NO_GEOM:-}" in
+    ''|0) ;;   # unset / empty / 0 mean "not requested"
+    *)
+        echo "error: sutura_geom is now required; SUTURA_NO_GEOM is no longer supported." >&2
+        exit 1
+        ;;
+esac
 
 pip_install() {
     "$PY" -m pip install --quiet --force-reinstall --no-deps "$@"

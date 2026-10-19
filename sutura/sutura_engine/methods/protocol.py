@@ -97,7 +97,22 @@ class RepairMethod:
             object.__setattr__(self, 'display_name', self.name)
 
     def available(self) -> Tuple[bool, Optional[str]]:
-        """``(bool, reason|None)`` availability, never raising."""
+        """``(bool, reason|None)`` availability, never raising.
+
+        The mandatory Rust core is checked CENTRALLY first: when it is absent
+        or lacks a required symbol, every method reports unavailable with the
+        same named reason. This is what ``--list-methods``, the GUI *Use
+        method* menu, ``methods_json()`` and ``--self-check`` all read, so they
+        cannot contradict each other. Optional per-method addons are checked
+        afterwards.
+        """
+        try:
+            from sutura_engine import health as _health
+            ok, reason = _health.check_required_geometry()
+            if not ok:
+                return False, reason
+        except Exception:  # noqa: BLE001 - never let the gate break availability
+            pass
         if self.available_fn is None:
             return True, None
         try:

@@ -94,6 +94,18 @@ GEOM_REQUIRED_MESSAGE = (
 GEOM_SYMBOL_MISSING_MESSAGE = (
     'sutura_geom is installed but lacks %s (rebuild needed)')
 
+# Symbols the runtime calls with NO fallback. They are checked by the central
+# gate so a stale wheel (the installer resolves a release wheel by VERSION and
+# may reuse an older one) cannot silently degrade: Flap always uses the Rust
+# core, Graft uses morph_close, and Tamponade runs on by default with no numpy
+# path. Optional bindings (dressing_coat, orient3d, shell_analyze, ...) are
+# feature-detected by their callers and are intentionally NOT in this list.
+REQUIRED_GEOM_SYMBOLS = ('flap_fill', 'morph_close', 'tamponade')
+
+
+class GeometryRequiredError(RuntimeError):
+    """The required ``sutura_geom`` extension (or symbol) is unavailable."""
+
 
 class Status(str, enum.Enum):
     """Availability / outcome state of one repair method."""
@@ -225,9 +237,10 @@ def _optional_import_modules() -> frozenset:
 def _is_optional_import_error(exc: BaseException) -> bool:
     """True when ``exc`` is an ImportError for an OPTIONAL dependency.
 
-    A missing optional addon (the Rust extension, fTetWild, ...) is a SKIP, not
-    a failure.  A missing SYMBOL in a present sutura_geom is NOT an ImportError
-    and therefore still stays an error.
+    A missing optional addon (fTetWild, the proxy/repeat/mirror tiers, ...) is
+    a SKIP, not a failure.  ``sutura_geom`` is NOT optional: its absence is a
+    FAIL recorded as an error.  A missing SYMBOL in a present sutura_geom is
+    NOT an ImportError either and therefore still stays an error.
     """
     if not isinstance(exc, ImportError):
         return False
@@ -310,16 +323,33 @@ def _registered_methods() -> List[Any]:
 def check_required_geometry() -> Tuple[bool, Optional[str]]:
     """The ONE central check for the required ``sutura_geom`` Rust extension.
 
-    Returns ``(True, None)`` when the extension imports, otherwise
-    ``(False, GEOM_REQUIRED_MESSAGE)``.  Never raises: a blocked/poisoned
-    import (``sys.modules['sutura_geom'] = None``) is reported as absent.
+    Returns ``(True, None)`` when the extension imports AND exposes every
+    symbol the runtime calls without a fallback, otherwise
+    ``(False, reason)``: ``GEOM_REQUIRED_MESSAGE`` for a missing extension,
+    ``GEOM_SYMBOL_MISSING_MESSAGE`` for a stale/incomplete one.  Never raises:
+    a blocked/poisoned import (``sys.modules['sutura_geom'] = None``) is
+    reported as absent.  KeyboardInterrupt / SystemExit deliberately propagate.
     """
     try:
-        import sutura_geom  # noqa: F401
-        return True, None
+        import sutura_geom
     except Exception:  # noqa: BLE001 - absence is the answer, never a crash
-        # KeyboardInterrupt / SystemExit deliberately propagate.
         return False, GEOM_REQUIRED_MESSAGE
+    missing = [name for name in REQUIRED_GEOM_SYMBOLS
+               if not callable(getattr(sutura_geom, name, None))]
+    if missing:
+        return False, GEOM_SYMBOL_MISSING_MESSAGE % ', '.join(missing)
+    return True, None
+
+
+def require_geometry() -> None:
+    """Raise :class:`GeometryRequiredError` when the central check fails.
+
+    Used by the narrowest shared library entry (``repair_mesh_from_arrays``)
+    so a direct Python API call cannot run with a missing/stale extension.
+    """
+    ok, reason = check_required_geometry()
+    if not ok:
+        raise GeometryRequiredError(reason)
 
 
 def check_availability_detail() -> Dict[str, Tuple[Status, Optional[str]]]:

@@ -342,7 +342,8 @@ jobs:
       - name: "Test: topology kernel Rust/numpy parity"
         run: ./.venv/bin/python tests/test_topology_parity.py
 
-      # Pins the Rust flap_fill port against the numpy oracle (both use
-      # trimesh/scipy installed above; the test skips without the extension).
-      - name: "Test: Flap Rust/numpy parity"
+      # Pins the Rust flap_fill port against the committed golden fixture
+      # (tests/fixtures/flap_golden.npz); fails, rather than skips, without the
+      # required extension.
+      - name: "Test: Flap Rust golden-fixture parity"
         run: ./.venv/bin/python tests/test_flap_rust_parity.py

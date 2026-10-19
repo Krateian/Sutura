@@ -273,6 +273,34 @@ def _raise_importerror():
     raise ImportError('no such module')
 
 
+def test_required_symbols_gate(tmp):
+    """A stale wheel that imports but lacks a no-fallback symbol is a named
+    FAIL, and every method / method listing reports unavailable."""
+    _repair, health, _triage = _import_engine()
+    import types
+    from sutura_engine import methods
+    real = sys.modules.get('sutura_geom')
+    fake = types.ModuleType('sutura_geom')
+    fake.flap_fill = lambda *a, **k: None
+    sys.modules['sutura_geom'] = fake
+    try:
+        ok, reason = health.check_required_geometry()
+        assert ok is False, reason
+        assert 'morph_close' in reason and 'tamponade' in reason, reason
+        assert health.GEOM_SYMBOL_MISSING_MESSAGE.split('%s')[0] in reason
+        assert all(not m.available()[0] for m in methods.all_methods()), \
+            [(m.id, m.available()) for m in methods.all_methods()
+             if m.available()[0]]
+        assert all(not row['available'] for row in methods.methods_json())
+        code = health.check_availability_detail()
+        assert all(st == health.Status.FAIL for st, _r in code.values()), code
+    finally:
+        if real is None:
+            sys.modules.pop('sutura_geom', None)
+        else:
+            sys.modules['sutura_geom'] = real
+
+
 def test_triage_attempt_isolates_pipeline_error(tmp):
     repair, health, triage = _import_engine()
     health.reset_if_unscoped()
