@@ -9,7 +9,6 @@ Provides:
 from typing import Optional, Tuple
 
 import numpy as np
-import sutura_geom
 
 
 def _split_face_components(verts, tris):
@@ -89,6 +88,7 @@ def extract_outer_shell(verts: np.ndarray, tris: np.ndarray, dilation: Optional[
     Returns:
         (shell_verts, shell_tris)
     """
+    import sutura_geom  # lazy so health.check_required_geometry owns the error
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int32)
     out_v, out_t = sutura_geom.outer_shell_union(verts, tris, dilation)

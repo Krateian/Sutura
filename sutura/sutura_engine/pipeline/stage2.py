@@ -12,13 +12,13 @@ import time
 import numpy as np
 
 import topology
-import sutura_geom
 from sutura_engine.pipeline.mesh_io import read_obj, write_obj
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
 def run_stage2_arrays(verts, tris):
     """Rebuild arrays as a Manifold solid. Returns ``(verts, tris, report)``."""
+    import sutura_geom  # lazy so health.check_required_geometry owns the error
     return sutura_geom.stage2_rebuild(
         np.asarray(verts, dtype=np.float64),
         np.asarray(tris, dtype=np.int32),
