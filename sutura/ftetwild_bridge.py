@@ -83,7 +83,6 @@ def run_bridge(src, dst, params=None):
     instead)."""
     report = {}
     try:
-        import trimesh
         import pytetwild  # noqa: F401  (imports pyvista internally)
     except ImportError as e:
         report['error'] = ('fTetWild fallback skipped: pytetwild/pyvista not '
@@ -93,11 +92,13 @@ def run_bridge(src, dst, params=None):
                            'requirements-ftetwild.txt)' % e)
         return report
 
+    from sutura_engine.pipeline.mesh_io import read_mesh
+
     t0 = time.perf_counter()
     try:
-        mesh = trimesh.load(src, force='mesh')
-        verts = np.asarray(mesh.vertices, dtype=np.float64)
-        tris = np.asarray(mesh.faces, dtype=np.int32)
+        _in_v, _in_t = read_mesh(src)
+        verts = np.asarray(_in_v, dtype=np.float64)
+        tris = np.asarray(_in_t, dtype=np.int32)
         report['input_vertices'] = int(len(verts))
         report['input_faces'] = int(len(tris))
         kw = tetrahedralize_params(params)

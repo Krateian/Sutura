@@ -9,8 +9,17 @@ the caller to re-import and save in the requested format.
 import sys
 import json
 import numpy as np
-import trimesh
 import manifold3d as m3d
+
+
+def _edge_watertight(tris):
+    """True when every undirected edge is used by exactly two faces."""
+    if len(tris) == 0:
+        return False
+    edges = np.sort(np.concatenate(
+        [tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]], axis=0), axis=1)
+    _unique, counts = np.unique(edges, axis=0, return_counts=True)
+    return bool(np.all(counts == 2))
 
 
 # Stage-1 hole filling can leave flat, effectively zero-volume "debris" shells.
@@ -89,14 +98,15 @@ def write_obj(path, verts, tris):
 def run_bridge(src, dst):
     """Rebuild the closed OBJ at src into a manifold solid at dst; returns
     the report dict. Shared by the CLI entry point and repair.py in-process."""
-    mesh = trimesh.load(src, force='mesh')
-    verts = np.asarray(mesh.vertices, dtype=np.float32)
-    tris = np.asarray(mesh.faces, dtype=np.int32)
+    from sutura_engine.pipeline.mesh_io import read_obj
+    verts, tris = read_obj(src)
+    verts = np.asarray(verts, dtype=np.float32)
+    tris = np.asarray(tris, dtype=np.int32)
 
     report = {
         'input_vertices': int(len(verts)),
         'input_faces': int(len(tris)),
-        'input_watertight': bool(mesh.is_watertight),
+        'input_watertight': _edge_watertight(tris),
     }
 
     man = m3d.Manifold(m3d.Mesh(vert_properties=verts, tri_verts=tris))
