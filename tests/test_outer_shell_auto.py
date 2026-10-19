@@ -27,7 +27,7 @@ import repair  # noqa: E402
 
 try:
     import trimesh
-    import manifold3d
+    import sutura_geom  # noqa: F401
 except ImportError as e:
     print('skip tests/test_outer_shell_auto.py: %s' % e)
     sys.exit(0)

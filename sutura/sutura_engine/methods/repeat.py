@@ -10,15 +10,9 @@ Features:
   3. repair_repeat_manual (Method #12): User-specified source and target point transplant.
   4. detect_repetition: Fast regularity analysis for rotational or translational patterns.
   5. repair_repeat_auto (Method #11): Consensus-based predict-and-verify automated repair.
-  6. Robust volumetric transplant using manifold3d CSG booleans (no fragile seam stitching).
+  6. Robust volumetric transplant using the Rust Manifold CSG kernel (no fragile seam stitching).
 """
 
-import os
-import sys
-import json
-import shutil
-import tempfile
-import subprocess
 import numpy as np
 
 import sutura_geom
@@ -99,9 +93,9 @@ def _decimate_faces(verts, tris, target):
 
 
 def check_mesh_validity(verts, tris):
-    """Check mesh validity (watertight 2-manifold) without closing or manifold3d.
+    """Check mesh validity (watertight 2-manifold) without closing or Manifold.
 
-    Pure NumPy/topology check that does not require importing manifold3d.
+    Pure NumPy/topology check that does not require the Rust Manifold kernel.
     Returns (is_valid, err_msg).
     """
     verts = np.asarray(verts, dtype=np.float64)
@@ -397,265 +391,28 @@ def align(src_pts, dst_pts, allow_reflection=False, allow_scale=False, max_iters
     return T, rel_rms
 
 
-def _resolve_csg_bridge():
-    """Locate csg_bridge.py.
+def _execute_boolean_transplant(verts, tris, template_pts, transforms,
+                                margin=OBB_EXPANSION_MARGIN, force_bridge=None):
+    """Execute the volumetric boolean transplant in the Rust core.
 
-    Prefers a copy bundled next to the executable in a PyInstaller bundle,
-    falling back to beside this module and the standard SUTURA_DIR layout.
+    The OBB is computed here (numpy eig), then ``sutura_geom`` runs the same
+    Manifold CSG sequence that the retired Python bridge used to run: intersect the
+    template box, cut the destination cavity, move the element and union it.
+    ``force_bridge`` is accepted for backwards compatibility and ignored.
     """
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(os.path.abspath(sys.executable))
-        for cand in (os.path.join(base, 'csg_bridge.py'),
-                     os.path.join(base, '..', 'csg_bridge.py')):
-            cand = os.path.abspath(cand)
-            if os.path.isfile(cand):
-                return cand
-    here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.path.join(here, 'csg_bridge.py'),
-                 os.path.join(here, '..', 'csg_bridge.py'),
-                 os.path.join(here, '..', '..', 'csg_bridge.py'),
-                 os.path.join(here, '..', '..', 'sutura', 'csg_bridge.py')):
-        cand = os.path.abspath(cand)
-        if os.path.isfile(cand):
-            return cand
-    sutura_dir = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
-    return os.path.join(sutura_dir, 'csg_bridge.py')
-
-
-def _resolve_python311():
-    """Locate the Python 3.11 interpreter for bridge execution."""
-    if 'SUTURA_VENV311' in os.environ and os.path.isfile(os.environ['SUTURA_VENV311']):
-        return os.environ['SUTURA_VENV311']
-    sutura_dir = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
-    venv311 = os.path.join(sutura_dir, 'venv311', 'bin', 'python')
-    if os.path.isfile(venv311) and os.access(venv311, os.X_OK):
-        return venv311
-    # Check if current interpreter has manifold3d (e.g. single-env macOS / conda)
-    try:
-        import manifold3d  # noqa: F401
-        return sys.executable
-    except ImportError:
-        pass
-    py311 = shutil.which('python3.11')
-    if py311:
-        return py311
-    return sys.executable
-
-
-def _execute_boolean_transplant_inprocess(verts, tris, template_pts, transforms, margin=OBB_EXPANSION_MARGIN):
-    """Execute volumetric boolean transplant in-process using manifold3d."""
-    import manifold3d
-
+    del force_bridge
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int32)
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(
-        vert_properties=verts,
-        tri_verts=tris,
-    ))
-    if mf.status() != manifold3d.Error.NoError:
-        raise ValueError(f"manifold3d error status on input mesh: {mf.status()}")
-    if mf.is_empty():
-        raise ValueError("manifold3d solid is empty")
-
-    initial_vol = mf.volume()
     c_src, ext_src, frame_src = _compute_obb(template_pts, margin=margin)
-
-    cube = manifold3d.Manifold.cube(ext_src, center=True)
-    T_box = np.eye(4)
-    T_box[:3, :3] = frame_src
-    T_box[:3, 3] = c_src
-    box_src_m = cube.transform(T_box[:3, :])
-
-    element_solid = mf ^ box_src_m
-    current_mf = mf
-    dst_boxes = []
-
-    # Shrunk box for cavity cut: shrunk by relative epsilon = 1e-3 of element size
-    # to avoid coincident coplanar faces between cut cavity and unioned element
-    eps = 1e-3
-    ext_cut = ext_src * (1.0 - eps)
-    cube_cut = manifold3d.Manifold.cube(ext_cut, center=True)
-    box_src_cut_m = cube_cut.transform(T_box[:3, :])
-
-    for T in transforms:
-        box_dst_m = box_src_m.transform(T[:3, :])
-        c_dst = T[:3, :3] @ c_src + T[:3, 3]
-        ext_dst = ext_src
-        frame_dst = T[:3, :3] @ frame_src
-        dst_boxes.append((c_dst, ext_dst, frame_dst))
-
-        box_dst_cut_m = box_src_cut_m.transform(T[:3, :])
-        cavity_m = current_mf - box_dst_cut_m
-        element_prime = element_solid.transform(T[:3, :])
-        current_mf = cavity_m + element_prime
-
-    out_mesh = current_mf.to_mesh()
-    rep_v = np.asarray(out_mesh.vert_properties, dtype=np.float64)
-    rep_t = np.asarray(out_mesh.tri_verts, dtype=np.int64)
-    vol_change = float(abs(current_mf.volume() - initial_vol))
-    is_watertight = bool(current_mf.status() == manifold3d.Error.NoError)
-    return rep_v, rep_t, vol_change, dst_boxes, is_watertight
-
-
-def _execute_boolean_transplant_bridge(verts, tris, template_pts, transforms, margin=OBB_EXPANSION_MARGIN):
-    """Execute volumetric boolean transplant out-of-process via csg_bridge.py under Python 3.11."""
-    bridge_script = _resolve_csg_bridge()
-    if not os.path.isfile(bridge_script):
-        raise RuntimeError(f"CSG bridge script not found at {bridge_script}")
-
-    py311 = _resolve_python311()
-    c_src, ext_src, frame_src = _compute_obb(template_pts, margin=margin)
-
-    eps = 1e-3
-    ext_cut = ext_src * (1.0 - eps)
-
-    ops = [
-        {
-            'op': 'box',
-            'result': 'src_box',
-            'center': c_src.tolist(),
-            'extents': ext_src.tolist(),
-            'frame': frame_src.tolist(),
-        },
-        {
-            'op': 'box',
-            'result': 'src_box_cut',
-            'center': c_src.tolist(),
-            'extents': ext_cut.tolist(),
-            'frame': frame_src.tolist(),
-        },
-        {
-            'op': 'intersection',
-            'a': 'base',
-            'b': 'src_box',
-            'result': 'element',
-        }
-    ]
-
-    dst_boxes = []
-    for idx, T in enumerate(transforms):
-        T_mat = np.asarray(T, dtype=np.float64)
-        c_dst = T_mat[:3, :3] @ c_src + T_mat[:3, 3]
-        ext_dst = ext_src
-        frame_dst = T_mat[:3, :3] @ frame_src
-        dst_boxes.append((c_dst, ext_dst, frame_dst))
-
-        box_dst_cut_name = f'dst_box_cut_{idx}'
-        elem_dst_name = f'element_{idx}'
-
-        ops.extend([
-            {
-                'op': 'transform',
-                'input': 'src_box_cut',
-                'matrix': T_mat.tolist(),
-                'result': box_dst_cut_name,
-            },
-            {
-                'op': 'difference',
-                'a': 'base',
-                'b': box_dst_cut_name,
-                'result': 'base',
-            },
-            {
-                'op': 'transform',
-                'input': 'element',
-                'matrix': T_mat.tolist(),
-                'result': elem_dst_name,
-            },
-            {
-                'op': 'union',
-                'a': 'base',
-                'b': elem_dst_name,
-                'result': 'base',
-            }
-        ])
-
-    with tempfile.TemporaryDirectory() as td:
-        in_mesh = os.path.join(td, 'input.npz')
-        out_mesh = os.path.join(td, 'output.npz')
-        spec_path = os.path.join(td, 'spec.json')
-
-        np.savez(in_mesh, verts=np.asarray(verts, dtype=np.float64), tris=np.asarray(tris, dtype=np.int32))
-        spec = {
-            'input_mesh': 'input.npz',
-            'output_mesh': 'output.npz',
-            'ops': ops,
-        }
-        with open(spec_path, 'w') as f:
-            json.dump(spec, f)
-
-        r = subprocess.run(
-            [py311, bridge_script, td],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if r.returncode != 0:
-            err_msg = r.stderr.strip() or r.stdout.strip()
-            raise RuntimeError(f"CSG bridge failed (code {r.returncode}): {err_msg}")
-
-        try:
-            report = json.loads(r.stdout.strip().splitlines()[-1])
-        except Exception:
-            report_file = os.path.join(td, 'report.json')
-            if os.path.isfile(report_file):
-                with open(report_file, 'r') as f:
-                    report = json.load(f)
-            else:
-                raise RuntimeError(f"Unparseable CSG bridge output: {r.stdout}")
-
-        if not report.get('ok'):
-            raise RuntimeError(f"CSG bridge error: {report.get('error', 'unknown error')}")
-
-        if not os.path.isfile(out_mesh):
-            raise RuntimeError("CSG bridge did not produce output mesh file")
-
-        out_data = np.load(out_mesh)
-        rep_v = np.asarray(out_data['verts'], dtype=np.float64)
-        rep_t = np.asarray(out_data['tris'], dtype=np.int64)
-        vol_change = float(report.get('volume_change', 0.0))
-        is_watertight = bool(report.get('is_watertight', False))
-
-        return rep_v, rep_t, vol_change, dst_boxes, is_watertight
-
-
-def _execute_boolean_transplant(verts, tris, template_pts, transforms, margin=OBB_EXPANSION_MARGIN, force_bridge=None):
-    """Execute volumetric boolean transplant operations using manifold3d CSG.
-
-    Uses in-process manifold3d when importable (e.g. macOS / conda single-env installs),
-    otherwise delegates to csg_bridge.py under the Python 3.11 interpreter.
-    Can be forced to use the bridge via force_bridge=True or SUTURA_FORCE_CSG_BRIDGE=1.
-
-    Parameters:
-        verts: (N, 3) float64 array of input mesh vertices.
-        tris: (M, 3) int64 array of input mesh triangles.
-        template_pts: (P, 3) vertices of the healthy template element.
-        transforms: list of 4x4 rigid transformation matrices (one per transplant site).
-        margin: OBB expansion margin fraction.
-        force_bridge: bool or None. If True or env var SUTURA_FORCE_CSG_BRIDGE is set,
-            forces execution via csg_bridge.py subprocess even if manifold3d is available.
-
-    Returns:
-        rep_v: (N_out, 3) vertices of repaired mesh.
-        rep_t: (M_out, 3) triangle indices of repaired mesh.
-        vol_change: float absolute volume change.
-        dst_boxes: list of (center, extents, frame) tuples for repaired regions.
-        is_watertight: bool whether the resulting solid is a valid watertight manifold.
-    """
-    if force_bridge is None:
-        force_bridge = os.environ.get('SUTURA_FORCE_CSG_BRIDGE', '').lower() in ('1', 'true', 'yes')
-
-    if not force_bridge:
-        try:
-            import manifold3d  # noqa: F401
-            can_inprocess = True
-        except ImportError:
-            can_inprocess = False
-
-        if can_inprocess:
-            return _execute_boolean_transplant_inprocess(verts, tris, template_pts, transforms, margin=margin)
-
-    return _execute_boolean_transplant_bridge(verts, tris, template_pts, transforms, margin=margin)
+    matrices = np.asarray(transforms, dtype=np.float64)
+    if matrices.ndim != 3 or matrices.shape[1:] != (4, 4):
+        raise ValueError("transforms must be a list of 4x4 matrices")
+    rep_v, rep_t, vol_change, dst_boxes, is_watertight = \
+        sutura_geom.boolean_transplant(
+            verts, tris, c_src, ext_src, frame_src, matrices)
+    return (np.asarray(rep_v, dtype=np.float64),
+            np.asarray(rep_t, dtype=np.int64),
+            float(vol_change), list(dst_boxes), bool(is_watertight))
 
 
 def _compute_hausdorff_outside(orig_v, orig_t, result_v, result_t, dst_boxes, samples=5000):
