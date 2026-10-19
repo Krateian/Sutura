@@ -992,10 +992,10 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     disambiguation of the generalized-winding sign in the ambiguous band; it is
     OFF by default, so the output is byte-identical to the winding-only path.
 
-    ``antipodal`` (or the ``SUTURA_ANTIPODAL`` env var) enables the robust
-    (antipodal) generalized winding number for the same band; it is OFF by
-    default (byte-identical when off) and, when both are enabled, runs last and
-    wins over ``raystab``.
+    ``antipodal`` (or the ``SUTURA_ANTIPODAL`` env var) controls the robust
+    (antipodal) generalized winding number for the same band; it is ON by
+    default (opt-out with ``antipodal=False`` or ``SUTURA_ANTIPODAL=0``) and,
+    when both are enabled, runs last and wins over ``raystab``.
 
     Returns ``(verts, tris, report)``; the report always carries
     ``method=13``, ``display_name='Graft'`` and ``invents_geometry=True``.

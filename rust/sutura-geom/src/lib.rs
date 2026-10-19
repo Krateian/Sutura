@@ -464,11 +464,10 @@ fn antipodal_info<'py>(
 /// the pass.  With `raystab=False` (the default) the output is byte-identical
 /// to the winding-only field.
 ///
-/// `antipodal=True` overrides the same band with the robust (antipodal)
-/// generalized winding number (`antipodal`), deterministically and exactly at
-/// grazing configurations; `info['antipodal']` records the pass.  When both are
-/// requested the antipodal pass runs last and wins.  With `antipodal=False` (the
-/// default) the output is byte-identical to the winding-only field.
+/// `antipodal=Some(false)` opts out of the robust (antipodal) generalized
+/// winding number (`antipodal`) and restores the classic winding path.  It is
+/// ON by default; when both raystab and antipodal are enabled, antipodal runs
+/// last and wins.  `SUTURA_ANTIPODAL=0` opts out in the environment.
 #[pyfunction]
 #[pyo3(signature = (verts, tris, voxel=None, r#box=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None))]
 fn sdf_grid<'py>(
@@ -590,11 +589,10 @@ fn sdf_grid<'py>(
 /// records the pass.  With `raystab=False` (the default) the output is
 /// byte-identical to the winding-only path.
 ///
-/// `antipodal=True` disambiguates the same band with the robust (antipodal)
-/// generalized winding number instead; `info['antipodal']` records the pass and
-/// the two are mutually compatible (antipodal runs last and wins).  With
-/// `antipodal=False` (the default) the output is byte-identical to the
-/// winding-only path.
+/// `antipodal=Some(false)` opts out of the robust (antipodal) generalized
+/// winding number instead and restores the classic winding path.  It is ON by
+/// default; when both raystab and antipodal are enabled, antipodal runs last
+/// and wins.  `SUTURA_ANTIPODAL=0` opts out in the environment.
 #[pyfunction]
 #[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None))]
 fn morph_close<'py>(
