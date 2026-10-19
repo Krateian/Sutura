@@ -825,6 +825,12 @@ def _auto_multi(src, out, tmpdir, ctx, base_method, result, tried):
             out, out, final_meshes, tmpdir, attr_source=src)
         for rep, st in zip(object_reports, stats or []):
             rep['triangle_attributes'] = st
+        # The top-level aggregate was built by the baseline repair_3mf before
+        # escalation; refresh it from the now-final per-object stats so it can
+        # never report stale counts.
+        agg_attrs = repair.aggregate_triangle_attributes(object_reports)
+        if agg_attrs is not None:
+            result['triangle_attributes'] = agg_attrs
 
     result['object_reports'] = object_reports
     if object_reports:

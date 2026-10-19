@@ -38,12 +38,22 @@ def _read_zip_entry(z: zipfile.ZipFile, name: str) -> bytes:
     return z.read(name)
 
 
+def _is_model_part(name: str) -> bool:
+    """True when a 3MF part name ends in ``.model`` (OPC: ASCII-insensitive)."""
+    suffix = name[-6:]
+    return ''.join(
+        c.lower() if 'A' <= c <= 'Z' else c for c in suffix) == '.model'
+
+
+# TODO: parse_3mf_meshes duplicates sutura_engine.pipeline.mesh_io's 3MF
+# parsing (prefixed tags, attribute names, units, comment handling). This
+# legacy copy only carries the .model case fix; consolidate onto mesh_io later.
 def parse_3mf_meshes(path: str) -> Dict[str, List[Tuple[np.ndarray, np.ndarray, Tuple[int, int]]]]:
     """Return {model_name: [(verts, tris, (start, end))]} for every <mesh> block."""
     out = {}
     with zipfile.ZipFile(path) as z:
         for name in z.namelist():
-            if not name.endswith('.model'):
+            if not _is_model_part(name):
                 continue
             xml = _read_zip_entry(z, name).decode('utf-8', errors='replace')
             blocks = []
