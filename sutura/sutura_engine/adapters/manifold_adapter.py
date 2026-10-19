@@ -1,22 +1,17 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Adapter for Manifold / manifold3d (Apache-2.0).
+"""Adapter for the Manifold kernel (Apache-2.0).
 
-Probes whether manifold3d can be imported in-process or reached via the
-subprocess bridge (manifold_bridge.py across Python runtimes).
+Manifold now lives in the Rust core (`sutura_geom.stage2_rebuild` /
+`watertight_check`); there is no Python `manifold3d` import or subprocess bridge any more.
 """
-import os
 
 
 def is_manifold_available() -> bool:
-    """Return True if manifold3d can be imported in-process or reached via bridge."""
+    """Return True when the Rust Manifold bindings are present."""
     try:
-        import manifold3d  # noqa: F401
-        return True
-    except (ImportError, Exception):
-        pass
-    # Check bridge
-    sutura_dir = os.environ.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
-    bridge = os.path.join(sutura_dir, 'manifold_bridge.py')
-    venv311 = os.path.join(sutura_dir, 'venv311', 'bin', 'python')
-    return os.path.isfile(bridge) and os.path.isfile(venv311)
+        import sutura_geom
+        return (hasattr(sutura_geom, 'stage2_rebuild')
+                and hasattr(sutura_geom, 'watertight_check'))
+    except Exception:  # noqa: BLE001 - availability probe must never raise
+        return False

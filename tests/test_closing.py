@@ -25,11 +25,10 @@ SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 sys.path.insert(0, REPO)
 
-# The in-process stage-2 / proximity stack is optional on the Linux CI legs
-# (manifold3d has no py3.14 wheel): skip cleanly where it is unavailable.
+# The proximity stack needs trimesh; skip cleanly where it is unavailable.
 try:
     import trimesh  # noqa: E402
-    import manifold3d  # noqa: E402
+    import sutura_geom  # noqa: E402
     import sutura.closing as cl  # noqa: E402
 except Exception as _exc:  # noqa: BLE001 - optional test dependency
     print('skip tests/test_closing.py: %s' % _exc)
@@ -150,9 +149,9 @@ def test_poisson_close_hemisphere():
     assert any('Poisson' in n for n in rep['notes']), f"Missing Poisson note: {rep['notes']}"
     assert len(t_out) > len(t_hemi), "Reconstruction should add faces"
 
-    # Verify with manifold3d
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    # Verify with the Rust Manifold kernel
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
 
     # Check fidelity with one_sided_hausdorff
     h_max, h_mean = cl.one_sided_hausdorff(v_hemi, t_hemi, v_out, t_out, samples=10000)
@@ -168,9 +167,9 @@ def test_flat_back_close_relief():
     assert rep['thickness'] > 0.0, f"Thickness should be positive: {rep['thickness']}"
     assert any('flat back' in n for n in rep['notes']), f"Missing note: {rep['notes']}"
 
-    # Verify with manifold3d
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    # Verify with the Rust Manifold kernel
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
 
     # Input faces should be strictly preserved -> Hausdorff == 0.0
     h_max, h_mean = cl.one_sided_hausdorff(v_rel, t_rel, v_out, t_out, samples=10000)
@@ -203,8 +202,8 @@ def test_flat_back_secondary_hole():
     v_out, t_out, rep = cl.flat_back_close(v_rel, t_with_hole)
     assert rep['watertight'] is True, f"Output with secondary hole not watertight: {rep}"
 
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
     print("  ✓ test_flat_back_secondary_hole passed")
 
 
@@ -214,8 +213,8 @@ def test_non_convex_l_relief():
     v_out, t_out, rep = cl.flat_back_close(v_l, t_l)
     assert rep['watertight'] is True, f"L-relief not watertight: {rep}"
 
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
     print("  ✓ test_non_convex_l_relief passed")
 
 
@@ -265,8 +264,8 @@ def test_large_loop_flat_back():
     assert rep['watertight'] is True, f"5000-vertex loop not watertight: {rep}"
     assert elapsed < 5.0, f"Large loop closing took too long: {elapsed:.2f} s"
 
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
     print(f"  ✓ test_large_loop_flat_back passed (5000-vertex loop in {elapsed:.3f} s)")
 
 
@@ -296,8 +295,8 @@ def test_large_loop_flat_back_clockwise():
     v_out, t_out, rep = cl.flat_back_close(verts, tris)
     assert rep['watertight'] is True, f"clockwise loop not watertight: {rep}"
     assert _signed_volume(v_out, t_out) > 0, "inverted cap: negative volume"
-    mf = manifold3d.Manifold(mesh=manifold3d.Mesh(vert_properties=v_out, tri_verts=t_out))
-    assert mf.status() == manifold3d.Error.NoError, f"manifold3d error: {mf.status()}"
+    ok, status = sutura_geom.watertight_check(v_out, t_out)
+    assert ok, f"Manifold error: {status}"
     print("  ✓ test_large_loop_flat_back_clockwise passed")
 
 

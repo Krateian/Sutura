@@ -1,58 +1,37 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Stage 2 (manifold3d solid rebuild) and pinch splitting (P1a split).
+"""Stage 2 (Manifold solid rebuild) and pinch splitting (P1a split).
 
-Runs the manifold3d bridge in-process or via the venv311 subprocess, gates
-Stage 2 behind the strict-watertight verdict, and splits pinched vertices on a
-closed Stage-1 result. Moved verbatim from sutura/repair.py; no logic change.
+Runs the Manifold kernel in the Rust core (`sutura_geom.stage2_rebuild`) on
+the arrays already in memory, gates Stage 2 behind the strict-watertight
+verdict, and splits pinched vertices on a closed Stage-1 result. Moved
+verbatim from sutura/repair.py; no logic change.
 """
-import json
-import os
-import subprocess
-import sys
-import tempfile
 import time
 
 import numpy as np
 
 import topology
-from sutura_engine import health as method_health
-from sutura_engine.pipeline.mesh_io import BRIDGE, read_obj, write_obj
-from sutura_engine.pipeline.presets import VENV311
+import sutura_geom
+from sutura_engine.pipeline.mesh_io import read_obj, write_obj
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
+def run_stage2_arrays(verts, tris):
+    """Rebuild arrays as a Manifold solid. Returns ``(verts, tris, report)``."""
+    return sutura_geom.stage2_rebuild(
+        np.asarray(verts, dtype=np.float64),
+        np.asarray(tris, dtype=np.int32),
+    )
+
+
 def run_stage2(inter, out_obj):
-    """Run stage 2. Returns (report, ok); reports a skip, never silence."""
-    # 1) primary: the fixed Linux two-venv layout (python3.11 + manifold3d)
-    if os.path.exists(VENV311) and os.path.exists(BRIDGE):
-        r = subprocess.run(
-            [VENV311, BRIDGE, inter, out_obj],
-            capture_output=True, text=True, timeout=600,
-        )
-        if r.returncode == 0:
-            try:
-                report = json.loads(r.stdout.strip().splitlines()[-1])
-            except Exception:
-                report = {'error': 'unparseable manifold output'}
-            if 'error' not in report:
-                return report, True
-        # fall through to the in-process attempt if the venv failed
-
-    # 2) single-environment installs (macOS/conda): call the bridge in-process
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('sutura_manifold_bridge', BRIDGE)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        report = module.run_bridge(inter, out_obj)
-        if 'error' not in report:
-            return report, True
-    except Exception:
-        pass
-
-    # 3) unavailable: report it explicitly, never silently
-    return {'error': 'Stage 2 skipped: manifold3d not available in this environment.'}, False
+    """File-based wrapper kept for the fTetWild post-process."""
+    verts, tris = read_obj(inter)
+    out_v, out_t, report = run_stage2_arrays(verts, tris)
+    if 'error' not in report:
+        write_obj(out_obj, out_v, out_t)
+    return report, 'error' not in report
 
 
 PINCH_SPLIT_MAX_PASSES = 5
@@ -101,28 +80,24 @@ def _split_pinched_vertices(ml, ms, topo):
 
 
 def maybe_run_stage2(report, verts, tris, tmpdir):
-    """Run stage 2 (manifold3d) when the mesh is watertight and the bridge is
-    available; shared by the single-mesh path and per-object 3MF repair.
+    """Run stage 2 when the mesh is watertight and the Rust core is present.
 
-    The gate mirrors the historical single-mesh behaviour: stage 2 only
-    applies to a mesh that stage 1 closed (two-manifold with no remaining
-    holes) AND the bridge exists. ``run_stage2`` itself handles the fixed
-    venv subprocess, the in-process fallback, or an explicit "skipped"
-    report. Sets ``report['stage2']`` when stage 2 was attempted and returns
-    ``(new_verts, new_tris)`` — the manifold3d-rebuilt mesh when it produced
-    output, the input arrays unchanged otherwise."""
+    Shared by the single-mesh path and per-object 3MF repair. The gate mirrors
+    the historical single-mesh behaviour: stage 2 only applies to a mesh that
+    stage 1 closed (two-manifold with no remaining holes). Sets
+    ``report['stage2']`` when stage 2 was attempted and returns
+    ``(new_verts, new_tris)`` — the rebuilt mesh when it produced output, the
+    input arrays unchanged otherwise.
+    """
+    del tmpdir  # arrays go straight to the Rust core; kept for callers
     if (report.get('stage1', {}).get('two_manifold')
-            and report.get('stage1', {}).get('holes_remaining', 0) == 0
-            and os.path.exists(BRIDGE)):
-        inter = os.path.join(tmpdir, 'stage1.obj')
-        out_obj = os.path.join(tmpdir, 'stage2.obj')
-        write_obj(inter, verts, tris)
+            and report.get('stage1', {}).get('holes_remaining', 0) == 0):
         _t_s2 = time.perf_counter()
-        mrep, _ = run_stage2(inter, out_obj)
+        new_v, new_t, mrep = run_stage2_arrays(verts, tris)
         report.setdefault('timings', {})['stage2'] = round(
             time.perf_counter() - _t_s2, 3)
         if mrep is not None:
             report['stage2'] = mrep
-            if 'error' not in mrep and os.path.exists(out_obj):
-                return read_obj(out_obj)
+            if 'error' not in mrep and len(new_t) > 0:
+                return new_v, new_t
     return verts, tris
