@@ -18,12 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'sutura'))
 
 import local_exact as le  # noqa: E402
 
-try:
-    import sutura_geom  # noqa: E402
-    _HAS_BVH = hasattr(sutura_geom, 'PyMeshBvh')
-except Exception:  # noqa: BLE001
-    sutura_geom = None
-    _HAS_BVH = False
+import sutura_geom  # noqa: E402
+_HAS_BVH = hasattr(sutura_geom, 'PyMeshBvh')
 
 
 def _box(cx=0.0, cy=0.0, cz=0.0, s=2.0):

@@ -24,10 +24,7 @@ if REPO not in sys.path:
 from sutura_engine import dressing  # noqa: E402
 from sutura_engine.methods import all_methods, get_method, rank_methods  # noqa: E402
 
-try:
-    import sutura_geom  # noqa: E402
-except Exception:  # pragma: no cover
-    sutura_geom = None
+import sutura_geom  # noqa: E402
 
 try:
     import pymeshlab as ml  # noqa: E402
