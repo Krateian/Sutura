@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Splint (method #18) — the last-resort exact solid-rebuild tier.** A new opt-in
+  deep-repair tier (`sutura_engine/pipeline/tiers/splint.py`, Rust core
+  `sutura_geom.splint_cut`) proxies the input surface, Delaunay-tetrahedralises it
+  and cuts the interior away to produce a watertight solid boundary. It is
+  deterministic and addon-free, and runs **after Dressing and before fTetWild** in
+  the `full` ladder. Splint is **off by default**: enable with `--experimental-splint`
+  / `SUTURA_SPLINT` (disable with `--no-splint` / `SUTURA_SPLINT=0`; the library
+  default keeps a direct `repair_mesh_from_arrays(deep_repair=None)` call
+  byte-identical), or pick it explicitly with `--methods 18` / the GUI *Use method*
+  menu. A candidate is adopted only when it reloads strict-watertight; a closed but
+  not two-manifold raw cut is first rebuilt through the Stage-2 Manifold bridge and
+  kept only when no worse on holes and non-manifold edges. Cost is bounded by a
+  resolution cap (`SPLINT_RES=128`) and an input-face cap, with the wall clock as an
+  outer all-or-nothing abort. Registered as method #18 (slug `splint`, family
+  `solid`, aliases `m18`/`18`), with `core_required=True` so a stale `sutura_geom`
+  (no `splint_cut`) is a named FAIL in `--self-check`/availability, never a SKIP.
+  CLI `--experimental-splint`/`--no-splint`, GUI batch-wide *Splint (exact solid
+  rebuild)* checkbox (Options → Experimental) and an EN/TR repair-log line.
+  Evaluation: `docs/benchmarks/splint-tier-evaluation-2026-10.md`.
+
 ### Changed
 
 - **trimesh removed from the runtime.** Mesh IO and the remaining pure-Python geometry helpers now live in the engine: `sutura_engine.pipeline.mesh_io` gained a dependency-free `read_obj`/`read_stl`/`read_mesh` (binary and ASCII STL), outer-shell and proxy extraction use numpy centroids/extents and face normals, the repeated-element tier uses its own Rodrigues rotation-matrix helper and delegates surface sampling to `sutura_engine.wall.sample_surface`, Graft's local stitch calls `manifold3d` directly, and the Manifold/CSG/fTetWild bridges read OBJ/STL through `mesh_io`. A numpy edge-count `watertight` test replaces `Trimesh.is_watertight` in the stage-2 report. `trimesh` moves to the new dev-only `requirements-dev.txt` (the test suite and developer scripts keep it as an independent oracle) and is dropped from `requirements.txt`, `requirements-311.txt`, the installers, the self-updater, the AppImage bundle and CI; a new `tests/test_no_trimesh.py` guard (mirroring the SciPy guard) scans the runtime for regressions.

@@ -11,7 +11,12 @@ watertight supersedes fTetWild.
 
 The adaptive sampling mode is fixed to ``'retry'`` (hardened pass first; a
 broader rerun only when the hardened result still has too many shells) and the
-resolution is capped at ``SPLINT_RES`` (128).  The candidate is adopted only
+resolution is capped at ``SPLINT_RES`` (128).  The raw emitted boundary of a
+cut can carry non-manifold edges (a boundary shared by more than two faces);
+because a destructive non-manifold repair would manufacture holes instead, such
+a cut is rebuilt as a closed Manifold solid through ``run_stage2_arrays``
+(mirroring the fTetWild post-process) and the rebuilt boundary is used only when
+it is no worse on holes and non-manifold edges.  The candidate is adopted only
 when it is strict-watertight after the save/reload-equivalent weld (holes and
 non-manifold edges equal to the best possible zero), which also guarantees it is
 no worse than the result the ladder already holds.  Never raises.
@@ -23,12 +28,19 @@ import numpy as np
 import topology
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
-from sutura_engine.pipeline.p_weld import (
-    _repair_welded_topology, weld_reload_equivalent,
-)
+from sutura_engine.pipeline.p_weld import weld_reload_equivalent
 from sutura_engine.pipeline.presets import (
     SPLINT_MAX_FACES, SPLINT_RES, SPLINT_TIMEOUT,
 )
+from sutura_engine.pipeline.stage2 import run_stage2_arrays
+
+
+def _count_defects(verts, tris):
+    """Return ``(holes, non_manifold_edges)`` on the saved/reloaded form."""
+    v32 = np.asarray(verts, dtype=np.float32)
+    t32 = np.asarray(tris, dtype=np.int32)
+    det = detect_defects(v32, t32)
+    return len(det['holes']), len(det['non_manifold'])
 
 
 def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
@@ -60,6 +72,7 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
            'input_faces': None, 'output_faces': None, 'output_vertices': None,
            'output_parts': None, 'out_manifold': None,
            'holes': None, 'non_manifold': None,
+           'construct_status': None, 'manifold_postprocessed': False,
            'seconds': None, 'skipped_budget': False, 'aborted': False,
            'reject_reason': None, 'reason': None, 'warnings': [],
            'max_faces': int(cap) if cap is not None else None,
@@ -120,19 +133,36 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
         cand_t = np.asarray(cand_t)
         if len(cand_t):
             cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
-            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
-            cand_v = np.asarray(cand_v, dtype=np.float32)
-            cand_t = np.asarray(cand_t, dtype=np.int32)
-            det = detect_defects(cand_v, cand_t)
-            cand_holes = len(det['holes'])
-            cand_nm = len(det['non_manifold'])
+            cand_holes, cand_nm = _count_defects(cand_v, cand_t)
+            after0 = topology.mesh_topology(
+                np.asarray(cand_v, dtype=np.float32),
+                np.asarray(cand_t, dtype=np.int32))
+            two_manifold = bool(after0.get('is_mesh_two_manifold'))
+            if not (cand_holes == 0 and cand_nm == 0 and two_manifold):
+                # The raw emitted boundary carries non-manifold edges; a
+                # destructive nm-edge repair would turn them into holes, so
+                # rebuild it as a closed Manifold solid (the same post-process
+                # fTetWild applies to its boundary) and keep the rebuild only
+                # when it is no worse.
+                m3_v, m3_t, m3rep = run_stage2_arrays(cand_v, cand_t)
+                rec['construct_status'] = m3rep.get('construct_status')
+                if 'error' not in m3rep and len(m3_t):
+                    m3_v, m3_t = weld_reload_equivalent(m3_v, m3_t)
+                    m3_holes, m3_nm = _count_defects(m3_v, m3_t)
+                    if m3_holes <= cand_holes and m3_nm <= cand_nm:
+                        cand_v, cand_t = m3_v, m3_t
+                        cand_holes, cand_nm = m3_holes, m3_nm
+                        rec['manifold_postprocessed'] = True
             rec['holes'] = cand_holes
             rec['non_manifold'] = cand_nm
             rec['faces'] = int(len(cand_t))
             if len(cand_t) and cand_holes == 0 and cand_nm == 0:
                 ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-                after = topology.mesh_topology(cand_v, cand_t)
+                ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
+                                    face_matrix=np.asarray(cand_t, np.int32)))
+                after = topology.mesh_topology(
+                    np.asarray(cand_v, dtype=np.float32),
+                    np.asarray(cand_t, dtype=np.int32))
                 rec['adopted'] = True
                 rec['watertight'] = False  # stage 2 confirms at the top level
                 rec['candidate_watertight'] = True

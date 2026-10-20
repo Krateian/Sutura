@@ -131,6 +131,9 @@ jobs:
       - name: "Test: method registry / analysis / ranking"
         run: ./venv/bin/python tests/test_methods.py
 
+      - name: "Test: deep-repair tier order (P1b characterization)"
+        run: ./venv/bin/python tests/test_pipeline_order.py
+
       # Error-isolation wrapper + Health section: parity of the output (health
       # ON vs SUTURA_METHOD_HEALTH=0) and fault-injection isolation.
       - name: "Test: method health / error isolation"

@@ -118,13 +118,13 @@ def main():
         'method_auto_rec', 3, gui._method_name(3), 82), w._item_by_path[a].text(1)
     print('ok  recommendation shown in the Method column')
 
-    # Use method menu: 17 entries, placeholders / needs-input disabled
+    # Use method menu: 18 entries, placeholders / needs-input disabled
     w._on_tag_toggle([b], 'method', 3)
     m = gui.QMenu(w.tree)
     um = gui._KeepOpenMenu(gui._t('menu_use_method'), m)
     w._build_use_method_menu(um, [b], b)
     acts = um.actions()
-    assert len(acts) == 17, len(acts)
+    assert len(acts) == 18, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
     # 8-12 are implemented and enabled (12 opens the repeat picker); 14
     # (Mirror Complete) is enabled.  13 Graft needs the Rust sutura_geom
@@ -528,6 +528,31 @@ def main():
     assert w._dressing_force_adopt is False
     assert (w.chk_dressing_force_adopt, False) in w._options_defaults
     print('ok  Dressing force-adopt checkbox + defaults')
+
+    # Splint (#18): the batch-wide checkbox adds --experimental-splint only when
+    # checked, maps to MainWindow._splint and is registered in the defaults.
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], splint=True)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--experimental-splint' in captured['args'], captured['args']
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b])
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--experimental-splint' not in captured['args'], captured['args']
+    w.chk_splint.setChecked(True)
+    assert w._splint is True
+    w.chk_splint.setChecked(False)
+    assert w._splint is False
+    assert (w.chk_splint, False) in w._options_defaults
+    print('ok  Splint checkbox + worker flag + defaults')
 
     # The post-batch "Try Dressing" button appears only when a finished result
     # suggested Dressing, and clicking it force-reruns exactly those files.

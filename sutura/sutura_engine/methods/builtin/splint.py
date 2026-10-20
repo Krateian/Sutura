@@ -26,6 +26,9 @@ METHOD = RepairMethod(
     # generic one-sided (input -> output) Hausdorff guard -- which would also
     # see the legitimate caps that close the openings -- is skipped.
     self_guarded=True,
+    # The tier cannot run without the Rust Splint core: a present-but-stale
+    # sutura_geom (no ``splint_cut``) is a FAIL in the health report, not a SKIP.
+    core_required=True,
     kwargs={'splint': True, 'deep_repair': 'full', 'ftetwild': False},
     available_fn=splint_available,
 )

@@ -91,6 +91,10 @@ class RepairMethod:
     available_fn: Optional[Callable] = field(default=None, compare=False, repr=False)
     guard_input_to_output: bool = field(default=False, compare=False, repr=False)
     self_guarded: bool = field(default=False, compare=False, repr=False)
+    # When True, an unavailable check means the mandatory Rust core is missing or
+    # stale for a method that cannot run without it: the health layer reports
+    # FAIL (not SKIP). Optional addons leave this False and stay SKIP.
+    core_required: bool = field(default=False, compare=False, repr=False)
 
     def __post_init__(self):
         if not self.display_name:

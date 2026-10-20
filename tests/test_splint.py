@@ -17,6 +17,8 @@ Plain script, no pytest required: run
 import os
 import sys
 
+import importlib.machinery
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
 for _p in (REPO, SUTURA):
@@ -61,6 +63,7 @@ def test_registry_and_order():
     m = get_method(18)
     assert m is not None and m.id == 'splint' and m.num == 18
     assert m.invents_geometry is True and m.self_guarded is True
+    assert m.core_required is True
     assert m.kwargs.get('splint') is True
     assert order.method_num('splint') == 18
     assert order.DEEP_TIER_ORDER.index('splint') < \
@@ -68,6 +71,31 @@ def test_registry_and_order():
     assert order.DEEP_TIER_ORDER.index('dressing') < \
         order.DEEP_TIER_ORDER.index('splint')
     print('ok test_registry_and_order')
+
+
+def test_health_fails_not_skips_without_splint_cut():
+    # A stale sutura_geom (the mandatory core symbols present but splint_cut
+    # missing) must make Splint FAIL, never SKIP: Splint is core_required, so a
+    # missing symbol is a broken install, not an optional addon.
+    import types
+    from sutura_engine import health
+    saved = sys.modules.get('sutura_geom')
+    fake = types.ModuleType('sutura_geom')
+    fake.__spec__ = importlib.machinery.ModuleSpec('sutura_geom', None)
+    for _sym in ('flap_fill', 'morph_close', 'tamponade'):
+        setattr(fake, _sym, lambda *a, **k: None)
+    sys.modules['sutura_geom'] = fake
+    try:
+        detail = health.check_availability_detail()
+        st, reason = detail['splint']
+        assert st is health.Status.FAIL, (st, reason)
+        assert 'splint_cut' in (reason or ''), reason
+    finally:
+        if saved is not None:
+            sys.modules['sutura_geom'] = saved
+        else:
+            sys.modules.pop('sutura_geom', None)
+    print('ok test_health_fails_not_skips_without_splint_cut')
 
 
 class _FakeMesh:
@@ -98,7 +126,7 @@ class _FakeML:
     MeshSet = _FakeMS
 
 
-def _install_fake_core(out_v, out_t, report=None):
+def _install_fake_core(out_v, out_t, report=None, b2=None):
     import types
     mod = types.ModuleType('sutura_geom')
     rep = {'seconds': 0.01, 'output_faces': int(len(out_t)),
@@ -108,14 +136,27 @@ def _install_fake_core(out_v, out_t, report=None):
 
     def splint_cut(verts, tris, res, adaptive=None):
         return out_v, out_t, rep
+
+    if b2 is None:
+        # Default fake Manifold rebuild: identity (constructs with NoError).
+        def stage2_rebuild(verts, tris):
+            return (np.asarray(verts, np.float32),
+                    np.asarray(tris, np.int32),
+                    {'construct_status': 'Error.NoError', 'ok': True})
+    else:
+        def stage2_rebuild(verts, tris):
+            v, t, st = b2
+            return (np.asarray(v, np.float32), np.asarray(t, np.int32),
+                    {'construct_status': st, 'ok': st == 'Error.NoError'})
     mod.splint_cut = splint_cut
+    mod.stage2_rebuild = stage2_rebuild
     sys.modules['sutura_geom'] = mod
     return mod
 
 
-def _run_tier(cand_v, cand_t, spec=None, stats=None):
+def _run_tier(cand_v, cand_t, spec=None, stats=None, b2=None):
     from sutura_engine.pipeline.tiers.splint import splint_tier
-    _install_fake_core(cand_v, cand_t)
+    _install_fake_core(cand_v, cand_t, b2=b2)
     stats = stats if stats is not None else {'stage1': {}}
     after = {}
 
@@ -140,12 +181,29 @@ def test_tier_adopts_watertight_candidate():
 
 def test_tier_rejects_holed_candidate():
     v, f = _cube()
-    # Drop one triangle -> the candidate has a boundary (hole).
+    # Drop one triangle -> the candidate has a boundary (hole) that even the
+    # (identity) Manifold rebuild cannot close, so it is not adopted.
     holed_f = f[:-1]
     ms, after, rec = _run_tier(v, holed_f)
     assert rec['ran'] and rec['adopted'] is False, rec
+    assert rec['construct_status'] == 'Error.NoError', rec
     assert rec['reason'].startswith('candidate not strict-watertight'), rec
     print('ok test_tier_rejects_holed_candidate')
+
+
+def test_tier_manifold_postprocess_adopts_closed_rebuild():
+    v, f = _cube()
+    # A fin triangle on an existing edge (0,1) makes it non-manifold (3 faces)
+    # with no hole; the Manifold rebuild (faked to a clean cube) closes it.
+    nm_f = np.vstack([f, [[0, 1, 7]]])
+    clean_v, clean_f = _cube()
+    ms, after, rec = _run_tier(v, nm_f,
+                               b2=(clean_v, clean_f, 'Error.NoError'))
+    assert rec['ran'] and rec['adopted'] is True, rec
+    assert rec['manifold_postprocessed'] is True, rec
+    assert rec['holes'] == 0 and rec['non_manifold'] == 0
+    assert rec['construct_status'] == 'Error.NoError'
+    print('ok test_tier_manifold_postprocess_adopts_closed_rebuild')
 
 
 def test_tier_skips_over_cap():
@@ -177,6 +235,7 @@ def test_tier_aborts_on_timeout():
 if __name__ == '__main__':
     test_resolve_splint_precedence()
     test_registry_and_order()
+    test_health_fails_not_skips_without_splint_cut()
     try:
         import pymeshlab  # noqa: F401
     except Exception:
@@ -185,6 +244,7 @@ if __name__ == '__main__':
         sys.exit(0)
     test_tier_adopts_watertight_candidate()
     test_tier_rejects_holed_candidate()
+    test_tier_manifold_postprocess_adopts_closed_rebuild()
     test_tier_skips_over_cap()
     test_tier_aborts_on_timeout()
     print('ALL OK')

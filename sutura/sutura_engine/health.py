@@ -368,7 +368,14 @@ def check_availability_detail() -> Dict[str, Tuple[Status, Optional[str]]]:
         except BaseException as exc:  # noqa: BLE001 - report, never crash
             out[mid] = (Status.FAIL, '%s: %s' % (type(exc).__name__, exc))
             continue
-        out[mid] = (Status.OK, None) if ok else (Status.SKIP, reason)
+        if ok:
+            out[mid] = (Status.OK, None)
+        elif getattr(m, 'core_required', False):
+            # A method that cannot run without the mandatory Rust core (Splint):
+            # a missing/stale symbol is a FAIL, never a skip.
+            out[mid] = (Status.FAIL, reason)
+        else:
+            out[mid] = (Status.SKIP, reason)
     return out
 
 
