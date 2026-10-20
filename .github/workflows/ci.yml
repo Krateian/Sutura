@@ -209,6 +209,9 @@ jobs:
       - name: "Test: topology parity (numpy fallback, no extension)"
         run: ./venv/bin/python tests/test_topology_parity.py
 
+      - name: "Test: native face dilation parity"
+        run: ./venv/bin/python tests/test_dilate_parity.py
+
       - name: "Test: no SciPy imports in the runtime"
         run: ./venv/bin/python tests/test_no_scipy.py
 
