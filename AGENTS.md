@@ -407,6 +407,28 @@ The new method immediately participates in `--list-methods`, `--analyze` recomme
   and 5 of them re-timed (FPS 44-46 -> 64-98, all >= 64 FPS). Small meshes
   at or below the target are returned unchanged.
 
+## Verification tiers
+
+Repair-path work is gated by the tiers in
+`.claude/skills/sutura-verify/SKILL.md` (the canonical metric/mode rules).
+Summary:
+
+| Tier | When | Scope |
+|---|---|---|
+| T0 | every commit | unit/parity tests only; no corpus |
+| T1 | output-affecting change | 3 heavy meshes (100827, 1038441, metal-nut), `--quality --exclude-nondeterministic --jobs 4` (or `--byte --deterministic`) |
+| T1+ | organic/scan-touching change | T1 + 100281, 224108, 46012 |
+| T2 | before merging a repair-path PR | all 40 tracked meshes (`git ls-files`), same mode |
+| T3 | before a release | T2 + the local hard set and local reference bench (private paths only) |
+
+`--byte` is for refactors (byte-identical baseline vs candidate);
+`--quality` is for behaviour changes (no mesh worse on watertight, SI-after,
+two-sided Hausdorff, MC-GWN union volume, parts). The baseline half is cached
+by input SHA + flags + baseline HEAD, and `--jobs 4` runs meshes in parallel.
+Rust-only unwired changes skip the corpus (T0 only). T0 is CI; T1/T2/T3 are
+developer/lead gates. Measured on the local M2: T1 138.7 s cold / 73.5 s warm;
+T2 338.2 s cold / 169.2 s warm (baseline cache + `--jobs 4`).
+
 ## Tests (no framework — plain scripts, need the venvs installed)
 
 - **Repair modes (`repair.MODE_PARAMS`, CLI `--mode`, GUI picker).** Five-step Stage 1 aggressiveness ladder: `low {8,200}`, `medium {8,1000}` (historical default thresholds), `auto` (the default; runs classify_mesh + tuning gate exactly as before — mode-neutral for all existing tests/CI), `aggressive {12,3000}`, `extreme {20,10000}`. Fixed modes (not `auto`) bypass the classifier for parameter selection (it still runs, cheap, so detected_type/confidence stay informative) and set `tuning_applied=False`. The chosen mode lands in the report as `repair_mode` (JSON), a `Mode:` line (`--human`), and per-object for multi-object 3MF. `mincomponentsize` stays >= 8 for every mode (never lower: CI regression risk). Note: `extreme` with mincomponentsize=20 can delete a whole object whose connected part has < 20 faces (e.g. the 13-face broken.stl smoke cube) — that is the value's intended-but-aggressive behaviour. When extreme deletes ALL geometry (zero faces remain), the report carries `category=error` with issue `extreme_removed_object` and the clear message "Extreme mode removed all geometry (small connected component below the size threshold); try a less aggressive mode (e.g. Auto)" — reported distinctly from the generic `malformed`/`all faces are degenerate` error via `repair.ExtremeRemovedAllError` + `classification.classify` (GUI localizes it through the `issue_extreme_removed_object` EN/TR dictionary entry). The GUI exposes the same five modes via its batch-wide Repair Mode button.
