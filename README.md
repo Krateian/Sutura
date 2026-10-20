@@ -178,8 +178,8 @@ but it rejects any input that is not already closed (`NotManifold`), so
 stage 1 must finish the mesh first.
 
 Stage 2 runs in-process in the mandatory `sutura_geom` Rust extension on
-every platform. There is no Python 3.11 venv and no subprocess bridge: the
-extension statically links the Manifold C++ kernel. A failed rebuild is
+every platform. There is no Python 3.11 venv for Stage 2 and no subprocess
+bridge: the extension statically links the Manifold C++ kernel. A failed rebuild is
 reported explicitly, never silently omitted.
 
 **Optional tiers.** Around the two core stages sit tiers for self-intersecting
@@ -960,7 +960,7 @@ Sutura and where you should still double-check the output.
 | Dolphin integration | ~85% | Right-click service menu for STL/OBJ/3MF, single/multi-select handled. Depends on KDE Plasma and `kbuildsycoca6` refresh; not available on other file managers or macOS. |
 | OrcaSlicer plugin | ~70% — experimental | Self-contained script plugin for the new OrcaSlicer script-plugin API (nightly / releases newer than 2.4.2; stable 2.4.x has no plugin system). A **"Sutura" dock panel** beside the 3D view lists **every object on the plate** with a Quick/Balanced/Thorough/Extreme preset picker (Balanced default), per-object **Analyze** (read-only: holes / non-manifold / self-intersections and the top ranked repair methods) and **Repair**, "Repair selected (n)" and "Select broken", live job phases (queued → exporting → repairing → loading → done/failed/cancelled) with a Cancel button and a **Show file** link. Non-manifold objects (or objects whose mesh errors Orca repaired on import) raise **one warning notification per object per session** with a "Repair with Sutura" action. The export writes every model-part volume in **world coordinates** (mirrored parts keep outward-facing winding), skips parameter modifiers / negative volumes / support blockers, merges multi-part objects into one STL, and loads the repaired copy back as a **new object** (Undo works; outputs are kept for 7 days). `numpy` is a declared plugin dependency with a numpy-free fallback. Verified end-to-end in a real OrcaSlicer **2.5.0-dev** (macOS); primary target is Linux, macOS is a verified bonus. `request_permissions` pre-declares the CLI path's fs_read up front (subprocess prompts remain, an OrcaSlicer audit-API limitation). Experimental: stub-tested against a mock host, with no live end-to-end test in CI. |
 | Indirect predicates / exact arrangement-lite (Phase B + C1–C4) | ~50% — experimental | A Rust prototype (`--experimental-indirect-autorefine`, `rust/sutura-geom`) that splits self-intersecting geometry with exact indirect predicates instead of the float64 snap-rounding used by `--experimental-autorefine`. Phase B built the chain (predicate core, exact triangle–triangle classifier, 2D CDT with implicit points, `arrangement_lite` PyO3 binding, `repair.py` wiring). Phase C1 (0.4.0) builds every crossing from the original input planes/lines instead of chaining constructed points, and adds a rigorous interval filter in front of the exact `BigRational` predicates (results unchanged by construction, differential-tested). Measured on thingi10k_1038441 (M2): 1001-face subset 53 s → 6 s, 5000-face subset timeout → 31 s, full mesh did not finish in 30+ min → ~463 s, identical output face counts. Phase C2 removes the linear scans from the per-host constrained triangulation (walking point location, segment-corridor walk, local updates, integer exact fallback) with byte-identical output: on the same x86_64 VM the full mesh went from 830 s to 52.5 s (5000-face subset 56 s → 13 s); on the M2 the full mesh now takes 29.8 s (C1: ~463 s). Phase C3 (classification shortcuts, integer exact arithmetic, output again identical) brings the VM time to 28.1 s, and Phase C4 (direct hashing of reduced exact keys, integer implicit constructions, output identical) to 17.6 s (M2: 16.8 s after C3, 10.6 s after C4). Known limitations: disabled by default (intended for evaluation); bundled in installers and AppImage/.dmg releases, but not yet benchmarked on the full 115-mesh corpus. An external alternative, Geogram's `MeshSurfaceIntersection`, was measured and rejected (output not accepted by the Manifold rebuild, community edition aborts on dense scans) — see `docs/geogram-spike-2026-09-24.md`. |
-| Test coverage | ~85% | Plain-script suites, each runnable as `python3 tests/<suite>.py` (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture, autorefine, join-components, fTetWild defaults, pinched vertices, deep-repair ladder, method registry (incl. the P-WELD reload-safe pass), repeated-element repair, mirror completion, thin-wall analysis/thicken, learning triage, scan closing, proxy-template repair, triage, triage profiles, external engines, fTetWild manager, engine integration, engines GUI, OrcaSlicer plugin v2 stub (world-transform/winding export, multi-part union, numpy-free fallback, message protocol, lifecycle debounce, notification de-duplication), history, real-world corpus, Manifold watertight check, shell-wrap graft (`tests/test_shell_wrap.py`), viscosity-coat dressing (`tests/test_dressing.py`), engine isolation without pymeshlab (`tests/test_engine_no_pymeshlab.py`), Flap surface hole fill (`tests/test_flap.py`), Flap Rust golden-fixture parity (`tests/test_flap_rust_parity.py`), Graft tier budget / input face cap (`tests/test_graft_budget.py`), localized exact self-union of residual SI clusters (`tests/test_local_exact.py`), ray-stabbing inside/outside (`tests/test_raystab.py`), guarded Stage-1 SI excise + re-cap (`tests/test_si_excise.py`)). CI on every push/PR runs all of them except the manual torture harness on Python 3.11 and 3.14 ; the two suites that build the main window run headless since the first-run dialog is skipped on the offscreen Qt platform. The Rust core has 219 unit tests including filter-vs-exact differential tests, a randomized accelerated-vs-linear CDT query test and regression tests for the evaluated (off-by-default) Sloan and edge-point CDT variants, run in CI both plainly and with `--features cdt-check` (every accelerated triangulation query asserted against the linear reference scan), and `tests/test_sutura_geom*.py` smoke-test its Python binding. Not 100%: the GUI itself has no automated UI test beyond construction and checkbox wiring, and there is no reproducible end-to-end test against a live OrcaSlicer. |
+| Test coverage | ~85% | Plain-script suites, each runnable as `python3 tests/<suite>.py` (smoke, layered 3MF, adversarial, classification, confidence, defects, heatmap frames, healed-mask, before/after render, viewer data, validate/dry-run, mesh classifier, repair mode, suggestions, updater, obj repair, units, budget, stage2-3mf, torture, autorefine, join-components, fTetWild defaults, pinched vertices, deep-repair ladder, method registry (incl. the P-WELD reload-safe pass), repeated-element repair, mirror completion, thin-wall analysis/thicken, learning triage, scan closing, proxy-template repair, triage, triage profiles, external engines, fTetWild manager, engine integration, engines GUI, OrcaSlicer plugin v2 stub (world-transform/winding export, multi-part union, numpy-free fallback, message protocol, lifecycle debounce, notification de-duplication), history, real-world corpus, Rust-core Manifold watertight check, shell-wrap graft (`tests/test_shell_wrap.py`), viscosity-coat dressing (`tests/test_dressing.py`), engine isolation without pymeshlab (`tests/test_engine_no_pymeshlab.py`), Flap surface hole fill (`tests/test_flap.py`), Flap Rust golden-fixture parity (`tests/test_flap_rust_parity.py`), Graft tier budget / input face cap (`tests/test_graft_budget.py`), localized exact self-union of residual SI clusters (`tests/test_local_exact.py`), ray-stabbing inside/outside (`tests/test_raystab.py`), guarded Stage-1 SI excise + re-cap (`tests/test_si_excise.py`)). CI on every push/PR runs all of them except the manual torture harness on Python 3.11 and 3.14; the two suites that build the main window run headless since the first-run dialog is skipped on the offscreen Qt platform. The Rust core has 219 unit tests including filter-vs-exact differential tests, a randomized accelerated-vs-linear CDT query test and regression tests for the evaluated (off-by-default) Sloan and edge-point CDT variants, run in CI both plainly and with `--features cdt-check` (every accelerated triangulation query asserted against the linear reference scan), and `tests/test_sutura_geom*.py` smoke-test its Python binding. Not 100%: the GUI itself has no automated UI test beyond construction and checkbox wiring, and there is no reproducible end-to-end test against a live OrcaSlicer. |
 
 ## Requirements
 
@@ -1085,12 +1085,13 @@ cd Sutura
 ./install.sh
 ```
 
-This creates two virtualenvs under `~/.local/share/sutura`, installs the CLI
+This creates the main virtualenv under `~/.local/share/sutura` (plus a
+`venv311` only when the optional fTetWild extra is requested), installs the CLI
 wrapper at `~/.local/bin/sutura`, installs the hicolor app icons, and
 registers the Dolphin service menu. Re-running is safe.
 
-**AppImage (optional).** A self-contained AppImage with both Python runtimes
-bundled (3.14 for stage 1 + GUI, 3.11 for stage 2) — no virtualenvs and no
+**AppImage (optional).** A self-contained AppImage with a single Python 3.14
+runtime bundled for Stage 1, Stage 2 and the GUI — no virtualenvs and no
 system `python3.11` needed. Each tagged release ships a prebuilt
 `Sutura-x86_64.AppImage` on the
 [GitHub releases page](https://github.com/Krateian/Sutura/releases); you can
@@ -1110,7 +1111,8 @@ right-click service menu is still installed by `install.sh`.
 Installation uses pip inside isolated virtualenvs — no AUR, no yay/paru
 required, nothing touches your system package manager. The GUI needs
 PySide6 (~79 MB download, part of the `venv`); total installed size for
-the two virtualenvs is roughly 800 MB.
+the main virtualenv is roughly 800 MB (the optional fTetWild extra adds its
+own `venv311`).
 
 **Rust extension (`sutura_geom`).** The Rust extension `sutura_geom` (~1 MB)
 is installed automatically by `install.sh` and `install-macos.sh` (which download
@@ -1148,7 +1150,7 @@ The extra can also be managed after install, without re-running the installer:
 Sutura environment only, showing the download and on-disk sizes first. Both
 refuse unsupported layouts (AppImage, `.dmg`, system Python) with a reason.
 
-On Arch, `install.sh` automatically downloads a standalone Python 3.11 runtime for stage 2 if none is present (set `SUTURA_NO_PYTHON_DOWNLOAD=1` to disable).
+On Arch, `install.sh` automatically downloads a standalone Python 3.11 runtime only for the optional fTetWild extra (`SUTURA_WITH_FTETWILD=1`) if none is present (set `SUTURA_NO_PYTHON_DOWNLOAD=1` to disable).
 
 ### macOS
 
@@ -2079,14 +2081,16 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 | Manifold (via `manifold-csg` in `sutura_geom`) | stage 2 rebuild, outer-shell union, repeated-element CSG, Graft local stitch | watertight guarantee, robust boolean, same C++ kernel as Bambu Studio; static link, Apache-2.0 |
 | numpy | pipeline-wide | array math for the CLI, GUI, defect detection, history and every pure-python tier; the required `sutura_geom` Rust extension is NOT optional and the Flap path has no numpy fallback |
 | pytetwild + pyvista | fTetWild fallback tier (optional extra) | fTetWild tetrahedralization (MPL-2.0); pyvista brings VTK, ~1.1 GB installed, so it is opt-in via `SUTURA_WITH_FTETWILD=1` |
-| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, morphology, nearest-neighbour, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module, point-cloud nearest neighbours (`kiddo`), exact EDT/dilation, and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
+| sutura-geom (Rust: `robust`, `manifold-csg`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, Manifold CSG, morphology, nearest-neighbour, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), the statically linked C++ Manifold kernel (`manifold-csg`) for Stage 2, outer-shell union, repeated-element CSG and the Graft local stitch, interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module, point-cloud nearest neighbours (`kiddo`), exact EDT/dilation, and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
 
-Pinned in `requirements.txt`, `requirements-311.txt` and (optional)
-`requirements-ftetwild.txt`; Rust dependencies in `rust/sutura-geom/Cargo.toml`
-(source builds require Rust >= 1.89, the `kiddo` 6.3 MSRV). `trimesh` is no
-longer a runtime dependency: mesh IO and the pure-Python geometry helpers live
-in the engine, and the test suite / developer scripts install `trimesh` through
-the dev-only `requirements-dev.txt`.
+Pinned in `requirements.txt`, `requirements-gui.txt` and the optional
+`requirements-ftetwild.txt` (development/test dependencies in
+`requirements-dev.txt`); Rust dependencies in `rust/sutura-geom/Cargo.toml`
+(source builds require Rust >= 1.89, the `kiddo` 6.3 MSRV). SciPy is not a
+dependency either: nearest-neighbour, EDT and dilation live in the Rust core.
+`trimesh` is no longer a runtime dependency: mesh IO and the pure-Python
+geometry helpers live in the engine, and the test suite / developer scripts
+install `trimesh` only through the dev-only `requirements-dev.txt`.
 
 ## Known limitations
 
@@ -2162,7 +2166,7 @@ Sutura is organized as a modular engine (`sutura_engine`) designed for reliabili
 * **`sutura_engine.cast`** — Thin wrapper around the Rust `sutura_geom` extension (exact predicates, `arrangement_lite`).
 * **`sutura_engine.methods`** — Pluggable repair methods conforming to `RepairMethodProtocol`: built-in methods (`#1` Quick Clean through `#17` Tamponade) discovered automatically from one named module per method, plus closing, proxy, morphology graft, and repeated-element repair tiers.
 * **`sutura_engine.triage`** — Intelligent escalation policy: ranks repair methods based on geometric analysis, enforces user intensity presets (*Quick*, *Balanced*, *Thorough*, *Extreme*), and respects strict runtime budgets.
-* **`sutura_engine.adapters`** — Strict isolation boundaries for external and third-party tools (PyMeshLab, Manifold3D, fTetWild, and external CLI engines). Adapters are imported lazily only when a specific method executes.
+* **`sutura_engine.adapters`** — Strict isolation boundaries for external and third-party tools (PyMeshLab, fTetWild, and external CLI engines). Manifold is not a Python adapter: its C++ kernel is statically linked into the mandatory `sutura_geom` Rust core through `manifold-csg`. Adapters are imported lazily only when a specific method executes.
 
 In an installed or AppImage layout `sutura_engine` is a top-level package; in a source checkout a small root bootstrap package (`sutura_engine/__init__.py`) makes `import sutura_engine` work from the repository root without a symlink.
 
@@ -2181,7 +2185,8 @@ Future development aims to reduce Python runtime overhead by migrating performan
 - **Phase 1 (Rust Topology Layer):** Implement deterministic array operations in native Rust (X-Ray reload welding, strict hole/non-manifold detection, and boundary loop defect walking), using native BVH structures for nearest-neighbor spatial queries.
 - **Phase 1c (Rust Hole Triangulation):** Liepa-style minimum-weight triangulation and loop closure in native Rust, providing a direct alternative to PyMeshLab hole closing on NumPy arrays.
 - **Phase 2 (PyMeshLab Independence):** Progressively port duplicate face/vertex removal, non-manifold repairs, and surface orientation passes to reduce external C++ runtime dependencies.
-- **Phases 3 & 4 (Native Manifold & Standalone Rust CLI):** Link Manifold3D directly into the Rust extension to eliminate the dual-virtualenv architecture, working toward an independent Rust CLI executable.
+- **Phase 3 (Native Manifold — completed):** Manifold is linked directly into the Rust extension through `manifold-csg`; Stage 2, the outer-shell union, repeated-element CSG and the Graft local stitch run in `sutura_geom`, the Python `manifold3d` bridges are gone, and the 3.11 virtualenv now exists only for the optional fTetWild extra.
+- **Phase 4 (Standalone Rust CLI):** remains future work toward an independent Rust CLI executable.
 
 ## Usage history (anonymous, opt-out)
 
