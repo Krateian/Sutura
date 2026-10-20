@@ -236,12 +236,13 @@ def _repair_nmv_ms(ms, ml):
         _set_mesh_on_ms(ms, ml, v_new, t_new)
 
 
-def _remove_selected_faces_ms(ms, ml):
+def _remove_selected_faces_ms(ms, ml, mask=None):
     """Remove selected faces on a MeshSet in-place with native topology."""
     m = ms.current_mesh()
     v = m.vertex_matrix()
     t = m.face_matrix()
-    sel = np.asarray(m.face_selection_array(), dtype=bool)
+    sel = (np.asarray(mask, dtype=bool) if mask is not None
+           else np.asarray(m.face_selection_array(), dtype=bool))
     if sel.any():
         t_new = topology.remove_selected_faces(t, sel)
         _set_mesh_on_ms(ms, ml, v, t_new)
@@ -480,17 +481,18 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                     topology.select_self_intersections_ms(ms, ml)
             else:
                 ms.apply_filter('compute_selection_by_self_intersections_per_face')
-            ms.apply_filter('apply_selection_dilatation')
-            selected = int(ms.current_mesh().face_selection_array().sum())
+            m_cur = ms.current_mesh()
+            t_cur = np.asarray(m_cur.face_matrix(), dtype=np.int64)
+            sel_cur = np.asarray(m_cur.face_selection_array(), dtype=bool)
+            sel_dil = topology.dilate_face_selection(t_cur, sel_cur)
+            selected = int(sel_dil.sum())
             if selected == 0:
-                ms.apply_filter('set_selection_none')
                 report['reason'] = 'no_selection'
                 break
             if selected > face_fraction * max(total_faces, 1):
-                ms.apply_filter('set_selection_none')
                 report['reason'] = 'scope'
                 break
-            _remove_selected_faces_ms(ms, ml)
+            _remove_selected_faces_ms(ms, ml, mask=sel_dil)
             _remove_unref_vertices_ms(ms, ml)
             _repair_nme_ms(ms, ml)
             _repair_nmv_ms(ms, ml)

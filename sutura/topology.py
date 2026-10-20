@@ -1243,6 +1243,26 @@ def self_intersecting_faces(verts, tris, bvh=None):
     return _geom.self_intersecting_faces(v, t)
 
 
+def dilate_face_selection(tris, selected, rings=1):
+    """Expand a face selection by vertex one-rings (PyMeshLab FaceDilate)."""
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    sel = np.asarray(selected, dtype=bool).copy()
+    if len(t) == 0 or not sel.any() or int(rings) <= 0:
+        return sel
+    nv = int(t.max()) + 1
+    v_to_faces = [[] for _ in range(nv)]
+    for fi, tri in enumerate(t):
+        for v in tri:
+            v_to_faces[int(v)].append(fi)
+    for _ in range(int(rings)):
+        out = sel.copy()
+        for fi in np.where(sel)[0]:
+            for v in t[fi]:
+                out[v_to_faces[int(v)]] = True
+        sel = out
+    return sel
+
+
 def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
     """Select self-intersecting faces in MeshSet in-place.
 
