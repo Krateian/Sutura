@@ -964,6 +964,7 @@ fn throat_separates(
     h_global: f64,
     _model_diag: f64,
     bvh: &MeshBvh,
+    antipodal_gwn: Option<&crate::antipodal::AntipodalGwn>,
     config: &TamponadeConfig,
     percell: bool,
     deadline: Option<Instant>,
@@ -974,7 +975,9 @@ fn throat_separates(
     // winding path refines exactly inside `FWN_REFINE_BAND` of either.
     const TAG_THRESHOLDS: [f64; 2] = [0.1, 0.5];
     let winding = |pts: &[[f64; 3]]| -> Vec<f64> {
-        if config.fwn {
+        if let Some(gwn) = antipodal_gwn {
+            gwn.winding_points_par(pts)
+        } else if config.fwn {
             bvh.winding_points_hybrid_par(
                 pts,
                 FWN_BETA,
@@ -4759,6 +4762,7 @@ fn stent_plug(
     directed_set: &HashSet<(u32, u32)>,
     edge_count: &HashMap<(u32, u32), i32>,
     bvh: &MeshBvh,
+    antipodal_gwn: Option<&crate::antipodal::AntipodalGwn>,
     h: f64,
     tol: f64,
     new_base: u32,
@@ -4805,16 +4809,21 @@ fn stent_plug(
     };
 
     let eps_test = 0.3 * rim_extent.min(h).max(tol);
-    let w_pos = bvh.winding_at([
+    let p_pos = [
         c[0] + eps_test * n_newell[0],
         c[1] + eps_test * n_newell[1],
         c[2] + eps_test * n_newell[2],
-    ]);
-    let w_neg = bvh.winding_at([
+    ];
+    let p_neg = [
         c[0] - eps_test * n_newell[0],
         c[1] - eps_test * n_newell[1],
         c[2] - eps_test * n_newell[2],
-    ]);
+    ];
+    let (w_pos, w_neg) = if let Some(gwn) = antipodal_gwn {
+        (gwn.winding(p_pos), gwn.winding(p_neg))
+    } else {
+        (bvh.winding_at(p_pos), bvh.winding_at(p_neg))
+    };
     let w_diff = (w_pos - w_neg).abs();
     // Robust outward direction: trust the winding when unambiguous; near an open
     // aperture both sides read ~0.5, so fall back to the mesh-derived outward
@@ -5159,6 +5168,7 @@ fn stent_attempt(
     directed_set: &HashSet<(u32, u32)>,
     bnd_edge_normals: &HashMap<(u32, u32), [f64; 3]>,
     bvh: &MeshBvh,
+    antipodal_gwn: Option<&crate::antipodal::AntipodalGwn>,
     h: f64,
     tol: f64,
     deadline: Option<Instant>,
@@ -5199,6 +5209,7 @@ fn stent_attempt(
             directed_set,
             edge_count,
             bvh,
+            antipodal_gwn,
             h,
             tol,
             new_base,
@@ -5319,6 +5330,7 @@ fn classify_boundary_loop(
     h: f64,
     model_diag: f64,
     bvh: &MeshBvh,
+    antipodal_gwn: Option<&crate::antipodal::AntipodalGwn>,
 ) -> LoopVerdict {
     let m = rim.len();
     if m <= TINY_LOOP_MAX {
@@ -5460,8 +5472,11 @@ fn classify_boundary_loop(
         c[2] - delta_neg * plane_norm[2],
     ];
 
-    let w_plus = bvh.winding_at(p_plus).abs();
-    let w_minus = bvh.winding_at(p_minus).abs();
+    let (w_plus, w_minus) = if let Some(gwn) = antipodal_gwn {
+        (gwn.winding(p_plus).abs(), gwn.winding(p_minus).abs())
+    } else {
+        (bvh.winding_at(p_plus).abs(), bvh.winding_at(p_minus).abs())
+    };
     let delta_w = (w_plus - w_minus).abs();
     let w_max = w_plus.max(w_minus);
     let rho_scale = loop_diam / model_diag.max(1e-12);
@@ -5588,7 +5603,19 @@ pub fn tamponade_repair(
         .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
         .collect();
     let t_bvh0 = Instant::now();
-    let bvh = MeshBvh::from_arrays(verts, &tris_usize);
+    let use_antipodal = crate::antipodal::antipodal_enabled_by_default();
+    let (bvh_owned, antipodal_gwn) = if use_antipodal {
+        let gwn = crate::antipodal::AntipodalGwn::build(verts, &tris_usize);
+        (None, Some(gwn))
+    } else {
+        let bvh = MeshBvh::from_arrays(verts, &tris_usize);
+        (Some(bvh), None)
+    };
+    let bvh: &MeshBvh = match (&bvh_owned, &antipodal_gwn) {
+        (Some(b), _) => b,
+        (_, Some(g)) => g.bvh(),
+        _ => unreachable!(),
+    };
     let bvh_s = t_bvh0.elapsed().as_secs_f64();
 
     // Per-loop group-outer rim (default: the loop itself). In the manifold path
@@ -5834,7 +5861,7 @@ pub fn tamponade_repair(
                 .unwrap_or(false)
         });
         if openings_gate_enabled {
-            match classify_boundary_loop(verts, &rim, &bnd_edge_normals, h, model_diag, &bvh) {
+            match classify_boundary_loop(verts, &rim, &bnd_edge_normals, h, model_diag, bvh, antipodal_gwn.as_ref()) {
                 LoopVerdict::IntentionalOpening { score, reason } => {
                     info.loop_diag.push(format!(
                         "m={} rejected:intentional_opening(S={:.2},{})",
@@ -5895,7 +5922,7 @@ pub fn tamponade_repair(
         if !tiny && !mincut_skipped {
             let tc0 = Instant::now();
             let verdict =
-                throat_separates(verts, &rim, h, model_diag, &bvh, config, percell, loop_deadline);
+                throat_separates(verts, &rim, h, model_diag, bvh, antipodal_gwn.as_ref(), config, percell, loop_deadline);
             let dt = tc0.elapsed().as_secs_f64();
             cut_s += dt;
             if profile {
@@ -6284,7 +6311,8 @@ pub fn tamponade_repair(
                 &mut plug_face_count,
                 &directed_set,
                 &bnd_edge_normals,
-                &bvh,
+                bvh,
+                antipodal_gwn.as_ref(),
                 h,
                 tol,
                 deadline,
@@ -6374,7 +6402,8 @@ pub fn tamponade_repair(
                 &mut plug_face_count,
                 &directed_set,
                 &bnd_edge_normals,
-                &bvh,
+                bvh,
+                antipodal_gwn.as_ref(),
                 h,
                 tol,
                 deadline,
@@ -6981,8 +7010,8 @@ mod tests {
                 .collect();
             let bvh = MeshBvh::from_arrays(&verts, &idx);
             for &h in &[0.05_f64, 0.2_f64] {
-                let comp = throat_separates(&verts, &rim, h, 1.0, &bvh, &config, false, None);
-                let percell = throat_separates(&verts, &rim, h, 1.0, &bvh, &config, true, None);
+                let comp = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &config, false, None);
+                let percell = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &config, true, None);
                 assert_eq!(
                     comp, percell,
                     "component vs per-cell verdict differ (h={}, rim={:?})",
@@ -7015,8 +7044,8 @@ mod tests {
                 .collect();
             let bvh = MeshBvh::from_arrays(&verts, &idx);
             for &h in &[0.05_f64, 0.2_f64] {
-                let a = throat_separates(&verts, &rim, h, 1.0, &bvh, &accurate, false, None);
-                let f = throat_separates(&verts, &rim, h, 1.0, &bvh, &fast, false, None);
+                let a = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &accurate, false, None);
+                let f = throat_separates(&verts, &rim, h, 1.0, &bvh, None, &fast, false, None);
                 assert_eq!(a, f, "fwn vs accurate verdict differ (h={}, rim={:?})", h, rim);
             }
         }
@@ -7996,7 +8025,7 @@ mod tests {
             .collect();
         let bvh = MeshBvh::from_arrays(&verts, &idx);
         let plug = stent_plug(
-            &rim, &verts, &directed_set, &edge_count, &bvh, 0.5, 0.05,
+            &rim, &verts, &directed_set, &edge_count, &bvh, None, 0.5, 0.05,
             verts.len() as u32, [0.0, 0.0, 1.0], None, &mut "", &mut false,
         );
         assert!(plug.is_some(), "stent must produce a candidate for a flat square hole");
@@ -8067,7 +8096,7 @@ mod tests {
             .collect();
         let bvh = MeshBvh::from_arrays(&verts, &idx);
         let plug = stent_plug(
-            &rim, &verts, &directed_set, &edge_count, &bvh, 0.5, 0.05,
+            &rim, &verts, &directed_set, &edge_count, &bvh, None, 0.5, 0.05,
             verts.len() as u32, [0.0, 0.0, 1.0], None, &mut "", &mut false,
         );
         let (_cand, added) = plug.expect("flat hole must seal");
@@ -8145,7 +8174,7 @@ mod tests {
             .collect();
         let bvh = MeshBvh::from_arrays(&verts, &idx);
         let plug = stent_plug(
-            &rim, &verts, &directed_set, &edge_count, &bvh, 0.2, 0.05,
+            &rim, &verts, &directed_set, &edge_count, &bvh, None, 0.2, 0.05,
             verts.len() as u32, [0.0, 0.0, 1.0], None, &mut "", &mut false,
         );
         assert!(plug.is_some(), "a shallow conical tip within tol must be sealed by the stent");

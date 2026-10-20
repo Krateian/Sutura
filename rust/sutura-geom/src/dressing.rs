@@ -538,9 +538,21 @@ pub fn dressing_coat(
     let r_max32 = r_max as f32;
     let sigma32 = sigma as f32;
 
-    let bvh = MeshBvh::from_arrays(verts, tris);
+    let use_antipodal = crate::antipodal::antipodal_enabled_by_default();
+    let (bvh_owned, antipodal_gwn) = if use_antipodal {
+        let gwn = crate::antipodal::AntipodalGwn::build(verts, tris);
+        (None, Some(gwn))
+    } else {
+        let bvh = MeshBvh::from_arrays(verts, tris);
+        (Some(bvh), None)
+    };
+    let bvh: &MeshBvh = match (&bvh_owned, &antipodal_gwn) {
+        (Some(b), _) => b,
+        (_, Some(g)) => g.bvh(),
+        _ => unreachable!(),
+    };
     let t_band = std::time::Instant::now();
-    let (u, band_mask) = narrow_band_distance(&bvh, origin, voxel, dims, band32);
+    let (u, band_mask) = narrow_band_distance(bvh, origin, voxel, dims, band32);
     let band_cells = band_mask.iter().filter(|&&b| b != 0).count();
     let band_seconds = t_band.elapsed().as_secs_f64();
 
@@ -626,17 +638,26 @@ pub fn dressing_coat(
                             val = -uu - r;
                         } else {
                             let x = origin[0] + voxel * i as f64;
-                            // Cheap loose-tolerance query first; the exact value
-                            // is only needed where the sign is genuinely
-                            // ambiguous (Generalized winding near 0.5).
-                            let wl = bvh.winding_at_tol([x, y, z], PRESCREEN_TOL);
-                            let w = if (wl - 0.5).abs() > PRESCREEN_MARGIN {
-                                wl
+                            let inside = if let Some(ref gwn) = antipodal_gwn {
+                                let (ins, fallback) = gwn.inside_with_fallback([x, y, z]);
+                                if fallback {
+                                    exact_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                                ins
                             } else {
-                                exact_count.fetch_add(1, Ordering::Relaxed);
-                                bvh.winding_at([x, y, z])
+                                // Cheap loose-tolerance query first; the exact value
+                                // is only needed where the sign is genuinely
+                                // ambiguous (Generalized winding near 0.5).
+                                let wl = bvh.winding_at_tol([x, y, z], PRESCREEN_TOL);
+                                let w = if (wl - 0.5).abs() > PRESCREEN_MARGIN {
+                                    wl
+                                } else {
+                                    exact_count.fetch_add(1, Ordering::Relaxed);
+                                    bvh.winding_at([x, y, z])
+                                };
+                                w > 0.5
                             };
-                            val = if w > 0.5 { -uu - r } else { uu - r };
+                            val = if inside { -uu - r } else { uu - r };
                             sign_count.fetch_add(1, Ordering::Relaxed);
                         }
                     }

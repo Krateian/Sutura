@@ -88,8 +88,17 @@ def _tamponade_shape_leak(in_verts, in_tris, out_verts, out_tris, in_diag):
         far_v = add_v[far]
         far_dist = dist[far]
         bvh = sutura_geom.PyMeshBvh(iv, it)
-        w = np.asarray(bvh.winding_points(far_v))
-        bad = w < 0.5
+        w_classic = np.asarray(bvh.winding_points(far_v))
+        bad = w_classic < 0.5
+        if (sutura_geom.__dict__.get("ANTIPODAL_SUPPORTED", False)
+                and os.environ.get("SUTURA_ANTIPODAL", "").strip().lower()
+                not in ("0", "false", "no", "off")):
+            # Conservative admission gate: admit a plug only if the leak check
+            # passes under BOTH oracles (classic and antipodal). If either flags
+            # an outside-the-input vertex, treat it as a leak.
+            _inside, _w = sutura_geom.antipodal_points(iv, it, far_v)
+            w_antipodal = np.asarray(_w, dtype=np.float64)
+            bad = bad | (w_antipodal < 0.5)
         if not bad.any():
             return 0.0, 0
         return float(far_dist[bad].max()), int(bad.sum())
@@ -446,6 +455,17 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                     rec['prepass_seconds'] = _elapsed
         else:
             geometry_fall = strict_fall or si_fall
+        # Plug leak guard: any plug added by Tamponade whose added vertices
+        # lie outside the input solid beyond the shape tolerance fails
+        # admission. Evaluated via _tamponade_shape_leak (which tests both
+        # classic and antipodal oracles under the conservative rule).
+        cand_leak_pts = 0
+        cand_leak_mm = 0.0
+        if plugs_added > 0:
+            cand_leak_mm, cand_leak_pts = _tamponade_shape_leak(
+                cur_v, cur_t, cand_v, cand_t, _bbox_diagonal(cur_v))
+        leak_ok = (cand_leak_pts == 0)
+
         # Post-chain placement: self-intersections are REPORT-ONLY (slicers
         # union overlapping volumes) and internal walls are report-only too, so
         # neither blocks adoption; the Rust leak gate and the reload-honest
@@ -454,7 +474,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         # fully reconcile the SI a reference plug can add.
         si_guard = si_ok if prepass else True
         if (no_rise and geometry_fall and parts_ok and healthy_ok and si_guard
-                and len(cand_t)):
+                and leak_ok and len(cand_t)):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
             after = ms.apply_filter('get_topological_measures')
@@ -485,6 +505,8 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 reasons.append('component count rose')
             if not healthy_ok:
                 reasons.append('healthy faces below 99%')
+            if not leak_ok:
+                reasons.append('plug leaks outside solid (%.4f mm, %d pts)' % (cand_leak_mm, cand_leak_pts))
             if not len(cand_t):
                 reasons.append('no geometry')
             rec['reason'] = 'not adopted (%s)' % '; '.join(reasons or ['?'])

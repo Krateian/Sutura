@@ -1036,6 +1036,13 @@ Python 3.11 is only needed for the optional fTetWild extra
   in the bundled `sutura_geom` extension. If it is missing from the bundle,
   Stage 2 is reported as skipped and confidence drops ~25 points; reinstall
   with `install-macos.sh`.
+* **Antipodal winding number regression / opting out.** Sutura uses the
+  accelerated antipodal robust generalized winding number by default across
+  Graft, Tamponade, Dressing, and SDF generation. If an unusual mesh exhibits
+  unwanted behaviour or you need exact parity with the classic winding number
+  oracle, set `SUTURA_ANTIPODAL=0` in the environment to opt out and restore the
+  classic winding path globally (the `antipodal=False` Python argument only
+  reaches Graft's `shell_wrap`, whereas `dressing.py` has no switch).
 
 If a repair fails, or a method looks unavailable, three commands help diagnose
 and recover the installation:

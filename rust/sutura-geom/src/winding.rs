@@ -261,6 +261,112 @@ impl Tri {
     }
 }
 
+/// Primitive that can be stored and clustered in a BVH.
+pub trait BvhPrimitive: Copy + Send + Sync {
+    fn expand_aabb(&self, aabb: &mut Aabb);
+    fn centroid(&self) -> [f64; 3];
+    fn area(&self) -> f64;
+    fn area_vector(&self, center: [f64; 3]) -> [f64; 3];
+    fn chord(&self) -> [f64; 3];
+    fn max_dist_to_vertices(&self, center: [f64; 3]) -> f64;
+}
+
+impl BvhPrimitive for Tri {
+    #[inline]
+    fn expand_aabb(&self, aabb: &mut Aabb) {
+        aabb.expand_point(self.a);
+        aabb.expand_point(self.b);
+        aabb.expand_point(self.c);
+    }
+
+    #[inline]
+    fn centroid(&self) -> [f64; 3] {
+        [
+            (self.a[0] + self.b[0] + self.c[0]) / 3.0,
+            (self.a[1] + self.b[1] + self.c[1]) / 3.0,
+            (self.a[2] + self.b[2] + self.c[2]) / 3.0,
+        ]
+    }
+
+    #[inline]
+    fn area(&self) -> f64 {
+        self.area()
+    }
+
+    #[inline]
+    fn area_vector(&self, _center: [f64; 3]) -> [f64; 3] {
+        self.area_vector()
+    }
+
+    #[inline]
+    fn chord(&self) -> [f64; 3] {
+        [0.0, 0.0, 0.0]
+    }
+
+    #[inline]
+    fn max_dist_to_vertices(&self, center: [f64; 3]) -> f64 {
+        let da = norm(sub(self.a, center));
+        let db = norm(sub(self.b, center));
+        let dc = norm(sub(self.c, center));
+        da.max(db).max(dc)
+    }
+}
+
+/// A weighted, directed 3D line segment for boundary integrals.
+#[derive(Clone, Copy, Debug)]
+pub struct Segment {
+    pub pos0: [f64; 3],
+    pub pos1: [f64; 3],
+    pub weight: f64,
+}
+
+impl Segment {
+    pub fn new(pos0: [f64; 3], pos1: [f64; 3], weight: f64) -> Self {
+        Segment { pos0, pos1, weight }
+    }
+}
+
+impl BvhPrimitive for Segment {
+    #[inline]
+    fn expand_aabb(&self, aabb: &mut Aabb) {
+        aabb.expand_point(self.pos0);
+        aabb.expand_point(self.pos1);
+    }
+
+    #[inline]
+    fn centroid(&self) -> [f64; 3] {
+        [
+            (self.pos0[0] + self.pos1[0]) * 0.5,
+            (self.pos0[1] + self.pos1[1]) * 0.5,
+            (self.pos0[2] + self.pos1[2]) * 0.5,
+        ]
+    }
+
+    #[inline]
+    fn area(&self) -> f64 {
+        norm(sub(self.pos1, self.pos0)) * self.weight.abs()
+    }
+
+    #[inline]
+    fn area_vector(&self, center: [f64; 3]) -> [f64; 3] {
+        let v0 = sub(self.pos0, center);
+        let v1 = sub(self.pos1, center);
+        scale(cross(v0, v1), 0.5 * self.weight)
+    }
+
+    #[inline]
+    fn chord(&self) -> [f64; 3] {
+        scale(sub(self.pos1, self.pos0), self.weight)
+    }
+
+    #[inline]
+    fn max_dist_to_vertices(&self, center: [f64; 3]) -> f64 {
+        let d0 = norm(sub(self.pos0, center));
+        let d1 = norm(sub(self.pos1, center));
+        d0.max(d1)
+    }
+}
+
 struct Node {
     bbox: Aabb,
     left: i32,
@@ -269,13 +375,186 @@ struct Node {
     count: u32,
     /// Area-weighted aggregate centroid (dipole position).
     center: [f64; 3],
-    /// Sum of oriented triangle area vectors (dipole moment).
+    /// Sum of oriented area vectors (dipole moment).
     vec_area: [f64; 3],
-    /// Sum of unsigned triangle areas (far-field magnitude bound).
+    /// Sum of unsigned areas/lengths (far-field magnitude bound).
     area_sum: f64,
-    /// Maximum distance from `center` to any vertex of the node's triangles
+    /// Maximum distance from `center` to any vertex of the node's primitives
     /// (the paper's `tree.r`); drives the fast-winding `beta` near/far test.
     radius: f64,
+    /// Sum of directed primitive boundary chords.
+    chord: [f64; 3],
+}
+
+/// A connected or closed loop of boundary segments.
+#[derive(Clone, Copy, Debug)]
+pub struct BoundaryLoop {
+    pub start: u32,
+    pub count: u32,
+    pub aabb: Aabb,
+    pub center: [f64; 3],
+    pub vec_area: [f64; 3],
+    pub radius: f64,
+    pub chord: [f64; 3],
+    pub area_sum: f64,
+}
+
+impl BvhPrimitive for BoundaryLoop {
+    #[inline]
+    fn expand_aabb(&self, aabb: &mut Aabb) {
+        aabb.union(&self.aabb);
+    }
+
+    #[inline]
+    fn centroid(&self) -> [f64; 3] {
+        self.center
+    }
+
+    #[inline]
+    fn area(&self) -> f64 {
+        self.area_sum
+    }
+
+    #[inline]
+    fn area_vector(&self, _center: [f64; 3]) -> [f64; 3] {
+        self.vec_area
+    }
+
+    #[inline]
+    fn chord(&self) -> [f64; 3] {
+        self.chord
+    }
+
+    #[inline]
+    fn max_dist_to_vertices(&self, center: [f64; 3]) -> f64 {
+        norm(sub(self.center, center)) + self.radius
+    }
+}
+
+/// Bounding volume hierarchy over boundary loops (for accelerated boundary integrals).
+pub struct SegmentBvh {
+    nodes: Vec<Node>,
+    order: Vec<u32>,
+    loops: Vec<BoundaryLoop>,
+    segs: Vec<Segment>,
+}
+
+impl SegmentBvh {
+    pub fn from_loops(loops: Vec<BoundaryLoop>, segs: Vec<Segment>) -> Self {
+        let centroids: Vec<[f64; 3]> = loops.iter().map(|l| l.centroid()).collect();
+        let mut order: Vec<u32> = (0..loops.len() as u32).collect();
+        let mut nodes: Vec<Node> = Vec::new();
+        if !loops.is_empty() {
+            build_rec(&loops, &centroids, &mut order, 0, loops.len(), 0, &mut nodes);
+        }
+        SegmentBvh {
+            nodes,
+            order,
+            loops,
+            segs,
+        }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    #[inline]
+    pub fn segment_count(&self) -> usize {
+        self.segs.len()
+    }
+
+    #[inline]
+    pub fn segments(&self) -> &[Segment] {
+        &self.segs
+    }
+
+    /// Evaluates the fractional boundary integral using far-field closed-loop dipoles where valid,
+    /// recursing to exact leaf evaluations when near boundaries or within ray shadows.
+    /// Returns `(half_area, accumulated_error_turns)`.
+    pub fn eval_fractional<F>(&self, p: [f64; 3], beta: f64, mut leaf_eval: F) -> (f64, f64)
+    where
+        F: FnMut(&Segment) -> f64,
+    {
+        if self.nodes.is_empty() {
+            return (0.0, 0.0);
+        }
+        let mut half_area = 0.0;
+        let mut err = 0.0;
+        self.fractional_node(0, p, beta, &mut leaf_eval, &mut half_area, &mut err);
+        (half_area, err)
+    }
+
+    fn fractional_node<F>(
+        &self,
+        idx: usize,
+        p: [f64; 3],
+        beta: f64,
+        leaf_eval: &mut F,
+        half_area: &mut f64,
+        err: &mut f64,
+    ) where
+        F: FnMut(&Segment) -> f64,
+    {
+        let n = &self.nodes[idx];
+
+        // 1. Ray Shadow Volume test (ray dir = -x):
+        let in_shadow = p[1] >= n.bbox.min[1]
+            && p[1] <= n.bbox.max[1]
+            && p[2] >= n.bbox.min[2]
+            && p[2] <= n.bbox.max[2]
+            && p[0] >= n.bbox.min[0];
+
+        if in_shadow {
+            if n.left < 0 {
+                let start = n.start as usize;
+                for k in start..start + n.count as usize {
+                    let lp = &self.loops[self.order[k] as usize];
+                    for s in lp.start..lp.start + lp.count {
+                        *half_area += leaf_eval(&self.segs[s as usize]);
+                    }
+                }
+                return;
+            }
+            self.fractional_node(n.left as usize, p, beta, leaf_eval, half_area, err);
+            self.fractional_node(n.right as usize, p, beta, leaf_eval, half_area, err);
+            return;
+        }
+
+        // 2. Far-field distance and closed-loop test:
+        let r = sub(n.center, p);
+        let d2 = dot(r, r);
+        let d = d2.sqrt();
+
+        if d > beta * n.radius && norm(n.chord) <= 1e-7 * d {
+            *half_area -= dot(n.vec_area, r) / (2.0 * d * d2);
+            *err += (3.0 / (4.0 * std::f64::consts::PI)) * (n.radius * norm(n.vec_area)) / (d * d2);
+            return;
+        }
+
+        // 3. Near-field / non-zero chord: recurse
+        if n.left < 0 {
+            let start = n.start as usize;
+            for k in start..start + n.count as usize {
+                let lp = &self.loops[self.order[k] as usize];
+                for s in lp.start..lp.start + lp.count {
+                    *half_area += leaf_eval(&self.segs[s as usize]);
+                }
+            }
+            return;
+        }
+        self.fractional_node(n.left as usize, p, beta, leaf_eval, half_area, err);
+        self.fractional_node(n.right as usize, p, beta, leaf_eval, half_area, err);
+    }
+
+    /// Evaluates the exact all-segment sum without far-field dipole approximations.
+    pub fn eval_fractional_exact<F>(&self, leaf_eval: F) -> f64
+    where
+        F: FnMut(&Segment) -> f64,
+    {
+        self.segs.iter().map(leaf_eval).sum()
+    }
 }
 
 /// Triangle-soup bounding volume hierarchy for winding-number and distance
@@ -427,6 +706,44 @@ impl MeshBvh {
             .first()
             .map(|n| n.bbox)
             .unwrap_or_else(Aabb::empty)
+    }
+
+    /// Visit every triangle whose AABB can intersect the axis-aligned ray
+    /// `p + t * (-x)` for `t >= 0`, in BVH order.
+    ///
+    /// The broad phase is exact: a node is entered only when its `(y, z)` extent
+    /// contains `p.yz` (closed interval) and its `x` minimum is `<= p.x`.  Any
+    /// triangle accepted by the antipodal in-projection predicate has `p.yz`
+    /// inside its `(y, z)` AABB and a hit depth `<= p.x`, so no candidate is
+    /// missed; false positives are harmless (the caller's exact predicate
+    /// rejects them).  Used by `antipodal::AntipodalGwn` in place of the
+    /// reference implementation's Embree user geometry.
+    pub(crate) fn for_each_x_ray_candidate<F: FnMut(&Tri)>(&self, p: [f64; 3], f: &mut F) {
+        if self.nodes.is_empty() {
+            return;
+        }
+        self.x_ray_node(0, p, f);
+    }
+
+    fn x_ray_node<F: FnMut(&Tri)>(&self, idx: usize, p: [f64; 3], f: &mut F) {
+        let n = &self.nodes[idx];
+        if p[1] < n.bbox.min[1]
+            || p[1] > n.bbox.max[1]
+            || p[2] < n.bbox.min[2]
+            || p[2] > n.bbox.max[2]
+            || n.bbox.min[0] > p[0]
+        {
+            return;
+        }
+        if n.left < 0 {
+            let start = n.start as usize;
+            for k in start..start + n.count as usize {
+                f(&self.tris[self.order[k] as usize]);
+            }
+            return;
+        }
+        self.x_ray_node(n.left as usize, p, f);
+        self.x_ray_node(n.right as usize, p, f);
     }
 
     /// Generalized winding number at `p`; ~1 inside a closed shell, ~0 outside.
@@ -1328,8 +1645,8 @@ fn tri_tri_disjoint_float_filter(
     false
 }
 
-fn build_rec(
-    tris: &[Tri],
+fn build_rec<P: BvhPrimitive>(
+    prims: &[P],
     centroids: &[[f64; 3]],
     order: &mut [u32],
     start: usize,
@@ -1348,36 +1665,33 @@ fn build_rec(
         vec_area: [0.0; 3],
         area_sum: 0.0,
         radius: 0.0,
+        chord: [0.0; 3],
     });
     let mut bbox = Aabb::empty();
-    let mut vec_area = [0.0f64; 3];
     let mut area_sum = 0.0f64;
     let mut csum = [0.0f64; 3];
+    let mut chord = [0.0f64; 3];
     for &o in &order[start..end] {
-        let t = &tris[o as usize];
-        bbox.expand_point(t.a);
-        bbox.expand_point(t.b);
-        bbox.expand_point(t.c);
-        let av = t.area_vector();
-        let a = t.area();
-        vec_area = add(vec_area, av);
+        let p = &prims[o as usize];
+        p.expand_aabb(&mut bbox);
+        let a = p.area();
         area_sum += a;
         csum = add(csum, scale(centroids[o as usize], a));
+        chord = add(chord, p.chord());
     }
     let center = if area_sum > 0.0 {
         scale(csum, 1.0 / area_sum)
     } else {
         bbox.center()
     };
-    // The paper's `tree.r`: farthest vertex from the approximation centre.
+    let mut vec_area = [0.0f64; 3];
     let mut radius = 0.0f64;
     for &o in &order[start..end] {
-        let t = &tris[o as usize];
-        for v in [t.a, t.b, t.c] {
-            let d = norm(sub(v, center));
-            if d > radius {
-                radius = d;
-            }
+        let p = &prims[o as usize];
+        vec_area = add(vec_area, p.area_vector(center));
+        let d = p.max_dist_to_vertices(center);
+        if d > radius {
+            radius = d;
         }
     }
     nodes[idx as usize].bbox = bbox;
@@ -1385,6 +1699,7 @@ fn build_rec(
     nodes[idx as usize].vec_area = vec_area;
     nodes[idx as usize].area_sum = area_sum;
     nodes[idx as usize].radius = radius;
+    nodes[idx as usize].chord = chord;
 
     if end - start <= LEAF_SIZE || depth >= MAX_DEPTH {
         return idx;
@@ -1396,8 +1711,8 @@ fn build_rec(
             .partial_cmp(&centroids[b as usize][axis])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let l = build_rec(tris, centroids, order, start, mid, depth + 1, nodes);
-    let r = build_rec(tris, centroids, order, mid, end, depth + 1, nodes);
+    let l = build_rec(prims, centroids, order, start, mid, depth + 1, nodes);
+    let r = build_rec(prims, centroids, order, mid, end, depth + 1, nodes);
     nodes[idx as usize].left = l;
     nodes[idx as usize].right = r;
     nodes[idx as usize].start = 0;

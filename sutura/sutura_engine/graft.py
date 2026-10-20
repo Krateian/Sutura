@@ -181,6 +181,25 @@ def _resolve_raystab(raystab):
     return bool(raystab) and _RAYSTAB_SUPPORTED
 
 
+# --- robust antipodal GWN disambiguation (opt-in, experimental) -------------
+# The robust (antipodal) generalized winding number resolves the same
+# winding-ambiguous band deterministically and exactly at grazing
+# configurations (Martens et al. 2026).  Default ON; opt-out with
+# SUTURA_ANTIPODAL=0 or antipodal=False.
+_ANTIPODAL_SUPPORTED = hasattr(sutura_geom, 'antipodal_points')
+_ANTIPODAL_ENV_FALSE = {'0', 'false', 'no', 'off'}
+
+
+def _resolve_antipodal(antipodal):
+    """Resolve the opt-out from the parameter, then SUTURA_ANTIPODAL, then on.
+
+    Returns False (a no-op) when the installed extension predates the feature.
+    """
+    if antipodal is None:
+        antipodal = os.environ.get('SUTURA_ANTIPODAL', '').strip().lower() not in _ANTIPODAL_ENV_FALSE
+    return bool(antipodal) and _ANTIPODAL_SUPPORTED
+
+
 # --- sign-field Pass 0 (r = 0, no closing; DEFAULT OFF, opt-in) -------------
 # When enabled, Graft tries the raw generalized-winding sign field (with the
 # ray-stab vote when enabled) at r = 0 before the closing ladder.  That keeps
@@ -938,7 +957,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                grid_budget=None, detail_tol=None, intensity=None,
                time_budget=None, sign_field=None,
                raystab=None, raystab_dirs=None, raystab_seed=0,
-               raystab_parity=False):
+               raystab_parity=False, antipodal=None):
     """Graft (shell wrap) repair.
 
     ``r`` fixes the closing radius (otherwise the sign-field Pass 0 + the
@@ -972,6 +991,11 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     ``raystab`` (or the ``SUTURA_RAYSTAB`` env var) enables ray-stabbing
     disambiguation of the generalized-winding sign in the ambiguous band; it is
     OFF by default, so the output is byte-identical to the winding-only path.
+
+    ``antipodal`` (or the ``SUTURA_ANTIPODAL`` env var) controls the robust
+    (antipodal) generalized winding number for the same band; it is ON by
+    default (opt-out with ``antipodal=False`` or ``SUTURA_ANTIPODAL=0``) and,
+    when both are enabled, runs last and wins over ``raystab``.
 
     Returns ``(verts, tris, report)``; the report always carries
     ``method=13``, ``display_name='Graft'`` and ``invents_geometry=True``.
@@ -1081,6 +1105,10 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             "raystab_seed": int(raystab_seed),
             "raystab_parity": bool(raystab_parity),
         }
+
+    use_antipodal = _resolve_antipodal(antipodal)
+    report["antipodal"] = None
+    raystab_kwargs["antipodal"] = bool(use_antipodal)
 
     use_sign_field = _resolve_sign_field(sign_field)
     report["sign_field"] = use_sign_field
@@ -1288,6 +1316,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
             "si_before": si_before, "si_after": si_after, "si_rolled_back": rolled,
             "pweld": pw, "detail": detail,
             "raystab": info.get("raystab"),
+            "antipodal": info.get("antipodal"),
         }
         # A sign-field (r = 0) candidate must NOT seed ``best``: if it is
         # watertight but fails the fidelity gate it could otherwise never be
@@ -1343,6 +1372,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         "non_manifold": best["non_manifold"],
         "p_weld": best["pweld"],
         "raystab": best.get("raystab"),
+        "antipodal": best.get("antipodal"),
         "faces_after": int(len(best["t"])),
         "detail_max_mm": round(detail["max"], 5),
         "detail_mean_mm": round(detail["mean"], 5),

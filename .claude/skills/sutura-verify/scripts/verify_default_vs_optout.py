@@ -202,8 +202,12 @@ def main():
                     help='interpreter with pymeshlab (the repair venv)')
     ap.add_argument('--out-dir', default=None,
                     help='output dir (default: a fresh temp dir)')
-    ap.add_argument('--opt-out-flag', default='--no-tamponade',
-                    help='flag that disables the feature (default: --no-tamponade)')
+    ap.add_argument('--opt-out-flag', default=None,
+                    help='flag that disables the feature (e.g. --no-tamponade)')
+    ap.add_argument('--opt-out-env', default=None,
+                    help='environment variable for opt-out (e.g. SUTURA_ANTIPODAL=0)')
+    ap.add_argument('--extra-arg', action='append', default=[],
+                    help='extra argument added to both runs (e.g. --methods 13,16,17)')
     ap.add_argument('--limit', type=int, default=0, help='max meshes (0 = all)')
     ap.add_argument('--timeout', type=int, default=900, help='per-run timeout (s)')
     args = ap.parse_args()
@@ -228,14 +232,19 @@ def main():
     env = os.environ.copy()
     env.setdefault('QT_QPA_PLATFORM', 'offscreen')
     results = []
+    opt_flags = [args.opt_out_flag] if args.opt_out_flag else []
     for idx, in_path in enumerate(meshes, 1):
         name = os.path.splitext(os.path.basename(in_path))[0]
         print('\n[%d/%d] %s' % (idx, len(meshes), name), flush=True)
         runs = {}
-        for key, extra in (('default', []), ('optout', [args.opt_out_flag])):
+        for key, extra in (('default', []), ('optout', opt_flags)):
+            run_env = env.copy()
+            if key == 'optout' and args.opt_out_env:
+                k, v = args.opt_out_env.split('=', 1)
+                run_env[k] = v
             out_stl = os.path.join(out_dir, key, '%s.stl' % name)
-            cmd = [args.python, repair_py, in_path, '-o', out_stl, '--no-history'] + extra
-            rc, sout, serr, el = run_cli(cmd, env, repo, args.timeout)
+            cmd = [args.python, repair_py, in_path, '-o', out_stl, '--no-history'] + args.extra_arg + extra
+            rc, sout, serr, el = run_cli(cmd, run_env, repo, args.timeout)
             meas = measure(in_path, out_stl, el, repo) if os.path.exists(out_stl) else None
             if meas is None:
                 print('  %s: no output (rc=%d) %s' % (key, rc, serr.strip()[:160]),

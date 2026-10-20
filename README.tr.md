@@ -1041,6 +1041,13 @@ Python 3.11 yalnızca isteğe bağlı fTetWild eki için gerekir
   `sutura_geom` eklentisinde çalışır. Eklenti bundle'da yoksa Aşama 2
   atlanmış olarak raporlanır ve güven ~25 puan düşer; `install-macos.sh` ile
   yeniden kurun.
+* **Antipodal sarım sayısı regresyonu / devre dışı bırakma (opt-out).** Sutura;
+  Graft, Tamponad, Dressing ve SDF üretiminde varsayılan olarak hızlandırılmış
+  antipodal genelleştirilmiş sarım sayısını kullanır. Olağandışı bir modelde
+  istenmeyen bir davranış görülürse veya klasik sarım sayısı orakılı ile tam
+  uyum gerekirse, ortamda `SUTURA_ANTIPODAL=0` tanımlayarak klasik sarım yoluna
+  dönebilirsiniz (Python'daki `antipodal=False` parametresi yalnızca Graft'ın
+  `shell_wrap` işlevine ulaşır, `dressing.py`'de ise bir anahtar bulunmaz).
 
 Bir onarım başarısız olursa veya bir yöntem kullanılamıyor görünürse, üç komut
 kurulumu tanılamaya ve kurtarmaya yardımcı olur:
