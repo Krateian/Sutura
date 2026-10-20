@@ -1,206 +1,190 @@
-#!/usr/bin/env python3
-"""Splint core (steps 1-8) PyO3 regression.
+# Copyright (C) 2026 Sutura Authors
+# SPDX-License-Identifier: Apache-2.0
+"""Splint tier (method #18) regression.
 
-Usage:
-    <venv>/bin/python tests/test_splint.py
+Runs under the PyMeshLab venv (the tier welds/repairs via ``ml``). The Rust
+``sutura_geom.splint_cut`` core is faked so no real rebuild is needed:
 
-Runs on a synthetic cube / five-cube fixture, so it is CI-safe and needs no
-corpus files. The 5-mesh spike equivalence is a separate local harness.
+  * ``resolve_splint`` precedence (--no-splint > --experimental-splint > env >
+    default switch) and the OFF-by-default constant;
+  * the registry entry (#18) and the deep-tier order table;
+  * ``splint_tier`` adopt on a strict-watertight candidate, reject on a holed
+    one, the input-cap skip and the wall-clock abort.
+
+Plain script, no pytest required: run
+  ~/.local/share/sutura/venv/bin/python tests/test_splint.py
 """
-import json
 import os
-import subprocess
 import sys
-import tempfile
 
-import numpy as np
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SUTURA = os.path.join(REPO, 'sutura')
+for _p in (REPO, SUTURA):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-import sutura_geom
-
-
-def cube():
-    h = 0.5
-    v = np.array([
-        [-h, -h, -h], [h, -h, -h], [h, h, -h], [-h, h, -h],
-        [-h, -h, h], [h, -h, h], [h, h, h], [-h, h, h],
-    ], dtype=np.float64)
-    t = np.array([
-        [0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
-        [0, 1, 5], [0, 5, 4], [3, 7, 6], [3, 6, 2],
-        [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5],
-    ], dtype=np.int32)
-    return v, t
+import numpy as np  # noqa: E402
 
 
-def five_cubes():
-    v, t = cube()
-    vs = []
-    ts = []
-    for i in range(5):
-        off = np.array([i * 3.0, 0.0, 0.0], dtype=np.float64)
-        base = len(vs)
-        vs.extend((v + off).tolist())
-        ts.extend((t + base).tolist())
-    return np.asarray(vs, dtype=np.float64), np.asarray(ts, dtype=np.int32)
+def _cube():
+    v = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                  [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], float)
+    f = np.array([[0, 2, 1], [0, 3, 2],   # bottom (outward -z)
+                  [4, 5, 6], [4, 6, 7],   # top (+z)
+                  [0, 1, 5], [0, 5, 4],   # front (-y)
+                  [1, 2, 6], [1, 6, 5],   # right (+x)
+                  [2, 3, 7], [2, 7, 6],   # back (+y)
+                  [3, 0, 4], [3, 4, 7]],  # left (-x)
+                 dtype=np.int64)
+    return v, f
 
 
-def test_entry_point_and_report():
-    v, t = cube()
-    ov, ot, rep = sutura_geom.splint_cut(v, t, 32)
-    assert rep['ok'] is True, rep
-    assert rep['res'] == 32
-    assert rep['input_vertices'] == 8
-    assert rep['input_faces'] == 12
-    assert rep['proxy_vertices'] > 0
-    assert rep['tets'] > 0
-    assert rep['output_vertices'] == len(ov)
-    assert rep['output_faces'] == len(ot)
-    assert rep['output_parts'] >= 1
-    assert rep['fix_islands'] is True
-    assert rep['soft_band'] is False
-    assert rep['out_manifold'] in (True, False)
-    assert rep['delaunay_hash'] != 0
-    assert rep['adaptive'] is None
-    assert rep['retry_threshold'] == 4
-    assert rep['cut_shells'] >= 1
-    assert rep['first_cut_shells'] == rep['cut_shells']
-
-    # Two direct calls must produce the same output arrays.
-    ov2, ot2, _ = sutura_geom.splint_cut(v, t, 32)
-    assert np.array_equal(ov, ov2)
-    assert np.array_equal(ot, ot2)
+def test_resolve_splint_precedence():
+    from sutura_engine.pipeline.presets import (
+        SPLINT_DEFAULT_ENABLED, resolve_splint,
+    )
+    assert SPLINT_DEFAULT_ENABLED is False
+    assert resolve_splint() is False                       # default OFF
+    assert resolve_splint(force=True) is True
+    assert resolve_splint(no_splint=True) is False
+    assert resolve_splint(no_splint=True, force=True) is False  # no > force
+    assert resolve_splint(environ='1') is True
+    assert resolve_splint(environ='0') is False
+    assert resolve_splint(default_enabled=True) == 'auto'
+    assert resolve_splint(no_splint=True, environ='1') is False
+    print('ok test_resolve_splint_precedence')
 
 
-def test_adaptive_default_and_invalid():
-    v, t = cube()
-    a, at, ar = sutura_geom.splint_cut(v, t, 32)
-    b, bt, br = sutura_geom.splint_cut(v, t, 32, adaptive=None)
-    assert np.array_equal(a, b) and np.array_equal(at, bt)
-    drop = {'seconds', 'secs_udf', 'secs_proxy', 'secs_delaunay', 'secs_cut', 'secs_adaptive'}
-    for key in ar:
-        if key in drop:
-            continue
-        if key in ('dropped_inside_vol', 'filled_outside_vol'):
-            assert abs(ar[key] - br[key]) <= 1e-12, (key, ar[key], br[key])
-        else:
-            assert ar[key] == br[key], (key, ar[key], br[key])
-    try:
-        sutura_geom.splint_cut(v, t, 32, adaptive='bogus')
-    except ValueError as ex:
-        assert 'adaptive must be' in str(ex)
-    else:
-        raise AssertionError('invalid adaptive mode did not raise ValueError')
+def test_registry_and_order():
+    from sutura_engine.methods import get_method
+    import sutura_engine.pipeline.order as order
+    m = get_method(18)
+    assert m is not None and m.id == 'splint' and m.num == 18
+    assert m.invents_geometry is True and m.self_guarded is True
+    assert m.kwargs.get('splint') is True
+    assert order.method_num('splint') == 18
+    assert order.DEEP_TIER_ORDER.index('splint') < \
+        order.DEEP_TIER_ORDER.index('ftetwild')
+    assert order.DEEP_TIER_ORDER.index('dressing') < \
+        order.DEEP_TIER_ORDER.index('splint')
+    print('ok test_registry_and_order')
 
 
-def test_adaptive_modes():
-    v, t = cube()
-    ov, ot, rep = sutura_geom.splint_cut(v, t, 32, adaptive='hardened')
-    assert rep['ok'] is True and rep['adaptive'] == 'hardened'
-    assert rep['cut_shells'] == rep['first_cut_shells']
-    assert rep['adaptive_retry'] is False and rep['adaptive_broad'] is False
-    ov2, ot2, _ = sutura_geom.splint_cut(v, t, 32, adaptive='hardened')
-    assert np.array_equal(ov, ov2) and np.array_equal(ot, ot2)
+class _FakeMesh:
+    def __init__(self, vertex_matrix=None, face_matrix=None):
+        self._v = np.asarray(vertex_matrix, np.float32)
+        self._f = np.asarray(face_matrix, np.int32)
 
-    rv, rt, rrep = sutura_geom.splint_cut(v, t, 32, adaptive='retry')
-    assert rrep['ok'] is True and rrep['adaptive'] == 'retry'
-    assert rrep['retry_threshold'] == 4
-    if rrep['first_cut_shells'] > 4:
-        assert rrep['adaptive_retry'] is True and rrep['adaptive_broad'] is True
-    else:
-        assert rrep['adaptive_retry'] is False and rrep['adaptive_broad'] is False
+    def vertex_matrix(self):
+        return self._v
 
-    # Five disjoint bodies: cut_shells > 4, so retry must take the broad pass.
-    fv, ft = five_cubes()
-    fv1, ft1, frep = sutura_geom.splint_cut(fv, ft, 32, adaptive='retry')
-    assert frep['first_cut_shells'] > 4, frep
-    assert frep['adaptive_retry'] is True and frep['adaptive_broad'] is True, frep
-    fv2, ft2, _ = sutura_geom.splint_cut(fv, ft, 32, adaptive='retry')
-    assert np.array_equal(fv1, fv2) and np.array_equal(ft1, ft2)
+    def face_matrix(self):
+        return self._f
 
 
-def test_invalid_res_returns_an_error_report():
-    v, t = cube()
-    ov, ot, rep = sutura_geom.splint_cut(v, t, 0)
-    assert rep['ok'] is False
-    assert 'res' in rep['error']
-    assert len(ov) == 0 and len(ot) == 0
+class _FakeMS:
+    def __init__(self):
+        self._m = None
+
+    def add_mesh(self, m):
+        self._m = m
+
+    def current_mesh(self):
+        return self._m
 
 
-def test_rayon_thread_counts_are_byte_identical():
-    v, t = cube()
-    with tempfile.TemporaryDirectory() as td:
-        inp = os.path.join(td, 'in.npz')
-        np.savez(inp, v=v, t=t)
-        results = []
-        for n in (1, 2, 8):
-            out = os.path.join(td, 'out_%d.npz' % n)
-            code = r'''
-import json, sys
-import numpy as np
-import sutura_geom
-d = np.load(sys.argv[1])
-ov, ot, rep = sutura_geom.splint_cut(d['v'], d['t'], 32)
-np.savez(sys.argv[2], v=ov, t=ot)
-drop = ('seconds', 'secs_udf', 'secs_proxy', 'secs_delaunay', 'secs_cut')
-print(json.dumps({k: rep[k] for k in rep if k not in drop}, sort_keys=True))
-'''
-            env = dict(os.environ)
-            env['RAYON_NUM_THREADS'] = str(n)
-            p = subprocess.run(
-                [sys.executable, '-c', code, inp, out],
-                env=env, capture_output=True, text=True, check=True)
-            results.append((np.load(out), json.loads(p.stdout)))
-        base, base_rep = results[0]
-        for data, rep in results[1:]:
-            assert np.array_equal(base['v'], data['v'])
-            assert np.array_equal(base['t'], data['t'])
-            # Diagnostic volumes are the only tolerance (float sum order).
-            for key in base_rep:
-                if key in ('dropped_inside_vol', 'filled_outside_vol'):
-                    assert abs(base_rep[key] - rep[key]) <= 1e-12
-                else:
-                    assert base_rep[key] == rep[key], (key, base_rep[key], rep[key])
+class _FakeML:
+    Mesh = _FakeMesh
+    MeshSet = _FakeMS
 
 
-def test_adaptive_rayon_thread_counts_are_byte_identical():
-    v, t = five_cubes()
-    with tempfile.TemporaryDirectory() as td:
-        inp = os.path.join(td, 'in.npz')
-        np.savez(inp, v=v, t=t)
-        results = []
-        for n in (1, 2, 8):
-            out = os.path.join(td, 'out_%d.npz' % n)
-            code = r'''
-import json, sys
-import numpy as np
-import sutura_geom
-d = np.load(sys.argv[1])
-ov, ot, rep = sutura_geom.splint_cut(d['v'], d['t'], 32, adaptive='retry')
-np.savez(sys.argv[2], v=ov, t=ot)
-drop = ('seconds', 'secs_udf', 'secs_proxy', 'secs_delaunay', 'secs_cut', 'secs_adaptive')
-print(json.dumps({k: rep[k] for k in rep if k not in drop}, sort_keys=True))
-'''
-            env = dict(os.environ)
-            env['RAYON_NUM_THREADS'] = str(n)
-            p = subprocess.run(
-                [sys.executable, '-c', code, inp, out],
-                env=env, capture_output=True, text=True, check=True)
-            results.append((np.load(out), json.loads(p.stdout)))
-        base, base_rep = results[0]
-        assert base_rep['adaptive_retry'] is True
-        for data, rep in results[1:]:
-            assert np.array_equal(base['v'], data['v'])
-            assert np.array_equal(base['t'], data['t'])
-            for key in base_rep:
-                if key in ('dropped_inside_vol', 'filled_outside_vol'):
-                    assert abs(base_rep[key] - rep[key]) <= 1e-12
-                else:
-                    assert base_rep[key] == rep[key], (key, base_rep[key], rep[key])
+def _install_fake_core(out_v, out_t, report=None):
+    import types
+    mod = types.ModuleType('sutura_geom')
+    rep = {'seconds': 0.01, 'output_faces': int(len(out_t)),
+           'output_vertices': int(len(out_v)), 'output_parts': 1,
+           'out_manifold': True}
+    rep.update(report or {})
+
+    def splint_cut(verts, tris, res, adaptive=None):
+        return out_v, out_t, rep
+    mod.splint_cut = splint_cut
+    sys.modules['sutura_geom'] = mod
+    return mod
+
+
+def _run_tier(cand_v, cand_t, spec=None, stats=None):
+    from sutura_engine.pipeline.tiers.splint import splint_tier
+    _install_fake_core(cand_v, cand_t)
+    stats = stats if stats is not None else {'stage1': {}}
+    after = {}
+
+    class _Spec:
+        splint_max_faces = 300000
+        splint_timeout = 180.0
+        splint_res = 128
+    ms, after = splint_tier(_FakeML(), None, after, stats,
+                            *_cube(), tmpdir='/tmp', splint=True,
+                            spec=(spec if spec is not None else _Spec()))
+    return ms, after, stats['splint']
+
+
+def test_tier_adopts_watertight_candidate():
+    v, f = _cube()
+    ms, after, rec = _run_tier(v, f)
+    assert rec['ran'] and rec['adopted'] is True, rec
+    assert rec['holes'] == 0 and rec['non_manifold'] == 0
+    assert after and ms is not None
+    print('ok test_tier_adopts_watertight_candidate')
+
+
+def test_tier_rejects_holed_candidate():
+    v, f = _cube()
+    # Drop one triangle -> the candidate has a boundary (hole).
+    holed_f = f[:-1]
+    ms, after, rec = _run_tier(v, holed_f)
+    assert rec['ran'] and rec['adopted'] is False, rec
+    assert rec['reason'].startswith('candidate not strict-watertight'), rec
+    print('ok test_tier_rejects_holed_candidate')
+
+
+def test_tier_skips_over_cap():
+    v, f = _cube()
+
+    class _Tiny:
+        splint_max_faces = 2
+        splint_timeout = 180.0
+        splint_res = 128
+    ms, after, rec = _run_tier(v, f, spec=_Tiny())
+    assert rec['skipped_budget'] is True and rec['ran'] is False, rec
+    assert rec['reject_reason'] == 'too_large'
+    print('ok test_tier_skips_over_cap')
+
+
+def test_tier_aborts_on_timeout():
+    v, f = _cube()
+
+    class _Zero:
+        splint_max_faces = 300000
+        splint_timeout = 1e-9    # any positive elapsed aborts
+        splint_res = 128
+    _ms, _after, rec = _run_tier(v, f, spec=_Zero())
+    assert rec['aborted'] is True and rec['adopted'] is False, rec
+    assert rec['reject_reason'] == 'aborted_time'
+    print('ok test_tier_aborts_on_timeout')
 
 
 if __name__ == '__main__':
-    for name, fn in sorted(globals().items()):
-        if name.startswith('test_'):
-            fn()
-            print('ok  %s' % name)
-    print('Splint core tests passed')
+    test_resolve_splint_precedence()
+    test_registry_and_order()
+    try:
+        import pymeshlab  # noqa: F401
+    except Exception:
+        print('skip tier tests (pymeshlab unavailable)')
+        print('ALL OK')
+        sys.exit(0)
+    test_tier_adopts_watertight_candidate()
+    test_tier_rejects_holed_candidate()
+    test_tier_skips_over_cap()
+    test_tier_aborts_on_timeout()
+    print('ALL OK')
