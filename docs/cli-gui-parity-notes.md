@@ -243,7 +243,9 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
 
 - **Splint core (`sutura_geom.splint_cut`, experimental):** a `sutura_geom`
   PyO3 test hook for steps 1–8 of the Splint spike (Geogram Delaunay + winding
-  cut + fix-A island cleanup). It has deliberately NO CLI flag, GUI control or
-  method-registry entry; step 9 dual contouring and adaptive sampling are out of
-  this core, and the raw step-8 cut is generally not manifold. It is a research
-  surface, not a user feature, so there is no parity gap to close yet.
+  cut + fix-A island cleanup), with `adaptive=None|'hardened'|'retry'` (default
+  `None`; the retry uses the self-contained `cut_shells > 4` rule). It has
+  deliberately NO CLI flag, GUI control or method-registry entry; step 9 dual
+  contouring is out of this core, and the raw step-8 cut is generally not
+  manifold. It is a research surface, not a user feature, so there is no parity
+  gap to close yet.

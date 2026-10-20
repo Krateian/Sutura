@@ -1549,20 +1549,31 @@ impl PyMeshBvh {
 /// inside/outside boundary; fix-A island cleanup is on, the soft band is off.
 #[pyfunction]
 #[pyo3(name = "splint_cut")]
-#[pyo3(signature = (verts, tris, res))]
+#[pyo3(signature = (verts, tris, res, adaptive=None))]
 fn splint_cut_py<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
     res: usize,
+    adaptive: Option<&str>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
     Bound<'py, PyDict>,
 )> {
+    let mode = match adaptive {
+        None => splint::SplintAdaptive::None,
+        Some("hardened") => splint::SplintAdaptive::Hardened,
+        Some("retry") => splint::SplintAdaptive::Retry,
+        Some(other) => {
+            return Err(PyValueError::new_err(format!(
+                "adaptive must be None, 'hardened' or 'retry' (got {other:?})"
+            )))
+        }
+    };
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        splint::splint_cut_core(&rv, &rt, res, true)
+        splint::splint_cut_core(&rv, &rt, res, mode, true)
     }));
     match result {
         Ok(Ok(out)) => {
@@ -1578,8 +1589,8 @@ fn splint_cut_py<'py>(
             splint_report_to_dict(&d, &out.report)?;
             Ok((verts_np, tris_np, d))
         }
-        Ok(Err(e)) => splint_error(py, &rv, &rt, res, &e),
-        Err(_) => splint_error(py, &rv, &rt, res, "splint panicked"),
+        Ok(Err(e)) => splint_error(py, &rv, &rt, res, adaptive, &e),
+        Err(_) => splint_error(py, &rv, &rt, res, adaptive, "splint panicked"),
     }
 }
 
@@ -1605,6 +1616,17 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("dropped_inside_vol", r.dropped_inside_vol)?;
     d.set_item("filled_outside_comps", r.filled_outside_comps)?;
     d.set_item("filled_outside_vol", r.filled_outside_vol)?;
+    d.set_item("adaptive", r.adaptive)?;
+    d.set_item("cut_shells", r.cut_shells)?;
+    d.set_item("first_cut_shells", r.first_cut_shells)?;
+    d.set_item("adaptive_broad", r.adaptive_broad)?;
+    d.set_item("adaptive_retry", r.adaptive_retry)?;
+    d.set_item("retry_threshold", r.retry_threshold)?;
+    d.set_item("adaptive_added", r.adaptive_added)?;
+    d.set_item("adaptive_samples", r.adaptive_samples)?;
+    d.set_item("adaptive_thin", r.adaptive_thin)?;
+    d.set_item("adaptive_capped", r.adaptive_capped)?;
+    d.set_item("secs_adaptive", r.secs_adaptive)?;
     d.set_item("secs_udf", r.secs_udf)?;
     d.set_item("secs_proxy", r.secs_proxy)?;
     d.set_item("secs_delaunay", r.secs_delaunay)?;
@@ -1618,6 +1640,7 @@ fn splint_error<'py>(
     rv: &[[f64; 3]],
     rt: &[[usize; 3]],
     res: usize,
+    adaptive: Option<&str>,
     message: &str,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
@@ -1632,6 +1655,7 @@ fn splint_error<'py>(
     d.set_item("res", res)?;
     d.set_item("input_vertices", rv.len())?;
     d.set_item("input_faces", rt.len())?;
+    d.set_item("adaptive", adaptive)?;
     Ok((verts_np, tris_np, d))
 }
 

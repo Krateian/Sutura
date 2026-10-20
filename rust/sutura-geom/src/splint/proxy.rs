@@ -8,6 +8,8 @@ use std::time::Instant;
 use crate::dual_contour::dual_contour;
 use crate::winding::MeshBvh;
 
+use super::adaptive::{self, AdaptiveStats};
+
 pub(crate) const JITTER: f64 = 2.0e-4;
 
 pub(crate) struct Proxy {
@@ -15,9 +17,16 @@ pub(crate) struct Proxy {
     pub(crate) voxel: f64,
     pub(crate) secs_udf: f64,
     pub(crate) secs_proxy: f64,
+    pub(crate) adaptive: AdaptiveStats,
 }
 
-pub(crate) fn build(bvh: &MeshBvh, res: usize, eps: f64) -> Result<Proxy, String> {
+pub(crate) fn build(
+    bvh: &MeshBvh,
+    res: usize,
+    eps: f64,
+    shell_map: Option<&[usize]>,
+    broad: bool,
+) -> Result<Proxy, String> {
     let dims = [res, res, res];
     let voxel = 1.0 / (res as f64 - 1.0);
     let origin = [0.0, 0.0, 0.0];
@@ -43,22 +52,31 @@ pub(crate) fn build(bvh: &MeshBvh, res: usize, eps: f64) -> Result<Proxy, String
             }
         }
     }
-    // Break exact cocircular/coplanar degeneracy (grid-like proxy points) with
-    // a deterministic, index-derived perturbation.
-    for (i, p) in proxy.iter_mut().enumerate() {
+    let base_len = proxy.len();
+    let adaptive = match shell_map {
+        Some(map) => adaptive::append(bvh, &shell.verts, map, &mut proxy, voxel, broad),
+        None => AdaptiveStats::default(),
+    };
+
+    // Base points (shell + corners) keep the historical index-derived jitter,
+    // so the default (adaptive off) output is bit-identical. Adaptive points
+    // are appended after them and jittered from their coordinate cell; never
+    // index-coupled.
+    for i in 0..base_len {
+        let p = &mut proxy[i];
         let mut s = (i as u64)
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             .wrapping_add(0x1234_5678_9ABC_DEF0);
         let mut next = || {
             s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = s;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+            ((adaptive::mix64(s)) >> 11) as f64 / (1u64 << 53) as f64
         };
         p[0] += (next() - 0.5) * JITTER;
         p[1] += (next() - 0.5) * JITTER;
         p[2] += (next() - 0.5) * JITTER;
+    }
+    for (j, key) in adaptive.keys.iter().enumerate() {
+        adaptive::jitter(*key, &mut proxy[base_len + j], JITTER);
     }
     let secs_proxy = t_proxy.elapsed().as_secs_f64();
 
@@ -67,16 +85,15 @@ pub(crate) fn build(bvh: &MeshBvh, res: usize, eps: f64) -> Result<Proxy, String
         voxel,
         secs_udf,
         secs_proxy,
+        adaptive,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::winding::MeshBvh;
 
-    #[test]
-    fn proxy_is_repeatable_in_one_process() {
+    fn cube() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
         let v = vec![
             [-0.5, -0.5, -0.5],
             [0.5, -0.5, -0.5],
@@ -101,12 +118,34 @@ mod tests {
             [1, 2, 6],
             [1, 6, 5],
         ];
+        (v, t)
+    }
+
+    #[test]
+    fn proxy_is_repeatable_in_one_process() {
+        let (v, t) = cube();
         let bvh = MeshBvh::from_arrays(&v, &t);
         let n = crate::splint::normalize::Normalizer::new(&v, 32);
-        let a = build(&bvh, 32, n.eps()).expect("first proxy");
-        let b = build(&bvh, 32, n.eps()).expect("second proxy");
+        let a = build(&bvh, 32, n.eps(), None, false).expect("first proxy");
+        let b = build(&bvh, 32, n.eps(), None, false).expect("second proxy");
         assert_eq!(a.verts.len(), b.verts.len());
         for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+            for k in 0..3 {
+                assert_eq!(p[k].to_bits(), q[k].to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn base_points_are_unchanged_by_adaptive_off() {
+        let (v, t) = cube();
+        let bvh = MeshBvh::from_arrays(&v, &t);
+        let n = crate::splint::normalize::Normalizer::new(&v, 32);
+        let off = build(&bvh, 32, n.eps(), None, false).expect("off proxy");
+        let hardened =
+            build(&bvh, 32, n.eps(), Some(&vec![0usize; t.len()]), false).expect("hard proxy");
+        assert!(hardened.verts.len() >= off.verts.len());
+        for (p, q) in off.verts.iter().zip(hardened.verts.iter()) {
             for k in 0..3 {
                 assert_eq!(p[k].to_bits(), q[k].to_bits());
             }
