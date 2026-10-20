@@ -2311,6 +2311,12 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.9.2 — 2026-10-21** — İsteğe bağlı kesin katı yeniden inşa katmanı
+  **Splint (#18)** (varsayılan kapalı; 40 mesh'lik korpusta değerlendirildi ve
+  henüz hiçbirinde benimsenmedi); `sutura --self-check`, `--diagnostics` ve
+  `--self-repair`; baskı-etkisi raporu; daha küçük çalışma zamanı
+  (trimesh/SciPy kaldırıldı, Manifold ve yerel geometri zorunlu Rust
+  çekirdeğinde); ve 3MF onarımlarında proje dosyasının korunması.
 - **v0.9.0 — 2026-10-11** — **Tamponad** (#17 yöntemi, varsayılan açık iç delik
   tıkacı; içten şişirilen **Stent** adayı ve büyük halkalar için çok-stent
   bölümlemesi; katı tıkaç kabul kuralları — sızıntı yok, yeniden yüklemede yeni
