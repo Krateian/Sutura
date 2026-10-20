@@ -26,21 +26,23 @@ This module is a stdlib-only leaf (no numpy / pymeshlab / third-party import)
 so ``triage`` can import it without pulling anything in.
 """
 
-# Run order of the deep-repair tiers (local re-mesh first, fTetWild last).
-DEEP_TIER_ORDER = ('local', 'graft', 'dressing', 'ftetwild')
+# Run order of the deep-repair tiers (local re-mesh first, fTetWild last;
+# Splint sits after Dressing and before fTetWild).
+DEEP_TIER_ORDER = ('local', 'graft', 'dressing', 'splint', 'ftetwild')
 
 # Registry method number for each tier.
 DEEP_TIER_METHOD_NUM = {
     'local': 2,       # Local Mend
     'graft': 13,      # Graft
     'dressing': 16,   # Dressing
+    'splint': 18,     # Splint
     'ftetwild': 7,    # fTetWild
 }
 
 # Precedence used by ``_deep_repair_offer`` when naming the reported final
 # tier. Kept separate from DEEP_TIER_ORDER because the reporting precedence is
 # not the run order (fTetWild is named first, not last).
-FINAL_TIER_PRECEDENCE = ('ftetwild', 'graft', 'dressing', 'local')
+FINAL_TIER_PRECEDENCE = ('ftetwild', 'graft', 'dressing', 'splint', 'local')
 
 # Convenience aliases for the two tiers whose relative order the auto policy
 # guarantees explicitly.

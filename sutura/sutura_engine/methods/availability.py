@@ -186,6 +186,32 @@ def tamponade_available() -> Tuple[bool, Optional[str]]:
         return False, 'tamponade unavailable: %s' % e
 
 
+def splint_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 18 needs the Rust Splint core.
+
+    Available when the installed ``sutura_geom`` advertises the ``splint_cut``
+    binding; the Rust extension is mandatory, so its absence is a FAIL (never a
+    SKIP)."""
+    try:
+        try:
+            spec = importlib.util.find_spec('sutura_geom')
+        except Exception as e:
+            return False, 'rust extension sutura_geom is not installed (%s)' % e
+        if spec is None:
+            return False, 'rust extension sutura_geom is not installed'
+        try:
+            import sutura_geom
+            if not hasattr(sutura_geom, 'splint_cut'):
+                return False, 'sutura_geom has no splint_cut (rebuild needed)'
+        except Exception as e:
+            return False, 'sutura_geom import failed: %s' % e
+        if importlib.util.find_spec('numpy') is None:
+            return False, 'numpy is not available'
+        return True, None
+    except Exception as e:
+        return False, 'splint unavailable: %s' % e
+
+
 def graft_available() -> Tuple[bool, Optional[str]]:
     """Registry method 13 needs the Rust morphology core (Cast)."""
     try:

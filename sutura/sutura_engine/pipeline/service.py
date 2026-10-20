@@ -55,7 +55,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
                  tamponade=False,
-                 si_mode=None, dressing_force_adopt=False):
+                 si_mode=None, dressing_force_adopt=False,
+                 splint=False, splint_adaptive=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     import pymeshlab as ml
 
@@ -114,6 +115,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             dressing_sigma_scale=dressing_sigma_scale,
             tamponade=run_tamponade,
             si_mode=si_mode,
+            splint=splint, splint_adaptive=splint_adaptive,
             dressing_force_adopt=dressing_force_adopt)
         report['_fp'] = history.mesh_fingerprint(verts, tris)
         report['defects'] = detect_defects(verts, tris)
@@ -284,7 +286,8 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                dressing=False, dressing_drain=None, dressing_defects=None,
                dressing_rmax_scale=None, dressing_sigma_scale=None,
                tamponade=False,
-               si_mode=None, dressing_force_adopt=False):
+               si_mode=None, dressing_force_adopt=False,
+               splint=False, splint_adaptive=None):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -337,6 +340,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                 dressing_sigma_scale=dressing_sigma_scale,
                 tamponade=tamponade,
                 si_mode=si_mode,
+                splint=splint, splint_adaptive=splint_adaptive,
                 dressing_force_adopt=dressing_force_adopt)
             rep['defects'] = detect_defects(verts, tris)
             rep['_fp'] = history.mesh_fingerprint(verts, tris)
