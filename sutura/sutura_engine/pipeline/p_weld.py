@@ -16,6 +16,7 @@ from sutura_engine.pipeline.stage1 import (
     _remove_unref_vertices_ms,
     _repair_nme_ms,
     _repair_nmv_ms,
+    _set_mesh_on_ms,
 )
 
 
@@ -59,9 +60,7 @@ def _repair_welded_topology(ml, verts, tris):
                 t_new = topology.remove_duplicate_faces(t)
                 if len(t_new) < len(t):
                     v = m.vertex_matrix()
-                    ms.clear()
-                    if len(t_new) > 0:
-                        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                    _set_mesh_on_ms(ms, ml, v, t_new)
             elif name == 'meshing_remove_unreferenced_vertices':
                 _remove_unref_vertices_ms(ms, ml)
             elif name == 'meshing_repair_non_manifold_edges':

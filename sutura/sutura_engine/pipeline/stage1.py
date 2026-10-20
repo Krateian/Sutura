@@ -111,6 +111,19 @@ def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8, join_compone
     return chain
 
 
+def _set_mesh_on_ms(ms, ml, v, t):
+    """Update ms with (v, t), preserving an empty current mesh if empty."""
+    ms.clear()
+    if len(v) > 0 and len(t) > 0:
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
+    elif len(v) > 0:
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=np.zeros((0, 3), dtype=np.int32)))
+    else:
+        ms.add_mesh(ml.Mesh(vertex_matrix=np.zeros((1, 3), dtype=np.float64),
+                            face_matrix=np.zeros((0, 3), dtype=np.int32)))
+        ms.apply_filter('meshing_remove_unreferenced_vertices')
+
+
 def apply_chain(ms, chain):
     import pymeshlab as ml
     applied = 0
@@ -124,8 +137,7 @@ def apply_chain(ms, chain):
                 t_new = topology.remove_duplicate_faces(t)
                 if len(t_new) < len(t):
                     v = m.vertex_matrix()
-                    ms.clear()
-                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                    _set_mesh_on_ms(ms, ml, v, t_new)
                 handled = True
             elif name == 'meshing_remove_null_faces':
                 m = ms.current_mesh()
@@ -133,8 +145,7 @@ def apply_chain(ms, chain):
                 t = m.face_matrix()
                 t_new = topology.remove_null_faces(v, t)
                 if len(t_new) < len(t):
-                    ms.clear()
-                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                    _set_mesh_on_ms(ms, ml, v, t_new)
                 handled = True
             elif name == 'meshing_remove_duplicate_vertices':
                 m = ms.current_mesh()
@@ -142,8 +153,7 @@ def apply_chain(ms, chain):
                 t = m.face_matrix()
                 v_new, t_new = topology.remove_duplicate_vertices(v, t)
                 if len(v_new) < len(v):
-                    ms.clear()
-                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                    _set_mesh_on_ms(ms, ml, v_new, t_new)
                 handled = True
             elif name == 'meshing_remove_unreferenced_vertices':
                 _remove_unref_vertices_ms(ms, ml)
@@ -156,9 +166,7 @@ def apply_chain(ms, chain):
                 t = m.face_matrix()
                 v_new, t_new = topology.remove_connected_components(v, t, min_faces=min_sz, remove_unref=remove_unref)
                 if len(t_new) < len(t):
-                    ms.clear()
-                    if len(t_new) > 0:
-                        ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                    _set_mesh_on_ms(ms, ml, v_new, t_new)
                 handled = True
             elif name == 'meshing_invert_face_orientation':
                 _invert_faces_ms(ms, ml)
@@ -192,9 +200,7 @@ def _remove_unref_vertices_ms(ms, ml):
     t = m.face_matrix()
     v_new, t_new = topology.remove_unreferenced_vertices(v, t)
     if len(v_new) < len(v):
-        ms.clear()
-        if len(v_new) > 0:
-            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+        _set_mesh_on_ms(ms, ml, v_new, t_new)
 
 
 def _invert_faces_ms(ms, ml):
@@ -203,9 +209,7 @@ def _invert_faces_ms(ms, ml):
     v = m.vertex_matrix()
     t = m.face_matrix()
     t_new = topology.invert_face_orientation(t)
-    ms.clear()
-    if len(t_new) > 0:
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+    _set_mesh_on_ms(ms, ml, v, t_new)
 
 
 def _re_orient_faces_ms(ms, ml):
@@ -219,9 +223,7 @@ def _repair_nme_ms(ms, ml):
     t = m.face_matrix()
     t_new = topology.repair_non_manifold_edges(v, t)
     if len(t_new) < len(t):
-        ms.clear()
-        if len(t_new) > 0:
-            ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+        _set_mesh_on_ms(ms, ml, v, t_new)
 
 
 def _repair_nmv_ms(ms, ml):
@@ -231,9 +233,7 @@ def _repair_nmv_ms(ms, ml):
     t = m.face_matrix()
     v_new, t_new = topology.repair_non_manifold_vertices(v, t)
     if len(v_new) > len(v):
-        ms.clear()
-        if len(v_new) > 0:
-            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+        _set_mesh_on_ms(ms, ml, v_new, t_new)
 
 
 def _remove_selected_faces_ms(ms, ml):
@@ -244,9 +244,7 @@ def _remove_selected_faces_ms(ms, ml):
     sel = np.asarray(m.face_selection_array(), dtype=bool)
     if sel.any():
         t_new = topology.remove_selected_faces(t, sel)
-        ms.clear()
-        if len(t_new) > 0:
-            ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+        _set_mesh_on_ms(ms, ml, v, t_new)
 
 
 def extreme_extra_passes(ms, ml, params):

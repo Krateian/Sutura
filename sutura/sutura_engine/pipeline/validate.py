@@ -185,10 +185,9 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     v_new, t_new = topology.remove_connected_components(
         v_cur, t_cur, min_faces=params['mincomponentsize'], remove_unref=True)
     if len(t_new) < len(t_cur):
-        ms.clear()
-        if len(t_new) > 0:
-            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
-    debris_faces = max(before_faces - (ms.current_mesh().face_number() if ms.number_meshes() > 0 else 0), 0)
+        from sutura_engine.pipeline.stage1 import _set_mesh_on_ms
+        _set_mesh_on_ms(ms, ml, v_new, t_new)
+    debris_faces = max(before_faces - ms.current_mesh().face_number(), 0)
 
     est = estimate_confidence_pre_repair({
         'detected_type': cls['type'],

@@ -1038,10 +1038,17 @@ def mesh_topology(verts, tris=None):
     Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
     """
     if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            m = verts.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
+        if hasattr(verts, 'mesh_number') and verts.mesh_number() == 0:
+            v = np.zeros((0, 3), dtype=np.float32)
+            t = np.zeros((0, 3), dtype=np.int64)
+        elif hasattr(verts, 'current_mesh'):
+            try:
+                m = verts.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+            except Exception:
+                v = np.zeros((0, 3), dtype=np.float32)
+                t = np.zeros((0, 3), dtype=np.int64)
         elif hasattr(verts, 'vertex_matrix'):
             v = verts.vertex_matrix()
             t = verts.face_matrix()
@@ -1067,10 +1074,17 @@ def mesh_geometric_measures(verts, tris=None):
     Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
     """
     if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            m = verts.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
+        if hasattr(verts, 'mesh_number') and verts.mesh_number() == 0:
+            v = np.zeros((0, 3), dtype=np.float32)
+            t = np.zeros((0, 3), dtype=np.int64)
+        elif hasattr(verts, 'current_mesh'):
+            try:
+                m = verts.current_mesh()
+                v = m.vertex_matrix()
+                t = m.face_matrix()
+            except Exception:
+                v = np.zeros((0, 3), dtype=np.float32)
+                t = np.zeros((0, 3), dtype=np.int64)
         elif hasattr(verts, 'vertex_matrix'):
             v = verts.vertex_matrix()
             t = verts.face_matrix()
