@@ -48,12 +48,22 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
         (a.output_parts, b.output_parts),
         (a.dropped_inside_comps, b.dropped_inside_comps),
         (a.filled_outside_comps, b.filled_outside_comps),
+        (a.cut_shells, b.cut_shells),
+        (a.first_cut_shells, b.first_cut_shells),
+        (a.retry_threshold, b.retry_threshold),
+        (a.adaptive_added, b.adaptive_added),
+        (a.adaptive_samples, b.adaptive_samples),
+        (a.adaptive_thin, b.adaptive_thin),
     ];
     for (x, y) in fields {
         assert_eq!(x, y);
     }
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     assert_eq!(a.out_manifold, b.out_manifold);
+    assert_eq!(a.adaptive, b.adaptive);
+    assert_eq!(a.adaptive_broad, b.adaptive_broad);
+    assert_eq!(a.adaptive_retry, b.adaptive_retry);
+    assert_eq!(a.adaptive_capped, b.adaptive_capped);
     // The output arrays are compared bit-for-bit by the caller. These two
     // diagnostic volumes are float sums over a cut component and may differ by
     // a last-bit rounding depending on the parallel scheduling; they do not
@@ -65,8 +75,9 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
 #[test]
 fn serial_and_parallel_outputs_are_byte_identical() {
     let (v, t) = cube();
-    let serial = splint_cut_core(&v, &t, 32, false).expect("serial splint");
-    let parallel = splint_cut_core(&v, &t, 32, true).expect("parallel splint");
+    let serial = splint_cut_core(&v, &t, 32, SplintAdaptive::None, false).expect("serial splint");
+    let parallel =
+        splint_cut_core(&v, &t, 32, SplintAdaptive::None, true).expect("parallel splint");
     assert_eq!(serial.tris, parallel.tris);
     assert_eq!(serial.verts.len(), parallel.verts.len());
     for (a, b) in serial.verts.iter().zip(parallel.verts.iter()) {
@@ -80,8 +91,8 @@ fn serial_and_parallel_outputs_are_byte_identical() {
 #[test]
 fn repeated_runs_are_byte_identical() {
     let (v, t) = cube();
-    let a = splint_cut_core(&v, &t, 32, true).expect("first splint");
-    let b = splint_cut_core(&v, &t, 32, true).expect("second splint");
+    let a = splint_cut_core(&v, &t, 32, SplintAdaptive::None, true).expect("first splint");
+    let b = splint_cut_core(&v, &t, 32, SplintAdaptive::None, true).expect("second splint");
     assert_eq!(a.tris, b.tris);
     assert_eq!(a.verts.len(), b.verts.len());
     for (x, y) in a.verts.iter().zip(b.verts.iter()) {
@@ -99,14 +110,14 @@ fn repeated_runs_are_byte_identical() {
 #[test]
 fn rayon_thread_counts_are_byte_identical() {
     let (v, t) = cube();
-    let baseline = splint_cut_core(&v, &t, 32, true).expect("baseline");
+    let baseline = splint_cut_core(&v, &t, 32, SplintAdaptive::None, true).expect("baseline");
     for threads in [1usize, 2, 8] {
         let pool = ThreadPoolBuilder::new()
             .num_threads(threads)
             .build()
             .expect("rayon pool");
         let out = pool
-            .install(|| splint_cut_core(&v, &t, 32, true))
+            .install(|| splint_cut_core(&v, &t, 32, SplintAdaptive::None, true))
             .expect("splint");
         assert_eq!(baseline.tris, out.tris);
         assert_eq!(baseline.verts.len(), out.verts.len());
@@ -122,11 +133,93 @@ fn rayon_thread_counts_are_byte_identical() {
 #[test]
 fn res_is_validated() {
     let (v, t) = cube();
-    assert!(splint_cut_core(&v, &t, 0, true).is_err());
-    assert!(splint_cut_core(&v, &t, MAX_RES + 1, true).is_err());
+    assert!(splint_cut_core(&v, &t, 0, SplintAdaptive::None, true).is_err());
+    assert!(splint_cut_core(&v, &t, MAX_RES + 1, SplintAdaptive::None, true).is_err());
 }
 
 #[test]
 fn empty_input_is_rejected() {
-    assert!(splint_cut_core(&[], &[], 32, true).is_err());
+    assert!(splint_cut_core(&[], &[], 32, SplintAdaptive::None, true).is_err());
+}
+
+fn five_cubes() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    let mut v = Vec::new();
+    let mut t = Vec::new();
+    for i in 0..5usize {
+        let off = [i as f64 * 3.0, 0.0, 0.0];
+        let base = v.len();
+        let (cv, ct) = cube();
+        v.extend(
+            cv.iter()
+                .map(|p| [p[0] + off[0], p[1] + off[1], p[2] + off[2]]),
+        );
+        t.extend(ct.iter().map(|q| [q[0] + base, q[1] + base, q[2] + base]));
+    }
+    (v, t)
+}
+
+#[test]
+fn adaptive_hardened_is_deterministic() {
+    let (v, t) = cube();
+    let a = splint_cut_core(&v, &t, 32, SplintAdaptive::Hardened, true).expect("a");
+    let b = splint_cut_core(&v, &t, 32, SplintAdaptive::Hardened, true).expect("b");
+    assert_eq!(a.report.adaptive, Some("hardened"));
+    assert_eq!(a.report.first_cut_shells, a.report.cut_shells);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+    same_report(&a.report, &b.report);
+}
+
+#[test]
+fn retry_uses_cut_shells_and_triggers_on_five_bodies() {
+    let (v, t) = five_cubes();
+    let out = splint_cut_core(&v, &t, 32, SplintAdaptive::Retry, true).expect("retry");
+    assert_eq!(out.report.adaptive, Some("retry"));
+    assert!(
+        out.report.first_cut_shells > super::adaptive::RETRY_COMPS,
+        "{:?}",
+        out.report
+    );
+    assert!(out.report.adaptive_retry, "{:?}", out.report);
+    assert!(out.report.adaptive_broad, "{:?}", out.report);
+    assert_eq!(out.report.first_cut_shells, out.report.first_cut_shells);
+    // Report's final cut_shells is the broad pass; the fixture stays five
+    // disjoint shells after fix A.
+    assert!(out.report.cut_shells >= 5, "{:?}", out.report);
+}
+
+#[test]
+fn retry_does_not_trigger_when_cut_shells_is_small() {
+    let (v, t) = cube();
+    let out = splint_cut_core(&v, &t, 32, SplintAdaptive::Retry, true).expect("retry");
+    assert_eq!(out.report.adaptive, Some("retry"));
+    assert!(out.report.first_cut_shells <= super::adaptive::RETRY_COMPS);
+    assert!(!out.report.adaptive_retry);
+    assert!(!out.report.adaptive_broad);
+}
+
+#[test]
+fn adaptive_rayon_thread_counts_are_byte_identical() {
+    let (v, t) = five_cubes();
+    let baseline = splint_cut_core(&v, &t, 32, SplintAdaptive::Retry, true).expect("baseline");
+    for threads in [1usize, 2, 8] {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("rayon pool");
+        let out = pool
+            .install(|| splint_cut_core(&v, &t, 32, SplintAdaptive::Retry, true))
+            .expect("splint");
+        assert_eq!(baseline.tris, out.tris);
+        for (a, b) in baseline.verts.iter().zip(out.verts.iter()) {
+            for k in 0..3 {
+                assert_eq!(a[k].to_bits(), b[k].to_bits());
+            }
+        }
+        same_report(&baseline.report, &out.report);
+    }
 }
