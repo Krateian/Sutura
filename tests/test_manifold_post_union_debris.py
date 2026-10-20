@@ -87,6 +87,22 @@ def test_never_drops_the_largest_part():
     assert not np.isnan(rep['volume_after'])
 
 
+def test_many_disjoint_parts_fast_path():
+    # 300 components is above FAST_COMPONENT_MIN (256), so Stage 2 uses the
+    # array walker instead of Manifold::decompose(). Every cube is a genuine
+    # solid: no debris is dropped and no shell is merged.
+    parts = [_cube((i * 12.0, 0.0, 0.0)) for i in range(300)]
+    ov, ot, rep = _run(parts)
+    assert rep['ok'] is True, rep
+    assert rep['shells_found'] == 300, rep
+    assert rep['shells_merged'] == 300, rep
+    assert rep['shells'] == 300, rep
+    assert rep.get('debris_parts_dropped', 0) == 0, rep
+    assert rep.get('post_union_debris_dropped', 0) == 0, rep
+    assert len(ot) == 300 * 12
+    assert abs(rep['volume_after'] - 300 * 1000.0) < 1e-3
+
+
 def test_single_part_is_untouched():
     _, _, rep = _run([_cube()])
     assert rep['ok'] is True, rep

@@ -19,6 +19,14 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 const DEBRIS_VOLUME_EPS: f64 = 1e-3;
 const DEBRIS_FLATNESS: f64 = 1e-4;
+/// Below this component count `Manifold::decompose()` is cheap and its exact
+/// part construction keeps the output bytes stable; above it the per-component
+/// scan dominates (thousands of components) and the array walker is used.
+/// The 40-mesh corpus tops out at 83 components (thingi10k_1038441), where
+/// the rebuilt parts can change the boolean result through their per-part
+/// epsilon; 256 keeps every corpus mesh on the exact path while the 1,206-part
+/// Splint repro still takes the walker.
+const FAST_COMPONENT_MIN: usize = 256;
 
 fn status_string(r: Result<(), CsgError>) -> String {
     match r {
@@ -274,6 +282,131 @@ fn split_components(
     out
 }
 
+/// One edge-connected face component of a Manifold mesh export.
+///
+/// `faces` and `verts` are ascending original indices. Components are emitted
+/// in the order of their smallest vertex index, which matches the label order
+/// of Manifold's `DisjointSets::connectedComponents` (a first-vertex scan) and
+/// therefore the part order of `Manifold::Decompose`.
+struct FaceComponent {
+    faces: Vec<usize>,
+    verts: Vec<usize>,
+}
+
+fn edge_face_components(tris: &[[usize; 3]]) -> Vec<FaceComponent> {
+    let n = tris.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut edge_faces: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            edge_faces.entry(key).or_default().push(fi);
+        }
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    for faces in edge_faces.values() {
+        if faces.len() == 2 {
+            let ra = find(&mut parent, faces[0]);
+            let rb = find(&mut parent, faces[1]);
+            if ra != rb {
+                parent[ra] = rb;
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+    let mut comps: Vec<FaceComponent> = groups
+        .into_values()
+        .map(|faces| {
+            let mut used: Vec<usize> = faces.iter().flat_map(|&fi| tris[fi]).collect();
+            used.sort_unstable();
+            used.dedup();
+            FaceComponent { faces, verts: used }
+        })
+        .collect();
+    comps.sort_by_key(|c| (c.verts[0], c.faces[0]));
+    comps
+}
+
+/// Extract one component as a standalone mesh, keeping the ascending vertex
+/// and face order used by Manifold's `Decompose`.
+fn component_arrays(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    comp: &FaceComponent,
+) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    let mut remap: HashMap<usize, usize> = HashMap::with_capacity(comp.verts.len());
+    for (new, &old) in comp.verts.iter().enumerate() {
+        remap.insert(old, new);
+    }
+    let cv: Vec<[f64; 3]> = comp.verts.iter().map(|&i| verts[i]).collect();
+    let ct: Vec<[usize; 3]> = comp
+        .faces
+        .iter()
+        .map(|&fi| {
+            [
+                remap[&tris[fi][0]],
+                remap[&tris[fi][1]],
+                remap[&tris[fi][2]],
+            ]
+        })
+        .collect();
+    (cv, ct)
+}
+
+/// Split `cur` into its connected Solid parts.
+///
+/// Fast path: walk the manifold's mesh export once and rebuild each part from
+/// its arrays, avoiding `Manifold::Decompose`'s per-component scan over every
+/// vertex and face (quadratic on meshes with thousands of components). The
+/// components are emitted in Manifold's label order and each part is built in
+/// the same vertex/face order, so the downstream `batch_boolean`/`compose`
+/// receive the same input sequence.
+///
+/// At or below `FAST_COMPONENT_MIN` the exact `Manifold::decompose()` path is
+/// kept (its per-component scan is cheap there and its part construction keeps
+/// the output bytes stable). Returns `(n, parts)`; `parts` is empty when
+/// `n <= 1` (no union needed). When a rebuilt part is rejected, the exact
+/// `Manifold::decompose()` fallback is used instead.
+fn stage2_components(cur: &Manifold) -> (usize, Vec<Manifold>) {
+    let (v, t) = mesh_to_f32(cur);
+    let comps = edge_face_components(&t);
+    if comps.len() <= 1 {
+        return (comps.len(), Vec::new());
+    }
+    if comps.len() > FAST_COMPONENT_MIN {
+        let mut parts = Vec::with_capacity(comps.len());
+        let mut built = true;
+        for comp in &comps {
+            let (cv, ct) = component_arrays(&v, &t, comp);
+            match f32_mesh(&cv, &ct) {
+                Ok(m) if m.status().is_ok() && !m.is_empty() => parts.push(m),
+                _ => {
+                    built = false;
+                    break;
+                }
+            }
+        }
+        if built {
+            return (comps.len(), parts);
+        }
+    }
+    let parts = cur.decompose();
+    (parts.len(), parts)
+}
+
 fn area_weighted_centroid(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> [f64; 3] {
     let mut acc = [0.0; 3];
     let mut wsum = 0.0;
@@ -411,9 +544,10 @@ pub fn stage2_rebuild<'py>(
     report.set_item("volume_before", man.volume())?;
 
     let mut cur = man;
-    let parts = cur.decompose();
-    report.set_item("shells_found", parts.len())?;
-    if parts.len() > 1 {
+    let (n_pre, parts) = stage2_components(&cur);
+    report.set_item("shells_found", n_pre)?;
+    let mut shells = n_pre;
+    if n_pre > 1 {
         let flags: Vec<bool> = parts.iter().map(is_debris_part).collect();
         let dropped = flags.iter().filter(|x| **x).count();
         if dropped > 0 {
@@ -429,6 +563,7 @@ pub fn stage2_rebuild<'py>(
             parts
         };
         report.set_item("shells_merged", kept.len())?;
+        shells = kept.len();
         cur = if kept.len() == 1 {
             kept.into_iter().next().unwrap()
         } else {
@@ -437,33 +572,37 @@ pub fn stage2_rebuild<'py>(
         report.set_item("volume_after_union", cur.volume())?;
     }
 
-    let post = cur.decompose();
-    if post.len() > 1 {
-        let vols: Vec<f64> = post.iter().map(|p| p.volume().abs()).collect();
-        let largest = vols
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i)
-            .unwrap();
-        let kept: Vec<Manifold> = post
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                if i == largest || !is_debris_part(&p) {
-                    Some(p)
+    if n_pre > 1 && cur.status().is_ok() {
+        let (n_post, post) = stage2_components(&cur);
+        shells = n_post;
+        if n_post > 1 {
+            let vols: Vec<f64> = post.iter().map(|p| p.volume().abs()).collect();
+            let largest = vols
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .map(|(i, _)| i)
+                .unwrap();
+            let kept: Vec<Manifold> = post
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, p)| {
+                    if i == largest || !is_debris_part(&p) {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if kept.len() < vols.len() {
+                report.set_item("post_union_debris_dropped", vols.len() - kept.len())?;
+                shells = kept.len();
+                cur = if kept.len() == 1 {
+                    kept.into_iter().next().unwrap()
                 } else {
-                    None
-                }
-            })
-            .collect();
-        if kept.len() < vols.len() {
-            report.set_item("post_union_debris_dropped", vols.len() - kept.len())?;
-            cur = if kept.len() == 1 {
-                kept.into_iter().next().unwrap()
-            } else {
-                Manifold::compose(&kept)
-            };
+                    Manifold::compose(&kept)
+                };
+            }
         }
     }
 
@@ -481,7 +620,7 @@ pub fn stage2_rebuild<'py>(
     report.set_item("output_vertices", ov.len())?;
     report.set_item("output_faces", ot.len())?;
     report.set_item("volume_after", cur.volume())?;
-    report.set_item("shells", cur.decompose().len())?;
+    report.set_item("shells", shells)?;
     report.set_item("ok", true)?;
     let (pv, pt) = f32_arrays(py, &ov, &ot)?;
     Ok((pv, pt, report))
@@ -720,4 +859,51 @@ pub fn boolean_transplant<'py>(
     let (ov, ot) = mesh_to_f64(&current);
     let (pv, pt) = f64_arrays(py, &ov, &ot)?;
     Ok((pv, pt, vol_change, boxes, is_watertight))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_components_follow_first_vertex_order() {
+        // Component A uses vertices 2..6, component B uses 0,1,6,7.
+        // B must come first because its smallest vertex index is 0, even
+        // though A's faces were emitted first.
+        let tris = vec![[2, 3, 4], [2, 4, 5], [0, 1, 6], [0, 6, 7]];
+        let comps = edge_face_components(&tris);
+        assert_eq!(comps.len(), 2);
+        assert_eq!(comps[0].verts, vec![0, 1, 6, 7]);
+        assert_eq!(comps[0].faces, vec![2, 3]);
+        assert_eq!(comps[1].verts, vec![2, 3, 4, 5]);
+        assert_eq!(comps[1].faces, vec![0, 1]);
+    }
+
+    #[test]
+    fn edge_components_do_not_join_at_a_shared_vertex() {
+        // Two triangles meeting only at vertex 0 are separate edge-connected
+        // components. Manifold splits such a pinched vertex at import, so this
+        // is the same partition as Decompose.
+        let tris = vec![[0, 1, 2], [0, 3, 4]];
+        let comps = edge_face_components(&tris);
+        assert_eq!(comps.len(), 2);
+        assert_eq!(comps[0].faces, vec![0]);
+        assert_eq!(comps[1].faces, vec![1]);
+    }
+
+    #[test]
+    fn component_arrays_keep_ascending_ids() {
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+        ];
+        let tris = vec![[3, 1, 2]];
+        let comps = edge_face_components(&tris);
+        assert_eq!(comps.len(), 1);
+        let (cv, ct) = component_arrays(&verts, &tris, &comps[0]);
+        assert_eq!(cv, vec![verts[1], verts[2], verts[3]]);
+        assert_eq!(ct, vec![[2, 0, 1]]);
+    }
 }
