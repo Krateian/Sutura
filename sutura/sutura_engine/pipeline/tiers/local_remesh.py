@@ -136,7 +136,7 @@ def _local_remesh_tier(ml, ms, after):
     m = ms.current_mesh()
     v = np.asarray(m.vertex_matrix(), dtype=np.float64)
     t = np.asarray(m.face_matrix(), dtype=np.int64)
-    rep = {'ran': True, 'adopted': False}
+    rep = {'ran': True, 'adopted': False, 'outside_unchanged': False}
     base_holes, base_loop = boundary_loop_stats(v, t)
     base_nm = after.get('non_two_manifold_edges', 0)
     rep.update(holes_before=int(base_holes), nm_before=int(base_nm),

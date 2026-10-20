@@ -426,17 +426,31 @@ else:
             f.write(worker_code)
             tmp_worker = f.name
         worker_env = dict(os.environ, PYTHONPATH=SUTURA)
-        try:
-            for path in samples:
-                proc = subprocess.run([sys.executable, tmp_worker, path], env=worker_env, capture_output=True, text=True)
-                assert proc.returncode == 0, f"Worker failed on {path}: {proc.stderr}"
-                res = json.loads(proc.stdout.strip().splitlines()[-1])
-                assert res['status'] == 'ok', f"Mismatch on {path}: {res['diffs']}"
-        finally:
-            if os.path.exists(tmp_worker):
-                os.remove(tmp_worker)
+        with tempfile.TemporaryDirectory(prefix='sutura-obj-parity-') as obj_td:
+            # OBJ load path: a cube with a duplicated face. PyMeshLab keeps the
+            # duplicate on load; measuring the loaded arrays (the pipeline
+            # call-site rule) must match PyMeshLab exactly. Run in the same
+            # subprocess worker as the corpus, so a previous in-process
+            # PyMeshLab MeshSet cannot corrupt the measure.
+            v_obj, t_obj = _cube()
+            t_obj = np.vstack([t_obj, t_obj[0:1]])
+            obj_path = os.path.join(obj_td, 'synthetic_duplicate_face.obj')
+            with open(obj_path, 'w') as f:
+                for p in np.asarray(v_obj, np.float32):
+                    f.write('v %.9g %.9g %.9g\n' % (p[0], p[1], p[2]))
+                for q in np.asarray(t_obj, np.int64):
+                    f.write('f %d %d %d\n' % (q[0] + 1, q[1] + 1, q[2] + 1))
+            try:
+                for path in samples + [obj_path]:
+                    proc = subprocess.run([sys.executable, tmp_worker, path], env=worker_env, capture_output=True, text=True)
+                    assert proc.returncode == 0, f"Worker failed on {path}: {proc.stderr}"
+                    res = json.loads(proc.stdout.strip().splitlines()[-1])
+                    assert res['status'] == 'ok', f"Mismatch on {path}: {res['diffs']}"
+            finally:
+                if os.path.exists(tmp_worker):
+                    os.remove(tmp_worker)
 
-    print(f'pymeshlab parity OK on {len(samples)} corpus meshes + {len(synthetic_cases)} synthetic non-manifold cases (bit-for-bit, exact keys)')
+    print(f'pymeshlab parity OK on {len(samples)} corpus meshes + 1 OBJ load case + {len(synthetic_cases)} synthetic non-manifold cases (bit-for-bit, exact keys)')
 
 
 def main():
