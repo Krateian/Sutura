@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 
+import topology
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.tiers.repeat import _clean_and_orient
@@ -59,7 +60,7 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
                     and cand_holes + cand_nm <= base_holes + base_nm):
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-                after = ms.apply_filter('get_topological_measures')
+                after = topology.mesh_topology(cand_v, cand_t)
                 rec['adopted'] = True
                 rec['candidate_watertight'] = True
                 rec['reason'] = 'walls thickened (stage 2 pending)'

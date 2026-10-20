@@ -64,7 +64,7 @@ def _split_pinched_vertices(ml, ms, topo):
     while passes < PINCH_SPLIT_MAX_PASSES:
         passes += 1
         trial.apply_filter('meshing_repair_non_manifold_vertices')
-        t_topo = trial.apply_filter('get_topological_measures')
+        t_topo = topology.mesh_topology(trial)
         if t_topo.get('is_mesh_two_manifold'):
             break
     tm = trial.current_mesh()

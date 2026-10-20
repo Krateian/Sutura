@@ -194,12 +194,13 @@ def _count_self_intersections(v: np.ndarray, t: np.ndarray) -> Tuple[int, bool]:
 
 
 def _component_count(v: np.ndarray, t: np.ndarray) -> int:
-    """Connected component count via lazy pymeshlab."""
-    import pymeshlab as ml
+    """Connected component count via topology kernel."""
     try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-        topo = ms.apply_filter('get_topological_measures')
+        try:
+            from .. import topology
+        except ImportError:
+            import topology
+        topo = topology.mesh_topology(v, t)
         return int(topo.get('connected_components_number', 1))
     except Exception:
         return 1

@@ -955,6 +955,7 @@ pub fn mesh_topology<'py>(
     let mut unique_edges_count = 0usize;
     let mut incident_on_nm_edges = vec![false; nf];
     let mut boundary_directed: HashMap<i64, i64> = HashMap::new();
+    let mut nm_edge_verts: HashSet<i64> = HashSet::new();
 
     let mut i = 0usize;
     let n_he = half_edges.len();
@@ -972,6 +973,8 @@ pub fn mesh_topology<'py>(
             boundary_directed.insert(half_edges[i].2.0, half_edges[i].2.1);
         } else if deg > 2 {
             non_two_manifold_edges += 1;
+            nm_edge_verts.insert(edge.0);
+            nm_edge_verts.insert(edge.1);
             for k in i..j {
                 incident_on_nm_edges[half_edges[k].1] = true;
             }
@@ -1010,6 +1013,9 @@ pub fn mesh_topology<'py>(
         let inc = &v_faces[v];
         if inc.is_empty() {
             unreferenced_vertices += 1;
+            continue;
+        }
+        if nm_edge_verts.contains(&(v as i64)) {
             continue;
         }
         if inc.len() <= 1 {

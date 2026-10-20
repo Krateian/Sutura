@@ -48,14 +48,14 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental',
     nm = d['non_manifold']
 
     ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-    topo = ms.apply_filter('get_topological_measures')
+    topo = topology.mesh_topology(v, t)
     if si_mode == 'off':
         self_intersections = None
     elif topology.native_si_enabled():
         _, count = topology.self_intersecting_faces(v, t)
         self_intersections = None if int(count) < 0 else int(count)
     else:
+        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         ms.apply_filter('compute_selection_by_self_intersections_per_face')
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
 
@@ -166,7 +166,7 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
 
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-    topo = ms.apply_filter('get_topological_measures')
+    topo = topology.mesh_topology(v, t)
     # "found" counts describe the INPUT mesh (like defects.detect does), so
     # self-intersections are measured before the debris-removal step below.
     if si_mode == 'off':

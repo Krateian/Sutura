@@ -156,10 +156,14 @@ def test_ftetwild_shape_change_is_flagged_not_rejected():
 
 
 def _cube_with_fin():
-    """Closed cube plus one extra face on an existing edge: a boundary that
-    has a non-manifold edge (fails the holes/nm guard on a nm-free mesh)."""
-    v = np.asarray(CUBE_V + [(0.5, -1.0, 0.5)], np.float32)
-    t = np.asarray(CUBE_T + [(0, 1, 8)], np.int32)
+    """Closed cube plus two extra faces on different existing edges: a boundary
+    with two non-manifold edges, so it is worse than the stage-1 base on the
+    holes/nm guard (the base has one) and the retry path runs deterministically.
+    The old single-fin fixture relied on PyMeshLab measuring the candidate as
+    three NM edges, which PyMeshLab reports inconsistently (1/2/3) for the same
+    arrays."""
+    v = np.asarray(CUBE_V + [(0.5, -1.0, 0.5), (2.0, 0.5, 0.5)], np.float32)
+    t = np.asarray(CUBE_T + [(0, 1, 8), (2, 3, 9)], np.int32)
     return v, t
 
 

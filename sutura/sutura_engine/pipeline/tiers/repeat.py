@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 
+import topology
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
@@ -124,7 +125,7 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
                 and hd is not None and hd <= REPEAT_MAX_HAUSDORFF_OUTSIDE):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-            after = ms.apply_filter('get_topological_measures')
+            after = topology.mesh_topology(cand_v, cand_t)
             rec['adopted'] = True
             rec['watertight'] = False
             rec['candidate_watertight'] = True

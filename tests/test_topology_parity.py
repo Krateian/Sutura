@@ -294,17 +294,176 @@ def test_geometric_measures_parity():
     print('mesh_geometric_measures parity OK (Rust == numpy oracle, bit-for-bit)')
 
 
+def test_pymeshlab_parity():
+    """Verify exact dict parity (including key presence and VCG quirks) against PyMeshLab.
+
+    Tests 4 synthetic cases (closed cube, non-manifold edge, non-manifold vertex pinch,
+    open triangle) and all tracked corpus meshes from tests/real-world-samples/*.stl.
+    """
+    try:
+        import pymeshlab
+    except ImportError:
+        print('pymeshlab not importable, skipping PyMeshLab parity check')
+        return
+
+    top_keys = (
+        'boundary_edges', 'connected_components_number', 'edges_number',
+        'faces_number', 'genus', 'incident_faces_on_non_two_manifold_edges',
+        'incident_faces_on_non_two_manifold_vertices', 'is_mesh_two_manifold',
+        'non_two_manifold_edges', 'non_two_manifold_vertices', 'number_holes',
+        'unreferenced_vertices', 'vertices_number'
+    )
+
+    # 1. Synthetic cases
+    synthetic_cases = []
+
+    # a) Closed watertight cube
+    v_cube, t_cube = _cube()
+    synthetic_cases.append(('closed_cube', v_cube, t_cube))
+
+    # b) Non-manifold edge: 3 triangles sharing an edge (0, 1)
+    v_nme = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float32)
+    t_nme = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]], dtype=np.int64)
+    synthetic_cases.append(('nm_edge', v_nme, t_nme))
+
+    # c) Non-manifold vertex (pinch): 2 tetrahedra touching at single vertex 0
+    v_pinch = np.array([
+        [0, 0, 0],
+        [1, 0, 0], [0, 1, 0], [0, 0, 1],
+        [-1, 0, 0], [0, -1, 0], [0, 0, -1]
+    ], dtype=np.float32)
+    t_pinch = np.array([
+        [0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2],
+        [0, 5, 4], [0, 6, 5], [0, 4, 6], [4, 5, 6]
+    ], dtype=np.int64)
+    synthetic_cases.append(('nm_vertex_pinch', v_pinch, t_pinch))
+
+    # d) Open mesh with boundary: single triangle
+    v_open = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+    t_open = np.array([[0, 1, 2]], dtype=np.int64)
+    synthetic_cases.append(('open_triangle', v_open, t_open))
+
+    for name, v, t in synthetic_cases:
+        ms = pymeshlab.MeshSet()
+        ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+        pml_top = ms.get_topological_measures()
+        pml_geo = ms.get_geometric_measures()
+
+        for eng in ('python', 'rust'):
+            topology.set_engine(eng)
+            cur_top = topology.mesh_topology(v, t)
+            cur_geo = topology.mesh_geometric_measures(v, t)
+
+            for k in top_keys:
+                assert cur_top[k] == pml_top[k], (
+                    f"[{name}:{eng}] top key {k} mismatch: pml={pml_top[k]} vs {eng}={cur_top[k]}"
+                )
+
+            assert abs(cur_geo['surface_area'] - float(pml_geo['surface_area'])) < 1e-4
+            assert ('mesh_volume' in pml_geo) == ('mesh_volume' in cur_geo), (
+                f"[{name}:{eng}] mesh_volume presence mismatch: pml={'mesh_volume' in pml_geo} vs {eng}={'mesh_volume' in cur_geo}"
+            )
+            if 'mesh_volume' in pml_geo:
+                assert abs(cur_geo['mesh_volume'] - float(pml_geo['mesh_volume'])) < 1e-4
+
+    # 2. Tracked corpus meshes (subprocess-isolated to prevent PyMeshLab heap corruption)
+    import glob
+    import subprocess
+    samples = sorted(glob.glob(os.path.join(REPO, 'tests', 'real-world-samples', '*.stl')))
+    if samples:
+        worker_code = """
+import sys, os, json, pymeshlab, numpy as np
+import topology
+
+path = sys.argv[1]
+ms = pymeshlab.MeshSet()
+ms.load_new_mesh(path)
+m = ms.current_mesh()
+v = m.vertex_matrix()
+t = m.face_matrix()
+
+pml_top = ms.get_topological_measures()
+pml_geo = ms.get_geometric_measures()
+
+top_keys = [
+    'boundary_edges', 'connected_components_number', 'edges_number',
+    'faces_number', 'genus', 'incident_faces_on_non_two_manifold_edges',
+    'incident_faces_on_non_two_manifold_vertices', 'is_mesh_two_manifold',
+    'non_two_manifold_edges', 'non_two_manifold_vertices', 'number_holes',
+    'unreferenced_vertices', 'vertices_number'
+]
+pml_top_clean = {k: pml_top[k] for k in top_keys}
+pml_geo_clean = {'surface_area': float(pml_geo['surface_area'])}
+if 'mesh_volume' in pml_geo:
+    pml_geo_clean['mesh_volume'] = float(pml_geo['mesh_volume'])
+
+diffs = []
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    curr_top = topology.mesh_topology(v, t)
+    curr_geo = topology.mesh_geometric_measures(v, t)
+
+    for k in top_keys:
+        if pml_top_clean[k] != curr_top[k]:
+            diffs.append(f"[{eng}] top.{k}: pml={pml_top_clean[k]} {eng}={curr_top[k]}")
+
+    if abs(pml_geo_clean['surface_area'] - curr_geo['surface_area']) > 1e-4 * max(1.0, pml_geo_clean['surface_area']):
+        diffs.append(f"[{eng}] geo.surface_area: pml={pml_geo_clean['surface_area']} {eng}={curr_geo['surface_area']}")
+
+    if ('mesh_volume' in pml_geo_clean) != ('mesh_volume' in curr_geo):
+        diffs.append(f"[{eng}] geo.mesh_volume presence: pml={'mesh_volume' in pml_geo_clean} {eng}={'mesh_volume' in curr_geo}")
+    elif 'mesh_volume' in pml_geo_clean:
+        if abs(pml_geo_clean['mesh_volume'] - curr_geo['mesh_volume']) > 1e-4 * max(1.0, abs(pml_geo_clean['mesh_volume'])):
+            diffs.append(f"[{eng}] geo.mesh_volume: pml={pml_geo_clean['mesh_volume']} {eng}={curr_geo['mesh_volume']}")
+
+if diffs:
+    print(json.dumps({'status': 'diff', 'diffs': diffs}))
+else:
+    print(json.dumps({'status': 'ok'}))
+"""
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(worker_code)
+            tmp_worker = f.name
+        worker_env = dict(os.environ, PYTHONPATH=SUTURA)
+        with tempfile.TemporaryDirectory(prefix='sutura-obj-parity-') as obj_td:
+            # OBJ load path: a cube with a duplicated face. PyMeshLab keeps the
+            # duplicate on load; measuring the loaded arrays (the pipeline
+            # call-site rule) must match PyMeshLab exactly. Run in the same
+            # subprocess worker as the corpus, so a previous in-process
+            # PyMeshLab MeshSet cannot corrupt the measure.
+            v_obj, t_obj = _cube()
+            t_obj = np.vstack([t_obj, t_obj[0:1]])
+            obj_path = os.path.join(obj_td, 'synthetic_duplicate_face.obj')
+            with open(obj_path, 'w') as f:
+                for p in np.asarray(v_obj, np.float32):
+                    f.write('v %.9g %.9g %.9g\n' % (p[0], p[1], p[2]))
+                for q in np.asarray(t_obj, np.int64):
+                    f.write('f %d %d %d\n' % (q[0] + 1, q[1] + 1, q[2] + 1))
+            try:
+                for path in samples + [obj_path]:
+                    proc = subprocess.run([sys.executable, tmp_worker, path], env=worker_env, capture_output=True, text=True)
+                    assert proc.returncode == 0, f"Worker failed on {path}: {proc.stderr}"
+                    res = json.loads(proc.stdout.strip().splitlines()[-1])
+                    assert res['status'] == 'ok', f"Mismatch on {path}: {res['diffs']}"
+            finally:
+                if os.path.exists(tmp_worker):
+                    os.remove(tmp_worker)
+
+    print(f'pymeshlab parity OK on {len(samples)} corpus meshes + 1 OBJ load case + {len(synthetic_cases)} synthetic non-manifold cases (bit-for-bit, exact keys)')
+
+
 def main():
     test_parity()
     test_re_orient_parity()
     test_repair_nme_parity()
     test_geometric_measures_parity()
+    test_pymeshlab_parity()
     test_fallback_when_kernel_missing()
     topology.set_engine('auto')
     print('topology parity tests passed')
 
 
 if __name__ == '__main__':
-
     main()
 

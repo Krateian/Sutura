@@ -155,9 +155,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if engines:
         _entries = []
         if engine_placement_order(engines, engine_chain, 'before_stage1'):
-            _base_ms = ml.MeshSet()
-            _base_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-            _base_topo = _base_ms.apply_filter('get_topological_measures')
+            _base_topo = topology.mesh_topology(v, t)
             _cv, _ct, _adopted = run_engines(
                 ml, engines, engine_chain, 'before_stage1', tmpdir, v, t,
                 boundary_loop_stats(v, t)[0],
@@ -325,13 +323,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                     stats['outer_shell_extracted'] = True
             # on error the guard records it and the input is kept unchanged
 
-    before_ms = ml.MeshSet()
-    before_ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-    before = before_ms.apply_filter('get_topological_measures')
-    if topology.native_measures_enabled():
-        before_geom = topology.mesh_geometric_measures(v, t)
-    else:
-        before_geom = before_ms.apply_filter('get_geometric_measures')
+    before = topology.mesh_topology(v, t)
+    before_geom = topology.mesh_geometric_measures(v, t)
     before_volume = before_geom.get('mesh_volume', 0)
     before_area = surface_area(v, t)
     before_verts = before.get('vertices_number', 0)
@@ -355,7 +348,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _tms = ml.MeshSet()
         _tms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         apply_chain(_tms, stage1_cleanup_chain(ml))
-        _tafter = _tms.apply_filter('get_topological_measures')
+        _tafter = topology.mesh_topology(_tms)
         _tms, _tafter = tamponade_tier(
             ml, _tms, _tafter, stats, tmpdir, tamponade=True,
             intensity=(getattr(triage_spec, 'base', None)
@@ -385,7 +378,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if flap:
         _fms = ml.MeshSet()
         _fms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-        _fafter = _fms.apply_filter('get_topological_measures')
+        _fafter = topology.mesh_topology(v, t)
         _fms, _fafter = _flap_step(ml, _fms, _fafter, stats, None)
         if (stats.get('flap') or {}).get('adopted'):
             v = np.asarray(_fms.current_mesh().vertex_matrix(), dtype=np.float32)
@@ -397,7 +390,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     applied, skipped = apply_chain(
         ms, stage1_chain(ml, **_p, join_components=join_components))
-    after = ms.apply_filter('get_topological_measures')
+    after = topology.mesh_topology(ms)
 
     # --experimental-autorefine prototype: resolve self-intersections on the
     # INPUT mesh by subdividing the intersecting triangles along their
@@ -426,7 +419,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 ms_cand.add_mesh(ml.Mesh(vertex_matrix=np.asarray(ar_v, np.float32),
                                          face_matrix=np.asarray(ar_t, np.int32)))
                 apply_chain(ms_cand, stage1_chain(ml, **_p, join_components=join_components))
-                cand_after = ms_cand.apply_filter('get_topological_measures')
+                cand_after = topology.mesh_topology(ms_cand)
                 cand_holes = boundary_loop_stats(
                     ms_cand.current_mesh().vertex_matrix(),
                     ms_cand.current_mesh().face_matrix())[0]
@@ -470,7 +463,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                     ms_cand.add_mesh(ml.Mesh(vertex_matrix=np.asarray(ia_v, np.float32),
                                              face_matrix=np.asarray(ia_t, np.int32)))
                     apply_chain(ms_cand, stage1_chain(ml, **_p, join_components=join_components))
-                    cand_after = ms_cand.apply_filter('get_topological_measures')
+                    cand_after = topology.mesh_topology(ms_cand)
                     cand_holes = boundary_loop_stats(
                         ms_cand.current_mesh().vertex_matrix(),
                         ms_cand.current_mesh().face_matrix())[0]
@@ -498,7 +491,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         fb.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         fapplied, fskipped = apply_chain(
             fb, delete_fallback_chain(ml, **_p, join_components=join_components))
-        fafter = fb.apply_filter('get_topological_measures')
+        fafter = topology.mesh_topology(fb)
         if (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0)):
             ms, after, applied, skipped = fb, fafter, fapplied, fskipped
@@ -512,7 +505,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             ms, ml, _p['mincomponentsize'], _p['maxholesize'])
         stats['experimental_join_components'] = {'moved': moved,
                                                  'remaining_small': remaining}
-        after = ms.apply_filter('get_topological_measures')
+        after = topology.mesh_topology(ms)
 
     if after.get('faces_number', 0) == 0:
         if mode == 'extreme':
@@ -536,7 +529,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         # and output byte-identical.
         if _si_rec.get('applied'):
             stats['si_excise'] = _si_rec
-            after = ms.apply_filter('get_topological_measures')
+            after = topology.mesh_topology(ms)
 
     # Extreme-only extra passes (Stage C): self-intersection cleanup + one more
     # run of the main chain to close the holes / drop the debris the removal
@@ -554,7 +547,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         if si_found:
             stats['self_intersections_found'] = si_found
             stats['self_intersections_removed'] = si_removed
-        after = ms.apply_filter('get_topological_measures')
+        after = topology.mesh_topology(ms)
         if after.get('faces_number', 0) == 0:
             raise ExtremeRemovedAllError(
                 'Extreme mode removed all geometry (small connected component '
@@ -587,7 +580,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             if _adopted:
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
-                after = ms.apply_filter('get_topological_measures')
+                after = topology.mesh_topology(ms)
         _record_engine_entries(stats, _entries)
 
     # Registry methods 8/9/10 (P-INT): standalone closing / proxy-template
@@ -681,7 +674,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             if _adopted:
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
-                after = ms.apply_filter('get_topological_measures')
+                after = topology.mesh_topology(_cv, _ct)
         _record_engine_entries(stats, _entries)
 
     holes_after = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
@@ -702,7 +695,12 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if skipped:
         stats['stage1']['skipped'] = skipped
 
-    if topology.native_measures_enabled():
+    m_cur = ms.current_mesh()
+    cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
+    cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+    geom = topology.mesh_geometric_measures(cur_v, cur_t)
+    if geom.get('mesh_volume', 0) < 0:
+        _invert_faces_ms(ms, ml)
         m_cur = ms.current_mesh()
         cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
         cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
@@ -713,19 +711,11 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
             cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
             geom = topology.mesh_geometric_measures(cur_v, cur_t)
-    else:
-        geom = ms.apply_filter('get_geometric_measures')
-        if geom.get('mesh_volume', 0) < 0:
-            _invert_faces_ms(ms, ml)
-            geom = ms.apply_filter('get_geometric_measures')
-            if geom.get('mesh_volume', 0) < 0:
-                _invert_faces_ms(ms, ml)
-                geom = ms.apply_filter('get_geometric_measures')
     after_volume = geom.get('mesh_volume', 0)
 
     new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
     new_tris = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
-    fin = ms.apply_filter('get_topological_measures')
+    fin = topology.mesh_topology(new_verts, new_tris)
     after_area = surface_area(new_verts, new_tris)
     after_verts = fin.get('vertices_number', 0)
     after_faces = fin.get('faces_number', 0)
@@ -882,7 +872,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             if _adopted:
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
-                after = ms.apply_filter('get_topological_measures')
+                after = topology.mesh_topology(_cv, _ct)
                 tiers_run.append('replace_ftetwild')
         elif (not engine_chain) or ('ftetwild' in engine_chain):
             # Graft (shell wrap) is tried BEFORE the fTetWild tier. When it is

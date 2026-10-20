@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 
+import topology
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.p_weld import (
@@ -234,7 +235,7 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
                     and (shape_ok or force_adopt)):
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-                after = ms.apply_filter('get_topological_measures')
+                after = topology.mesh_topology(cand_v, cand_t)
                 rec['adopted'] = True
                 rec['forced'] = bool(force_adopt and not shape_ok)
                 rec['watertight'] = False  # stage 2 confirms at the top level
