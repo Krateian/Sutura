@@ -5,16 +5,18 @@ the objects on the plate are read through the `orca.host` API, exported to STL
 in world coordinates, repaired with the [separately-installed Sutura
 CLI](https://github.com/Krateian/Sutura), and the repaired copy is loaded back
 into the slicer as a new object. The plugin does not bundle
-pymeshlab/manifold3d into OrcaSlicer's embedded Python; it declares `numpy`
+PyMeshLab/manifold3d into OrcaSlicer's embedded Python; repair runs through the
+installed Sutura CLI, which requires the mandatory `sutura_geom` extension. The
+plugin itself declares `numpy`
 as a plugin dependency (installed by OrcaSlicer's bundled uv) and falls back
 to the numpy-free mesh accessors when numpy is unavailable.
 
-## ⚠️ Version requirement — nightly / newer than 2.4.2 REQUIRED
+## ⚠️ Version requirement — OrcaSlicer 2.5.0+ / nightly REQUIRED
 
-The OrcaSlicer Python plugin system exists **only in nightly builds / releases
-newer than 2.4.2**. The stable **2.4.2 release has no "Plugins" menu** — this
-plugin will not work there. Use a nightly (or a release newer than 2.4.2)
-build.
+The OrcaSlicer Python plugin system ships in **OrcaSlicer 2.5.0 and newer /
+nightly builds**. The **2.4.x releases have no "Plugins" menu**, so the plugin
+will not work there. It was verified end-to-end on a 2.5.0-dev nightly (macOS);
+the first stable release with the plugin API is 2.5.0.
 
 ## ⚠️ EXPERIMENTAL — early stage
 
@@ -121,7 +123,9 @@ Repair always runs via the **subprocess CLI** (`~/.local/bin/sutura <stage>
 `pip` (plus the declared `numpy`), so in-process repair is not possible. The
 CLI is run with a 600 s timeout and can be cancelled from the panel; Analyze
 runs `sutura <stage> --analyze` (read-only, no output file). The JSON report
-on stdout is parsed and mapped onto the panel protocol.
+on stdout is parsed and mapped onto the panel protocol. The installed CLI
+exposes all 18 repair methods; the experimental **Splint (#18)** exact solid
+rebuild is opt-in and off by default, so the panel presets do not enable it.
 
 ## Permissions
 
@@ -134,7 +138,7 @@ audit API has no declarative form for subprocess spawns, and their persisted
 grant matches the exact command line (which contains unique staging paths),
 so a subprocess permission prompt can still appear once per command target.
 
-## Install (nightly / OrcaSlicer > 2.4.2)
+## Install (OrcaSlicer 2.5.0+ / nightly)
 
 1. Install Sutura first: `./install.sh` (Linux) or `install-macos.sh` (macOS),
    so `~/.local/bin/sutura` exists.
@@ -175,7 +179,7 @@ Plugins dialog without the manual copy.
 - The export is a per-object triangle soup of its model parts; Sutura repairs
   the union surface. Overlapping or intentionally separate parts are treated
   as one solid.
-- Nightly-only API (see the version requirement above).
+- OrcaSlicer 2.5.0+ / nightly only (see the version requirement above).
 
 ## Feedback
 
