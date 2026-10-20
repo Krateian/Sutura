@@ -11,12 +11,16 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **Faster, exact inside/outside test by default.** The accelerated antipodal generalized winding number is now the default oracle (`SUTURA_ANTIPODAL=0` restores the classic one); the Tamponade plug is only adopted when both the classic and the antipodal oracle report no leak.
 - **Smaller, safer runtime.** `trimesh` and SciPy are no longer runtime dependencies; Manifold/CSG, nearest-neighbour queries, exact predicates, morphology and the native cleanup filters run in the mandatory Rust `sutura_geom` extension through `manifold-csg` and the vendored **Geogram Delaunay PSM** (BSD-3-Clause, Inria). Prebuilt wheels already contain the Geogram PSM; source builds need Rust 1.89+, cmake and a **C++20** compiler. `venv311` is now needed only for the optional fTetWild extra.
 - **What still uses Python and PyMeshLab.** Stage 1 remains the PyMeshLab/VCG chain: self-intersection selection, `close_holes`, re-orientation, Hausdorff distance, decimation and Poisson reconstruction; fTetWild remains the optional last-resort addon; the pipeline orchestration is Python and the GUI is Qt/PySide6. The Rust core removes the Python Manifold/SciPy/trimesh layer, not PyMeshLab itself.
 - **PySide6 follows the interpreter.** `requirements-gui.txt` installs PySide6-Essentials 6.12.0 on Python 3.12+ and 6.11.2 on Python 3.11; the macOS conda environment stays on 3.11/6.11.2, which also keeps macOS 13 support. Linux installs and the AppImage on Python 3.14 use 6.12.0.
 
 ### Fixed
 
+- **No more hang on meshes with thousands of shells.** Stage 2 builds parts directly from the mesh export when there are more than 256 components instead of calling Manifold's per-component decompose; ordinary meshes keep byte-identical output.
+- **Sturdier file reading.** The built-in STL/OBJ reader handles malformed and edge-case files more robustly, and 3MF parsing tolerates case, unicode, unit and comment variations.
+- **Exact self-intersection count fix.** A -1 sentinel was read as 0 and a stale BVH cache could be reused; both fixed.
 - **3MF repair preserves the project file.** Only the repaired objects' mesh XML changes; thumbnails, slicer configs, plate/wipe-tower data, Production sub-models and ZIP metadata are retained, including per-triangle paint/seam/support attributes on unchanged coordinates.
 - **Repair history and learning survive updates.** Runtime data now lives in `~/.local/share/sutura/data/` (override with `SUTURA_DATA_DIR`), with a one-time migration; the updater, rollback and uninstall no longer discard it.
 - **Deterministic shell analysis and cache keys.** Shell analysis no longer depends on process-random hash iteration, and the analysis/learning caches are keyed by the classifier engine and classifier version so a stale or cross-engine result cannot be reused.
