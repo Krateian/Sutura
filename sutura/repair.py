@@ -69,7 +69,7 @@ from sutura_engine.pipeline.presets import (
    resolve_dressing_drain, resolve_dressing_rmax_scale,
    resolve_dressing_scale, resolve_dressing_sigma_scale, resolve_flap,
    resolve_ftetwild, resolve_ftetwild_optimize, resolve_graft,
-   resolve_mode_params, resolve_si_mode, resolve_tamponade,
+   resolve_mode_params, resolve_si_mode, resolve_splint, resolve_tamponade,
    tuning_applied_for
 )
 from sutura_engine.pipeline.mesh_io import (
@@ -174,7 +174,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  dressing=False, dressing_drain=None, dressing_defects=None,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
                  tamponade=False,
-                 si_mode=None, dressing_force_adopt=False):
+                 si_mode=None, dressing_force_adopt=False,
+                 splint=False, splint_adaptive=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -249,6 +250,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             dressing_sigma_scale=dressing_sigma_scale,
             tamponade=tamponade,
             si_mode=si_mode,
+            splint=splint, splint_adaptive=splint_adaptive,
             dressing_force_adopt=dressing_force_adopt))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
@@ -525,6 +527,17 @@ def main():
                              'with --deep-repair off). Primarily for its own '
                              'evaluation; the auto path (default) already '
                              'prefers Graft over fTetWild')
+    parser.add_argument('--experimental-splint', action='store_true',
+                        help='enable the Splint (#18) exact solid-rebuild tier: '
+                             'the Rust proxy+Delaunay+cut rebuild runs on the '
+                             'original input in the deep-repair ladder, after '
+                             'Dressing and before fTetWild, and is adopted only '
+                             'when it reloads strict-watertight. Off by default; '
+                             'env: SUTURA_SPLINT / SUTURA_SPLINT_DEFAULT')
+    parser.add_argument('--no-splint', action='store_true',
+                        help='disable the Splint (#18) exact solid-rebuild tier '
+                             '(it is off by default; this forces it off even '
+                             'when SUTURA_SPLINT / the default switch enables it)')
     parser.add_argument('--flap', action='store_true',
                         help='run the Flap surface-based hole filler as the '
                              'FIRST Stage-1 step (a pre-pass on the input, '
@@ -958,6 +971,11 @@ def main():
     # before fTetWild). --experimental-graft forces it outside the ladder.
     _graft_arg = resolve_graft(no_graft=args.no_graft,
                                force=args.experimental_graft)
+    # Splint (#18): the single default switch (SPLINT_DEFAULT_ENABLED /
+    # SUTURA_SPLINT_DEFAULT, OFF) decides; --no-splint disables and
+    # --experimental-splint forces.
+    _splint_arg = resolve_splint(no_splint=args.no_splint,
+                                 force=args.experimental_splint)
     # Flap: on by default; --no-flap disables it, --flap forces it, SUTURA_FLAP
     # may set 0/1 and SUTURA_FLAP_DEFAULT overrides the built-in default.
     _flap_arg = resolve_flap(no_flap=args.no_flap, force=args.flap)
@@ -1002,6 +1020,7 @@ def main():
                             dressing_defects=_dressing_defects,
                             dressing_rmax_scale=_dressing_rmax_scale,
                             dressing_sigma_scale=_dressing_sigma_scale,
+                            splint=_splint_arg,
                             si_mode=si_mode,
                             dressing_force_adopt=args.dressing_force_adopt,
                             indirect_autorefine=args.experimental_indirect_autorefine,

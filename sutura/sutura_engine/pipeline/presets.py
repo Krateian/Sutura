@@ -306,6 +306,27 @@ GRAFT_MAX_FACES = _BALANCED_INTENSITY.graft_max_faces
 GRAFT_TIMEOUT = _BALANCED_INTENSITY.graft_timeout
 
 
+# Bound for the Splint (#18) exact solid-rebuild tier, the last-resort tier
+# AFTER Dressing and BEFORE fTetWild.  Splint runs the Rust ``splint_cut`` core
+# (proxy surface + Delaunay tetrahedralization + tet cut) on the ORIGINAL input
+# arrays.  Like Graft it has no interruptible solver: SPLINT_MAX_FACES is the
+# hard input cap (above it the tier refuses rather than start), SPLINT_RES caps
+# the sampling resolution (the main runtime bound; ``adaptive='retry'`` only
+# reruns after the hardened pass), and SPLINT_TIMEOUT is the outer wall-clock
+# budget that abandons the candidate all-or-nothing, consistent with the
+# fTetWild timeout.  SPLINT_DEFAULT_ENABLED is the single switch and stays OFF
+# until the 40-mesh corpus decision proves Splint no worse on every mesh.
+SPLINT_RES = 128
+
+SPLINT_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
+
+SPLINT_TIMEOUT = _BALANCED_INTENSITY.ftetwild_timeout
+
+SPLINT_DEFAULT_ENABLED = False
+
+SPLINT_ENV = 'SUTURA_SPLINT'
+
+
 # Decimation of a wastefully dense fTetWild boundary. fTetWild with
 # optimize=False can return a boundary far denser than the input (measured on
 # thingi10k_73444: 473,212 output faces at 7,882 input faces, against 14,012
@@ -380,6 +401,44 @@ def resolve_graft(no_graft=False, force=False, environ=None):
         if val in ('1', 'true', 'yes', 'on', 'auto'):
             return True if val not in ('auto',) else 'auto'
     return 'auto'
+
+
+def _splint_default_enabled():
+    """The single Splint-default switch: module constant overridden by the
+    ``SUTURA_SPLINT_DEFAULT`` env var (truthy = run the tier by default)."""
+    raw = os.environ.get('SUTURA_SPLINT_DEFAULT')
+    if raw is None:
+        return bool(SPLINT_DEFAULT_ENABLED)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def resolve_splint(no_splint=False, force=False, environ=None,
+                   default_enabled=None):
+    """Resolve the ``splint`` argument (method #18, exact solid rebuild).
+
+    Returns ``False`` (disabled), ``True`` (forced) or ``'auto'`` (the ladder
+    fallback: tried only when the result the ladder holds still has holes or
+    non-manifold edges).  Precedence: ``--no-splint`` disables;
+    ``--experimental-splint`` forces; ``SUTURA_SPLINT`` may set ``0/1``.  With
+    none of those set the answer follows the single default switch
+    (:data:`SPLINT_DEFAULT_ENABLED`, OFF, or the ``SUTURA_SPLINT_DEFAULT`` env
+    var; ``default_enabled`` overrides both for tests).  The library default in
+    ``repair_mesh_from_arrays`` stays ``False``.
+    """
+    if no_splint:
+        return False
+    if force:
+        return True
+    env = environ if environ is not None else os.environ.get(SPLINT_ENV)
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in ('0', 'false', 'no', 'off'):
+            return False
+        if val in ('1', 'true', 'yes', 'on'):
+            return True
+    if default_enabled is None:
+        default_enabled = _splint_default_enabled()
+    return 'auto' if default_enabled else False
 
 
 FLAP_ENV = 'SUTURA_FLAP'

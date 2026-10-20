@@ -4,7 +4,7 @@
 
 Generates a zip archive containing:
   - system_info.json: platform, python, environment, and sutura_geom symbol audit
-  - methods_availability.json: status and availability reason for all 17 methods
+  - methods_availability.json: status and availability reason for all 18 methods
   - config_sanitized.json: configuration with home paths and usernames scrubbed
   - last_repair_history.json: latest repair metrics record from history.jsonl
   - README.txt: description of diagnostic contents

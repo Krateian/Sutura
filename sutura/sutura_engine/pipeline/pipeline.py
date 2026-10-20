@@ -36,6 +36,7 @@ from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier
 from sutura_engine.pipeline.tiers.graft import graft_tier
 from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier
 from sutura_engine.pipeline.tiers.repeat import repeat_tier
+from sutura_engine.pipeline.tiers.splint import splint_tier
 from sutura_engine.pipeline.tiers.tamponade import tamponade_tier
 from sutura_engine.pipeline.tiers.wall import wall_thicken_tier
 from sutura_engine.pipeline.utils import (
@@ -56,7 +57,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                              dressing_drain=None, dressing_defects=None,
                              dressing_rmax_scale=None, dressing_sigma_scale=None,
                              tamponade=False,
-                             si_mode=None, dressing_force_adopt=False):
+                             si_mode=None, dressing_force_adopt=False,
+                             splint=False, splint_adaptive=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
@@ -638,6 +640,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                    dressing_rmax_scale=dressing_rmax_scale,
                                    dressing_sigma_scale=dressing_sigma_scale,
                                    si_mode=si_mode,
+                                   splint=(splint if not _tamp_watertight
+                                           else False),
+                                   splint_adaptive=splint_adaptive,
                                    dressing_force_adopt=dressing_force_adopt)
 
     # Registry methods 11/12 (P-REP): repeated-element transplant, after the
@@ -824,6 +829,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                        graft=False, dressing=False, dressing_drain=None,
                        dressing_defects=None, dressing_rmax_scale=None,
                        dressing_sigma_scale=None, si_mode='report',
+                       splint=False, splint_adaptive=None,
                        dressing_force_adopt=False):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
@@ -948,11 +954,38 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     dressing_ok = True
                     tiers_run.append('dressing')
 
+            # Splint (#18) sits AFTER Dressing and BEFORE fTetWild: an exact
+            # solid rebuild that closes the mesh supersedes fTetWild.  It runs
+            # only when the result the ladder now holds (after Graft/Dressing)
+            # still has holes or non-manifold edges, and only when neither Graft
+            # nor Dressing already produced the final mesh.
+            splint_ok = False
+            if splint in (True, 'auto') and not dressing_ok and not graft_ok:
+                _sh = boundary_loop_stats(
+                    ms.current_mesh().vertex_matrix(),
+                    ms.current_mesh().face_matrix())[0]
+                _snm = int(after.get('non_two_manifold_edges', 0))
+                if _sh > 0 or _snm > 0:
+                    _s_ms, _s_after = splint_tier(
+                        ml, ms, after, stats, v, t, tmpdir, splint=True,
+                        intensity=(getattr(spec, 'base', None)
+                                   or getattr(spec, 'name', None)),
+                        spec=spec, adaptive=splint_adaptive)
+                    if (stats.get('splint') or {}).get('adopted'):
+                        ms, after = _s_ms, _s_after
+                        splint_ok = True
+                        tiers_run.append('splint')
+
             if dressing_ok:
                 stats['experimental_ftetwild'] = False
                 if graft_ms is not None:
                     stats['graft']['adopted'] = False
                     stats['graft']['reason'] = 'superseded by Dressing'
+            elif splint_ok:
+                stats['experimental_ftetwild'] = False
+                if graft_ms is not None:
+                    stats['graft']['adopted'] = False
+                    stats['graft']['reason'] = 'superseded by Splint'
             elif graft_ok:
                 stats['experimental_ftetwild'] = False
             else:
@@ -1010,6 +1043,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             'ftetwild': stats.get('experimental_ftetwild') or None,
             'graft': stats.get('graft') or None,
             'dressing': stats.get('dressing') or None,
+            'splint': stats.get('splint') or None,
             'cad_likeness': cad,
             'dressing_damage': dmg,
             'available': None,
@@ -1032,6 +1066,7 @@ def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):
         'ftetwild': dr.get('ftetwild'),
         'graft': stats.get('graft'),
         'dressing': stats.get('dressing'),
+        'splint': stats.get('splint'),
         'local': dr.get('local'),
     }
     for _tier in FINAL_TIER_PRECEDENCE:

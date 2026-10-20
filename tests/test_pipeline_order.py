@@ -345,13 +345,15 @@ def test_ladder_none_deviation_edges():
 
 def test_order_table_contents():
     import sutura_engine.pipeline.order as order
-    assert order.DEEP_TIER_ORDER == ('local', 'graft', 'dressing', 'ftetwild')
+    assert order.DEEP_TIER_ORDER == ('local', 'graft', 'dressing', 'splint',
+                                     'ftetwild')
     assert order.FINAL_TIER_PRECEDENCE == ('ftetwild', 'graft', 'dressing',
-                                           'local')
+                                           'splint', 'local')
     assert order.method_num('local') == 2
     assert order.method_num('graft') == 13
     assert order.method_num('ftetwild') == 7
     assert order.method_num('dressing') == 16
+    assert order.method_num('splint') == 18
     assert order.GRAFT_METHOD_NUM == 13
     assert order.FTETWILD_METHOD_NUM == 7
 

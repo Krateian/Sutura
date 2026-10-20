@@ -207,6 +207,18 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   array; the GUI's tamponade log renders the adopted verdict unchanged. The
   name is deliberately NOT "balloon" to avoid confusion with method #8 Balloon
   (Poisson surface reconstruction).
+- **Splint (#18, exact solid rebuild, unreleased):** CLI `--experimental-splint`
+  / `--no-splint` and env `SUTURA_SPLINT` (`0/1/true/false/...`) control the
+  off-by-default last-resort solid-rebuild tier; the GUI exposes the same as
+  Options → Experimental *Splint (exact solid rebuild)* (EN/TR) and #18 is also
+  selectable via the right-click *Use method* menu, with an EN/TR repair-log
+  line rendering the adopted / not-adopted / aborted / budget verdict. The
+  library default (`splint=False`, `SPLINT_DEFAULT_ENABLED = False`) keeps a
+  direct `repair_mesh_from_arrays(deep_repair=None)` call byte-identical;
+  `--experimental-splint` / `SUTURA_SPLINT=1` / the GUI checkbox enable it, and
+  `--no-splint` / `SUTURA_SPLINT=0` are the disable path on both sides. The
+  resolution, hash and wall-clock rules live in the shared
+  `pipeline.presets.resolve_splint`, so CLI and GUI cannot diverge.
 - **Native self-intersection detection (unreleased):** the Rust-counted
   self-intersection metric is an evaluation switch behind the env
   `SUTURA_NATIVE_SI=1` (default OFF: the count is not byte-identical to

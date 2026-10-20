@@ -102,8 +102,14 @@ STRINGS = {
         'method_name_transplant_plus': 'Transplant+ (repeat manual)',
         'method_name_graft': 'Graft (shell wrap)',
         'method_name_dressing': 'Dressing (viscosity coat)',
+        'method_name_splint': 'Splint (exact solid rebuild)',
         'method_name_mirror_complete': 'Mirror Complete',
         'method_name_wall_thicken': 'Wall Thicken',
+        'method_tip_splint': 'SPLINT (#18) — exact solid rebuild: proxy the '
+            'surface, Delaunay-tetrahedralise it and cut away the interior to '
+            'produce a watertight solid boundary. Deterministic and addon-free; '
+            'the last-resort deep-repair tier (after Dressing, before fTetWild), '
+            'adopted only when it reloads strict-watertight. Opt-in.',
         'method_tip_dressing': 'DRESSING (#16) — variable-viscosity volumetric '
             'skinning: extract a narrow-band generalized-winding isosurface '
             'whose radius is thin over detailed healthy surface and thicker '
@@ -303,6 +309,10 @@ STRINGS = {
         'repair_log_graft_grid_fallback': 'Graft: %s grid does not fit in RAM; used the Balanced grid',
         'repair_log_dressing': 'Dressing (viscosity coat): %d faces, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Dressing fidelity: %s',
+        'repair_log_splint': 'Splint (exact rebuild): %d parts, %d faces (res %s)',
+        'repair_log_splint_not': 'Splint (exact rebuild): %d parts (not adopted: %s)',
+        'repair_log_splint_aborted': 'Splint: stopped for time; previous stage kept',
+        'repair_log_splint_budget': 'Splint: input over the face cap; skipped',
         'repair_log_tamponade': 'Tamponade (interior plug): %s plugs, %s faces, holes %s->%s',
         'repair_log_tamponade_not': 'Tamponade: not adopted (%s)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
@@ -347,6 +357,14 @@ STRINGS = {
                                     'watertight and self-intersection-free. The '
                                     'shape may deform; the same option the '
                                     'non-watertight suggestion offers.',
+        'splint_label': 'Splint (exact solid rebuild)',
+        'splint_tip': 'Splint (#18) \u2014 off by default; turn it on here or with '
+                      '--experimental-splint / SUTURA_SPLINT. The last-resort '
+                      'deep-repair tier: proxy the surface, Delaunay-'
+                      'tetrahedralise it and cut away the interior to produce a '
+                      'watertight solid boundary. Deterministic and addon-free; '
+                      'tried after Dressing and before fTetWild, adopted only '
+                      'when it reloads strict-watertight.',
         'tamponade_label': 'Tamponade (fill holes from inside)',
         'tamponade_tip': 'Tamponade (#17) \u2014 on by default; turn it off here '
                          'or with --no-tamponade / SUTURA_TAMPONADE=0. Runs '
@@ -756,8 +774,15 @@ STRINGS = {
         'method_name_transplant_plus': 'Nakil+ (yineleme, elle)',
         'method_name_graft': 'Graft (kabuk sarma)',
         'method_name_dressing': 'Pansuman (Dressing)',
+        'method_name_splint': 'Splint (kesin katı yeniden inşa)',
         'method_name_mirror_complete': 'Aynalı Tamamlama',
         'method_name_wall_thicken': 'Duvar Kalınlaştır',
+        'method_tip_splint': 'SPLINT (#18) — kesin katı yeniden inşa: yüzeyi '
+            'proxy\u2019ler, Delaunay ile dörtyüzlülere ayırır ve içi kesip '
+            'atarak su geçirmez bir katı sınır üretir. Deterministik ve eklenti '
+            'gerektirmez; son çare derin onarım katmanıdır (Pansuman\u2019dan '
+            'sonra, fTetWild\u2019dan önce) ve yalnızca yeniden yüklendiğinde '
+            'kesin su geçirmez olduğunda benimsenir. İsteğe bağlıdır.',
         'method_tip_dressing': 'PANSUMAN (Dressing) (#16) — değişken viskoziteli hacimsel '
             'kaplama: genelleştirilmiş sarımlı, dar bantlı bir seviye '
             'kümesi çıkarır; yarıçap sağlıklı ince yüzeyde ince, hasar '
@@ -959,6 +984,10 @@ STRINGS = {
         'repair_log_graft_grid_fallback': 'Graft: %s ızgara RAM\'e sığmadı; Dengeli ızgara kullanıldı',
         'repair_log_dressing': 'Pansuman (Dressing): %d yüz, voxel=%s, r=%s',
         'repair_log_dressing_warn': 'Pansuman sadakati: %s',
+        'repair_log_splint': 'Splint (kesin yeniden inşa): %d parça, %d yüz (res %s)',
+        'repair_log_splint_not': 'Splint (kesin yeniden inşa): %d parça (benimsenmedi: %s)',
+        'repair_log_splint_aborted': 'Splint: süre nedeniyle durduruldu; önceki aşama korundu',
+        'repair_log_splint_budget': 'Splint: girdi yüz üst sınırını aşıyor; atlandı',
         'repair_log_tamponade': 'Tampon (içeriden tıkaç): %s tıkaç, %s yüz, delik %s->%s',
         'repair_log_tamponade_not': 'Tampon: benimsenmedi (%s)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
@@ -1006,6 +1035,15 @@ STRINGS = {
                                     'kaplamayı benimser. Parça deforme olabilir; '
                                     'su geçirmez olmayan sonuçta önerilen '
                                     'seçeneğin aynısı.',
+        'splint_label': 'Splint (kesin katı yeniden inşa)',
+        'splint_tip': 'Splint (#18) \u2014 varsayılan olarak kapalı; buradan ya da '
+                      '--experimental-splint / SUTURA_SPLINT ile açın. Son '
+                      'çare derin onarım katmanı: yüzeyi proxy\u2019ler, Delaunay '
+                      'ile dörtyüzlülere ayırır ve içi kesip atarak su geçirmez '
+                      'bir katı sınır üretir. Deterministik ve eklenti '
+                      'gerektirmez; Pansuman\u2019dan sonra ve fTetWild\u2019dan önce '
+                      'denenir, yalnızca yeniden yüklendiğinde kesin su geçirmez '
+                      'olduğunda benimsenir.',
         'tamponade_label': 'Tamponad (delikleri içeriden doldur)',
         'tamponade_tip': 'Tamponad (#17) \u2014 varsayılan olarak açık; buradan '
                          'ya da --no-tamponade / SUTURA_TAMPONADE=0 ile '
@@ -1819,6 +1857,7 @@ class RepairWorker(QThread):
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
                  dressing_sigma_scale=None, dressing_force_adopt=False,
+                 splint=False,
                  intensity='balanced',
                  si_mode='report',
                  methods_by_path=None,
@@ -1845,6 +1884,7 @@ class RepairWorker(QThread):
         self._dressing_rmax_scale = dressing_rmax_scale
         self._dressing_sigma_scale = dressing_sigma_scale
         self._dressing_force_adopt = dressing_force_adopt
+        self._splint = splint
         self._si_mode = si_mode
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
@@ -1937,6 +1977,8 @@ class RepairWorker(QThread):
                              repr(self._dressing_sigma_scale)]
             if self._dressing_force_adopt:
                 args.append('--dressing-force-adopt')
+            if self._splint:
+                args.append('--experimental-splint')
             method_nums = self._methods_by_path.get(path)
             if method_nums:
                 args += ['--methods', ','.join(str(n) for n in method_nums)]
@@ -3363,7 +3405,8 @@ class OptionsDialog(QDialog):
         e.addWidget(warn)
         for chk in (main.chk_autorefine, main.chk_indirect_autorefine,
                     main.chk_join_components, main.chk_edge_tiebreak,
-                    main.chk_dressing, main.chk_dressing_force_adopt):
+                    main.chk_dressing, main.chk_dressing_force_adopt,
+                    main.chk_splint):
             e.addWidget(chk)
         _drain_row = QHBoxLayout()
         _drain_row.setContentsMargins(22, 0, 0, 0)
@@ -3800,6 +3843,7 @@ class MainWindow(QMainWindow):
         self._indirect_autorefine = False  # batch-wide opt-in indirect arrangement-lite (Phase B)
         self._flap = True             # batch-wide Flap surface hole fill (Stage 1, on by default)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
+        self._splint = False          # batch-wide opt-in Splint exact solid rebuild (#18)
         # Batch-wide Tamponade (#17, incl. Stent): ON by default. A missing or
         # legacy config key is treated as ON so an old opt-in-era config cannot
         # silently keep it off.
@@ -3973,6 +4017,13 @@ class MainWindow(QMainWindow):
         self.chk_dressing_force_adopt.setToolTip(_t('dressing_force_adopt_tip'))
         self.chk_dressing_force_adopt.toggled.connect(
             lambda on: setattr(self, '_dressing_force_adopt', on))
+        # opt-in Splint exact solid rebuild (#18, batch-wide; off by default
+        # until measured on the corpus). Last-resort ladder slot after Dressing,
+        # before fTetWild; adopted only on a strict reload-watertight candidate.
+        self.chk_splint = QCheckBox(_t('splint_label'))
+        self.chk_splint.setToolTip(_t('splint_tip'))
+        self.chk_splint.toggled.connect(
+            lambda on: setattr(self, '_splint', on))
         # Tamponade interior plug (#17, batch-wide; on by default)
         self.chk_tamponade = QCheckBox(_t('tamponade_label'))
         self.chk_tamponade.setToolTip(_t('tamponade_tip'))
@@ -4038,6 +4089,7 @@ class MainWindow(QMainWindow):
             (self.chk_flap, True),
             (self.chk_dressing, False),
             (self.chk_dressing_force_adopt, False),
+            (self.chk_splint, False),
             (self.chk_tamponade, True),
         )
         self._options_dialog = OptionsDialog(self)
@@ -4701,6 +4753,7 @@ class MainWindow(QMainWindow):
                                    dressing_rmax_scale=self._dressing_rmax_scale,
                                    dressing_sigma_scale=self._dressing_sigma_scale,
                                    dressing_force_adopt=self._dressing_force_adopt,
+                                   splint=self._splint,
                                    si_mode=self._si_mode,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
@@ -5181,6 +5234,20 @@ class MainWindow(QMainWindow):
                 _dmsg = _dwarns[0].get('message_tr' if _is_tr else 'message_en') \
                     or _dwarns[0].get('message_en', '')
                 lines.append(_t('repair_log_dressing_warn', _dmsg))
+        sp_r = data.get('splint')
+        if sp_r and sp_r.get('ran'):
+            if sp_r.get('aborted'):
+                lines.append(_t('repair_log_splint_aborted'))
+            elif sp_r.get('adopted'):
+                lines.append(_t('repair_log_splint', sp_r.get('output_parts', 0),
+                                sp_r.get('output_faces', 0), sp_r.get('res')))
+            else:
+                lines.append(_t('repair_log_splint_not',
+                                sp_r.get('output_parts', 0),
+                                sp_r.get('reject_reason')
+                                or sp_r.get('reason') or '?'))
+        elif sp_r and sp_r.get('skipped_budget'):
+            lines.append(_t('repair_log_splint_budget'))
         tp_r = data.get('tamponade')
         if tp_r and tp_r.get('ran'):
             if tp_r.get('adopted'):

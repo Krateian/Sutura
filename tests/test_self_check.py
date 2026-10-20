@@ -54,9 +54,9 @@ def test_availability_only_partition_set():
 
 
 def test_self_check_runs_within_budget():
-    """Verify self-check executes all 17 methods within the <5 s budget."""
+    """Verify self-check executes all 18 methods within the <5 s budget."""
     report = run_self_check(run_fixtures=True)
-    assert report['total'] == 17
+    assert report['total'] == 18
     assert report['failed'] == 0
     assert report['total_time_s'] < 5.0, f"Self-check exceeded budget: {report['total_time_s']:.2f}s"
 

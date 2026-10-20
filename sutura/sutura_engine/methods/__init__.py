@@ -94,6 +94,8 @@ _METHOD_ALIASES: Dict[str, int] = {
     '16': 16, 'm16': 16, 'dressing': 16, 'coat': 16, 'dipcoat': 16,
     # 17: Tamponade (interior hole plugging and SI melting)
     '17': 17, 'm17': 17, 'tamponade': 17, 'lava': 17,
+    # 18: Splint (exact solid rebuild)
+    '18': 18, 'm18': 18, 'splint': 18,
 }
 
 
@@ -199,6 +201,7 @@ _CANONICAL_BY_NUM = {
     9: 'backplate', 10: 'scaffold', 11: 'transplant', 12: 'transplant_plus',
     13: 'graft', 14: 'mirror_complete', 15: 'wall_thicken', 16: 'dressing',
     17: 'tamponade',
+    18: 'splint',
 }
 
 
@@ -264,6 +267,15 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
                  + 0.25 * _clamp01(si / 200.0))
         return (_clamp01(score), 'openings / holes closable by a shell wrap',
                 'rec_reason_graft', ())
+    if method_id == 'splint':
+        # Exact solid rebuild: the deterministic last-resort tier (tried after
+        # Dressing, before fTetWild). Favours larger damage where a proxy +
+        # Delaunay rebuild can reconstruct a closed solid.
+        score = (0.45 * _clamp01(open_ratio / 0.05)
+                 + 0.30 * _clamp01((holes + nm) / 3.0)
+                 + 0.25 * _clamp01(si / 200.0))
+        return (_clamp01(score), 'damage reconstructable by an exact solid rebuild',
+                'rec_reason_splint', ())
     if method_id == 'balloon':
         single = _clamp01(_a(analysis, 'single_side_score'))
         relief = _clamp01(_a(analysis, 'relief_score'))

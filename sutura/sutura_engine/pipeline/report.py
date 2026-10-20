@@ -675,6 +675,22 @@ def human_report(r, show_defects=False, show_diff=False):
                         dr_r.get('seconds', 0), dr_r.get('voxel'),
                         dr_r.get('r_base'), _drain_txt, dr_r.get('holes'),
                         dr_r.get('non_manifold'), state))
+    sp_r = r.get('splint')
+    if sp_r and sp_r.get('ran'):
+        if sp_r.get('adopted'):
+            state = ' adopted'
+        elif sp_r.get('aborted'):
+            state = ' NOT adopted (stopped for time; ladder result kept)'
+        elif sp_r.get('skipped_budget'):
+            state = ' skipped (%s)' % (sp_r.get('reason') or 'budget')
+        else:
+            state = ' NOT adopted (%s)' % (sp_r.get('reason') or '?')
+        lines.append('  Splint (exact rebuild)  : %s faces in %.2fs, '
+                     'res=%s, adaptive=%s, parts=%s, %s'
+                     % (sp_r.get('output_faces') or sp_r.get('faces', 0),
+                        sp_r.get('seconds', 0), sp_r.get('res'),
+                        sp_r.get('adaptive'), sp_r.get('output_parts'),
+                        state))
     eng_r = r.get('engines')
     if eng_r:
         lines.append('')

@@ -31,11 +31,11 @@ EXPECTED = {
     8: 'balloon', 9: 'backplate', 10: 'scaffold',
     11: 'transplant', 12: 'transplant_plus', 13: 'graft',
     14: 'mirror_complete', 15: 'wall_thicken', 16: 'dressing',
-    17: 'tamponade',
+    17: 'tamponade', 18: 'splint',
 }
-ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+ALL_NUMS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 FAMILIES = {'clean', 'topology', 'si', 'envelope', 'closing', 'template',
-            'pattern', 'interior'}
+            'pattern', 'interior', 'solid'}
 
 
 def _env(tmp):
@@ -178,6 +178,14 @@ def test_kwargs_mapping(tmp):
     assert methods.get_method(17).needs_user_input is True
     for alias in ('17', 'm17', 'tamponade', 'lava'):
         assert methods.get_method(alias).num == 17, alias
+    assert methods.get_method(18).kwargs['splint'] is True
+    assert methods.get_method(18).kwargs['deep_repair'] == 'full'
+    assert methods.get_method(18).kwargs['ftetwild'] is False
+    assert methods.get_method(18).invents_geometry is True
+    assert methods.get_method(18).self_guarded is True
+    assert methods.get_method(18).core_required is True
+    for alias in ('18', 'm18', 'splint'):
+        assert methods.get_method(alias).num == 18, alias
 
 
 # --- templates / ranking ----------------------------------------------------
