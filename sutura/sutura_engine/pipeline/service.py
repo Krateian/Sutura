@@ -19,6 +19,7 @@ import triage
 from confidence import repair_confidence
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
+from sutura_engine import trace
 from sutura_engine.pipeline.mesh_io import (
     aggregate_triangle_attributes, obj_has_material_refs,
     parse_3mf_mesh_blocks, read_3mf_units,
@@ -87,6 +88,15 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                            dtype=np.float32)
         tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
 
+    if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
+        trace.begin_trace(trace_path=None, input_file=src,
+                          command_args={'mode': mode, 'profile': profile, 'si_mode': si_mode})
+
+    trace.set_context(object_id='main', attempt='primary')
+    if trace.is_active():
+        trace.record_stage('load', 'mesh_io.load_mesh', None, None, verts, tris,
+                           gate={'status': 'ok', 'source': src})
+
     def _run(flap_value, run_tamponade=None):
         """Repair the loaded mesh with Flap on/off, through P-HONEST.
 
@@ -125,7 +135,12 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # Stage 2 applies to watertight results; shared helper keeps the single-
         # mesh path and per-object 3MF repair on the same code (same gate, same
         # OBJ round-trip, same explicit skip reporting).
+        _s2_in_v, _s2_in_t = new_v, new_t
         new_v, new_t = maybe_run_stage2(report, new_v, new_t, tmpdir)
+        if trace.is_active():
+            trace.record_stage('stage2', 'stage2.maybe_run_stage2',
+                               _s2_in_v, _s2_in_t, new_v, new_t,
+                               gate=report.get('stage2', {'status': 'skipped'}))
 
         if engines:
             new_v, new_t = run_after_stage2_engines(
@@ -139,9 +154,19 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # it) and adopt only a strictly reload-watertight result; never make
         # the output worse.
         if ext == '.stl':
+            _pw_in_v, _pw_in_t = new_v, new_t
             new_v, new_t, _pwel = p_weld_final(ml, new_v, new_t)
             if _pwel is not None:
                 report['p_weld'] = _pwel
+            if trace.is_active():
+                trace.record_stage('p_weld', 'p_weld.p_weld_final',
+                                   _pw_in_v, _pw_in_t, new_v, new_t,
+                                   gate=_pwel or {'status': 'noop'})
+        else:
+            if trace.is_active():
+                trace.record_stage('p_weld', 'p_weld.p_weld_final',
+                                   new_v, new_t, new_v, new_t,
+                                   gate={'status': 'skipped', 'reason': 'not_stl'})
 
         # Localized exact self-union of residual SI clusters (experimental, OFF
         # by default). Runs on the post-Stage-2 + post-P-WELD mesh; a no-op that
@@ -173,6 +198,10 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # in-memory index topology. The final mesh is chosen above; judge it in
         # the save/reload-equivalent form and let that verdict win.
         enforce_reload_verdict(report, new_v, new_t)
+        if trace.is_active():
+            trace.record_stage('validate', 'service.enforce_reload_verdict',
+                               new_v, new_t, new_v, new_t,
+                               gate={'repaired_is_watertight': report.get('repaired_is_watertight')})
         return report, new_v, new_t
 
     _t_file = time.perf_counter()
@@ -197,6 +226,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                         'on': on_metrics}
             use_off = False
             try:
+                trace.set_context(attempt='flap_off_safety_net')
                 off_report, off_v, off_t = _run(False, run_tamponade=False)
                 _, off_metrics = _flap_final_needs_off(
                     verts, tris, off_v, off_t)
@@ -241,6 +271,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                         'on': on_metrics}
             use_off = False
             try:
+                trace.set_context(attempt='tamponade_off_safety_net')
                 off_report, off_v, off_t = _run(flap, run_tamponade=False)
                 _, off_metrics = _tamponade_final_needs_off(
                     verts, tris, off_v, off_t, force_metrics=True)
@@ -272,6 +303,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         report['triangle_attributes'] = stats[0]
     else:
         save_mesh(out, new_v, new_t)
+    if trace.is_active():
+        trace.finish_trace(final_verts=new_v, final_tris=new_t, final_report=report)
     return report
 
 
@@ -302,13 +335,22 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     if not blocks:
         return {'error': 'no mesh objects found in 3MF'}
 
+    if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
+        trace.begin_trace(trace_path=None, input_file=src,
+                          command_args={'mode': mode, 'profile': profile, 'si_mode': si_mode})
+
     units = read_3mf_units(src)
     reports = []
     updates = []
     cache = {}
-    for block in blocks:
+    for i, block in enumerate(blocks):
         verts = np.asarray(block.verts, dtype=np.float32)
         tris = np.asarray(block.tris, dtype=np.int32)
+        obj_name = getattr(block, 'model_name', None) or f"object_{i}"
+        trace.set_context(object_id=obj_name, attempt='primary')
+        if trace.is_active():
+            trace.record_stage('load', '3mf.parse_3mf_mesh_blocks', None, None, verts, tris,
+                               gate={'status': 'ok', 'object_name': obj_name})
         declared = units.get(block.model_name, 'millimeter')
         key = (verts.tobytes(), tris.tobytes())
         if key in cache:
@@ -347,7 +389,12 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
             # Per-object stage 2 first: closed objects get a watertight
             # rebuild (same helper/gate as the single-mesh path), and the
             # confidence/health/risk below then see the stage2 outcome.
+            _s2_in_v, _s2_in_t = new_v, new_t
             new_v, new_t = maybe_run_stage2(rep, new_v, new_t, tmpdir)
+            if trace.is_active():
+                trace.record_stage('stage2', 'stage2.maybe_run_stage2',
+                                   _s2_in_v, _s2_in_t, new_v, new_t,
+                                   gate=rep.get('stage2', {'status': 'skipped'}))
             if engines:
                 new_v, new_t = run_after_stage2_engines(
                     ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
@@ -374,6 +421,10 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
             # archive (reload-equivalent form) before the confidence/score
             # below, so those see the honest verdict too.
             enforce_reload_verdict(rep, new_v, new_t)
+            if trace.is_active():
+                trace.record_stage('validate', 'service.enforce_reload_verdict',
+                                   new_v, new_t, new_v, new_t,
+                                   gate={'repaired_is_watertight': rep.get('repaired_is_watertight')})
             rep['print_report'] = build_print_report(
                 rep, in_arrays=(verts, tris), out_arrays=(new_v, new_t))
             _rc = repair_confidence(rep)
@@ -429,4 +480,6 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                     1 for f in _flaps
                     if (f.get('final_fallback') or {}).get('used') == 'off'),
             }
+    if trace.is_active():
+        trace.finish_trace()
     return agg

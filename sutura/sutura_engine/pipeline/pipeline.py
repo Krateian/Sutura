@@ -11,6 +11,7 @@ import numpy as np
 import topology
 import triage
 from sutura_engine import health as method_health
+from sutura_engine import trace
 from sutura_engine.pipeline.mesh_io import check_units, should_extract_outer_shell
 from sutura_engine.pipeline.order import (
     FINAL_TIER_PRECEDENCE, ftetwild_supersedes_graft,
@@ -42,6 +43,17 @@ from sutura_engine.pipeline.tiers.wall import wall_thicken_tier
 from sutura_engine.pipeline.utils import (
     _count_vertex_components, boundary_loop_stats, surface_area,
 )
+
+
+def _meshset_arrays_safe(ms):
+    try:
+        if hasattr(ms, 'mesh_number') and ms.mesh_number() == 0:
+            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
+        m = ms.current_mesh()
+        return (np.asarray(m.vertex_matrix(), dtype=np.float32),
+                np.asarray(m.face_matrix(), dtype=np.int32))
+    except Exception:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
 
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
@@ -347,6 +359,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # mesh, so its stats record is preserved.
     if tamponade is True:
         _t_pre = time.perf_counter()
+        _tp_in_v, _tp_in_t = v, t
         _tms = ml.MeshSet()
         _tms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         apply_chain(_tms, stage1_cleanup_chain(ml))
@@ -361,6 +374,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             t = np.asarray(_tms.current_mesh().face_matrix(), dtype=np.int32)
             verts, tris = v, t
         stats['timings']['prepass'] = round(time.perf_counter() - _t_pre, 3)
+        if trace.is_active():
+            trace.record_stage('tamponade_prepass', 'tiers.tamponade.tamponade_tier',
+                               _tp_in_v, _tp_in_t, v, t,
+                               gate=stats.get('tamponade', {}), elapsed=stats['timings']['prepass'])
+    else:
+        if trace.is_active():
+            trace.record_stage('tamponade_prepass', 'tiers.tamponade.tamponade_tier',
+                               v, t, v, t,
+                               gate={'status': 'skipped', 'reason': 'disabled'})
 
     # Flap: surface-based hole fill (on by default in the CLI). It is the FIRST Stage-1
     # step, a pre-pass on the input as it stands here (normally the original
@@ -378,6 +400,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # OFF when the final result is not strict-watertight or has more parts than
     # the input). The reported 'before' metrics above are still the input's.
     if flap:
+        _t_flap = time.perf_counter()
+        _fl_in_v, _fl_in_t = v, t
         _fms = ml.MeshSet()
         _fms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         _fafter = topology.mesh_topology(v, t)
@@ -386,13 +410,37 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             v = np.asarray(_fms.current_mesh().vertex_matrix(), dtype=np.float32)
             t = np.asarray(_fms.current_mesh().face_matrix(), dtype=np.int32)
             verts, tris = v, t
+        if trace.is_active():
+            trace.record_stage('flap_prepass', 'tiers.flap._flap_step',
+                               _fl_in_v, _fl_in_t, v, t,
+                               gate=stats.get('flap', {}),
+                               elapsed=round(time.perf_counter() - _t_flap, 4))
+    else:
+        if trace.is_active():
+            trace.record_stage('flap_prepass', 'tiers.flap._flap_step',
+                               v, t, v, t,
+                               gate={'status': 'skipped', 'reason': 'disabled'})
 
+    _t_s1 = time.perf_counter()
+    _s1_in_v, _s1_in_t = v, t
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
 
     applied, skipped = apply_chain(
         ms, stage1_chain(ml, **_p, join_components=join_components))
     after = topology.mesh_topology(ms)
+    if trace.is_active():
+        try:
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('stage1_chain', 'stage1.apply_chain',
+                               _s1_in_v, _s1_in_t, _cur_v, _cur_t,
+                               gate={'status': 'applied', 'filters': applied,
+                                     'skipped': len(skipped) if hasattr(skipped, '__len__') else skipped},
+                               elapsed=round(time.perf_counter() - _t_s1, 4))
+        except Exception as e:
+            trace.record_stage('stage1_chain', 'stage1.apply_chain',
+                               _s1_in_v, _s1_in_t, _s1_in_v, _s1_in_t,
+                               gate={'status': 'applied', 'trace_hook_error': str(e)})
 
     # --experimental-autorefine prototype: resolve self-intersections on the
     # INPUT mesh by subdividing the intersecting triangles along their
@@ -489,14 +537,29 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         stats['experimental_indirect_autorefine'] = ia_rep
 
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
+        _t_fb = time.perf_counter()
+        _fb_in_v, _fb_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
         fb = ml.MeshSet()
         fb.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         fapplied, fskipped = apply_chain(
             fb, delete_fallback_chain(ml, **_p, join_components=join_components))
         fafter = topology.mesh_topology(fb)
-        if (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
-                < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0)):
+        _adopted = (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
+                < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0))
+        if _adopted:
             ms, after, applied, skipped = fb, fafter, fapplied, fskipped
+        if trace.is_active():
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('stage1_delete_fallback', 'stage1.delete_fallback_chain',
+                               _fb_in_v, _fb_in_t, _cur_v, _cur_t,
+                               gate={'status': 'adopted' if _adopted else 'rejected'},
+                               elapsed=round(time.perf_counter() - _t_fb, 4))
+    else:
+        if trace.is_active():
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('stage1_delete_fallback', 'stage1.delete_fallback_chain',
+                               _cur_v, _cur_t, _cur_v, _cur_t,
+                               gate={'status': 'skipped', 'reason': 'clean_manifold'})
 
     # --experimental-join-components prototype: instead of deleting small
     # components (the mincomponentsize filter was dropped from the chain
@@ -522,6 +585,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # is untouched) and skipped for mode == 'extreme', which keeps its legacy
     _shell_adopted_for_si = (stats.get('tamponade_shell_prepass') or {}).get('shell_adopted', False)
     if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled() and not _shell_adopted_for_si:
+        _t_si = time.perf_counter()
+        _si_in_v, _si_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
         ms, _si_rec = si_excise_recap(
             ms, ml, maxholesize=_p['maxholesize'],
             time_budget=_si_excise_budget(triage_spec))
@@ -532,6 +597,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         if _si_rec.get('applied'):
             stats['si_excise'] = _si_rec
             after = topology.mesh_topology(ms)
+        if trace.is_active():
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('si_excise', 'stage1.si_excise_recap',
+                               _si_in_v, _si_in_t, _cur_v, _cur_t,
+                               gate=_si_rec, elapsed=round(time.perf_counter() - _t_si, 4))
+    else:
+        if trace.is_active():
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('si_excise', 'stage1.si_excise_recap',
+                               _cur_v, _cur_t, _cur_v, _cur_t,
+                               gate={'status': 'skipped', 'reason': 'disabled_or_not_full'})
 
     # Extreme-only extra passes (Stage C): self-intersection cleanup + one more
     # run of the main chain to close the holes / drop the debris the removal
@@ -591,8 +667,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # ``closing_ladder``).
     stats['timings']['stage1'] = round(time.perf_counter() - _t_start, 3)
     _t_tiers = time.perf_counter()
+    _t_cl = time.perf_counter()
+    _cl_in_v, _cl_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
     ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
                                closing=closing, proxy_template=proxy_template)
+    if trace.is_active():
+        _cur_v, _cur_t = _meshset_arrays_safe(ms)
+        trace.record_stage('closing_ladder', 'tiers.closing.closing_ladder',
+                           _cl_in_v, _cl_in_t, _cur_v, _cur_t,
+                           gate={'closing': closing, 'proxy_template': proxy_template},
+                           elapsed=round(time.perf_counter() - _t_cl, 4))
 
     # Registry method 17 (Tamponade): interior hole plug + SI melt. When the
     # tier is ON it normally runs as a pre-pass (before Flap / Stage 1, see
@@ -602,11 +686,26 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # Adopts only when the reload-honest holes+non-manifold strictly falls
     # without raising parts or losing healthy faces.
     if not (stats.get('tamponade') or {}).get('adopted'):
+        _t_tp = time.perf_counter()
+        _tp_in_v, _tp_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
         ms, after = tamponade_tier(ml, ms, after, stats, tmpdir,
                                    tamponade=(tamponade is True),
                                    intensity=(getattr(triage_spec, 'base', None)
                                               or getattr(triage_spec, 'name', None)),
                                    spec=triage_spec, si_mode=si_mode)
+        if trace.is_active():
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('tamponade_post', 'tiers.tamponade.tamponade_tier',
+                               _tp_in_v, _tp_in_t, _cur_v, _cur_t,
+                               gate=stats.get('tamponade', {}),
+                               elapsed=round(time.perf_counter() - _t_tp, 4))
+    else:
+        if trace.is_active():
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('tamponade_post', 'tiers.tamponade.tamponade_tier',
+                               _cur_v, _cur_t, _cur_v, _cur_t,
+                               gate={'status': 'skipped', 'reason': 'adopted_in_prepass'})
+
     # A watertight Tamponade adoption already closed the mesh: skip the deep
     # tiers (the same "a watertight candidate supersedes" logic Graft adoption
     # uses), but still record the ladder's own report.
@@ -619,11 +718,19 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # run on the ORIGINAL input arrays before the fTetWild ladder. Adopts only a
     # reload-watertight candidate; records the fidelity verdict + warnings under
     # ``stats['graft']``.
+    _t_gr = time.perf_counter()
+    _gr_in_v, _gr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
     ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
                            graft=(graft is True) and not _tamp_watertight,
                            intensity=(getattr(triage_spec, 'base', None)
                                       or getattr(triage_spec, 'name', None)),
                            spec=triage_spec)
+    if trace.is_active():
+        _cur_v, _cur_t = _meshset_arrays_safe(ms)
+        trace.record_stage('graft', 'tiers.graft.graft_tier',
+                           _gr_in_v, _gr_in_t, _cur_v, _cur_t,
+                           gate=stats.get('graft', {'status': 'disabled'}),
+                           elapsed=round(time.perf_counter() - _t_gr, 4))
 
     ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
                                    mode=deep_repair,
@@ -663,7 +770,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # ("bowtie") vertices, e.g. when the final close_holes fan-fills a hole at
     # a vertex shared by two boundary loops; stage 2 then never runs and a
     # strictly watertight mesh is reported as a warning (thingi10k_145065).
+    _t_ps = time.perf_counter()
+    _ps_in_v, _ps_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
     ms, after, stats['pinched_vertices_split'] = _split_pinched_vertices(ml, ms, after)
+    if trace.is_active():
+        _cur_v, _cur_t = _meshset_arrays_safe(ms)
+        trace.record_stage('pinch_split', 'stage2._split_pinched_vertices',
+                           _ps_in_v, _ps_in_t, _cur_v, _cur_t,
+                           gate={'split_count': stats.get('pinched_vertices_split', 0)},
+                           elapsed=round(time.perf_counter() - _t_ps, 4))
 
     # final_fallback engines run once, on the ORIGINAL input, after every
     # built-in tier (including replace_ftetwild) and after the pinch split.
@@ -941,6 +1056,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 dmg = {'holes': _dh, 'non_manifold': _dnm,
                        'self_intersections': _dsi}
             if _dressing_wanted(dressing, _dh, _dnm, _dsi, si_mode):
+                _t_dr = time.perf_counter()
+                _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
                 _d_ms, _d_after = dressing_tier(
                     ml, ms, after, stats, v, t, tmpdir, dressing=True,
                     intensity=(getattr(spec, 'base', None)
@@ -953,6 +1070,18 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     ms, after = _d_ms, _d_after
                     dressing_ok = True
                     tiers_run.append('dressing')
+                if trace.is_active():
+                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
+                                       _dr_in_v, _dr_in_t, _cur_v, _cur_t,
+                                       gate=stats.get('dressing', {}),
+                                       elapsed=round(time.perf_counter() - _t_dr, 4))
+            else:
+                if trace.is_active():
+                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
+                                       _cur_v, _cur_t, _cur_v, _cur_t,
+                                       gate={'status': 'skipped', 'reason': 'not_wanted'})
 
             # Splint (#18) sits AFTER Dressing and BEFORE fTetWild: an exact
             # solid rebuild that closes the mesh supersedes fTetWild.  It runs
@@ -961,11 +1090,12 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # nor Dressing already produced the final mesh.
             splint_ok = False
             if splint in (True, 'auto') and not dressing_ok and not graft_ok:
-                _sh = boundary_loop_stats(
-                    ms.current_mesh().vertex_matrix(),
-                    ms.current_mesh().face_matrix())[0]
+                _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                _sh = boundary_loop_stats(_cur_v, _cur_t)[0]
                 _snm = int(after.get('non_two_manifold_edges', 0))
                 if _sh > 0 or _snm > 0:
+                    _t_sp = time.perf_counter()
+                    _sp_in_v, _sp_in_t = (_cur_v, _cur_t) if trace.is_active() else (None, None)
                     _s_ms, _s_after = splint_tier(
                         ml, ms, after, stats, v, t, tmpdir, splint=True,
                         intensity=(getattr(spec, 'base', None)
@@ -975,24 +1105,64 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                         ms, after = _s_ms, _s_after
                         splint_ok = True
                         tiers_run.append('splint')
+                    if trace.is_active():
+                        _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                        trace.record_stage('splint', 'tiers.splint.splint_tier',
+                                           _sp_in_v, _sp_in_t, _cur_v, _cur_t,
+                                           gate=stats.get('splint', {}),
+                                           elapsed=round(time.perf_counter() - _t_sp, 4))
+                else:
+                    if trace.is_active():
+                        trace.record_stage('splint', 'tiers.splint.splint_tier',
+                                           _cur_v, _cur_t, _cur_v, _cur_t,
+                                           gate={'status': 'skipped', 'reason': 'mesh_already_closed'})
+            else:
+                if trace.is_active():
+                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    trace.record_stage('splint', 'tiers.splint.splint_tier',
+                                       _cur_v, _cur_t, _cur_v, _cur_t,
+                                       gate={'status': 'skipped', 'reason': 'not_wanted'})
 
             if dressing_ok:
                 stats['experimental_ftetwild'] = False
                 if graft_ms is not None:
                     stats['graft']['adopted'] = False
                     stats['graft']['reason'] = 'superseded by Dressing'
+                if trace.is_active():
+                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
+                                       _cur_v, _cur_t, _cur_v, _cur_t,
+                                       gate={'status': 'skipped', 'reason': 'superseded_by_dressing'})
             elif splint_ok:
                 stats['experimental_ftetwild'] = False
                 if graft_ms is not None:
                     stats['graft']['adopted'] = False
                     stats['graft']['reason'] = 'superseded by Splint'
+                if trace.is_active():
+                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
+                                       _cur_v, _cur_t, _cur_v, _cur_t,
+                                       gate={'status': 'skipped', 'reason': 'superseded_by_splint'})
             elif graft_ok:
                 stats['experimental_ftetwild'] = False
+                if trace.is_active():
+                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
+                                       _cur_v, _cur_t, _cur_v, _cur_t,
+                                       gate={'status': 'skipped', 'reason': 'superseded_by_graft'})
             else:
+                _t_ft = time.perf_counter()
+                _ft_in_v, _ft_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
                 ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
                                            ftetwild, spec=spec)
                 if (stats.get('experimental_ftetwild') or {}).get('ran'):
                     tiers_run.append('ftetwild')
+                if trace.is_active():
+                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
+                                       _ft_in_v, _ft_in_t, _cur_v, _cur_t,
+                                       gate=stats.get('experimental_ftetwild', {}),
+                                       elapsed=round(time.perf_counter() - _t_ft, 4))
                 if graft_ms is not None:
                     ft_dev = (stats.get('experimental_ftetwild')
                               or {}).get('hausdorff_rel')
@@ -1020,6 +1190,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
         # an explicit choice is always honoured; the auto 'full' ladder stays
         # conservative and only tries it when stage 1 left damage.
         if dressing is True:
+            _t_dr = time.perf_counter()
+            _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
             _d_ms, _d_after = dressing_tier(
                 ml, ms, after, stats, v, t, tmpdir, dressing=True,
                 intensity=(getattr(spec, 'base', None)
@@ -1031,7 +1203,24 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             if (stats.get('dressing') or {}).get('adopted'):
                 ms, after = _d_ms, _d_after
                 tiers_run.append('dressing')
+            if trace.is_active():
+                _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
+                                   _dr_in_v, _dr_in_t, _cur_v, _cur_t,
+                                   gate=stats.get('dressing', {}),
+                                   elapsed=round(time.perf_counter() - _t_dr, 4))
+        else:
+            if trace.is_active():
+                _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
+                                   _cur_v, _cur_t, _cur_v, _cur_t,
+                                   gate={'status': 'skipped', 'reason': 'not_wanted'})
         stats['experimental_ftetwild'] = False
+        if trace.is_active():
+            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
+                               _cur_v, _cur_t, _cur_v, _cur_t,
+                               gate={'status': 'skipped', 'reason': f'mode_{mode}'})
     if mode is not None:
         stats['deep_repair'] = {
             'mode': mode,
