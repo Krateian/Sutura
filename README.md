@@ -2301,6 +2301,12 @@ community — but for now, it will continue like this.
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.9.2 — 2026-10-21** — **Splint (#18)** as an opt-in exact solid-rebuild tier
+  (off by default; evaluated on the 40-mesh corpus and adopted on none so far);
+  `sutura --self-check`, `--diagnostics` and `--self-repair`; a print-impact
+  report; a smaller runtime (trimesh/SciPy removed, Manifold and the native
+  geometry in the mandatory Rust core); and 3MF repairs that preserve the
+  project file.
 - **v0.9.0 — 2026-10-11** — **Tamponade** (method #17, on-by-default interior hole plug
   with an inflate-from-inside **Stent** candidate and multi-stent partition for
   large loops; strict plug acceptance rules — no leak, no new holes/non-manifold

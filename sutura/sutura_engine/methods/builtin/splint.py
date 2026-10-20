@@ -26,6 +26,9 @@ METHOD = RepairMethod(
     # generic one-sided (input -> output) Hausdorff guard -- which would also
     # see the legitimate caps that close the openings -- is skipped.
     self_guarded=True,
+    # Opt-in only: keep it out of the automatic ranking (like Dressing and
+    # Wall Thicken); the user selects it explicitly.
+    needs_user_input=True,
     # The tier cannot run without the Rust Splint core: a present-but-stale
     # sutura_geom (no ``splint_cut``) is a FAIL in the health report, not a SKIP.
     core_required=True,

@@ -159,7 +159,7 @@ from sutura_engine.pipeline.cli import (
 )
 
 
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 
 
 def process_file(src, human, mode='auto', profile=None, no_history=False,
