@@ -254,7 +254,7 @@ def _flap_step_impl(ml, ms, after, stats, rec):
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
                             face_matrix=np.asarray(cand_t, np.int32)))
-        after = ms.apply_filter('get_topological_measures')
+        after = topology.mesh_topology(cand_v, cand_t)
         rec['adopted'] = True
         rec['reason'] = ('adopted (holes %d->%d, non-manifold %d->%d; '
                          'damage %d->%d)' % (

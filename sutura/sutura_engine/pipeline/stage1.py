@@ -455,7 +455,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
         if time_budget is not None and (time.perf_counter() - t0) > time_budget:
             report['reason'] = 'budget'
             break
-        topo_before = ms.apply_filter('get_topological_measures')
+        topo_before = topology.mesh_topology(ms)
         # Use boundary EDGES, not ``number_holes``: the latter is unreliable on
         # meshes with non-manifold vertices (reported -1 on thingi10k_145065,
         # which let a round that opened 42 boundary loops be accepted).
@@ -498,7 +498,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                     SI_EXCISE_REFINE_EDGE_PCT)
             ms.apply_filter('meshing_close_holes', **close_kwargs)
             _remove_unref_vertices_ms(ms, ml)
-            topo_after = ms.apply_filter('get_topological_measures')
+            topo_after = topology.mesh_topology(ms)
             holes_after = int(topo_after.get('boundary_edges', 0) or 0)
             nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)
                         + int(topo_after.get('non_two_manifold_vertices', 0) or 0))

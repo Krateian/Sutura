@@ -185,7 +185,7 @@ def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_aft
             m3_ms = ml.MeshSet()
             m3_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(m3_v, np.float32),
                                    face_matrix=np.asarray(m3_t, np.int32)))
-            m3_after = m3_ms.apply_filter('get_topological_measures')
+            m3_after = topology.mesh_topology(m3_v, m3_t)
             m3_holes = boundary_loop_stats(m3_v, m3_t)[0]
             m3_nm = m3_after.get('non_two_manifold_edges', 0)
             if m3_holes <= cand_holes and m3_nm <= cand_nm:
@@ -202,7 +202,7 @@ def _ftetwild_candidate(ml, tmpdir, cand_v, cand_t):
     cand_ms = ml.MeshSet()
     cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
                              face_matrix=np.asarray(cand_t, np.int32)))
-    cand_after = cand_ms.apply_filter('get_topological_measures')
+    cand_after = topology.mesh_topology(cand_v, cand_t)
     cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
     cand_nm = cand_after.get('non_two_manifold_edges', 0)
     (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \

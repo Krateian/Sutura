@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 
+import topology
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.presets import (
     LOCAL_MAX_LOOP_LEN, LOCAL_MAX_NM_EDGES, LOCAL_MAX_REGIONS,
@@ -192,7 +193,7 @@ def _local_remesh_tier(ml, ms, after):
         rep['fairing_iters'] = LOCAL_REMESH_FAIR_STEPS
         trial = ml.MeshSet()
         trial.add_mesh(ml.Mesh(vertex_matrix=nv, face_matrix=nt.astype(np.int32)))
-        t_after = trial.apply_filter('get_topological_measures')
+        t_after = topology.mesh_topology(nv, nt)
         holes = boundary_loop_stats(nv, nt)[0]
         nm = t_after.get('non_two_manifold_edges', 0)
         rep.update(holes_after=int(holes), nm_after=int(nm))

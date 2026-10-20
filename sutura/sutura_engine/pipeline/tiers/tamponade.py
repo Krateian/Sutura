@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 
+import topology
 from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.mesh_io import stl_write_binary
@@ -477,7 +478,7 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
                 and leak_ok and len(cand_t)):
             ms = ml.MeshSet()
             ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-            after = ms.apply_filter('get_topological_measures')
+            after = topology.mesh_topology(cand_v, cand_t)
             rec['adopted'] = True
             wet = bool(cand_holes == 0 and cand_nm == 0)
             rec['watertight'] = wet

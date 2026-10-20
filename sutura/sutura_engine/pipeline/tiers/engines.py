@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 
+import topology
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.presets import FTETWILD_MAX_HAUSDORFF_REL
 from sutura_engine.pipeline.utils import _hausdorff_rel, boundary_loop_stats
@@ -108,9 +109,7 @@ def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,
                 entries.append(entry)
                 continue
             cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
-            cand_ms = ml.MeshSet()
-            cand_ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-            cand_after = cand_ms.apply_filter('get_topological_measures')
+            cand_after = topology.mesh_topology(cand_v, cand_t)
             if cand_after.get('faces_number', 0) == 0:
                 entry['reject_reason'] = 'engine removed all geometry'
                 entries.append(entry)
@@ -152,10 +151,7 @@ def run_after_stage2_engines(ml, report, new_v, new_t, tmpdir, engines,
         return new_v, new_t
     entries = []
     base_holes = boundary_loop_stats(new_v, new_t)[0]
-    base_ms = ml.MeshSet()
-    base_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(new_v, np.float32),
-                             face_matrix=np.asarray(new_t, np.int32)))
-    base_nm = base_ms.apply_filter('get_topological_measures').get(
+    base_nm = topology.mesh_topology(new_v, new_t).get(
         'non_two_manifold_edges', 0)
     cand_v, cand_t, adopted = run_engines(
         ml, engines, engine_chain, 'after_stage2', tmpdir, new_v, new_t,

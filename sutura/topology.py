@@ -65,6 +65,7 @@ _RUST_FNS = (
     'remove_connected_components',
     'invert_face_orientation',
     'mesh_topology',
+    'mesh_geometric_measures',
     'self_intersecting_faces',
 )
 
@@ -384,6 +385,7 @@ def _mesh_topology_numpy(verts, tris):
     E = len(edges)
     boundary_edges = int(np.sum(counts == 1))
     nm_edges = int(np.sum(counts > 2))
+    nm_edge_verts = set(edges[counts > 2].ravel().tolist()) if nm_edges > 0 else set()
 
     face_of_h = np.tile(np.arange(F, dtype=np.int64), 3)
     nm_edge_faces = int(len(np.unique(face_of_h[counts[inv] > 2]))) if nm_edges > 0 else 0
@@ -434,6 +436,8 @@ def _mesh_topology_numpy(verts, tris):
     nmv_count = 0
     nmv_incident_faces = set()
     for v_idx, inc_faces in v_faces.items():
+        if v_idx in nm_edge_verts:
+            continue
         if len(inc_faces) <= 1:
             continue
         f_pos = {f: i for i, f in enumerate(inc_faces)}
@@ -794,10 +798,26 @@ def repair_non_manifold_edges(verts, tris):
     return _geom.repair_non_manifold_edges(v, t)
 
 
-def mesh_topology(verts, tris):
-    """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures)."""
-    v = np.ascontiguousarray(verts, dtype=np.float32)
-    t = np.ascontiguousarray(tris, dtype=np.int64)
+def mesh_topology(verts, tris=None):
+    """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures).
+
+    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
+    """
+    if tris is None:
+        if hasattr(verts, 'current_mesh'):
+            m = verts.current_mesh()
+            v = m.vertex_matrix()
+            t = m.face_matrix()
+        elif hasattr(verts, 'vertex_matrix'):
+            v = verts.vertex_matrix()
+            t = verts.face_matrix()
+        else:
+            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
+    else:
+        v = verts
+        t = tris
+    v = np.ascontiguousarray(v, dtype=np.float32)
+    t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
         raise ValueError("verts must be Nx3")
     if t.ndim != 2 or t.shape[1] != 3:
@@ -807,10 +827,26 @@ def mesh_topology(verts, tris):
     return _geom.mesh_topology(v, t)
 
 
-def mesh_geometric_measures(verts, tris):
-    """Complete geometric measures of a triangle mesh (matching VCGLib get_geometric_measures)."""
-    v = np.ascontiguousarray(verts, dtype=np.float32)
-    t = np.ascontiguousarray(tris, dtype=np.int64)
+def mesh_geometric_measures(verts, tris=None):
+    """Complete geometric measures of a triangle mesh (matching VCGLib get_geometric_measures).
+
+    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
+    """
+    if tris is None:
+        if hasattr(verts, 'current_mesh'):
+            m = verts.current_mesh()
+            v = m.vertex_matrix()
+            t = m.face_matrix()
+        elif hasattr(verts, 'vertex_matrix'):
+            v = verts.vertex_matrix()
+            t = verts.face_matrix()
+        else:
+            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
+    else:
+        v = verts
+        t = tris
+    v = np.ascontiguousarray(v, dtype=np.float32)
+    t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
         raise ValueError("verts must be Nx3")
     if t.ndim != 2 or t.shape[1] != 3:
@@ -818,6 +854,10 @@ def mesh_geometric_measures(verts, tris):
     if engine() == 'python':
         return _mesh_geometric_measures_numpy(v, t)
     return _geom.mesh_geometric_measures(v, t)
+
+
+get_topological_measures = mesh_topology
+get_geometric_measures = mesh_geometric_measures
 
 
 def native_si_enabled():
