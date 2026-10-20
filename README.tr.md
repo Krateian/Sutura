@@ -971,7 +971,7 @@ Linux:
 
 * `python3` (>= 3.11), venv desteğiyle, PyMeshLab venv'i için
 * `sutura_geom` kaynaktan derlenecekse (hazır wheel yoksa): Rust >= 1.89,
-  cmake ve C++17 derleyicisi (g++/clang++). Sürüm kurulumları hazır wheel
+  cmake ve C++20 derleyicisi (g++/clang++). Sürüm kurulumları hazır wheel
   indirir ve bunlara ihtiyaç duymaz.
 * Dolphin servis menüsü için KDE Plasma (isteğe bağlı; CLI ve GUI her yerde
   çalışır)
@@ -1001,7 +1001,7 @@ Python 3.11 yalnızca isteğe bağlı fTetWild eki için gerekir
   * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
   * Fedora: `sudo dnf install python3.11`
 * **`sutura_geom` kaynak derlemesi başarısız.** Manifold çekirdeği C++ ile
-  derlenir: `cmake`, C++17 derleyicisi (g++/clang++) ve Rust >= 1.89 kurun.
+  derlenir: `cmake`, C++20 derleyicisi (g++/clang++) ve Rust >= 1.89 kurun.
   Sürüm kurulumları normalde hazır wheel kullanır.
 * **PySide6 kurulumu başarısız.** GUI, `venv`'e PyPI'dan kurulan
   `PySide6-Essentials` gerektirir. Sürüm yorumlayıcıya göre seçilir:
@@ -2090,7 +2090,7 @@ güvenilir şekilde algılayabilir.
 | Manifold (`sutura_geom` içindeki `manifold-csg`) | aşama 2 yeniden kurma, dış kabuk birleşimi, yinelenen öge CSG, Graft yerel dikişi | su geçirmezlik garantisi, sağlam boolean, Bambu Studio ile aynı C++ çekirdek; statik bağlantı, Apache-2.0 |
 | numpy | hat geneli | CLI, GUI, kusur tespiti, geçmiş ve tüm saf-Python katmanlar için dizi matematiği; zorunlu `sutura_geom` Rust eklentisi isteğe bağlı değildir ve Flap yolunun numpy geri dönüşü yoktur |
 | pytetwild + pyvista | fTetWild yedek katmanı (isteğe bağlı ek) | fTetWild tetrahedralizasyonu (MPL-2.0); pyvista VTK'yı getirir, kurulu ~1,1 GB, bu yüzden `SUTURA_WITH_FTETWILD=1` ile isteğe bağlıdır |
-| sutura-geom (Rust: `robust`, `manifold-csg`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, Manifold CSG, morfoloji, en yakın komşu, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), Aşama 2, dış kabuk birleşimi, yinelenen öge CSG ve Graft yerel dikişi için statik bağlı C++ Manifold çekirdeği (`manifold-csg`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü, nokta-bulutu en yakın komşuları (`kiddo`), exact EDT/dilasyon ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
+| sutura-geom (Rust: `robust`, `manifold-csg`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`; gömülü Geogram Delaunay PSM, BSD-3-Clause) | exact arrangement, Manifold CSG, morfoloji, en yakın komşu, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), Aşama 2, dış kabuk birleşimi, yinelenen öge CSG ve Graft yerel dikişi için statik bağlı C++ Manifold çekirdeği (`manifold-csg`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü, nokta-bulutu en yakın komşuları (`kiddo`), exact EDT/dilasyon ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD; gömülü Geogram PSM BSD-3-Clause olup bildirimi ve LICENSE dosyası wheel içinde gelir), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
 
 `requirements.txt`, `requirements-gui.txt` ve isteğe bağlı
 `requirements-ftetwild.txt` içinde sabitlenmiştir (geliştirme/test

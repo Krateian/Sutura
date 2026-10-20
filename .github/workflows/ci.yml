@@ -319,6 +319,9 @@ jobs:
       - name: "Test: sutura_geom arrangement"
         run: ./.venv/bin/python tests/test_sutura_geom_arrangement.py
 
+      - name: "Test: splint core"
+        run: ./.venv/bin/python tests/test_splint.py
+
       # Graft (#13) needs the Rust extension plus trimesh; the real repair
       # venv has pymeshlab (the verbatim-hybrid test skips without it).
       - name: Install Graft test deps

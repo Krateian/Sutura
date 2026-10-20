@@ -240,3 +240,10 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   GUI parity: the health banner's export button calls the same
   `sutura.diagnostics.create_diagnostics_zip(out_path)` and reports the outcome
   in the GUI, so it is listed as a covered surface in the table above.
+
+- **Splint core (`sutura_geom.splint_cut`, experimental):** a `sutura_geom`
+  PyO3 test hook for steps 1–8 of the Splint spike (Geogram Delaunay + winding
+  cut + fix-A island cleanup). It has deliberately NO CLI flag, GUI control or
+  method-registry entry; step 9 dual contouring and adaptive sampling are out of
+  this core, and the raw step-8 cut is generally not manifold. It is a research
+  surface, not a user feature, so there is no parity gap to close yet.

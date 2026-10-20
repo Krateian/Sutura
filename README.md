@@ -968,7 +968,7 @@ Linux:
 
 * `python3` (>= 3.11) with venv support, for the PyMeshLab venv
 * For a source build of `sutura_geom` (when no prebuilt wheel is available):
-  Rust >= 1.89, cmake and a C++17 compiler (g++/clang++). Release installs
+  Rust >= 1.89, cmake and a C++20 compiler (g++/clang++). Release installs
   download a prebuilt wheel and need none of these.
 * KDE Plasma for the Dolphin service menu (optional; CLI and GUI work anywhere)
 
@@ -996,7 +996,7 @@ Python 3.11 is only needed for the optional fTetWild extra
   * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
   * Fedora: `sudo dnf install python3.11`
 * **`sutura_geom` source build fails.** The Manifold kernel is compiled from
-  C++: install `cmake` and a C++17 compiler (g++/clang++), and Rust >= 1.89.
+  C++: install `cmake` and a C++20 compiler (g++/clang++), and Rust >= 1.89.
   Release installs normally use the prebuilt wheel and need none of these.
 * **PySide6 install fails.** The GUI needs `PySide6-Essentials`, which is
   installed into the `venv` from PyPI. The version follows the interpreter:
@@ -2083,7 +2083,7 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 | Manifold (via `manifold-csg` in `sutura_geom`) | stage 2 rebuild, outer-shell union, repeated-element CSG, Graft local stitch | watertight guarantee, robust boolean, same C++ kernel as Bambu Studio; static link, Apache-2.0 |
 | numpy | pipeline-wide | array math for the CLI, GUI, defect detection, history and every pure-python tier; the required `sutura_geom` Rust extension is NOT optional and the Flap path has no numpy fallback |
 | pytetwild + pyvista | fTetWild fallback tier (optional extra) | fTetWild tetrahedralization (MPL-2.0); pyvista brings VTK, ~1.1 GB installed, so it is opt-in via `SUTURA_WITH_FTETWILD=1` |
-| sutura-geom (Rust: `robust`, `manifold-csg`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, Manifold CSG, morphology, nearest-neighbour, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), the statically linked C++ Manifold kernel (`manifold-csg`) for Stage 2, outer-shell union, repeated-element CSG and the Graft local stitch, interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module, point-cloud nearest neighbours (`kiddo`), exact EDT/dilation, and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
+| sutura-geom (Rust: `robust`, `manifold-csg`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`; vendored Geogram Delaunay PSM, BSD-3-Clause) | exact arrangement, Manifold CSG, morphology, nearest-neighbour, Flap, Dressing, Tamponade and topology-cleanup acceleration | exact explicit/indirect predicates (`orient3d`, `insphere`), the statically linked C++ Manifold kernel (`manifold-csg`) for Stage 2, outer-shell union, repeated-element CSG and the Graft local stitch, interval filter, exact triangle intersection and CDT for `--experimental-autorefine` and `--experimental-indirect-autorefine`, SDF grid and dual contouring for Graft (#13), the `flap_fill` surface-hole fill, the `dressing_coat` narrow-band extractor, the `tamponade` interior-plug module, point-cloud nearest neighbours (`kiddo`), exact EDT/dilation, and the native mesh-cleaning filters (`remove_duplicate_faces`, `remove_null_faces`, duplicate/unreferenced-vertex removal, vertex welding) that back the Stage-1 cleanup with a transparent pure-numpy fallback; `faer` (MIT) provides the sparse LU for the Flap fairing. Permissive licenses only (MIT/Apache-2.0/BSD), prebuilt wheels installed automatically via `scripts/install_sutura_geom.sh` or built with `maturin develop` |
 
 Pinned in `requirements.txt`, `requirements-gui.txt` and the optional
 `requirements-ftetwild.txt` (development/test dependencies in

@@ -19,6 +19,16 @@ for respecting it if you reuse the files outside Sutura's test suite.
 The complete per-file attribution table (file, license, model name, author,
 Thingiverse source URL) lives in `tests/real-world-samples/ATTRIBUTION.md`.
 
+## `sutura_geom` third-party code
+
+The Rust extension vendors the standalone **Geogram Delaunay PSM**
+(`rust/sutura-geom/third_party/geogram_delaunay_psm/`), used by the Splint core
+for deterministic tetrahedralization. It is **BSD 3-Clause**, Copyright (c)
+2000-2022 Inria, upstream <https://github.com/BrunoLevy/geogram>. The full
+license is in that directory and is shipped in the wheel together with
+`rust/sutura-geom/THIRD_PARTY.md`; it is separate from the crate's
+MIT/Apache-2.0 license and from Sutura's PolyForm Noncommercial license.
+
 Corpus composition (40 meshes):
 
 | Group | Count | Files |
