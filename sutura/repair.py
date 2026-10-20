@@ -175,7 +175,8 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
                  tamponade=False,
                  si_mode=None, dressing_force_adopt=False,
-                 splint=False, splint_adaptive=None):
+                 splint=False, splint_adaptive=None,
+                 trace_path=None):
     """Repair one file. Returns (result_dict, category).
 
     ``max_geom_change``/``max_risk`` (optional repair budgets) gate the save:
@@ -225,6 +226,9 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     # records its failure through sutura_engine.health; the run is summarised
     # below as result['method_health'].
     method_health.begin()
+    from sutura_engine import trace
+    trace.begin_trace(trace_path=trace_path, input_file=src,
+                      command_args={'mode': mode, 'profile': profile, 'si_mode': si_mode})
     try:
         # Method registry / exec policy (sutura/methods.py): with methods=None
         # this is auto mode -- it runs today's default pipeline first and only
@@ -310,6 +314,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
     # the scope opened above).
     result['method_health'] = method_health.build_report()
     method_health.end()
+    trace.finish_trace()
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
 
     category, issues, _summary = classify(result)
@@ -655,6 +660,10 @@ def main():
                              'classifier head (base features + the five strong '
                              'FAZ10 scan signals). NOT the default; the gain is '
                              'marginal (1 mesh on the 71-mesh labeled set).')
+    parser.add_argument('--trace', metavar='PATH',
+                        default=os.environ.get('SUTURA_TRACE'),
+                        help='record a structured step-by-step trace of every '
+                             'pipeline stage to PATH (JSON format). Env: SUTURA_TRACE')
     parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
     args = parser.parse_args()
 
@@ -1032,7 +1041,8 @@ def main():
                             engine_filter=engines_sel,
                             repeat_source=repeat_source,
                             repeat_target=repeat_target,
-                            wall_min_thickness=args.wall_min_thickness) for f in files]
+                            wall_min_thickness=args.wall_min_thickness,
+                            trace_path=args.trace) for f in files]
     ok = sum(1 for _, c in results if c == 'watertight')
     warnings = sum(1 for _, c in results if c == 'warning')
     errors = sum(1 for _, c in results if c == 'error')
