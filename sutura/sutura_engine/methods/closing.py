@@ -432,27 +432,24 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
 
         # 1. Coherently orient faces
         ms.apply_filter('meshing_re_orient_faces_coherently')
-        ms.apply_filter('compute_normal_per_face')
 
         # 2. Check outward orientation vs centroid and invert if inward
         cur = ms.current_mesh()
         cur_v = cur.vertex_matrix()
         cur_f = cur.face_matrix()
-        cur_fn = cur.face_normal_matrix()
+        import topology
+        cur_fn = topology.compute_normal_per_face(cur_v, cur_f)
         face_centers = cur_v[cur_f].mean(axis=1)
         centroid = cur_v.mean(axis=0)
         if np.sum((face_centers - centroid) * cur_fn) < 0:
-            try:
-                import topology
-                cur_f_new = topology.invert_face_orientation(cur_f)
-                ms.clear()
-                ms.add_mesh(ml.Mesh(vertex_matrix=cur_v, face_matrix=cur_f_new.astype(np.int32)))
-            except Exception:
-                ms.apply_filter('meshing_invert_face_orientation')
-            ms.apply_filter('compute_normal_per_face')
+            cur_f = topology.invert_face_orientation(cur_f)
+            cur_fn = -cur_fn
 
-        # 3. Compute per-vertex normals
-        ms.apply_filter('compute_normal_per_vertex')
+        # 3. Compute per-vertex normals natively and re-add mesh with normals
+        cur_vn = topology.compute_normal_per_vertex(cur_v, cur_f)
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=cur_v, face_matrix=cur_f.astype(np.int32),
+                            v_normals_matrix=cur_vn, f_normals_matrix=cur_fn))
 
         # 4. Screened Poisson reconstruction with scale=POISSON_DEFAULT_SCALE
         ms.apply_filter(

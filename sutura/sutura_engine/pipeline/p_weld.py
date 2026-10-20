@@ -12,7 +12,12 @@ import numpy as np
 
 import topology
 from defects import detect as detect_defects
-from sutura_engine.pipeline.stage1 import _remove_unref_vertices_ms
+from sutura_engine.pipeline.stage1 import (
+    _remove_unref_vertices_ms,
+    _repair_nme_ms,
+    _repair_nmv_ms,
+    _set_mesh_on_ms,
+)
 
 
 def weld_reload_equivalent(verts, tris):
@@ -55,17 +60,17 @@ def _repair_welded_topology(ml, verts, tris):
                 t_new = topology.remove_duplicate_faces(t)
                 if len(t_new) < len(t):
                     v = m.vertex_matrix()
-                    ms.clear()
-                    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+                    _set_mesh_on_ms(ms, ml, v, t_new)
             elif name == 'meshing_remove_unreferenced_vertices':
                 _remove_unref_vertices_ms(ms, ml)
+            elif name == 'meshing_repair_non_manifold_edges':
+                _repair_nme_ms(ms, ml)
+            elif name == 'meshing_repair_non_manifold_vertices':
+                _repair_nmv_ms(ms, ml)
             else:
                 ms.apply_filter(name, **params)
         except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
-            try:
-                ms.apply_filter(name, **params)
-            except Exception:
-                pass
+            pass
     return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
             np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
 
@@ -141,9 +146,9 @@ def _close_small_holes(ml, verts, tris):
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
                             face_matrix=np.asarray(tris, np.int32)))
-        ms.apply_filter('meshing_repair_non_manifold_vertices')
+        _repair_nmv_ms(ms, ml)
         ms.apply_filter('meshing_close_holes', maxholesize=P_WELD_MAX_HOLE)
-        ms.apply_filter('meshing_remove_unreferenced_vertices')
+        _remove_unref_vertices_ms(ms, ml)
         m = ms.current_mesh()
         return (np.asarray(m.vertex_matrix(), dtype=np.float32),
                 np.asarray(m.face_matrix(), dtype=np.int32))

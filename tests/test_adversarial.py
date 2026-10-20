@@ -67,6 +67,10 @@ def build(tmp):
     write_stl(p, [((0, 0, 0), (1, 0, 0), (1, 1, 0)), ((0, 0, 0), (1, 1, 0), (0, 1, 0))])
     cases['degenerate'] = p
 
+    p = os.path.join(tmp, 'all_zero_area.stl')
+    write_stl(p, [((0, 0, 0), (1, 0, 0), (2, 0, 0)), ((0, 0, 0), (0, 1, 0), (0, 2, 0))])
+    cases['all_zero_area'] = p
+
     p = os.path.join(tmp, 'nan_inf.stl')
     write_stl(p, [
         ((-1, -1, -1), (float('nan'), -1, -1), (1, 1, -1)),
@@ -99,7 +103,20 @@ def run_sutura(path):
     return r.returncode, rep
 
 
+def test_all_degenerate_faces_repair_pipeline():
+    """Verify entirely zero-area faces are rejected with the canonical error and no crash."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = os.path.join(tmp, 'zero_area.stl')
+        write_stl(p, [((0, 0, 0), (1, 0, 0), (2, 0, 0))])
+        code, rep = run_sutura(p)
+        assert code == 1, f"Expected exit code 1, got {code}"
+        assert rep.get('error') == 'repair failed: all faces are degenerate; nothing to repair', rep
+        assert rep.get('category') == 'error', rep
+        assert rep.get('issues') == ['malformed'], rep
+
+
 def main():
+    test_all_degenerate_faces_repair_pipeline()
     with tempfile.TemporaryDirectory() as tmp:
         cases = build(tmp)
         fails = []
@@ -110,7 +127,7 @@ def main():
             elif 'error' not in rep:
                 fails.append('%s: failed without an error report' % name)
             else:
-                print('ok  %-11s exit=%d  %s' % (name, code, rep['error'].splitlines()[0][:70]))
+                print('ok  %-13s exit=%d  %s' % (name, code, rep['error'].splitlines()[0][:70]))
         if fails:
             print('FAIL:')
             for f in fails:
