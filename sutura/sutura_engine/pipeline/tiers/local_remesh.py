@@ -15,6 +15,7 @@ from sutura_engine.pipeline.presets import (
     LOCAL_MAX_REMOVED_FACES, LOCAL_MAX_SECONDS, LOCAL_REMESH_FAIR_STEPS,
     LOCAL_REMESH_MAX_HOLE, LOCAL_REMESH_REFINE,
 )
+from sutura_engine.pipeline.stage1 import _repair_nmv_ms
 from sutura_engine.pipeline.utils import (
     _canonical_face_keys, _count_si, _edge_uses, _faces_preserved,
     _hausdorff_rel, boundary_loop_stats,
@@ -172,7 +173,7 @@ def _local_remesh_tier(ml, ms, after):
     with method_health.tier_guard('local_remesh', 'tier') as _g:
         trial = ml.MeshSet()
         trial.add_mesh(ml.Mesh(vertex_matrix=kv, face_matrix=kt.astype(np.int32)))
-        trial.apply_filter('meshing_repair_non_manifold_vertices')
+        _repair_nmv_ms(trial, ml)
         n0 = trial.current_mesh().face_number()
         nv0 = trial.current_mesh().vertex_number()
         trial.apply_filter('meshing_close_holes', maxholesize=LOCAL_REMESH_MAX_HOLE,

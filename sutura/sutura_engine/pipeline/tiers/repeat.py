@@ -13,20 +13,20 @@ from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
 def _clean_and_orient(ml, verts, tris):
-    """PyMeshLab cleanup of a generated surface: dedup + coherent orientation."""
+    """Cleanup of a generated surface: dedup + coherent orientation."""
     try:
+        from sutura_engine.pipeline.stage1 import apply_chain
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
                             face_matrix=np.asarray(tris, np.int32)))
-        for filt in ('meshing_remove_duplicate_vertices',
-                     'meshing_remove_duplicate_faces',
-                     'meshing_remove_unreferenced_vertices',
-                     'meshing_repair_non_manifold_edges',
-                     'meshing_re_orient_faces_coherently'):
-            try:
-                ms.apply_filter(filt)
-            except Exception:
-                pass
+        chain = [(filt, {}) for filt in (
+            'meshing_remove_duplicate_vertices',
+            'meshing_remove_duplicate_faces',
+            'meshing_remove_unreferenced_vertices',
+            'meshing_repair_non_manifold_edges',
+            'meshing_re_orient_faces_coherently',
+        )]
+        apply_chain(ms, chain)
         cur = ms.current_mesh()
         return (np.asarray(cur.vertex_matrix(), dtype=np.float64),
                 np.asarray(cur.face_matrix(), dtype=np.int32))

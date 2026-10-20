@@ -13,6 +13,7 @@ import numpy as np
 
 import topology
 from sutura_engine.pipeline.mesh_io import read_obj, write_obj
+from sutura_engine.pipeline.stage1 import _repair_nmv_ms
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
@@ -63,7 +64,7 @@ def _split_pinched_vertices(ml, ms, topo):
     t_topo, passes = topo, 0
     while passes < PINCH_SPLIT_MAX_PASSES:
         passes += 1
-        trial.apply_filter('meshing_repair_non_manifold_vertices')
+        _repair_nmv_ms(trial, ml)
         t_topo = topology.mesh_topology(trial)
         if t_topo.get('is_mesh_two_manifold'):
             break
