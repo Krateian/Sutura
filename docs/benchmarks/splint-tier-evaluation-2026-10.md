@@ -37,9 +37,13 @@ than 4 shells). It is adopted only when the candidate reloads strict-watertight.
 - Total wall clock: A 184.7 s, B 191.7 s, C 181.6 s. The opt-in flag therefore
   costs nothing on the 39 meshes where stage 1 already closes the mesh (the
   tier is a last-resort and does not run).
-- The only non-`SAME` mesh is `thingi10k_100827` for both B and C; a targeted
-  re-run of that mesh returned `SAME` for B (see determinism below), so the
-  single `WORSE` is a non-reproducible artifact of the non-Splint tiers.
+- The only non-`SAME` mesh is `thingi10k_100827` for both B and C. For B the
+  difference is a non-reproducible artifact of fTetWild (a targeted re-run of
+  the same mesh returned `SAME`; see determinism below). For C it is the
+  deterministic consequence of *removing the fTetWild fallback* — Splint is
+  rejected, nothing closes the mesh, and the result keeps 4 holes / 2
+  non-manifold edges — not of Splint itself. This is why arm C is a worst-case
+  bound and not an argument against enabling Splint alongside fTetWild.
 
 ## The single exercised mesh: thingi10k_100827
 
