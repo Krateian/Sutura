@@ -39,6 +39,49 @@ This skill is how an agent that did NOT write the change checks the claim.
   on the command line and write their outputs to scratch. This skill and its
   scripts must stay free of private names and absolute paths.
 
+## Verification modes
+
+The comparison script has three modes:
+
+- **`--feature` (default, existing):** one repo, default (feature ON) vs
+  opt-out (feature OFF). This is the original behaviour and the tier commands
+  below keep working unchanged.
+- **`--byte` (refactors):** two builds, baseline (`--baseline-repo`,
+  `--baseline-python`) vs candidate (`--repo`, `--python`), same arguments;
+  outputs must be byte-identical. Add `--deterministic` to append
+  `--no-graft --no-fallback-ftetwild --deep-repair off`, and/or
+  `--exclude-nondeterministic` to report fTetWild-adopting meshes as
+  `SKIPPED-NONDET` instead of failures.
+- **`--quality` (behaviour changes):** baseline vs candidate; no mesh may be
+  worse on watertight (holes/NM), SI-after, two-sided Hausdorff (existing
+  tolerance), MC-GWN union volume (0.1 % of input) or parts. Every changed mesh
+  is listed. Missing SI is a hard failure. `--exclude-nondeterministic` also
+  works here, because fTetWild output is not deterministic.
+
+`--jobs N` runs meshes in parallel (`--jobs 4` for gates). Baseline outputs are
+cached under `--cache-dir` (default `~/.cache/sutura-verify`) keyed by the input
+SHA-256, the exact flags and the baseline HEAD, so a repeated T1/T2 reuses the
+baseline half. Candidate outputs are never cached.
+
+## Verification tiers
+
+| Tier | When | Scope | Command | Gate | Measured (this M2) |
+|---|---|---|---|---|---|
+| T0 | every commit | unit/parity, no corpus | `cargo test` + the relevant Python unit/parity suites | pass | seconds |
+| T1 | output-affecting change | 3 heavy meshes: `thingi10k_100827`, `thingi10k_1038441`, `artec_metal-nut` | `--quality --exclude-nondeterministic --jobs 4` (or `--byte --deterministic`) | no worse / identical | **138.7 s cold, 73.5 s warm** |
+| T1+ | organic/scan-touching change | T1 + `thingi10k_100281`, `thingi10k_224108`, `thingi10k_46012` | same | same | ~2x T1 cold |
+| T2 | before a repair-path PR merge | all **40 tracked** meshes (explicit `git ls-files`, not the 48-file dir) | same | no worse / identical | **338.2 s cold, 169.2 s warm** (cache+4-way) |
+| T3 | before a release | T2 + local hard set + local reference bench | T2 + the owner's bench command | no worse; bench explained | local only |
+
+- T0 is the only tier in CI. T1/T1+/T2/T3 are developer/lead gates; keep
+  outputs under `/tmp`.
+- Rust-only **unwired** changes (no `sutura/` call site, registry, CLI or GUI)
+  need T0 only; once wired, T1/T2.
+- T3 inputs are private/local; pass paths on the command line and never name
+  them in tracked files. The docs only state that T3 exists.
+- Use the explicit tracked mesh list for T2; `resolve_meshes` on the directory
+  also picks up ignored `*_fixed.stl` artifacts.
+
 ## How to run
 The measurement half (input vs one output):
 ```

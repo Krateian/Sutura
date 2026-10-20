@@ -194,6 +194,46 @@ def exact_si(verts, tris):
         return None, 'si failed: %s' % e
 
 
+def gwn_union_volume(verts, tris, samples=12000, seed=0, chunk=16):
+    """Monte-Carlo GWN union volume (inside fraction x bbox volume).
+
+    Summed signed volume double-counts overlapping bodies; the GWN membership
+    fraction is the union volume. Fixed seed and small chunks keep it
+    deterministic and memory-bounded. Uses the native PyMeshBvh when present.
+    """
+    v = np.asarray(verts, np.float64)
+    t = np.asarray(tris, np.int64)
+    if len(v) == 0 or len(t) == 0:
+        return 0.0
+    lo, hi = v.min(0), v.max(0)
+    bbox_vol = float(np.prod(np.maximum(hi - lo, 1e-12)))
+    rng = np.random.default_rng(int(seed))
+    pts = lo + (hi - lo) * rng.random((int(samples), 3))
+    try:
+        import sutura_geom
+        bvh = sutura_geom.PyMeshBvh(v, t.astype(np.int32))
+        w = np.concatenate([
+            np.asarray(bvh.winding_points(pts[s:s + chunk]))
+            for s in range(0, len(pts), chunk)
+        ])
+    except Exception:  # noqa: BLE001 - numpy oracle fallback
+        A, B, C = v[t[:, 0]], v[t[:, 1]], v[t[:, 2]]
+        w = np.zeros(len(pts), np.float64)
+        for s in range(0, len(pts), chunk):
+            p = pts[s:s + chunk, None, :]
+            a, b, c = A[None] - p, B[None] - p, C[None] - p
+            la = np.linalg.norm(a, axis=2)
+            lb = np.linalg.norm(b, axis=2)
+            lc = np.linalg.norm(c, axis=2)
+            det = np.einsum('ijk,ijk->ij', a, np.cross(b, c))
+            den = (la * lb * lc + np.einsum('ijk,ijk->ij', a, b) * lc
+                   + np.einsum('ijk,ijk->ij', b, c) * la
+                   + np.einsum('ijk,ijk->ij', c, a) * lb)
+            w[s:s + chunk] = np.arctan2(det, den).sum(1) / (2.0 * np.pi)
+    inside = np.asarray(w) > 0.5
+    return float(inside.mean() * bbox_vol)
+
+
 def submesh(verts, tris, face_idx):
     """Build a standalone welded submesh from a set of face indices."""
     if len(face_idx) == 0:
@@ -360,6 +400,9 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
     rep = detect(vo, to)
     comp, closed = topology_counts(vo, to)
     si_out, si_note = exact_si(vo, to)
+    vol_in = gwn_union_volume(vi, ti)
+    vol_out = gwn_union_volume(vo, to)
+    vol_err = abs(vol_out - vol_in) / max(abs(vol_in), 1e-12)
     dist = two_sided_distance(vi, ti, vo, to)
     leak = leak_metric(in_raw, out_raw, vi, ti, tol)
     orca = orca_info(out_path)
@@ -390,6 +433,9 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
         'leak_count': leak['leak_count'],
         'si_output': si_out,
         'si_output_note': si_note,
+        'input_gwn_volume_mm3': round(vol_in, 4),
+        'output_gwn_volume_mm3': round(vol_out, 4),
+        'volume_error_rel': round(vol_err, 9),
     }
 
     if do_render:

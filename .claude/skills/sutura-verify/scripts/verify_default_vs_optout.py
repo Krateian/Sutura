@@ -35,6 +35,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -194,92 +195,300 @@ def generate_markdown(results, opt_out_flag):
     return '\n'.join(lines) + '\n'
 
 
-def main():
-    ap = argparse.ArgumentParser(description='default vs opt-out shape comparison')
-    ap.add_argument('meshes', nargs='*', help='STL/OBJ files or directories')
-    ap.add_argument('--repo', default=None, help='repository root')
-    ap.add_argument('--python', default=sys.executable,
-                    help='interpreter with pymeshlab (the repair venv)')
-    ap.add_argument('--out-dir', default=None,
-                    help='output dir (default: a fresh temp dir)')
-    ap.add_argument('--opt-out-flag', default=None,
-                    help='flag that disables the feature (e.g. --no-tamponade)')
-    ap.add_argument('--opt-out-env', default=None,
-                    help='environment variable for opt-out (e.g. SUTURA_ANTIPODAL=0)')
-    ap.add_argument('--extra-arg', action='append', default=[],
-                    help='extra argument added to both runs (e.g. --methods 13,16,17)')
-    ap.add_argument('--limit', type=int, default=0, help='max meshes (0 = all)')
-    ap.add_argument('--timeout', type=int, default=900, help='per-run timeout (s)')
-    args = ap.parse_args()
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
 
+
+def _repo_head(repo):
+    try:
+        return subprocess.check_output(
+            ['git', '-C', repo, 'rev-parse', 'HEAD'], text=True,
+            stderr=subprocess.DEVNULL).strip()
+    except Exception:  # noqa: BLE001
+        rp = os.path.join(repo, 'sutura', 'repair.py')
+        return _sha256_file(rp) if os.path.exists(rp) else 'unknown'
+
+
+def _cache_key(in_path, flags, repo, python):
+    payload = json.dumps([flags, _repo_head(repo), python], sort_keys=True)
+    return hashlib.sha256(
+        (_sha256_file(in_path) + '|' + payload).encode()).hexdigest()
+
+
+def _read_cache(cache_dir, key):
+    d = os.path.join(cache_dir, key[:2], key)
+    stl, meta = os.path.join(d, 'output.stl'), os.path.join(d, 'meta.json')
+    if os.path.exists(stl) and os.path.exists(meta):
+        with open(meta) as f:
+            return stl, json.load(f)
+    return None, None
+
+
+def _write_cache(cache_dir, key, stl, meta):
+    d = os.path.join(cache_dir, key[:2], key)
+    os.makedirs(d, exist_ok=True)
+    tmp = os.path.join(d, 'output.stl.tmp')
+    shutil.copyfile(stl, tmp)
+    os.replace(tmp, os.path.join(d, 'output.stl'))
+    tmpm = os.path.join(d, 'meta.json.tmp')
+    with open(tmpm, 'w') as f:
+        json.dump(meta, f)
+    os.replace(tmpm, os.path.join(d, 'meta.json'))
+
+
+def ftetwild_adopted(report):
+    ft = (report or {}).get('experimental_ftetwild') or {}
+    return bool(ft.get('adopted'))
+
+
+def judge_quality(b, c, tol):
+    """Candidate vs baseline: no mesh worse on the quality metrics."""
+    if b.get('si_output') is None or c.get('si_output') is None:
+        return 'ERROR', 'SI-after unavailable (hard fail)'
+    md5_changed = bool(b.get('md5') and c.get('md5') and b['md5'] != c['md5'])
+    if c['reload_holes'] > b['reload_holes']:
+        return 'WORSE', 'more holes: %d vs %d' % (c['reload_holes'], b['reload_holes'])
+    if c['reload_non_manifold_edges'] > b['reload_non_manifold_edges']:
+        return 'WORSE', 'more NM edges: %d vs %d' % (
+            c['reload_non_manifold_edges'], b['reload_non_manifold_edges'])
+    if c['si_output'] > b['si_output']:
+        return 'WORSE', 'SI-after rose: %d vs %d' % (c['si_output'], b['si_output'])
+    if c['two_sided_max_mm'] > b['two_sided_max_mm'] + tol:
+        return 'WORSE', 'two-sided max worse beyond tol: %s vs %s' % (
+            c['two_sided_max_mm'], b['two_sided_max_mm'])
+    if c['two_sided_p95_mm'] > b['two_sided_p95_mm'] + tol:
+        return 'WORSE', 'two-sided p95 worse beyond tol: %s vs %s' % (
+            c['two_sided_p95_mm'], b['two_sided_p95_mm'])
+    if c['volume_error_rel'] > b['volume_error_rel'] + 1e-3:
+        return 'WORSE', 'volume error rose: %.6f vs %.6f' % (
+            c['volume_error_rel'], b['volume_error_rel'])
+    bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
+    cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
+    if cp > bp:
+        return 'WORSE', 'more parts: %s vs %s' % (cp, bp)
+    if c['closed_shells'] < b['closed_shells']:
+        return 'WORSE', 'fewer closed shells: %d vs %d' % (
+            c['closed_shells'], b['closed_shells'])
+    if (c['reload_holes'] < b['reload_holes']
+            or c['reload_non_manifold_edges'] < b['reload_non_manifold_edges']
+            or c['si_output'] < b['si_output']
+            or c['two_sided_max_mm'] < b['two_sided_max_mm']
+            or c['volume_error_rel'] < b['volume_error_rel']
+            or cp < bp
+            or c['closed_shells'] > b['closed_shells']):
+        return 'BETTER', 'no metric worse and at least one improves'
+    if md5_changed:
+        return 'CHANGED', 'output changed within quality tolerance'
+    return 'SAME', 'no quality change'
+
+
+def _markdown_modes(results, mode):
+    if mode == 'byte':
+        lines = ['# Byte gate (refactors)', '',
+                 '| Mesh | Baseline MD5 | Candidate MD5 | Verdict | Note |',
+                 '|---|---|---|---|---|']
+        for r in results:
+            b = r.get('baseline') or {}
+            c = r.get('candidate') or {}
+            lines.append('| %s | %s | %s | **%s** | %s |' % (
+                r['name'], (b.get('md5') or '')[:8], (c.get('md5') or '')[:8],
+                r['verdict'], r.get('verdict_reason', '')))
+        return '\n'.join(lines) + '\n'
+    lines = ['# Quality gate (behaviour changes)', '',
+             '| Mesh | Holes b/c | NM b/c | SI b/c | 2-sided max b/c | '
+             'Vol err b/c | Parts b/c | Verdict | Changed |',
+             '|---|---|---|---|---|---|---|---|---|']
+    for r in results:
+        b = r.get('baseline') or {}
+        c = r.get('candidate') or {}
+        if not b or not c:
+            lines.append('| %s | - | - | - | - | - | - | **%s** | - |' % (
+                r['name'], r['verdict']))
+            continue
+        bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
+        cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
+        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %.6f/%.6f | %s/%s | **%s** | %s |' % (
+            r['name'], b['reload_holes'], c['reload_holes'],
+            b['reload_non_manifold_edges'], c['reload_non_manifold_edges'],
+            b['si_output'], c['si_output'],
+            b['two_sided_max_mm'], c['two_sided_max_mm'],
+            b['volume_error_rel'], c['volume_error_rel'], bp, cp,
+            r['verdict'], 'yes' if r.get('changed') else 'no'))
+    return '\n'.join(lines) + '\n'
+
+
+def main():
+    ap = argparse.ArgumentParser(description='baseline/candidate or default-vs-opt-out verification')
+    ap.add_argument('meshes', nargs='*', help='STL/OBJ files or directories')
+    ap.add_argument('--repo', default=None, help='candidate repository root')
+    ap.add_argument('--python', default=sys.executable,
+                    help='candidate interpreter with pymeshlab')
+    ap.add_argument('--baseline-repo', default=None,
+                    help='baseline repository root (byte/quality)')
+    ap.add_argument('--baseline-python', default=None,
+                    help='baseline interpreter (default: --python)')
+    ap.add_argument('--byte', action='store_true', help='refactor: byte-identical outputs')
+    ap.add_argument('--quality', action='store_true', help='behaviour: no quality metric worse')
+    ap.add_argument('--deterministic', action='store_true',
+                    help='add --no-graft --no-fallback-ftetwild --deep-repair off')
+    ap.add_argument('--exclude-nondeterministic', action='store_true',
+                    help='byte mode: fTetWild-adopting meshes are SKIPPED-NONDET')
+    ap.add_argument('--out-dir', default=None)
+    ap.add_argument('--cache-dir', default=os.environ.get(
+        'SUTURA_VERIFY_CACHE', os.path.expanduser('~/.cache/sutura-verify')),
+        help='main/baseline output cache (SHA + flags)')
+    ap.add_argument('--jobs', type=int, default=1, help='parallel meshes (e.g. 4)')
+    ap.add_argument('--opt-out-flag', default=None)
+    ap.add_argument('--opt-out-env', default=None)
+    ap.add_argument('--extra-arg', action='append', default=[])
+    ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--timeout', type=int, default=900)
+    args = ap.parse_args()
+    mode = 'byte' if args.byte else 'quality' if args.quality else 'feature'
+    if args.exclude_nondeterministic and mode == 'feature':
+        print('error: --exclude-nondeterministic needs --byte or --quality', file=sys.stderr)
+        return 2
+    if mode != 'feature' and not args.baseline_repo:
+        print('error: --baseline-repo is required with --byte/--quality', file=sys.stderr)
+        return 2
     repo = args.repo or vrs.default_repo()
+    baseline_repo = args.baseline_repo or repo
+    baseline_python = args.baseline_python or args.python
     repair_py = os.path.join(repo, 'sutura', 'repair.py')
-    if not os.path.exists(repair_py):
-        print('error: %s not found; pass --repo' % repair_py, file=sys.stderr)
+    base_repair_py = os.path.join(baseline_repo, 'sutura', 'repair.py')
+    if not os.path.exists(repair_py) or not os.path.exists(base_repair_py):
+        print('error: repair.py not found in candidate/baseline repo', file=sys.stderr)
         return 2
     meshes = resolve_meshes(args.meshes, repo, args.limit)
     if not meshes:
-        print('error: no meshes; pass paths or --repo with a sample corpus',
-              file=sys.stderr)
+        print('error: no meshes', file=sys.stderr)
         return 2
     out_dir = args.out_dir or tempfile.mkdtemp(prefix='sutura-verify-')
-    os.makedirs(os.path.join(out_dir, 'default'), exist_ok=True)
-    os.makedirs(os.path.join(out_dir, 'optout'), exist_ok=True)
-    print('repo: %s' % repo)
-    print('python: %s' % args.python)
+    side_names = (('default', 'optout') if mode == 'feature'
+                  else ('baseline', 'candidate'))
+    for side in side_names:
+        os.makedirs(os.path.join(out_dir, side), exist_ok=True)
+    if mode != 'feature':
+        os.makedirs(args.cache_dir, exist_ok=True)
+    print('mode: %s | repo: %s | baseline: %s' % (mode, repo, baseline_repo))
+    print('python: %s | baseline python: %s' % (args.python, baseline_python))
     print('meshes: %d | output: %s' % (len(meshes), out_dir))
-
     env = os.environ.copy()
     env.setdefault('QT_QPA_PLATFORM', 'offscreen')
-    results = []
-    opt_flags = [args.opt_out_flag] if args.opt_out_flag else []
-    for idx, in_path in enumerate(meshes, 1):
+    det_args = (['--no-graft', '--no-fallback-ftetwild',
+                 '--deep-repair', 'off'] if args.deterministic else [])
+    common_flags = args.extra_arg + det_args
+    opt_flags = ([args.opt_out_flag] if args.opt_out_flag else [])
+
+    def run_side(in_path, name, side, repo_x, python_x, extra, use_cache):
+        out_stl = os.path.join(out_dir, side, '%s.stl' % name)
+        flags = common_flags + extra
+        key = None
+        if use_cache:
+            key = _cache_key(in_path, flags, repo_x, python_x)
+            cached, meta = _read_cache(args.cache_dir, key)
+            if cached:
+                shutil.copyfile(cached, out_stl)
+                meta['time_s'] = 0.0
+                meta['cached'] = True
+                meta['output'] = out_stl
+                print('  %s: cached (%s)' % (side, meta.get('md5', '')[:8]), flush=True)
+                return meta
+        cmd = [python_x, os.path.join(repo_x, 'sutura', 'repair.py'), in_path,
+               '-o', out_stl, '--no-history'] + flags
+        run_env = env.copy()
+        if side == 'optout' and args.opt_out_env:
+            k, v = args.opt_out_env.split('=', 1)
+            run_env[k] = v
+        rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
+        if not os.path.exists(out_stl):
+            print('  %s: no output (rc=%d) %s' % (side, rc, serr.strip()[:160]), flush=True)
+            return None
+        report = cli_report(sout)
+        with open(out_stl, 'rb') as f:
+            md5 = hashlib.md5(f.read()).hexdigest()
+        if mode in ('quality', 'feature'):
+            meas = measure(in_path, out_stl, el, repo_x)
+        else:
+            meas = {'time_s': round(el, 2)}
+        meas.update({'md5': md5, 'ftetwild_adopted': ftetwild_adopted(report),
+                     'cli_report': {'experimental_ftetwild':
+                                    report.get('experimental_ftetwild')}})
+        meas.setdefault('cached', False)
+        if use_cache:
+            _write_cache(args.cache_dir, key, out_stl, meas)
+        print('  %s: rc=%d %.2fs holes=%s nm=%s' % (
+            side, rc, el, meas.get('reload_holes', '-'), meas.get('reload_non_manifold_edges', '-')),
+            flush=True)
+        return meas
+
+    def run_one(idx_in):
+        idx, in_path = idx_in
         name = os.path.splitext(os.path.basename(in_path))[0]
         print('\n[%d/%d] %s' % (idx, len(meshes), name), flush=True)
-        runs = {}
-        for key, extra in (('default', []), ('optout', opt_flags)):
-            run_env = env.copy()
-            if key == 'optout' and args.opt_out_env:
-                k, v = args.opt_out_env.split('=', 1)
-                run_env[k] = v
-            out_stl = os.path.join(out_dir, key, '%s.stl' % name)
-            cmd = [args.python, repair_py, in_path, '-o', out_stl, '--no-history'] + args.extra_arg + extra
-            rc, sout, serr, el = run_cli(cmd, run_env, repo, args.timeout)
-            meas = measure(in_path, out_stl, el, repo) if os.path.exists(out_stl) else None
-            if meas is None:
-                print('  %s: no output (rc=%d) %s' % (key, rc, serr.strip()[:160]),
-                      file=sys.stderr)
-                runs[key] = None
-                continue
-            with open(out_stl, 'rb') as fh:
-                meas['md5'] = hashlib.md5(fh.read()).hexdigest()
-            meas['tamponade'] = cli_report(sout).get('tamponade', {})
-            runs[key] = meas
-            print('  %s: rc=%d %.2fs holes=%d nm=%d' % (
-                key, rc, el, meas['reload_holes'], meas['reload_non_manifold_edges']))
-        if runs.get('default') is None or runs.get('optout') is None:
-            results.append({'name': name, 'verdict': 'ERROR',
-                            'verdict_reason': 'a run produced no output',
-                            'default': runs.get('default') or {},
-                            'optout': runs.get('optout') or {}})
-            continue
-        d, n = runs['default'], runs['optout']
-        verdict, reason = judge_verdict(d, n, d['tolerance_mm'])
-        print('  -> %s (%s)' % (verdict, reason))
-        results.append({'name': name, 'verdict': verdict, 'verdict_reason': reason,
-                        'default': d, 'optout': n})
+        if mode == 'feature':
+            b = run_side(in_path, name, 'default', repo, args.python, [], False)
+            c = run_side(in_path, name, 'optout', repo, args.python, opt_flags, False)
+            key_b, key_c = 'default', 'optout'
+        else:
+            b = run_side(in_path, name, 'baseline', baseline_repo, baseline_python,
+                         [], True)
+            c = run_side(in_path, name, 'candidate', repo, args.python, [], False)
+            key_b, key_c = 'baseline', 'candidate'
+        if b is None or c is None:
+            return {'name': name, key_b: b or {}, key_c: c or {},
+                    'verdict': 'ERROR', 'verdict_reason': 'a run produced no output',
+                    'changed': True}
+        nondet = (args.exclude_nondeterministic
+                  and (b.get('ftetwild_adopted') or c.get('ftetwild_adopted')))
+        if mode == 'feature':
+            verdict, reason = judge_verdict(b, c, b.get('tolerance_mm', 0.05))
+        elif nondet:
+            verdict, reason = 'SKIPPED-NONDET', 'fTetWild adopted on this mesh'
+        elif mode == 'byte':
+            changed = b['md5'] != c['md5']
+            if not changed:
+                verdict, reason = 'SAME', 'byte-identical'
+            else:
+                verdict, reason = 'CHANGED', 'output bytes differ'
+        else:
+            verdict, reason = judge_quality(b, c, b.get('tolerance_mm', 0.05))
+        changed = bool(b.get('md5') != c.get('md5'))
+        print('  -> %s (%s)' % (verdict, reason), flush=True)
+        return {'name': name, key_b: b, key_c: c, 'verdict': verdict,
+                'verdict_reason': reason, 'changed': changed}
+
+    results = []
+    jobs = max(1, int(args.jobs))
+    if jobs == 1:
+        for item in enumerate(meshes, 1):
+            results.append(run_one(item))
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            results = list(ex.map(run_one, enumerate(meshes, 1)))
 
     with open(os.path.join(out_dir, 'summary.json'), 'w') as f:
         json.dump(results, f, indent=2)
-    md = generate_markdown([r for r in results if r['verdict'] != 'ERROR'],
-                           args.opt_out_flag)
+    if mode == 'feature':
+        md = generate_markdown([r for r in results if r['verdict'] != 'ERROR'],
+                               args.opt_out_flag)
+    else:
+        md = _markdown_modes(results, mode)
     with open(os.path.join(out_dir, 'report.md'), 'w') as f:
         f.write(md)
-    worse = [r['name'] for r in results if r['verdict'] == 'WORSE']
+    bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR')]
+    skipped = [r['name'] for r in results if r['verdict'] == 'SKIPPED-NONDET']
     print('\nwrote %s/summary.json and report.md' % out_dir)
-    print('WORSE: %s' % (', '.join(worse) if worse else 'none'))
+    print('FAIL: %s' % (', '.join(bad) if bad else 'none'))
+    if skipped:
+        print('SKIPPED-NONDET: %s' % ', '.join(skipped))
     print('(%s)' % PRIVATE_HINT)
-    return 1 if worse else 0
+    return 1 if bad else 0
 
 
 if __name__ == '__main__':
