@@ -179,22 +179,16 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
         self_intersections = int(ms.current_mesh().face_selection_array().sum())
         ms.apply_filter('set_selection_none')
     before_faces = ms.current_mesh().face_number()
-    try:
-        m = ms.current_mesh()
-        v_cur = m.vertex_matrix()
-        t_cur = m.face_matrix()
-        v_new, t_new = topology.remove_connected_components(
-            v_cur, t_cur, min_faces=params['mincomponentsize'], remove_unref=True)
-        if len(t_new) == 0:
-            ms.apply_filter('meshing_remove_connected_component_by_face_number',
-                            mincomponentsize=params['mincomponentsize'], removeunref=True)
-        elif len(t_new) < len(t_cur):
-            ms.clear()
+    m = ms.current_mesh()
+    v_cur = m.vertex_matrix()
+    t_cur = m.face_matrix()
+    v_new, t_new = topology.remove_connected_components(
+        v_cur, t_cur, min_faces=params['mincomponentsize'], remove_unref=True)
+    if len(t_new) < len(t_cur):
+        ms.clear()
+        if len(t_new) > 0:
             ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
-    except Exception:
-        ms.apply_filter('meshing_remove_connected_component_by_face_number',
-                        mincomponentsize=params['mincomponentsize'], removeunref=True)
-    debris_faces = max(before_faces - ms.current_mesh().face_number(), 0)
+    debris_faces = max(before_faces - (ms.current_mesh().face_number() if ms.number_meshes() > 0 else 0), 0)
 
     est = estimate_confidence_pre_repair({
         'detected_type': cls['type'],

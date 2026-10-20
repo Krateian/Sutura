@@ -16,7 +16,7 @@
 //! can fall back to numpy (numpy orders NaN/inf differently from `partial_cmp`).
 
 use numpy::ndarray::Array2;
-use numpy::{AllowTypeChange, PyArray1, PyArray2, PyArrayLike2};
+use numpy::{AllowTypeChange, PyArray1, PyArray2, PyArrayLike1, PyArrayLike2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -150,6 +150,19 @@ fn unique_rows_f32(rows: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<i64>) {
 }
 
 fn read_f32_rows(arr: &PyArrayLike2<'_, f32, AllowTypeChange>) -> PyResult<Vec<[f32; 3]>> {
+    let v = arr.as_array();
+    if v.ncols() != 3 {
+        return Err(PyValueError::new_err("array must be Nx3"));
+    }
+    let n = v.nrows();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        out.push([v[[i, 0]], v[[i, 1]], v[[i, 2]]]);
+    }
+    Ok(out)
+}
+
+fn read_f64_rows(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<Vec<[f64; 3]>> {
     let v = arr.as_array();
     if v.ncols() != 3 {
         return Err(PyValueError::new_err("array must be Nx3"));
@@ -745,7 +758,6 @@ pub fn repair_non_manifold_edges_core(
         std::collections::HashMap::new();
 
     let mut i = 0;
-    let mut active_nm: Vec<(i64, i64)> = Vec::new();
     while i < half_edges.len() {
         let mut j = i + 1;
         while j < half_edges.len() && half_edges[j].0 == half_edges[i].0 {
@@ -756,53 +768,49 @@ pub fn repair_non_manifold_edges_core(
         for k in i..j {
             flist.push(half_edges[k].1);
         }
-        if flist.len() > 2 {
-            active_nm.push(edge);
-        }
         edge_faces.insert(edge, flist);
         i = j;
     }
 
-    if active_nm.is_empty() {
+    let mut to_del: Vec<usize> = Vec::new();
+    for (f_idx, edges) in face_edges.iter().enumerate() {
+        let mut has_nm = false;
+        for e in edges {
+            if let Some(flist) = edge_faces.get(e) {
+                if flist.len() > 2 {
+                    has_nm = true;
+                    break;
+                }
+            }
+        }
+        if has_nm {
+            to_del.push(f_idx);
+        }
+    }
+
+    if to_del.is_empty() {
         return trows.to_vec();
     }
 
+    to_del.sort_by(|&a, &b| areas[a].total_cmp(&areas[b]).then_with(|| a.cmp(&b)));
+
     let mut removed = vec![false; nf];
-
-    while let Some(edge) = active_nm.pop() {
-        if let Some(flist) = edge_faces.get_mut(&edge) {
-            flist.retain(|&f| !removed[f]);
-            if flist.len() <= 2 {
-                continue;
-            }
-            let mut best_idx = 0;
-            let mut min_area = areas[flist[0]];
-            let mut min_f = flist[0];
-            for (idx, &f) in flist.iter().enumerate().skip(1) {
-                let a = areas[f];
-                if a < min_area || (a == min_area && f < min_f) {
-                    min_area = a;
-                    min_f = f;
-                    best_idx = idx;
+    for fi in to_del {
+        if removed[fi] {
+            continue;
+        }
+        let mut still_has_nm = false;
+        for e in &face_edges[fi] {
+            if let Some(flist) = edge_faces.get(e) {
+                let active_count = flist.iter().filter(|&&f| !removed[f]).count();
+                if active_count > 2 {
+                    still_has_nm = true;
+                    break;
                 }
             }
-            let victim = flist.swap_remove(best_idx);
-            removed[victim] = true;
-
-            if flist.len() > 2 {
-                active_nm.push(edge);
-            }
-
-            for &other_e in &face_edges[victim] {
-                if other_e != edge {
-                    if let Some(other_list) = edge_faces.get_mut(&other_e) {
-                        other_list.retain(|&f| !removed[f]);
-                        if other_list.len() > 2 {
-                            active_nm.push(other_e);
-                        }
-                    }
-                }
-            }
+        }
+        if still_has_nm {
+            removed[fi] = true;
         }
     }
 
@@ -810,6 +818,296 @@ pub fn repair_non_manifold_edges_core(
     for (f_idx, tri) in trows.iter().enumerate() {
         if !removed[f_idx] {
             out.push(*tri);
+        }
+    }
+    out
+}
+
+/// Repair non-manifold pinch vertices by splitting them (matching VCGLib meshing_repair_non_manifold_vertices).
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn repair_non_manifold_vertices<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f32, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<(Bound<'py, PyArray2<f32>>, Bound<'py, PyArray2<i64>>)> {
+    let vrows = read_f32_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let (out_v, out_t) = repair_non_manifold_vertices_core(&vrows, &trows);
+    Ok((rows_to_array2_f32(py, &out_v), rows_to_array2_i64(py, &out_t)))
+}
+
+pub fn repair_non_manifold_vertices_core(
+    vrows: &[[f32; 3]],
+    trows: &[[i64; 3]],
+) -> (Vec<[f32; 3]>, Vec<[i64; 3]>) {
+    let nf = trows.len();
+    let nv = vrows.len();
+    if nf == 0 || nv == 0 {
+        return (vrows.to_vec(), trows.to_vec());
+    }
+
+    let mut v_out = vrows.to_vec();
+    let mut t_out = trows.to_vec();
+
+    let mut half_edges: Vec<((i64, i64), usize, usize)> = Vec::with_capacity(3 * nf);
+    let mut vert_faces: std::collections::HashMap<i64, Vec<usize>> = std::collections::HashMap::new();
+
+    for (fi, tri) in trows.iter().enumerate() {
+        for k in 0..3 {
+            let e = canon(tri[k], tri[(k + 1) % 3]);
+            half_edges.push((e, fi, k));
+            vert_faces.entry(tri[k]).or_default().push(fi);
+        }
+    }
+    half_edges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let mut nm_edge_verts: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut ff_adj: std::collections::HashMap<(usize, usize), (usize, usize)> =
+        std::collections::HashMap::new();
+
+    let mut i = 0;
+    while i < half_edges.len() {
+        let mut j = i + 1;
+        while j < half_edges.len() && half_edges[j].0 == half_edges[i].0 {
+            j += 1;
+        }
+        let count = j - i;
+        let edge = half_edges[i].0;
+        if count > 2 {
+            nm_edge_verts.insert(edge.0);
+            nm_edge_verts.insert(edge.1);
+        } else if count == 2 {
+            let (f0, k0) = (half_edges[i].1, half_edges[i].2);
+            let (f1, k1) = (half_edges[i + 1].1, half_edges[i + 1].2);
+            ff_adj.insert((f0, k0), (f1, k1));
+            ff_adj.insert((f1, k1), (f0, k0));
+        } else if count == 1 {
+            let (f0, k0) = (half_edges[i].1, half_edges[i].2);
+            ff_adj.insert((f0, k0), (f0, k0));
+        }
+        i = j;
+    }
+
+    let mut nm_verts: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for (&vi, flist) in &vert_faces {
+        if nm_edge_verts.contains(&vi) {
+            continue;
+        }
+        let start_f = flist[0];
+        let mut visited_f = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        visited_f.insert(start_f);
+        queue.push_back(start_f);
+
+        while let Some(curr_f) = queue.pop_front() {
+            let tri = t_out[curr_f];
+            let mut corner = usize::MAX;
+            for k in 0..3 {
+                if tri[k] == vi {
+                    corner = k;
+                    break;
+                }
+            }
+            if corner == usize::MAX {
+                continue;
+            }
+            for &edge_k in &[(corner + 2) % 3, corner] {
+                if let Some(&(adj_f, _)) = ff_adj.get(&(curr_f, edge_k)) {
+                    if !visited_f.contains(&adj_f) && t_out[adj_f].contains(&vi) {
+                        visited_f.insert(adj_f);
+                        queue.push_back(adj_f);
+                    }
+                }
+            }
+        }
+        if visited_f.len() < flist.len() {
+            nm_verts.insert(vi);
+        }
+    }
+
+    if nm_verts.is_empty() {
+        return (v_out, t_out);
+    }
+
+    let mut visited_v = std::collections::HashSet::new();
+    let mut to_split: Vec<(i64, Vec<(usize, usize)>)> = Vec::new();
+
+    for fi in 0..nf {
+        for corner in 0..3 {
+            let vi = t_out[fi][corner];
+            if nm_verts.contains(&vi) && !visited_v.contains(&vi) {
+                visited_v.insert(vi);
+                let mut fan_faces = std::collections::HashSet::new();
+                let mut queue = std::collections::VecDeque::new();
+                fan_faces.insert(fi);
+                queue.push_back(fi);
+
+                while let Some(curr_f) = queue.pop_front() {
+                    let tri = t_out[curr_f];
+                    let mut c = usize::MAX;
+                    for k in 0..3 {
+                        if tri[k] == vi {
+                            c = k;
+                            break;
+                        }
+                    }
+                    if c == usize::MAX {
+                        continue;
+                    }
+                    for &edge_k in &[(c + 2) % 3, c] {
+                        if let Some(&(adj_f, _)) = ff_adj.get(&(curr_f, edge_k)) {
+                            if !fan_faces.contains(&adj_f) && t_out[adj_f].contains(&vi) {
+                                fan_faces.insert(adj_f);
+                                queue.push_back(adj_f);
+                            }
+                        }
+                    }
+                }
+
+                let mut sorted_fan: Vec<usize> = fan_faces.into_iter().collect();
+                sorted_fan.sort_unstable();
+                let mut face_ints: Vec<(usize, usize)> = Vec::with_capacity(sorted_fan.len());
+                for f_idx in sorted_fan {
+                    let c = t_out[f_idx].iter().position(|&v| v == vi).unwrap();
+                    face_ints.push((f_idx, c));
+                }
+                to_split.push((vi, face_ints));
+            }
+        }
+    }
+
+    for (orig_vi, face_ints) in to_split {
+        let new_v_idx = v_out.len() as i64;
+        v_out.push(v_out[orig_vi as usize]);
+        for (f_idx, corner) in face_ints {
+            t_out[f_idx][corner] = new_v_idx;
+        }
+    }
+
+    (v_out, t_out)
+}
+
+/// Remove selected faces matching VCGLib meshing_remove_selected_faces.
+#[pyfunction]
+#[pyo3(signature = (tris, selected))]
+pub fn remove_selected_faces<'py>(
+    py: Python<'py>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    selected: PyArrayLike1<'py, bool, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<i64>>> {
+    let trows = read_i64_rows(&tris)?;
+    let sel_slice = selected.as_slice()?;
+    let out = remove_selected_faces_core(&trows, sel_slice);
+    Ok(rows_to_array2_i64(py, &out))
+}
+
+pub fn remove_selected_faces_core(
+    trows: &[[i64; 3]],
+    selected: &[bool],
+) -> Vec<[i64; 3]> {
+    trows
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| !selected.get(*idx).copied().unwrap_or(false))
+        .map(|(_, tri)| *tri)
+        .collect()
+}
+
+/// Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0)).
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn compute_normal_per_face<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let vrows = read_f64_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let out = compute_normal_per_face_core(&vrows, &trows);
+    Ok(rows_to_array2_f32(py, &out))
+}
+
+pub fn compute_normal_per_face_core(
+    vrows: &[[f64; 3]],
+    trows: &[[i64; 3]],
+) -> Vec<[f32; 3]> {
+    let nf = trows.len();
+    let nv = vrows.len();
+    let mut out = Vec::with_capacity(nf);
+    for tri in trows {
+        let (i0, i1, i2) = (tri[0], tri[1], tri[2]);
+        if i0 < 0 || i1 < 0 || i2 < 0 || (i0 as usize) >= nv || (i1 as usize) >= nv || (i2 as usize) >= nv {
+            out.push([0.0, 0.0, 0.0]);
+            continue;
+        }
+        let p0 = vrows[i0 as usize];
+        let p1 = vrows[i1 as usize];
+        let p2 = vrows[i2 as usize];
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let cross = [
+            (e1[1] * e2[2] - e1[2] * e2[1]) as f32,
+            (e1[2] * e2[0] - e1[0] * e2[2]) as f32,
+            (e1[0] * e2[1] - e1[1] * e2[0]) as f32,
+        ];
+        out.push(cross);
+    }
+    out
+}
+
+/// Compute unit per-vertex normals matching VCGLib compute_normal_per_vertex (Simple Average).
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+pub fn compute_normal_per_vertex<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    let vrows = read_f64_rows(&verts)?;
+    let trows = read_i64_rows(&tris)?;
+    let out = compute_normal_per_vertex_core(&vrows, &trows);
+    Ok(rows_to_array2_f32(py, &out))
+}
+
+pub fn compute_normal_per_vertex_core(
+    vrows: &[[f64; 3]],
+    trows: &[[i64; 3]],
+) -> Vec<[f32; 3]> {
+    let nv = vrows.len();
+    let mut vn = vec![[0.0f64; 3]; nv];
+    for tri in trows {
+        let (i0, i1, i2) = (tri[0], tri[1], tri[2]);
+        if i0 < 0 || i1 < 0 || i2 < 0 || (i0 as usize) >= nv || (i1 as usize) >= nv || (i2 as usize) >= nv {
+            continue;
+        }
+        let p0 = vrows[i0 as usize];
+        let p1 = vrows[i1 as usize];
+        let p2 = vrows[i2 as usize];
+        let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+        let cross = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let len = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+        if len > 0.0 {
+            let n = [cross[0] / len, cross[1] / len, cross[2] / len];
+            for &idx in &[i0 as usize, i1 as usize, i2 as usize] {
+                vn[idx][0] += n[0];
+                vn[idx][1] += n[1];
+                vn[idx][2] += n[2];
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(nv);
+    for n in vn {
+        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        if len > 0.0 {
+            out.push([(n[0] / len) as f32, (n[1] / len) as f32, (n[2] / len) as f32]);
+        } else {
+            out.push([0.0f32, 0.0f32, 0.0f32]);
         }
     }
     out

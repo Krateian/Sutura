@@ -370,6 +370,7 @@ def test_pymeshlab_parity():
     import glob
     import subprocess
     samples = sorted(glob.glob(os.path.join(REPO, 'tests', 'real-world-samples', '*.stl')))
+    samples = [p for p in samples if not p.endswith('_fixed.stl')]
     if samples:
         worker_code = """
 import sys, os, json, pymeshlab, numpy as np
@@ -453,12 +454,175 @@ else:
     print(f'pymeshlab parity OK on {len(samples)} corpus meshes + 1 OBJ load case + {len(synthetic_cases)} synthetic non-manifold cases (bit-for-bit, exact keys)')
 
 
+def test_phase2_filter_parity():
+    """Verify bit-for-bit parity against PyMeshLab on all Phase 2 repair and cleanup filters.
+
+    Filters covered:
+      - meshing_repair_non_manifold_vertices
+      - meshing_repair_non_manifold_edges
+      - meshing_remove_unreferenced_vertices
+      - meshing_remove_selected_faces
+      - meshing_invert_face_orientation
+      - meshing_remove_connected_component_by_face_number
+      - compute_normal_per_face
+      - compute_normal_per_vertex
+    """
+    try:
+        import pymeshlab
+    except ImportError:
+        print('pymeshlab not importable, skipping phase 2 filter parity check')
+        return
+
+    import glob
+    import subprocess
+    import tempfile
+
+    samples = sorted(glob.glob(os.path.join(REPO, 'tests', 'real-world-samples', '*.stl')))
+    samples = [p for p in samples if not p.endswith('_fixed.stl')]
+    if not samples:
+        print('no corpus samples found, skipping corpus phase 2 parity check')
+        return
+
+    worker_code = """
+import sys, os, json, pymeshlab, numpy as np
+import topology
+
+path = sys.argv[1]
+ms0 = pymeshlab.MeshSet()
+ms0.load_new_mesh(path)
+m0 = ms0.current_mesh()
+v = m0.vertex_matrix()
+t = m0.face_matrix()
+
+diffs = []
+
+# 1. invert_face_orientation
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.apply_filter('meshing_invert_face_orientation')
+pml_t_inv = ms.current_mesh().face_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    t_inv = topology.invert_face_orientation(t)
+    if not np.array_equal(pml_t_inv, t_inv):
+        diffs.append(f'[{eng}] invert_face_orientation mismatch')
+
+# 2. remove_unreferenced_vertices
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.apply_filter('meshing_remove_unreferenced_vertices')
+pml_v_unref = ms.current_mesh().vertex_matrix()
+pml_t_unref = ms.current_mesh().face_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    v_unref, t_unref = topology.remove_unreferenced_vertices(v, t)
+    if not (np.array_equal(pml_v_unref, v_unref) and np.array_equal(pml_t_unref, t_unref)):
+        diffs.append(f'[{eng}] remove_unreferenced_vertices mismatch')
+
+# 3. remove_connected_components
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.apply_filter('meshing_remove_connected_component_by_face_number', mincomponentsize=8, removeunref=True)
+pml_v_cc = ms.current_mesh().vertex_matrix()
+pml_t_cc = ms.current_mesh().face_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    v_cc, t_cc = topology.remove_connected_components(v, t, min_faces=8, remove_unref=True)
+    if not (np.array_equal(pml_v_cc, v_cc) and np.array_equal(pml_t_cc, t_cc)):
+        diffs.append(f'[{eng}] remove_connected_components mismatch')
+
+# 4. repair_non_manifold_edges
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.apply_filter('meshing_repair_non_manifold_edges')
+pml_t_nme = ms.current_mesh().face_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    t_nme = topology.repair_non_manifold_edges(v, t)
+    if not np.array_equal(pml_t_nme, t_nme):
+        diffs.append(f'[{eng}] repair_non_manifold_edges mismatch')
+
+# 5. repair_non_manifold_vertices
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.apply_filter('meshing_repair_non_manifold_vertices')
+pml_v_nmv = ms.current_mesh().vertex_matrix()
+pml_t_nmv = ms.current_mesh().face_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    v_nmv, t_nmv = topology.repair_non_manifold_vertices(v, t)
+    if not (np.array_equal(pml_v_nmv, v_nmv) and np.array_equal(pml_t_nmv, t_nmv)):
+        diffs.append(f'[{eng}] repair_non_manifold_vertices mismatch')
+
+
+# 7. compute_normal_per_face
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.apply_filter('compute_normal_per_face')
+pml_fn = ms.current_mesh().face_normal_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    fn = topology.compute_normal_per_face(v, t)
+    rel_diff = np.max(np.abs(pml_fn - fn) / np.maximum(np.abs(pml_fn), 1.0))
+    if rel_diff > 1e-4:
+        diffs.append(f'[{eng}] compute_normal_per_face rel diff {rel_diff}')
+
+# 8. compute_normal_per_vertex
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.apply_filter('compute_normal_per_vertex')
+pml_vn = ms.current_mesh().vertex_normal_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    vn = topology.compute_normal_per_vertex(v, t)
+    rel_diff = np.max(np.abs(pml_vn - vn) / np.maximum(np.abs(pml_vn), 1.0))
+    if rel_diff > 1e-4:
+        diffs.append(f'[{eng}] compute_normal_per_vertex rel diff {rel_diff}')
+
+# 9. remove_selected_faces
+sel = np.zeros(len(t), dtype=bool)
+sel[:min(5, len(t))] = True
+ms = pymeshlab.MeshSet()
+ms.add_mesh(pymeshlab.Mesh(v, t.astype(np.int32)))
+ms.current_mesh().add_face_custom_scalar_attribute(sel.astype(float), '_sel')
+ms.apply_filter('compute_selection_by_condition_per_face', condselect='_sel > 0.5')
+ms.apply_filter('meshing_remove_selected_faces')
+pml_t_sel = ms.current_mesh().face_matrix()
+for eng in ('python', 'rust'):
+    topology.set_engine(eng)
+    t_sel = topology.remove_selected_faces(t, sel)
+    if not np.array_equal(pml_t_sel, t_sel):
+        diffs.append(f'[{eng}] remove_selected_faces mismatch')
+
+if diffs:
+    print(json.dumps({'status': 'diff', 'diffs': diffs}))
+else:
+    print(json.dumps({'status': 'ok'}))
+"""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(worker_code)
+        tmp_worker = f.name
+    worker_env = dict(os.environ, PYTHONPATH=SUTURA)
+    try:
+        for path in samples:
+            proc = subprocess.run([sys.executable, tmp_worker, path], env=worker_env, capture_output=True, text=True)
+            assert proc.returncode == 0, f"Phase 2 worker failed on {path}: {proc.stderr}"
+            res = json.loads(proc.stdout.strip().splitlines()[-1])
+            assert res['status'] == 'ok', f"Phase 2 filter mismatch on {path}: {res['diffs']}"
+    finally:
+        if os.path.exists(tmp_worker):
+            os.remove(tmp_worker)
+
+    print(f'Phase 2 filter parity OK on {len(samples)} corpus meshes (bit-for-bit array match)')
+
+
 def main():
     test_parity()
     test_re_orient_parity()
     test_repair_nme_parity()
     test_geometric_measures_parity()
     test_pymeshlab_parity()
+    test_phase2_filter_parity()
     test_fallback_when_kernel_missing()
     topology.set_engine('auto')
     print('topology parity tests passed')

@@ -64,6 +64,12 @@ _RUST_FNS = (
     'remove_unreferenced_vertices',
     'remove_connected_components',
     'invert_face_orientation',
+    're_orient_faces_coherently',
+    'repair_non_manifold_edges',
+    'repair_non_manifold_vertices',
+    'remove_selected_faces',
+    'compute_normal_per_face',
+    'compute_normal_per_vertex',
     'mesh_topology',
     'mesh_geometric_measures',
     'self_intersecting_faces',
@@ -296,14 +302,13 @@ def _repair_non_manifold_edges_numpy(verts, tris):
     if nf == 0:
         return t
 
-    # Calculate triangle areas
+    # Calculate triangle double areas matching VCGLib DoubleArea
     p0 = v[t[:, 0]]
     p1 = v[t[:, 1]]
     p2 = v[t[:, 2]]
     cross = np.cross(p1 - p0, p2 - p0)
-    areas = 0.5 * np.linalg.norm(cross, axis=1)
+    double_areas = np.linalg.norm(cross, axis=1)
 
-    # Edge to incident faces mapping
     edge_faces = {}
     face_edges = []
     for fi in range(nf):
@@ -316,48 +321,165 @@ def _repair_non_manifold_edges_numpy(verts, tris):
         edge_faces.setdefault(e1, []).append(fi)
         edge_faces.setdefault(e2, []).append(fi)
 
-    sorted_edges = sorted(edge_faces.keys())
-    active_nm = [e for e in sorted_edges if len(edge_faces[e]) > 2]
-    if not active_nm:
+    to_del = []
+    for fi in range(nf):
+        edges = face_edges[fi]
+        if any(len(edge_faces[e]) > 2 for e in edges):
+            to_del.append(fi)
+
+    if not to_del:
         return t.copy()
 
+    to_del.sort(key=lambda fi: (double_areas[fi], fi))
+
     removed = np.zeros(nf, dtype=bool)
-
-    while active_nm:
-        edge = active_nm.pop()
-        flist = edge_faces[edge]
-        flist = [f for f in flist if not removed[f]]
-        edge_faces[edge] = flist
-        if len(flist) <= 2:
+    for fi in to_del:
+        if removed[fi]:
             continue
-
-        best_idx = 0
-        min_area = areas[flist[0]]
-        min_f = flist[0]
-        for idx in range(1, len(flist)):
-            f = flist[idx]
-            a = areas[f]
-            if a < min_area or (a == min_area and f < min_f):
-                min_area = a
-                min_f = f
-                best_idx = idx
-
-        victim = flist[best_idx]
-        flist[best_idx] = flist[-1]
-        flist.pop()
-        removed[victim] = True
-
-        if len(flist) > 2:
-            active_nm.append(edge)
-
-        for other_e in face_edges[victim]:
-            if other_e != edge:
-                other_list = [f for f in edge_faces[other_e] if not removed[f]]
-                edge_faces[other_e] = other_list
-                if len(other_list) > 2:
-                    active_nm.append(other_e)
+        edges = face_edges[fi]
+        still_has_nm = False
+        for e in edges:
+            active_count = sum(1 for f in edge_faces[e] if not removed[f])
+            if active_count > 2:
+                still_has_nm = True
+                break
+        if still_has_nm:
+            removed[fi] = True
 
     return t[~removed].copy()
+
+
+def _repair_non_manifold_vertices_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    nf = len(t)
+    nv = len(v)
+    if nf == 0 or nv == 0:
+        return v.copy(), t.copy()
+
+    v_out = [list(x) for x in v]
+    t_out = [list(tri) for tri in t]
+
+    edge_faces = {}
+    vert_faces = {}
+    for fi in range(nf):
+        tri = t[fi]
+        for k in range(3):
+            e = (min(tri[k], tri[(k + 1) % 3]), max(tri[k], tri[(k + 1) % 3]))
+            edge_faces.setdefault(e, []).append((fi, k))
+            vert_faces.setdefault(tri[k], []).append(fi)
+
+    nm_edges = {e for e, flist in edge_faces.items() if len(flist) > 2}
+    nm_edge_verts = set()
+    for e in nm_edges:
+        nm_edge_verts.add(e[0])
+        nm_edge_verts.add(e[1])
+
+    ff_adj = {}
+    for e, flist in edge_faces.items():
+        if len(flist) == 2:
+            (f0, k0), (f1, k1) = flist
+            ff_adj[(f0, k0)] = (f1, k1)
+            ff_adj[(f1, k1)] = (f0, k0)
+        elif len(flist) == 1:
+            (f0, k0) = flist[0]
+            ff_adj[(f0, k0)] = (f0, k0)
+
+    nm_verts = set()
+    for vi, flist in vert_faces.items():
+        if vi in nm_edge_verts:
+            continue
+        start_f = flist[0]
+        visited_f = {start_f}
+        q = [start_f]
+        while q:
+            curr_f = q.pop()
+            c = t_out[curr_f].index(vi)
+            for edge_k in [(c + 2) % 3, c]:
+                if (curr_f, edge_k) in ff_adj:
+                    adj_f, adj_k = ff_adj[(curr_f, edge_k)]
+                    if adj_f not in visited_f and vi in t_out[adj_f]:
+                        visited_f.add(adj_f)
+                        q.append(adj_f)
+        if len(visited_f) < len(flist):
+            nm_verts.add(vi)
+
+    if not nm_verts:
+        return v.copy(), t.copy()
+
+    visited_v = set()
+    to_split = []
+    for fi in range(nf):
+        for corner in range(3):
+            vi = t_out[fi][corner]
+            if vi in nm_verts and vi not in visited_v:
+                visited_v.add(vi)
+                fan_faces = {fi}
+                q = [fi]
+                while q:
+                    curr_f = q.pop()
+                    c = t_out[curr_f].index(vi)
+                    for edge_k in [(c + 2) % 3, c]:
+                        if (curr_f, edge_k) in ff_adj:
+                            adj_f, adj_k = ff_adj[(curr_f, edge_k)]
+                            if adj_f not in fan_faces and vi in t_out[adj_f]:
+                                fan_faces.add(adj_f)
+                                q.append(adj_f)
+                face_ints = []
+                for f_idx in sorted(fan_faces):
+                    face_ints.append((f_idx, t_out[f_idx].index(vi)))
+                to_split.append((vi, face_ints))
+
+    for orig_vi, face_ints in to_split:
+        new_v_idx = len(v_out)
+        v_out.append(v_out[orig_vi])
+        for f_idx, corner in face_ints:
+            t_out[f_idx][corner] = new_v_idx
+
+    return np.array(v_out, dtype=np.float32), np.array(t_out, dtype=np.int64)
+
+
+def _remove_selected_faces_numpy(tris, selected):
+    t = np.asarray(tris, dtype=np.int64)
+    sel = np.asarray(selected, dtype=bool)
+    return t[~sel].copy()
+
+
+def _compute_normal_per_face_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    p0 = v[t[:, 0]]
+    p1 = v[t[:, 1]]
+    p2 = v[t[:, 2]]
+    return np.cross(p1 - p0, p2 - p0).astype(np.float32)
+
+
+def _compute_normal_per_vertex_numpy(verts, tris):
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    nv = len(v)
+    if nv == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    if len(t) == 0:
+        return np.zeros((nv, 3), dtype=np.float32)
+    p0 = v[t[:, 0]]
+    p1 = v[t[:, 1]]
+    p2 = v[t[:, 2]]
+    cross = np.cross(p1 - p0, p2 - p0)
+    lens = np.linalg.norm(cross, axis=1, keepdims=True)
+    lens[lens == 0] = 1.0
+    norm_fn = cross / lens
+
+    vn = np.zeros((nv, 3), dtype=np.float64)
+    np.add.at(vn, t[:, 0], norm_fn)
+    np.add.at(vn, t[:, 1], norm_fn)
+    np.add.at(vn, t[:, 2], norm_fn)
+
+    v_lens = np.linalg.norm(vn, axis=1, keepdims=True)
+    v_lens[v_lens == 0] = 1.0
+    return (vn / v_lens).astype(np.float32)
 
 
 def _mesh_topology_numpy(verts, tris):
@@ -798,6 +920,118 @@ def repair_non_manifold_edges(verts, tris):
     return _geom.repair_non_manifold_edges(v, t)
 
 
+def repair_non_manifold_vertices(verts, tris=None):
+    """Repair non-manifold pinch vertices by splitting them (matching VCGLib meshing_repair_non_manifold_vertices).
+
+    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
+    Returns (verts, tris) as arrays, or modifies MeshSet in-place if MeshSet passed.
+    """
+    is_ms = False
+    if tris is None:
+        if hasattr(verts, 'current_mesh'):
+            ms = verts
+            m = ms.current_mesh()
+            v = m.vertex_matrix()
+            t = m.face_matrix()
+            is_ms = True
+        elif hasattr(verts, 'vertex_matrix'):
+            v = verts.vertex_matrix()
+            t = verts.face_matrix()
+        else:
+            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
+    else:
+        v = verts
+        t = tris
+    v = np.ascontiguousarray(v, dtype=np.float32)
+    t = np.ascontiguousarray(t, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(v) == 0 or len(t) == 0:
+        out_v, out_t = v, t
+    elif engine() == 'python':
+        out_v, out_t = _repair_non_manifold_vertices_numpy(v, t)
+    else:
+        out_v, out_t = _geom.repair_non_manifold_vertices(v, t)
+
+    if is_ms and len(out_v) > len(v):
+        import pymeshlab as ml
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=out_v, face_matrix=out_t.astype(np.int32)))
+        return ms
+    return out_v, out_t
+
+
+def remove_selected_faces(tris, selected):
+    """Remove selected faces matching VCGLib meshing_remove_selected_faces."""
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    sel = np.ascontiguousarray(selected, dtype=bool)
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) == 0:
+        return t
+    if engine() == 'python':
+        return _remove_selected_faces_numpy(t, sel)
+    return _geom.remove_selected_faces(t, sel)
+
+
+def compute_normal_per_face(verts, tris=None):
+    """Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0))."""
+    if tris is None:
+        if hasattr(verts, 'current_mesh'):
+            m = verts.current_mesh()
+            v = m.vertex_matrix()
+            t = m.face_matrix()
+        elif hasattr(verts, 'vertex_matrix'):
+            v = verts.vertex_matrix()
+            t = verts.face_matrix()
+        else:
+            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
+    else:
+        v = verts
+        t = tris
+    v = np.ascontiguousarray(v, dtype=np.float64)
+    t = np.ascontiguousarray(t, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    if engine() == 'python':
+        return _compute_normal_per_face_numpy(v, t)
+    return _geom.compute_normal_per_face(v, t)
+
+
+def compute_normal_per_vertex(verts, tris=None):
+    """Compute unit per-vertex normals matching VCGLib compute_normal_per_vertex (Simple Average)."""
+    if tris is None:
+        if hasattr(verts, 'current_mesh'):
+            m = verts.current_mesh()
+            v = m.vertex_matrix()
+            t = m.face_matrix()
+        elif hasattr(verts, 'vertex_matrix'):
+            v = verts.vertex_matrix()
+            t = verts.face_matrix()
+        else:
+            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
+    else:
+        v = verts
+        t = tris
+    v = np.ascontiguousarray(v, dtype=np.float64)
+    t = np.ascontiguousarray(t, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(v) == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    if engine() == 'python':
+        return _compute_normal_per_vertex_numpy(v, t)
+    return _geom.compute_normal_per_vertex(v, t)
+
+
 def mesh_topology(verts, tris=None):
     """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures).
 
@@ -858,6 +1092,15 @@ def mesh_geometric_measures(verts, tris=None):
 
 get_topological_measures = mesh_topology
 get_geometric_measures = mesh_geometric_measures
+meshing_repair_non_manifold_vertices = repair_non_manifold_vertices
+meshing_repair_non_manifold_edges = repair_non_manifold_edges
+meshing_remove_unreferenced_vertices = remove_unreferenced_vertices
+meshing_remove_selected_faces = remove_selected_faces
+meshing_re_orient_faces_coherently = re_orient_faces_coherently
+meshing_invert_face_orientation = invert_face_orientation
+meshing_remove_connected_component_by_face_number = remove_connected_components
+meshing_compute_normal_per_face = compute_normal_per_face
+meshing_compute_normal_per_vertex = compute_normal_per_vertex
 
 
 def native_si_enabled():
@@ -874,23 +1117,28 @@ def native_si_enabled():
 def native_orient_enabled():
     """Return True if native coherent face reorientation is enabled.
 
-    Controlled by environment variable ``SUTURA_NATIVE_ORIENT`` (default OFF: 0/false).
-    When enabled, coherent face winding propagation uses native dual-graph BFS via
-    sutura_geom rather than PyMeshLab's VCGLib filter.
+    Default True (active). Opt out with ``SUTURA_NATIVE_ORIENT=0``.
     """
     env = os.environ.get('SUTURA_NATIVE_ORIENT', '').strip().lower()
-    return env in ('1', 'true', 'yes', 'on')
+    return env not in ('0', 'false', 'no', 'off')
 
 
 def native_nme_enabled():
     """Return True if native non-manifold edge repair is enabled.
 
-    Controlled by environment variable ``SUTURA_NATIVE_NME`` (default OFF: 0/false).
-    When enabled, non-manifold edge repair prunes incident faces via sutura_geom
-    rather than PyMeshLab's VCGLib filter.
+    Default True (active). Opt out with ``SUTURA_NATIVE_NME=0``.
     """
     env = os.environ.get('SUTURA_NATIVE_NME', '').strip().lower()
-    return env in ('1', 'true', 'yes', 'on')
+    return env not in ('0', 'false', 'no', 'off')
+
+
+def native_nmv_enabled():
+    """Return True if native non-manifold vertex repair is enabled.
+
+    Default True (active). Opt out with ``SUTURA_NATIVE_NMV=0``.
+    """
+    env = os.environ.get('SUTURA_NATIVE_NMV', '').strip().lower()
+    return env not in ('0', 'false', 'no', 'off')
 
 
 def native_measures_enabled():
@@ -1111,12 +1359,17 @@ __all__ = [
     'invert_face_orientation',
     're_orient_faces_coherently',
     'repair_non_manifold_edges',
+    'repair_non_manifold_vertices',
+    'remove_selected_faces',
+    'compute_normal_per_face',
+    'compute_normal_per_vertex',
     'mesh_topology',
     'mesh_geometric_measures',
     'connected_components',
     'native_si_enabled',
     'native_orient_enabled',
     'native_nme_enabled',
+    'native_nmv_enabled',
     'native_measures_enabled',
     'self_intersecting_faces',
     'select_self_intersections_ms',

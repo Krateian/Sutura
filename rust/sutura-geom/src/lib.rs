@@ -1672,6 +1672,10 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::repair_non_manifold_edges, m)?)?;
     m.add_function(wrap_pyfunction!(topology::mesh_topology, m)?)?;
     m.add_function(wrap_pyfunction!(topology::mesh_geometric_measures, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::repair_non_manifold_vertices, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::remove_selected_faces, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::compute_normal_per_face, m)?)?;
+    m.add_function(wrap_pyfunction!(topology::compute_normal_per_vertex, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;

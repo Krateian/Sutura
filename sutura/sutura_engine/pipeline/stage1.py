@@ -155,77 +155,61 @@ def apply_chain(ms, chain):
                 v = m.vertex_matrix()
                 t = m.face_matrix()
                 v_new, t_new = topology.remove_connected_components(v, t, min_faces=min_sz, remove_unref=remove_unref)
-                if len(t_new) == 0:
-                    ms.apply_filter(name, **params)
-                elif len(t_new) < len(t):
+                if len(t_new) < len(t):
                     ms.clear()
-                    ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+                    if len(t_new) > 0:
+                        ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
                 handled = True
             elif name == 'meshing_invert_face_orientation':
                 _invert_faces_ms(ms, ml)
                 handled = True
             elif name == 'meshing_repair_non_manifold_edges':
-                if topology.native_nme_enabled():
-                    _repair_nme_ms(ms, ml)
-                    handled = True
+                _repair_nme_ms(ms, ml)
+                handled = True
             elif name == 'meshing_re_orient_faces_coherently':
-                if topology.native_orient_enabled():
-                    _re_orient_faces_ms(ms, ml)
-                    handled = True
+                _re_orient_faces_ms(ms, ml)
+                handled = True
+            elif name == 'meshing_repair_non_manifold_vertices':
+                _repair_nmv_ms(ms, ml)
+                handled = True
+            elif name == 'meshing_remove_selected_faces':
+                _remove_selected_faces_ms(ms, ml)
+                handled = True
 
             if not handled:
                 ms.apply_filter(name, **params)
             applied += 1
-        except Exception:
-            # Central wrapper: a native-path miss falls back to PyMeshLab; only
-            # a failure of THAT fallback is a real (recorded) method error.
-            _ok, _err = method_health.guard(
-                'stage1:' + name, 'filter', ms.apply_filter, name, **params)
-            if _ok:
-                applied += 1
-            else:
-                skipped[name] = str(_err)
+        except Exception as exc:
+            method_health.record_error('stage1:' + name, 'filter', exc)
+            skipped[name] = str(exc)
     return applied, skipped
 
 
 def _remove_unref_vertices_ms(ms, ml):
-    """Remove unreferenced vertices from a MeshSet in-place with native topology fallback."""
-    try:
-        m = ms.current_mesh()
-        v = m.vertex_matrix()
-        t = m.face_matrix()
-        v_new, t_new = topology.remove_unreferenced_vertices(v, t)
-        if len(v_new) == 0:
-            ms.apply_filter('meshing_remove_unreferenced_vertices')
-        elif len(v_new) < len(v):
-            ms.clear()
-            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
-    except Exception:
-        ms.apply_filter('meshing_remove_unreferenced_vertices')
-
-
-def _invert_faces_ms(ms, ml):
-    """Invert face orientation on a MeshSet in-place with native topology fallback."""
-    try:
-        m = ms.current_mesh()
-        v = m.vertex_matrix()
-        t = m.face_matrix()
-        t_new = topology.invert_face_orientation(t)
-        ms.clear()
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
-    except Exception:
-        ms.apply_filter('meshing_invert_face_orientation')
-
-
-def _re_orient_faces_ms(ms, ml):
-    """Re-orient faces coherently on a MeshSet in-place with native topology."""
+    """Remove unreferenced vertices from a MeshSet in-place with native topology."""
     m = ms.current_mesh()
     v = m.vertex_matrix()
     t = m.face_matrix()
-    t_new = topology.re_orient_faces_coherently(t)
-    if not np.array_equal(t_new, t):
+    v_new, t_new = topology.remove_unreferenced_vertices(v, t)
+    if len(v_new) < len(v):
         ms.clear()
+        if len(v_new) > 0:
+            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+
+
+def _invert_faces_ms(ms, ml):
+    """Invert face orientation on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.invert_face_orientation(t)
+    ms.clear()
+    if len(t_new) > 0:
         ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+
+
+def _re_orient_faces_ms(ms, ml):
+    ms.apply_filter('meshing_re_orient_faces_coherently')
 
 
 def _repair_nme_ms(ms, ml):
@@ -236,7 +220,33 @@ def _repair_nme_ms(ms, ml):
     t_new = topology.repair_non_manifold_edges(v, t)
     if len(t_new) < len(t):
         ms.clear()
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+        if len(t_new) > 0:
+            ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
+
+
+def _repair_nmv_ms(ms, ml):
+    """Repair non-manifold vertices on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    v_new, t_new = topology.repair_non_manifold_vertices(v, t)
+    if len(v_new) > len(v):
+        ms.clear()
+        if len(v_new) > 0:
+            ms.add_mesh(ml.Mesh(vertex_matrix=v_new, face_matrix=t_new.astype(np.int32)))
+
+
+def _remove_selected_faces_ms(ms, ml):
+    """Remove selected faces on a MeshSet in-place with native topology."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    sel = np.asarray(m.face_selection_array(), dtype=bool)
+    if sel.any():
+        t_new = topology.remove_selected_faces(t, sel)
+        ms.clear()
+        if len(t_new) > 0:
+            ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t_new.astype(np.int32)))
 
 
 def extreme_extra_passes(ms, ml, params):
@@ -265,7 +275,7 @@ def extreme_extra_passes(ms, ml, params):
                 return False, 0, 0, 0, {}
             before_removal = m.face_number()
             topology.select_self_intersections_ms(ms, ml, mask=mask, count=int(found))
-            ms.apply_filter('meshing_remove_selected_faces')
+            _remove_selected_faces_ms(ms, ml)
             removed = max(before_removal - ms.current_mesh().face_number(), 0)
             _remove_unref_vertices_ms(ms, ml)
             applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
@@ -277,7 +287,7 @@ def extreme_extra_passes(ms, ml, params):
     if found == 0:
         return False, 0, 0, 0, {}
     before_removal = ms.current_mesh().face_number()
-    ms.apply_filter('meshing_remove_selected_faces')
+    _remove_selected_faces_ms(ms, ml)
     removed = max(before_removal - ms.current_mesh().face_number(), 0)
     _remove_unref_vertices_ms(ms, ml)
     applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
@@ -482,13 +492,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 ms.apply_filter('set_selection_none')
                 report['reason'] = 'scope'
                 break
-            ms.apply_filter('meshing_remove_selected_faces')
+            _remove_selected_faces_ms(ms, ml)
             _remove_unref_vertices_ms(ms, ml)
-            if topology.native_nme_enabled():
-                _repair_nme_ms(ms, ml)
-            else:
-                ms.apply_filter('meshing_repair_non_manifold_edges')
-            ms.apply_filter('meshing_repair_non_manifold_vertices')
+            _repair_nme_ms(ms, ml)
+            _repair_nmv_ms(ms, ml)
             close_kwargs = {'maxholesize': maxholesize,
                             'newfaceselected': False,
                             'selfintersection': True}
