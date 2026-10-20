@@ -273,8 +273,7 @@ def extreme_extra_passes(ms, ml, params):
             if int(found) == 0:
                 return False, 0, 0, 0, {}
             before_removal = m.face_number()
-            topology.select_self_intersections_ms(ms, ml, mask=mask, count=int(found))
-            _remove_selected_faces_ms(ms, ml)
+            _remove_selected_faces_ms(ms, ml, mask=mask)
             removed = max(before_removal - ms.current_mesh().face_number(), 0)
             _remove_unref_vertices_ms(ms, ml)
             applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
@@ -476,14 +475,16 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
         with method_health.tier_guard('si_excise', 'round') as _gr:
             if topology.native_si_enabled():
                 if round_idx == 0 and init_mask is not None:
-                    topology.select_self_intersections_ms(ms, ml, mask=init_mask, count=current_si)
+                    sel_cur = init_mask
                 else:
-                    topology.select_self_intersections_ms(ms, ml)
+                    m_cur = ms.current_mesh()
+                    sel_cur, _ = topology.self_intersecting_faces(
+                        m_cur.vertex_matrix(), m_cur.face_matrix())
             else:
                 ms.apply_filter('compute_selection_by_self_intersections_per_face')
+                sel_cur = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
             m_cur = ms.current_mesh()
             t_cur = np.asarray(m_cur.face_matrix(), dtype=np.int64)
-            sel_cur = np.asarray(m_cur.face_selection_array(), dtype=bool)
             sel_dil = topology.dilate_face_selection(t_cur, sel_cur)
             selected = int(sel_dil.sum())
             if selected == 0:

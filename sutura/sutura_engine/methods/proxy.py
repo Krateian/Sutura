@@ -436,16 +436,22 @@ def health_mask(verts, tris, dilation_rings=DEFAULT_DILATION_RINGS, si_face_cap=
             if l in small_labels:
                 bad_face_indices.add(f_idx)
 
-    # 4. Self-intersections via PyMeshLab
+    # 4. Self-intersections via native exact predicates or PyMeshLab
     if n_faces <= si_face_cap:
         try:
-            import pymeshlab as ml
-            ms = ml.MeshSet()
-            ms.add_mesh(ml.Mesh(vertex_matrix=verts, face_matrix=np.asarray(tris, np.int32)))
-            ms.apply_filter('compute_selection_by_self_intersections_per_face')
-            si_sel = ms.current_mesh().face_selection_array()
-            for f_idx in np.where(si_sel)[0]:
-                bad_face_indices.add(int(f_idx))
+            if topology.native_si_enabled():
+                si_mask, _ = topology.self_intersecting_faces(verts, tris)
+                if si_mask is not None:
+                    for f_idx in np.where(si_mask)[0]:
+                        bad_face_indices.add(int(f_idx))
+            else:
+                import pymeshlab as ml
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=verts, face_matrix=np.asarray(tris, np.int32)))
+                ms.apply_filter('compute_selection_by_self_intersections_per_face')
+                si_sel = ms.current_mesh().face_selection_array()
+                for f_idx in np.where(si_sel)[0]:
+                    bad_face_indices.add(int(f_idx))
         except Exception:
             pass
 
