@@ -999,7 +999,8 @@ Python 3.11 is only needed for the optional fTetWild extra
   C++: install `cmake` and a C++17 compiler (g++/clang++), and Rust >= 1.89.
   Release installs normally use the prebuilt wheel and need none of these.
 * **PySide6 install fails.** The GUI needs `PySide6-Essentials`, which is
-  installed into the `venv` from PyPI. On distros where `pip install
+  installed into the `venv` from PyPI. The version follows the interpreter:
+  `6.12.0` on Python 3.12+, `6.11.2` on Python 3.11. On distros where `pip install
   PySide6-Essentials` fails (missing build tooling or a blocked PyPI), install
   the system Qt Python bindings instead and point the entry point at them:
   * Debian/Ubuntu: `sudo apt install python3-pyside6`
@@ -1162,7 +1163,8 @@ cd Sutura
 
 `install-macos.sh` checks for Homebrew, installs Miniforge via Homebrew if
 conda is missing, creates a `sutura-env` conda environment (Python 3.11),
-installs pymeshlab from conda-forge and PySide6/sutura_geom from pip,
+installs pymeshlab from conda-forge and PySide6/sutura_geom from pip
+(PySide6 6.11.2 on the Python 3.11 environment, which keeps macOS 13 support),
 verifies the imports, copies the app files to `~/.local/share/sutura/`, and
 creates `~/.local/bin/sutura` (CLI) and `~/.local/bin/sutura-gui` launchers.
 It also creates a native **`~/Applications/Sutura.app`** so you can launch the
