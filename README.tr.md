@@ -1004,7 +1004,9 @@ Python 3.11 yalnızca isteğe bağlı fTetWild eki için gerekir
   derlenir: `cmake`, C++17 derleyicisi (g++/clang++) ve Rust >= 1.89 kurun.
   Sürüm kurulumları normalde hazır wheel kullanır.
 * **PySide6 kurulumu başarısız.** GUI, `venv`'e PyPI'dan kurulan
-  `PySide6-Essentials` gerektirir. `pip install PySide6-Essentials`'ın
+  `PySide6-Essentials` gerektirir. Sürüm yorumlayıcıya göre seçilir:
+  Python 3.12+ için `6.12.0`, Python 3.11 için `6.11.2`.
+  `pip install PySide6-Essentials`'ın
   başarısız olduğu dağıtımlarda (eksik derleme araçları veya engellenen PyPI),
   sistem Qt Python bağlamalarını kurun ve giriş noktasını onlara yönlendirin:
   * Debian/Ubuntu: `sudo apt install python3-pyside6`
@@ -1171,7 +1173,8 @@ cd Sutura
 
 `install-macos.sh` Homebrew'i kontrol eder, conda yoksa Homebrew üzerinden
 Miniforge kurar, `sutura-env` conda ortamını oluşturur (Python 3.11),
-pymeshlab'ı conda-forge'dan, PySide6/sutura_geom'ı pip'ten kurar,
+pymeshlab'ı conda-forge'dan, PySide6/sutura_geom'ı pip'ten kurar
+(Python 3.11 ortamında PySide6 6.11.2; bu macOS 13 desteğini korur),
 import'ları doğrular, uygulama dosyalarını `~/.local/share/sutura/`'ya kopyalar
 ve `~/.local/bin/sutura` (CLI) ile `~/.local/bin/sutura-gui` başlatıcılarını
 oluşturur. Ayrıca yerel bir **`~/Applications/Sutura.app`** oluşturur — GUI'yi
