@@ -1,1 +1,5 @@
-PySide6-Essentials==6.11.2
+# PySide6 6.12 aborts the offscreen Qt render path on CPython 3.11 (a
+# shiboken refcount bug) and its macOS wheel requires macOS 14. Keep 6.11.2
+# there; the macOS conda environment is pinned to Python 3.11.
+PySide6-Essentials==6.12.0; python_version >= "3.12"
+PySide6-Essentials==6.11.2; python_version < "3.12"
