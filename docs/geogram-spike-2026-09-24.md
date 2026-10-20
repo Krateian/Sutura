@@ -92,11 +92,11 @@ The crash is a real blocker for community-edition Geogram 1.10.1 on this class o
 
 ---
 
-## 7. Outcome — Geogram evaluated, NOT integrated
+## 7. Outcome — MeshSurfaceIntersection evaluated, NOT integrated
 
 Following the project's standing rule for rejected experiments (the FAZ6 / FAZ8 / FAZ9 "evaluated, NOT integrated" pattern), this report records the outcome so a future attempt does not re-tread the same ground.
 
-**Status:** Geogram is **NOT integrated** into Sutura.  There is no `--experimental-geogram` flag, no GUI control, no wiring into `repair.py`, and no module-list update in `install.sh` / `install-macos.sh` / `scripts/build_appimage.sh`.
+**Status:** Geogram's **MeshSurfaceIntersection** path is **NOT integrated** into Sutura. There is no `--experimental-geogram` flag, no GUI control, no wiring into `repair.py`, and no module-list update in `install.sh` / `install-macos.sh` / `scripts/build_appimage.sh`. A different Geogram component, the standalone **Delaunay PSM**, is vendored in `rust/sutura-geom/third_party/geogram_delaunay_psm/` and compiled into the mandatory `sutura_geom` extension for the opt-in Splint tier (C++20 source builds); this report's rejection applies only to `MeshSurfaceIntersection`.
 
 **Why the path is closed:**
 1. Geogram's `MeshSurfaceIntersection` + `remove_internal_shells` is fast and reduces SI substantially, but its output remains non-manifold / non-watertight on Sutura's real-world SI targets.
