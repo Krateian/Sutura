@@ -5,7 +5,7 @@ The `sutura.ftetwild_manager` module provides a standard-library-only backend fo
 ## Supported Environments
 
 To maintain strict stability and isolate heavy dependencies, the manager operates **only** on Sutura's two designated environments:
-1. **Linux**: `$APP_DIR/venv311/bin/pip` (where `$APP_DIR` is `$SUTURA_DIR` or `~/.local/share/sutura`), as created by `install.sh`.
+1. **Linux**: `$APP_DIR/venv311/bin/pip` (where `$APP_DIR` is `$SUTURA_DIR` or `~/.local/share/sutura`), as created by `install.sh` with `SUTURA_WITH_FTETWILD=1`. Stage 2 no longer uses this environment: Manifold runs in-process in the mandatory `sutura_geom` Rust extension, so `venv311` exists only for the fTetWild extra.
 2. **macOS**: The conda `sutura-env` environment (`sutura-env/bin/pip`), as created by `install-macos.sh`.
 
 ### Unsupported Environments
@@ -29,9 +29,9 @@ Size estimates are hardcoded based on real measurements:
 
 ## Dependency Pruning & Safe Uninstall
 
-The manager dynamically resolves package dependencies from `requirements-ftetwild.txt` and base requirement files (`requirements.txt`, `requirements-gui.txt`, `requirements-311.txt`):
+The manager dynamically resolves package dependencies from `requirements-ftetwild.txt` and base requirement files (`requirements.txt`, `requirements-gui.txt`):
 
-1. **Base Protection**: Packages required by base Sutura (e.g. `numpy`, `manifold3d`, `trimesh`, `pymeshlab`, `PySide6-Essentials`) are strictly protected and never removed.
+1. **Base Protection**: Packages required by base Sutura (e.g. `numpy`, `pymeshlab`, `PySide6-Essentials`, `pip`, `setuptools`, `wheel`) are strictly protected and never removed. Manifold is not a Python package: it is statically linked into `sutura_geom` through `manifold-csg`, and `trimesh` is a development/test-only dependency, so neither appears in the base package set.
 2. **Heavy Dependency Cleanup**: Packages pulled in solely for fTetWild (notably `vtk`, `pyvista`, and `pyvista-validation`) are tracked and uninstalled, reclaiming ~517 MB from VTK alone.
 3. **Cancellation & Half-Install Cleanup**: Pip runs in a detached process group (`start_new_session=True`). When cancelled via `cancel_event`, the entire process tree is terminated (`SIGTERM` -> `SIGKILL`), and any partially extracted fTetWild packages are cleaned up automatically.
 

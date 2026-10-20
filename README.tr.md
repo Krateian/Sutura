@@ -184,8 +184,8 @@ eder ama açık kenarlı herhangi bir girdiyi reddeder (`NotManifold`), bu yüzd
 aşama 1'in meshi önce bitirmesi gerekir.
 
 Aşama 2 her platformda zorunlu `sutura_geom` Rust eklentisinin içinde süreç
-içi (in-process) çalışır. Python 3.11 sanal ortamı ve alt süreç köprüsü yoktur:
-eklenti Manifold C++ çekirdeğini statik olarak bağlar. Başarısız bir yeniden
+içi (in-process) çalışır. Aşama 2 için Python 3.11 sanal ortamı ve alt süreç
+köprüsü yoktur: eklenti Manifold C++ çekirdeğini statik olarak bağlar. Başarısız bir yeniden
 kurma raporda açıkça belirtilir, asla sessizce atlanmaz.
 
 **İsteğe bağlı katmanlar.** İki çekirdek aşamanın etrafında, self-intersection
@@ -963,7 +963,7 @@ söyler.
 | Dolphin entegrasyonu | ~%85 | STL/OBJ/3MF için sağ tık servis menüsü; tekli/çoklu seçimi destekler. KDE Plasma'ya ve `kbuildsycoca6` yenilenmesine bağlıdır; diğer dosya yöneticilerinde veya macOS'ta bulunmaz. |
 | OrcaSlicer eklentisi | ~%70 — deneysel | Yeni OrcaSlicer betik-eklentisi API'si için tek başına çalışan betik eklentisi (nightly / 2.4.2'den yeni sürümler; stabil 2.4.x'te eklenti sistemi yoktur). 3D görünümün yanındaki bir **"Sutura" yan paneli**, plate'teki **her nesneyi** bir Quick/Balanced/Thorough/Extreme preset seçici (varsayılan Balanced), nesne başına **Analyze** (salt-okunur: delikler / non-manifold / self-intersection'lar ve en üst sıradaki onarım yöntemleri) ve **Repair**, "Repair selected (n)" ve "Select broken", Cancel düğmeli canlı iş aşamaları (queued → exporting → repairing → loading → done/failed/cancelled) ve bir **Show file** bağlantısıyla listeler. Non-manifold nesneler (ya da Orca'nın içe aktarımda onardığı mesh hataları olan nesneler) **nesne başına oturumda bir kez** "Repair with Sutura" eylemli bir uyarı bildirimi üretir. Dışa aktarım her model-parça hacmini **dünya koordinatlarında** yazar (aynalanmış parçalar dışa bakan sarmalımı korur), parametre değiştiricilerini / negatif hacimleri / destek engelleyicilerini atlar, çok parçalı nesneleri tek bir STL'de birleştirir ve onarılan kopyayı **yeni bir nesne** olarak geri yükler (Undo çalışır; çıktılar 7 gün saklanır). `numpy` beyan edilmiş bir eklenti bağımlılığıdır; numpy'siz bir geri dönüş yolu vardır. Gerçek bir OrcaSlicer **2.5.0-dev** (macOS) üzerinde uçtan uca doğrulandı; birincil hedef Linux, macOS doğrulanmış bir bonus. `request_permissions` CLI yolunun fs_read iznini önceden beyan eder (subprocess istemleri kalır — bir OrcaSlicer denetim API kısıtı). Deneysel: bir taklit host'a karşı taklit-test edilir, CI'da canlı uçtan uca test yoktur. |
 | Dolaylı predikatlar / exact arrangement-lite (Faz B + C1–C4) | ~%50 — deneysel | Self-intersection geometrisini `--experimental-autorefine`'ın float64 snap-rounding'i yerine exact dolaylı predikatlarla bölen bir Rust prototipi (`--experimental-indirect-autorefine`, `rust/sutura-geom`). Faz B zinciri kurdu (predikat çekirdeği, exact üçgen–üçgen sınıflandırıcı, implicit noktalarla 2D CDT, `arrangement_lite` PyO3 bağlaması, `repair.py` bağlantısı). Faz C1 (0.4.0) her kesişim noktasını, oluşturulmuş noktaları zincirlemek yerine orijinal girdi düzlemlerinden/doğrularından kurar ve exact `BigRational` predikatlarının önüne kesin bir aralık-aritmetiği filtresi ekler (sonuçlar yapı gereği değişmez, fark testleriyle doğrulandı). thingi10k_1038441 üzerinde ölçüldü (M2): 1001 yüzlük alt küme 53 sn → 6 sn, 5000 yüzlük alt küme zaman aşımı → 31 sn, tam mesh 30+ dk'da bitmiyordu → ~463 sn; çıktı yüz sayıları birebir aynı. Faz C2, üçgen başına kısıtlı üçgenlemedeki doğrusal taramaları kaldırır (yürüyerek nokta konumlama, segment koridoru yürüyüşü, yerel güncellemeler, tamsayı tabanlı exact geri dönüş); çıktı bayt düzeyinde aynıdır: aynı x86_64 VM'de tam mesh 830 sn'den 52,5 sn'ye indi (5000 yüzlük alt küme 56 sn → 13 sn); M2'de tam mesh artık 29,8 sn (C1: ~463 sn). Faz C3 (sınıflandırma kısayolları, tamsayı tabanlı exact aritmetik, çıktı yine birebir aynı) VM süresini 28,1 sn'ye, Faz C4 (indirgenmiş exact anahtarların doğrudan hash'lenmesi, tamsayı tabanlı implicit nokta kurulumu, çıktı birebir aynı) ise 17,6 sn'ye indirir (M2: C3 sonrası 16,8 sn, C4 sonrası 10,6 sn). Bilinen sınırlamalar: varsayılan olarak kapalıdır (değerlendirme amaçlıdır); kurulumcularda ve AppImage/.dmg sürümlerinde paketlidir, ancak 115 mesh'lik corpus'ta henüz ölçülmemiştir. Harici bir alternatif olan Geogram `MeshSurfaceIntersection` ölçüldü ve reddedildi (çıktısı Manifold yeniden kurmasınca kabul edilmiyor, topluluk sürümü yoğun taramalarda çöküyor) — bkz. `docs/geogram-spike-2026-09-24.md`. |
-| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, aynalı tamamlama, ince-duvar analizi/kalınlaştırma, öğrenen triyaj, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi v2 taklidi (dünya-dönüşümü/sarmalım aktarımı, çok parçalı birleştirme, numpy'siz geri dönüş, mesaj protokolü, yaşam döngüsü debounce'u, bildirim tekilleştirmesi), geçmiş, gerçek-dünya corpus, Manifold su geçirmezlik kontrolü, kabuk-sarma graft (`tests/test_shell_wrap.py`), viskozite-kaplama pansuman (`tests/test_dressing.py`), pymeshlab'sız motor yalıtımı (`tests/test_engine_no_pymeshlab.py`), Flap yüzey delik doldurma (`tests/test_flap.py`), Flap Rust altın-şablon eşliği (`tests/test_flap_rust_parity.py`), Graft kademe bütçesi / girdi yüz sayısı üst sınırı (`tests/test_graft_budget.py`), kalan SI kümelerinin yerelleştirilmiş tam kendinden-birleşimi (`tests/test_local_exact.py`), ışın-saplama iç/dış (`tests/test_raystab.py`), korumalı Stage-1 SI kesme + yeniden kapatma (`tests/test_si_excise.py`)). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır (stage-2'ye bağlı bütçe, stage2-3mf ve gerçek-dünya corpus süitleri yalnızca 3.11 kolunda); ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 219 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
+| Test kapsamı | ~%85 | Her biri `python3 tests/<süit>.py` ile çalıştırılabilen düz betik süitleri (smoke, katmanlı 3MF, düşmanca, sınıflandırma, güven, kusurlar, ısı haritası çerçeveleri, düzelen-harita, öncesi/sonrası çizimi, viewer verisi, validate/dry-run, mesh sınıflandırıcı, onarım modu, öneriler, güncelleyici, obj onarımı, birim, bütçe, stage2-3mf, işkence, autorefine, join-components, fTetWild varsayılanları, sıkışmış vertex'ler, derin onarım merdiveni, yöntem kayıt defteri (P-WELD yeniden-yükleme güvenli geçişi dahil), yinelenen öge onarımı, aynalı tamamlama, ince-duvar analizi/kalınlaştırma, öğrenen triyaj, tarama kapatma, vekil-şablon onarımı, harici motorlar, fTetWild yöneticisi, motor entegrasyonu, motorlar GUI, OrcaSlicer eklentisi v2 taklidi (dünya-dönüşümü/sarmalım aktarımı, çok parçalı birleştirme, numpy'siz geri dönüş, mesaj protokolü, yaşam döngüsü debounce'u, bildirim tekilleştirmesi), geçmiş, gerçek-dünya corpus, Rust çekirdeği Manifold su geçirmezlik kontrolü, kabuk-sarma graft (`tests/test_shell_wrap.py`), viskozite-kaplama pansuman (`tests/test_dressing.py`), pymeshlab'sız motor yalıtımı (`tests/test_engine_no_pymeshlab.py`), Flap yüzey delik doldurma (`tests/test_flap.py`), Flap Rust altın-şablon eşliği (`tests/test_flap_rust_parity.py`), Graft kademe bütçesi / girdi yüz sayısı üst sınırı (`tests/test_graft_budget.py`), kalan SI kümelerinin yerelleştirilmiş tam kendinden-birleşimi (`tests/test_local_exact.py`), ışın-saplama iç/dış (`tests/test_raystab.py`), korumalı Stage-1 SI kesme + yeniden kapatma (`tests/test_si_excise.py`)). Her push/PR'da CI, elle çalıştırılan işkence düzeneği dışında hepsini Python 3.11 ve 3.14'te çalıştırır; ana pencereyi kuran iki süit de ilk-çalıştırma diyaloğu offscreen Qt platformunda atlandığı için artık headless çalışır. Rust çekirdeğinde filtre-exact fark testleri ve rastgele hızlandırılmış-doğrusal CDT sorgu testi ve değerlendirilmiş (varsayılanda kapalı) Sloan ve kenar-noktası CDT varyantlarının regresyon testleri dahil 219 birim testi vardır; CI'da hem düz hem de `--features cdt-check` ile (her hızlandırılmış üçgenleme sorgusu doğrusal referans taramaya karşı doğrulanır) çalışır; `tests/test_sutura_geom*.py` Python bağlamasını smoke-test eder. %100 değil: GUI'nin pencere kurulumu ve onay kutusu bağlantısı dışında otomatik bir UI testi yoktur ve canlı bir OrcaSlicer'a karşı yeniden üretilebilir uçtan uca test yoktur. |
 
 ## Gereksinimler
 
@@ -1093,13 +1093,14 @@ cd Sutura
 ./install.sh
 ```
 
-Bu, `~/.local/share/sutura` altında iki sanal ortam oluşturur, CLI sarmalayıcıyı
+Bu, `~/.local/share/sutura` altında ana sanal ortamı oluşturur (isteğe bağlı
+fTetWild eki istendiğinde ayrıca bir `venv311`), CLI sarmalayıcıyı
 `~/.local/bin/sutura`'ya kurar, hicolor uygulama ikonlarını kurar ve Dolphin
 servis menüsünü kaydeder. Yeniden çalıştırmak güvenlidir.
 
-**AppImage (isteğe bağlı).** Her iki Python çalışma zamanının da paketlendiği
-tek dosyalık AppImage — sanal ortam yok, sistemde `python3.11` gerekmez
-(aşama 1 + GUI için 3.14, aşama 2 için 3.11 paketlenir). Her etiketli sürüm,
+**AppImage (isteğe bağlı).** Aşama 1, Aşama 2 ve GUI için tek bir Python 3.14
+çalışma zamanının paketlendiği tek dosyalık AppImage — sanal ortam yok,
+sistemde `python3.11` gerekmez. Her etiketli sürüm,
 [GitHub sürümler sayfasında](https://github.com/Krateian/Sutura/releases)
 önceden derlenmiş `Sutura-x86_64.AppImage` ile birlikte gelir; dilerseniz
 `scripts/build_appimage.sh` ile kendiniz de derleyebilirsiniz
@@ -1117,8 +1118,8 @@ sağ tık servis menüsü hâlâ `install.sh` ile kurulur.
 
 Kurulum izole sanal ortamların içinde pip kullanır — AUR yok, yay/paru gerekmez,
 sistem paket yöneticinize hiçbir şey dokunmaz. GUI, PySide6 (~79 MB indirme,
-`venv`'in parçası) gerektirir; iki sanal ortamın toplam kurulu boyutu yaklaşık
-800 MB'dır.
+`venv`'in parçası) gerektirir; ana sanal ortamın toplam kurulu boyutu yaklaşık
+800 MB'dır (isteğe bağlı fTetWild eki kendi `venv311`'ini ekler).
 
 **Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~1 MB),
 `install.sh` ve `install-macos.sh` tarafından otomatik olarak kurulur (GitHub
@@ -1158,7 +1159,7 @@ Sutura ortamına kurar/kaldırır ve önce indirme ve disk boyutlarını göster
 Her ikisi de desteklenmeyen düzenleri (AppImage, `.dmg`, sistem Python'u)
 gerekçeyle reddeder.
 
-Arch'ta sistemde `python3.11` yoksa `install.sh` aşama 2 için bağımsız bir Python 3.11 çalışma zamanını otomatik olarak indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir).
+Arch'ta sistemde `python3.11` yoksa `install.sh` bağımsız bir Python 3.11 çalışma zamanını yalnızca isteğe bağlı fTetWild eki (`SUTURA_WITH_FTETWILD=1`) için otomatik olarak indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir).
 
 ### macOS
 
@@ -2086,15 +2087,17 @@ güvenilir şekilde algılayabilir.
 | Manifold (`sutura_geom` içindeki `manifold-csg`) | aşama 2 yeniden kurma, dış kabuk birleşimi, yinelenen öge CSG, Graft yerel dikişi | su geçirmezlik garantisi, sağlam boolean, Bambu Studio ile aynı C++ çekirdek; statik bağlantı, Apache-2.0 |
 | numpy | hat geneli | CLI, GUI, kusur tespiti, geçmiş ve tüm saf-Python katmanlar için dizi matematiği; zorunlu `sutura_geom` Rust eklentisi isteğe bağlı değildir ve Flap yolunun numpy geri dönüşü yoktur |
 | pytetwild + pyvista | fTetWild yedek katmanı (isteğe bağlı ek) | fTetWild tetrahedralizasyonu (MPL-2.0); pyvista VTK'yı getirir, kurulu ~1,1 GB, bu yüzden `SUTURA_WITH_FTETWILD=1` ile isteğe bağlıdır |
-| sutura-geom (Rust: `robust`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, morfoloji, en yakın komşu, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü, nokta-bulutu en yakın komşuları (`kiddo`), exact EDT/dilasyon ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
+| sutura-geom (Rust: `robust`, `manifold-csg`, `num-bigint`, `num-rational`, `num-traits`, `rayon`, `faer`, `kiddo`, `pyo3`, `numpy`) | exact arrangement, Manifold CSG, morfoloji, en yakın komşu, Flap, Dressing, Tamponad ve topoloji-temizleme hızlandırma | `--experimental-autorefine` ve `--experimental-indirect-autorefine` için exact açık/dolaylı predikatlar (`orient3d`, `insphere`), Aşama 2, dış kabuk birleşimi, yinelenen öge CSG ve Graft yerel dikişi için statik bağlı C++ Manifold çekirdeği (`manifold-csg`), aralık filtresi, exact üçgen kesişimi ve CDT, Graft (#13) için SDF ızgarası ve ikili konturlama, `flap_fill` yüzey-delik doldurma, `dressing_coat` dar-bant çıkarıcısı, `tamponade` iç-tıkaç modülü, nokta-bulutu en yakın komşuları (`kiddo`), exact EDT/dilasyon ve Aşama-1 temizliğini şeffaf bir saf-numpy geri dönüşle destekleyen yerel ağ-temizleme filtreleri (`remove_duplicate_faces`, `remove_null_faces`, mükerrer/kullanılmayan köşe kaldırma, köşe kaynatma); `faer` (MIT) Flap fairing'i için seyrek LU sağlar. Yalnızca serbest lisanslar (MIT/Apache-2.0/BSD), `scripts/install_sutura_geom.sh` ile otomatik tekerlek kurulumu veya `maturin develop` ile derleme |
 
-`requirements.txt` ve (isteğe bağlı)
-`requirements-ftetwild.txt` içinde sabitlenmiştir; Rust bağımlılıkları
+`requirements.txt`, `requirements-gui.txt` ve isteğe bağlı
+`requirements-ftetwild.txt` içinde sabitlenmiştir (geliştirme/test
+bağımlılıkları `requirements-dev.txt` içinde); Rust bağımlılıkları
 `rust/sutura-geom/Cargo.toml` içindedir (kaynaktan derleme Rust >= 1.89,
-`kiddo` 6.3 MSRV gerektirir). `trimesh` artık bir çalışma-zamanı bağımlılığı
-değildir: mesh G/Ç ve saf-Python geometri yardımcıları motorun içinde yer alır
-ve test takımı / geliştirici betikleri `trimesh`'i yalnızca geliştiriciye özel
-`requirements-dev.txt` üzerinden kurar.
+`kiddo` 6.3 MSRV gerektirir). SciPy de bir bağımlılık değildir: en yakın komşu,
+EDT ve dilasyon Rust çekirdeğinde yaşar. `trimesh` artık bir çalışma-zamanı
+bağımlılığı değildir: mesh G/Ç ve saf-Python geometri yardımcıları motorun
+içinde yer alır ve test takımı / geliştirici betikleri `trimesh`'i yalnızca
+geliştiriciye özel `requirements-dev.txt` üzerinden kurar.
 
 ## Bilinen sınırlamalar
 
@@ -2173,7 +2176,7 @@ Sutura, güvenilirlik, katman izolasyonu ve genişletilebilirlik için tasarlanm
 * **`sutura_engine.cast`** — Rust `sutura_geom` uzantısı etrafında ince sarmalayıcı (kesin yüklemler, `arrangement_lite`).
 * **`sutura_engine.methods`** — `RepairMethodProtocol` standardına uyan eklenebilir onarım yöntemleri: yöntem başına bir adlandırılmış modülden otomatik olarak keşfedilen yerleşik yöntemler (`#1` Hızlı Temizlik - `#17` Tamponad), tarama kapatma, vekil şablon, morfoloji graft ve tekrarlayan geometri katmanları.
 * **`sutura_engine.triage`** — Akıllı kademelendirme politikası: geometrik analize göre onarım yöntemlerini puanlar, kullanıcı yoğunluk profillerini (*Hızlı*, *Dengeli*, *Kapsamlı*, *Ekstrem*) uygular ve çalışma süresi bütçelerini yönetir.
-* **`sutura_engine.adapters`** — Harici ve üçüncü parti kütüphaneler için katı izolasyon sınırları (PyMeshLab, Manifold3D, fTetWild ve harici CLI motorları). Yalnızca ilgili yöntem çalıştırıldığında tembel (lazy) olarak yüklenir.
+* **`sutura_engine.adapters`** — Harici ve üçüncü parti kütüphaneler için katı izolasyon sınırları (PyMeshLab, fTetWild ve harici CLI motorları). Manifold bir Python adaptörü değildir: C++ çekirdeği, `manifold-csg` aracılığıyla zorunlu `sutura_geom` Rust çekirdeğine statik olarak bağlanır. Yalnızca ilgili yöntem çalıştırıldığında tembel (lazy) olarak yüklenir.
 
 Kurulu veya AppImage düzeninde `sutura_engine` üst düzey bir pakettir; kaynak kopyasında ise kök dizindeki küçük bir başlatma paketi (`sutura_engine/__init__.py`) sembolik bağ olmadan `import sutura_engine`'in depo kökünden çalışmasını sağlar.
 
@@ -2192,7 +2195,8 @@ Gelecekteki geliştirme süreci, performans açısından kritik yolları `rust/s
 - **Aşama 1 (Rust Topoloji Katmanı):** Belirleyici dizi işlemlerinin (X-Ray yeniden yükleme kaynaştırması, kesin delik/manifold-olmayan kenar tespiti ve sınır döngüsü taraması) yerel Rust'a aktarılması ve en yakın komşu sorguları için yerel BVH yapılarının kullanılması.
 - **Aşama 1c (Rust Delik Üçgenleme):** NumPy dizileri üzerinde PyMeshLab delik kapatma adımına doğrudan alternatif olarak Liepa tarzı minimum ağırlıklı üçgenleme ve döngü kapatmanın Rust ile uygulanması.
 - **Aşama 2 (PyMeshLab Bağımsızlığı):** Yinelenen yüzey/nokta temizliği, manifold-olmayan bölge onarımı ve yüzey yönlendirme adımlarının kademeli olarak Rust'a taşınarak harici C++ çalışma zamanı bağımlılığının azaltılması.
-- **Aşama 3 ve 4 (Yerel Manifold ve Bağımsız Rust CLI):** Manifold3D kütüphanesini doğrudan Rust eklentisine bağlayarak iki ayrı sanal ortam yapısının teke indirilmesi ve bağımsız bir Rust CLI çalıştırılabilir dosyasına doğru ilerlenmesi.
+- **Aşama 3 (Yerel Manifold — tamamlandı):** Manifold, `manifold-csg` aracılığıyla doğrudan Rust eklentisine bağlanmıştır; Aşama 2, dış kabuk birleşimi, yinelenen öge CSG ve Graft yerel dikişi `sutura_geom` içinde çalışır, Python `manifold3d` köprüleri kaldırılmıştır ve 3.11 sanal ortamı artık yalnızca isteğe bağlı fTetWild eki için vardır.
+- **Aşama 4 (Bağımsız Rust CLI):** bağımsız bir Rust CLI çalıştırılabilir dosyasına doğru gelecekteki çalışma olarak kalır.
 
 ## Kullanım geçmişi (anonim, isteğe bağlı kapatılabilir)
 
