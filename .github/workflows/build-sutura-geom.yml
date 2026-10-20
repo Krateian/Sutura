@@ -5,12 +5,13 @@ name: Build sutura_geom wheels
 # (scripts/install_sutura_geom.sh) downloads, plus the SHA256SUMS file it
 # verifies against:
 #   * linux x86_64  -> manylinux_2_28 wheel (cmake + gcc 12 from the image)
-#   * linux aarch64 -> manylinux_2_28 wheel, cross-compiled
+#   * linux aarch64 -> manylinux_2_28 wheel, native arm64 runner
 #   * macOS         -> universal2 wheel (--target universal2-apple-darwin)
 #
 # `manifold-csg` compiles the C++ Manifold kernel from source (static link, no
-# TBB). The manylinux_2_28 image is used because C++17 is needed; the default
-# manylinux2014 image's toolchain is too old. `before-script-linux` installs
+# TBB) and the vendored Geogram Delaunay PSM (C++20). The manylinux_2_28 image
+# is used because both C++17 and C++20 are needed; the default manylinux2014
+# image's toolchain is too old. `before-script-linux` installs
 # cmake/git if the image does not already provide them.
 #
 # On a published release and on a workflow_dispatch with a `tag` input the
@@ -95,6 +96,23 @@ jobs:
           working-directory: rust/sutura-geom
           args: --release --out dist
 
+      - name: Check third-party notices in wheel
+        run: |
+          W=$(ls rust/sutura-geom/dist/*.whl)
+          unzip -l "$W" | grep -q 'THIRD_PARTY.md'
+          unzip -l "$W" | grep -q 'third_party/geogram_delaunay_psm/LICENSE'
+
+      - name: Check universal2 extension
+        if: matrix.name == 'macos-universal2'
+        run: |
+          W=$(ls rust/sutura-geom/dist/*.whl)
+          rm -rf /tmp/wheelcheck && mkdir -p /tmp/wheelcheck
+          unzip -q "$W" 'sutura_geom/*.so' -d /tmp/wheelcheck
+          SO=$(find /tmp/wheelcheck -name 'sutura_geom*.so' | head -1)
+          lipo -info "$SO"
+          lipo -info "$SO" | grep -q 'arm64'
+          lipo -info "$SO" | grep -q 'x86_64'
+
       - name: Upload wheel
         uses: actions/upload-artifact@v7
         with:
@@ -142,6 +160,7 @@ jobs:
           ./.venv/bin/python -c "import sutura_geom; print('sutura_geom', sutura_geom.__version__)"
           ./.venv/bin/python tests/test_sutura_geom.py
           ./.venv/bin/python tests/test_sutura_geom_arrangement.py
+          ./.venv/bin/python tests/test_splint.py
 
       - name: Exercise the install helper (SUTURA_GEOM_WHEEL path)
         run: |

@@ -41,5 +41,9 @@ faer = { version = "0.24", features = ["sparse-linalg"] }
 # Pure Rust, MIT OR Apache-2.0; MSRV 1.89.
 kiddo = "6.3"
 
+[build-dependencies]
+# Compiles the vendored Geogram Delaunay PSM (C++20). Build tool only.
+cc = "1"
+
 [dev-dependencies]
 rand = "0.8"

@@ -12,3 +12,7 @@ license = { text = "MIT OR Apache-2.0" }
 [tool.maturin]
 module-name = "sutura_geom"
 features = ["extension-module"]
+include = [
+  "THIRD_PARTY.md",
+  "third_party/geogram_delaunay_psm/LICENSE",
+]

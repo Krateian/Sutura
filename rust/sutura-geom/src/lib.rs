@@ -35,6 +35,7 @@ pub mod profile;
 pub mod rbf;
 pub mod raycast;
 pub mod shell;
+pub mod splint;
 pub mod tamponade;
 pub mod topology;
 pub mod triangle_intersection;
@@ -1542,6 +1543,98 @@ impl PyMeshBvh {
     }
 }
 
+/// Splint core: deterministic UDF → Geogram Delaunay → winding cut.
+///
+/// Steps 1–8 only (no step-9 dual-contour `thin_mesh`). The output is the raw
+/// inside/outside boundary; fix-A island cleanup is on, the soft band is off.
+#[pyfunction]
+#[pyo3(name = "splint_cut")]
+#[pyo3(signature = (verts, tris, res))]
+fn splint_cut_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    res: usize,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        splint::splint_cut_core(&rv, &rt, res, true)
+    }));
+    match result {
+        Ok(Ok(out)) => {
+            let out_verts: Vec<Vec<f64>> = out.verts.iter().map(|p| p.to_vec()).collect();
+            let out_tris: Vec<Vec<i32>> = out
+                .tris
+                .iter()
+                .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+                .collect();
+            let verts_np = PyArray2::<f64>::from_vec2(py, &out_verts)?;
+            let tris_np = PyArray2::<i32>::from_vec2(py, &out_tris)?;
+            let d = PyDict::new(py);
+            splint_report_to_dict(&d, &out.report)?;
+            Ok((verts_np, tris_np, d))
+        }
+        Ok(Err(e)) => splint_error(py, &rv, &rt, res, &e),
+        Err(_) => splint_error(py, &rv, &rt, res, "splint panicked"),
+    }
+}
+
+fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyResult<()> {
+    d.set_item("ok", r.ok)?;
+    d.set_item("res", r.res)?;
+    d.set_item("input_vertices", r.input_vertices)?;
+    d.set_item("input_faces", r.input_faces)?;
+    d.set_item("proxy_vertices", r.proxy_vertices)?;
+    d.set_item("tets", r.tets)?;
+    d.set_item("delaunay_hash", r.delaunay_hash)?;
+    d.set_item("internal_faces", r.internal_faces)?;
+    d.set_item("outer_faces", r.outer_faces)?;
+    d.set_item("out_tets", r.out_tets)?;
+    d.set_item("interior_anchors", r.interior_anchors)?;
+    d.set_item("output_vertices", r.output_vertices)?;
+    d.set_item("output_faces", r.output_faces)?;
+    d.set_item("output_parts", r.output_parts)?;
+    d.set_item("out_manifold", r.out_manifold)?;
+    d.set_item("fix_islands", r.fix_islands)?;
+    d.set_item("soft_band", r.soft_band)?;
+    d.set_item("dropped_inside_comps", r.dropped_inside_comps)?;
+    d.set_item("dropped_inside_vol", r.dropped_inside_vol)?;
+    d.set_item("filled_outside_comps", r.filled_outside_comps)?;
+    d.set_item("filled_outside_vol", r.filled_outside_vol)?;
+    d.set_item("secs_udf", r.secs_udf)?;
+    d.set_item("secs_proxy", r.secs_proxy)?;
+    d.set_item("secs_delaunay", r.secs_delaunay)?;
+    d.set_item("secs_cut", r.secs_cut)?;
+    d.set_item("seconds", r.seconds)?;
+    Ok(())
+}
+
+fn splint_error<'py>(
+    py: Python<'py>,
+    rv: &[[f64; 3]],
+    rt: &[[usize; 3]],
+    res: usize,
+    message: &str,
+) -> PyResult<(
+    Bound<'py, PyArray2<f64>>,
+    Bound<'py, PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let verts_np = PyArray2::<f64>::zeros(py, [0, 3], false);
+    let tris_np = PyArray2::<i32>::zeros(py, [0, 3], false);
+    let d = PyDict::new(py);
+    d.set_item("ok", false)?;
+    d.set_item("error", message)?;
+    d.set_item("res", res)?;
+    d.set_item("input_vertices", rv.len())?;
+    d.set_item("input_faces", rt.len())?;
+    Ok((verts_np, tris_np, d))
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -1583,6 +1676,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;
     m.add_function(wrap_pyfunction!(shell_analyze_py, m)?)?;
+    m.add_function(wrap_pyfunction!(splint_cut_py, m)?)?;
     m.add_class::<PyMeshBvh>()?;
     m.add("MAX_VOXELS", MAX_VOXELS)?;
     m.add("SI_MAX_FACES", SI_MAX_FACES)?;
