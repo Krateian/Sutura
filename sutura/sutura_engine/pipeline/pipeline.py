@@ -1,7 +1,13 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: Apache-2.0
 """Central repair pipeline: repair_mesh_from_arrays and the deep-repair ladder
-(P1a split). Moved verbatim from sutura/repair.py; no logic change."""
+(P1a split). Moved verbatim from sutura/repair.py; no logic change.
+
+Internal geometry arrays stay float64 through the pipeline. Downcasting to
+float32 happens only when writing STL (or another float32 output format);
+never coerce a Stage-1 or tier result to float32 at a MeshSet/array boundary,
+because it changes exact duplicate/weld decisions and cascades into the tiers.
+"""
 import os
 import tempfile
 import time
@@ -72,6 +78,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                              si_mode=None, dressing_force_adopt=False,
                              splint=False, splint_adaptive=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
+
+    Internal arrays stay float64; the final verts/tris are float32 for output
+    (the same rule as the module docstring).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
     classifier + confidence gate exactly as before; the fixed modes
@@ -363,7 +372,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _tp_v, _tp_t, _tp_a, _tp_s = apply_chain(
             v, t, stage1_cleanup_chain(ml))
         _tms = ml.MeshSet()
-        _tms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(_tp_v, np.float32),
+        _tms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(_tp_v, np.float64),
                               face_matrix=np.asarray(_tp_t, np.int32)))
         _tafter = topology.mesh_topology(_tp_v, _tp_t)
         _tms, _tafter = tamponade_tier(
@@ -611,7 +620,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # Downstream tiers still take a MeshSet; build the single boundary object
     # here, after the array-only Stage-1/delete-fallback/join/SI-extreme path.
     ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cur_v, np.float32),
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cur_v, np.float64),
                         face_matrix=np.asarray(cur_t, np.int32)))
 
     # fTetWild fallback tier (FAZ17): guaranteed-correct last-resort
