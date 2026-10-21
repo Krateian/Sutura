@@ -1120,9 +1120,10 @@ meshing_compute_normal_per_vertex = compute_normal_per_vertex
 def native_si_enabled():
     """Return True if native self-intersection detection is enabled.
 
-    Controlled by environment variables ``SUTURA_SI_EXACT`` or ``SUTURA_NATIVE_SI``
-    (default OFF: 0/false). When enabled, self-intersection queries use exact
-    geometric predicates via sutura_geom rather than PyMeshLab's VCGLib filter.
+    Default ON: self-intersection queries use the exact geometric predicates
+    in sutura_geom rather than PyMeshLab's VCGLib filter. Opt out with
+    ``SUTURA_SI_EXACT=0``; the legacy ``SUTURA_NATIVE_SI=0`` is also accepted.
+    Precedence: ``SUTURA_SI_EXACT`` > ``SUTURA_NATIVE_SI`` > default True.
     """
     env_exact = os.environ.get('SUTURA_SI_EXACT', '').strip().lower()
     if env_exact in ('1', 'true', 'yes', 'on'):
@@ -1130,7 +1131,9 @@ def native_si_enabled():
     if env_exact in ('0', 'false', 'no', 'off'):
         return False
     env = os.environ.get('SUTURA_NATIVE_SI', '').strip().lower()
-    return env in ('1', 'true', 'yes', 'on')
+    if env in ('0', 'false', 'no', 'off'):
+        return False
+    return True
 
 
 def native_orient_enabled():

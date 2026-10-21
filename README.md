@@ -209,12 +209,18 @@ whenever its optional extra is installed:
   `--ftetwild-optimize` (GUI: *Optimise tetrahedra*, not recommended)
   turns it on.
 * *In Full Mend, after stage 1:* a **guarded self-intersection excise + re-cap**
-  removes residual self-intersecting faces (the faces plus a one-ring band),
-  closes the opened loops with PyMeshLab's refined hole filling
-  (`refinehole=True`, `selfintersection=True` — which *prevents* new crossing
-  caps) and commits a round only when the self-intersection count strictly drops
-  while holes and non-manifold edges do not increase; otherwise the pre-round
-  mesh is restored byte-for-byte. No connected component is ever dropped, at
+  removes residual self-intersecting faces (the faces plus a one-ring band;
+  on the exact path, if that round reduces but cannot close the pre-existing
+  boundary, the same round is retried once with a two-ring band, and the retry
+  is rejected if it adds a connected component), closes the opened loops with PyMeshLab's refined hole
+  filling (`refinehole=True`, `selfintersection=True` — which *prevents* new
+  crossing caps) and commits a round only when the self-intersection count
+  strictly drops, non-manifold edges do not increase, and — on the exact
+  path — the mesh closes completely (no boundary edges); the fallback keeps the
+  historical no-worse-than-before hole rule, and otherwise the pre-round
+  mesh is restored byte-for-byte. Self-intersection detection uses the exact
+  Rust classifier by default; `SUTURA_SI_EXACT=0` (legacy
+  `SUTURA_NATIVE_SI=0`) restores PyMeshLab's filter. No connected component is ever dropped, at
   most three rounds run under the intensity preset's time budget (Balanced 5 s,
   Thorough 20 s, Extreme 60 s), and the step is a no-op on meshes without
   self-intersections. Disable it with `SUTURA_SI_EXCISE=0`. The Stage-1 hole
