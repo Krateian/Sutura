@@ -163,9 +163,7 @@ def _loop_spanned_area(verts: np.ndarray, loop_idx: Sequence[int]) -> float:
 
 
 def _count_self_intersections(v: np.ndarray, t: np.ndarray) -> Tuple[int, bool]:
-    """(count, estimated) self-intersecting face count via lazy pymeshlab."""
-    import pymeshlab as ml
-    faces = len(t)
+    """(count, estimated) self-intersecting face count via native topology kernel."""
     try:
         try:
             from .. import topology
@@ -177,20 +175,7 @@ def _count_self_intersections(v: np.ndarray, t: np.ndarray) -> Tuple[int, bool]:
                 return int(count), False
     except Exception:
         pass
-    try:
-        if faces <= SI_COUNT_MAX_FACES:
-            ms = ml.MeshSet()
-            ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-            ms.apply_filter('compute_selection_by_self_intersections_per_face')
-            return int(ms.current_mesh().face_selection_array().sum()), False
-        rng = np.random.default_rng(SI_SAMPLE_SEED)
-        pick = np.sort(rng.choice(faces, size=min(SI_SAMPLE_FACES, faces), replace=False))
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=np.asarray(t[pick], dtype=np.int32)))
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        return int(ms.current_mesh().face_selection_array().sum()), True
-    except Exception:
-        return 0, False
+    return 0, False
 
 
 def _component_count(v: np.ndarray, t: np.ndarray) -> int:
