@@ -8,3 +8,13 @@
 # The runtime guard tests/test_no_trimesh.py enforces that sutura/ imports
 # no trimesh.
 trimesh==5.1.1
+
+# PyMeshLab is NOT a Sutura runtime dependency either: Stage 1 topology, hole
+# closing, self-intersection classification and decimation now run natively in
+# sutura_geom / sutura_engine.  It is kept here only as an INDEPENDENT ORACLE
+# for the parity tests (the VCG reference results the native passes are checked
+# against), and the runtime guard tests/test_no_runtime_pymeshlab.py enforces
+# that sutura/ imports no pymeshlab.  On Linux it installs from PyPI; on Apple
+# Silicon there is no PyPI wheel, so macOS developers must install it from
+# conda-forge (conda install -c conda-forge pymeshlab).
+pymeshlab==2025.7.post1
