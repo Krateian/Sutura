@@ -227,11 +227,14 @@ def _run_ladder(graft_body, ft_body):
     stats = {}
     calls = []
 
-    def fake_graft(ml_arg, m, a, st, vv, tt, tmpdir, **kw):
+    def fake_graft(vv, tt, iv, it, a, st, tmpdir, **kw):
         calls.append('graft')
         assert graft_body is not None, 'Graft tier must not run'
         st['graft'] = dict(graft_body)
-        return _cube_ms('graft')
+        _ms, after = _cube_ms('graft')
+        return (np.asarray(_ms.current_mesh().vertex_matrix(), dtype=np.float64),
+                np.asarray(_ms.current_mesh().face_matrix(), dtype=np.int64),
+                after)
 
     def fake_ft(vv, tt, iv, it, a, st, tmpdir, ftetwild, spec=None):
         calls.append('ftetwild')
@@ -244,15 +247,15 @@ def _run_ladder(graft_body, ft_body):
                 np.asarray(_ms.current_mesh().face_matrix(), dtype=np.int64),
                 after)
 
-    saved = (pipeline._graft_tier_ms, pipeline._ftetwild_tier)
-    pipeline._graft_tier_ms, pipeline._ftetwild_tier = fake_graft, fake_ft
+    saved = (pipeline.graft_tier, pipeline._ftetwild_tier)
+    pipeline.graft_tier, pipeline._ftetwild_tier = fake_graft, fake_ft
     try:
         _ms, out_after = pipeline.deep_repair_ladder(
             ml, ms, after, stats, v, t, tempfile.gettempdir(), mode='full',
             ftetwild='auto', spec=repair.triage.PRESETS['balanced'],
             graft='auto')
     finally:
-        pipeline._graft_tier_ms, pipeline._ftetwild_tier = saved
+        pipeline.graft_tier, pipeline._ftetwild_tier = saved
     return stats, calls, out_after
 
 

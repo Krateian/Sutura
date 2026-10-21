@@ -40,7 +40,7 @@ from sutura_engine.pipeline.tiers.engines import (
 )
 from sutura_engine.pipeline.tiers.flap import _flap_step
 from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier
-from sutura_engine.pipeline.tiers.graft import _graft_tier_ms
+from sutura_engine.pipeline.tiers.graft import graft_tier
 from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier
 from sutura_engine.pipeline.tiers.repeat import repeat_tier
 from sutura_engine.pipeline.tiers.splint import _splint_tier_ms
@@ -716,11 +716,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # ``stats['graft']``.
     _t_gr = time.perf_counter()
     _gr_in_v, _gr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-    ms, after = _graft_tier_ms(ml, ms, after, stats, v, t, tmpdir,
-                           graft=(graft is True) and not _tamp_watertight,
-                           intensity=(getattr(triage_spec, 'base', None)
-                                      or getattr(triage_spec, 'name', None)),
-                           spec=triage_spec)
+    _gr_cur_v, _gr_cur_t = _meshset_arrays_safe(ms)
+    _g_v, _g_t, after = graft_tier(
+        np.asarray(_gr_cur_v, dtype=np.float64),
+        np.asarray(_gr_cur_t, dtype=np.int64), v, t, after, stats, tmpdir,
+        graft=(graft is True) and not _tamp_watertight,
+        intensity=(getattr(triage_spec, 'base', None)
+                   or getattr(triage_spec, 'name', None)),
+        spec=triage_spec, ml=ml)
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=_g_v, face_matrix=_g_t.astype(np.int32)))
     if trace.is_active():
         _cur_v, _cur_t = _meshset_arrays_safe(ms)
         trace.record_stage('graft', 'tiers.graft.graft_tier',
@@ -1027,11 +1032,17 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # run on it, or already-watertight repairs would change output and
             # pay an unnecessary tier.
             if graft in (True, 'auto') and (cur_holes > 0 or cur_nm > 0):
-                _g_ms, _g_after = _graft_tier_ms(ml, ms, after, stats, v, t, tmpdir,
-                                             graft=True,
-                                             intensity=(getattr(spec, 'base', None)
-                                                        or getattr(spec, 'name', None)),
-                                             spec=spec)
+                _g_cur_v, _g_cur_t = _meshset_arrays_safe(ms)
+                _g_v, _g_t, _g_after = graft_tier(
+                    np.asarray(_g_cur_v, dtype=np.float64),
+                    np.asarray(_g_cur_t, dtype=np.int64), v, t, after, stats,
+                    tmpdir, graft=True,
+                    intensity=(getattr(spec, 'base', None)
+                               or getattr(spec, 'name', None)),
+                    spec=spec, ml=ml)
+                _g_ms = ml.MeshSet()
+                _g_ms.add_mesh(ml.Mesh(vertex_matrix=_g_v,
+                                       face_matrix=_g_t.astype(np.int32)))
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
                     # Adopt only a watertight candidate that is faithful AND
