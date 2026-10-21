@@ -16,26 +16,15 @@ import triage
 from sutura_engine import health as method_health
 
 
-def _refine_hole_enabled():
-    """Experimental (env-gated): refine the Stage-1 hole fill.
-
-    ``SUTURA_REFINE_HOLE=1`` makes ``meshing_close_holes`` use Liepa-style
-    refinement (``refinehole=True``, default 3 % edge length) so large /
-    non-convex boundary loops get interior vertices instead of long ear-cut
-    chords. OFF by default; not yet proven on the real-world corpus, so it
-    stays behind the env flag and out of the CLI/GUI (see
-    ``docs/cli-gui-parity-notes.md``).
-    """
-    return os.environ.get('SUTURA_REFINE_HOLE', '').strip().lower() in (
-        '1', 'true', 'yes', 'on')
-
-
 def _close_holes_step(maxholesize):
-    """The ``meshing_close_holes`` chain entry, refined only when opted in."""
-    params = {'maxholesize': maxholesize}
-    if _refine_hole_enabled():
-        params['refinehole'] = True
-    return ('meshing_close_holes', params)
+    """The ``meshing_close_holes`` chain entry (native ear-clipping closer).
+
+    The experimental Liepa-style refinement (``SUTURA_REFINE_HOLE``) was
+    removed in Phase 4 W3d: it was OFF by default and measured to worsen an
+    open mesh (thingi10k_100827: 9 -> 23 holes, SI 29 -> 77), so the plain
+    native closer is always used (see ``docs/cli-gui-parity-notes.md``).
+    """
+    return ('meshing_close_holes', {'maxholesize': maxholesize})
 
 
 def _close_holes_ms(ms, ml, maxholesize=1000, self_intersection=True,
@@ -204,9 +193,7 @@ def apply_chain(ms, chain):
                 _close_holes_ms(
                     ms, ml, maxholesize=params.get('maxholesize', 1000),
                     self_intersection=params.get('selfintersection', True),
-                    newfaceselected=params.get('newfaceselected', False),
-                    refinehole=params.get('refinehole', False),
-                    refineholeedgelen=params.get('refineholeedgelen'))
+                    newfaceselected=params.get('newfaceselected', False))
                 handled = True
 
             if not handled:
@@ -334,15 +321,6 @@ SI_EXCISE_MAX_ROUNDS = 3
 SI_EXCISE_MAX_FACE_FRACTION = 0.30  # scope brake: never excise > 30 % at once
 
 
-SI_EXCISE_REFINE_EDGE_PCT = 2.0     # refineholeedgelen, % of bbox diagonal
-
-
-# Liepa refinement (refinehole=True) costs ~3 s per round on a 90k-face mesh
-# but, measured on the 40-mesh corpus, changed NO excise outcome vs the plain
-# cap; it is therefore used only where it is cheap (small meshes).
-SI_EXCISE_REFINE_MAX_FACES = 20000
-
-
 SI_EXCISE_DEFAULT_BUDGET = 5.0
 
 
@@ -448,14 +426,14 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                     max_rounds=SI_EXCISE_MAX_ROUNDS,
                     time_budget=SI_EXCISE_DEFAULT_BUDGET,
                     face_fraction=SI_EXCISE_MAX_FACE_FRACTION):
-    """Guarded self-intersection excise + refined re-cap for the Full Mend path.
+    """Guarded self-intersection excise + re-cap for the Full Mend path.
 
     Selects the self-intersecting faces, dilates the selection by one vertex
     ring, deletes it and re-caps the opened loops with ``meshing_close_holes``
-    (``selfintersection=True`` -- which PREVENTS new self-intersecting caps;
-    ``refinehole=True`` only up to ``SI_EXCISE_REFINE_MAX_FACES``, since the
-    Liepa refinement costs ~3 s/round on a 90k mesh without changing the
-    corpus outcome). On the native exact path a rejected one-ring round is
+    (``selfintersection=True`` -- which PREVENTS new self-intersecting caps).
+    The Liepa ``refinehole`` refinement was removed in Phase 4 W3d (the
+    40-mesh corpus check found it changed no excise outcome). On the native
+    exact path a rejected one-ring round is
     retried once on the same pre-round mesh with two rings only when it reduced
     (but did not close) the pre-existing boundary: the exact classifier does
     not flag adjacent shared-vertex / touching faces, so the extra ring clears
@@ -543,14 +521,8 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 _remove_unref_vertices_ms(ms, ml)
                 _repair_nme_ms(ms, ml)
                 _repair_nmv_ms(ms, ml)
-                close_kwargs = {'maxholesize': maxholesize,
-                                'newfaceselected': False,
-                                'self_intersection': True}
-                if total_faces <= SI_EXCISE_REFINE_MAX_FACES:
-                    close_kwargs['refinehole'] = True
-                    close_kwargs['refineholeedgelen'] = ml.PercentageValue(
-                        SI_EXCISE_REFINE_EDGE_PCT)
-                _close_holes_ms(ms, ml, **close_kwargs)
+                _close_holes_ms(ms, ml, maxholesize=maxholesize,
+                                newfaceselected=False, self_intersection=True)
                 _remove_unref_vertices_ms(ms, ml)
                 topo_after = topology.mesh_topology(ms)
                 holes_after = int(topo_after.get('boundary_edges', 0) or 0)

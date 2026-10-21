@@ -82,12 +82,11 @@ from sutura_engine.pipeline.mesh_io import (
     FTETWILD_BRIDGE, INDIRECT_BRIDGE,
 )
 from sutura_engine.pipeline.stage1 import (
-   _refine_hole_enabled, _close_holes_step, stage1_cleanup_chain,
+   _close_holes_step, stage1_cleanup_chain,
    stage1_chain, delete_fallback_chain, apply_chain,
    _remove_unref_vertices_ms, _invert_faces_ms, _re_orient_faces_ms,
    _repair_nme_ms, extreme_extra_passes, SI_EXCISE_MAX_ROUNDS,
-   SI_EXCISE_MAX_FACE_FRACTION, SI_EXCISE_REFINE_EDGE_PCT,
-   SI_EXCISE_REFINE_MAX_FACES, SI_EXCISE_DEFAULT_BUDGET,
+   SI_EXCISE_MAX_FACE_FRACTION, SI_EXCISE_DEFAULT_BUDGET,
    SI_EXCISE_BUDGET_BY_INTENSITY, si_excise_enabled, _si_excise_budget,
    si_excise_recap, LOCAL_EXACT_DEFAULT_ENABLED,
    LOCAL_EXACT_BUDGET_BY_INTENSITY, LOCAL_EXACT_DEFAULT_BUDGET,

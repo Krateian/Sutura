@@ -8,6 +8,10 @@ All notable changes to this project are documented here.
 
 - **Exact self-intersection detection is now the default.** Stage 1 and every self-intersection consumer use the exact Rust classifier instead of PyMeshLab's filter; `SUTURA_SI_EXACT=0` (legacy `SUTURA_NATIVE_SI=0`) restores the old path. The Full Mend self-intersection excise starts with a one-ring dilation and, only when that round reduces but cannot close the pre-existing boundary, retries once with two rings on the exact path; the retry is rejected if it adds a connected component. A round is accepted only after the mesh closes completely (no boundary edges); the PyMeshLab fallback is unchanged.
 
+### Removed
+
+- **The experimental `SUTURA_REFINE_HOLE` Stage-1 hole-fill refinement switch.** It was off by default and measured to worsen an open mesh (thingi10k_100827: 9 -> 23 holes, SI 29 -> 77), so the plain native ear-clipping closer is now always used. The Full Mend self-intersection re-cap likewise no longer requests refinement (the 40-mesh corpus check found it changed no excise outcome).
+
 ## [0.9.2] - 2026-10-21
 
 ### Added

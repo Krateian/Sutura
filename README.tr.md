@@ -219,8 +219,8 @@ açıktır:
   yeniden kapatma** artakalan self-intersection yüzlerini (yüzler ve bir
   halkalık kuşak; exact yolda bu tur mevcut sınırı azaltıp yine de kapatamazsa
   aynı tur bir kez iki halkalık kuşakla yeniden denenir ve retry bağlı bileşen
-  sayısını artırırsa reddedilir) kaldırır, açılan döngüleri PyMeshLab'ın rafine delik
-  doldurmasıyla (`refinehole=True`, `selfintersection=True` — bu yeni kesişen
+  sayısını artırırsa reddedilir) kaldırır, açılan döngüleri native delik
+  doldurmasıyla (`selfintersection=True` — bu yeni kesişen
   kapakları *önler*) kapatır ve bir turu yalnızca self-intersection sayısı
   kesin azalırken, non-manifold kenarlar artmazken ve exact yolda ağ tamamen
   kapanırken (sınır kenarı yok) kabul eder; fallback önceki "öncekinden kötü
@@ -230,10 +230,7 @@ açıktır:
   `SUTURA_NATIVE_SI=0`) PyMeshLab filtresini geri getirir. Hiçbir bağlı bileşen
   düşürülmez, yoğunluk ön ayarının zaman bütçesiyle (Balanced 5 sn, Thorough
   20 sn, Extreme 60 sn) en fazla üç tur çalışır ve self-intersection içermeyen
-  ağlarda no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır. Stage 1 delik
-  doldurması ayrıca deneysel `SUTURA_REFINE_HOLE=1` ile rafine edilebilir
-  (`refinehole=True`); korpuslarda henüz kanıtlanmadığı için varsayılan
-  kapalıdır.
+  ağlarda no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya

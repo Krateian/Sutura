@@ -186,35 +186,34 @@ def test_full_path_plumbs_a_positive_result():
     assert seen.get('time_budget') == 5.0, seen  # balanced default
 
 
-def test_refine_hole_flag_closes_a_hole():
-    """The experimental Stage-1 refine flag must still produce a two-manifold
-    result on a mesh with a hole (evaluation; kept behind the env flag)."""
+def test_close_holes_step_ignores_removed_refine_env():
+    """Phase 4 W3d removed SUTURA_REFINE_HOLE: the plain native closer is always
+    used (no ``refinehole`` param) and must still close a real hole."""
+    from repair import _close_holes_step, apply_chain, stage1_chain
+
+    os.environ.pop('SUTURA_REFINE_HOLE', None)
+    name, params = _close_holes_step(1000)
+    assert name == 'meshing_close_holes', name
+    assert 'refinehole' not in params, params
+
+    os.environ['SUTURA_REFINE_HOLE'] = '1'
+    try:
+        _name2, params2 = _close_holes_step(1000)
+    finally:
+        del os.environ['SUTURA_REFINE_HOLE']
+    assert params2 == params, params2
+
     v, t = _sphere_with_blade(3)
     # drop a band of faces to open a real hole
     c = np.asarray(v)[np.asarray(t)].mean(axis=1)
     keep = ~((c[:, 2] > 0.75) & (c[:, 0] > -0.3))
     vh, th = np.asarray(v), np.asarray(t)[keep]
 
-    def run():
-        ms = _meshset(vh, th)
-        from repair import apply_chain, stage1_chain
-        apply_chain(ms, stage1_chain(ml, maxholesize=1000, mincomponentsize=8))
-        topo = _topo(ms)
-        return topo, int(ms.current_mesh().vertex_number())
-
-    os.environ.pop('SUTURA_REFINE_HOLE', None)
-    topo_off, _nv_off = run()
-    os.environ['SUTURA_REFINE_HOLE'] = '1'
-    try:
-        topo_on, nv_on = run()
-    finally:
-        del os.environ['SUTURA_REFINE_HOLE']
-    assert topo_off['number_holes'] == 0, topo_off
-    assert topo_on['number_holes'] == 0, topo_on
-    assert topo_off['non_two_manifold_edges'] == 0, topo_off
-    assert topo_on['non_two_manifold_edges'] == 0, topo_on
-    # refinement inserts interior vertices -> the two fills differ
-    assert nv_on != _nv_off or topo_on['faces_number'] != topo_off['faces_number']
+    ms = _meshset(vh, th)
+    apply_chain(ms, stage1_chain(ml, maxholesize=1000, mincomponentsize=8))
+    topo = _topo(ms)
+    assert topo['number_holes'] == 0, topo
+    assert topo['non_two_manifold_edges'] == 0, topo
 
 
 if __name__ == '__main__':
