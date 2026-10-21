@@ -59,8 +59,6 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
-    import pymeshlab as ml
-
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
         raise ValueError('input mesh contains %s' % bad_coords)
@@ -144,7 +142,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
 
         if engines:
             new_v, new_t = run_after_stage2_engines(
-                ml, report, new_v, new_t, tmpdir, engines, engine_chain,
+                None, report, new_v, new_t, tmpdir, engines, engine_chain,
                 triage_spec or triage.resolve_intensity(None))
 
         # P-WELD: reload-safe final pass. STL re-welds exactly-coincident
@@ -330,7 +328,6 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
     returns the rebuilt arrays). Objects that remain open after stage 1 are
     written as stage-1 output, mirroring the single-mesh behaviour.
     """
-    import pymeshlab as ml
     blocks = parse_3mf_mesh_blocks(src)
     if not blocks:
         return {'error': 'no mesh objects found in 3MF'}
@@ -397,7 +394,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                                    gate=rep.get('stage2', {'status': 'skipped'}))
             if engines:
                 new_v, new_t = run_after_stage2_engines(
-                    ml, rep, new_v, new_t, tmpdir, engines, engine_chain,
+                    None, rep, new_v, new_t, tmpdir, engines, engine_chain,
                     triage_spec or triage.resolve_intensity(None))
             if _should_run_local_exact(rep, triage_spec):
                 _lse_spec = triage_spec or triage.resolve_intensity(None)
