@@ -458,7 +458,7 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
             scale=POISSON_DEFAULT_SCALE,
         )
         # Ensure any boundary opening from octree domain clipping is closed
-        ms.apply_filter('meshing_close_holes', maxholesize=10000)
+        topology.close_holes_ms(ms, ml, maxholesize=10000)
 
         out_mesh = ms.current_mesh()
         out_v = np.asarray(out_mesh.vertex_matrix(), dtype=np.float64)
@@ -522,6 +522,7 @@ def flat_back_close(verts, tris, thickness=None):
 
     try:
         import pymeshlab as ml
+        import topology
 
         in_v, in_t = _referenced_only(verts, tris)
         loops = boundary_loops(in_v, in_t)
@@ -551,7 +552,7 @@ def flat_back_close(verts, tris, thickness=None):
             if max_small_hole_len < dom_len:
                 ms = ml.MeshSet()
                 ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-                ms.apply_filter('meshing_close_holes', maxholesize=max_small_hole_len + 1)
+                topology.close_holes_ms(ms, ml, maxholesize=max_small_hole_len + 1)
                 cur = ms.current_mesh()
                 in_v = np.asarray(cur.vertex_matrix(), dtype=np.float64)
                 in_t = np.asarray(cur.face_matrix(), dtype=np.int32)
@@ -683,7 +684,7 @@ def flat_back_close(verts, tris, thickness=None):
                     vertex_matrix=all_verts,
                     face_matrix=np.asarray(open_bottom_tris, np.int32),
                 ))
-                ms_cap.apply_filter('meshing_close_holes', maxholesize=n_loop + 100)
+                topology.close_holes_ms(ms_cap, ml, maxholesize=n_loop + 100)
                 out_cap = ms_cap.current_mesh()
                 all_verts = np.asarray(out_cap.vertex_matrix(), dtype=np.float64)
                 all_tris = np.asarray(out_cap.face_matrix(), dtype=np.int32)

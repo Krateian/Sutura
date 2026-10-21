@@ -302,6 +302,7 @@ def build_proxy(verts, tris, voxel=None, resample_timeout=None):
 
     import pymeshlab as ml
     import time
+    import topology
 
     if resample_timeout is None:
         resample_timeout = _resample_timeout()
@@ -313,8 +314,8 @@ def build_proxy(verts, tris, voxel=None, resample_timeout=None):
                                             timeout=resample_timeout)
         ms = ml.MeshSet()
         ms.add_mesh(ml.Mesh(vertex_matrix=rv, face_matrix=np.asarray(rt, np.int32)))
-        ms.apply_filter('meshing_close_holes', maxholesize=10000)
-        ms.apply_filter('meshing_close_holes', maxholesize=10000)
+        topology.close_holes_ms(ms, ml, maxholesize=10000)
+        topology.close_holes_ms(ms, ml, maxholesize=10000)
         out = ms.current_mesh()
         pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
         pt = np.asarray(out.face_matrix(), dtype=np.int32)

@@ -101,6 +101,28 @@ def test_rollback_on_failed_recap_restores_mesh():
     assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
 
 
+def test_round_that_splits_the_mesh_is_rejected():
+    """A committed round must not increase the connected-component count.
+
+    thingi10k_63785: the one-ring excise closed the mesh and dropped SI 81 -> 0
+    but left TWO shells (the pre-round mesh is a single component), so every
+    round must be rejected and the excise must stay unapplied with the input's
+    component count preserved."""
+    sample = os.path.join(REPO, 'tests', 'real-world-samples',
+                          'thingi10k_63785.stl')
+    if not os.path.exists(sample):
+        print('    (corpus mesh missing: skipped)')
+        return
+    m = trimesh.load(sample)
+    ms = _meshset(np.asarray(m.vertices, np.float64),
+                  np.asarray(m.faces, np.int64))
+    comp_before = _topo(ms)['connected_components_number']
+    assert comp_before == 1, comp_before
+    ms, rep = pipeline_mod.si_excise_recap(ms, ml, time_budget=30.0)
+    assert rep['applied'] is False, rep
+    assert _topo(ms)['connected_components_number'] == comp_before, _topo(ms)
+
+
 def test_budget_zero_skips():
     v, t = _sphere_with_blade(3)
     ms = _meshset(v, t)
@@ -164,35 +186,34 @@ def test_full_path_plumbs_a_positive_result():
     assert seen.get('time_budget') == 5.0, seen  # balanced default
 
 
-def test_refine_hole_flag_closes_a_hole():
-    """The experimental Stage-1 refine flag must still produce a two-manifold
-    result on a mesh with a hole (evaluation; kept behind the env flag)."""
+def test_close_holes_step_ignores_removed_refine_env():
+    """Phase 4 W3d removed SUTURA_REFINE_HOLE: the plain native closer is always
+    used (no ``refinehole`` param) and must still close a real hole."""
+    from repair import _close_holes_step, apply_chain, stage1_chain
+
+    os.environ.pop('SUTURA_REFINE_HOLE', None)
+    name, params = _close_holes_step(1000)
+    assert name == 'meshing_close_holes', name
+    assert 'refinehole' not in params, params
+
+    os.environ['SUTURA_REFINE_HOLE'] = '1'
+    try:
+        _name2, params2 = _close_holes_step(1000)
+    finally:
+        del os.environ['SUTURA_REFINE_HOLE']
+    assert params2 == params, params2
+
     v, t = _sphere_with_blade(3)
     # drop a band of faces to open a real hole
     c = np.asarray(v)[np.asarray(t)].mean(axis=1)
     keep = ~((c[:, 2] > 0.75) & (c[:, 0] > -0.3))
     vh, th = np.asarray(v), np.asarray(t)[keep]
 
-    def run():
-        ms = _meshset(vh, th)
-        from repair import apply_chain, stage1_chain
-        apply_chain(ms, stage1_chain(ml, maxholesize=1000, mincomponentsize=8))
-        topo = _topo(ms)
-        return topo, int(ms.current_mesh().vertex_number())
-
-    os.environ.pop('SUTURA_REFINE_HOLE', None)
-    topo_off, _nv_off = run()
-    os.environ['SUTURA_REFINE_HOLE'] = '1'
-    try:
-        topo_on, nv_on = run()
-    finally:
-        del os.environ['SUTURA_REFINE_HOLE']
-    assert topo_off['number_holes'] == 0, topo_off
-    assert topo_on['number_holes'] == 0, topo_on
-    assert topo_off['non_two_manifold_edges'] == 0, topo_off
-    assert topo_on['non_two_manifold_edges'] == 0, topo_on
-    # refinement inserts interior vertices -> the two fills differ
-    assert nv_on != _nv_off or topo_on['faces_number'] != topo_off['faces_number']
+    ms = _meshset(vh, th)
+    apply_chain(ms, stage1_chain(ml, maxholesize=1000, mincomponentsize=8))
+    topo = _topo(ms)
+    assert topo['number_holes'] == 0, topo
+    assert topo['non_two_manifold_edges'] == 0, topo
 
 
 if __name__ == '__main__':

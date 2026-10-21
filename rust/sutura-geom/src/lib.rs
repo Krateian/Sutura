@@ -20,6 +20,7 @@ pub mod cdt2d;
 pub mod dressing;
 pub mod dual_contour;
 pub mod flap;
+pub mod hole;
 pub mod interval;
 pub mod lava;
 pub mod melt;
@@ -1700,6 +1701,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::remove_selected_faces, m)?)?;
     m.add_function(wrap_pyfunction!(topology::compute_normal_per_face, m)?)?;
     m.add_function(wrap_pyfunction!(topology::compute_normal_per_vertex, m)?)?;
+    m.add_function(wrap_pyfunction!(hole::close_holes, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;

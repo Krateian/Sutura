@@ -16,26 +16,32 @@ import triage
 from sutura_engine import health as method_health
 
 
-def _refine_hole_enabled():
-    """Experimental (env-gated): refine the Stage-1 hole fill.
-
-    ``SUTURA_REFINE_HOLE=1`` makes ``meshing_close_holes`` use Liepa-style
-    refinement (``refinehole=True``, default 3 % edge length) so large /
-    non-convex boundary loops get interior vertices instead of long ear-cut
-    chords. OFF by default; not yet proven on the real-world corpus, so it
-    stays behind the env flag and out of the CLI/GUI (see
-    ``docs/cli-gui-parity-notes.md``).
-    """
-    return os.environ.get('SUTURA_REFINE_HOLE', '').strip().lower() in (
-        '1', 'true', 'yes', 'on')
-
-
 def _close_holes_step(maxholesize):
-    """The ``meshing_close_holes`` chain entry, refined only when opted in."""
-    params = {'maxholesize': maxholesize}
-    if _refine_hole_enabled():
-        params['refinehole'] = True
-    return ('meshing_close_holes', params)
+    """The ``meshing_close_holes`` chain entry (native ear-clipping closer).
+
+    The experimental Liepa-style refinement (``SUTURA_REFINE_HOLE``) was
+    removed in Phase 4 W3d: it was OFF by default and measured to worsen an
+    open mesh (thingi10k_100827: 9 -> 23 holes, SI 29 -> 77), so the plain
+    native closer is always used (see ``docs/cli-gui-parity-notes.md``).
+    """
+    return ('meshing_close_holes', {'maxholesize': maxholesize})
+
+
+def _close_holes_ms(ms, ml, maxholesize=1000, self_intersection=True,
+                    newfaceselected=False, refinehole=False,
+                    refineholeedgelen=None):
+    """Apply ``meshing_close_holes`` to a MeshSet in place (native).
+
+    Thin delegate to :func:`topology.close_holes_ms`: the Rust ear-clipping
+    closer handles the plain path, while the Liepa-style ``refinehole=True``
+    refinement is not ported yet (Faz 4D) and is routed to PyMeshLab unchanged.
+    Returns ``(closed_holes, new_faces)`` for the native path and ``None`` for
+    the PyMeshLab fallback.
+    """
+    return topology.close_holes_ms(
+        ms, ml, maxholesize=maxholesize, self_intersection=self_intersection,
+        newfaceselected=newfaceselected, refinehole=refinehole,
+        refineholeedgelen=refineholeedgelen)
 
 
 def stage1_cleanup_chain(ml):
@@ -183,6 +189,12 @@ def apply_chain(ms, chain):
             elif name == 'meshing_remove_selected_faces':
                 _remove_selected_faces_ms(ms, ml)
                 handled = True
+            elif name == 'meshing_close_holes':
+                _close_holes_ms(
+                    ms, ml, maxholesize=params.get('maxholesize', 1000),
+                    self_intersection=params.get('selfintersection', True),
+                    newfaceselected=params.get('newfaceselected', False))
+                handled = True
 
             if not handled:
                 ms.apply_filter(name, **params)
@@ -309,15 +321,6 @@ SI_EXCISE_MAX_ROUNDS = 3
 SI_EXCISE_MAX_FACE_FRACTION = 0.30  # scope brake: never excise > 30 % at once
 
 
-SI_EXCISE_REFINE_EDGE_PCT = 2.0     # refineholeedgelen, % of bbox diagonal
-
-
-# Liepa refinement (refinehole=True) costs ~3 s per round on a 90k-face mesh
-# but, measured on the 40-mesh corpus, changed NO excise outcome vs the plain
-# cap; it is therefore used only where it is cheap (small meshes).
-SI_EXCISE_REFINE_MAX_FACES = 20000
-
-
 SI_EXCISE_DEFAULT_BUDGET = 5.0
 
 
@@ -423,22 +426,22 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                     max_rounds=SI_EXCISE_MAX_ROUNDS,
                     time_budget=SI_EXCISE_DEFAULT_BUDGET,
                     face_fraction=SI_EXCISE_MAX_FACE_FRACTION):
-    """Guarded self-intersection excise + refined re-cap for the Full Mend path.
+    """Guarded self-intersection excise + re-cap for the Full Mend path.
 
     Selects the self-intersecting faces, dilates the selection by one vertex
     ring, deletes it and re-caps the opened loops with ``meshing_close_holes``
-    (``selfintersection=True`` -- which PREVENTS new self-intersecting caps;
-    ``refinehole=True`` only up to ``SI_EXCISE_REFINE_MAX_FACES``, since the
-    Liepa refinement costs ~3 s/round on a 90k mesh without changing the
-    corpus outcome). On the native exact path a rejected one-ring round is
+    (``selfintersection=True`` -- which PREVENTS new self-intersecting caps).
+    The Liepa ``refinehole`` refinement was removed in Phase 4 W3d (the
+    40-mesh corpus check found it changed no excise outcome). On the native
+    exact path a rejected one-ring round is
     retried once on the same pre-round mesh with two rings only when it reduced
     (but did not close) the pre-existing boundary: the exact classifier does
     not flag adjacent shared-vertex / touching faces, so the extra ring clears
     that contact pocket before re-capping. A round that opens more boundary
-    edges than the pre-round mesh is not retried. The two-ring retry is also
-    rejected when it increases the connected-component count. A round is
+    edges than the pre-round mesh is not retried. A round is
     committed only when the self-intersection count strictly decreases,
-    non-manifold edges do not increase, and the native path closes completely
+    non-manifold edges do not increase, the connected-component count does not
+    increase, and the native path closes completely
     (``holes_after == 0``); the fallback keeps the historical
     ``holes_after <= holes_before``. Otherwise the pre-round mesh is restored
     byte-for-byte. The connected-component removal filter is never called (no
@@ -518,14 +521,8 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 _remove_unref_vertices_ms(ms, ml)
                 _repair_nme_ms(ms, ml)
                 _repair_nmv_ms(ms, ml)
-                close_kwargs = {'maxholesize': maxholesize,
-                                'newfaceselected': False,
-                                'selfintersection': True}
-                if total_faces <= SI_EXCISE_REFINE_MAX_FACES:
-                    close_kwargs['refinehole'] = True
-                    close_kwargs['refineholeedgelen'] = ml.PercentageValue(
-                        SI_EXCISE_REFINE_EDGE_PCT)
-                ms.apply_filter('meshing_close_holes', **close_kwargs)
+                _close_holes_ms(ms, ml, maxholesize=maxholesize,
+                                newfaceselected=False, self_intersection=True)
                 _remove_unref_vertices_ms(ms, ml)
                 topo_after = topology.mesh_topology(ms)
                 holes_after = int(topo_after.get('boundary_edges', 0) or 0)
@@ -539,7 +536,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 report['reason'] = 'rollback'
                 break
             holes_ok = holes_after == 0 if native_si else holes_after <= holes_before
-            components_ok = rings != 2 or comp_after <= comp_before
+            components_ok = comp_after <= comp_before
             if (si_after < current_si and holes_ok
                     and nm_after <= nm_before and components_ok):
                 accepted = True
@@ -669,7 +666,10 @@ def join_small_components(ms, ml, mincomponentsize, maxholesize):
                          ('meshing_close_holes', {'maxholesize': maxholesize}),
                          ('meshing_remove_unreferenced_vertices', {})):
         try:
-            ms.apply_filter(name, **params)
+            if name == 'meshing_close_holes':
+                _close_holes_ms(ms, ml, maxholesize=params['maxholesize'])
+            else:
+                ms.apply_filter(name, **params)
         except Exception:
             pass
     return moved, max(len(small) - moved, 0)

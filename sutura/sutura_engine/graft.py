@@ -837,8 +837,7 @@ def _hybrid_close(v0, t0, region_mask, ml):
                     ('meshing_repair_non_manifold_edges', {}),
                     ('meshing_repair_non_manifold_vertices', {}),
                     ('meshing_remove_duplicate_faces', {}),
-                    ('meshing_close_holes', {'maxholesize': HYBRID_MAX_HOLE,
-                                             'refinehole': True}),
+                    ('meshing_close_holes', {'maxholesize': HYBRID_MAX_HOLE}),
                     ('meshing_remove_unreferenced_vertices', {})):
                 try:
                     ms.apply_filter(name, **kw)

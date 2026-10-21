@@ -147,7 +147,7 @@ def _close_small_holes(ml, verts, tris):
         ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
                             face_matrix=np.asarray(tris, np.int32)))
         _repair_nmv_ms(ms, ml)
-        ms.apply_filter('meshing_close_holes', maxholesize=P_WELD_MAX_HOLE)
+        topology.close_holes_ms(ms, ml, maxholesize=P_WELD_MAX_HOLE)
         _remove_unref_vertices_ms(ms, ml)
         m = ms.current_mesh()
         return (np.asarray(m.vertex_matrix(), dtype=np.float32),
