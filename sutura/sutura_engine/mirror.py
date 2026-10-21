@@ -18,9 +18,11 @@ the dominant open boundary loop:
      registry method #8) when the symmetry confidence is low or the mirrored
      stitch does not produce a valid solid.
 
-Operates on numpy arrays (verts float64 Nx3, tris int Mx3). numpy + topology
-only at import time; pymeshlab / trimesh are imported lazily
-inside the functions that need them, so the module stays importable anywhere.
+Operates on numpy arrays (verts float64 Nx3, tris int Mx3). Only numpy is
+imported at module import time; the shared closing helpers, the native
+Stage-1 repair chain and the trimesh-based shell extraction are imported
+lazily inside the functions that need them, so the module stays importable
+anywhere.
 """
 import numpy as np
 
@@ -138,7 +140,7 @@ def _weld(verts, tris, tol):
     return new_verts, new_tris
 
 
-def _repair_topology(ml, verts, tris):
+def _repair_topology(verts, tris):
     """Best-effort repair of a stitched surface (never raises)."""
     try:
         from sutura_engine.pipeline.stage1 import apply_chain
@@ -207,11 +209,7 @@ def mirror_close(verts, tris, tmpdir=None, min_score=MIRROR_MIN_SCORE):
         if not (np.array_equal(wrapped_v, merged_v)
                 and np.array_equal(wrapped_t, merged_t)):
             merged_v, merged_t = wrapped_v, wrapped_t
-        try:
-            import pymeshlab as ml
-            merged_v, merged_t = _repair_topology(ml, merged_v, merged_t)
-        except Exception:
-            pass
+        merged_v, merged_t = _repair_topology(merged_v, merged_t)
         ok, reason = closing._check_validity(merged_v, merged_t)
 
     if not ok:
