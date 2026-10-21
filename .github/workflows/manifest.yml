@@ -54,7 +54,7 @@ jobs:
 
       - name: Generate manifest.json
         run: |
-          PYTHONPATH=. python3 -m sutura.manifest --out manifest.json
+          PYTHONPATH=.:sutura python3 -m sutura.manifest --out manifest.json
           cat manifest.json
 
       - name: Upload manifest.json to GitHub Release
