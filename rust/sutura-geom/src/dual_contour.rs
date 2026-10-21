@@ -78,7 +78,22 @@ pub struct DcMesh {
 /// is returned unchanged (a pathological field must not be replaced by the
 /// unwelded tetrahedra output).
 pub fn dual_contour(f: &[f32], dims: [usize; 3], origin: [f64; 3], voxel: f64) -> DcMesh {
-    let dc = dual_contour_core(f, dims, origin, voxel);
+    dual_contour_mode(f, dims, origin, voxel, false)
+}
+
+/// Like `dual_contour` but with an explicit per-cell vertex rule.  With
+/// `mass_point=true` the cell vertex is the mean of its sign-change edge
+/// intersection points (a Surface-Nets-style vertex) instead of the QEF
+/// minimiser; both are clamped to the cell.  Used to compare the two rules on
+/// curved fields where dual contouring can fold faces into self-intersections.
+pub fn dual_contour_mode(
+    f: &[f32],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+    mass_point: bool,
+) -> DcMesh {
+    let dc = dual_contour_core(f, dims, origin, voxel, mass_point);
     if mesh_is_manifold(&dc.0, &dc.1) {
         return DcMesh {
             verts: dc.0,
@@ -124,6 +139,7 @@ fn dual_contour_core(
     dims: [usize; 3],
     origin: [f64; 3],
     voxel: f64,
+    mass_point: bool,
 ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
     let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
     if nx < 2 || ny < 2 || nz < 2 {
@@ -275,7 +291,11 @@ fn dual_contour_core(
                         psum[1] / *count as f64,
                         psum[2] / *count as f64,
                     ];
-                    let mut x = solve_qef(a, b, mass, 1e-4);
+                    let mut x = if mass_point {
+                        mass
+                    } else {
+                        solve_qef(a, b, mass, 1e-4)
+                    };
                     for d in 0..3 {
                         if !x[d].is_finite() {
                             x[d] = mass[d];

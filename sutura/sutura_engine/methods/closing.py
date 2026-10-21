@@ -7,7 +7,7 @@ Provides:
   - boundary_loops: ordered vertex-index loops from directed boundary edges
   - single_side_score: detector for single-sided open scans
   - relief_score: detector for roughly planar heightfield-like reliefs
-  - poisson_close: screened Poisson surface reconstruction with adaptive depth
+  - poisson_close: voxel signed-field resample with adaptive depth
   - flat_back_close: extrusion to a flat offset back plane with planar cap
   - one_sided_hausdorff: fidelity metric measuring input-to-output distance
 """
@@ -24,7 +24,11 @@ RELIEF_MIN_NORMAL_ALIGN = 0.70  # Min fraction of face normals pointing toward p
 RELIEF_MIN_ONE_SIDED = 0.90  # Min fraction of vertices on one side of plane
 
 DEFAULT_FLAT_BACK_THICKNESS_REL = 0.005  # Default thickness = 0.005 * bbox_diag
-POISSON_DEFAULT_SCALE = 2.0  # Poisson octree scale padding to ensure bubble closes watertight
+POISSON_DEFAULT_SCALE = 2.0  # octree-style domain padding; voxel = scale*extent/2**depth
+POISSON_FACE_BUDGET_MULT = 4        # target output faces = 4x the input face count
+POISSON_FACE_BUDGET_MIN = 20_000    # floor so a tiny input still resolves its surface
+POISSON_FACE_BUDGET_MAX = 200_000   # ceiling: a small input must not explode into 100k+ faces
+POISSON_VERTEX_MODE = 'mass'        # surface-nets mass-point vertex (QEF folds -> SI)
 EAR_CLIP_MAX_VERTICES = 1500  # Max loop size for O(n^2) ear clipping; larger loops use O(n) / O(n log n)
 
 
@@ -393,10 +397,18 @@ def _check_validity(verts, tris):
 
 
 def poisson_close(verts, tris, depth=None, tmpdir=None):
-    """Close single-sided mesh watertight using PyMeshLab Screened Poisson reconstruction.
+    """Close a single-sided mesh watertight via a voxel signed-field resample.
 
-    Ensures outward consistent normals, adapts depth (8..11), uses scale padding
-    so reconstruction closes inside bounding volume, and keeps largest component.
+    Ensures outward consistent normals, then reconstructs the back surface by
+    extracting the generalized-winding signed level set on a uniform voxel grid
+    (``topology.resample_uniform``); the iso-surface is 2-manifold by
+    construction. The voxel size is derived from the legacy octree ``depth``
+    (8..11): the octree resolved the scale-padded bounding box into ``2**depth``
+    cells, so ``voxel = POISSON_DEFAULT_SCALE * extent / 2**depth``; it is then
+    capped by a face budget so a small input cannot explode into a 100k+ face
+    shell. The extraction uses the surface-nets **mass-point** vertex rule
+    rather than the default QEF solver, which folds nearly parallel dual faces
+    into self-intersections on curved fields. Keeps the largest component.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
@@ -409,65 +421,92 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
             'notes': [],
         }
 
+    # Adaptive depth from vertex count if None
+    if depth is None:
+        n_v = len(verts)
+        if n_v < 5_000:
+            depth = 8
+        elif n_v < 25_000:
+            depth = 9
+        elif n_v < 100_000:
+            depth = 10
+        else:
+            depth = 11
+    depth = int(np.clip(depth, 8, 11))
+
+    in_v, in_t = _referenced_only(verts, tris)
+
     try:
-        import pymeshlab as ml
-
-        # Adaptive depth from vertex count if None
-        if depth is None:
-            n_v = len(verts)
-            if n_v < 5_000:
-                depth = 8
-            elif n_v < 25_000:
-                depth = 9
-            elif n_v < 100_000:
-                depth = 10
-            else:
-                depth = 11
-        depth = int(np.clip(depth, 8, 11))
-
-        in_v, in_t = _referenced_only(verts, tris)
-
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-
-        # 1. Coherently orient faces
-        ms.apply_filter('meshing_re_orient_faces_coherently')
-
-        # 2. Check outward orientation vs centroid and invert if inward
-        cur = ms.current_mesh()
-        cur_v = cur.vertex_matrix()
-        cur_f = cur.face_matrix()
         import topology
-        cur_fn = topology.compute_normal_per_face(cur_v, cur_f)
-        face_centers = cur_v[cur_f].mean(axis=1)
-        centroid = cur_v.mean(axis=0)
-        if np.sum((face_centers - centroid) * cur_fn) < 0:
-            cur_f = topology.invert_face_orientation(cur_f)
-            cur_fn = -cur_fn
 
-        # 3. Compute per-vertex normals natively and re-add mesh with normals
-        cur_vn = topology.compute_normal_per_vertex(cur_v, cur_f)
-        ms.clear()
-        ms.add_mesh(ml.Mesh(vertex_matrix=cur_v, face_matrix=cur_f.astype(np.int32),
-                            v_normals_matrix=cur_vn, f_normals_matrix=cur_fn))
+        # 1. Coherently orient faces, then check outward orientation vs the
+        #    centroid and invert if inward.
+        in_t = topology.re_orient_faces_coherently(in_t)
+        in_fn = topology.compute_normal_per_face(in_v, in_t)
+        face_centers = in_v[in_t].mean(axis=1)
+        centroid = in_v.mean(axis=0)
+        if np.sum((face_centers - centroid) * in_fn) < 0:
+            in_t = topology.invert_face_orientation(in_t)
 
-        # 4. Screened Poisson reconstruction with scale=POISSON_DEFAULT_SCALE
-        ms.apply_filter(
-            'generate_surface_reconstruction_screened_poisson',
-            depth=depth,
-            scale=POISSON_DEFAULT_SCALE,
-        )
-        # Ensure any boundary opening from octree domain clipping is closed
-        topology.close_holes_ms(ms, ml, maxholesize=10000)
+        # 2. Voxel size derived from the legacy Poisson depth, then capped by a
+        #    face budget. The budget is an UPPER bound only: a small input keeps
+        #    the legacy resolution, a small input that would otherwise explode
+        #    into 100k+ faces (a 152-face hemisphere did) is coarsened instead.
+        extent = float(np.max(in_v.max(axis=0) - in_v.min(axis=0)))
+        voxel = POISSON_DEFAULT_SCALE * extent / float(2 ** depth)
+        budget = int(np.clip(POISSON_FACE_BUDGET_MULT * len(in_t),
+                             POISSON_FACE_BUDGET_MIN, POISSON_FACE_BUDGET_MAX))
 
-        out_mesh = ms.current_mesh()
-        out_v = np.asarray(out_mesh.vertex_matrix(), dtype=np.float64)
-        out_t = np.asarray(out_mesh.face_matrix(), dtype=np.int32)
+        def _resample(vx):
+            return topology.resample_uniform(
+                in_v, in_t, vx, 0.0, False, False,
+                vertex_mode=POISSON_VERTEX_MODE)[:2]
 
-        # 5. Keep largest connected component
+        # 3. Signed generalized-winding level-set extraction (closed by
+        #    construction). Uses the mass-point (surface-nets) vertex rule, not
+        #    the QEF solver: on curved fields the QEF optimum folds nearly
+        #    parallel dual faces into self-intersections while the cell mass
+        #    point does not (measured SI 561 -> 0 at an identical face count on a
+        #    152-face hemisphere, with a slightly lower Hausdorff).
+        out_v, out_t = _resample(voxel)
+
+        # 3b. Enforce the face budget by coarsening once. The factor is derived
+        #     from the observed face count, so the result is deterministic and a
+        #     small mesh (already below the budget) is left untouched.
+        if len(out_t) > budget:
+            voxel *= float(np.sqrt(len(out_t) / float(budget))) * 1.03
+            out_v, out_t = _resample(voxel)
+
+        # 4. Keep largest connected component
         out_v, out_t = _keep_largest_component(out_v, out_t)
 
-        # 6. Validity check
+        # 4b. The tier never claims a watertight shell that still self-
+        #     intersects. The mass-point rule makes this unreachable in
+        #     measurement, but the guard is kept: try the native guarded
+        #     excise+recap; if self-intersections remain it fails honestly and
+        #     hands the input back unchanged.
+        si_before = max(int(topology.self_intersecting_faces(out_v, out_t)[1]), 0)
+        si_after = si_before
+        if si_before > 0:
+            from sutura_engine.pipeline.stage1 import si_excise_recap
+            ex_v, ex_t, _ex_rep = si_excise_recap(out_v, out_t)
+            si_after = max(int(topology.self_intersecting_faces(ex_v, ex_t)[1]), 0)
+            if si_after < si_before:
+                out_v, out_t = ex_v, ex_t
+        if si_after > 0:
+            return verts, tris, {
+                'faces': len(tris),
+                'watertight': False,
+                'depth': depth,
+                'voxel': voxel,
+                'si_before': si_before,
+                'si_after': si_after,
+                'error': 'Residual self-intersections (%d) after voxel resample'
+                         % si_after,
+                'notes': [],
+            }
+
+        # 5. Validity check
         is_wt, err_msg = _check_validity(out_v, out_t)
 
         if not is_wt:
@@ -477,6 +516,7 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
                 'faces': len(tris),
                 'watertight': False,
                 'depth': depth,
+                'voxel': voxel,
                 'error': err_msg,
                 'notes': [],
             }
@@ -485,7 +525,12 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
             'faces': len(out_t),
             'watertight': True,
             'depth': depth,
-            'notes': ['back surface was estimated (Poisson)'],
+            'voxel': voxel,
+            'face_budget': budget,
+            'vertex_mode': POISSON_VERTEX_MODE,
+            'si_before': si_before,
+            'si_after': si_after,
+            'notes': ['back surface was estimated (voxel resample)'],
         }
         return out_v, out_t, report
 
@@ -502,7 +547,7 @@ def flat_back_close(verts, tris, thickness=None):
     """Close relief-like mesh watertight with a flat back plane and side walls.
 
     - Dominant loop defines the outline.
-    - Minor secondary holes are closed via pymeshlab.
+    - Minor secondary holes are closed natively.
     - Back plane is set through loop centroid shifted along -n to
       (min over ALL vertices of n·(x-c)) minus thickness.
     - Default thickness = 0.005 * bbox_diag.
@@ -521,7 +566,6 @@ def flat_back_close(verts, tris, thickness=None):
         }
 
     try:
-        import pymeshlab as ml
         import topology
 
         in_v, in_t = _referenced_only(verts, tris)
@@ -544,18 +588,14 @@ def flat_back_close(verts, tris, thickness=None):
         dom_loop = loops[dom_idx]
         dom_len = len(dom_loop)
 
-        # Close any other smaller holes using pymeshlab
+        # Close any other smaller holes using the native hole filler
         other_loops = [loops[i] for i in range(len(loops)) if i != dom_idx]
         if other_loops:
             max_small_hole_len = max(len(l) for l in other_loops)
             # Only run if small holes are strictly smaller than dominant loop
             if max_small_hole_len < dom_len:
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-                topology.close_holes_ms(ms, ml, maxholesize=max_small_hole_len + 1)
-                cur = ms.current_mesh()
-                in_v = np.asarray(cur.vertex_matrix(), dtype=np.float64)
-                in_t = np.asarray(cur.face_matrix(), dtype=np.int32)
+                in_v, in_t, _closed, _new = topology.close_holes(
+                    in_v, in_t, maxholesize=max_small_hole_len + 1)
                 # Re-extract dominant loop on hole-closed mesh
                 loops = boundary_loops(in_v, in_t)
                 if not loops:
@@ -677,17 +717,10 @@ def flat_back_close(verts, tris, thickness=None):
                     cap_tris = cap_tris[:, [0, 2, 1]]
                 all_tris = np.vstack([in_t, side_tris, cap_tris])
             else:
-                # Fallback for non-star large loops: PyMeshLab close-holes
-                ms_cap = ml.MeshSet()
+                # Fallback for non-star large loops: native close-holes
                 open_bottom_tris = np.vstack([in_t, side_tris])
-                ms_cap.add_mesh(ml.Mesh(
-                    vertex_matrix=all_verts,
-                    face_matrix=np.asarray(open_bottom_tris, np.int32),
-                ))
-                topology.close_holes_ms(ms_cap, ml, maxholesize=n_loop + 100)
-                out_cap = ms_cap.current_mesh()
-                all_verts = np.asarray(out_cap.vertex_matrix(), dtype=np.float64)
-                all_tris = np.asarray(out_cap.face_matrix(), dtype=np.int32)
+                all_verts, all_tris, _closed, _new = topology.close_holes(
+                    all_verts, open_bottom_tris, maxholesize=n_loop + 100)
 
         is_wt, err_msg = _check_validity(all_verts, all_tris)
 
@@ -729,7 +762,7 @@ def _has_positive_area(verts, tris, diag):
     cross = np.cross(b - a, c - a)
     # Relative threshold: a genuinely zero-area (collinear) face is exactly 0
     # for the meshes that reach this path; the scale term only rejects
-    # numerically degenerate slivers that pymeshlab cannot sample safely.
+    # numerically degenerate slivers that would skew the sampled distance.
     return bool(np.any(np.linalg.norm(cross, axis=1) > 1e-12 * diag * diag))
 
 

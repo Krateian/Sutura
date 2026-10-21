@@ -38,6 +38,8 @@ pub struct ResampleReport {
     pub coarsened: bool,
     pub manifold: bool,
     pub raystab_full: bool,
+    pub surface_tets: bool,
+    pub mass_point: bool,
 }
 
 /// Resample `verts`/`tris` on a uniform voxel grid and extract the iso-surface.
@@ -58,6 +60,8 @@ pub fn resample_core(
     offset: f64,
     absdist: bool,
     raystab_full: bool,
+    use_tets: bool,
+    mass_point: bool,
 ) -> Result<ResampleReport, String> {
     if !voxel.is_finite() || voxel <= 0.0 {
         return Err("voxel must be a positive finite number".to_string());
@@ -130,7 +134,11 @@ pub fn resample_core(
     } else {
         s.iter().map(|&x| x - off).collect()
     };
-    let dc = dual_contour::dual_contour(&field, dims, origin, voxel);
+    let dc = if use_tets {
+        dual_contour::marching_tets_mesh(&field, dims, origin, voxel)
+    } else {
+        dual_contour::dual_contour_mode(&field, dims, origin, voxel, mass_point)
+    };
 
     let out_tris: Vec<[i64; 3]> = dc
         .tris
@@ -147,6 +155,8 @@ pub fn resample_core(
         coarsened,
         manifold: dc.manifold,
         raystab_full: use_raystab,
+        surface_tets: use_tets,
+        mass_point,
     })
 }
 
@@ -208,7 +218,7 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 /// `resample_core`.  The default `False` is byte-identical to the
 /// winding-only field.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, voxel, offset=0.0, absdist=false, raystab_full=false))]
+#[pyo3(signature = (verts, tris, voxel, offset=0.0, absdist=false, raystab_full=false, surface=None, vertex_mode=None))]
 pub fn resample_uniform<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -217,6 +227,8 @@ pub fn resample_uniform<'py>(
     offset: f64,
     absdist: bool,
     raystab_full: bool,
+    surface: Option<&str>,
+    vertex_mode: Option<&str>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i64>>,
@@ -224,14 +236,33 @@ pub fn resample_uniform<'py>(
 )> {
     let vrows = read_f64_rows(&verts)?;
     let trows = read_i64_rows(&tris)?;
-    let rep = resample_core(&vrows, &trows, voxel, offset, absdist, raystab_full)
-        .map_err(PyValueError::new_err)?;
+    let use_tets = matches!(
+        surface.map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("tets") | Some("tet") | Some("marching_tets")
+    );
+    let mass_point = matches!(
+        vertex_mode.map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("mass") | Some("mass_point") | Some("surface_nets")
+    );
+    let rep = resample_core(
+        &vrows,
+        &trows,
+        voxel,
+        offset,
+        absdist,
+        raystab_full,
+        use_tets,
+        mass_point,
+    )
+    .map_err(PyValueError::new_err)?;
     let info = PyDict::new(py);
     info.set_item("voxel", rep.voxel)?;
     info.set_item("offset", rep.offset)?;
     info.set_item("absdist", rep.absdist)?;
     info.set_item("raystab_full", rep.raystab_full)?;
     info.set_item("mode", if rep.absdist { "unsigned" } else { "signed" })?;
+    info.set_item("surface", if rep.surface_tets { "tets" } else { "dual" })?;
+    info.set_item("vertex_mode", if rep.mass_point { "mass" } else { "qef" })?;
     info.set_item("dims", [rep.dims[0], rep.dims[1], rep.dims[2]])?;
     info.set_item("faces", rep.tris.len())?;
     info.set_item("coarsened", rep.coarsened)?;
@@ -280,7 +311,7 @@ mod tests {
     #[test]
     fn signed_cube_is_watertight_manifold() {
         let (v, t) = cube(1.0);
-        let rep = resample_core(&v, &t, 0.1, 0.0, false, false).unwrap();
+        let rep = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
         assert!(rep.tris.len() > 0, "no faces extracted");
         assert!(rep.manifold, "dual contouring did not yield a manifold mesh");
     }
@@ -288,7 +319,7 @@ mod tests {
     #[test]
     fn unsigned_offset_wraps_outside_the_input() {
         let (v, t) = cube(1.0);
-        let rep = resample_core(&v, &t, 0.1, 0.1, true, false).unwrap();
+        let rep = resample_core(&v, &t, 0.1, 0.1, true, false, false, false).unwrap();
         assert!(rep.tris.len() > 0, "no faces extracted");
         assert!(rep.manifold, "unsigned resample not manifold");
         // The outer offset surface sits at least `offset` beyond the input.
@@ -303,9 +334,9 @@ mod tests {
     #[test]
     fn output_order_is_deterministic() {
         let (v, t) = cube(1.0);
-        let a = resample_core(&v, &t, 0.1, 0.0, false, false).unwrap();
+        let a = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
         for _ in 0..3 {
-            let b = resample_core(&v, &t, 0.1, 0.0, false, false).unwrap();
+            let b = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
             assert_eq!(a.tris, b.tris);
             assert_eq!(a.verts, b.verts);
         }
@@ -314,10 +345,10 @@ mod tests {
     #[test]
     fn rejects_bad_input() {
         let (v, t) = cube(1.0);
-        assert!(resample_core(&v, &t, 0.0, 0.0, false, false).is_err());
-        assert!(resample_core(&v, &t, -1.0, 0.0, false, false).is_err());
-        assert!(resample_core(&v, &t, f64::NAN, 0.0, false, false).is_err());
-        assert!(resample_core(&[], &[], 0.1, 0.0, false, false).is_err());
+        assert!(resample_core(&v, &t, 0.0, 0.0, false, false, false, false).is_err());
+        assert!(resample_core(&v, &t, -1.0, 0.0, false, false, false, false).is_err());
+        assert!(resample_core(&v, &t, f64::NAN, 0.0, false, false, false, false).is_err());
+        assert!(resample_core(&[], &[], 0.1, 0.0, false, false, false, false).is_err());
     }
 
     /// The same open box with its top face flipped -- a folded/partial sign
@@ -387,7 +418,7 @@ mod tests {
         // by every caller except the proxy resample) the output must not change
         // -- byte-for-byte the winding-only extraction.
         let (v, t) = cube(1.0);
-        let rep = resample_core(&v, &t, 0.1, 0.0, false, false).unwrap();
+        let rep = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
         let (rv, rt) = reference(&v, &t, 0.1, 0.0, false);
         assert_eq!(rep.verts, rv, "default verts changed");
         assert_eq!(rep.tris, rt, "default tris changed");
@@ -399,8 +430,8 @@ mod tests {
         // With the flag set the field must equal the full-grid ray vote, and it
         // must actually differ from the winding-only field on a folded sign.
         let (v, t) = flipped_top_cube(1.0);
-        let base = resample_core(&v, &t, 0.1, 0.0, false, false).unwrap();
-        let full = resample_core(&v, &t, 0.1, 0.0, false, true).unwrap();
+        let base = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
+        let full = resample_core(&v, &t, 0.1, 0.0, false, true, false, false).unwrap();
         let (rv, rt) = reference(&v, &t, 0.1, 0.0, true);
         assert_eq!(full.verts, rv, "raystab_full verts differ from the vote");
         assert_eq!(full.tris, rt, "raystab_full tris differ from the vote");
@@ -415,8 +446,8 @@ mod tests {
     #[test]
     fn raystab_full_is_ignored_for_the_unsigned_field() {
         let (v, t) = flipped_top_cube(1.0);
-        let a = resample_core(&v, &t, 0.1, 0.1, true, true).unwrap();
-        let b = resample_core(&v, &t, 0.1, 0.1, true, false).unwrap();
+        let a = resample_core(&v, &t, 0.1, 0.1, true, true, false, false).unwrap();
+        let b = resample_core(&v, &t, 0.1, 0.1, true, false, false, false).unwrap();
         assert_eq!(a.verts, b.verts);
         assert_eq!(a.tris, b.tris);
         assert!(!a.raystab_full);
@@ -425,9 +456,9 @@ mod tests {
     #[test]
     fn raystab_full_output_is_deterministic() {
         let (v, t) = flipped_top_cube(1.0);
-        let a = resample_core(&v, &t, 0.1, 0.0, false, true).unwrap();
+        let a = resample_core(&v, &t, 0.1, 0.0, false, true, false, false).unwrap();
         for _ in 0..3 {
-            let b = resample_core(&v, &t, 0.1, 0.0, false, true).unwrap();
+            let b = resample_core(&v, &t, 0.1, 0.0, false, true, false, false).unwrap();
             assert_eq!(a.verts, b.verts);
             assert_eq!(a.tris, b.tris);
         }
@@ -437,6 +468,21 @@ mod tests {
     fn rejects_out_of_range_index() {
         let (v, _) = cube(1.0);
         let t = vec![[0, 1, 99]];
-        assert!(resample_core(&v, &t, 0.1, 0.0, false, false).is_err());
+        assert!(resample_core(&v, &t, 0.1, 0.0, false, false, false, false).is_err());
+    }
+
+    #[test]
+    fn surface_and_vertex_mode_options_run() {
+        let (v, t) = cube(1.0);
+        let tets = resample_core(&v, &t, 0.1, 0.0, false, false, true, false).unwrap();
+        assert!(tets.surface_tets && !tets.mass_point);
+        assert!(!tets.tris.is_empty());
+        let mass = resample_core(&v, &t, 0.1, 0.0, false, false, false, true).unwrap();
+        assert!(!mass.surface_tets && mass.mass_point);
+        assert!(!mass.tris.is_empty());
+        // Marching tets emits per-triangle vertices (unwelded soup), so it has
+        // strictly more vertices than the (welded) dual-contouring output.
+        let qef = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
+        assert!(tets.verts.len() > qef.verts.len());
     }
 }

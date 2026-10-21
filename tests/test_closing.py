@@ -144,9 +144,9 @@ def test_poisson_close_hemisphere():
     v_hemi, t_hemi = _make_hemisphere()
     v_out, t_out, rep = cl.poisson_close(v_hemi, t_hemi, depth=8)
 
-    assert rep['watertight'] is True, f"Poisson output not watertight: {rep}"
+    assert rep['watertight'] is True, f"poisson_close output not watertight: {rep}"
     assert rep['depth'] == 8, f"Depth mismatch: {rep}"
-    assert any('Poisson' in n for n in rep['notes']), f"Missing Poisson note: {rep['notes']}"
+    assert any('estimated' in n for n in rep['notes']), f"Missing note: {rep['notes']}"
     assert len(t_out) > len(t_hemi), "Reconstruction should add faces"
 
     # Verify with the Rust Manifold kernel

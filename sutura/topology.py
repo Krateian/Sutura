@@ -1106,7 +1106,7 @@ def decimate_qem(verts, tris, target_faces, target_error=None,
 
 
 def resample_uniform(verts, tris, voxel, offset=0.0, absdist=False,
-                     raystab_full=False):
+                     raystab_full=False, surface=None, vertex_mode=None):
     """Resample ``verts``/``tris`` on a uniform voxel grid.
 
     Native only (Faz 4 W3c): the Rust ``sutura_geom.resample_uniform`` (a
@@ -1150,14 +1150,16 @@ def resample_uniform(verts, tris, voxel, offset=0.0, absdist=False,
         return v, t, {'voxel': cell, 'offset': off, 'absdist': bool(absdist),
                       'mode': 'unsigned' if absdist else 'signed',
                       'dims': (0, 0, 0), 'faces': 0, 'coarsened': False,
-                      'manifold': True, 'raystab_full': use_raystab}
+                      'manifold': True, 'raystab_full': use_raystab,
+                      'surface': surface or 'dual',
+                      'vertex_mode': vertex_mode or 'qef'}
     if not _has_rust('resample_uniform'):
         raise RuntimeError(
             "sutura_geom.resample_uniform required but unavailable in this "
             "environment (no numpy oracle for voxel resampling)"
         )
     out_v, out_t, info = _geom.resample_uniform(
-        v, t, cell, off, bool(absdist), use_raystab)
+        v, t, cell, off, bool(absdist), use_raystab, surface, vertex_mode)
     report = dict(info)
     report['dims'] = tuple(int(d) for d in report.get('dims', (0, 0, 0)))
     return (np.asarray(out_v), np.asarray(out_t).astype(np.int64), report)
