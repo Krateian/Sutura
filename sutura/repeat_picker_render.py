@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
 from heatmap_render import load_mesh
+import topology
 
 # Cap the picker mesh for responsiveness; a repeated element is a local feature,
 # so a decimated surface is enough to click on.
@@ -25,31 +26,28 @@ LOD_TARGET = 20000
 
 
 def decimate(verts, tris, target=LOD_TARGET):
-    """Cluster-decimate to at or below ``target`` faces (no-op below it)."""
+    """Cluster-decimate to at or below ``target`` faces (no-op below it).
+
+    Native (Faz 4 W3a): ``topology.cluster_decimate`` replaces PyMeshLab's
+    ``meshing_decimation_clustering``; the threshold steps are absolute model
+    units (VCG ``PureValue``) and the search stops at the first step at or
+    below the target.
+    """
+    verts = np.asarray(verts, dtype=np.float64)
+    tris = np.asarray(tris, dtype=np.int64)
     if len(tris) <= target:
         return verts, tris
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
-                        face_matrix=np.asarray(tris, np.int32)))
     best = None
     for threshold in (0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 8.0):
         try:
-            ms2 = ml.MeshSet()
-            ms2.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
-                                 face_matrix=np.asarray(tris, np.int32)))
-            ms2.apply_filter('meshing_decimation_clustering',
-                             threshold=ml.PureValue(threshold))
-            cur = ms2.current_mesh()
-            cv = np.asarray(cur.vertex_matrix(), dtype=np.float64)
-            ct = np.asarray(cur.face_matrix(), dtype=np.int64)
-            if len(ct) and len(ct) <= target:
-                best = (cv, ct)
-                break
-            if best is None:
-                best = (cv, ct)
+            cv, ct, _ = topology.cluster_decimate(verts, tris, float(threshold))
         except Exception:  # noqa: BLE001 - fall back to a coarser step
             continue
+        if len(ct) and len(ct) <= target:
+            best = (cv, ct)
+            break
+        if best is None:
+            best = (cv, ct)
     return best if best is not None else (verts, tris)
 
 

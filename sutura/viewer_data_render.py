@@ -27,6 +27,7 @@ import pymeshlab as ml
 
 from defects import detect, defect_type_colors
 from heatmap_render import load_mesh
+import topology
 from viewer_common import (defect_vertex_set,
                            healed_face_mask, initial_view_camera)
 
@@ -47,28 +48,33 @@ def _defect_vertex_list(defect_report):
 def _decimate_lod(verts, tris, target=LOD_TARGET):
     """Cluster-decimate to AT MOST ``target`` triangles (fast, topology-free).
 
+    Native (Faz 4 W3a): uses ``topology.cluster_decimate`` (the Rust
+    vertex-clustering pass replacing PyMeshLab's ``meshing_decimation_clustering``).
     Returns (lverts, ltris) in the same dtypes as the input. Meshes already
     at or below the target are returned unchanged. Tries the threshold steps
-    in ascending order (larger pct -> fewer triangles) and picks the result
-    that lands AT OR BELOW the target and is CLOSEST to it, so the LOD never
-    stays above the target and never over-collapses when a step jumps far
-    below it. If no step reaches the target, the most aggressive (smallest)
-    result is used. Never raises for empty input.
+    in ascending order (larger cell size -> fewer triangles) and picks the
+    result that lands AT OR BELOW the target and is CLOSEST to it, so the LOD
+    never stays above the target and never over-collapses when a step jumps
+    far below it. If no step reaches the target, the most aggressive
+    (smallest) result is used. Never raises for empty input.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
     if len(tris) == 0 or len(tris) <= target:
         return verts, tris
+    diag = 0.0
+    if len(verts):
+        diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+    if diag <= 0.0:
+        return verts, tris
     best_below = None   # (face_count, lverts, ltris) closest to target from below
     fallback = None     # (face_count, lverts, ltris) smallest result overall
     for pct in (1.0, 1.5, 2.0, 3.0, 5.0, 8.0):
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=verts, face_matrix=tris.astype(np.int32)))
-        ms.apply_filter('meshing_decimation_clustering',
-                        threshold=ml.PercentageValue(pct))
-        m = ms.current_mesh()
-        lv = np.asarray(m.vertex_matrix(), dtype=np.float64)
-        lt = np.asarray(m.face_matrix(), dtype=np.int64)
+        try:
+            lv, lt, _ = topology.cluster_decimate(
+                verts, tris, diag * (pct / 100.0))
+        except Exception:  # noqa: BLE001 - fall back to a coarser step
+            continue
         n = len(lt)
         if n == 0:
             continue
