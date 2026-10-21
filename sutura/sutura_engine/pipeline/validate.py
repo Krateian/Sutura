@@ -33,7 +33,6 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental',
     non-blocking unit-warning heuristic (3MF only). ``si_mode`` selects the
     self-intersection policy; under 'off' the count is reported as None
     ('not measured') and is not required by the watertight predicate."""
-    import pymeshlab as ml
     si_mode = resolve_si_mode(si_mode)
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -47,17 +46,13 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental',
     holes = d['holes']
     nm = d['non_manifold']
 
-    ms = ml.MeshSet()
     topo = topology.mesh_topology(v, t)
     if si_mode == 'off':
         self_intersections = None
-    elif topology.native_si_enabled():
+    else:
+        # W4a: array-only exact SI count; no MeshSet is created.
         _, count = topology.self_intersecting_faces(v, t)
         self_intersections = None if int(count) < 0 else int(count)
-    else:
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        self_intersections = int(ms.current_mesh().face_selection_array().sum())
 
     vol = signed_volume(v, t)
     bridge = bool(is_manifold_available())
@@ -144,7 +139,6 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     when None); Stage 1 thresholds are unaffected by it. ``flap`` is reported
     as ``flap_step`` in the plan so --dry-run shows the pre-pass (no work is
     done)."""
-    import pymeshlab as ml
     si_mode = resolve_si_mode(si_mode)
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -164,30 +158,20 @@ def dry_run_mesh_from_arrays(verts, tris, mode='auto', profile=None, engine='exp
     params['maxholesize'] = max(params['maxholesize'],
                                 2 * boundary_loop_stats(verts, tris)[1])
 
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
     topo = topology.mesh_topology(v, t)
     # "found" counts describe the INPUT mesh (like defects.detect does), so
     # self-intersections are measured before the debris-removal step below.
     if si_mode == 'off':
         self_intersections = None
-    elif topology.native_si_enabled():
+    else:
+        # W4a: array-only exact SI count; no MeshSet is created.
         _, count = topology.self_intersecting_faces(v, t)
         self_intersections = None if int(count) < 0 else int(count)
-    else:
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        self_intersections = int(ms.current_mesh().face_selection_array().sum())
-        ms.apply_filter('set_selection_none')
-    before_faces = ms.current_mesh().face_number()
-    m = ms.current_mesh()
-    v_cur = m.vertex_matrix()
-    t_cur = m.face_matrix()
+    v_cur, t_cur = v, t
+    before_faces = len(t_cur)
     v_new, t_new = topology.remove_connected_components(
         v_cur, t_cur, min_faces=params['mincomponentsize'], remove_unref=True)
-    if len(t_new) < len(t_cur):
-        from sutura_engine.pipeline.stage1 import _set_mesh_on_ms
-        _set_mesh_on_ms(ms, ml, v_new, t_new)
-    debris_faces = max(before_faces - ms.current_mesh().face_number(), 0)
+    debris_faces = max(before_faces - len(t_new), 0)
 
     est = estimate_confidence_pre_repair({
         'detected_type': cls['type'],

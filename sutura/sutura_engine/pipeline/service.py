@@ -82,11 +82,11 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         declared_unit = read_3mf_units(src).get(
             mesh_block.model_name, 'millimeter')
     else:
-        load_ms = ml.MeshSet()
-        load_ms.load_new_mesh(src)
-        verts = np.asarray(load_ms.current_mesh().vertex_matrix(),
-                           dtype=np.float32)
-        tris = np.asarray(load_ms.current_mesh().face_matrix(), dtype=np.int32)
+        from sutura_engine.pipeline.mesh_io import load_mesh
+
+        verts, tris = load_mesh(src)
+        verts = np.asarray(verts, dtype=np.float32)
+        tris = np.asarray(tris, dtype=np.int32)
 
     if not trace.is_active() and os.environ.get('SUTURA_TRACE'):
         trace.begin_trace(trace_path=None, input_file=src,

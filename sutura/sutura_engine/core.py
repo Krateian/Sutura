@@ -91,23 +91,13 @@ def build_mesh_block(verts: np.ndarray, tris: np.ndarray) -> str:
 def load_meshes(src: str) -> List[Tuple[Optional[str], np.ndarray, np.ndarray]]:
     """Load a mesh file as a list of (model_name|None, verts, tris).
 
-    STL/OBJ give one entry with model_name None; 3MF yields one entry per object.
-    Lazy imports pymeshlab for STL/OBJ.
+    Thin compatibility wrapper over the native ``pipeline.mesh_io`` loader
+    (W4a): STL/OBJ give one entry, 3MF yields one entry per object, and no
+    MeshSet is created.
     """
-    ext = os.path.splitext(src)[1].lower()
-    if ext == '.3mf':
-        out = []
-        for name, blocks in parse_3mf_meshes(src).items():
-            for vs, ts, _span in blocks:
-                out.append((name, np.asarray(vs, dtype=np.float32),
-                            np.asarray(ts, dtype=np.int32)))
-        return out
-    import pymeshlab as ml
-    load_ms = ml.MeshSet()
-    load_ms.load_new_mesh(src)
-    m = load_ms.current_mesh()
-    return [(None, np.asarray(m.vertex_matrix(), dtype=np.float32),
-             np.asarray(m.face_matrix(), dtype=np.int32))]
+    from sutura_engine.pipeline.mesh_io import load_meshes as _load_meshes
+
+    return _load_meshes(src)
 
 
 def stl_write_binary(path: str, verts: np.ndarray, tris: np.ndarray) -> None:

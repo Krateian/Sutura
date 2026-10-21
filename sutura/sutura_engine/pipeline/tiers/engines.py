@@ -54,19 +54,36 @@ def engine_placement_order(engines, chain, placement):
 
 
 def _read_engine_mesh(path):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.load_new_mesh(path)
-    return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
-            np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
+    """Read an engine mesh without a MeshSet.
+
+    STL/OBJ/3MF use the native mesh_io loader; PLY (the only extra format the
+    engine config accepts) goes through trimesh, which has no PyMeshLab
+    dependency.
+    """
+    ext = os.path.splitext(str(path))[1].lower()
+    if ext in ('.stl', '.obj', '.3mf'):
+        from sutura_engine.pipeline.mesh_io import load_mesh
+
+        return load_mesh(path)
+    import trimesh
+
+    m = trimesh.load(path, process=False, force='mesh')
+    return (np.asarray(m.vertices, dtype=np.float32),
+            np.asarray(m.faces, dtype=np.int32))
 
 
 def _write_engine_mesh(path, verts, tris):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
-                        face_matrix=np.asarray(tris, np.int32)))
-    ms.save_current_mesh(path)
+    ext = os.path.splitext(str(path))[1].lower()
+    if ext in ('.stl', '.obj', '.3mf'):
+        from sutura_engine.pipeline.mesh_io import save_mesh
+
+        save_mesh(path, verts, tris)
+        return
+    import trimesh
+
+    trimesh.Trimesh(vertices=np.asarray(verts, np.float32),
+                    faces=np.asarray(tris, np.int32),
+                    process=False).export(path)
 
 
 def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,
