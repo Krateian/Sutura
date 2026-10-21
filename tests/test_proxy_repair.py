@@ -6,8 +6,13 @@ Checks:
   2. build_proxy produces watertight 2-manifold surface without debris.
   3. build_proxy is bounded on a fan mesh whose long thin triangles used to
      hang PyMeshLab's resampler (now handled by the native resampler).
-  3b. build_proxy falls back to the native morph_close strategy when the
-     resample strategies are unavailable.
+  3b. build_proxy actually selects the signed resample strategy on a mesh with
+     an inconsistently wound face (native resample + non-manifold cleanup).
+  3b-ii. build_proxy's open-flap truncation (thingi10k_100827) is a KNOWN
+      limitation, kept as an expected-fail; the opt-in raystab_full=True param
+      that would fix it is parked because it degrades the common case.
+  3c. build_proxy falls back to the native morph_close strategy when the
+      resample strategies are unavailable.
   4. proxy_template_repair repairs broken sphere with hole, flipped face, and debris.
   5. proxy_template_repair repairs broken torus while preserving topology.
   6. Defensive error handling returns honest error reports without raising.
@@ -82,6 +87,75 @@ def test_build_proxy():
     ok, status = sutura_geom.watertight_check(pv, pt)
     assert ok, f"Proxy Manifold error: {status}"
     print(f"  ✓ test_build_proxy passed (faces: {len(pt)}, method: {info['method']})")
+
+
+def test_build_proxy_prefers_signed_resample():
+    """The signed resample strategy must actually be selected.
+
+    Regression (Faz 4 W3c): the dual-contour signed resample emitted a
+    watertight but non-manifold surface where the generalized-winding sign field
+    was ambiguous (here: one inconsistently wound face).  ``close_holes`` then
+    rejected it, and ``build_proxy`` silently fell through to the
+    outward-offset *unsigned* proxy -- a different shape than the signed proxy
+    the VCG ``generate_resampled_uniform_mesh`` produced.  ``_manifold_resample``
+    re-orients the signed input and splits the residual pinched
+    vertices/edges, so the signed path must now win."""
+    v, t = _make_broken_sphere()
+    pv, pt, info = pr.build_proxy(v, t)
+    assert info['method'] == 'uniform_resampled_signed', (
+        f"expected the signed resample, got {info['method']}")
+    assert len(pt) >= 100, f"proxy too small: {len(pt)} faces"
+    ok, status = sutura_geom.watertight_check(pv, pt)
+    assert ok, f"Signed proxy Manifold error: {status}"
+    print(f"  ✓ test_build_proxy_prefers_signed_resample passed (faces: {len(pt)})")
+
+
+def test_build_proxy_open_flap_expected_fail():
+    """EXPECTED FAIL -- known limitation, kept as evidence (Faz 4 W3c).
+
+    On ``thingi10k_100827`` (a broken scan whose top surface is folded back on
+    itself) the generalized-winding sign is ~0 over the top region, so the
+    winding-only signed field reads it as *outside* and dual contouring truncates
+    the proxy at z ~ 30.1 while the input reaches 34.5 (~38 % of the input
+    vertices sit above the cut).
+
+    The native ``resample_uniform`` already has an opt-in ``raystab_full=True``
+    that recovers the flap (measured: z_top 34.38, Manifold watertight, faces
+    11298 -> 12114 and SI 664 -> 81 on 100827), but enabling it for the whole
+    field degrades the common case: on a plain broken sphere the proxy hits the
+    face budget (11298 -> 20000 faces) and ``projected_fraction_healthy`` drops
+    0.981 -> 0.878, because the full-band vote introduces scattered single-cell
+    sign flips that spawn extra surface where the winding was already clean.  The
+    proxy therefore keeps the winding-only signed path.
+
+    FOLLOW-UP: narrow the vote rule to the recovery direction only (flip
+    outside -> inside, never inside -> outside) so the flap is recovered without
+    the scattered flips, then re-measure 100827 and the broken sphere and pass
+    ``raystab_full=True`` at the signed call site.  Tracked in
+    ``/tmp/followups.md``.
+    """
+    sample = os.path.join(REPO, 'tests', 'real-world-samples',
+                          'thingi10k_100827.stl')
+    if not os.path.exists(sample):
+        print("  ~ test_build_proxy_open_flap_expected_fail skipped (sample missing)")
+        return
+    mesh = trimesh.load(sample, process=True)
+    v = np.asarray(mesh.vertices, np.float64)
+    t = np.asarray(mesh.faces, np.int64)
+
+    _pv, _pt, info = pr.build_proxy(v, t)
+    pv = np.asarray(_pv)
+    z_top = float(pv[:, 2].max())
+    z_max_in = float(v[:, 2].max())
+    if z_top >= 34.0:
+        print(f"  ! test_build_proxy_open_flap_expected_fail UNEXPECTEDLY PASSED "
+              f"(z_top {z_top:.2f}); the limitation may be resolved -- promote it")
+        return
+    print(f"  x test_build_proxy_open_flap_expected_fail (expected): proxy "
+          f"truncates the flap z_top={z_top:.2f} < input {z_max_in:.2f} "
+          f"[method {info['method']}]")
+    print("    follow-up: narrow the vote rule to recovery-only "
+          "(outside -> inside) and enable raystab_full=True")
 
 
 def test_proxy_template_repair_sphere():
@@ -238,6 +312,8 @@ def main():
     print("Running proxy-template repair tests (tests/test_proxy_repair.py)...")
     test_health_mask()
     test_build_proxy()
+    test_build_proxy_prefers_signed_resample()
+    test_build_proxy_open_flap_expected_fail()
     test_build_proxy_bounded_on_fan_mesh()
     test_build_proxy_morph_close_fallback()
     test_proxy_template_repair_sphere()

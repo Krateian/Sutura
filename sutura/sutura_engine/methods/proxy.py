@@ -119,6 +119,65 @@ def _decimate_to_budget(verts, tris, max_budget):
     return None
 
 
+def _manifold_resample(verts, tris, voxel, offset, absdist, raystab_full=False):
+    """Native voxel resample hardened against an ambiguous sign field (Faz 4 W3c).
+
+    ``sutura_geom.resample_uniform`` extracts the iso-surface with dual
+    contouring.  Where the generalized-winding sign field is ambiguous
+    (inconsistent face winding or self-intersections) dual contouring emits a
+    watertight but *non-manifold* surface (a pinched edge shared by four faces),
+    which the later ``close_holes`` rejects.  Three native steps harden it:
+
+    * the signed pass resamples a coherently re-oriented input, so a locally
+      flipped face no longer corrupts the winding sign;
+    * any residual non-manifold vertices/edges in the extraction are split
+      before hole closing.
+
+    The optional ``raystab_full`` (passed straight to
+    ``topology.resample_uniform``) lets the ray-stabbing vote decide the sign in
+    every cell instead of only the winding-ambiguous band.  It is *not* enabled
+    by ``build_proxy``: it recovers a folded/open flap the winding-only field
+    truncates (``thingi10k_100827``: z_top 30.1 -> 34.4, SI 664 -> 81) but
+    degrades the common case (broken sphere: ``projected_fraction_healthy``
+    0.981 -> 0.878, faces 11298 -> 20000) through scattered single-cell sign
+    flips.  Parked until the vote rule is narrowed to the recovery direction
+    only; see ``/tmp/followups.md`` and
+    ``tests/test_proxy_repair.py::test_build_proxy_open_flap_expected_fail``.
+
+    Returns ``(verts, tris)``.
+    """
+    if not absdist:
+        tris = topology.re_orient_faces_coherently(np.asarray(tris, dtype=np.int64))
+    rv, rt, _info = topology.resample_uniform(
+        verts, tris, voxel, offset, absdist, raystab_full)
+    rv, rt = topology.repair_non_manifold_vertices(rv, rt)
+    rt = topology.repair_non_manifold_edges(rv, rt)
+    return _reload_honest(rv, rt)
+
+
+def _reload_honest(verts, tris):
+    """Weld the proxy into its reload-equivalent form and repair, iterating.
+
+    Dual contouring puts one vertex per cell surface component, so it can leave
+    vertices that are distinct yet collapse onto the same float32 position.  The
+    in-memory mesh is watertight, but the STL the user reloads re-welds those
+    positions and exposes pinched edges, which the closing tier then prunes into
+    holes.  Welding here (the exact form the reloader produces) and repairing
+    again makes the returned proxy reload-honest.  Bounded, converges in a few
+    rounds.
+    """
+    for _ in range(4):
+        nv, nt = topology.weld_reload_equivalent(verts, tris)
+        nv, nt = topology.repair_non_manifold_vertices(nv, nt)
+        nt = topology.repair_non_manifold_edges(nv, nt)
+        nv, nt, _closed, _new = topology.close_holes(nv, nt, maxholesize=10000)
+        is_wt, _ = _check_validity(nv, nt)
+        if is_wt:
+            return nv, nt
+        verts, tris = nv, nt
+    return nv, nt
+
+
 def build_proxy(verts, tris, voxel=None):
     """Construct a watertight, coarse proxy surface for the input mesh.
 
@@ -161,7 +220,7 @@ def build_proxy(verts, tris, voxel=None):
 
     # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
     try:
-        rv, rt, _ = topology.resample_uniform(in_v, in_t, voxel, 0.0, False)
+        rv, rt = _manifold_resample(in_v, in_t, voxel, 0.0, False)
         for _ in range(2):
             rv, rt, _closed, _new = topology.close_holes(rv, rt, maxholesize=10000)
         pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
@@ -177,7 +236,7 @@ def build_proxy(verts, tris, voxel=None):
 
     # Strategy 2: Unsigned distance offset resampling (absdist=True, offset=voxel)
     try:
-        rv, rt, _ = topology.resample_uniform(in_v, in_t, voxel, voxel, True)
+        rv, rt = _manifold_resample(in_v, in_t, voxel, voxel, True)
         pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
