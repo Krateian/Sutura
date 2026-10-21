@@ -25,7 +25,6 @@ sys.path.insert(0, SUTURA)
 import numpy as np  # noqa: E402
 
 import topology  # noqa: E402
-from sutura_engine.pipeline import stage1, utils  # noqa: E402
 
 
 def _crossing_pairs(k):
@@ -53,34 +52,6 @@ def _clean_cube():
         (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
         (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7)], dtype=np.int32)
     return v, t
-
-
-class _FakeMesh:
-    def __init__(self, sel):
-        self._sel = np.asarray(sel, dtype=float)
-
-    def face_selection_array(self):
-        return self._sel
-
-    def vertex_matrix(self):
-        return np.zeros((3, 3), dtype=np.float32)
-
-    def face_matrix(self):
-        return np.zeros((1, 3), dtype=np.int32)
-
-
-class _FakeMeshSet:
-    """Minimal MeshSet stub: only the pieces _count_si / _si_count_and_mask use."""
-
-    def __init__(self, sel=(0.0,)):
-        self._m = _FakeMesh(sel)
-        self.filters = []
-
-    def apply_filter(self, name, **kwargs):
-        self.filters.append(name)
-
-    def current_mesh(self):
-        return self._m
 
 
 def _have_rust():
@@ -123,6 +94,7 @@ def test_contract():
 
 def test_sites_agree():
     from sutura_engine import dressing, graft
+    from sutura_engine.pipeline import utils
     if not _have_rust():
         print('sites: skip (no Rust kernel)')
         return
@@ -140,28 +112,6 @@ def test_sites_agree():
     assert dressing.si_face_count(cv30, ct30) == c30
     assert graft._si_count(cv30, ct30) is None
     print('sites OK (topology/utils/dressing/graft agree; Graft capped -> None)')
-
-
-def test_sentinel_falls_back():
-    """A -1 sentinel at the operational sites falls back to PyMeshLab, not 0."""
-    saved_native = topology.native_si_enabled
-    saved_sif = topology.self_intersecting_faces
-    try:
-        topology.native_si_enabled = lambda: True
-        topology.self_intersecting_faces = lambda *a, **k: (
-            np.zeros(3, dtype=bool), -1)
-
-        ms = _FakeMeshSet(sel=(1.0, 0.0, 1.0))
-        assert utils._count_si(None, ms) == 2, utils._count_si(None, ms)
-
-        ms2 = _FakeMeshSet(sel=(1.0, 0.0, 1.0))
-        n, mask = stage1._si_count_and_mask(ms2)
-        assert n == 2, n
-        assert mask.dtype == bool and int(mask.sum()) == 2
-    finally:
-        topology.native_si_enabled = saved_native
-        topology.self_intersecting_faces = saved_sif
-    print('sentinel OK (-1 -> PyMeshLab fallback, never 0)')
 
 
 def test_no_stale_cache():
@@ -187,17 +137,14 @@ def test_report_site_reports_none():
         return
     from sutura_engine.pipeline import validate
 
-    saved_native = topology.native_si_enabled
     saved_sif = topology.self_intersecting_faces
     try:
-        topology.native_si_enabled = lambda: True
         topology.self_intersecting_faces = lambda *a, **k: (
             np.zeros(3, dtype=bool), -1)
         v, t = _clean_cube()
         rep = validate.validate_mesh_from_arrays(v, t, si_mode='report')
         assert rep['validation']['self_intersections'] is None, rep['validation']
     finally:
-        topology.native_si_enabled = saved_native
         topology.self_intersecting_faces = saved_sif
     print('report site OK (skipped classifier -> None, not 0)')
 
@@ -205,7 +152,6 @@ def test_report_site_reports_none():
 def main():
     test_contract()
     test_sites_agree()
-    test_sentinel_falls_back()
     test_no_stale_cache()
     test_report_site_reports_none()
     print('test_si_caps: all passed')

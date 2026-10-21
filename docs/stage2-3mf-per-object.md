@@ -1,5 +1,11 @@
 # Per-object Stage 2 for multi-object 3MF — investigation report
 
+> **Historical note (documentation sweep, 2026-10):** this is the original
+> investigation report from the PyMeshLab-era Stage 1. The current runtime
+> uses the native `sutura_engine` + `sutura_geom` chain and does not import
+> PyMeshLab; the PyMeshLab build details below are kept as the historical
+> record of how the failure was diagnosed.
+
 Date: session post-v0.2.5 (repo state: Task 1 + Task 2 approved, uncommitted).
 Author note: this document is the agreed Task 3 deliverable (REPORT ONLY — no
 code was changed for anything described here). It contains two investigations:

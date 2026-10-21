@@ -31,7 +31,7 @@ Size estimates are hardcoded based on real measurements:
 
 The manager dynamically resolves package dependencies from `requirements-ftetwild.txt` and base requirement files (`requirements.txt`, `requirements-gui.txt`):
 
-1. **Base Protection**: Packages required by base Sutura (e.g. `numpy`, `pymeshlab`, `PySide6-Essentials`, `pip`, `setuptools`, `wheel`) are strictly protected and never removed. Manifold is not a Python package: it is statically linked into `sutura_geom` through `manifold-csg`, and `trimesh` is a development/test-only dependency, so neither appears in the base package set.
+1. **Base Protection**: Packages required by base Sutura (e.g. `numpy`, `PySide6-Essentials`, `pip`, `setuptools`, `wheel`) are strictly protected and never removed. Manifold is not a Python package: it is statically linked into `sutura_geom` through `manifold-csg`, so it does not appear in the base package set; `trimesh` and `pymeshlab` are development/test-only dependencies, so they are not protected either.
 2. **Heavy Dependency Cleanup**: Packages pulled in solely for fTetWild (notably `vtk`, `pyvista`, and `pyvista-validation`) are tracked and uninstalled, reclaiming ~517 MB from VTK alone.
 3. **Cancellation & Half-Install Cleanup**: Pip runs in a detached process group (`start_new_session=True`). When cancelled via `cancel_event`, the entire process tree is terminated (`SIGTERM` -> `SIGKILL`), and any partially extracted fTetWild packages are cleaned up automatically.
 

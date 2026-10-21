@@ -51,8 +51,8 @@ def test_graft_tier_skips_over_face_cap():
     stats = {'stage1': {'holes_remaining': 4,
                         'non_manifold_edges_remaining': 2}}
     after = {'faces_number': 0}
-    repair.graft_tier(_FakeML(), after, after, stats,
-                      np.zeros((0, 3), np.float64), t, '/tmp',
+    repair.graft_tier(np.zeros((0, 3), np.float64), t,
+                      np.zeros((0, 3), np.float64), t, after, stats, '/tmp',
                       graft=True, intensity='balanced', spec=spec)
     rec = stats['graft']
     assert rec['ran'] is False
@@ -80,9 +80,10 @@ def test_graft_tier_under_cap_runs_shell_wrap_with_budget():
         stats = {'stage1': {'holes_remaining': 3,
                             'non_manifold_edges_remaining': 1}}
         after = {'faces_number': 0}
-        repair.graft_tier(_FakeML(), after, after, stats,
+        repair.graft_tier(np.zeros((0, 3), np.float64),
+                          np.zeros((5, 3), np.int64),
                           np.zeros((0, 3), np.float64),
-                          np.zeros((5, 3), np.int64), '/tmp',
+                          np.zeros((5, 3), np.int64), after, stats, '/tmp',
                           graft=True, intensity='balanced',
                           spec=triage.PRESETS['balanced'])
     finally:
@@ -100,9 +101,10 @@ def test_graft_tier_under_cap_runs_shell_wrap_with_budget():
 def test_graft_tier_no_graft_is_a_noop():
     stats = {}
     after = {'faces_number': 0}
-    out_ms, out_after = repair.graft_tier(
-        _FakeML(), after, after, stats, np.zeros((0, 3), np.float64),
-        np.zeros((5, 3), np.int64), '/tmp', graft=False)
+    out_v, out_t, out_after = repair.graft_tier(
+        np.zeros((0, 3), np.float64), np.zeros((5, 3), np.int64),
+        np.zeros((0, 3), np.float64), np.zeros((5, 3), np.int64),
+        after, stats, '/tmp', graft=False)
     assert stats == {}
     assert out_after is after
 

@@ -924,46 +924,22 @@ def repair_non_manifold_edges(verts, tris):
     return _geom.repair_non_manifold_edges(v, t)
 
 
-def repair_non_manifold_vertices(verts, tris=None):
+def repair_non_manifold_vertices(verts, tris):
     """Repair non-manifold pinch vertices by splitting them (matching VCGLib meshing_repair_non_manifold_vertices).
 
-    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
-    Returns (verts, tris) as arrays, or modifies MeshSet in-place if MeshSet passed.
+    Returns ``(verts, tris)`` as arrays.
     """
-    is_ms = False
-    if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            ms = verts
-            m = ms.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
-            is_ms = True
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
-    v = np.ascontiguousarray(v, dtype=np.float32)
-    t = np.ascontiguousarray(t, dtype=np.int64)
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
         raise ValueError("verts must be Nx3")
     if t.ndim != 2 or t.shape[1] != 3:
         raise ValueError("tris must be Mx3")
     if len(v) == 0 or len(t) == 0:
-        out_v, out_t = v, t
-    elif engine() == 'python':
-        out_v, out_t = _repair_non_manifold_vertices_numpy(v, t)
-    else:
-        out_v, out_t = _geom.repair_non_manifold_vertices(v, t)
-
-    if is_ms and len(out_v) > len(v):
-        import pymeshlab as ml
-        ms.clear()
-        ms.add_mesh(ml.Mesh(vertex_matrix=out_v, face_matrix=out_t.astype(np.int32)))
-        return ms
+        return v, t
+    if engine() == 'python':
+        return _repair_non_manifold_vertices_numpy(v, t)
+    out_v, out_t = _geom.repair_non_manifold_vertices(v, t)
     return out_v, out_t
 
 
@@ -1165,57 +1141,10 @@ def resample_uniform(verts, tris, voxel, offset=0.0, absdist=False,
     return (np.asarray(out_v), np.asarray(out_t).astype(np.int64), report)
 
 
-def close_holes_ms(ms, ml=None, maxholesize=1000, self_intersection=True,
-                   newfaceselected=False, refinehole=False,
-                   refineholeedgelen=None):
-    """Apply ``meshing_close_holes`` to a MeshSet in place.
-
-    Uses the native :func:`close_holes`; the Liepa-style ``refinehole=True``
-    refinement is not ported yet (Faz 4D), so such calls are routed to
-    PyMeshLab's filter unchanged.  Returns ``(closed_holes, new_faces)`` for
-    the native path and ``None`` when the PyMeshLab fallback is used.
-    """
-    if refinehole:
-        if ml is None:
-            import pymeshlab as ml  # noqa: F401
-        kw = {'maxholesize': int(maxholesize),
-              'selfintersection': bool(self_intersection),
-              'newfaceselected': bool(newfaceselected),
-              'refinehole': True}
-        if refineholeedgelen is not None:
-            kw['refineholeedgelen'] = refineholeedgelen
-        ms.apply_filter('meshing_close_holes', **kw)
-        return None
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    v_new, t_new, closed, new_faces = close_holes(
-        v, t, maxholesize=maxholesize, self_intersection=self_intersection,
-        newfaceselected=newfaceselected)
-    if len(t_new) != len(t):
-        if ml is None:
-            import pymeshlab as ml
-        ms.clear()
-        ms.add_mesh(ml.Mesh(vertex_matrix=v_new,
-                            face_matrix=t_new.astype(np.int32)))
-    return closed, new_faces
-
-
-def compute_normal_per_face(verts, tris=None):
+def compute_normal_per_face(verts, tris):
     """Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0))."""
-    if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            m = verts.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float64)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
@@ -1229,21 +1158,10 @@ def compute_normal_per_face(verts, tris=None):
     return _geom.compute_normal_per_face(v, t)
 
 
-def compute_normal_per_vertex(verts, tris=None):
+def compute_normal_per_vertex(verts, tris):
     """Compute unit per-vertex normals matching VCGLib compute_normal_per_vertex (Simple Average)."""
-    if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            m = verts.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float64)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
@@ -1257,31 +1175,10 @@ def compute_normal_per_vertex(verts, tris=None):
     return _geom.compute_normal_per_vertex(v, t)
 
 
-def mesh_topology(verts, tris=None):
-    """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures).
-
-    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
-    """
-    if tris is None:
-        if hasattr(verts, 'mesh_number') and verts.mesh_number() == 0:
-            v = np.zeros((0, 3), dtype=np.float32)
-            t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'current_mesh'):
-            try:
-                m = verts.current_mesh()
-                v = m.vertex_matrix()
-                t = m.face_matrix()
-            except Exception:
-                v = np.zeros((0, 3), dtype=np.float32)
-                t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+def mesh_topology(verts, tris):
+    """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures)."""
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float32)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
@@ -1293,31 +1190,10 @@ def mesh_topology(verts, tris=None):
     return _geom.mesh_topology(v, t)
 
 
-def mesh_geometric_measures(verts, tris=None):
-    """Complete geometric measures of a triangle mesh (matching VCGLib get_geometric_measures).
-
-    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
-    """
-    if tris is None:
-        if hasattr(verts, 'mesh_number') and verts.mesh_number() == 0:
-            v = np.zeros((0, 3), dtype=np.float32)
-            t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'current_mesh'):
-            try:
-                m = verts.current_mesh()
-                v = m.vertex_matrix()
-                t = m.face_matrix()
-            except Exception:
-                v = np.zeros((0, 3), dtype=np.float32)
-                t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+def mesh_geometric_measures(verts, tris):
+    """Complete geometric measures of a triangle mesh (matching VCGLib get_geometric_measures)."""
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float32)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
@@ -1340,34 +1216,6 @@ meshing_invert_face_orientation = invert_face_orientation
 meshing_remove_connected_component_by_face_number = remove_connected_components
 meshing_compute_normal_per_face = compute_normal_per_face
 meshing_compute_normal_per_vertex = compute_normal_per_vertex
-
-
-def native_si_enabled():
-    """Return True if native self-intersection detection is enabled.
-
-    Default ON: self-intersection queries use the exact geometric predicates
-    in sutura_geom rather than PyMeshLab's VCGLib filter. Opt out with
-    ``SUTURA_SI_EXACT=0``; the legacy ``SUTURA_NATIVE_SI=0`` is also accepted.
-    Precedence: ``SUTURA_SI_EXACT`` > ``SUTURA_NATIVE_SI`` > default True.
-    """
-    env_exact = os.environ.get('SUTURA_SI_EXACT', '').strip().lower()
-    if env_exact in ('1', 'true', 'yes', 'on'):
-        return True
-    if env_exact in ('0', 'false', 'no', 'off'):
-        return False
-    env = os.environ.get('SUTURA_NATIVE_SI', '').strip().lower()
-    if env in ('0', 'false', 'no', 'off'):
-        return False
-    return True
-
-
-def native_orient_enabled():
-    """Return True if native coherent face reorientation is enabled.
-
-    Default True (active). Opt out with ``SUTURA_NATIVE_ORIENT=0``.
-    """
-    env = os.environ.get('SUTURA_NATIVE_ORIENT', '').strip().lower()
-    return env not in ('0', 'false', 'no', 'off')
 
 
 def native_nme_enabled():
@@ -1496,29 +1344,6 @@ def dilate_face_selection(tris, selected, rings=1):
     return sel
 
 
-def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
-    """Return the self-intersecting face mask for a MeshSet.
-
-    With SUTURA_NATIVE_SI the exact classifier is used and the mask is
-    returned array-only (no MeshSet selection is written; callers must use
-    the returned mask). The PyMeshLab fallback keeps the legacy behaviour and
-    writes the selection so the old opt-out path still works.
-
-    Returns (mask, count).
-    """
-    if not native_si_enabled():
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        res_mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
-        return res_mask, int(res_mask.sum())
-
-    m = ms.current_mesh()
-    if mask is None or count is None:
-        v = m.vertex_matrix()
-        t = m.face_matrix()
-        mask, count = self_intersecting_faces(v, t)
-    return mask, int(count)
-
-
 def connected_components(graph=None, *, directed=False, connection='weak',
                          return_labels=True, n_nodes=None, edges=None):
     """Connected components of an undirected graph.
@@ -1622,19 +1447,15 @@ __all__ = [
     'repair_non_manifold_vertices',
     'remove_selected_faces',
     'close_holes',
-    'close_holes_ms',
     'compute_normal_per_face',
     'compute_normal_per_vertex',
     'mesh_topology',
     'mesh_geometric_measures',
     'connected_components',
-    'native_si_enabled',
-    'native_orient_enabled',
     'native_nme_enabled',
     'native_nmv_enabled',
     'native_measures_enabled',
     'self_intersecting_faces',
-    'select_self_intersections_ms',
     'si_face_count',
     'SI_MAX_FACES',
     'engine',

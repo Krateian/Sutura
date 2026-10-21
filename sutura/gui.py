@@ -41,8 +41,8 @@ if _HERE not in sys.path:
 import updater
 import triage
 # method registry / per-object recommendations (stdlib+numpy at import time;
-# pymeshlab and repair are imported lazily inside its functions, so importing
-# it here keeps the GUI process pymeshlab-free)
+# the repair pipeline is imported lazily inside its functions, so importing
+# it here keeps the GUI process lightweight)
 import methods
 
 # single source of truth: prefer the package, else the repair.py beside us
@@ -58,7 +58,7 @@ except ImportError:
 # result classification (stdlib-only single source shared with the CLI)
 import classification
 
-# interactive mesh rendering (numpy + QPainter only, no pymeshlab - it stays
+# interactive mesh rendering (numpy + QPainter only; mesh loading/repair stays
 # in the subprocesses that load/render the meshes)
 from heatmap import (_ISOMETRIC, draw_frame, draw_face_index, prepare_render,
                     shared_frame)
@@ -95,7 +95,7 @@ STRINGS = {
         'method_name_autorefine': 'Autorefine (SI)',
         'method_name_exact_refine': 'Exact Refine (SI, exact)',
         'method_name_ftetwild': 'fTetWild',
-        'method_name_balloon': 'Balloon (Poisson close)',
+        'method_name_balloon': 'Balloon (native implicit close)',
         'method_name_backplate': 'Backplate (flat back)',
         'method_name_scaffold': 'Scaffold (proxy template)',
         'method_name_transplant': 'Transplant (repeat auto)',
@@ -124,7 +124,7 @@ STRINGS = {
             '(re-run the installer or set up a Rust toolchain)',
         'method_tip_mirror_complete': 'MIRROR COMPLETE (#14) — complete the '
             'missing back of a single-sided scan by mirroring the visible '
-            'surface across its detected symmetry plane. Falls back to Poisson '
+            'surface across its detected symmetry plane. Falls back to the native implicit closer '
             'when the symmetry is not confident. Estimated geometry.',
         'method_tip_wall_thicken': 'WALL THICKEN (#15) — opt-in: measure '
             'per-vertex wall thickness from an SDF grid and thicken walls below '
@@ -153,7 +153,7 @@ STRINGS = {
         ),
         'about_credits': (
             "Third-Party Adapters & Algorithms:\n"
-            "• PyMeshLab / VCG Library (GPL-3.0) — Stage 1 topological repair and surface filtering.\n"
+            "• Native stage-1 engine (Rust sutura_geom + sutura_engine) — topological repair, hole closing, non-manifold cleanup and decimation (meshoptimizer, MIT/Apache-2.0).\n"
             "• Manifold (Apache-2.0) via manifold-csg in the Rust core — Stage 2 volumetric manifold solid rebuilding.\n"
             "• Geogram Delaunay PSM (BSD-3-Clause, Inria) — deterministic tetrahedralisation for the opt-in Splint tier.\n"
             "• numpy (BSD-3-Clause) — Array math and geometry algorithms across the tiers.\n"
@@ -768,7 +768,7 @@ STRINGS = {
         'method_name_autorefine': 'Kendini Onarım (SI)',
         'method_name_exact_refine': 'Kesin Onarım (SI)',
         'method_name_ftetwild': 'fTetWild',
-        'method_name_balloon': 'Balon (Poisson kapatma)',
+        'method_name_balloon': 'Balon (native örtük kapatma)',
         'method_name_backplate': 'Arka Plaka',
         'method_name_scaffold': 'İskelet (vekil şablon)',
         'method_name_transplant': 'Nakil (yineleme, otomatik)',
@@ -799,8 +799,8 @@ STRINGS = {
             '(kurulumcuyu yeniden çalıştırın veya Rust araç zinciri kurun)',
         'method_tip_mirror_complete': 'AYNALI TAMAMLAMA (#14) — tek taraflı '
             'taramada eksik arka yüzeyi, görünen yüzeyi algılanan simetri '
-            'düzleminde aynalayarak tamamlar. Simetri güveni düşükse Poisson '
-            'yöntemine döner. Tahmini geometri.',
+            'düzleminde aynalayarak tamamlar. Simetri güveni düşükse native örtük '
+            'kapatmaya döner. Tahmini geometri.',
         'method_tip_wall_thicken': 'DUVAR KALINLAŞTIR (#15) — isteğe bağlı: '
             'SDF ızgarasından her tepe için duvar kalınlığını ölçer ve hedefin '
             'altındaki duvarları morfolojik öteleme ile kalınlaştırır. Asla '
@@ -829,7 +829,7 @@ STRINGS = {
         ),
         'about_credits': (
             "Üçüncü Taraf Uyarlayıcılar ve Algoritmalar:\n"
-            "• PyMeshLab / VCG Kütüphanesi (GPL-3.0) — Aşama 1 topolojik onarım ve filtreleme.\n"
+            "• Yerel Aşama 1 motoru (Rust sutura_geom + sutura_engine) — topolojik onarım, delik kapatma, manifold olmayan temizleme ve desimasyon (meshoptimizer, MIT/Apache-2.0).\n"
             "• Rust çekirdeğinde manifold-csg üzerinden Manifold (Apache-2.0) — Aşama 2 hacimsel manifold katı yeniden inşası.\n"
             "• Geogram Delaunay PSM (BSD-3-Clause, Inria) — isteğe bağlı Splint katmanı için deterministik dörtyüzlüleme.\n"
             "• numpy (BSD-3-Clause) — Katmanlar genelinde dizi matematiği ve geometri algoritmaları.\n"
@@ -1725,7 +1725,7 @@ def format_report(data):
     if data.get('status') == 'budget_declined':
         lines.append('ERROR: %s' % data.get('error'))
         lines.append('')
-    lines.append('Stage 1 (MeshLab):')
+    lines.append('Stage 1 (native):')
     lines.append('  Holes closed              : %d' % s1.get('holes_closed', 0))
     lines.append('  Holes remaining           : %d' % s1.get('holes_remaining', 0))
     lines.append('  Non-manifold edges fixed  : %d' % s1.get('non_manifold_edges_fixed', 0))
@@ -2015,8 +2015,8 @@ class RepairWorker(QThread):
 class AnalyzeWorker(QThread):
     """Runs a read-only pre-repair analysis (validate + --dry-run) for each
     file, sequentially, in a background thread. Same subprocess pattern as
-    RepairWorker: the CLI does all the pymeshlab work, so the GUI process
-    never imports it. Never writes or modifies anything."""
+    RepairWorker: the CLI does the mesh work, so the GUI process never imports
+    the repair stack. Never writes or modifies anything."""
 
     file_done = Signal(str, object)      # path, analysis dict
     progress = Signal(int, int)          # current, total
@@ -2117,8 +2117,8 @@ class MethodAnalyzeWorker(QThread):
     """Runs the read-only ``--analyze`` (per-object analysis + ranked method
     recommendations + external engines) for each file, sequentially, in a
     background thread. Same subprocess pattern as AnalyzeWorker: the CLI does
-    all the pymeshlab work, so the GUI process never imports it. Never writes
-    or modifies anything."""
+    the mesh work, so the GUI process never imports the repair stack. Never
+    writes or modifies anything."""
 
     file_done = Signal(str, object)      # path, analyze result dict
     progress = Signal(int, int)          # current, total
@@ -2169,12 +2169,14 @@ class MethodAnalyzeWorker(QThread):
 class HeatmapWorker(QThread):
     """Renders a mesh heatmap off the GUI thread and off the GUI process.
 
-    The render (pymeshlab mesh load + defect detect + rasterise) runs as a
+    The render (mesh load + defect detect + rasterise) runs as a
     subprocess (``heatmap_render.py``) writing a PNG to a temp file. This
-    keeps pymeshlab out of the GUI process entirely -- using pymeshlab inside
-    a Qt worker thread while a QMainWindow exists corrupts the heap at
-    interpreter shutdown (PySide6 6.11 + Python 3.14). The PNG is read back
-    as bytes and decoded to a QPixmap in the main thread.
+    keeps the mesh-loading/repair stack out of the GUI process entirely --
+    running heavy mesh work inside a Qt worker thread alongside a QMainWindow
+    is fragile (an earlier in-process renderer corrupted the heap at
+    interpreter shutdown under PySide6 6.11 + Python 3.14) and can freeze the
+    UI. The PNG is read back as bytes and decoded to a QPixmap in the main
+    thread.
     """
 
     done = Signal(str, str, bytes)     # path, size_key, png bytes
@@ -2218,8 +2220,9 @@ class HeatmapWorker(QThread):
 class BeforeAfterWorker(QThread):
     """Renders the original vs repaired comparison in a subprocess.
 
-    Same isolation rule as ``HeatmapWorker``: pymeshlab stays out of the GUI
-    process. Loads both meshes in the subprocess, renders them with a SHARED
+    Same isolation rule as ``HeatmapWorker``: the mesh-loading stack stays
+    out of the GUI process. Loads both meshes in the subprocess, renders them
+    with a SHARED
     isometric camera frame (identical framing, so the toggle is meaningful),
     and hands four PNG byte blobs back to the main thread: before, after,
     detail_before, detail_after.
@@ -2282,8 +2285,9 @@ class BeforeAfterWorker(QThread):
 class ViewerDataWorker(QThread):
     """Builds the interactive-viewer dataset (.npz) in a subprocess.
 
-    Same isolation rule as ``HeatmapWorker``/``BeforeAfterWorker``: pymeshlab
-    stays out of the GUI process. Runs ``viewer_data_render.py`` on the
+    Same isolation rule as ``HeatmapWorker``/``BeforeAfterWorker``: the
+    mesh-loading stack stays out of the GUI process. Runs
+    ``viewer_data_render.py`` on the
     original + repaired meshes and loads the resulting npz (mesh arrays,
     defect/healed masks, distances, the shared camera) back into a dict.
     Spawned LAZILY the first time the user switches the before/after dialog
@@ -2329,9 +2333,9 @@ class ViewerDataWorker(QThread):
 class RepeatPickerWorker(QThread):
     """Loads the method-12 picker mesh (npz) in a subprocess.
 
-    Same isolation rule as the other workers: pymeshlab stays out of the GUI
-    process. Runs ``repeat_picker_render.py`` and loads the resulting
-    ``verts``/``tris`` arrays back into a dict. Never imports pymeshlab.
+    Same isolation rule as the other workers: the mesh-loading stack stays
+    out of the GUI process. Runs ``repeat_picker_render.py`` and loads the
+    resulting ``verts``/``tris`` arrays back into a dict.
     """
 
     done = Signal(str, object)      # path, {verts, tris}
@@ -2505,9 +2509,8 @@ class _RenderThread(QThread):
 
     Consumes camera jobs (latest wins: a job submitted while one is drawing
     replaces the pending one) and emits the resulting QImage. Pure numpy +
-    heatmap.draw_frame -- pymeshlab is never involved, so this thread is
-    safe alongside the QMainWindow (the documented heap corruption is
-    specific to pymeshlab inside a Qt thread).
+    heatmap.draw_frame -- no mesh loading, so this thread is safe alongside
+    the QMainWindow.
     """
 
     frame_ready = Signal(object)    # QImage
@@ -2546,7 +2549,7 @@ class _RenderThread(QThread):
 class MeshViewport(QWidget):
     """Interactive before/after mesh view (drag to rotate, wheel to zoom).
 
-    Pure numpy + heatmap (no pymeshlab). Rendering runs on a ``_RenderThread``
+    Pure numpy + heatmap (no mesh loading). Rendering runs on a ``_RenderThread``
     with latest-wins frame dropping: while dragging/zooming the interactive
     LOD is drawn; ~300 ms after the input stops the full-resolution mesh is
     rendered once ("finalizing"). The camera starts at the same defect-facing
@@ -3082,7 +3085,7 @@ class ProfileEditor(QWidget):
 class EnginesStatusWorker(QThread):
     """Background: fTetWild manager status + configured engine list.
 
-    Stdlib-only (no pymeshlab), so it is safe inside the GUI process. Runs in
+    Stdlib-only, so it is safe inside the GUI process. Runs in
     a thread so ``importlib.metadata`` scans never freeze the dialog."""
 
     done = Signal(object)

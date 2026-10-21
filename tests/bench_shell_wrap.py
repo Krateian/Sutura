@@ -65,12 +65,11 @@ def _hausdorff_healthy(v0, t0, out_v, out_t):
 # --------------------------------------------------------------------------- #
 def run_graft(mesh):
     import numpy as np
-    import pymeshlab
     from shell_wrap import shell_wrap
     v, f = _load(mesh)
     t0 = time.perf_counter()
     try:
-        ov, ot, rep = shell_wrap(v, f, ml=pymeshlab)
+        ov, ot, rep = shell_wrap(v, f)
     except Exception as e:  # noqa: BLE001
         return {"error": "%s: %s" % (type(e).__name__, e),
                 "seconds": round(time.perf_counter() - t0, 2)}
@@ -228,7 +227,7 @@ def _write(rows):
         "# F4 benchmark — Graft (#13) vs fTetWild (#7)",
         "",
         "Only meshes whose default repair is NOT already reload-watertight are",
-        "included.  Graft: `shell_wrap(original, ml=pymeshlab)`.  fTetWild: the",
+        "included.  Graft: `shell_wrap(original)`.  fTetWild: the",
         "real `repair.py --methods 7` pipeline.  One mesh at a time; 600 s cap",
         "per stage.  Hausdorff = one-sided max on the healthy region, relative",
         "to the bbox diagonal.",

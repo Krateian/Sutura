@@ -24,7 +24,8 @@ Usage:
   scripts/defect_injector.py input.stl output.stl --flipped-normal --count 3
   scripts/defect_injector.py input.stl output.stl --hole --non-manifold --seed 1
 
-Run under the venv (needs pymeshlab):
+Run under any interpreter with numpy + the Rust sutura_geom extension
+(no pymeshlab):
   ~/.local/share/sutura/venv/bin/python scripts/defect_injector.py ...
 """
 import argparse
@@ -33,22 +34,14 @@ import sys
 
 import numpy as np
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(_HERE)
+for _p in (os.path.join(_REPO, 'sutura'), _REPO):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-def load_mesh(path):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.load_new_mesh(path)
-    v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
-    t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
-    return v, t
-
-
-def save_mesh(path, verts, tris):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
-                        face_matrix=np.asarray(tris, np.int32)))
-    ms.save_current_mesh(path)
+from sutura_engine.pipeline.mesh_io import (  # noqa: E402
+    load_mesh, save_mesh)
 
 
 def _diag(v):
@@ -88,10 +81,12 @@ def inject_non_manifold(v, t, count, rng):
 
 
 def inject_self_intersect(v, t, count, rng):
-    """Drop a small triangle across the middle of random faces: two edge
-    midpoints are lifted in OPPOSITE directions out of the face plane, so the
-    new triangle passes transversally through the original face's interior ->
-    a genuine self-intersection (VCG-detectable)."""
+    """Add a small triangle that pierces a random face through its interior:
+    two of its vertices are lifted out of the face plane and the third is
+    pushed the other way, so it crosses the face transversally -> a genuine
+    (proper) self-intersection, detected by
+    ``topology.self_intersecting_faces``. The piercing triangle shares no
+    vertex with the face, so it is not mistaken for an adjacent face."""
     v = v.copy()
     t = t.copy()
     for _ in range(count):
@@ -100,14 +95,21 @@ def inject_self_intersect(v, t, count, rng):
         fi = int(rng.integers(0, len(t)))
         va, vb, vc = v[t[fi][0]], v[t[fi][1]], v[t[fi][2]]
         nrm = np.cross(vb - va, vc - va)
-        nrm = nrm / (np.linalg.norm(nrm) + 1e-12)
+        nn = float(np.linalg.norm(nrm))
+        if nn < 1e-12:
+            continue
+        nrm = nrm / nn
+        centroid = (va + vb + vc) / 3.0
         size = float(np.linalg.norm(vb - va)) or 1e-9
+        u = (vb - va) / (np.linalg.norm(vb - va) + 1e-12)
+        w = np.cross(nrm, u)
+        e = 0.2 * size
         lift = 0.05 * size
-        m1 = (va + vb) / 2.0
-        m2 = (vb + vc) / 2.0 + nrm * lift
-        m3 = (vc + va) / 2.0 - nrm * lift
+        p0 = centroid + e * u + nrm * lift
+        p1 = centroid - e * u + nrm * lift
+        p2 = centroid + e * w - nrm * lift
         base = len(v)
-        v = np.vstack([v, m1, m2, m3])
+        v = np.vstack([v, p0, p1, p2])
         t = np.vstack([t, [[base, base + 1, base + 2]]])
     return v, t
 

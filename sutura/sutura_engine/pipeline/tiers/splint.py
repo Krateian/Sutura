@@ -43,11 +43,13 @@ def _count_defects(verts, tris):
     return len(det['holes']), len(det['non_manifold'])
 
 
-def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
+def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
                 intensity=None, spec=None, adaptive=None):
     """Exact solid-rebuild tier for registry method 18 (Splint).
 
-    Runs ``sutura_geom.splint_cut`` on the original input arrays and adopts the
+    ``v``/``t`` is the result the ladder currently holds and
+    ``input_v``/``input_t`` the original user surface this tier rebuilds. Runs
+    ``sutura_geom.splint_cut`` on the original input arrays and adopts the
     candidate only when it reloads strict-watertight.  ``stats['splint']``
     records the core report fields (``out_parts``/``out_manifold``/``seconds``
     and the per-phase split) plus the adopt verdict and the EN/TR reason the
@@ -58,8 +60,12 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
     above the cap and a wall-clock overrun are reported honestly and keep the
     current result.  Never raises.
     """
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v, dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
     if not splint:
-        return ms, after
+        return v, t, after
     cap = getattr(spec, 'splint_max_faces', SPLINT_MAX_FACES) if spec is not None \
         else SPLINT_MAX_FACES
     timeout = getattr(spec, 'splint_timeout', SPLINT_TIMEOUT) if spec is not None \
@@ -88,9 +94,9 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
             rec['reason'] = ('splint_cut is unavailable in this sutura_geom '
                              'build; the ladder result was kept')
             stats['splint'] = rec
-            return ms, after
-        in_v = np.asarray(v, dtype=np.float64)
-        in_t = np.asarray(t, dtype=np.int64)
+            return v, t, after
+        in_v = input_v
+        in_t = input_t
         rec['input_faces'] = int(len(in_t))
         if cap is not None and len(in_t) > int(cap):
             # Hard input cap: a splint_cut call is not interruptible, so do not
@@ -104,7 +110,7 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
                              'the ladder result was kept'
                              % (len(in_t), int(cap)))
             stats['splint'] = rec
-            return ms, after
+            return v, t, after
         t0 = time.perf_counter()
         cand_v, cand_t, srec = cut(in_v, in_t, res, adaptive=mode)
         elapsed = time.perf_counter() - t0
@@ -128,7 +134,7 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
             rec['non_manifold'] = (stats.get('stage1') or {}).get(
                 'non_manifold_edges_remaining')
             stats['splint'] = rec
-            return ms, after
+            return v, t, after
         cand_v = np.asarray(cand_v)
         cand_t = np.asarray(cand_t)
         if len(cand_t):
@@ -157,9 +163,6 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
             rec['non_manifold'] = cand_nm
             rec['faces'] = int(len(cand_t))
             if len(cand_t) and cand_holes == 0 and cand_nm == 0:
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
-                                    face_matrix=np.asarray(cand_t, np.int32)))
                 after = topology.mesh_topology(
                     np.asarray(cand_v, dtype=np.float32),
                     np.asarray(cand_t, dtype=np.int32))
@@ -178,4 +181,7 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
         # subclass); degrade to the reason field instead of aborting the repair.
         rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['splint'] = rec
-    return ms, after
+    if rec['adopted']:
+        return (np.asarray(cand_v, dtype=np.float64),
+                np.asarray(cand_t, dtype=np.int64), after)
+    return v, t, after

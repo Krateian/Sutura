@@ -2,7 +2,7 @@
 """Regression tests for Graft (#13, shell wrap) — sutura/shell_wrap.py.
 
 Runs under the venv with the maturin-built sutura_geom extension (no
-pymeshlab).  pytest-compatible; runnable directly.
+native toolchain).  pytest-compatible; runnable directly.
 
     <venv>/bin/python tests/test_shell_wrap.py
 """
@@ -214,15 +214,11 @@ def test_smallest_radius_first_ladder():
 
 
 def test_hybrid_keeps_healthy_verbatim():
-    """The pymeshlab-backed verbatim hybrid closes a hole while keeping every
-    healthy original triangle unchanged (zero healthy deviation)."""
-    try:
-        import pymeshlab
-    except ImportError:
-        return
+    """The native verbatim hybrid closes a hole while keeping every healthy
+    original triangle unchanged (zero healthy deviation)."""
     v, f = sphere_with_hole()
     mask, _ = _damaged_region(f)
-    hy = _hybrid_close(v, f, mask, pymeshlab)
+    hy = _hybrid_close(v, f, mask)
     assert hy is not None, "hybrid could not close the sphere hole"
     h, nm = reload_strict_holes_nm(*hy)
     assert h == 0 and nm == 0
@@ -230,7 +226,7 @@ def test_hybrid_keeps_healthy_verbatim():
     # A coarse envelope loses detail, so shell_wrap must fall back to the
     # verbatim hybrid and report zero healthy deviation (sign-field Pass 0 is
     # disabled here so the closing/hybrid path is the one under test).
-    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, ml=pymeshlab,
+    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, hybrid=True,
                                sign_field=False)
     assert rep["ok"] and rep["mode"] == "hybrid"
     assert rep["detail_max_mm"] == 0.0
@@ -374,12 +370,16 @@ def test_work_budget_stops_deterministically():
     real_close = graft_mod.sutura_geom.morph_close
     real_ladder = graft_mod._r_ladder
     real_budget = graft_mod.GRAFT_WORK_BUDGET_BY_INTENSITY
+    real_hybrid = graft_mod._hybrid_close
 
     def fake_ladder(gap, voxel, diag, max_tries):
         return [1e-4, 2e-4, 4e-4, 8e-4]
 
     graft_mod._r_ladder = fake_ladder
     graft_mod.sutura_geom.morph_close = real_close
+    # Isolate the budget policy: the hybrid fast path would close on the first
+    # rung and end the ladder before the work budget can trip.
+    graft_mod._hybrid_close = lambda *a, **k: None
     graft_mod.GRAFT_WORK_BUDGET_BY_INTENSITY = {
         k: 1 for k in real_budget}
     try:
@@ -388,6 +388,7 @@ def test_work_budget_stops_deterministically():
     finally:
         graft_mod._r_ladder = real_ladder
         graft_mod.sutura_geom.morph_close = real_close
+        graft_mod._hybrid_close = real_hybrid
         graft_mod.GRAFT_WORK_BUDGET_BY_INTENSITY = real_budget
 
     assert rep["budget_exceeded"] is True

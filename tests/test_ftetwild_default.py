@@ -10,7 +10,7 @@ still self-intersects. Without the extra the default changes nothing.
 The checks that need fTetWild itself run only when the extra is installed
 (it is ~1.1 GB, so CI does not install it); everything else always runs.
 
-Needs the venv (pymeshlab). Usage:
+Needs only numpy + the Rust ``sutura_geom`` extension (no pymeshlab). Usage:
     ~/.local/share/sutura/venv/bin/python tests/test_ftetwild_default.py
 """
 import os
@@ -33,6 +33,7 @@ from _qt_test_env import ensure_qt_plugins  # noqa: E402
 ensure_qt_plugins()
 
 import repair  # noqa: E402
+import topology  # noqa: E402
 import sutura_engine.pipeline.tiers.ftetwild as ftetwild_mod  # noqa: E402
 
 # Stage 1 leaves this 80-face mesh open (strict watertight only with fTetWild).
@@ -201,9 +202,13 @@ def test_auto_leaves_closed_si_result_alone():
 
 def test_gui_checkboxes_map_to_cli_flags():
     """Default checked -> no flag ('auto'); unchecked -> --no-fallback-ftetwild;
-    both checked -> --experimental-fallback-ftetwild. Runs in a SUBPROCESS:
-    mixing pymeshlab (imported by repair in this process) with a QMainWindow
-    corrupts the heap at interpreter shutdown (documented)."""
+    both checked -> --experimental-fallback-ftetwild. Runs in a SUBPROCESS so a
+    QMainWindow is never created in the same process as the mesh kernel."""
+    try:
+        import PySide6  # noqa: F401
+    except ImportError:
+        print('    (PySide6 unavailable: GUI flag mapping skipped)')
+        return
     code = (
         "import os, sys\n"
         "os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')\n"
@@ -244,7 +249,7 @@ def test_gui_checkboxes_map_to_cli_flags():
 
 
 # Two tetrahedra sharing only vertex 0: closed, no non-manifold edge, but the
-# shared vertex is pinched, so pymeshlab reports it as not two-manifold.
+# shared vertex is pinched, so mesh_topology reports it as not two-manifold.
 _BOWTIE_V = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1),
              (-1, 0, 0), (0, -1, 0), (0, 0, -1)]
 _TET = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
@@ -256,25 +261,22 @@ _SPLIT_T = _TET + [(7, 5, 4), (7, 4, 6), (7, 6, 5), (4, 5, 6)]
 
 def _measure(v, t):
     import numpy as np
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                        face_matrix=np.asarray(t, np.int32)))
-    topo = ms.apply_filter('get_topological_measures')
-    holes = repair.boundary_loop_stats(np.asarray(v, np.float64), np.asarray(t))[0]
-    return ms, topo, holes, topo.get('non_two_manifold_edges', 0)
+    va = np.asarray(v, np.float64)
+    ta = np.asarray(t, np.int64)
+    topo = topology.mesh_topology(va, ta)
+    holes = repair.boundary_loop_stats(va, ta)[0]
+    return None, topo, holes, topo.get('non_two_manifold_edges', 0)
 
 
 def _postprocess(v, t, fake_stage2):
-    import pymeshlab as ml
-    ms, topo, holes, nm = _measure(v, t)
+    _ms, topo, holes, nm = _measure(v, t)
     saved = ftetwild_mod.run_stage2
     if fake_stage2 is not None:
         ftetwild_mod.run_stage2 = fake_stage2
     try:
         with tempfile.TemporaryDirectory(prefix='sutura-bowtie-') as tmp:
             return ftetwild_mod._ftetwild_manifold_postprocess(
-                ml, tmp, v, t, ms, topo, holes, nm)
+                tmp, v, t, topo, holes, nm)
     finally:
         ftetwild_mod.run_stage2 = saved
 
@@ -298,7 +300,7 @@ def test_bowtie_boundary_gets_the_manifold_postprocess():
         repair.write_obj(out_obj, _SPLIT_V, _SPLIT_T)
         return {'output_triangles': len(_SPLIT_T)}, True
 
-    v, t, _ms, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, fake_stage2)
+    v, t, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, fake_stage2)
     assert calls, 'the manifold post-process was not attempted'
     assert done and holes == 0 and nm == 0
     assert topo.get('is_mesh_two_manifold')
@@ -312,7 +314,7 @@ def test_two_manifold_boundary_is_left_unchanged():
         calls.append(inter)
         return {'error': 'must not be called'}, False
 
-    v, t, _ms, _topo, _h, _nm, done = _postprocess(_SPLIT_V, _SPLIT_T, fake_stage2)
+    v, t, _topo, _h, _nm, done = _postprocess(_SPLIT_V, _SPLIT_T, fake_stage2)
     assert not calls and not done
     assert (v, t) == (_SPLIT_V, _SPLIT_T)
 
@@ -326,7 +328,7 @@ def test_bowtie_with_real_stage2():
     if not ok:
         print('    (stage 2 unavailable: real Manifold check skipped)')
         return
-    _v, _t, _ms, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, None)
+    _v, _t, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, None)
     assert done, 'Manifold post-process not adopted'
     assert holes == 0 and nm == 0 and topo.get('is_mesh_two_manifold')
 
@@ -390,6 +392,11 @@ def test_ftetwild_optimize_resolution():
 def test_gui_ftetwild_optimize_flag():
     """The Repair-tab checkbox maps to --ftetwild-optimize (off by default)
     and is disabled with the fTetWild fallback. Subprocess, as above."""
+    try:
+        import PySide6  # noqa: F401
+    except ImportError:
+        print('    (PySide6 unavailable: GUI flag mapping skipped)')
+        return
     code = (
         "import os, sys\n"
         "os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')\n"

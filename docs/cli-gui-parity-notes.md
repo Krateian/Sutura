@@ -116,7 +116,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `repeat_repair.py` was integrated into the registry (11 `repeat_auto`,
   12 `repeat_manual`) with `--repeat-source X,Y,Z` / `--repeat-target X,Y,Z`
   for the manual method; the GUI *Use method* entry for #12 opens a picker
-  dialog (kept off the GUI's pymeshlab-free process by loading the mesh in the
+  dialog (kept off the GUI process by loading the mesh in the
   `repeat_picker_render.py` subprocess) so both sides are covered.
 - **Proxy resample + alpha wrap native swap (Phase 4 W3c/W3e):** the proxy-tier
   uniform resampler and hole closure moved from PyMeshLab
@@ -135,7 +135,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `None` runs every enabled engine as before), so the parity rule holds.
 - **Closing / proxy-template methods (#8–#10):** the standalone
   `closing.py` / `proxy_repair.py` tiers are reachable from the CLI
-  (`--methods 8/9/10`) and from the GUI *Use method* list (all sixteen methods);
+  (`--methods 8/9/10`) and from the GUI *Use method* list (all eighteen methods);
   no separate flag exists, so parity holds without a dedicated control.
 - **Method #14 Mirror Complete / #15 Wall Thicken (v0.6.1):** both are in the
   shared method registry, so the GUI *Use method* menu lists and tags them with
@@ -218,7 +218,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `stent_used` / `stent_rejected` and the standard per-plug `plug_metrics`
   array; the GUI's tamponade log renders the adopted verdict unchanged. The
   name is deliberately NOT "balloon" to avoid confusion with method #8 Balloon
-  (Poisson surface reconstruction).
+  (native implicit surface reconstruction).
 - **Splint (#18, exact solid rebuild, unreleased):** CLI `--experimental-splint`
   / `--no-splint` and env `SUTURA_SPLINT` (`0/1/true/false/...`) control the
   off-by-default last-resort solid-rebuild tier; the GUI exposes the same as
@@ -231,12 +231,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `--no-splint` / `SUTURA_SPLINT=0` are the disable path on both sides. The
   resolution, hash and wall-clock rules live in the shared
   `pipeline.presets.resolve_splint`, so CLI and GUI cannot diverge.
-- **Native self-intersection detection (default ON):** the Rust-counted exact
-  self-intersection classifier is the default for every SI consumer; the env
-  opt-out is `SUTURA_SI_EXACT=0` (legacy `SUTURA_NATIVE_SI=0` restores
-  PyMeshLab's filter). It has deliberately NO CLI flag or GUI control, so the
-  CLI and the GUI behave identically (parity by construction, like the
-  ray-stab vote).
+- **Native self-intersection detection (always ON):** the Rust-counted exact
+  self-intersection classifier is the only path for every SI consumer; the
+  PyMeshLab opt-out was removed. It has deliberately NO CLI flag or GUI
+  control, so the CLI and the GUI behave identically (parity by construction,
+  like the ray-stab vote).
 - **fTetWild deterministic retry + time abort (v0.9.1):** the retry after a boundary
   that fails the holes/non-manifold guard is a pure function of that verdict (no
   wall-clock gate), and `FTETWILD_TIMEOUT` is only an outer all-or-nothing abort that

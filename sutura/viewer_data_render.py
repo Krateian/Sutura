@@ -2,10 +2,10 @@
 
 Runs as a SEPARATE PROCESS spawned by the GUI the first time the user
 switches the before/after dialog to the interactive view (lazy). Same
-isolation rule as heatmap_render.py / before_after_render.py: pymeshlab
-never runs inside the GUI process.
+isolation rule as heatmap_render.py / before_after_render.py: the mesh loader
+is native, so PyMeshLab is not imported here (or in the GUI process).
 
-Loads the original and repaired meshes with pymeshlab, detects defects on
+Loads the original and repaired meshes natively, detects defects on
 both, computes the healed per-face mask, the per-vertex surface-deviation
 distance (repaired -> original) plus the global Hausdorff max, decimates
 both meshes to an interactive LOD, and writes ONE npz with everything the
@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 
-import pymeshlab as ml
 import sutura_geom
 
 from defects import detect, defect_type_colors

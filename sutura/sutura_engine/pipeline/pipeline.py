@@ -5,8 +5,8 @@
 
 Internal geometry arrays stay float64 through the pipeline. Downcasting to
 float32 happens only when writing STL (or another float32 output format);
-never coerce a Stage-1 or tier result to float32 at a MeshSet/array boundary,
-because it changes exact duplicate/weld decisions and cascades into the tiers.
+never coerce a Stage-1 or tier result to float32 at an array boundary, because
+it changes exact duplicate/weld decisions and cascades into the tiers.
 """
 import os
 import tempfile
@@ -27,7 +27,7 @@ from sutura_engine.pipeline.presets import (
     estimate_deep_repair_time, resolve_mode_params, resolve_si_mode,
 )
 from sutura_engine.pipeline.stage1 import (
-    _invert_faces_ms, _si_excise_budget, apply_chain, delete_fallback_chain,
+    _si_excise_budget, apply_chain, delete_fallback_chain,
     extreme_extra_passes, join_small_components, si_excise_enabled,
     si_excise_recap, stage1_chain, stage1_cleanup_chain,
 )
@@ -49,17 +49,6 @@ from sutura_engine.pipeline.tiers.wall import wall_thicken_tier
 from sutura_engine.pipeline.utils import (
     _count_vertex_components, boundary_loop_stats, surface_area,
 )
-
-
-def _meshset_arrays_safe(ms):
-    try:
-        if hasattr(ms, 'mesh_number') and ms.mesh_number() == 0:
-            return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
-        m = ms.current_mesh()
-        return (np.asarray(m.vertex_matrix(), dtype=np.float32),
-                np.asarray(m.face_matrix(), dtype=np.int32))
-    except Exception:
-        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.int32)
 
 
 def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
@@ -118,7 +107,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ``load_engine_run``; None (library default) runs no external engine and
     keeps the output byte-identical to the pre-engines behaviour.
     ``closing`` selects the standalone scan-closing tier (registry methods 8/9):
-    ``'poisson'`` (screened Poisson reconstruction, ``sutura/closing.py``) or
+    ``'poisson'`` (native implicit reconstruction, legacy alias; ``sutura/closing.py``) or
     ``'flat_back'`` (flat back plane + side walls); ``proxy_template`` selects
     the proxy-template rebuild (registry method 10, ``sutura/proxy_repair.py``).
     Both run on the ORIGINAL input arrays (like the fTetWild tier) and the
@@ -152,7 +141,6 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # direct API) funnels through here, so a missing/stale sutura_geom cannot
     # silently degrade when the function is called as a library.
     method_health.require_geometry()
-    import pymeshlab as ml
     method_health.reset_if_unscoped()
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -180,7 +168,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         if engine_placement_order(engines, engine_chain, 'before_stage1'):
             _base_topo = topology.mesh_topology(v, t)
             _cv, _ct, _adopted = run_engines(
-                ml, engines, engine_chain, 'before_stage1', tmpdir, v, t,
+                engines, engine_chain, 'before_stage1', tmpdir, v, t,
                 boundary_loop_stats(v, t)[0],
                 _base_topo.get('non_two_manifold_edges', 0), triage_spec, _entries)
             if _adopted:
@@ -370,19 +358,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _t_pre = time.perf_counter()
         _tp_in_v, _tp_in_t = v, t
         _tp_v, _tp_t, _tp_a, _tp_s = apply_chain(
-            v, t, stage1_cleanup_chain(ml))
-        _tms = ml.MeshSet()
-        _tms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(_tp_v, np.float64),
-                              face_matrix=np.asarray(_tp_t, np.int32)))
+            v, t, stage1_cleanup_chain())
         _tafter = topology.mesh_topology(_tp_v, _tp_t)
-        _tms, _tafter = tamponade_tier(
-            ml, _tms, _tafter, stats, tmpdir, tamponade=True,
+        _tp_v, _tp_t, _tafter = tamponade_tier(
+            _tp_v, _tp_t, v, t, _tafter, stats, tmpdir, tamponade=True,
             intensity=(getattr(triage_spec, 'base', None)
                        or getattr(triage_spec, 'name', None)),
             spec=triage_spec, si_mode=si_mode, prepass=True)
         if (stats.get('tamponade') or {}).get('adopted'):
-            v = np.asarray(_tms.current_mesh().vertex_matrix(), dtype=np.float32)
-            t = np.asarray(_tms.current_mesh().face_matrix(), dtype=np.int32)
+            v = np.asarray(_tp_v, dtype=np.float32)
+            t = np.asarray(_tp_t, dtype=np.int32)
             verts, tris = v, t
         stats['timings']['prepass'] = round(time.perf_counter() - _t_pre, 3)
         if trace.is_active():
@@ -413,13 +398,11 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if flap:
         _t_flap = time.perf_counter()
         _fl_in_v, _fl_in_t = v, t
-        _fms = ml.MeshSet()
-        _fms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
         _fafter = topology.mesh_topology(v, t)
-        _fms, _fafter = _flap_step(ml, _fms, _fafter, stats, None)
+        _fv, _ft, _fafter = _flap_step(v, t, v, t, _fafter, stats, None)
         if (stats.get('flap') or {}).get('adopted'):
-            v = np.asarray(_fms.current_mesh().vertex_matrix(), dtype=np.float32)
-            t = np.asarray(_fms.current_mesh().face_matrix(), dtype=np.int32)
+            v = np.asarray(_fv, dtype=np.float32)
+            t = np.asarray(_ft, dtype=np.int32)
             verts, tris = v, t
         if trace.is_active():
             trace.record_stage('flap_prepass', 'tiers.flap._flap_step',
@@ -437,7 +420,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     cur_v, cur_t = np.asarray(v, np.float64), np.asarray(t, np.int64)
     cur_v, cur_t, applied, skipped = apply_chain(
-        cur_v, cur_t, stage1_chain(ml, **_p, join_components=join_components))
+        cur_v, cur_t, stage1_chain(**_p, join_components=join_components))
     after = topology.mesh_topology(cur_v, cur_t)
     if trace.is_active():
         trace.record_stage('stage1_chain', 'stage1.apply_chain',
@@ -470,7 +453,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             ar_rep.update(ar_info)
             if len(ar_t) > 0:
                 ar_v, ar_t, _a, _s = apply_chain(
-                    ar_v, ar_t, stage1_chain(ml, **_p, join_components=join_components))
+                    ar_v, ar_t, stage1_chain(**_p, join_components=join_components))
                 cand_after = topology.mesh_topology(ar_v, ar_t)
                 cand_holes = boundary_loop_stats(ar_v, ar_t)[0]
                 cand_nm = cand_after.get('non_two_manifold_edges', 0)
@@ -508,7 +491,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 ia_rep.update(al_info)
                 if len(ia_t) > 0:
                     ia_v, ia_t, _a, _s = apply_chain(
-                        ia_v, ia_t, stage1_chain(ml, **_p, join_components=join_components))
+                        ia_v, ia_t, stage1_chain(**_p, join_components=join_components))
                     cand_after = topology.mesh_topology(ia_v, ia_t)
                     cand_holes = boundary_loop_stats(ia_v, ia_t)[0]
                     cand_nm = cand_after.get('non_two_manifold_edges', 0)
@@ -532,7 +515,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _t_fb = time.perf_counter()
         _fb_in_v, _fb_in_t = cur_v, cur_t
         fb_v, fb_t, fapplied, fskipped = apply_chain(
-            cur_v, cur_t, delete_fallback_chain(ml, **_p, join_components=join_components))
+            cur_v, cur_t, delete_fallback_chain(**_p, join_components=join_components))
         fafter = topology.mesh_topology(fb_v, fb_t)
         _adopted = (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0))
@@ -617,11 +600,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 'Extreme mode removed all geometry (small connected component '
                 'below the size threshold); try a less aggressive mode (e.g. Auto)')
 
-    # Downstream tiers still take a MeshSet; build the single boundary object
-    # here, after the array-only Stage-1/delete-fallback/join/SI-extreme path.
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cur_v, np.float64),
-                        face_matrix=np.asarray(cur_t, np.int32)))
+    # Downstream tiers are array-native: the stage-1 result is carried as
+    # ``(cur_v, cur_t)`` (float64/int64), with no MeshSet boundary object.
+    cur_v = np.asarray(cur_v, dtype=np.float64)
+    cur_t = np.asarray(cur_t, dtype=np.int64)
 
     # fTetWild fallback tier (FAZ17): guaranteed-correct last-resort
     # solidifier. Tetrahedralize the ORIGINAL input surface and extract its
@@ -641,16 +623,16 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if engines:
         _entries = []
         if engine_placement_order(engines, engine_chain, 'after_stage1'):
-            _cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
-            _cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
+            _cur_v = np.asarray(cur_v, dtype=np.float32)
+            _cur_t = np.asarray(cur_t, dtype=np.int32)
             _cv, _ct, _adopted = run_engines(
-                ml, engines, engine_chain, 'after_stage1', tmpdir, _cur_v, _cur_t,
+                engines, engine_chain, 'after_stage1', tmpdir, _cur_v, _cur_t,
                 boundary_loop_stats(_cur_v, _cur_t)[0],
                 after.get('non_two_manifold_edges', 0), triage_spec, _entries)
             if _adopted:
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
-                after = topology.mesh_topology(ms)
+                cur_v = np.asarray(_cv, dtype=np.float64)
+                cur_t = np.asarray(_ct, dtype=np.int64)
+                after = topology.mesh_topology(cur_v, cur_t)
         _record_engine_entries(stats, _entries)
 
     # Registry methods 8/9/10 (P-INT): standalone closing / proxy-template
@@ -660,13 +642,21 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     stats['timings']['stage1'] = round(time.perf_counter() - _t_start, 3)
     _t_tiers = time.perf_counter()
     _t_cl = time.perf_counter()
-    _cl_in_v, _cl_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-    ms, after = closing_ladder(ml, ms, after, stats, v, t, tmpdir,
-                               closing=closing, proxy_template=proxy_template)
+    _cl_in_v, _cl_in_t = ((np.asarray(cur_v, dtype=np.float32),
+                           np.asarray(cur_t, dtype=np.int32))
+                          if trace.is_active() else (None, None))
+    _cv = np.asarray(cur_v, dtype=np.float32)
+    _ct = np.asarray(cur_t, dtype=np.int32)
+    _cv, _ct, after = closing_ladder(_cv, _ct, v, t, after, stats, tmpdir,
+                                     closing=closing,
+                                     proxy_template=proxy_template)
+    cur_v = np.asarray(_cv, dtype=np.float64)
+    cur_t = np.asarray(_ct, dtype=np.int64)
     if trace.is_active():
-        _cur_v, _cur_t = _meshset_arrays_safe(ms)
         trace.record_stage('closing_ladder', 'tiers.closing.closing_ladder',
-                           _cl_in_v, _cl_in_t, _cur_v, _cur_t,
+                           _cl_in_v, _cl_in_t,
+                           np.asarray(cur_v, dtype=np.float32),
+                           np.asarray(cur_t, dtype=np.int32),
                            gate={'closing': closing, 'proxy_template': proxy_template},
                            elapsed=round(time.perf_counter() - _t_cl, 4))
 
@@ -679,21 +669,30 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # without raising parts or losing healthy faces.
     if not (stats.get('tamponade') or {}).get('adopted'):
         _t_tp = time.perf_counter()
-        _tp_in_v, _tp_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-        ms, after = tamponade_tier(ml, ms, after, stats, tmpdir,
-                                   tamponade=(tamponade is True),
-                                   intensity=(getattr(triage_spec, 'base', None)
-                                              or getattr(triage_spec, 'name', None)),
-                                   spec=triage_spec, si_mode=si_mode)
+        _tp_in_v = _tp_in_t = None
         if trace.is_active():
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            _tp_in_v = np.asarray(cur_v, dtype=np.float32)
+            _tp_in_t = np.asarray(cur_t, dtype=np.int32)
+        _cv = np.asarray(cur_v, dtype=np.float32)
+        _ct = np.asarray(cur_t, dtype=np.int32)
+        _cv, _ct, after = tamponade_tier(
+            _cv, _ct, v, t, after, stats, tmpdir, tamponade=(tamponade is True),
+            intensity=(getattr(triage_spec, 'base', None)
+                       or getattr(triage_spec, 'name', None)),
+            spec=triage_spec, si_mode=si_mode)
+        cur_v = np.asarray(_cv, dtype=np.float64)
+        cur_t = np.asarray(_ct, dtype=np.int64)
+        if trace.is_active():
             trace.record_stage('tamponade_post', 'tiers.tamponade.tamponade_tier',
-                               _tp_in_v, _tp_in_t, _cur_v, _cur_t,
+                               _tp_in_v, _tp_in_t,
+                               np.asarray(cur_v, dtype=np.float32),
+                               np.asarray(cur_t, dtype=np.int32),
                                gate=stats.get('tamponade', {}),
                                elapsed=round(time.perf_counter() - _t_tp, 4))
     else:
         if trace.is_active():
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            _cur_v = np.asarray(cur_v, dtype=np.float32)
+            _cur_t = np.asarray(cur_t, dtype=np.int32)
             trace.record_stage('tamponade_post', 'tiers.tamponade.tamponade_tier',
                                _cur_v, _cur_t, _cur_v, _cur_t,
                                gate={'status': 'skipped', 'reason': 'adopted_in_prepass'})
@@ -711,20 +710,28 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # reload-watertight candidate; records the fidelity verdict + warnings under
     # ``stats['graft']``.
     _t_gr = time.perf_counter()
-    _gr_in_v, _gr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-    ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
-                           graft=(graft is True) and not _tamp_watertight,
-                           intensity=(getattr(triage_spec, 'base', None)
-                                      or getattr(triage_spec, 'name', None)),
-                           spec=triage_spec)
+    _gr_cur_v = np.asarray(cur_v, dtype=np.float32)
+    _gr_cur_t = np.asarray(cur_t, dtype=np.int32)
+    _g_v, _g_t, after = graft_tier(
+        np.asarray(_gr_cur_v, dtype=np.float64),
+        np.asarray(_gr_cur_t, dtype=np.int64), v, t, after, stats, tmpdir,
+        graft=(graft is True) and not _tamp_watertight,
+        intensity=(getattr(triage_spec, 'base', None)
+                   or getattr(triage_spec, 'name', None)),
+        spec=triage_spec)
+    cur_v = np.asarray(_g_v, dtype=np.float64)
+    cur_t = np.asarray(_g_t, dtype=np.int64)
     if trace.is_active():
-        _cur_v, _cur_t = _meshset_arrays_safe(ms)
         trace.record_stage('graft', 'tiers.graft.graft_tier',
-                           _gr_in_v, _gr_in_t, _cur_v, _cur_t,
+                           _gr_cur_v, _gr_cur_t,
+                           np.asarray(cur_v, dtype=np.float32),
+                           np.asarray(cur_t, dtype=np.int32),
                            gate=stats.get('graft', {'status': 'disabled'}),
                            elapsed=round(time.perf_counter() - _t_gr, 4))
 
-    ms, after = deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir,
+    _cv = np.asarray(cur_v, dtype=np.float32)
+    _ct = np.asarray(cur_t, dtype=np.int32)
+    _cv, _ct, after = deep_repair_ladder(_cv, _ct, v, t, after, stats, tmpdir,
                                    mode=deep_repair,
                                    ftetwild=(ftetwild if not _tamp_watertight
                                              else False),
@@ -743,19 +750,21 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                            else False),
                                    splint_adaptive=splint_adaptive,
                                    dressing_force_adopt=dressing_force_adopt)
+    cur_v = np.asarray(_cv, dtype=np.float64)
+    cur_t = np.asarray(_ct, dtype=np.int64)
 
     # Registry methods 11/12 (P-REP): repeated-element transplant, after the
     # whole stage-1 chain (the transplant needs a watertight M).
-    ms, after = repeat_tier(ml, ms, after, stats, mode=repeat,
-                            source_point=repeat_source,
-                            target_point=repeat_target)
+    cur_v, cur_t, after = repeat_tier(cur_v, cur_t, after, stats, mode=repeat,
+                                      source_point=repeat_source,
+                                      target_point=repeat_target)
 
     # Registry method 15 (P-WALL): opt-in thin-wall thicken-to-min. Runs on the
     # ORIGINAL input arrays (like the closing tier) and adopts only a
     # strict-watertight, no-worse candidate; never automatic.
     if wall_thicken:
-        ms, after = wall_thicken_tier(ml, ms, after, stats, v, t,
-                                      min_thickness=wall_min_thickness)
+        cur_v, cur_t, after = wall_thicken_tier(cur_v, cur_t, after, stats, v, t,
+                                                min_thickness=wall_min_thickness)
     stats['timings']['deep_repair'] = round(time.perf_counter() - _t_tiers, 3)
 
     # A closed result with no non-manifold edge can still have pinched
@@ -763,12 +772,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # a vertex shared by two boundary loops; stage 2 then never runs and a
     # strictly watertight mesh is reported as a warning (thingi10k_145065).
     _t_ps = time.perf_counter()
-    _ps_in_v, _ps_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-    ms, after, stats['pinched_vertices_split'] = _split_pinched_vertices(ml, ms, after)
+    _ps_in_v = _ps_in_t = None
     if trace.is_active():
-        _cur_v, _cur_t = _meshset_arrays_safe(ms)
+        _ps_in_v = np.asarray(cur_v, dtype=np.float32)
+        _ps_in_t = np.asarray(cur_t, dtype=np.int32)
+    cur_v, cur_t, after, stats['pinched_vertices_split'] = _split_pinched_vertices(
+        cur_v, cur_t, after)
+    if trace.is_active():
         trace.record_stage('pinch_split', 'stage2._split_pinched_vertices',
-                           _ps_in_v, _ps_in_t, _cur_v, _cur_t,
+                           _ps_in_v, _ps_in_t,
+                           np.asarray(cur_v, dtype=np.float32),
+                           np.asarray(cur_t, dtype=np.int32),
                            gate={'split_count': stats.get('pinched_vertices_split', 0)},
                            elapsed=round(time.perf_counter() - _t_ps, 4))
 
@@ -777,20 +791,19 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if engines:
         _entries = []
         if engine_placement_order(engines, engine_chain, 'final_fallback'):
-            _cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
-            _cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
+            _cur_v = np.asarray(cur_v, dtype=np.float32)
+            _cur_t = np.asarray(cur_t, dtype=np.int32)
             _cv, _ct, _adopted = run_engines(
-                ml, engines, engine_chain, 'final_fallback', tmpdir, v, t,
+                engines, engine_chain, 'final_fallback', tmpdir, v, t,
                 boundary_loop_stats(_cur_v, _cur_t)[0],
                 after.get('non_two_manifold_edges', 0), triage_spec, _entries)
             if _adopted:
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
-                after = topology.mesh_topology(_cv, _ct)
+                cur_v = np.asarray(_cv, dtype=np.float64)
+                cur_t = np.asarray(_ct, dtype=np.int64)
+                after = topology.mesh_topology(cur_v, cur_t)
         _record_engine_entries(stats, _entries)
 
-    holes_after = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
-                                      ms.current_mesh().face_matrix())[0]
+    holes_after = boundary_loop_stats(cur_v, cur_t)[0]
     nm_after = after.get('non_two_manifold_edges', 0)
     _deep_repair_offer(stats, holes_after, nm_after, len(t), spec=triage_spec)
 
@@ -807,26 +820,21 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if skipped:
         stats['stage1']['skipped'] = skipped
 
-    m_cur = ms.current_mesh()
-    cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
-    cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+    cur_v = np.asarray(cur_v, dtype=np.float32)
+    cur_t = np.asarray(cur_t, dtype=np.int32)
     geom = topology.mesh_geometric_measures(cur_v, cur_t)
     if geom.get('mesh_volume', 0) < 0:
-        _invert_faces_ms(ms, ml)
-        m_cur = ms.current_mesh()
-        cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
-        cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+        cur_t = np.asarray(topology.invert_face_orientation(cur_t),
+                           dtype=np.int32)
         geom = topology.mesh_geometric_measures(cur_v, cur_t)
         if geom.get('mesh_volume', 0) < 0:
-            _invert_faces_ms(ms, ml)
-            m_cur = ms.current_mesh()
-            cur_v = np.asarray(m_cur.vertex_matrix(), dtype=np.float32)
-            cur_t = np.asarray(m_cur.face_matrix(), dtype=np.int32)
+            cur_t = np.asarray(topology.invert_face_orientation(cur_t),
+                               dtype=np.int32)
             geom = topology.mesh_geometric_measures(cur_v, cur_t)
     after_volume = geom.get('mesh_volume', 0)
 
-    new_verts = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32)
-    new_tris = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32)
+    new_verts = cur_v
+    new_tris = cur_t
     fin = topology.mesh_topology(new_verts, new_tris)
     after_area = surface_area(new_verts, new_tris)
     after_verts = fin.get('vertices_number', 0)
@@ -861,11 +869,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     })
 
     # Self-intersection count on the FINAL stage-1 output (repair_score.py's
-    # health metric). We reuse the existing `ms` MeshSet: ms.current_mesh()
-    # IS the repaired mesh right now (new_verts/new_tris were pulled from it
-    # above), so building a fresh MeshSet and reloading arrays would be wasted
-    # work on large meshes. The filter only sets the face-selection array and
-    # does not alter geometry, so this cannot disturb anything downstream.
+    # health metric). The count is measured from the final arrays with the
+    # exact Rust classifier.
     #
     # Assumption (documented, not silent): stage 2 (Manifold) only runs on a
     # watertight closed mesh and REBUILDS the watertight solid, so its output
@@ -873,19 +878,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # 2's output is NOT re-measured here. When stage 2 runs and writes the
     # final mesh, this value is a conservative stage-1-based upper bound on
     # the health signal, which is fine for scoring.
-    # Under --si-mode off the policy is 'not measured': skip the (estimated)
-    # count entirely and report None. The guarded si_excise pass keeps its own
-    # pymeshlab count independently, so it is unaffected.
+    # Under --si-mode off the policy is 'not measured': skip the count entirely
+    # and report None.
     if si_mode == 'off':
         stats['stage1']['self_intersections_remaining'] = None
-    elif topology.native_si_enabled():
+    else:
         _, count = topology.self_intersecting_faces(new_verts, new_tris)
         stats['stage1']['self_intersections_remaining'] = (
             None if int(count) < 0 else int(count))
-    else:
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        stats['stage1']['self_intersections_remaining'] = int(
-            ms.current_mesh().face_selection_array().sum())
     stats['method_errors'] = method_health.current().to_dicts()
     return stats, new_verts, new_tris
 
@@ -907,7 +907,7 @@ def _dressing_wanted(dressing, holes, nm, si, si_mode='report'):
     return False
 
 
-def _dressing_damage(ms, after, measure_si=True):
+def _dressing_damage(cur_v, cur_t, after, measure_si=True):
     """``(holes, non_manifold, exact_si)`` of the current result.
 
     ``exact_si`` is ``None`` when the classifier cannot measure it (empty/too
@@ -916,39 +916,41 @@ def _dressing_damage(ms, after, measure_si=True):
     should run on the result the ladder currently holds (after Graft), so under
     the default 'report' mode an SI-only residual is reported but not escalated.
     """
-    m = ms.current_mesh()
-    holes = boundary_loop_stats(m.vertex_matrix(), m.face_matrix())[0]
+    holes = boundary_loop_stats(cur_v, cur_t)[0]
     nm = int(after.get('non_two_manifold_edges', 0))
     si = None
     if measure_si:
         try:
             from sutura_engine import dressing as _d
             si = _d.si_face_count(
-                np.asarray(m.vertex_matrix(), dtype=np.float64),
-                np.asarray(m.face_matrix(), dtype=np.int64))
+                np.asarray(cur_v, dtype=np.float64),
+                np.asarray(cur_t, dtype=np.int64))
         except Exception:  # noqa: BLE001 - unknown SI never blocks a repair
             si = None
     return int(holes), nm, si
 
 
-def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
-                       ftetwild=False, spec=None, engines=None, engine_chain=None,
-                       graft=False, dressing=False, dressing_drain=None,
-                       dressing_defects=None, dressing_rmax_scale=None,
-                       dressing_sigma_scale=None, si_mode='report',
-                       splint=False, splint_adaptive=None,
+def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
+                       mode=None, ftetwild=False, spec=None, engines=None,
+                       engine_chain=None, graft=False, dressing=False,
+                       dressing_drain=None, dressing_defects=None,
+                       dressing_rmax_scale=None, dressing_sigma_scale=None,
+                       si_mode='report', splint=False, splint_adaptive=None,
                        dressing_force_adopt=False):
     """Single entry point of the deep-repair ladder, called after the stage-1
-    chain. ``mode`` is one of DEEP_REPAIR_MODES, or None for the library
-    default (no deep-repair report; ``ftetwild`` alone decides, as before
-    the ladder existed). 'local' runs the local re-mesh tier; 'full' and None
-    run the fTetWild tier (``ftetwild``: 'auto'/True/False, unchanged
-    semantics); 'off' runs nothing. ``spec`` is the resolved intensity spec
-    (defaults to Balanced); it supplies the tier's timeout, size cap,
-    decimation ladder and Hausdorff sample count. Records
+    chain. ``cur_v``/``cur_t`` is the result the ladder currently holds and
+    ``input_v``/``input_t`` the original user surface. ``mode`` is one of
+    DEEP_REPAIR_MODES, or None for the library default (no deep-repair report;
+    ``ftetwild`` alone decides, as before the ladder existed). 'local' runs the
+    local re-mesh tier; 'full' and None run the fTetWild tier (``ftetwild``:
+    'auto'/True/False, unchanged semantics); 'off' runs nothing. ``spec`` is the
+    resolved intensity spec (defaults to Balanced); it supplies the tier's
+    timeout, size cap, decimation ladder and Hausdorff sample count. Records
     ``stats['deep_repair']`` (mode, tiers run, per-tier reports); the
     ``available`` offer is filled in by ``_deep_repair_offer`` after the final
-    stage-1 measurement. Returns ``(ms, after)``."""
+    stage-1 measurement. Returns ``(cur_v, cur_t, after)``."""
+    cur_v = np.asarray(cur_v, dtype=np.float64)
+    cur_t = np.asarray(cur_t, dtype=np.int64)
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     tiers_run = []
@@ -959,12 +961,16 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
     # and its tie-breaks are pinned by tests/test_pipeline_order.py.
     cad = None
     dmg = None
-    cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
-                                    ms.current_mesh().face_matrix())[0]
+    cur_holes = boundary_loop_stats(cur_v, cur_t)[0]
     cur_nm = int(after.get('non_two_manifold_edges', 0))
     if mode == 'local':
         if cur_holes > 0 or cur_nm > 0:
-            ms, after, local_rep = _local_remesh_tier(ml, ms, after)
+            _lv = np.asarray(cur_v, dtype=np.float32)
+            _lt = np.asarray(cur_t, dtype=np.int32)
+            _lv, _lt, after, local_rep = _local_remesh_tier(
+                _lv, _lt, input_v, input_t, after)
+            cur_v = np.asarray(_lv, dtype=np.float64)
+            cur_t = np.asarray(_lt, dtype=np.int64)
             tiers_run.append('local')
         else:
             local_rep = None
@@ -979,13 +985,13 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
         if replace_names:
             _entries = []
             _cv, _ct, _adopted = run_engines(
-                ml, engines, engine_chain, 'replace_ftetwild', tmpdir, v, t,
-                cur_holes, cur_nm, spec, _entries)
+                engines, engine_chain, 'replace_ftetwild', tmpdir, input_v,
+                input_t, cur_holes, cur_nm, spec, _entries)
             _record_engine_entries(stats, _entries)
             if _adopted:
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=_cv, face_matrix=_ct))
-                after = topology.mesh_topology(_cv, _ct)
+                cur_v = np.asarray(_cv, dtype=np.float64)
+                cur_t = np.asarray(_ct, dtype=np.int64)
+                after = topology.mesh_topology(cur_v, cur_t)
                 tiers_run.append('replace_ftetwild')
         elif (not engine_chain) or ('ftetwild' in engine_chain):
             # Graft (shell wrap) is tried BEFORE the fTetWild tier. When it is
@@ -999,8 +1005,8 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # inputs (which satisfies the guard: a CAD-like part gets the
             # verbatim Graft hybrid before Dressing and Dressing only runs when
             # damage remains); the calibrated detector will drive the ordering.
-            cad = cad_likeness(v, t)
-            graft_ms = graft_after = None
+            cad = cad_likeness(input_v, input_t)
+            graft_v = graft_t = graft_after = None
             graft_dev = None
             graft_ok = False
             graft_cov_failed = False
@@ -1010,11 +1016,15 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # run on it, or already-watertight repairs would change output and
             # pay an unnecessary tier.
             if graft in (True, 'auto') and (cur_holes > 0 or cur_nm > 0):
-                _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
-                                             graft=True,
-                                             intensity=(getattr(spec, 'base', None)
-                                                        or getattr(spec, 'name', None)),
-                                             spec=spec)
+                _g_cur_v = np.asarray(cur_v, dtype=np.float32)
+                _g_cur_t = np.asarray(cur_t, dtype=np.int32)
+                _g_v, _g_t, _g_after = graft_tier(
+                    np.asarray(_g_cur_v, dtype=np.float64),
+                    np.asarray(_g_cur_t, dtype=np.int64), input_v, input_t,
+                    after, stats, tmpdir, graft=True,
+                    intensity=(getattr(spec, 'base', None)
+                               or getattr(spec, 'name', None)),
+                    spec=spec)
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
                     # Adopt only a watertight candidate that is faithful AND
@@ -1023,15 +1033,22 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     # thingi10k_100827) is held aside like a fidelity failure so
                     # the ladder falls through to fTetWild/next tier; it is
                     # never preferred over fTetWild by the deviation tie-break.
-                    if (_g.get('fidelity_ok') is not False
-                            and _g.get('coverage_ok') is not False):
-                        ms, after = _g_ms, _g_after
+                    _fid = _g.get('fidelity_ok')
+                    _cov = _g.get('coverage_ok')
+                    _fid_failed = (_fid is not None and not bool(_fid))
+                    _cov_failed = (_cov is not None and not bool(_cov))
+                    if not _fid_failed and not _cov_failed:
+                        cur_v = np.asarray(_g_v, dtype=np.float64)
+                        cur_t = np.asarray(_g_t, dtype=np.int64)
+                        after = _g_after
                         graft_ok = True
                         tiers_run.append('graft')
                     else:
-                        graft_ms, graft_after = _g_ms, _g_after
+                        graft_v = np.asarray(_g_v, dtype=np.float64)
+                        graft_t = np.asarray(_g_t, dtype=np.int64)
+                        graft_after = _g_after
                         graft_dev = _g.get('hausdorff_healthy')
-                        graft_cov_failed = (_g.get('coverage_ok') is False)
+                        graft_cov_failed = _cov_failed
 
             # Dressing (#16) sits AFTER Graft and BEFORE fTetWild: its
             # volumetric skin targets the whole-shell folds and heavy
@@ -1043,15 +1060,20 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             _dh = _dnm = 0
             _dsi = None
             if dressing == 'auto':
-                _dh, _dnm, _dsi = _dressing_damage(ms, after,
+                _dh, _dnm, _dsi = _dressing_damage(cur_v, cur_t, after,
                                                    measure_si=(si_mode != 'off'))
                 dmg = {'holes': _dh, 'non_manifold': _dnm,
                        'self_intersections': _dsi}
             if _dressing_wanted(dressing, _dh, _dnm, _dsi, si_mode):
                 _t_dr = time.perf_counter()
-                _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-                _d_ms, _d_after = dressing_tier(
-                    ml, ms, after, stats, v, t, tmpdir, dressing=True,
+                _dr_cur_v = np.asarray(cur_v, dtype=np.float32)
+                _dr_cur_t = np.asarray(cur_t, dtype=np.int32)
+                _dr_in_v, _dr_in_t = ((_dr_cur_v, _dr_cur_t)
+                                      if trace.is_active() else (None, None))
+                _d_v, _d_t, _d_after = dressing_tier(
+                    np.asarray(_dr_cur_v, dtype=np.float64),
+                    np.asarray(_dr_cur_t, dtype=np.int64), input_v, input_t,
+                    after, stats, tmpdir, dressing=True,
                     intensity=(getattr(spec, 'base', None)
                                or getattr(spec, 'name', None)),
                     drain=dressing_drain, defects=dressing_defects,
@@ -1059,18 +1081,22 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                     sigma_scale=dressing_sigma_scale,
                     force_adopt=dressing_force_adopt)
                 if (stats.get('dressing') or {}).get('adopted'):
-                    ms, after = _d_ms, _d_after
+                    cur_v = np.asarray(_d_v, dtype=np.float64)
+                    cur_t = np.asarray(_d_t, dtype=np.int64)
+                    after = _d_after
                     dressing_ok = True
                     tiers_run.append('dressing')
                 if trace.is_active():
-                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
                     trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
-                                       _dr_in_v, _dr_in_t, _cur_v, _cur_t,
+                                       _dr_in_v, _dr_in_t,
+                                       np.asarray(cur_v, dtype=np.float32),
+                                       np.asarray(cur_t, dtype=np.int32),
                                        gate=stats.get('dressing', {}),
                                        elapsed=round(time.perf_counter() - _t_dr, 4))
             else:
                 if trace.is_active():
-                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    _cur_v = np.asarray(cur_v, dtype=np.float32)
+                    _cur_t = np.asarray(cur_t, dtype=np.int32)
                     trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
                                        _cur_v, _cur_t, _cur_v, _cur_t,
                                        gate={'status': 'skipped', 'reason': 'not_wanted'})
@@ -1082,25 +1108,32 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # nor Dressing already produced the final mesh.
             splint_ok = False
             if splint in (True, 'auto') and not dressing_ok and not graft_ok:
-                _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                _cur_v = np.asarray(cur_v, dtype=np.float32)
+                _cur_t = np.asarray(cur_t, dtype=np.int32)
                 _sh = boundary_loop_stats(_cur_v, _cur_t)[0]
                 _snm = int(after.get('non_two_manifold_edges', 0))
                 if _sh > 0 or _snm > 0:
                     _t_sp = time.perf_counter()
-                    _sp_in_v, _sp_in_t = (_cur_v, _cur_t) if trace.is_active() else (None, None)
-                    _s_ms, _s_after = splint_tier(
-                        ml, ms, after, stats, v, t, tmpdir, splint=True,
+                    _sp_in_v, _sp_in_t = ((_cur_v, _cur_t)
+                                          if trace.is_active() else (None, None))
+                    _s_v, _s_t, _s_after = splint_tier(
+                        np.asarray(_cur_v, dtype=np.float64),
+                        np.asarray(_cur_t, dtype=np.int64), input_v, input_t,
+                        after, stats, tmpdir, splint=True,
                         intensity=(getattr(spec, 'base', None)
                                    or getattr(spec, 'name', None)),
                         spec=spec, adaptive=splint_adaptive)
                     if (stats.get('splint') or {}).get('adopted'):
-                        ms, after = _s_ms, _s_after
+                        cur_v = np.asarray(_s_v, dtype=np.float64)
+                        cur_t = np.asarray(_s_t, dtype=np.int64)
+                        after = _s_after
                         splint_ok = True
                         tiers_run.append('splint')
                     if trace.is_active():
-                        _cur_v, _cur_t = _meshset_arrays_safe(ms)
                         trace.record_stage('splint', 'tiers.splint.splint_tier',
-                                           _sp_in_v, _sp_in_t, _cur_v, _cur_t,
+                                           _sp_in_v, _sp_in_t,
+                                           np.asarray(cur_v, dtype=np.float32),
+                                           np.asarray(cur_t, dtype=np.int32),
                                            gate=stats.get('splint', {}),
                                            elapsed=round(time.perf_counter() - _t_sp, 4))
                 else:
@@ -1110,52 +1143,64 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                                            gate={'status': 'skipped', 'reason': 'mesh_already_closed'})
             else:
                 if trace.is_active():
-                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    _cur_v = np.asarray(cur_v, dtype=np.float32)
+                    _cur_t = np.asarray(cur_t, dtype=np.int32)
                     trace.record_stage('splint', 'tiers.splint.splint_tier',
                                        _cur_v, _cur_t, _cur_v, _cur_t,
                                        gate={'status': 'skipped', 'reason': 'not_wanted'})
 
             if dressing_ok:
                 stats['experimental_ftetwild'] = False
-                if graft_ms is not None:
+                if graft_v is not None:
                     stats['graft']['adopted'] = False
                     stats['graft']['reason'] = 'superseded by Dressing'
                 if trace.is_active():
-                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    _cur_v = np.asarray(cur_v, dtype=np.float32)
+                    _cur_t = np.asarray(cur_t, dtype=np.int32)
                     trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
                                        _cur_v, _cur_t, _cur_v, _cur_t,
                                        gate={'status': 'skipped', 'reason': 'superseded_by_dressing'})
             elif splint_ok:
                 stats['experimental_ftetwild'] = False
-                if graft_ms is not None:
+                if graft_v is not None:
                     stats['graft']['adopted'] = False
                     stats['graft']['reason'] = 'superseded by Splint'
                 if trace.is_active():
-                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    _cur_v = np.asarray(cur_v, dtype=np.float32)
+                    _cur_t = np.asarray(cur_t, dtype=np.int32)
                     trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
                                        _cur_v, _cur_t, _cur_v, _cur_t,
                                        gate={'status': 'skipped', 'reason': 'superseded_by_splint'})
             elif graft_ok:
                 stats['experimental_ftetwild'] = False
                 if trace.is_active():
-                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                    _cur_v = np.asarray(cur_v, dtype=np.float32)
+                    _cur_t = np.asarray(cur_t, dtype=np.int32)
                     trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
                                        _cur_v, _cur_t, _cur_v, _cur_t,
                                        gate={'status': 'skipped', 'reason': 'superseded_by_graft'})
             else:
                 _t_ft = time.perf_counter()
-                _ft_in_v, _ft_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-                ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
-                                           ftetwild, spec=spec)
+                _ft_cur_v = np.asarray(cur_v, dtype=np.float32)
+                _ft_cur_t = np.asarray(cur_t, dtype=np.int32)
+                _ft_in_v, _ft_in_t = ((_ft_cur_v, _ft_cur_t)
+                                      if trace.is_active() else (None, None))
+                _ft_cur_v, _ft_cur_t, after = _ftetwild_tier(
+                    np.asarray(_ft_cur_v, dtype=np.float64),
+                    np.asarray(_ft_cur_t, dtype=np.int64), input_v, input_t,
+                    after, stats, tmpdir, ftetwild, spec=spec)
+                cur_v = np.asarray(_ft_cur_v, dtype=np.float64)
+                cur_t = np.asarray(_ft_cur_t, dtype=np.int64)
                 if (stats.get('experimental_ftetwild') or {}).get('ran'):
                     tiers_run.append('ftetwild')
                 if trace.is_active():
-                    _cur_v, _cur_t = _meshset_arrays_safe(ms)
                     trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
-                                       _ft_in_v, _ft_in_t, _cur_v, _cur_t,
+                                       _ft_in_v, _ft_in_t,
+                                       np.asarray(cur_v, dtype=np.float32),
+                                       np.asarray(cur_t, dtype=np.int32),
                                        gate=stats.get('experimental_ftetwild', {}),
                                        elapsed=round(time.perf_counter() - _t_ft, 4))
-                if graft_ms is not None:
+                if graft_v is not None:
                     ft_dev = (stats.get('experimental_ftetwild')
                               or {}).get('hausdorff_rel')
                     ft_adopted = bool((stats.get('experimental_ftetwild')
@@ -1170,7 +1215,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                             'superseded by fTetWild (lower healthy deviation)')
                         tiers_run.append('graft')
                     else:
-                        ms, after = graft_ms, graft_after
+                        cur_v, cur_t, after = graft_v, graft_t, graft_after
                         stats['graft']['adopted'] = True
                         stats['graft']['preferred_over_ftetwild'] = True
                         if 'ftetwild' in tiers_run:
@@ -1183,9 +1228,14 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
         # conservative and only tries it when stage 1 left damage.
         if dressing is True:
             _t_dr = time.perf_counter()
-            _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-            _d_ms, _d_after = dressing_tier(
-                ml, ms, after, stats, v, t, tmpdir, dressing=True,
+            _dr_cur_v = np.asarray(cur_v, dtype=np.float32)
+            _dr_cur_t = np.asarray(cur_t, dtype=np.int32)
+            _dr_in_v, _dr_in_t = ((_dr_cur_v, _dr_cur_t)
+                                  if trace.is_active() else (None, None))
+            _d_v, _d_t, _d_after = dressing_tier(
+                np.asarray(_dr_cur_v, dtype=np.float64),
+                np.asarray(_dr_cur_t, dtype=np.int64), input_v, input_t,
+                after, stats, tmpdir, dressing=True,
                 intensity=(getattr(spec, 'base', None)
                            or getattr(spec, 'name', None)),
                 drain=dressing_drain, defects=dressing_defects,
@@ -1193,23 +1243,28 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 sigma_scale=dressing_sigma_scale,
                 force_adopt=dressing_force_adopt)
             if (stats.get('dressing') or {}).get('adopted'):
-                ms, after = _d_ms, _d_after
+                cur_v = np.asarray(_d_v, dtype=np.float64)
+                cur_t = np.asarray(_d_t, dtype=np.int64)
+                after = _d_after
                 tiers_run.append('dressing')
             if trace.is_active():
-                _cur_v, _cur_t = _meshset_arrays_safe(ms)
                 trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
-                                   _dr_in_v, _dr_in_t, _cur_v, _cur_t,
+                                   _dr_in_v, _dr_in_t,
+                                   np.asarray(cur_v, dtype=np.float32),
+                                   np.asarray(cur_t, dtype=np.int32),
                                    gate=stats.get('dressing', {}),
                                    elapsed=round(time.perf_counter() - _t_dr, 4))
         else:
             if trace.is_active():
-                _cur_v, _cur_t = _meshset_arrays_safe(ms)
+                _cur_v = np.asarray(cur_v, dtype=np.float32)
+                _cur_t = np.asarray(cur_t, dtype=np.int32)
                 trace.record_stage('dressing', 'tiers.dressing.dressing_tier',
                                    _cur_v, _cur_t, _cur_v, _cur_t,
                                    gate={'status': 'skipped', 'reason': 'not_wanted'})
         stats['experimental_ftetwild'] = False
         if trace.is_active():
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
+            _cur_v = np.asarray(cur_v, dtype=np.float32)
+            _cur_t = np.asarray(cur_t, dtype=np.int32)
             trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
                                _cur_v, _cur_t, _cur_v, _cur_t,
                                gate={'status': 'skipped', 'reason': f'mode_{mode}'})
@@ -1229,7 +1284,7 @@ def deep_repair_ladder(ml, ms, after, stats, v, t, tmpdir, mode=None,
             'dressing_damage': dmg,
             'available': None,
         }
-    return ms, after
+    return cur_v, cur_t, after
 
 
 def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):

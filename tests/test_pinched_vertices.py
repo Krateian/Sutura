@@ -22,10 +22,10 @@ if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
 
 import classification  # noqa: E402
 import repair  # noqa: E402
+import topology  # noqa: E402
 
 # Two tetrahedra sharing only vertex 0: closed, no non-manifold edge, pinched.
 _TET = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
@@ -39,10 +39,8 @@ SAMPLE = os.path.join(REPO, 'tests', 'real-world-samples', 'thingi10k_145065.stl
 
 
 def _meshset(v, t):
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                        face_matrix=np.asarray(t, np.int32)))
-    return ms, ms.apply_filter('get_topological_measures')
+    return None, topology.mesh_topology(np.asarray(v, np.float64),
+                                        np.asarray(t, np.int64))
 
 
 def test_bowtie_is_split_into_a_two_manifold_mesh():
@@ -50,29 +48,31 @@ def test_bowtie_is_split_into_a_two_manifold_mesh():
     assert not topo.get('is_mesh_two_manifold')
     assert topo.get('non_two_manifold_edges', 0) == 0
     assert topo.get('non_two_manifold_vertices', 0) > 0
-    out_ms, out_topo, rep = repair._split_pinched_vertices(ml, ms, topo)
+    v0, t0 = np.asarray(BOWTIE_V), np.asarray(BOWTIE_T)
+    ov, ot, out_topo, rep = repair._split_pinched_vertices(v0, t0, topo)
     assert rep and rep['adopted'], rep
     assert rep['before'] > 0 and rep['after'] == 0 and 1 <= rep['passes'] <= 5
     assert out_topo.get('is_mesh_two_manifold')
-    m = out_ms.current_mesh()
-    assert len(m.face_matrix()) == len(BOWTIE_T)
-    assert repair.boundary_loop_stats(m.vertex_matrix(), m.face_matrix())[0] == 0
+    assert len(ot) == len(BOWTIE_T)
+    assert repair.boundary_loop_stats(ov, ot)[0] == 0
     # geometry unchanged: the split only duplicates vertex 0
-    assert len(m.vertex_matrix()) == len(BOWTIE_V) + 1
+    assert len(ov) == len(BOWTIE_V) + 1
 
 
 def test_clean_cube_is_left_alone():
     ms, topo = _meshset(CUBE_V, CUBE_T)
     assert topo.get('is_mesh_two_manifold')
-    out_ms, out_topo, rep = repair._split_pinched_vertices(ml, ms, topo)
+    v0 = np.asarray(CUBE_V, np.float64); t0 = np.asarray(CUBE_T, np.int64)
+    ov, ot, out_topo, rep = repair._split_pinched_vertices(v0, t0, topo)
     assert rep is False
-    assert out_ms is ms and out_topo is topo
+    assert np.array_equal(ov, v0) and np.array_equal(ot, t0)
 
 
 def test_open_mesh_is_left_alone():
     ms, topo = _meshset(CUBE_V, CUBE_T[:-1])     # one missing face -> a hole
-    out_ms, _topo, rep = repair._split_pinched_vertices(ml, ms, topo)
-    assert rep is False and out_ms is ms
+    v0 = np.asarray(CUBE_V, np.float64); t0 = np.asarray(CUBE_T[:-1], np.int64)
+    ov, ot, _topo, rep = repair._split_pinched_vertices(v0, t0, topo)
+    assert rep is False and np.array_equal(ov, v0) and np.array_equal(ot, t0)
 
 
 def test_real_world_pinched_sample():

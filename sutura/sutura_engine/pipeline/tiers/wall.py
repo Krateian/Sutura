@@ -12,8 +12,11 @@ from sutura_engine.pipeline.tiers.repeat import _clean_and_orient
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
-def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
+def wall_thicken_tier(cur_v, cur_t, after, stats, v, t, min_thickness=None):
     """Thin-wall thicken-to-min tier for registry method 15 (P-WALL).
+
+    Array-native: ``cur_v``/``cur_t`` is the current mesh and the adopted
+    ``(cur_v, cur_t, after)`` is returned.
 
     ``wall_thickness.thicken_to_min`` measures the per-vertex wall thickness
     from an SDF grid and thickens walls below ``min_thickness`` (default: 1% of
@@ -23,14 +26,16 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
     baseline on holes + non-manifold edges. Records ``stats['wall_thicken']``
     (before/after minimum thickness, counts, notes); never raises.
     """
+    cur_v = np.asarray(cur_v, dtype=np.float64)
+    cur_t = np.asarray(cur_t, dtype=np.int64)
     rec = {'tier': 'wall_thicken', 'ran': True, 'adopted': False,
            'watertight': False, 'min_before': None, 'min_after': None,
            'min_thickness': None, 'delta': None, 'thin_before': None,
            'faces': None, 'notes': [], 'reason': None}
     with method_health.tier_guard('wall_thicken', 'tier') as _g:
         import wall_thickness as _wt
-        base_v = np.asarray(ms.current_mesh().vertex_matrix())
-        base_t = np.asarray(ms.current_mesh().face_matrix())
+        base_v = cur_v
+        base_t = cur_t
         base_holes = boundary_loop_stats(base_v, base_t)[0]
         base_nm = int(after.get('non_two_manifold_edges', 0))
         in_v = np.asarray(v, dtype=np.float64)
@@ -45,7 +50,7 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
         if 'error' in rep:
             rec['reason'] = 'module error: %s' % rep['error']
         if len(cand_t):
-            cand_v, cand_t = _clean_and_orient(ml, cand_v, cand_t)
+            cand_v, cand_t = _clean_and_orient(cand_v, cand_t)
             cand_v = np.asarray(cand_v, dtype=np.float32)
             cand_t = np.asarray(cand_t, dtype=np.int32)
             det = detect_defects(cand_v, cand_t)
@@ -58,9 +63,9 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
             rec['thin_after'] = rep.get('thin_after')
             if (cand_holes == 0 and cand_nm == 0
                     and cand_holes + cand_nm <= base_holes + base_nm):
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-                after = topology.mesh_topology(cand_v, cand_t)
+                cur_v = np.asarray(cand_v, dtype=np.float64)
+                cur_t = np.asarray(cand_t, dtype=np.int64)
+                after = topology.mesh_topology(cur_v, cur_t)
                 rec['adopted'] = True
                 rec['candidate_watertight'] = True
                 rec['reason'] = 'walls thickened (stage 2 pending)'
@@ -74,4 +79,4 @@ def wall_thicken_tier(ml, ms, after, stats, v, t, min_thickness=None):
         rec['ran'] = False
         rec['reason'] = 'error: %s' % _g.error
     stats['wall_thicken'] = rec
-    return ms, after
+    return cur_v, cur_t, after

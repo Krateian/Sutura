@@ -155,7 +155,7 @@ def run_ftetwild(inter, out_obj, params=None, timeout=None):
                      'in this environment.'}, False
 
 
-def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_after,
+def _ftetwild_manifold_postprocess(tmpdir, cand_v, cand_t, cand_after,
                                    cand_holes, cand_nm):
     """Manifold post-process of the fTetWild boundary.
 
@@ -170,11 +170,11 @@ def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_aft
     edges than the raw fTetWild boundary. A boundary that is already
     two-manifold with no hole is returned unchanged.
 
-    Returns ``(verts, tris, meshset, topo, holes, nm, postprocessed)``.
+    Returns ``(verts, tris, topo, holes, nm, postprocessed)``.
     """
     two_manifold = bool(cand_after.get('is_mesh_two_manifold'))
     if cand_nm == 0 and cand_holes == 0 and two_manifold:
-        return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, False
+        return cand_v, cand_t, cand_after, cand_holes, cand_nm, False
     m3_in = os.path.join(tmpdir, 'ftetwild_m3d_in.obj')
     m3_out = os.path.join(tmpdir, 'ftetwild_m3d_out.obj')
     write_obj(m3_in, cand_v, cand_t)
@@ -182,41 +182,34 @@ def _ftetwild_manifold_postprocess(ml, tmpdir, cand_v, cand_t, cand_ms, cand_aft
     if m3ok and 'error' not in m3rep and os.path.exists(m3_out):
         m3_v, m3_t = read_obj(m3_out)
         if len(m3_t) > 0:
-            m3_ms = ml.MeshSet()
-            m3_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(m3_v, np.float32),
-                                   face_matrix=np.asarray(m3_t, np.int32)))
-            m3_after = topology.mesh_topology(m3_ms)
+            m3_after = topology.mesh_topology(m3_v, m3_t)
             m3_holes = boundary_loop_stats(m3_v, m3_t)[0]
             m3_nm = m3_after.get('non_two_manifold_edges', 0)
             if m3_holes <= cand_holes and m3_nm <= cand_nm:
-                return m3_v, m3_t, m3_ms, m3_after, m3_holes, m3_nm, True
-    return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, False
+                return (m3_v, m3_t, m3_after, m3_holes, m3_nm, True)
+    return cand_v, cand_t, cand_after, cand_holes, cand_nm, False
 
 
-def _ftetwild_candidate(ml, tmpdir, cand_v, cand_t):
+def _ftetwild_candidate(tmpdir, cand_v, cand_t):
     """Measure a boundary candidate and run the Manifold post-process on it.
 
-    Returns ``(verts, tris, meshset, topo, holes, nm, postprocessed)``; the
-    same measurement/post-process the tier always applied to a single fTetWild
+    Returns ``(verts, tris, topo, holes, nm, postprocessed)``; the same
+    measurement/post-process the tier always applied to a single fTetWild
     boundary."""
-    cand_ms = ml.MeshSet()
-    cand_ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
-                             face_matrix=np.asarray(cand_t, np.int32)))
-    cand_after = topology.mesh_topology(cand_ms)
+    cand_after = topology.mesh_topology(cand_v, cand_t)
     cand_holes = boundary_loop_stats(cand_v, cand_t)[0]
     cand_nm = cand_after.get('non_two_manifold_edges', 0)
-    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \
+    (cand_v, cand_t, cand_after, cand_holes, cand_nm, pp) = \
         _ftetwild_manifold_postprocess(
-            ml, tmpdir, cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm)
-    return cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp
+            tmpdir, cand_v, cand_t, cand_after, cand_holes, cand_nm)
+    return cand_v, cand_t, cand_after, cand_holes, cand_nm, pp
 
 
-def _decimate_boundary(ml, cand_v, cand_t, target):
+def _decimate_boundary(cand_v, cand_t, target):
     """Quadric edge collapse of an fTetWild boundary to ``target`` faces.
 
     Native (Faz 4 W3b): ``sutura_geom.decimate_qem`` (meshopt) replaces the
-    PyMeshLab filter, so ``ml`` is unused and kept only for call/back-compat.
-    The border is locked (meshopt ``LockBorder``, the former
+    PyMeshLab filter.  The border is locked (meshopt ``LockBorder``, the former
     ``preserveboundary``) and per-vertex normals ride along as collapse
     attributes.  meshopt has no quality threshold / planar quadric, so the
     caller's watertight + one-sided-Hausdorff acceptance gate is what keeps a
@@ -240,7 +233,7 @@ def _decimate_boundary(ml, cand_v, cand_t, target):
         return None
 
 
-def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t, spec):
+def _ftetwild_decimate_and_postprocess(tmpdir, cand_v, cand_t, v, t, spec):
     """Decimate a wastefully dense fTetWild boundary and pick a candidate.
 
     The escalating target ladder ``spec.dense_target_ladder`` (multiples of the
@@ -263,7 +256,7 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t, spec):
     raw_faces = int(len(cand_t))
     info = {'ftetwild_decimated': False, 'ftetwild_faces_final': raw_faces,
             'ftetwild_decimate_time': 0.0}
-    hd_raw, _ = _hausdorff_rel(ml, v, t, cand_v, cand_t,
+    hd_raw, _ = _hausdorff_rel(None, v, t, cand_v, cand_t,
                                samples=spec.ftetwild_hausdorff_samples)
     info['ftetwild_hausdorff_raw'] = hd_raw
     limit = (hd_raw if hd_raw is not None else 0.0) + DECIMATE_HD_MARGIN
@@ -288,7 +281,7 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t, spec):
     for tg in targets:
         t0 = time.perf_counter()
         try:
-            dec = _decimate_boundary(ml, cand_v, cand_t, tg)
+            dec = _decimate_boundary(cand_v, cand_t, tg)
         except Exception:
             dec = None
         info['ftetwild_decimate_time'] = round(
@@ -300,15 +293,15 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t, spec):
             continue
         dv, dt = dec
         rec['faces'] = int(len(dt))
-        payload = _ftetwild_candidate(ml, tmpdir, dv, dt)
-        cv, ct, _cms, cafter, choles, cnm, _pp = payload
+        payload = _ftetwild_candidate(tmpdir, dv, dt)
+        cv, ct, cafter, choles, cnm, _pp = payload
         rec['holes'] = int(choles)
         rec['non_manifold'] = int(cnm)
         if not (choles == 0 and cnm == 0 and cafter.get('is_mesh_two_manifold')):
             rec['reason'] = 'not_watertight'
             attempts.append(rec)
             continue
-        hd_dec, _ = _hausdorff_rel(ml, v, t, cv, ct,
+        hd_dec, _ = _hausdorff_rel(None, v, t, cv, ct,
                                    samples=spec.ftetwild_hausdorff_samples)
         rec['hausdorff_rel'] = hd_dec
         if (hd_dec is None or hd_dec > limit
@@ -336,7 +329,7 @@ def _ftetwild_decimate_and_postprocess(ml, tmpdir, cand_v, cand_t, v, t, spec):
     return None, info
 
 
-def _ftetwild_boundary(ml, tmpdir, inter, tag, params, timeout, v, t, spec):
+def _ftetwild_boundary(tmpdir, inter, tag, params, timeout, v, t, spec):
     """One fTetWild run on ``inter`` plus the dense-boundary handling.
 
     A wastefully dense boundary
@@ -344,7 +337,7 @@ def _ftetwild_boundary(ml, tmpdir, inter, tag, params, timeout, v, t, spec):
     decimated first; when every decimation target fails the undecimated
     boundary is measured instead and ``dense_failed`` is True. Returns
     ``(attempt_report, candidate, dense_failed)`` where candidate is
-    ``(verts, tris, meshset, topo, holes, nm)`` or None."""
+    ``(verts, tris, topo, holes, nm)`` or None."""
     out_obj = os.path.join(tmpdir, 'ftetwild_out_%s.obj' % tag)
     t0 = time.perf_counter()
     mrep, _ok = run_ftetwild(inter, out_obj, params, timeout=timeout)
@@ -364,30 +357,29 @@ def _ftetwild_boundary(ml, tmpdir, inter, tag, params, timeout, v, t, spec):
     if (v is not None and t is not None and spec.dense_target_ladder
             and raw_faces > spec.dense_ratio * max(len(t), spec.dense_min_faces)):
         payload, dec_info = _ftetwild_decimate_and_postprocess(
-            ml, tmpdir, cand_v, cand_t, v, t, spec)
+            tmpdir, cand_v, cand_t, v, t, spec)
         att.update(dec_info)
         if payload is not None:
-            cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp = payload
+            cand_v, cand_t, cand_after, cand_holes, cand_nm, pp = payload
             att['manifold_postprocessed'] = pp
             att['output_holes'] = cand_holes
             att['output_non_manifold'] = cand_nm
-            return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm), False
+            return att, (cand_v, cand_t, cand_after, cand_holes, cand_nm), False
         # every decimation target failed: fall through to the undecimated
         # boundary, but flag the failure so the caller can retry (Extreme)
         dense_failed = True
-    (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm, pp) = \
-        _ftetwild_candidate(ml, tmpdir, cand_v, cand_t)
+    (cand_v, cand_t, cand_after, cand_holes, cand_nm, pp) = \
+        _ftetwild_candidate(tmpdir, cand_v, cand_t)
     att['manifold_postprocessed'] = pp
     att['output_holes'] = cand_holes
     att['output_non_manifold'] = cand_nm
-    return att, (cand_v, cand_t, cand_ms, cand_after, cand_holes, cand_nm), dense_failed
+    return att, (cand_v, cand_t, cand_after, cand_holes, cand_nm), dense_failed
 
 
-def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None,
+def _ftetwild_attempt(tmpdir, inter, tag, params, timeout, v=None, t=None,
                       spec=None):
     """One attempt of the fTetWild tier. Returns ``(attempt_report,
-    candidate)``; candidate is ``(verts, tris, meshset, topo, holes, nm)`` or
-    None.
+    candidate)``; candidate is ``(verts, tris, topo, holes, nm)`` or None.
 
     When the attempt used the bridge defaults and every dense decimation rung
     failed, the Extreme preset makes one more run with the tetrahedron-quality
@@ -396,12 +388,12 @@ def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None,
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
     att, cand, dense_failed = _ftetwild_boundary(
-        ml, tmpdir, inter, tag, params, timeout, v, t, spec)
+        tmpdir, inter, tag, params, timeout, v, t, spec)
     if (cand is not None and dense_failed
             and spec.ftetwild_optimize_retry_on_dense_fail
             and not (params or {}).get('optimize')):
         o_att, o_cand, _ = _ftetwild_boundary(
-            ml, tmpdir, inter, tag + '_optimize', {'optimize': True},
+            tmpdir, inter, tag + '_optimize', {'optimize': True},
             timeout, v, t, spec)
         att['optimize_retry'] = dict(o_att, ran=True)
         if o_cand is not None:
@@ -415,9 +407,12 @@ def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None,
     return att, cand
 
 
-def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
-    """fTetWild basamak of the deep-repair ladder. Returns ``(ms, after)``.
+def _ftetwild_tier(v, t, input_v, input_t, after, stats, tmpdir, ftetwild,
+                   spec=None):
+    """fTetWild basamak of the deep-repair ladder. Returns ``(v, t, after)``.
 
+    ``v``/``t`` is the result the ladder currently holds and
+    ``input_v``/``input_t`` the original user surface this tier rebuilds from.
     Skipped for inputs above the intensity spec's fTetWild size cap
     (reject_reason 'too_large'; None means no cap). The first attempt uses the
     bridge defaults (optimize=False); when its boundary fails the
@@ -432,35 +427,33 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
     (``shape_changed``), not rejected."""
     if spec is None:
         spec = triage.PRESETS[triage.DEFAULT_INTENSITY]
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v, dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
     stats['experimental_ftetwild'] = False
     if ftetwild == 'auto' and not ftetwild_available():
         ftetwild = False
-    if ftetwild and len(t) > 0:
+    if ftetwild and len(input_t) > 0:
         ft_rep = {'ran': True, 'trigger': 'auto' if ftetwild == 'auto' else 'always'}
-        cur_holes = boundary_loop_stats(ms.current_mesh().vertex_matrix(),
-                                        ms.current_mesh().face_matrix())[0]
+        cur_holes = boundary_loop_stats(v, t)[0]
         cur_nm = after.get('non_two_manifold_edges', 0)
         cur_si = 0
         if ftetwild is True:
-            if topology.native_si_enabled():
-                m = ms.current_mesh()
-                _, cur_si = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-                cur_si = max(int(cur_si), 0)
-            else:
-                ms.apply_filter('compute_selection_by_self_intersections_per_face')
-                cur_si = int(ms.current_mesh().face_selection_array().sum())
+            _, cur_si = topology.self_intersecting_faces(v, t)
+            cur_si = max(int(cur_si), 0)
         if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
             if (spec.ftetwild_max_faces is not None
-                    and len(t) > spec.ftetwild_max_faces):
+                    and len(input_t) > spec.ftetwild_max_faces):
                 stats['experimental_ftetwild'] = {
                     'ran': False, 'adopted': False, 'reject_reason': 'too_large',
-                    'input_faces': int(len(t)),
+                    'input_faces': int(len(input_t)),
                     'max_faces': spec.ftetwild_max_faces,
                     'trigger': ft_rep['trigger']}
-                return ms, after
+                return v, t, after
             with method_health.tier_guard('ftetwild', 'tier') as _g:
                 inter = os.path.join(tmpdir, 'ftetwild_in.obj')
-                write_obj(inter, v, t)
+                write_obj(inter, input_v, input_t)
                 attempts = []
                 t_start = time.perf_counter()
                 # the user option (--ftetwild-optimize / config) runs the
@@ -493,15 +486,16 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                     if remaining <= 0.0:
                         aborted = True
                         break
-                    att, cand = _ftetwild_attempt(ml, tmpdir, inter, tag,
-                                                  params, remaining, v, t, spec)
+                    att, cand = _ftetwild_attempt(tmpdir, inter, tag,
+                                                  params, remaining, input_v,
+                                                  input_t, spec)
                     attempts.append(att)
                     if att.get('error') == 'timeout':
                         aborted = True
                         break
                     if cand is None:
                         continue
-                    if cand[4] <= cur_holes and cand[5] <= cur_nm:
+                    if cand[3] <= cur_holes and cand[4] <= cur_nm:
                         chosen = (att, cand)
                         break
                     att['reject_reason'] = 'holes_nm'
@@ -519,7 +513,7 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                         ('%g s' % float(spec.ftetwild_timeout))
                         if spec.ftetwild_timeout else 'time')
                 if chosen:
-                    att, (cand_v, cand_t, cand_ms, cand_after, _h, _n) = chosen
+                    att, (cand_v, cand_t, cand_after, _h, _n) = chosen
                     ft_rep['adopted_attempt'] = att['attempt']
                     ft_rep.pop('reject_reason', None)
                     # shape flag: fTetWild can close openings and cavities,
@@ -529,16 +523,17 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                     hd_max = ft_rep.get('hausdorff_rel')
                     if hd_max is None:
                         hd_max, _hd_mean = _hausdorff_rel(
-                            ml, v, t, cand_v, cand_t,
+                            None, input_v, input_t, cand_v, cand_t,
                             samples=spec.ftetwild_hausdorff_samples)
                     ft_rep['hausdorff_rel'] = hd_max
                     ft_rep['shape_changed'] = bool(
                         hd_max is not None and hd_max > FTETWILD_MAX_HAUSDORFF_REL)
                     if ft_rep['shape_changed']:
                         stats['shape_changed'] = True
-                    ms = cand_ms
+                    v = np.asarray(cand_v, dtype=np.float64)
+                    t = np.asarray(cand_t, dtype=np.int64)
                     after = cand_after
             if _g.error is not None:
                 ft_rep['error'] = str(_g.error)
             stats['experimental_ftetwild'] = ft_rep
-    return ms, after
+    return v, t, after

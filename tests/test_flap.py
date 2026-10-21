@@ -3,7 +3,7 @@
 (sutura_engine.flap) and its Stage-1 wiring (repair.resolve_flap /
 repair._flap_step, SUTURA_FLAP).
 
-Needs the venv (pymeshlab), like the other Stage-1 tests. pytest-compatible;
+Needs only numpy + the Rust ``sutura_geom`` extension (no pymeshlab). pytest-compatible;
 runnable directly:
     ~/.local/share/sutura/venv/bin/python tests/test_flap.py
 """
@@ -17,19 +17,70 @@ for p in (SUTURA, REPO):
         sys.path.insert(0, p)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
-import trimesh  # noqa: E402
 
 import repair  # noqa: E402
+import topology  # noqa: E402
 import sutura_engine.pipeline.service as service_mod  # noqa: E402
 from sutura_engine import flap  # noqa: E402
+from sutura_engine.pipeline.mesh_io import write_obj  # noqa: E402
 from defects import detect  # noqa: E402
+
+_CUBE_V = np.asarray([(x, y, z) for x in (0, 1) for y in (0, 1)
+                      for z in (0, 1)], np.float64)
+_CUBE_T = np.asarray([(0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5),
+                      (0, 5, 1), (2, 3, 7), (2, 7, 6), (0, 2, 6), (0, 6, 4),
+                      (1, 5, 7), (1, 7, 3)], np.int64)
+
+
+def _icosphere(subdiv=3, radius=1.0):
+    """Dependency-free icosphere (numpy only); connectivity matches the former
+    ``trimesh.creation.icosphere``/``pymeshlab.create_sphere`` fixture."""
+    t = (1.0 + 5.0 ** 0.5) / 2.0
+    raw = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0),
+           (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t),
+           (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+    verts = []
+    for a, b, c in raw:
+        n = (a * a + b * b + c * c) ** 0.5
+        verts.append([a / n, b / n, c / n])
+    verts = np.asarray(verts, dtype=np.float64)
+    faces = np.asarray([
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ], dtype=np.int64)
+    for _ in range(subdiv):
+        cache = {}
+        verts_list = [v for v in verts]
+
+        def mid(a, b):
+            key = (a, b) if a < b else (b, a)
+            if key not in cache:
+                p = verts[a] + verts[b]
+                idx = len(verts_list)
+                verts_list.append(p / np.linalg.norm(p))
+                cache[key] = idx
+            return cache[key]
+
+        out = []
+        for a, b, c in faces:
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            out += [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]
+        verts = np.asarray(verts_list, dtype=np.float64)
+        faces = np.asarray(out, dtype=np.int64)
+    return verts * radius, faces
+
+
+def _cube(extents=(1.0, 1.0, 1.0), center=(0.0, 0.0, 0.0)):
+    """Axis-aligned box (8 verts / 12 outward tris), centred at ``center``."""
+    v = (_CUBE_V - 0.5) * np.asarray(extents, np.float64) \
+        + np.asarray(center, np.float64)
+    return v, _CUBE_T.copy()
 
 
 def _holed_sphere(subdiv=4, radius=5.0, cut=4.0):
-    m = trimesh.creation.icosphere(subdivisions=subdiv, radius=radius)
-    v = np.asarray(m.vertices, np.float64)
-    t = np.asarray(m.faces, np.int64)
+    v, t = _icosphere(subdiv, radius)
     c = v[t].mean(axis=1)
     keep = c[:, 2] < cut
     return v, t[keep]
@@ -64,9 +115,7 @@ def test_flap_fill_closes_a_hole_and_keeps_original_faces():
 
 
 def test_flap_fill_is_a_noop_on_a_closed_mesh():
-    m = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
-    v = np.asarray(m.vertices, np.float64)
-    t = np.asarray(m.faces, np.int64)
+    v, t = _cube((10.0, 10.0, 10.0))
     out_v, out_t, rep = flap.flap_fill(v, t, separate_stl=False)
     assert rep['loops_found'] == 0, rep
     assert rep['patch_faces'] == 0, rep
@@ -109,27 +158,19 @@ def test_flap_default_switch_is_overridable():
             os.environ['SUTURA_FLAP_DEFAULT'] = old
 
 
-def _meshset(v, t):
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                        face_matrix=np.asarray(t, np.int32)))
-    return ms
-
-
 def test_flap_step_adopts_a_hole_closure():
     v, t = _holed_sphere()
-    ms = _meshset(v, t)
-    after = ms.apply_filter('get_topological_measures')
+    after = topology.mesh_topology(np.asarray(v, np.float64),
+                                   np.asarray(t, np.int64))
     stats = {'stage1': {}}
-    out, _ = repair._flap_step(ml, ms, after, stats, {'maxholesize': 1000})
+    out_v, out_t, _ = repair._flap_step(v, t, v, t, after, stats,
+                                        {'maxholesize': 1000})
     rec = stats['flap']
     assert rec['ran'] is True, rec
     assert rec['adopted'] is True, rec
     assert rec['baseline_holes'] == 1, rec
     assert rec['candidate_holes'] == 0, rec
     assert rec['candidate_non_manifold'] <= rec['baseline_non_manifold'], rec
-    out_v = np.asarray(out.current_mesh().vertex_matrix())
-    out_t = np.asarray(out.current_mesh().face_matrix())
     assert len(detect(out_v, out_t)['holes']) == 0
 
 
@@ -150,11 +191,11 @@ def test_flap_adopt_gate_combined_damage():
 
 
 def test_flap_step_skips_a_clean_mesh():
-    m = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
-    ms = _meshset(np.asarray(m.vertices), np.asarray(m.faces))
-    after = ms.apply_filter('get_topological_measures')
+    bv, bt = _cube((10.0, 10.0, 10.0))
+    after = topology.mesh_topology(bv, bt)
     stats = {'stage1': {}}
-    _out, _ = repair._flap_step(ml, ms, after, stats, {'maxholesize': 1000})
+    _v, _t, _ = repair._flap_step(bv, bt, bv, bt, after, stats,
+                                  {'maxholesize': 1000})
     rec = stats['flap']
     assert rec['ran'] is False, rec
     assert rec['baseline_holes'] == 0 and rec['baseline_non_manifold'] == 0, rec
@@ -179,9 +220,8 @@ def test_flap_prepass_runs_on_original_input():
 
 
 def _box(extents, translate):
-    m = trimesh.creation.box(extents=extents)
-    m.apply_translation(translate)
-    return (np.asarray(m.vertices, np.float32), np.asarray(m.faces, np.int32))
+    v, t = _cube(extents, center=translate)
+    return v.astype(np.float32), t.astype(np.int32)
 
 
 def test_drop_flap_debris_drops_flat_keeps_solid():
@@ -230,8 +270,8 @@ def test_flap_step_never_raises_when_flap_fill_fails():
     # MEDIUM-2: the pre-pass has no surrounding try, so a raising flap_fill
     # must be swallowed by _flap_step itself and the input mesh returned.
     v, t = _holed_sphere(radius=6.0, cut=4.5)  # unique content -> no cache
-    ms = _meshset(v, t)
-    after = ms.apply_filter('get_topological_measures')
+    after = topology.mesh_topology(np.asarray(v, np.float64),
+                                   np.asarray(t, np.int64))
     orig = flap.flap_fill
 
     def _boom(*_a, **_k):
@@ -240,21 +280,21 @@ def test_flap_step_never_raises_when_flap_fill_fails():
     flap.flap_fill = _boom
     try:
         stats = {'stage1': {}}
-        out, _ = repair._flap_step(ml, ms, after, stats)
+        out_v, out_t, _ = repair._flap_step(v, t, v, t, after, stats)
     finally:
         flap.flap_fill = orig
     rec = stats['flap']
     assert rec['ran'] is False, rec
     assert 'flap error' in rec['reason'], rec
-    assert out.current_mesh().face_number() == len(t)
+    assert len(out_t) == len(t)
 
 
 def test_flap_step_never_raises_on_malformed_report():
     # MEDIUM-2: a differently-shaped report (e.g. a future/older binding) must
     # not escape through _flap_max_orig_move / the adopted-MeshSet block.
     v, t = _holed_sphere(radius=8.0, cut=6.0)  # unique content -> no cache
-    ms = _meshset(v, t)
-    after = ms.apply_filter('get_topological_measures')
+    after = topology.mesh_topology(np.asarray(v, np.float64),
+                                   np.asarray(t, np.int64))
     orig = flap.flap_fill
 
     def _bad(verts, tris, **k):
@@ -266,31 +306,31 @@ def test_flap_step_never_raises_on_malformed_report():
     flap.flap_fill = _bad
     try:
         stats = {'stage1': {}}
-        out, _ = repair._flap_step(ml, ms, after, stats)
+        out_v, out_t, _ = repair._flap_step(v, t, v, t, after, stats)
     finally:
         flap.flap_fill = orig
     assert 'flap error' in stats['flap']['reason'], stats['flap']
-    assert out.current_mesh().face_number() == len(t)
+    assert len(out_t) == len(t)
 
 
 def test_flap_step_quick_budget_skips_and_caches_across_repeats():
     # MEDIUM-3: the quick preset disables Flap entirely.
     v, t = _holed_sphere(radius=7.0, cut=5.0)
-    ms = _meshset(v, t)
-    after = ms.apply_filter('get_topological_measures')
+    after = topology.mesh_topology(np.asarray(v, np.float64),
+                                   np.asarray(t, np.int64))
     stats = {'stage1': {}, 'triage_intensity': 'quick'}
-    repair._flap_step(ml, ms, after, stats)
+    repair._flap_step(v, t, v, t, after, stats)
     rec = stats['flap']
     assert rec['ran'] is False, rec
     assert 'budget' in rec['reason'], rec
     # ... while balanced runs it once and reuses the cached candidate on a
     # repeat (the triage escalation path).
     stats1 = {'stage1': {}, 'triage_intensity': 'balanced'}
-    repair._flap_step(ml, _meshset(v, t), after, stats1)
+    repair._flap_step(v, t, v, t, after, stats1)
     assert stats1['flap']['ran'] is True, stats1['flap']
     assert stats1['flap']['cache_hit'] is False, stats1['flap']
     stats2 = {'stage1': {}, 'triage_intensity': 'balanced'}
-    repair._flap_step(ml, _meshset(v, t), after, stats2)
+    repair._flap_step(v, t, v, t, after, stats2)
     assert stats2['flap']['cache_hit'] is True, stats2['flap']
     assert stats2['flap']['adopted'] is True, stats2['flap']
 
@@ -324,9 +364,9 @@ def test_flap_final_safety_net_helpers():
 
 
 def test_flap_off_leaves_no_report_key():
-    m = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
-    v = np.asarray(m.vertices, np.float32)
-    t = np.asarray(m.faces, np.int32)
+    v, t = _cube((10.0, 10.0, 10.0))
+    v = v.astype(np.float32)
+    t = t.astype(np.int32)
     import tempfile
     rep, _nv, _nt = repair.repair_mesh_from_arrays(
         v, t, tempfile.mkdtemp(prefix='flapoff-'), mode='medium', flap=False)
@@ -339,10 +379,10 @@ def test_flap_safety_net_does_not_rerun_tamponade():
     # fallback candidate is usually discarded). Regression for the double
     # Tamponade invocation (two expensive Rust tier passes per --tamponade run).
     import tempfile
-    m = trimesh.creation.box(extents=(10.0, 10.0, 10.0))
+    cv, ct = _cube((10.0, 10.0, 10.0))
     work = tempfile.mkdtemp(prefix='flaptamp-')
     src = os.path.join(work, 'cube.obj')
-    m.export(src)
+    write_obj(src, cv.astype(np.float32), ct.astype(np.int32))
 
     seen = []
     real = service_mod.repair_mesh_from_arrays

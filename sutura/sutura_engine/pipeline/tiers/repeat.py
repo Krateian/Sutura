@@ -12,7 +12,7 @@ from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
-def _clean_and_orient(ml, verts, tris):
+def _clean_and_orient(verts, tris):
     """Cleanup of a generated surface: dedup + coherent orientation."""
     try:
         from sutura_engine.pipeline.stage1 import apply_chain
@@ -36,9 +36,12 @@ def _clean_and_orient(ml, verts, tris):
 REPEAT_MAX_HAUSDORFF_OUTSIDE = 0.01
 
 
-def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
+def repeat_tier(cur_v, cur_t, after, stats, mode=None, source_point=None,
                 target_point=None):
     """Repeated-element transplant tier (registry methods 11/12, P-REP).
+
+    Array-native: ``cur_v``/``cur_t`` is the current mesh (as passed by the
+    pipeline) and the adopted ``(cur_v, cur_t, after)`` is returned.
 
     Runs AFTER the whole stage-1 chain because the transplant needs a
     watertight (closed 2-manifold) ``M``: if stage 1 left holes or non-manifold
@@ -51,14 +54,14 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
     repaired boxes <= ``REPEAT_MAX_HAUSDORFF_OUTSIDE``). Records
     ``stats['repeat']``; never raises.
     """
+    cur_v = np.asarray(cur_v, dtype=np.float64)
+    cur_t = np.asarray(cur_t, dtype=np.int64)
     if not mode:
-        return ms, after
+        return cur_v, cur_t, after
     rec = {'mode': mode, 'ran': False, 'adopted': False, 'watertight': False,
            'pattern_type': None, 'positions_repaired': None,
            'hausdorff_outside': None, 'notes': [], 'reason': None}
     with method_health.tier_guard('repeat', 'tier') as _g:
-        cur_v = np.asarray(ms.current_mesh().vertex_matrix())
-        cur_t = np.asarray(ms.current_mesh().face_matrix())
         holes = boundary_loop_stats(cur_v, cur_t)[0]
         nm = int(after.get('non_two_manifold_edges', 0))
         if holes or nm or not after.get('is_mesh_two_manifold'):
@@ -66,7 +69,7 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
                              'input; stage 1 left holes=%d non-manifold=%d'
                              % (holes, nm))
             stats['repeat'] = rec
-            return ms, after
+            return cur_v, cur_t, after
         rec['ran'] = True
         import repeat_repair as _rr
         if mode == 'manual':
@@ -74,7 +77,7 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
                 rec['reason'] = ('manual repeat repair needs a source and a '
                                  'target point')
                 stats['repeat'] = rec
-                return ms, after
+                return cur_v, cur_t, after
             rv, rt, rep = _rr.repair_repeat_manual(
                 np.asarray(cur_v, dtype=np.float64),
                 np.asarray(cur_t, dtype=np.int64),
@@ -95,7 +98,7 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
                 notes = rep.get('notes') or []
                 rec['reason'] = notes[0] if notes else 'nothing to repair'
             stats['repeat'] = rec
-            return ms, after
+            return cur_v, cur_t, after
         # Validate the raw Manifold transplant (in-memory). unlike the
         # closing tiers it is NOT float32-welded here: the CSG output has
         # coincident cut-seam vertices whose pymeshlab weld-repair opens holes,
@@ -119,9 +122,9 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
         if (len(cand_t) and cand_holes == 0 and cand_nm == 0
                 and cand_holes + cand_nm <= holes + nm
                 and hd is not None and hd <= REPEAT_MAX_HAUSDORFF_OUTSIDE):
-            ms = ml.MeshSet()
-            ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
-            after = topology.mesh_topology(cand_v, cand_t)
+            cur_v = np.asarray(cand_v, dtype=np.float64)
+            cur_t = np.asarray(cand_t, dtype=np.int64)
+            after = topology.mesh_topology(cur_v, cur_t)
             rec['adopted'] = True
             rec['watertight'] = False
             rec['candidate_watertight'] = True
@@ -138,4 +141,4 @@ def repeat_tier(ml, ms, after, stats, mode=None, source_point=None,
         rec['ran'] = False
         rec['reason'] = 'error: %s' % _g.error
     stats['repeat'] = rec
-    return ms, after
+    return cur_v, cur_t, after

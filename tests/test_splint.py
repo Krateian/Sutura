@@ -164,10 +164,11 @@ def _run_tier(cand_v, cand_t, spec=None, stats=None, b2=None):
         splint_max_faces = 300000
         splint_timeout = 180.0
         splint_res = 128
-    ms, after = splint_tier(_FakeML(), None, after, stats,
-                            *_cube(), tmpdir='/tmp', splint=True,
-                            spec=(spec if spec is not None else _Spec()))
-    return ms, after, stats['splint']
+    v, f = _cube()
+    out_v, out_t, after = splint_tier(
+        v, f, v, f, after, stats, tmpdir='/tmp', splint=True,
+        spec=(spec if spec is not None else _Spec()))
+    return out_v, after, stats['splint']
 
 
 def test_tier_adopts_watertight_candidate():

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Sutura macOS installer (Apple Silicon / Intel, conda).
 #
-# The Linux installer uses two Python virtualenvs and a pip-only flow. On
-# macOS, pymeshlab has no PyPI wheel for Apple Silicon, so it must come from
-# conda-forge; everything else lives in one conda environment. This script
+# The Linux installer uses a pip-only flow. macOS keeps a single conda
+# environment (Homebrew provides the Miniforge/conda toolchain it builds on)
+# so the pinned PySide6 and the fTetWild extra install reproducibly. The
+# repair engine is native; PyMeshLab is not installed at runtime. This script
 # automates that setup.
 set -euo pipefail
 
@@ -59,7 +60,6 @@ fi
 
 # 5) install dependencies ---------------------------------------------------
 echo "==> installing packages into $ENV_NAME"
-conda install -y -n "$ENV_NAME" -c conda-forge pymeshlab
 conda run -n "$ENV_NAME" pip install PySide6-Essentials==6.11.2
 if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
     echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
@@ -80,7 +80,7 @@ bash "$REPO_DIR/scripts/install_sutura_geom.sh" "$ENV_PY" "$REPO_DIR"
 
 # 6) verify ----------------------------------------------------------------
 if ! conda run -n "$ENV_NAME" python -c \
-    "import pymeshlab, numpy, sutura_geom; from PySide6 import QtWidgets; print('OK')"; then
+    "import numpy, sutura_geom; from PySide6 import QtWidgets; print('OK')"; then
     die "import check failed - dependencies not usable in $ENV_NAME"
 fi
 if ! conda run -n "$ENV_NAME" python -c 'import sutura_geom' >/dev/null 2>&1; then

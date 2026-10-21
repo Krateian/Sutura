@@ -40,7 +40,7 @@ from sutura_engine.pipeline.utils import (
     surface_area, boundary_loop_stats, signed_volume, _bbox_diagonal,
     _edge_uses, _faces_preserved, _referenced_only, _canonical_face_keys,
     _count_vertex_components, _internal_wall_count, _exact_si_face_count,
-    _count_si, _hausdorff_rel, _obj_closed_result, _not_watertight_result,
+    _hausdorff_rel, _obj_closed_result, _not_watertight_result,
 )
 from sutura_engine.pipeline.presets import (
    CAD_LIKENESS_THRESHOLD, CLASSIFIER_ENGINES, DECIMATE_HD_MARGIN,
@@ -84,14 +84,13 @@ from sutura_engine.pipeline.mesh_io import (
 from sutura_engine.pipeline.stage1 import (
    _close_holes_step, stage1_cleanup_chain,
    stage1_chain, delete_fallback_chain, apply_chain,
-   _remove_unref_vertices_ms, _invert_faces_ms, _re_orient_faces_ms,
-   _repair_nme_ms, extreme_extra_passes, SI_EXCISE_MAX_ROUNDS,
+   extreme_extra_passes, SI_EXCISE_MAX_ROUNDS,
    SI_EXCISE_MAX_FACE_FRACTION, SI_EXCISE_DEFAULT_BUDGET,
    SI_EXCISE_BUDGET_BY_INTENSITY, si_excise_enabled, _si_excise_budget,
    si_excise_recap, LOCAL_EXACT_DEFAULT_ENABLED,
    LOCAL_EXACT_BUDGET_BY_INTENSITY, LOCAL_EXACT_DEFAULT_BUDGET,
    local_exact_enabled, _local_exact_budget, _should_run_local_exact,
-   _si_count_and_mask, _si_count, join_small_components
+   join_small_components
 )
 from sutura_engine.pipeline.stage2 import (
     run_stage2, maybe_run_stage2, _split_pinched_vertices, PINCH_SPLIT_MAX_PASSES,
@@ -545,7 +544,7 @@ def main():
     parser.add_argument('--flap', action='store_true',
                         help='run the Flap surface-based hole filler as the '
                              'FIRST Stage-1 step (a pre-pass on the input, '
-                             'before the VCG chain): every open boundary loop '
+                             'before the native Stage-1 chain): every open boundary loop '
                              'is covered with a minimum-area triangulation '
                              'refined to the surrounding edge length and faired '
                              'with a thin-plate solve that continues the '

@@ -15,9 +15,8 @@ from sutura_engine.pipeline.presets import (
     LOCAL_MAX_REMOVED_FACES, LOCAL_MAX_SECONDS, LOCAL_REMESH_FAIR_STEPS,
     LOCAL_REMESH_MAX_HOLE, LOCAL_REMESH_REFINE,
 )
-from sutura_engine.pipeline.stage1 import _repair_nmv_ms
 from sutura_engine.pipeline.utils import (
-    _canonical_face_keys, _count_si, _edge_uses, _faces_preserved,
+    _canonical_face_keys, _edge_uses, _faces_preserved,
     _hausdorff_rel, boundary_loop_stats,
 )
 
@@ -120,23 +119,13 @@ def _umbrella_fair(verts, tris, first_free, steps):
     return out
 
 
-def _local_remesh_tier(ml, ms, after):
-    """Local re-mesh basamak (pymeshlab-only prototype).
-
-    The damaged region (faces on a boundary or non-manifold edge, grown by
-    one vertex ring) is deleted, pinched vertices of the new boundary are
-    split, the openings are closed with ``meshing_close_holes`` (refined to
-    the mean edge length of the deleted region) and only the new interior
-    vertices are smoothed (Laplacian, the hole boundary stays fixed). The
-    result is adopted only when holes and non-manifold edges are no worse
-    and not both unchanged, self-intersections do not increase, and every
-    face outside the deleted region is still present with identical
-    coordinates. Returns ``(ms, after, report)``.
-    """
+def _local_remesh_tier(v, t, input_v, input_t, after, stats=None):
+    """Local re-mesh tier on plain arrays (no MeshSet)."""
     t0 = time.perf_counter()
-    m = ms.current_mesh()
-    v = np.asarray(m.vertex_matrix(), dtype=np.float64)
-    t = np.asarray(m.face_matrix(), dtype=np.int64)
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    _iv = np.asarray(input_v, dtype=np.float64) if input_v is not None else v
+    _it = np.asarray(input_t, dtype=np.int64) if input_t is not None else t
     rep = {'ran': True, 'adopted': False, 'outside_unchanged': False}
     base_holes, base_loop = boundary_loop_stats(v, t)
     base_nm = after.get('non_two_manifold_edges', 0)
@@ -146,7 +135,7 @@ def _local_remesh_tier(ml, ms, after):
     def skip(reason):
         rep['reject_reason'] = reason
         rep['time'] = round(time.perf_counter() - t0, 3)
-        return ms, after, rep
+        return v, t, after, rep
     if base_nm > LOCAL_MAX_NM_EDGES:
         return skip('scope: non-manifold edges')
     if base_loop > LOCAL_MAX_LOOP_LEN:
@@ -171,48 +160,33 @@ def _local_remesh_tier(ml, ms, after):
     remap[used] = np.arange(len(used))
     kv, kt = v[used], remap[kept]
     with method_health.tier_guard('local_remesh', 'tier') as _g:
-        trial = ml.MeshSet()
-        trial.add_mesh(ml.Mesh(vertex_matrix=kv, face_matrix=kt.astype(np.int32)))
-        _repair_nmv_ms(trial, ml)
-        n0 = trial.current_mesh().face_number()
-        nv0 = trial.current_mesh().vertex_number()
-        topology.close_holes_ms(
-            trial, ml, maxholesize=LOCAL_REMESH_MAX_HOLE,
-            newfaceselected=True, self_intersection=True,
-            refinehole=LOCAL_REMESH_REFINE and edge_len > 0,
-            refineholeedgelen=ml.PureValue(edge_len))
-        rep['faces_added'] = int(trial.current_mesh().face_number() - n0)
+        nv, nt = topology.repair_non_manifold_vertices(kv, kt)
+        n0 = len(nt)
+        nv0 = len(nv)
+        nv, nt, _closed, _new = topology.close_holes(
+            nv, nt, maxholesize=LOCAL_REMESH_MAX_HOLE,
+            newfaceselected=True, self_intersection=True)
+        rep['faces_added'] = int(len(nt) - n0)
         if time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
             return skip('time')
-        tm = trial.current_mesh()
-        nv = np.asarray(tm.vertex_matrix(), dtype=np.float64)
-        nt = np.asarray(tm.face_matrix(), dtype=np.int64)
-        # Fairing on the new interior vertices only (the refinement appends
-        # them after the existing ones), so the hole boundary stays fixed.
-        # pymeshlab's selected-only Laplacian also moved vertices of the
-        # surrounding surface, hence the explicit umbrella operator here.
         nv = _umbrella_fair(nv, nt, nv0, LOCAL_REMESH_FAIR_STEPS)
         rep['fairing_iters'] = LOCAL_REMESH_FAIR_STEPS
-        trial = ml.MeshSet()
-        trial.add_mesh(ml.Mesh(vertex_matrix=nv, face_matrix=nt.astype(np.int32)))
         t_after = topology.mesh_topology(nv, nt)
         holes = boundary_loop_stats(nv, nt)[0]
         nm = t_after.get('non_two_manifold_edges', 0)
         rep.update(holes_after=int(holes), nm_after=int(nm))
-        # guard 1: outside faces unchanged (exact coordinates, any order)
         outside_ok = _faces_preserved(kv, kt, nv, nt)
         rep['outside_unchanged'] = bool(outside_ok)
-        # guard 2: holes / nm no worse, and some progress
         better = (holes <= base_holes and nm <= base_nm
                   and (holes, nm) != (base_holes, base_nm))
         si_ok = True
         if outside_ok and better and time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
             return skip('time')
         if outside_ok and better:
-            base_si = _count_si(ml, ms)
-            new_si = _count_si(ml, trial)
-            rep.update(si_before=base_si, si_after=new_si)
-            si_ok = new_si <= base_si
+            _, base_si = topology.self_intersecting_faces(v, t)
+            _, new_si = topology.self_intersecting_faces(nv, nt)
+            rep.update(si_before=int(base_si), si_after=int(new_si))
+            si_ok = int(new_si) <= int(base_si)
         if not outside_ok:
             rep['reject_reason'] = 'faces outside the region changed'
         elif not better:
@@ -220,11 +194,12 @@ def _local_remesh_tier(ml, ms, after):
         elif not si_ok:
             rep['reject_reason'] = 'more self-intersections'
         else:
-            rep['hausdorff_rel'] = _hausdorff_rel(ml, v, t, nv, nt)[0]
+            rep['hausdorff_rel'] = _hausdorff_rel(None, v, t, nv, nt)[0]
             rep['adopted'] = True
             rep['time'] = round(time.perf_counter() - t0, 3)
-            return trial, t_after, rep
+            return nv, nt, t_after, rep
     if _g.error is not None:
         rep['error'] = str(_g.error)
     rep['time'] = round(time.perf_counter() - t0, 3)
-    return ms, after, rep
+    return v, t, after, rep
+

@@ -1,9 +1,8 @@
 name: Build macOS .app/.dmg
 
-# Builds the macOS standalone app from the proven onedir recipe: PyMeshLab
-# from conda-forge (no Apple Silicon PyPI wheel), the CLI + render tools as
-# onedir PyInstaller executables (onefile children hang under a Qt GUI
-# parent), sutura_geom ships the Manifold kernel so stage 2 works
+# Builds the macOS standalone app from the proven onedir recipe: the CLI +
+# render tools as onedir PyInstaller executables (onefile children hang under a
+# Qt GUI parent), sutura_geom ships the Manifold kernel so stage 2 works
 # self-contained, a windowed GUI .app with the tools in Contents/MacOS, and
 # an UDZO .dmg. Runs on published releases like the AppImage workflow; the
 # release is created by the maintainer's `gh` (a user token), never by this
@@ -53,13 +52,12 @@ jobs:
           python-version: "3.11"
           use-only-tar-bz2: true
 
-      - name: Install PyMeshLab (conda-forge) + pip dependencies
+      - name: Install pip dependencies
         run: |
-          conda install -y -c conda-forge pymeshlab
           pip install --quiet \
             PySide6-Essentials==6.11.2 pyinstaller numpy
           python -c \
-            "import pymeshlab, PySide6; print('deps OK')"
+            "import PySide6; print('deps OK')"
 
       # The Rust extension (rust/sutura-geom, abi3-py311) is needed by Graft
       # (#13), Exact Refine (#6) and the indirect tier. Install it into the
@@ -92,7 +90,6 @@ jobs:
       # --- shared PyInstaller flags (proven recipe) -----------------------
       # - hidden imports for sutura's flat modules (repair.py imports them
       #   as top-level `from classification import ...`)
-      # - --collect-data pymeshlab carries the VCG PlugIns/lib/Frameworks
       - name: Build onedir tool executables
         run: |
           set -e
@@ -106,7 +103,6 @@ jobs:
           export PYTHONPATH="$GITHUB_WORKSPACE/sutura"
           PYS=("--noconfirm" "--log-level" "WARN"
             "--paths" "sutura"
-            "--hidden-import" "pymeshlab"
             "--hidden-import" "classification" "--hidden-import" "confidence"
             "--hidden-import" "defects" "--hidden-import" "topology" "--hidden-import" "mesh_classifier"
             "--hidden-import" "history" "--hidden-import" "heatmap"
@@ -127,8 +123,7 @@ jobs:
             "--collect-submodules" "sutura_engine"
             "--collect-submodules" "sutura.sutura_engine"
             "--paths" "."
-            "--exclude-module" "scipy"
-            "--collect-data" "pymeshlab")
+            "--exclude-module" "scipy")
           for t in sutura-cli:repair.py heatmap-render:heatmap_render.py \
                      before-after-render:before_after_render.py \
                      viewer-data-render:viewer_data_render.py \
@@ -152,7 +147,6 @@ jobs:
             --noconfirm --log-level WARN \
             --paths . --paths sutura \
             --hidden-import sutura \
-            --hidden-import pymeshlab \
             --hidden-import classification --hidden-import confidence \
             --hidden-import defects --hidden-import topology --hidden-import mesh_classifier \
             --hidden-import history --hidden-import heatmap \
@@ -171,7 +165,6 @@ jobs:
             --collect-submodules sutura_engine \
             --collect-submodules sutura.sutura_engine \
             --exclude-module scipy \
-            --collect-data pymeshlab \
             --name Sutura --windowed --icon assets/icon/Sutura.icns \
             sutura/gui.py
 
@@ -212,7 +205,8 @@ jobs:
       - name: Smoke repair a broken cube via the frozen CLI
         # The frozen CLI must actually repair, not just list methods: run it on
         # a deliberately broken STL and assert the report is watertight. This
-        # also exercises the real pymeshlab + sutura_geom (including Manifold) path in
+        # also exercises the real native stage-1/stage-2 path
+        # (sutura_geom, including Manifold) in
         # the frozen app (stage 1, stage 2, and the sutura_engine method
         # registry that repair_with_methods drives). repair.py emits a single
         # JSON object on stdout (repair.py main, single-file branch), so stdout

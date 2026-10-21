@@ -19,9 +19,8 @@ jobs:
     strategy:
       fail-fast: false   # report every leg, do not cancel 3.11 when 3.14 fails
       matrix:
-        # 3.11 and 3.14 are both supported. 3.12/3.13 are not tested:
-        # pymeshlab imports on 3.13 but the VCG repair pipeline segfaults
-        # there, root cause not investigated. See CHANGELOG.md.
+        # 3.11 and 3.14 are both supported and tested. 3.12/3.13 are not
+        # part of the shipped matrix. See CHANGELOG.md.
         python-version: ['3.11', '3.14']
     steps:
       - uses: actions/checkout@v7
@@ -31,8 +30,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # pymeshlab's STL/OBJ I/O plugins are Qt plugins that need the GL
-      # runtime libs, which the default headless runner image lacks.
+      # The Qt offscreen platform used by the render/GUI suites needs these
+      # GL/EGL runtime libs, which the default headless runner image lacks.
       - name: Install system GL libraries
         run: sudo apt-get update && sudo apt-get install -y libopengl0 libgl1 libglu1-mesa libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
 
@@ -57,9 +56,6 @@ jobs:
         run: |
           SUTURA_GEOM_FROM_SOURCE=1 scripts/install_sutura_geom.sh ./venv/bin/python
           ./venv/bin/python -c "import sutura_geom; print('sutura_geom OK')"
-
-      - name: Import check (pymeshlab)
-        run: ./venv/bin/python -c "import pymeshlab; print('pymeshlab OK')"
 
       - name: CLI shim for suites that exec the CLI
         run: |

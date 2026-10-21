@@ -30,9 +30,9 @@ Pure API::
 
     shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=3,
-               target_edge=None, ml=None, si_check=True, guard=True,
+               target_edge=None, si_check=True, guard=True,
                grid_budget=None, detail_tol=None, intensity=None,
-               sign_field=None)
+               sign_field=None, hybrid=False)
         -> (verts_out, tris_out, report)
 
 No file is written.  ``report['per_vertex_deviation']`` carries the per-result-
@@ -53,6 +53,7 @@ from defects import detect as detect_defects
 from sutura_engine.pipeline.p_weld import (
     _separate_weld_collisions,
     reload_strict_holes_nm,
+    weld_reload_equivalent,
 )
 from sutura_engine.pipeline.tiers.local_remesh import _damaged_region
 from sutura_engine.pipeline.utils import _referenced_only
@@ -742,20 +743,18 @@ def _si_count(v, t):
 # --------------------------------------------------------------------------- #
 # Stitch (P-WELD) + X-Ray (honest verdict)
 # --------------------------------------------------------------------------- #
-def _p_weld(v, t, ml=None):
-    """Reload-safe Stitch pass: the pymeshlab P-WELD when ``ml`` is supplied,
-    otherwise the pure split-collisions branch."""
+def _p_weld(v, t):
+    """Reload-safe Stitch pass on plain arrays."""
     v = np.asarray(v, dtype=np.float32)
     t = np.asarray(t, dtype=np.int64)
     h, nm = reload_strict_holes_nm(v, t)
     if h == 0 and nm == 0:
         return v, t, None
-    if ml is not None:
-        try:
-            from repair import p_weld_final
-            return p_weld_final(ml, v, t)
-        except Exception:  # noqa: BLE001
-            pass
+    try:
+        from sutura_engine.pipeline.p_weld import p_weld_final
+        return p_weld_final(v, t)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         cv, ct = _separate_weld_collisions(v, t)
         ch, cnm = reload_strict_holes_nm(cv, ct)
@@ -818,38 +817,57 @@ def _cap_boundary_loops(v, t):
     return nv[used], remap[nt]
 
 
-def _hybrid_close(v0, t0, region_mask, ml):
+def _hybrid_close(v0, t0, region_mask):
     """Verbatim hybrid: drop the damaged-region faces and close the openings
-    with the pymeshlab repair path plus a numpy boundary cap, keeping every
+    with the native repair path plus a numpy boundary cap, keeping every
     healthy original triangle unchanged.  Returns ``(v, t)`` only when the
     result is reload-watertight, otherwise ``None``."""
-    if ml is None or region_mask is None or not (~region_mask).any():
+    if region_mask is None or not (~region_mask).any():
         return None
     bv, bt = _referenced_only(v0, t0[~region_mask])
     if len(bt) == 0:
         return None
     try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(bv, np.float64),
-                            face_matrix=np.asarray(bt, np.int32)))
+        ov = np.asarray(bv, dtype=np.float64)
+        ot = np.asarray(bt, dtype=np.int64)
         for _ in range(2):
-            for name, kw in (
-                    ('meshing_repair_non_manifold_edges', {}),
-                    ('meshing_repair_non_manifold_vertices', {}),
-                    ('meshing_remove_duplicate_faces', {}),
-                    ('meshing_close_holes', {'maxholesize': HYBRID_MAX_HOLE}),
-                    ('meshing_remove_unreferenced_vertices', {})):
-                try:
-                    ms.apply_filter(name, **kw)
-                except Exception:  # noqa: BLE001
-                    pass
-        m = ms.current_mesh()
-        ov = np.asarray(m.vertex_matrix(), np.float64)
-        ot = np.asarray(m.face_matrix(), np.int64)
+            try:
+                ot = topology.repair_non_manifold_edges(ov, ot)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ov, ot = topology.repair_non_manifold_vertices(ov, ot)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ot = topology.remove_duplicate_faces(ot)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ov, ot, _closed, _new = topology.close_holes(
+                    ov, ot, maxholesize=HYBRID_MAX_HOLE)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ov, ot = topology.remove_unreferenced_vertices(ov, ot)
+            except Exception:  # noqa: BLE001
+                pass
         # Seal any residual boundary components, then reload-safe Stitch.
         ov, ot = _cap_boundary_loops(ov, ot)
-        ov, ot, _ = _p_weld(ov, ot, None)
+        ov, ot, _ = _p_weld(ov, ot)
         h, nm = reload_strict_holes_nm(ov, ot)
+        if h != 0:
+            # The float32 reload can open a boundary loop that is clean in
+            # memory. Split the weld collisions first (removes the non-manifold
+            # edges), then cap the exposed loop on the welded form, which is
+            # what the saved STL will reload as.
+            sv, st = _separate_weld_collisions(ov, ot)
+            wv, wt = weld_reload_equivalent(sv, st)
+            wv, wt = _cap_boundary_loops(wv, wt)
+            wh, wnm = reload_strict_holes_nm(wv, wt)
+            if wh == 0 and wnm == 0:
+                ov, ot = wv, wt
+                h, nm = 0, 0
         if h == 0 and nm == 0:
             return ov, ot
     except Exception:  # noqa: BLE001
@@ -952,9 +970,9 @@ def _warnings_for(r_used, detail, diag):
 # --------------------------------------------------------------------------- #
 def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=MAX_TRIES,
-               target_edge=None, ml=None, si_check=True, guard=True,
+               target_edge=None, si_check=True, guard=True,
                grid_budget=None, detail_tol=None, intensity=None,
-               time_budget=None, sign_field=None,
+               time_budget=None, sign_field=None, hybrid=False,
                raystab=None, raystab_dirs=None, raystab_seed=0,
                raystab_parity=False, antipodal=None):
     """Graft (shell wrap) repair.
@@ -963,8 +981,8 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
     finest-first closing ladder is used); ``voxel``/``box`` are forwarded to
     ``sutura_geom.morph_close``; ``local=True`` forces the local-window path
     (``None`` decides from the damaged-region bbox); ``remesh`` toggles the
-    isotropic re-mesh; ``ml`` is an optional live pymeshlab module for the full
-    Stitch (P-WELD) pass.
+    isotropic re-mesh. The verbatim hybrid closes the damaged region natively,
+    keeping the healthy triangles unchanged.
 
     ``grid_budget`` caps the grid cells; ``None`` resolves it from the
     ``intensity`` preset alone via ``resolve_grid_budget`` (never from free RAM,
@@ -1255,7 +1273,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         rolled = si_rolled
 
         # Stitch (P-WELD) + X-Ray (honest reload verdict)
-        wv, wt, pw = _p_weld(wrapped_v, wrapped_t, ml)
+        wv, wt, pw = _p_weld(wrapped_v, wrapped_t)
         h, nm = reload_strict_holes_nm(wv, wt)
 
         # guards / detail loss
@@ -1275,13 +1293,13 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         fidelity_ok = (not guard) or (hh is None) or (hh <= HEALTHY_HAUSDORFF_MAX)
 
         # Hybrid fallback: keep the original healthy triangles verbatim and
-        # close only the damaged region (needs the pymeshlab repair path).  The
+        # close only the damaged region with the native repair path. The
         # envelope is used for the r decision; when it is too coarse to carry
         # the healthy detail through the projection, this guarantees zero
         # deviation on the healthy surface.
-        if (ml is not None and region_mask is not None
+        if (hybrid and region_mask is not None
                 and not (h == 0 and nm == 0 and fidelity_ok)):
-            hy = _hybrid_close(v0, t0, region_mask, ml)
+            hy = _hybrid_close(v0, t0, region_mask)
             if hy is not None:
                 hy_h, hy_nm = reload_strict_holes_nm(*hy)
                 if hy_h == 0 and hy_nm == 0:

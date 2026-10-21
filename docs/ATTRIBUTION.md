@@ -32,8 +32,8 @@ MIT/Apache-2.0 license and from Sutura's PolyForm Noncommercial license.
 The extension also builds the **meshoptimizer** C++ core through the `meshopt`
 crate (`meshopt = "0.7"`, MIT OR Apache-2.0; vendored meshoptimizer 1.3, MIT,
 Copyright (c) 2016-2026 Arseny Kapoulkine, <https://github.com/zeux/meshoptimizer>).
-It provides the native quadric decimation pass (`decimate.rs`) that replaces
-PyMeshLab's `meshing_decimation_quadric_edge_collapse`. The C++ is compiled from
+It provides the native quadric decimation pass (`decimate.rs`) used by the
+Dressing tier and the interactive-viewer LOD. The C++ is compiled from
 the crate's own vendored sources at build time and its MIT license text is shipped
 as `rust/sutura-geom/third_party/meshoptimizer/LICENSE` (also in the wheel).
 
@@ -116,8 +116,10 @@ their terms):
   full notice required when distributing the dependency or a bundled wheel.
 - **pyrobust-predicates** — Unlicense / public domain. Shewchuk-style exact
   3D orientation predicates used by `sutura/autorefine.py` (FAZ16).
-- **PyMeshLab** — GPL-3.0/Commercial (VCG library); used via its Python
-  package as the stage-1 engine.
+- **meshopt / meshoptimizer** — MIT OR Apache-2.0 (vendored meshoptimizer 1.3,
+  MIT). Native quadric decimation (`decimate.rs`) compiled into `sutura_geom`
+  (see the meshoptimizer note above); used by the Dressing tier and the
+  interactive-viewer LOD.
 - **Manifold** — Apache-2.0. The C++ Manifold kernel
   (https://github.com/elalish/manifold) is compiled statically into
   `sutura_geom` through the `manifold-csg` Rust crate (Apache-2.0 OR MIT,
@@ -126,6 +128,13 @@ their terms):
   stitch. The build uses no TBB (sequential, deterministic).
 - **PySide6 / Qt** — LGPL-3.0; the GUI toolkit.
 - **pyvista / VTK** — BSD-3-Clause; required by `pytetwild` at import time.
+
+**Test-only oracle (not a runtime dependency):** **PyMeshLab** — GPL-3.0 /
+Commercial (VCG library). Since the native engine migration, stage-1 topology,
+hole closing, self-intersection classification and decimation run in
+`sutura_geom` / `sutura_engine`, so PyMeshLab is no longer bundled or imported
+by `sutura/` (enforced by `tests/test_no_runtime_pymeshlab.py`). It is retained
+in `requirements-dev.txt` solely as an independent parity oracle for the tests.
 
 ## Algorithm references (clean-room implementations)
 

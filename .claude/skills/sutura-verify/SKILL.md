@@ -96,8 +96,8 @@ The comparison half (runs the repair twice per mesh, default vs opt-out):
 ```
 With no MESH it uses the public corpus `tests/real-world-samples/`; `--limit N`
 caps the count. The runner exits non-zero when any mesh is WORSE and writes
-`summary.json` + `report.md`. `--python` must be an interpreter with pymeshlab
-(the repair venv), not the plain system Python.
+`summary.json` + `report.md`. `--python` must be the repair venv interpreter (numpy + the mandatory
+`sutura_geom` extension), not the plain system Python.
 
 ## Portability (Linux + macOS)
 - `--repo` resolves by walking up to `sutura/repair.py`; never hard-code it.

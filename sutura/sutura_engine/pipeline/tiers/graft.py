@@ -14,12 +14,13 @@ from sutura_engine.pipeline.p_weld import (
 from sutura_engine.pipeline.presets import GRAFT_MAX_FACES, GRAFT_TIMEOUT
 
 
-def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
-               spec=None):
+def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
+               intensity=None, spec=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
-    Runs ``sutura_engine.graft.shell_wrap`` on the ORIGINAL input arrays (like
-    the closing and fTetWild tiers).  The candidate is adopted only when it is
+    ``v``/``t`` is the result the ladder currently holds and
+    ``input_v``/``input_t`` the original user surface this tier wraps (like the
+    closing and fTetWild tiers).  The candidate is adopted only when it is
     strict-watertight after the save/reload-equivalent weld.  ``stats['graft']``
     records the fidelity verdict (``fidelity_ok``, ``hausdorff_healthy``,
     ``detail_max_mm``/``detail_area_moved``) and the EN/TR detail-loss
@@ -38,8 +39,12 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
     all-or-nothing: the partial ladder is discarded, never returned.  Never
     raises.
     """
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v, dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
     if not graft:
-        return ms, after
+        return v, t, after
     cap = getattr(spec, 'graft_max_faces', GRAFT_MAX_FACES) if spec is not None \
         else GRAFT_MAX_FACES
     timeout = getattr(spec, 'graft_timeout', GRAFT_TIMEOUT) if spec is not None \
@@ -64,8 +69,8 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
             from sutura_engine import graft as _graft
         except Exception:  # noqa: BLE001
             import shell_wrap as _graft
-        in_v = np.asarray(v, dtype=np.float64)
-        in_t = np.asarray(t, dtype=np.int64)
+        in_v = input_v
+        in_t = input_t
         rec['input_faces'] = int(len(in_t))
         if cap is not None and len(in_t) > int(cap):
             # Hard input cap: a morph_close call is not interruptible, so do
@@ -78,8 +83,8 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
             rec['reason'] = ('input has %d faces, above the Graft cap of %d; '
                              'stage-1 result kept' % (len(in_t), int(cap)))
             stats['graft'] = rec
-            return ms, after
-        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml,
+            return v, t, after
+        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, hybrid=True,
                                                  intensity=intensity,
                                                  time_budget=timeout)
         rec['ran'] = True
@@ -99,7 +104,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
             rec['non_manifold'] = (stats.get('stage1') or {}).get(
                 'non_manifold_edges_remaining')
             stats['graft'] = rec
-            return ms, after
+            return v, t, after
         if rec['budget_exceeded']:
             # Deterministic inner work budget: keep stage-1 if not adopted.
             rec['reject_reason'] = 'budget'
@@ -115,7 +120,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
             rec['non_manifold'] = (stats.get('stage1') or {}).get(
                 'non_manifold_edges_remaining')
             stats['graft'] = rec
-            return ms, after
+            return v, t, after
         rec['fidelity_ok'] = grec.get('fidelity_ok')
         rec['input_coverage'] = grec.get('input_coverage')
         rec['coverage_ok'] = grec.get('coverage_ok')
@@ -128,7 +133,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         rec['warnings'] = list(grec.get('warnings') or [])
         if len(cand_t):
             cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
-            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(cand_v, cand_t)
             cand_v = np.asarray(cand_v, dtype=np.float32)
             cand_t = np.asarray(cand_t, dtype=np.int32)
             det = detect_defects(cand_v, cand_t)
@@ -138,8 +143,6 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
             rec['non_manifold'] = cand_nm
             rec['faces'] = int(len(cand_t))
             if len(cand_t) and cand_holes == 0 and cand_nm == 0:
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
                 after = topology.mesh_topology(cand_v, cand_t)
                 rec['adopted'] = True
                 rec['watertight'] = False  # stage 2 confirms at the top level
@@ -175,4 +178,7 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         # reason field rather than abort the whole repair.
         rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['graft'] = rec
-    return ms, after
+    if rec['adopted']:
+        return (np.asarray(cand_v, dtype=np.float64),
+                np.asarray(cand_t, dtype=np.int64), after)
+    return v, t, after

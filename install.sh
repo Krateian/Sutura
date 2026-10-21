@@ -126,7 +126,7 @@ command -v "$MAIN_PY" >/dev/null || die "python3 not found"
 
 mkdir -p "$APP_DIR" "$BIN_DIR" "$SERVICE_DIR"
 
-echo "==> virtualenv (stage 1: PyMeshLab + GUI) [$MAIN_PY]"
+echo "==> virtualenv (native stage 1 + GUI) [$MAIN_PY]"
 [ -d "$APP_DIR/venv" ] || "$MAIN_PY" -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/venv/bin/pip" install --quiet -r "$SRC/requirements.txt"

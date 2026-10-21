@@ -406,7 +406,7 @@ def test_p_weld_final_separates_float32_collisions(tmp):
     repair = methods._repair_mod()
     v, t = _two_cubes_sharing_edge()
     assert repair.reload_strict_holes_nm(v, t) == (0, 1)
-    nv, nt, rec = repair.p_weld_final(None, v, t)
+    nv, nt, rec = repair.p_weld_final(v, t)
     assert rec is not None and rec['applied'], rec
     assert rec['method'] == 'split-collisions', rec
     assert repair.reload_strict_holes_nm(nv, nt) == (0, 0), rec
@@ -416,7 +416,7 @@ def test_p_weld_final_separates_float32_collisions(tmp):
     # a genuinely reload-watertight mesh is left alone
     cv, ct = _cube()
     assert repair.reload_strict_holes_nm(cv, ct) == (0, 0)
-    nv2, nt2, rec2 = repair.p_weld_final(None, cv, ct)
+    nv2, nt2, rec2 = repair.p_weld_final(cv, ct)
     assert rec2 is None, rec2
     assert np.array_equal(nv2, cv) and np.array_equal(nt2, ct)
 

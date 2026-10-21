@@ -37,7 +37,6 @@ if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
 
 import methods  # noqa: E402
 import repair  # noqa: E402
@@ -204,13 +203,12 @@ def test_auto_deferred_graft_none_deviation_edges():
 # Part 2: deep_repair_ladder                                                   #
 # --------------------------------------------------------------------------- #
 
-def _cube_ms(marker):
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(CUBE_V, np.float64),
-                        face_matrix=np.asarray(CUBE_T, np.int32)))
-    after = ms.apply_filter('get_topological_measures')
-    after['_tier'] = marker
-    return ms, after
+def _cube_arrays():
+    return (np.asarray(CUBE_V, np.float64), np.asarray(CUBE_T, np.int64))
+
+
+def _cube_after(marker):
+    return {'non_two_manifold_edges': 0, '_tier': marker}
 
 
 def _run_ladder(graft_body, ft_body):
@@ -221,31 +219,31 @@ def _run_ladder(graft_body, ft_body):
     report.  Returns ``(stats, calls, after)``.
     """
     v, t = _load(OPEN_SAMPLE)
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
-    after = ms.apply_filter('get_topological_measures')
+    after = {'non_two_manifold_edges': 0}
     stats = {}
     calls = []
 
-    def fake_graft(ml_arg, m, a, st, vv, tt, tmpdir, **kw):
+    def fake_graft(vv, tt, iv, it, a, st, tmpdir, **kw):
         calls.append('graft')
         assert graft_body is not None, 'Graft tier must not run'
         st['graft'] = dict(graft_body)
-        return _cube_ms('graft')
+        cv, ct = _cube_arrays()
+        return cv, ct, _cube_after('graft')
 
-    def fake_ft(ml_arg, m, a, st, vv, tt, tmpdir, ftetwild, spec=None):
+    def fake_ft(vv, tt, iv, it, a, st, tmpdir, ftetwild, spec=None):
         calls.append('ftetwild')
         st['experimental_ftetwild'] = dict(ft_body)
         # Like the real tier, an unadopted fTetWild leaves the mesh unchanged.
         if not ft_body.get('adopted'):
-            return m, a
-        return _cube_ms('ftetwild')
+            return vv, tt, a
+        cv, ct = _cube_arrays()
+        return cv, ct, _cube_after('ftetwild')
 
     saved = (pipeline.graft_tier, pipeline._ftetwild_tier)
     pipeline.graft_tier, pipeline._ftetwild_tier = fake_graft, fake_ft
     try:
-        _ms, out_after = pipeline.deep_repair_ladder(
-            ml, ms, after, stats, v, t, tempfile.gettempdir(), mode='full',
+        _cv, _ct, out_after = pipeline.deep_repair_ladder(
+            v, t, v, t, after, stats, tempfile.gettempdir(), mode='full',
             ftetwild='auto', spec=repair.triage.PRESETS['balanced'],
             graft='auto')
     finally:
@@ -254,11 +252,8 @@ def _run_ladder(graft_body, ft_body):
 
 
 def _load(path):
-    ms = ml.MeshSet()
-    ms.load_new_mesh(path)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), np.float32),
-            np.asarray(m.face_matrix(), np.int32))
+    from sutura_engine.pipeline.mesh_io import load_mesh
+    return load_mesh(path)
 
 
 def test_ladder_faithful_graft_skips_ftetwild():

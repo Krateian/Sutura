@@ -6,9 +6,10 @@ must be genuinely detected by the corresponding detector.
   --non-manifold    -> defects.detect()['non_manifold'] increases
   --flipped-normal  -> defects.defect_type_colors() gains ORANGE faces
   --degenerate      -> defects.defect_type_colors() gains YELLOW faces
-  --self-intersect  -> pymeshlab self-intersection selection > 0
+  --self-intersect  -> topology.self_intersecting_faces() > 0
 
-A clean closed cube must have none of these. Needs the venv (pymeshlab).
+A clean closed cube must have none of these. Needs only numpy + the Rust
+``sutura_geom`` extension (no pymeshlab).
 
 Usage: ~/.local/share/sutura/venv/bin/python tests/test_defect_injector.py
 """
@@ -26,12 +27,8 @@ for p in (SUTURA, SCRIPTS):
 
 import numpy as np  # noqa: E402
 
-try:
-    import pymeshlab
-except ImportError:
-    pymeshlab = None
-
 import defects  # noqa: E402
+import topology  # noqa: E402
 import defect_injector as di  # noqa: E402
 
 _ORANGE = (255, 140, 60)
@@ -51,11 +48,8 @@ def _cube():
 
 
 def _self_intersections(v, t):
-    ms = pymeshlab.MeshSet()
-    ms.add_mesh(pymeshlab.Mesh(vertex_matrix=np.asarray(v, np.float32),
-                               face_matrix=np.asarray(t, np.int32)))
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    return int(ms.current_mesh().face_selection_array().sum())
+    return int(topology.self_intersecting_faces(
+        np.asarray(v, np.float64), np.asarray(t, np.int64))[1])
 
 
 def test_clean_cube_has_no_defects():
@@ -65,9 +59,6 @@ def test_clean_cube_has_no_defects():
     assert len(det['non_manifold']) == 0, det
     colors = defects.defect_type_colors(v, t)
     assert not np.any(np.any(colors, axis=1)), colors
-    if pymeshlab is None:
-        print("skip: pymeshlab required for oracle self-intersection check")
-        return
     assert _self_intersections(v, t) == 0
 
 
@@ -100,9 +91,6 @@ def test_degenerate_detected():
 
 
 def test_self_intersect_detected():
-    if pymeshlab is None:
-        print("skip: pymeshlab required for oracle self-intersection check")
-        return
     v, t = di.inject_self_intersect(*_cube(), count=3, rng=np.random.default_rng(42))
     assert _self_intersections(v, t) > 0
 

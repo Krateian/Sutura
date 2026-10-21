@@ -99,13 +99,14 @@ def _dressing_suggestion_text(sug):
             % sug.get('flag'))
 
 
-def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
+def dressing_tier(v, t, input_v, input_t, after, stats, tmpdir, dressing=False,
                   intensity=None, drain=None, defects=None,
                   r_max_scale=None, sigma_scale=None, force_adopt=False):
     """Variable-viscosity coat tier for registry method 16 (Dressing).
 
-    Runs ``sutura_engine.dressing.dressing_coat`` on the ORIGINAL input arrays
-    (like the closing / Graft / fTetWild tiers).  The candidate is adopted only
+    ``v``/``t`` is the result the ladder currently holds and
+    ``input_v``/``input_t`` the original user surface this tier coats (like the
+    closing / Graft / fTetWild tiers).  The candidate is adopted only
     when it is strict-watertight after the save/reload-equivalent weld, free of
     exact self-intersections and inside the preset's coat->input fidelity gate.
     ``drain`` selects the healthy-region erode-back (``None`` = preset default,
@@ -120,8 +121,12 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
     the parameters, the deviations, the exact-SI verdict and the EN/TR warnings
     the CLI/GUI surface.  Never raises.
     """
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v, dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
     if not dressing:
-        return ms, after
+        return v, t, after
     rec = {'tier': 'dressing', 'ran': False, 'adopted': False,
            'watertight': False, 'fidelity_ok': None, 'engine': None,
            'voxel': None, 'r_base': None, 'r_max': None, 'sigma': None,
@@ -145,12 +150,12 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
     except Exception as e:  # noqa: BLE001
         rec['reason'] = 'sutura_engine.dressing unavailable: %s' % e
         stats['dressing'] = rec
-        return ms, after
+        return v, t, after
     with method_health.tier_guard('dressing', 'tier') as _g:
-        in_v = np.asarray(v, dtype=np.float64)
-        in_t = np.asarray(t, dtype=np.int64)
+        in_v = input_v
+        in_t = input_t
         cand_v, cand_t, drec = _dressing.dressing_coat(
-            in_v, in_t, ml=ml, intensity=intensity, drain=drain,
+            in_v, in_t, intensity=intensity, drain=drain,
             defects=defects, r_max_scale=r_max_scale, sigma_scale=sigma_scale)
         rec['ran'] = True
         rec['drain'] = drec.get('drain')
@@ -181,7 +186,7 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
             rec['reason'] = 'dressing returned no geometry'
         else:
             cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
-            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(cand_v, cand_t)
             cand_v = np.asarray(cand_v, dtype=np.float32)
             cand_t = np.asarray(cand_t, dtype=np.int32)
             det = detect_defects(cand_v, cand_t)
@@ -199,12 +204,8 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
             # is itself damaged/open, so the current result is the reference.
             vol_before = parts_before = None
             try:
-                cur_v = np.asarray(ms.current_mesh().vertex_matrix(),
-                                   dtype=np.float64)
-                cur_t = np.asarray(ms.current_mesh().face_matrix(),
-                                   dtype=np.int64)
-                vol_before = _dressing.signed_volume(cur_v, cur_t)
-                parts_before = _dressing.count_components(cur_t)
+                vol_before = _dressing.signed_volume(v, t)
+                parts_before = _dressing.count_components(t)
             except Exception:  # noqa: BLE001 - guards degrade to "unknown"
                 pass
             vol_after = drec.get('volume_after')
@@ -233,8 +234,6 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
 
             if (cand_holes == 0 and cand_nm == 0 and si_ok
                     and (shape_ok or force_adopt)):
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
                 after = topology.mesh_topology(cand_v, cand_t)
                 rec['adopted'] = True
                 rec['forced'] = bool(force_adopt and not shape_ok)
@@ -270,4 +269,7 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
     if _g.error is not None:
         rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['dressing'] = rec
-    return ms, after
+    if rec['adopted']:
+        return (np.asarray(cand_v, dtype=np.float64),
+                np.asarray(cand_t, dtype=np.int64), after)
+    return v, t, after

@@ -18,15 +18,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
 
 # Relative path from sutura/ -> (owning_work_package, expected_sites, description)
-RUNTIME_PYMESHLAB_ALLOWLIST = {
-    'viewer_data_render.py': ('W2', 1, 'viewer LOD decimation and surface distance'),
-    'topology.py': ('W4a', 3, 'native selection writeback and close_holes_ms fallback'),
-    'sutura_engine/methods/closing.py': ('W3', 2, 'Poisson/flat-back/loop close holes'),
-    'sutura_engine/methods/proxy.py': ('W3', 4, 'proxy voxel resample, alpha, cleanup, SI'),
-    'sutura_engine/mirror.py': ('W1', 1, 'mirror stitch repair fallback'),
-    'sutura_engine/pipeline/pipeline.py': ('W4a', 1, 'stage1/tiers MeshSet dispatch'),
-    'sutura_engine/pipeline/service.py': ('W4a', 2, 'repair_file / repair_3mf MeshSet orchestration'),
-}
+RUNTIME_PYMESHLAB_ALLOWLIST = {}
 
 
 def _find_runtime_pymeshlab_imports(base_dir=SUTURA):

@@ -15,7 +15,7 @@ from sutura_engine.pipeline.p_weld import (
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
-def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
+def closing_ladder(v, t, input_v, input_t, after, stats, tmpdir,
                    closing=None, proxy_template=False):
     """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
 
@@ -36,19 +36,23 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
     ``invents_geometry`` methods. Records ``stats['closing']`` (tier, ran,
     adopted, counts, the module's ``notes``); never raises.
     """
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    input_v = np.asarray(input_v if input_v is not None else v, dtype=np.float64)
+    input_t = np.asarray(input_t if input_t is not None else t, dtype=np.int64)
     if not closing and not proxy_template:
-        return ms, after
+        return v, t, after
     tier = 'proxy_template' if proxy_template else closing
-    base_v = np.asarray(ms.current_mesh().vertex_matrix())
-    base_t = np.asarray(ms.current_mesh().face_matrix())
+    base_v = v
+    base_t = t
     base_holes = boundary_loop_stats(base_v, base_t)[0]
     base_nm = int(after.get('non_two_manifold_edges', 0))
     rec = {'tier': tier, 'ran': True, 'adopted': False, 'watertight': False,
            'holes': None, 'non_manifold': None, 'faces': None,
            'notes': [], 'reason': None}
     with method_health.tier_guard('closing', 'tier') as _g:
-        in_v = np.asarray(v, dtype=np.float64)
-        in_t = np.asarray(t, dtype=np.int64)
+        in_v = input_v
+        in_t = input_t
         if proxy_template:
             import proxy_repair as _proxy
             cand_v, cand_t, rep = _proxy.proxy_template_repair(in_v, in_t)
@@ -66,7 +70,7 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
             else:
                 rec.update(ran=False, reason='unknown closing mode %r' % closing)
                 stats['closing'] = rec
-                return ms, after
+                return v, t, after
         rec['notes'] = list(rep.get('notes') or [])
         if 'error' in rep:
             rec['reason'] = 'module error: %s' % rep['error']
@@ -78,7 +82,7 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
             # repair what the weld exposes, then check -- never adopt a
             # candidate that is not strict-watertight after a save/reload.
             cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
-            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(cand_v, cand_t)
             cand_v = np.asarray(cand_v, dtype=np.float32)
             cand_t = np.asarray(cand_t, dtype=np.int32)
             det = detect_defects(cand_v, cand_t)
@@ -89,8 +93,6 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
             rec['faces'] = int(len(cand_t))
             if (len(cand_t) and cand_holes == 0 and cand_nm == 0
                     and cand_holes + cand_nm <= base_holes + base_nm):
-                ms = ml.MeshSet()
-                ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
                 after = topology.mesh_topology(cand_v, cand_t)
                 rec['adopted'] = True
                 # 5.2: this is a stage-1 strict-watertight CANDIDATE only --
@@ -109,4 +111,7 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
         rec['ran'] = False
         rec['reason'] = 'error: %s' % _g.error
     stats['closing'] = rec
-    return ms, after
+    if rec['adopted']:
+        return (np.asarray(cand_v, dtype=np.float64),
+                np.asarray(cand_t, dtype=np.int64), after)
+    return v, t, after
