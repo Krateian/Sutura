@@ -24,7 +24,7 @@
   <img src="https://img.shields.io/github/commit-activity/y/Krateian/Sutura" alt="Commit activity">
 </p>
 
-Sutura Triage Engine: a staged PyMeshLab + Manifold mesh-repair pipeline with 18 ranked repair methods
+Sutura Triage Engine: a staged native + Manifold mesh-repair pipeline with 18 ranked repair methods
 for STL, OBJ and 3MF files, built for Linux with full macOS support.
 
 Linux has no direct equivalent of Windows' right-click "Fix model" (3D Builder,
@@ -36,7 +36,7 @@ malformed files, adversarial inputs and torture scenarios (huge meshes, thin
 walls, multi-part assemblies) — and every change is verified automatically by
 CI on each push and pull request.
 
-**What you can rely on.** The staged STL repair pipeline (Stage 1 VCG +
+**What you can rely on.** The staged STL repair pipeline (Stage 1 native +
 Stage 2 Manifold) is validated on a 115-mesh real-world scan corpus with a strict
 `defects.detect()` closed-loop check: 103/115 (~90%) genuinely watertight, 0
 crashes, every pipeline claim confirmed 1:1, and an independent Manifold
@@ -106,7 +106,7 @@ your file ─► Tamponade ─► Flap ─► Stage 1 clean-up ─► (still ope
    If Flap cannot fill a hole safely it leaves it to the next step, so a file is
    never worse with Flap than without it. Turn it off with `--no-flap` or the
    *Flap surface hole fill* checkbox.
-3. **Stage 1: clean-up (PyMeshLab).** Removes duplicate and broken triangles,
+3. **Stage 1: clean-up (native).** Removes duplicate and broken triangles,
    untangles bad edges, makes every face point the same way and closes any
    hole that is still open.
 4. **Graft: only when the damage is serious.** If the model is still open or
@@ -162,17 +162,19 @@ are described in the steps above.
 
 ## Why a staged pipeline
 
-* **Stage 1 - PyMeshLab (VCG).** Removes duplicate and degenerate faces,
-  repairs non-manifold edges and vertices, orients faces coherently, closes
-  holes of *any* size, and drops tiny open debris components. VCG is the
-  battle-tested classic for 3D-printing repair.
+* **Stage 1 - native engine (Rust `sutura_geom` + `sutura_engine`).** Removes
+  duplicate and degenerate faces, repairs non-manifold edges and vertices,
+  orients faces coherently, closes holes of *any* size, and drops tiny open
+  debris components. The filters mirror the battle-tested VCG `meshing_*`
+  semantics Sutura was built on, reimplemented natively (no PyMeshLab at
+  runtime), so the pipeline stays dependency-light and permissively licensed.
 * **Stage 2 - Manifold (in the Rust core).** Rebuilds the closed mesh as a
   valid manifold solid and merges overlapping shells with a boolean union.
   This is the same C++ Manifold kernel Bambu Studio uses, compiled into the
   mandatory `sutura_geom` extension; it guarantees the output is a single
   closed two-manifold.
 
-Each stage fixes what the other cannot: VCG closes big holes but does not
+Each stage fixes what the other cannot: stage 1 closes big holes but does not
 resolve self-intersecting geometry; Manifold guarantees a watertight result
 but it rejects any input that is not already closed (`NotManifold`), so
 stage 1 must finish the mesh first.
@@ -235,7 +237,7 @@ estimate coefficients are placeholders until they are calibrated on the
 corpora) and `--human` shows a "Deep repair available" line. `local` is an
 experimental prototype that re-meshes only the damaged regions: faces on a
 boundary or non-manifold edge and their one-vertex ring are deleted, the
-openings are closed with PyMeshLab's refined hole filling and the new
+openings are closed with the native refined hole filling and the new
 interior vertices are smoothed with the boundary fixed; it is adopted only
 when holes and non-manifold edges do not get worse, self-intersections do not
 increase and every face outside the deleted region is unchanged. It only
@@ -608,8 +610,8 @@ stays covered (input→output guard).
 
 Flap (`sutura_engine.flap`) is a surface-based hole filler that covers a
 boundary loop by continuing the neighbouring surface instead of laying a flat
-lid over it. It runs as a **Stage-1 pre-pass on the raw input**, before the VCG
-chain and before the Graft/fTetWild tiers, so those tiers see the flap-closed
+lid over it. It runs as a **Stage-1 pre-pass on the raw input**, before the
+native stage-1 chain and before the Graft/fTetWild tiers, so those tiers see the flap-closed
 surface. Each loop is triangulated with a minimum-area dynamic program, refined
 to the surrounding edge length, and faired with a discrete biharmonic
 (thin-plate) solve that carries the rim's position and slope into the patch. The
@@ -788,8 +790,8 @@ folds where local patch excision and hybrid splicing fail.
 3. **Numpy prototype backend, Rust-ready**: the field build and marching
    tetrahedra run in numpy today; the Rust `sutura_geom.dressing_coat`
    narrow-band core is feature-detected and takes over automatically when
-   available. Decimation is a PyMeshLab quadric collapse (`optimalplacement=False`,
-   `planarquadric=True`) that rolls back atomically if it would open a hole,
+   available. Decimation is a native quadric edge-collapse (meshoptimizer) that
+   rolls back atomically if it would open a hole,
    create a non-manifold edge or introduce an exact self-intersection.
 4. **Drain (healthy-region erode-back)**: the coat sits ~`r_base` outside the
    original, so a *drain* term is added **inside the level set**
@@ -959,14 +961,14 @@ Sutura and where you should still double-check the output.
 
 | Area | Maturity | What is solid / where to be careful |
 |---|---|---|
-| STL repair (staged pipeline) | ~96% | The VCG + Manifold pipeline is CI-hardened against malformed/adversarial/torture inputs and validated on a 75-model real-world corpus (0 hard failures; the stage-1 chain was reordered and `maxholesize` made mesh-sensitive so large scan holes close) plus a 115-mesh real-world scan corpus (re-measured with a strict `defects.detect()` closed-loop check on the actual output geometry: 0 crashes, 103/115 = ~90% strictly watertight, every pipeline claim confirmed 1:1 — see `docs/repair-benchmark-strict-watertight-2026-09.md`). The top-level verdict is **reload-honest** (P-HONEST): a mesh is called watertight only when the saved file re-loads strict-watertight, and the **P-WELD** final pass heals the STL float32 seam collapse that used to make 7 of the 40 samples reload non-manifold — with unchanged face counts — while already-watertight meshes are untouched. Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and the last few stubborn holes / heavy non-manifold structures on scan meshes are a genuine VCG limit. |
+| STL repair (staged pipeline) | ~96% | The native + Manifold pipeline is CI-hardened against malformed/adversarial/torture inputs and validated on a 75-model real-world corpus (0 hard failures; the stage-1 chain was reordered and `maxholesize` made mesh-sensitive so large scan holes close) plus a 115-mesh real-world scan corpus (re-measured with a strict `defects.detect()` closed-loop check on the actual output geometry: 0 crashes, 103/115 = ~90% strictly watertight, every pipeline claim confirmed 1:1 — see `docs/repair-benchmark-strict-watertight-2026-09.md`). The top-level verdict is **reload-honest** (P-HONEST): a mesh is called watertight only when the saved file re-loads strict-watertight, and the **P-WELD** final pass heals the STL float32 seam collapse that used to make 7 of the 40 samples reload non-manifold — with unchanged face counts — while already-watertight meshes are untouched. Not 100%: pathological self-intersections can be reshaped by the stage-2 rebuild, and the last few stubborn holes / heavy non-manifold structures on scan meshes are a genuine stage-1 limit. |
 | 3MF multi-object | ~92% | Every object is repaired independently in memory and written back, so no object is lost. An object that stage 1 closes now gets a **per-object stage 2** (Manifold watertight rebuild) through the same shared helper as single-mesh files: per-object `stage2` reports, `objects_watertight` / `objects_stage2_ok` aggregates, and the file-level verdict considers ALL objects (not just object 0). Byte-identical objects reuse one repair but each still gets its own report. Auto escalation is **per-object**: baseline-watertight objects remain untouched while failing objects escalate through ranked repair methods independently (reporting per-object `method_used`). A layered/duplicated-vertex (Bambu-style) 3MF is fixed at Stage 1 (a second duplicate-faces pass after vertex dedup) and repairs to 12 faces / 0 holes per object, confirmed watertight by per-object stage 2. The archive is non-destructive: only the repaired `<mesh>` blocks are rewritten, while thumbnails, slicer configs, plate/wipe-tower data, Production sub-models and all other entries keep their bytes, order and ZIP metadata; per-triangle paint/seam/support attributes are retained on exact-coordinate survivors and reported in `triangle_attributes`. Regression-tested (`tests/test_stage2_3mf.py`, `tests/test_multiobject_escalation.py`, `tests/test_3mf_roundtrip.py`). Known limits: per-object stage 2 only applies to objects that stage 1 actually closes (open objects are stage-1 output), the object-0 `stage1`/`stage2` top-level fields are kept for backward compatibility, and phase 1 keeps attributes only on triangles whose vertex coordinates are unchanged (new triangles are not inferred). |
 | Defect detection (holes / non-manifold) | ~90% | Stdlib+numpy, single source of truth, unit-tested on clean and broken cubes. Not 100%: it reports input defects only; on a mesh with thousands of micro-cracks the per-defect list gets large, and the CLI JSON omits index data (rendering-only). |
 | GUI | ~89% | Native Qt batch repair, drag & drop, defect panel, pre-repair analysis with mode suggestions, heatmap, before/after comparison (static + interactive 3D viewer with surface deviation), **a color-coded defect view** (red = non-manifold, orange = flipped winding, yellow = degenerate face — FAZ11), a **"what changed" repair log panel** (holes closed, non-manifold edges fixed, faces removed, components, stage 2 — FAZ11, now also reporting the Graft grid fallback / low-memory guard and the Graft and fTetWild time-abort messages), a **tabbed *Options* window** (General / Repair / Experimental / Updates / Changelog / Engines; Ctrl+, / Cmd+,) holding the batch-wide switches (fTetWild fallback tier — FAZ17; Flap surface hole fill, on by default; Tamponade interior plug — #17, on by default; plus the opt-in ones: edge-tiebreak classifier head; join-small-components — FAZ14; autorefine self-intersection resolution — FAZ16; exact indirect autorefine — Phase B/C1), repair-mode picker + repair-profile dropdown, a **Triage intensity** combo (presets + user profiles) with per-preset tooltips, **New/Duplicate/Rename/Delete profile buttons and an inline Profile settings editor**, and a *Reset to recommended* button on the *Repair* tab, an **Engines** tab (fTetWild install/remove manager with sizes and a cancellable progress dialog, plus the configured external-engine list and a link to the engine docs), status/version row, i18n (EN/TR). Gaps: it shells out to the CLI (no in-process progress), the native KDE file dialog only works when the system Qt matches PySide6's, and on macOS Finder right-click repair is provided by the separate Quick Action rather than the GUI itself. |
 | CLI | ~90% | Stable flags (`-o`, `--human`, `--defects`, `--diff`, `--mode`, `--profile`, `--intensity <preset\|profile>`, `--list-intensities`, `--analyze`, `--list-methods`, `--methods {1..18}`, `--no-graft`, `--experimental-graft`, `--tamponade`/`--no-tamponade` (interior plug, on by default; `SUTURA_TAMPONADE=0` disables), `--no-dressing`, `--experimental-dressing`, `--dressing-drain MODE\|mm`, `--dressing-defects {all,holes_nm}`, `--dressing-rmax-scale F`, `--dressing-sigma-scale F`, `--dressing-force-adopt`, `--experimental-splint`/`--no-splint` (Splint solid rebuild, off by default; `SUTURA_SPLINT` overrides), `--no-cache`, `--engines NAME`, `--repeat-source X,Y,Z` / `--repeat-target X,Y,Z`, `--wall-min-thickness T`, `--dry-run`, `--deep-repair {off,local,full}`, `--si-mode {report,repair,off}`, `--flap`/`--no-flap` (surface hole fill, ON by default; `SUTURA_FLAP=0` disables), `--ftetwild-optimize`, `--self-check`, `--diagnostics ZIP`, `--self-repair`/`--yes`, `--version`), the read-only `validate`, `clear-cache`, `clear-learning`, `export-history`, `engines list\|check` and `ftetwild status` (plus `install\|uninstall`) subcommands, JSON reports, batch summary, exit codes. Plus experimental/prototype flags: `--experimental-join-components` (moves small components onto the nearest larger one instead of deleting them; changes geometry, evaluation only), `--experimental-autorefine` (resolves self-intersections by subdividing the intersecting triangles along their intersection segments — Lazard & Valque 2025 — instead of deleting faces; NEVER deletes input faces; adopted only when its final output is not worse than the default chain; on moderate-SI meshes it reduces SI, on dense-SI scans the float64 construction is limited — see `docs/alpha-wrap-feasibility-2026-09.md`; re-measured 25 Sep 2026 on the 45 real-world samples it changed no final outcome — 31/45 strictly watertight either way — while the total run time went from ~33 s to ~1003 s, so it stays opt-in), `--no-fallback-ftetwild` / `--experimental-fallback-ftetwild` (the fTetWild last-resort solidifier — tetrahedralizes the ORIGINAL input with fTetWild via pytetwild, MPL-2.0, and extracts a watertight, SI-free boundary; adopted only when no worse on holes+non-manifold — is ON by default when its optional ~1.1 GB extra is installed, `SUTURA_WITH_FTETWILD=1`, and then runs only when stage 1 leaves holes or non-manifold edges: strict watertight 31/40 → 39/40 on the real-world samples; the first flag disables it, the second also runs it on closed results that still self-intersect), `--experimental-indirect-autorefine` (Phase B prototype: exact arrangement-lite self-intersection split via the rust/sutura-geom extension — indirect predicates, broad phase + exact triangle classifier + per-triangle 2D CDT + exact-rational welding; adopted only when no worse on holes+non-manifold, same guard as `--experimental-autorefine`; evaluation-only; the dense thingi10k_1038441 scan now completes in about ten seconds — on an M2 ~463 s (C1) → 29.8 s (C2) → 10.6 s (C4); on a 2-vCPU x86_64 VM 830 s → 52.5 s (C2) → 17.6 s (C4) — the tier is off by default and intended for evaluation) and `--experimental-edge-tiebreak` (opt-in 11-feature classifier head — base features + the five strong FAZ10 scan signals; the gain is marginal, 1 mesh on the 71-mesh labeled set, but the signal is statistically real; NOT the default), plus `--wall-min-thickness T` (target for method #15 Wall Thicken) and `--no-learning-triage` / the `clear-learning` subcommand (toggle and reset the bounded local-history ranking bonus). The `--human` report is English-only (localization is a GUI concern). |
 | Batch processing | ~90% | Multi-file repair with per-file results and a summary. Hard stops (Ctrl-C / Stop) are handled; the batch summary is not resumable and a failed file does not halt the rest. |
 | Defect heatmap | ~80% | On-demand CPU rasterizer (no GL), runs in a subprocess, never crashes the GUI. Deliberately CPU-only: offscreen OpenGL segfaults on headless systems, so it is flat-shaded with a three-point lighting model rather than full GL shading, and for multi-object 3MF it renders only the first object. |
-| Before/after comparison | ~80% | Static CPU-rasterized toggle between original and repaired views with a **worst-defect zoom detail** close-up and a tri-state colour scheme (grey = never broken, green `(46,204,113)` = healed, orange `(255,140,60)` = still broken). The healed map is spatial (repaired-face centroids vs original defect extents) and capped at the 256 largest defects so scan meshes stay fast. A **Static/Interactive** switch adds a CPU interactive 3D view (drag to rotate, wheel to zoom, LOD while dragging then a full-resolution final frame) and a **surface-deviation** mode (per-vertex repaired→original distance via pymeshlab's nearest-surface-point filter + global Hausdorff max), both built lazily on first use and cached per dialog; the interactive LOD target is tuned against the 75-model corpus (median ~71 FPS at 720×540). Same GL constraint as the heatmap means it stays a CPU rasterizer; only the first object is compared for multi-object 3MF. Regression-tested (`tests/test_healed_mask.py`, `tests/test_before_after_render.py`, `tests/test_viewer_data.py`, `scripts/verify_before_after_dialog.py`). |
+| Before/after comparison | ~80% | Static CPU-rasterized toggle between original and repaired views with a **worst-defect zoom detail** close-up and a tri-state colour scheme (grey = never broken, green `(46,204,113)` = healed, orange `(255,140,60)` = still broken). The healed map is spatial (repaired-face centroids vs original defect extents) and capped at the 256 largest defects so scan meshes stay fast. A **Static/Interactive** switch adds a CPU interactive 3D view (drag to rotate, wheel to zoom, LOD while dragging then a full-resolution final frame) and a **surface-deviation** mode (per-vertex repaired→original distance via a native nearest-surface-point query + global Hausdorff max), both built lazily on first use and cached per dialog; the interactive LOD target is tuned against the 75-model corpus (median ~71 FPS at 720×540). Same GL constraint as the heatmap means it stays a CPU rasterizer; only the first object is compared for multi-object 3MF. Regression-tested (`tests/test_healed_mask.py`, `tests/test_before_after_render.py`, `tests/test_viewer_data.py`, `scripts/verify_before_after_dialog.py`). |
 | Validate (`sutura validate`) | ~55% (beta) | New in 0.1.8-beta.1: read-only analysis of holes / non-manifold regions / self-intersections / connected components / signed volume (orientation) / surface area with a watertight verdict — no repair, no output file. Beta quality: the combined metrics are new and not yet calibrated against real-world repair outcomes, and multi-object 3MF validates each object but keeps only a minimal aggregate report. It has a dedicated regression suite (`tests/test_validate.py`). |
 | Dry-run (`--dry-run`) | ~50% (beta) | New in 0.1.8-beta.1: reports the would-do plan (detected type, mode, Stage 1 thresholds, found holes / debris / self-intersections, stage 2 availability) and writes nothing. Beta quality: the plan is derived from the input analysis, so exact hole-close counts are not guaranteed to match a real run, and the extreme-mode extra passes are not simulated. It is covered by `tests/test_validate.py` (validate and dry-run share the suite). |
 | Repair modes (`--mode` ladder) | ~80% | Five-step aggressiveness ladder (`low`/`medium`/`auto`/`aggressive`/`extreme`) for the Stage 1 thresholds, exposed both as a CLI flag and a batch-wide GUI picker; `auto` keeps the historical classifier + confidence-gate behaviour byte-identical and is regression-tested (`tests/test_repair_mode.py`). The mode fixes the BASE `maxholesize`, which is then raised mesh-sensitively (`max(base, 2 × longest input loop)`, never lowered) so large scan holes close in every mode. Caveats: `extreme` can delete a small object (reported as the distinct `extreme_removed_object` error, not malformed input) and the per-type tuned threshold values are experimental. |
@@ -990,7 +992,7 @@ Sutura and where you should still double-check the output.
 
 Linux:
 
-* `python3` (>= 3.11) with venv support, for the PyMeshLab venv
+* `python3` (>= 3.11) with venv support, for the repair venv
 * For a source build of `sutura_geom` (when no prebuilt wheel is available):
   Rust >= 1.89, cmake and a C++20 compiler (g++/clang++). Release installs
   download a prebuilt wheel and need none of these.
@@ -998,9 +1000,9 @@ Linux:
 
 macOS (Apple Silicon / Intel):
 
-* Homebrew and Miniforge (conda). pymeshlab has no PyPI wheel for Apple
-  Silicon, so it must come from conda-forge; this is why macOS uses a single
-  conda environment (`install-macos.sh`) rather than the Linux pip-only flow.
+* Homebrew and Miniforge (conda). macOS uses a single conda environment
+  (`install-macos.sh`) so PySide6 (Qt) and the rest of the native stack are
+  installed consistently, rather than the Linux pip-only flow.
 * Install Python 3.11 via conda (`install-macos.sh` does this automatically).
 
 Python 3.11 is only needed for the optional fTetWild extra
@@ -1034,14 +1036,12 @@ Python 3.11 is only needed for the optional fTetWild extra
   and a system Qt version that matches PySide6's. If the rubber-band selection
   is missing, Qt falls back to its embedded dialog — Ctrl/Shift+click still
   work for multi-selection.
-* **macOS: `pip install pymeshlab` fails or pulls an Intel build.** PyMeshLab
-  has no Apple Silicon PyPI wheel — install from conda-forge
-  (`conda install -n sutura-env -c conda-forge pymeshlab`, see
-  `install-macos.sh`). The install is a directory of native VCG plugins
-  (`pmeshlab.*.so`, `PlugIns/*.so`, `lib/*.so`, `Frameworks/*.dylib`)
-  loaded at import; if a filter reports "not loaded", the `PlugIns/` dir is
-  missing next to the package. When bundling with PyInstaller you need
-  `--collect-data pymeshlab`, not just a hidden import.
+* **PyMeshLab lingers on an upgraded install.** Since the native stage-1
+  engine, PyMeshLab is neither installed nor imported at runtime (it survives
+  only as an optional test-time parity oracle in `requirements-dev.txt`). An
+  install upgraded from an older version may still carry it as an orphan
+  package; remove it with `pip uninstall pymeshlab` (or
+  `conda remove -n sutura-env pymeshlab`). Sutura does not use it.
 * **Headless GUI "hangs" right after launch.** The first run (no config at
   `~/.config/sutura/config.json`) opens a **modal** update/usage-history
   dialog and blocks until answered. Since the version after 0.4.1 the dialog
@@ -1187,7 +1187,7 @@ cd Sutura
 
 `install-macos.sh` checks for Homebrew, installs Miniforge via Homebrew if
 conda is missing, creates a `sutura-env` conda environment (Python 3.11),
-installs pymeshlab from conda-forge and PySide6/sutura_geom from pip
+installs PySide6/sutura_geom from pip
 (PySide6 6.11.2 on the Python 3.11 environment; Linux/Python 3.12+ installs use 6.12.0, and this pin keeps macOS 13 support),
 verifies the imports, copies the app files to `~/.local/share/sutura/`, and
 creates `~/.local/bin/sutura` (CLI) and `~/.local/bin/sutura-gui` launchers.
@@ -1608,7 +1608,7 @@ A **Static / Interactive** switch at the top of the dialog adds the
 interactive 3D view (built lazily the first time it is chosen, then cached
 for the dialog's lifetime): **drag** rotates the mesh, the **mouse wheel**
 zooms. While you drag, an interactive low-poly LOD is rasterized per frame
-on a background thread (latest frame wins, no pymeshlab in the GUI
+on a background thread (latest frame wins, no mesh loading in the GUI
 process); ~300 ms after you stop, a full-resolution frame is drawn. The
 interactive view starts at the same defect-facing camera as the static
 comparison. A second toggle switches the repaired view between the
@@ -2035,7 +2035,7 @@ corpus when new meshes are added.
 The benchmark harness (`scripts/benchmark_repair_corpus.py`) also carries an
 **Manifold cross-validation column**: each repaired mesh's final geometry is
 independently checked with `sutura_geom.watertight_check` (a Manifold constructs
-with `NoError` and is non-empty ⇒ watertight) next to the pymeshlab-based
+with `NoError` and is non-empty ⇒ watertight) next to the array-based
 `defects.detect()` strict check, and the two verdicts are compared. It never
 changes the strict result or the pipeline.
 `--experimental-indirect-autorefine` runs the exact Rust arrangement tier for
@@ -2074,7 +2074,7 @@ repair pipeline and the defect detectors, and can extend future synthetic
 training/test sets. Each injected type is validated by
 `tests/test_defect_injector.py` against the corresponding detector
 (`defects.detect()` for holes/non-manifold, `defect_type_colors()` for
-flipped/degenerate, pymeshlab self-intersection for self-intersect).
+flipped/degenerate, the native self-intersection classifier for self-intersect).
 
 This runs five scenarios and reports the before/after for each: a 5M-triangle
 sphere (repair time), a 0.05 mm thin slab (feature-loss risk — it must survive
@@ -2104,7 +2104,7 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 
 | Library | Role | Why |
 |---|---|---|
-| PyMeshLab | stage 1 filter chain | VCG-based, proven for print repair, fills holes of any size, Python 3.14 wheel available |
+| Native stage-1 engine (`sutura_engine` + Rust `sutura_geom`) | stage 1 filter chain | VCG `meshing_*`-equivalent cleanup (duplicate/degenerate removal, non-manifold repair, coherent orientation, ear-clipping hole closure) implemented natively; no external C++ runtime, permissive-licensed |
 | Manifold (via `manifold-csg` in `sutura_geom`) | stage 2 rebuild, outer-shell union, repeated-element CSG, Graft local stitch | watertight guarantee, robust boolean, same C++ kernel as Bambu Studio; static link, Apache-2.0 |
 | numpy | pipeline-wide | array math for the CLI, GUI, defect detection, history and every pure-python tier; the required `sutura_geom` Rust extension is NOT optional and the Flap path has no numpy fallback |
 | pytetwild + pyvista | fTetWild fallback tier (optional extra) | fTetWild tetrahedralization (MPL-2.0); pyvista brings VTK, ~1.1 GB installed, so it is opt-in via `SUTURA_WITH_FTETWILD=1` |
@@ -2147,7 +2147,7 @@ install `trimesh` only through the dev-only `requirements-dev.txt`.
   mesh as a solid, which resolves interior/overlapping geometry, but the
   rebuild can slightly reshape features in pathological cases. Always check
   the result in a slicer.
-* **Large hole patches.** VCG fills holes with flat triangulated patches; for
+* **Large hole patches.** The stage-1 closer fills holes with flat triangulated patches; for
   very large holes the fill is a simple patch, not a smart reconstruction.
   It closes the mesh, but the patch quality is average and may need smoothing.
 * **Tiny disconnected debris.** Components with fewer than 8 faces are
@@ -2162,7 +2162,7 @@ install `trimesh` only through the dev-only `requirements-dev.txt`.
 * **Layered/duplicated-vertex 3MF exports.** Some slicers (Bambu Studio
   included) write 3MFs whose objects repeat every vertex position ~15x as
   separate vertex entries, and whose surfaces are folded (several faces
-  coincident on one edge). VCG can turn such meshes into valid 2-manifolds:
+  coincident on one edge). The Stage 1 chain can turn such meshes into valid 2-manifolds:
   the Stage 1 chain dedups faces again after the vertex dedup (vertex dedup
   is what *creates* the duplicate faces on a layered mesh), then repairs
   non-manifold vertices before hole closing and finishes with a close pass,
@@ -2193,7 +2193,7 @@ Sutura is organized as a modular engine (`sutura_engine`) designed for reliabili
 * **`sutura_engine.cast`** — Thin wrapper around the Rust `sutura_geom` extension (exact predicates, `arrangement_lite`).
 * **`sutura_engine.methods`** — Pluggable repair methods conforming to `RepairMethodProtocol`: built-in methods (`#1` Quick Clean through `#17` Tamponade) discovered automatically from one named module per method, plus closing, proxy, morphology graft, and repeated-element repair tiers.
 * **`sutura_engine.triage`** — Intelligent escalation policy: ranks repair methods based on geometric analysis, enforces user intensity presets (*Quick*, *Balanced*, *Thorough*, *Extreme*), and respects strict runtime budgets.
-* **`sutura_engine.adapters`** — Strict isolation boundaries for external and third-party tools (PyMeshLab, fTetWild, and external CLI engines). Manifold is not a Python adapter: its C++ kernel is statically linked into the mandatory `sutura_geom` Rust core through `manifold-csg`. Adapters are imported lazily only when a specific method executes.
+* **`sutura_engine.adapters`** — Strict isolation boundaries for external and third-party tools (fTetWild and external CLI engines, plus the Manifold availability probe). Manifold itself is not a Python adapter: its C++ kernel is statically linked into the mandatory `sutura_geom` Rust core through `manifold-csg`. Adapters are imported lazily only when a specific method executes.
 
 In an installed or AppImage layout `sutura_engine` is a top-level package; in a source checkout a small root bootstrap package (`sutura_engine/__init__.py`) makes `import sutura_engine` work from the repository root without a symlink.
 
@@ -2210,8 +2210,8 @@ In an installed or AppImage layout `sutura_engine` is a top-level package; in a 
 Future development aims to reduce Python runtime overhead by migrating performance-sensitive paths to `rust/sutura-geom`:
 - **Phase 0 (Python Hot-Path Reductions):** Removal of unconditional `trimesh` imports from the outer-shell check shipped in v0.7.0; vectorization of candidate transforms in rotational symmetry detection shipped in v0.7.2 (batched, threaded nearest-neighbour queries, identical results, ~2-3.7x faster on the sample/corpus detector).
 - **Phase 1 (Rust Topology Layer):** Implement deterministic array operations in native Rust (X-Ray reload welding, strict hole/non-manifold detection, and boundary loop defect walking), using native BVH structures for nearest-neighbor spatial queries.
-- **Phase 1c (Rust Hole Triangulation):** Liepa-style minimum-weight triangulation and loop closure in native Rust, providing a direct alternative to PyMeshLab hole closing on NumPy arrays.
-- **Phase 2 (PyMeshLab Independence):** Progressively port duplicate face/vertex removal, non-manifold repairs, and surface orientation passes to reduce external C++ runtime dependencies.
+- **Phase 1c (Rust Hole Triangulation — completed):** the native Rust `sutura_geom.close_holes` ear-clipping closer (matching VCGLib `meshing_close_holes` semantics) now backs Stage-1 hole closure directly on NumPy arrays. A Liepa-style minimum-weight triangulation remains future work.
+- **Phase 2 (PyMeshLab Independence — completed):** duplicate/degenerate face removal, non-manifold repair, coherent orientation, duplicate/unreferenced-vertex removal and vertex welding are implemented natively in Rust (`sutura_geom`) with a pure-numpy fallback, so PyMeshLab is no longer an external C++ runtime dependency.
 - **Phase 3 (Native Manifold — completed):** Manifold is linked directly into the Rust extension through `manifold-csg`; Stage 2, the outer-shell union, repeated-element CSG and the Graft local stitch run in `sutura_geom`, the Python `manifold3d` bridges are gone, and the 3.11 virtualenv now exists only for the optional fTetWild extra.
 - **Phase 4 (Standalone Rust CLI):** remains future work toward an independent Rust CLI executable.
 
