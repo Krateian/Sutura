@@ -13,7 +13,7 @@ one implementation module instead of a second copy of repair.py.
 from defects import detect as detect_defects
 
 from sutura_engine.pipeline.mesh_io import (
-    aggregate_triangle_attributes, build_mesh_block, load_meshes,
+    aggregate_triangle_attributes, build_mesh_block, load_mesh, load_meshes,
     parse_3mf_mesh_blocks, parse_3mf_meshes,
     rewrite_3mf_meshes, save_mesh,
 )

@@ -493,12 +493,58 @@ def should_extract_outer_shell(verts, tris, mesh_type=None, si_count=0):
         return False
 
 
+def _write_3mf_single(out_path, verts, tris):
+    """Write one object as a minimal, standards-compliant 3MF container."""
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or '.'
+    os.makedirs(out_dir, exist_ok=True)
+    model = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<model unit="millimeter" xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n'
+        '<resources>\n<object id="1" type="model">\n'
+        + build_mesh_block(verts, tris)
+        + '\n</object>\n</resources>\n'
+        '<build><item objectid="1"/></build>\n</model>\n'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n'
+        '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n'
+        '</Types>\n'
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        '<Relationship Target="/3D/3dmodel.model" Id="rel0" '
+        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n'
+        '</Relationships>\n'
+    )
+    with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml', content_types)
+        z.writestr('_rels/.rels', rels)
+        z.writestr('3D/3dmodel.model', model)
+
+
 def save_mesh(out_path, verts, tris):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
-                        face_matrix=np.asarray(tris, np.int32)))
-    ms.save_current_mesh(out_path)
+    """Write one mesh natively, dispatched by extension.
+
+    STL is binary (the existing reload-equivalent writer), OBJ uses the
+    standard ``v``/``f`` records, and 3MF is a single-object container.
+    Multi-object 3MF rewriting remains the existing ``rewrite_3mf_meshes``
+    path.
+    """
+    ext = os.path.splitext(str(out_path))[1].lower()
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
+    if ext == '.stl':
+        stl_write_binary(out_path, v, t)
+    elif ext == '.obj':
+        write_obj(out_path, v, t)
+    elif ext == '.3mf':
+        _write_3mf_single(out_path, v, t)
+    else:
+        raise ValueError('unsupported mesh extension for writing: %s' % ext)
 
 
 def scan_bad_coordinates(path):
@@ -936,14 +982,35 @@ def _read_zip_entry(z, name):
     return _read_zip_info(z, z.getinfo(name))
 
 
-def load_meshes(src):
-    """Load a mesh file as a list of (model_name|None, verts, tris).
+def _read_native_single(src):
+    """Read one STL/OBJ and match the former loader's vertex semantics.
 
-    STL/OBJ give one entry with ``model_name`` None; a 3MF yields one entry
-    per object (or an empty list when it has no mesh objects). Shared by
-    validate and dry-run so both see exactly what repair would see."""
-    import pymeshlab as ml
-    ext = os.path.splitext(src)[1].lower()
+    The former PyMeshLab STL loader welded exactly coincident positions; OBJ
+    is already index-based and keeps duplicate vertex records. The native STL
+    reader returns three unshared vertices per triangle, so apply the same
+    exact-position weld here (the topology kernel is bit-for-bit with the
+    reload weld used elsewhere).
+    """
+    ext = os.path.splitext(str(src))[1].lower()
+    if ext == '.stl':
+        v, t = read_stl(src)
+        import topology
+
+        return topology.remove_duplicate_vertices(v, t)
+    if ext == '.obj':
+        return read_obj(src)
+    raise ValueError('unsupported mesh extension for reading: %s' % ext)
+
+
+def load_meshes(src):
+    """Load a mesh file as a list of (model_name|None, verts float32, tris int32).
+
+    STL (binary/ascii) and OBJ give one entry with ``model_name`` None; a 3MF
+    yields one entry per mesh block (or an empty list when it has no mesh
+    objects). Shared by validate and dry-run so both see exactly what repair
+    would see. Fully native: no MeshSet is created.
+    """
+    ext = os.path.splitext(str(src))[1].lower()
     if ext == '.3mf':
         out = []
         for name, blocks in parse_3mf_meshes(src).items():
@@ -951,8 +1018,20 @@ def load_meshes(src):
                 out.append((name, np.asarray(vs, dtype=np.float32),
                             np.asarray(ts, dtype=np.int32)))
         return out
-    load_ms = ml.MeshSet()
-    load_ms.load_new_mesh(src)
-    m = load_ms.current_mesh()
-    return [(None, np.asarray(m.vertex_matrix(), dtype=np.float32),
-             np.asarray(m.face_matrix(), dtype=np.int32))]
+    v, t = _read_native_single(src)
+    return [(None, np.asarray(v, dtype=np.float32),
+             np.asarray(t, dtype=np.int32))]
+
+
+def load_mesh(src):
+    """Load one mesh as ``(verts float32, tris int32)``.
+
+    STL/OBJ give their single mesh; for a multi-object 3MF the first mesh
+    block is returned (use ``load_meshes`` for every object). Raises
+    ``ValueError`` when the file has no mesh geometry.
+    """
+    meshes = load_meshes(src)
+    if not meshes:
+        raise ValueError('no mesh geometry found in %s' % src)
+    _name, verts, tris = meshes[0]
+    return verts, tris
