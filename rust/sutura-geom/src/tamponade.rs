@@ -1622,6 +1622,17 @@ fn edge_use_counts(tris: &[[u32; 3]]) -> HashMap<(u32, u32), i32> {
 fn plug_structure_ok(tris: &[[u32; 3]], rim: &[u32], verts: &[[f64; 3]]) -> bool {
     let mut count: HashMap<(u32, u32), i32> = HashMap::with_capacity(tris.len() * 3);
     for t in tris {
+        // A candidate built on a stale vertex base (e.g. a multi-sub-plug
+        // attempt whose earlier sibling appended vertices that are not in the
+        // `verts` slice passed here) must be rejected, never index out of
+        // bounds. `verts` is a caller-supplied snapshot, so its length is the
+        // only valid bound.
+        if t[0] as usize >= verts.len()
+            || t[1] as usize >= verts.len()
+            || t[2] as usize >= verts.len()
+        {
+            return false;
+        }
         if tri_area(
             verts[t[0] as usize],
             verts[t[1] as usize],
@@ -7471,6 +7482,59 @@ mod tests {
         assert!(centre.is_none());
         assert_eq!(tris.len(), rim.len() - 2);
         assert!(plug_structure_ok(&tris, &rim, &verts));
+    }
+
+    fn grid_4x4_with_removed_faces() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let n = 4usize;
+        let mut verts = Vec::new();
+        let mut idx: HashMap<(usize, usize), u32> = HashMap::new();
+        for j in 0..=n {
+            for i in 0..=n {
+                idx.insert((i, j), verts.len() as u32);
+                verts.push([i as f64 / n as f64, j as f64 / n as f64, 0.0]);
+            }
+        }
+        let mut tris = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                let a = idx[&(i, j)];
+                let b = idx[&(i + 1, j)];
+                let c = idx[&(i + 1, j + 1)];
+                let d = idx[&(i, j + 1)];
+                tris.push([a, b, c]);
+                tris.push([a, c, d]);
+            }
+        }
+        // Faces 11, 13 and 20 leave a pinched multi-rim boundary that reaches
+        // the multi-stent path with a stale vertex base.
+        for k in [20usize, 13, 11] {
+            tris.remove(k);
+        }
+        (verts, tris)
+    }
+
+    #[test]
+    fn plug_structure_ok_rejects_an_out_of_range_vertex_without_panicking() {
+        let (verts, _) = unit_cube_open_top();
+        // A candidate whose interior vertex is not covered by the `verts`
+        // snapshot (a stale multi-sub-plug base) must be a clean `false`, not
+        // an index-out-of-bounds panic: a panic in the repair path aborts the
+        // whole run on user input.
+        assert!(!plug_structure_ok(&[[0, 1, 99]], &[0, 1, 2], &verts));
+    }
+
+    #[test]
+    fn grid_fixture_with_a_stale_plug_base_does_not_panic() {
+        let (verts, tris) = grid_4x4_with_removed_faces();
+        let (_, _, info) = tamponade_repair(&verts, &tris, &TamponadeConfig::default());
+        // The stale candidate is rejected by the structural gate and the
+        // repair completes safely (before the bounds check this fixture
+        // panicked at `plug_structure_ok`).
+        assert_eq!(info.reason, "ok", "{info:?}");
+        assert!(
+            info.plugs_rejected + info.stent_rejected >= 1,
+            "{info:?}"
+        );
     }
 
     #[test]
