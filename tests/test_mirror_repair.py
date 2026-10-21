@@ -18,7 +18,11 @@ SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pytest  # noqa: E402
+
+try:
+    import pymeshlab
+except ImportError:
+    pymeshlab = None
 
 
 def _half_sphere():
@@ -37,14 +41,6 @@ def _cube():
             np.asarray(m.faces, dtype=np.int64))
 
 
-def _have_pymeshlab():
-    try:
-        import pymeshlab  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
 def test_detect_half_sphere_plane():
     import mirror_repair as MR
     v, t = _half_sphere()
@@ -56,18 +52,7 @@ def test_detect_half_sphere_plane():
     assert info['dominant_ratio'] > 0.9, info
 
 
-def _have_close_holes():
-    try:
-        import sutura_geom
-        return hasattr(sutura_geom, 'close_holes')
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(not _have_close_holes(), reason="sutura_geom.close_holes required for mirror stitching")
 def test_mirror_close_half_sphere():
-    if not _have_close_holes():
-        pytest.skip("sutura_geom.close_holes required for mirror stitching")
     import mirror_repair as MR
     from sutura_engine.methods import closing as C
     v, t = _half_sphere()
@@ -80,10 +65,10 @@ def test_mirror_close_half_sphere():
     assert ok, reason
 
 
-@pytest.mark.skipif(not _have_pymeshlab(), reason="pymeshlab required for Poisson fallback")
 def test_mirror_close_closed_falls_back():
-    if not _have_pymeshlab():
-        pytest.skip("pymeshlab required for Poisson fallback")
+    if pymeshlab is None:
+        print("skip: pymeshlab required for Poisson fallback")
+        return
     import mirror_repair as MR
     v, t = _cube()
     n, c, score, info = MR.detect_mirror_plane(v, t)

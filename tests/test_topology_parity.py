@@ -20,7 +20,6 @@ SUTURA = os.path.join(REPO, 'sutura')
 sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pytest  # noqa: E402
 
 try:
     import pymeshlab
@@ -300,7 +299,6 @@ def test_geometric_measures_parity():
     print('mesh_geometric_measures parity OK (Rust == numpy oracle, bit-for-bit)')
 
 
-@pytest.mark.skipif(pymeshlab is None, reason="pymeshlab required for topology parity oracle")
 def test_pymeshlab_parity():
     """Verify exact dict parity (including key presence and VCG quirks) against PyMeshLab.
 
@@ -308,7 +306,8 @@ def test_pymeshlab_parity():
     open triangle) and all tracked corpus meshes from tests/real-world-samples/*.stl.
     """
     if pymeshlab is None:
-        pytest.skip("pymeshlab not importable, skipping PyMeshLab parity check")
+        print("skip: pymeshlab not importable, skipping PyMeshLab parity check")
+        return
 
     top_keys = (
         'boundary_edges', 'connected_components_number', 'edges_number',
@@ -458,7 +457,6 @@ else:
     print(f'pymeshlab parity OK on {len(samples)} corpus meshes + 1 OBJ load case + {len(synthetic_cases)} synthetic non-manifold cases (bit-for-bit, exact keys)')
 
 
-@pytest.mark.skipif(pymeshlab is None, reason="pymeshlab required for phase 2 filter parity oracle")
 def test_phase2_filter_parity():
     """Verify bit-for-bit parity against PyMeshLab on all Phase 2 repair and cleanup filters.
 
@@ -473,7 +471,8 @@ def test_phase2_filter_parity():
       - compute_normal_per_vertex
     """
     if pymeshlab is None:
-        pytest.skip("pymeshlab not importable, skipping phase 2 filter parity check")
+        print("skip: pymeshlab not importable, skipping phase 2 filter parity check")
+        return
 
     import glob
     import subprocess
