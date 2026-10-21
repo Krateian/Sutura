@@ -15,4 +15,5 @@ features = ["extension-module"]
 include = [
   "THIRD_PARTY.md",
   "third_party/geogram_delaunay_psm/LICENSE",
+  "third_party/meshoptimizer/LICENSE",
 ]

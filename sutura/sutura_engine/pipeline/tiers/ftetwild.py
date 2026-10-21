@@ -22,7 +22,7 @@ import triage
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.mesh_io import FTETWILD_BRIDGE, read_obj, write_obj
 from sutura_engine.pipeline.presets import (
-    DECIMATE_HD_MARGIN, DENSE_QUALITY, FTETWILD_ABORT_MESSAGE,
+    DECIMATE_HD_MARGIN, FTETWILD_ABORT_MESSAGE,
     FTETWILD_MAX_HAUSDORFF_REL, FTETWILD_RETRY_PARAMS, FTETWILD_TIMEOUT,
     HAUSDORFF_SAMPLES, VENV311, ftetwild_params, resolve_ftetwild_optimize,
 )
@@ -214,29 +214,25 @@ def _ftetwild_candidate(ml, tmpdir, cand_v, cand_t):
 def _decimate_boundary(ml, cand_v, cand_t, target):
     """Quadric edge collapse of an fTetWild boundary to ``target`` faces.
 
-    Boundary and topology are preserved and a planar quadric is used, so a
-    closed boundary stays closed. The raw bridge output carries every
-    tetrahedron vertex (interior ones included), so the unreferenced vertices
-    are dropped first. Returns ``(verts, tris)`` or None on failure/empty
-    output (the caller then falls back to the undecimated boundary)."""
+    Native (Faz 4 W3b): ``sutura_geom.decimate_qem`` (meshopt) replaces the
+    PyMeshLab filter, so ``ml`` is unused and kept only for call/back-compat.
+    The border is locked (meshopt ``LockBorder``, the former
+    ``preserveboundary``) and per-vertex normals ride along as collapse
+    attributes.  meshopt has no quality threshold / planar quadric, so the
+    caller's watertight + one-sided-Hausdorff acceptance gate is what keeps a
+    closed boundary closed and the shape unchanged.  The raw bridge output
+    carries every tetrahedron vertex (interior ones included), so the
+    unreferenced vertices are dropped first.  Returns ``(verts, tris)`` or
+    None on failure/empty output (the caller then falls back to the
+    undecimated boundary)."""
     try:
         rv, rt = _referenced_only(cand_v, cand_t)
         if len(rt) == 0:
             return None
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=rv,
-                            face_matrix=np.asarray(rt, np.int32)))
-        ms.apply_filter('meshing_decimation_quadric_edge_collapse',
-                        targetfacenum=int(target),
-                        qualitythr=DENSE_QUALITY,
-                        preserveboundary=True,
-                        preservenormal=True,
-                        preservetopology=True,
-                        planarquadric=True,
-                        autoclean=True)
-        m = ms.current_mesh()
-        dv = np.asarray(m.vertex_matrix(), np.float64)
-        dt = np.asarray(m.face_matrix(), np.int64)
+        dv, dt, _rec = topology.decimate_qem(
+            rv, rt, int(target), lock_border=True, preserve_normal=True)
+        dv = np.asarray(dv, np.float64)
+        dt = np.asarray(dt, np.int64)
         if len(dt) == 0:
             return None
         return dv, dt

@@ -562,36 +562,20 @@ def _target_faces(n_input_faces):
 
 
 def _qem_decimate(ml, v, t, target_faces):
-    """PyMeshLab quadric edge collapse that preserves topology / normals.
+    """Native quadric edge collapse toward ``target_faces`` (Faz 4 W3b).
 
-    Configuration from the decimation benchmark (internal report,
-    ornate-frame 1.36 M-face coat): ``optimalplacement=False``
-    ("subset placement") with ``planarquadric=True`` yields **0 self-
-    intersections**, sub-micron fidelity to the coat and ~20 s at a 400k
-    target, whereas unconstrained placement introduces up to 30 SI faces.  A
-    2-step schedule is used when the target is at or below half the raw coat,
-    which the report found also reaches 0 SI even with optimal placement.
-    Returns ``(v, t)``."""
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                        face_matrix=np.asarray(t, np.int32)))
-
-    def _collapse(target):
-        ms.apply_filter('meshing_decimation_quadric_edge_collapse',
-                        targetfacenum=int(target),
-                        preservetopology=True,
-                        preservenormal=True,
-                        planarquadric=True,
-                        planarweight=0.001,
-                        optimalplacement=False,
-                        autoclean=True)
-
-    if len(t) > 2 * int(target_faces) and int(target_faces) <= 250_000:
-        _collapse(min(len(t) // 2, 400_000))
-    _collapse(target_faces)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), np.float64),
-            np.asarray(m.face_matrix(), np.int64))
+    ``sutura_geom.decimate_qem`` (the MIT ``meshopt`` / meshoptimizer core)
+    replaces the PyMeshLab ``meshing_decimation_quadric_edge_collapse`` call;
+    the ``ml`` argument is kept only for call/back-compat and is unused.
+    meshopt has no planar-quadric / subset-placement mode (the settings the
+    benchmark found necessary to reach 0 self-intersections), so the atomic
+    rollback in :func:`_decimate_coat` is now what enforces the 0 hole /
+    0 non-manifold / 0 SI contract.  Per-vertex normals are passed as collapse
+    attributes (``preserve_normal``).  Returns ``(v, t)``.
+    """
+    dv, dt, _rec = topology.decimate_qem(
+        v, t, int(target_faces), lock_border=False, preserve_normal=True)
+    return np.asarray(dv, np.float64), np.asarray(dt, np.int64)
 
 
 def _exact_si(v, t):
@@ -713,13 +697,11 @@ def _decimate_coat(ml, v, t, target_faces):
 
     Adopts the decimated mesh only when it stays 0 holes / 0 non-manifold and
     introduces no exact self-intersection; otherwise the un-decimated coat is
-    returned byte-for-byte.  ``ml is None`` skips decimation.
+    returned byte-for-byte.  Decimation is native (``meshopt``), so ``ml`` is
+    unused and kept only for call/back-compat.
     """
     if len(t) <= target_faces * 1.05:
         return v, t, {'decimated': False, 'reason': 'already_within_budget',
-                      'target': int(target_faces)}
-    if ml is None:
-        return v, t, {'decimated': False, 'reason': 'no_pymeshlab',
                       'target': int(target_faces)}
     try:
         dv, dt = _qem_decimate(ml, v, t, target_faces)

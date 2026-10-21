@@ -24,11 +24,22 @@ rejected.
 | `robust` | `=1.2.0` | MIT OR Apache-2.0 |
 | `pyo3` | `=0.29.2` | MIT OR Apache-2.0 |
 | `numpy` (rust-numpy) | `=0.29.0` | BSD-2-Clause |
+| `num-bigint` / `num-rational` / `num-traits` | `0.4` / `0.4` / `0.2` | MIT OR Apache-2.0 |
 | `rayon` | `1.12` | MIT OR Apache-2.0 |
+| `manifold-csg` | `=0.4.1` | Apache-2.0 OR MIT |
+| `faer` | `0.24` | MIT |
+| `kiddo` | `6.3` | MIT OR Apache-2.0 |
+| `meshopt` | `0.7` | MIT OR Apache-2.0 (vendored meshoptimizer C++: MIT) |
 
 `rayon` is pure Rust (no C or system dependency; about 1.1 MB of source in the
 lockfile including `rayon-core`, `crossbeam-deque`/`epoch` and `either`) and is
 used only to parallelise the morphology grid queries.
+
+`meshopt` builds the meshoptimizer C++ core (`vendor/src/*.cpp`, MIT) from the
+crate's own vendored sources at build time; only the referenced objects are
+linked into the extension (+108 KB on macOS arm64, measured). Its license text
+is shipped as `third_party/meshoptimizer/LICENSE`; the C++ code bundled into
+`sutura_geom` is credited in `THIRD_PARTY.md`.
 
 `maturin` (currently `==1.15.0`) is the build tool; it is **not** a Cargo
 dependency. Install it into the target venv:

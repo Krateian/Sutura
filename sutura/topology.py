@@ -74,6 +74,8 @@ _RUST_FNS = (
     'mesh_geometric_measures',
     'self_intersecting_faces',
     'close_holes',
+    'cluster_decimate',
+    'decimate_qem',
 )
 
 
@@ -1010,6 +1012,96 @@ def close_holes(verts, tris, maxholesize=1000, self_intersection=True,
         v, t, int(maxholesize), bool(self_intersection), bool(newfaceselected))
     return (np.asarray(out_v), np.asarray(out_t).astype(np.int64),
             int(closed), int(new_faces))
+
+
+def cluster_decimate(verts, tris, threshold):
+    """Cluster-decimate ``verts``/``tris`` at the absolute ``threshold``.
+
+    Native only (Faz 4 W3a): the Rust ``sutura_geom.cluster_decimate``
+    vertex-clustering pass is required -- there is deliberately NO numpy
+    oracle, so a missing extension or symbol raises ``RuntimeError`` rather
+    than silently degrading.
+
+    ``threshold`` is an absolute cell size in model units (the call site
+    converts VCG's percentage threshold via ``pct / 100 * bbox_diagonal``).
+    Each occupied cell contributes one representative at the mean of its
+    member positions; faces whose three vertices share a cell are dropped;
+    unreferenced representatives are removed.
+
+    Returns ``(verts, tris, report)`` with ``report`` carrying
+    ``threshold``/``faces_in``/``faces_out``.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float64)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    thr = float(threshold)
+    if not np.isfinite(thr) or thr <= 0.0:
+        raise ValueError("threshold must be a positive finite number")
+    if len(t) == 0:
+        return v, t, {'threshold': thr, 'faces_in': 0, 'faces_out': 0}
+    if not _has_rust('cluster_decimate'):
+        raise RuntimeError(
+            "sutura_geom.cluster_decimate required but unavailable in this "
+            "environment (no numpy oracle for cluster decimation)"
+        )
+    out_v, out_t, faces_in, faces_out = _geom.cluster_decimate(v, t, thr)
+    return (np.asarray(out_v), np.asarray(out_t).astype(np.int64),
+            {'threshold': thr, 'faces_in': int(faces_in),
+             'faces_out': int(faces_out)})
+
+
+def decimate_qem(verts, tris, target_faces, target_error=None,
+                 lock_border=False, preserve_normal=False):
+    """Quadric edge-collapse decimation to ``target_faces``.
+
+    Native only (Faz 4 W3b): the Rust ``sutura_geom.decimate_qem`` (a wrapper
+    over the MIT ``meshopt`` / meshoptimizer C++ core) is required -- there is
+    deliberately NO numpy oracle, so a missing extension or symbol raises
+    ``RuntimeError`` rather than silently degrading.
+
+    The input is welded on the f32 bit pattern of the position first (meshopt
+    needs a shared index buffer; split STL-style corners otherwise read as
+    topological borders), degenerate faces created by the weld are dropped,
+    and surviving vertices keep their exact f64 input positions.  ``target_faces``
+    is approached as closely as ``target_error`` (default ``1.0`` = the whole
+    mesh extent) allows, so the result may carry more faces than requested when
+    the error bound is tight.
+
+    ``lock_border`` maps to meshopt's ``LockBorder`` (the PyMeshLab
+    ``preserveboundary`` flag); ``preserve_normal`` passes per-vertex normals
+    as collapse attributes.  Normal/topology preservation has no meshopt
+    equivalent, so callers keep their own validity guards.
+
+    Returns ``(verts, tris, report)`` with ``report`` carrying ``faces_in``/
+    ``faces_out``/``weld_merged``/``welded_vertices``/``degenerate_removed``/
+    ``target_error_used``/``result_error``/``lock_border``/``attributes_used``/
+    ``no_op``/``engine``.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float64)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    target = int(target_faces)
+    if target < 0:
+        raise ValueError("target_faces must be >= 0")
+    if not _has_rust('decimate_qem'):
+        raise RuntimeError(
+            "sutura_geom.decimate_qem required but unavailable in this "
+            "environment (no numpy oracle for quadric decimation)"
+        )
+    attributes = None
+    if preserve_normal and len(v) > 0:
+        attributes = compute_normal_per_vertex(v, t)
+    err = None if target_error is None else float(target_error)
+    out_v, out_t, report = _geom.decimate_qem(
+        v, t, target, err, bool(lock_border), attributes)
+    return (np.asarray(out_v), np.asarray(out_t).astype(np.int64),
+            dict(report))
 
 
 def close_holes_ms(ms, ml=None, maxholesize=1000, self_intersection=True,

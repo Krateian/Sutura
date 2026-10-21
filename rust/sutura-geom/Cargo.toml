@@ -2,6 +2,10 @@
 name = "sutura-geom"
 version = "0.1.0"
 edition = "2021"
+# Enforces the crate's highest documented MSRV (kiddo 1.89; meshopt needs
+# 1.87 for its edition-2024 build).  CI and install.sh both build with the
+# stable toolchain, so this only fails on an intentionally old toolchain.
+rust-version = "1.89"
 description = "Foundation crate for Sutura's future indirect-predicates geometry core"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Krateian/Sutura"
@@ -40,6 +44,14 @@ faer = { version = "0.24", features = ["sparse-linalg"] }
 # Point-cloud nearest-neighbour queries (replaces scipy.spatial.cKDTree).
 # Pure Rust, MIT OR Apache-2.0; MSRV 1.89.
 kiddo = "6.3"
+# Quadric mesh simplification (replaces PyMeshLab
+# meshing_decimation_quadric_edge_collapse).  Rust binding over the vendored
+# meshoptimizer C++ core (MIT); the crate itself is MIT OR Apache-2.0 and
+# compiles its C++ from vendor/ at build time (no network).  The static
+# archive is ~250 KB and only the referenced objects are linked: the release
+# extension grows 5,055,632 -> 5,166,592 B (+108 KB) on macOS arm64.  Needs a
+# C++11 compiler, which the Geogram build already requires.
+meshopt = "0.7"
 
 [build-dependencies]
 # Compiles the vendored Geogram Delaunay PSM (C++20). Build tool only.
