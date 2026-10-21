@@ -46,7 +46,11 @@ def _cube():
 
 
 def _self_intersections(v, t):
-    import pymeshlab as ml
+    try:
+        import pymeshlab as ml
+    except ImportError:
+        import pytest
+        pytest.skip("pymeshlab required for oracle self-intersection check")
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float32),
                         face_matrix=np.asarray(t, np.int32)))

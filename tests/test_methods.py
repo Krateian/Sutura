@@ -406,10 +406,6 @@ def test_p_weld_final_separates_float32_collisions(tmp):
     repair = methods._repair_mod()
     v, t = _two_cubes_sharing_edge()
     assert repair.reload_strict_holes_nm(v, t) == (0, 1)
-    try:
-        import pymeshlab  # noqa: F401
-    except ImportError:
-        return
     nv, nt, rec = repair.p_weld_final(None, v, t)
     assert rec is not None and rec['applied'], rec
     assert rec['method'] == 'split-collisions', rec

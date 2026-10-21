@@ -8,6 +8,12 @@ import json
 import os
 import subprocess
 import sys
+import pytest
+
+try:
+    import pymeshlab
+except ImportError:
+    pymeshlab = None
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
@@ -75,7 +81,12 @@ def main():
         for r in bad:
             print('MISMATCH', r)
         raise SystemExit(1)
-    print('dilate parity passed')
+@pytest.mark.skipif(pymeshlab is None, reason="pymeshlab required for dilation parity oracle")
+def test_dilate_parity():
+    if pymeshlab is None:
+        pytest.skip("pymeshlab required for dilation parity oracle")
+    main()
+
 
 if __name__ == '__main__':
     main()

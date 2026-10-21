@@ -21,16 +21,13 @@ SUTURA = os.path.join(REPO, 'sutura')
 RUNTIME_PYMESHLAB_ALLOWLIST = {
     'repeat_picker_render.py': ('W3', 1, 'decimate clustering LOD (meshing_decimation_clustering)'),
     'viewer_data_render.py': ('W2', 1, 'viewer LOD decimation and surface distance'),
-    'topology.py': ('W4a', 1, 'native selection writeback (select_self_intersections_ms)'),
+    'topology.py': ('W4a', 3, 'native selection writeback and close_holes_ms fallback'),
     'sutura_engine/methods/closing.py': ('W3', 2, 'Poisson/flat-back/loop close holes'),
     'sutura_engine/methods/proxy.py': ('W3', 4, 'proxy voxel resample, alpha, cleanup, SI'),
     'sutura_engine/methods/repeat.py': ('W3', 1, 'repeat detection QEM'),
     'sutura_engine/mirror.py': ('W1', 1, 'mirror stitch repair fallback'),
     'sutura_engine/pipeline/pipeline.py': ('W4a', 1, 'stage1/tiers MeshSet dispatch'),
     'sutura_engine/pipeline/service.py': ('W4a', 2, 'repair_file / repair_3mf MeshSet orchestration'),
-    'sutura_engine/pipeline/stage1.py': ('W1/W4a', 1, 'apply_chain MeshSet fallback'),
-    'sutura_engine/pipeline/tiers/engines.py': ('W4a', 2, 'external engine MeshSet I/O'),
-    'sutura_engine/pipeline/validate.py': ('W4a', 2, 'validate / dry-run MeshSet'),
 }
 
 

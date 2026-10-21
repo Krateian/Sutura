@@ -18,8 +18,13 @@ import math
 import os
 import struct
 import subprocess
-import sys
 import tempfile
+import pytest
+
+try:
+    import pymeshlab
+except ImportError:
+    pymeshlab = None
 
 import numpy as np
 
@@ -41,6 +46,8 @@ def write_stl(path, verts, tris):
 
 
 def measure(path):
+    if pymeshlab is None:
+        pytest.skip("pymeshlab required for torture test measurements")
     import pymeshlab as ml
     ms = ml.MeshSet()
     ms.load_new_mesh(path)
@@ -278,6 +285,13 @@ def main():
     import shutil
     shutil.rmtree(tmp, ignore_errors=True)
     return 0
+
+
+@pytest.mark.skipif(pymeshlab is None, reason="pymeshlab required for torture test measurements")
+def test_torture():
+    if pymeshlab is None:
+        pytest.skip("pymeshlab required for torture test measurements")
+    assert main() == 0
 
 
 if __name__ == '__main__':
