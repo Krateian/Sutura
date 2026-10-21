@@ -392,30 +392,35 @@ pub fn directed_boundary_edges(tris: &[[u32; 3]]) -> Vec<(u32, u32)> {
 /// rims. A non-manifold vertex with several incident boundary edges is split
 /// greedily; every used edge appears in at most one loop.
 ///
-/// This is a deliberate port of the Python verifier's `defects._boundary_loops`
-/// (insertion-ordered adjacency, vertex-marking greedy) so the kernel and the
-/// verifier decompose a shared-vertex / non-manifold rim identically. The
-/// earlier edge-marking walker chose a different loop through a shared vertex,
-/// which made the plug miss the real holes.
+/// The traversal order is canonical: starts and neighbours are visited in
+/// ascending vertex-id order, matching the Python verifier's
+/// `defects._boundary_loops` (W4a parity fix). The earlier insertion-ordered
+/// adjacency made the decomposition -- and therefore the plug choice --
+/// depend on the input face order: a non-manifold / pinched boundary graph
+/// has several valid ways to pair a shared rim vertex, and the greedy walk
+/// picked one of them from the order the faces happened to arrive in
+/// (`thingi10k_100827`).
 pub fn build_boundary_loops(directed: &[(u32, u32)]) -> Vec<Vec<u32>> {
-    let mut order: Vec<u32> = Vec::new();
     let mut adj: HashMap<u32, Vec<u32>> = HashMap::new();
     for &(a, b) in directed {
         if a == b {
             continue;
         }
         for (x, y) in [(a, b), (b, a)] {
-            if !adj.contains_key(&x) {
-                order.push(x);
-                adj.insert(x, Vec::new());
-            }
-            adj.get_mut(&x).unwrap().push(y);
+            adj.entry(x).or_default().push(y);
         }
     }
+    // Canonical neighbour order, independent of the face order that produced
+    // `directed`.
+    for nbrs in adj.values_mut() {
+        nbrs.sort_unstable();
+    }
+    let mut starts: Vec<u32> = adj.keys().copied().collect();
+    starts.sort_unstable();
 
     let mut used: HashSet<u32> = HashSet::new();
     let mut loops = Vec::new();
-    for &start in &order {
+    for &start in &starts {
         if used.contains(&start) {
             continue;
         }
@@ -2117,6 +2122,16 @@ pub(crate) fn build_reference(
         }
         ring_faces.push((f, fnrm, area));
     }
+    // Canonical ring order: sort by the face's sorted vertex triple, never by
+    // the `dist` HashMap walk or the input face id. The quadric/RBF samples
+    // and the accumulated normals below are summed in this order, so neither
+    // a face permutation nor a different hash seed may move the fitted
+    // reference (and with it the plug candidate the loop chooses).
+    ring_faces.sort_by_key(|(f, _, _)| {
+        let mut key = tris[*f as usize];
+        key.sort_unstable();
+        key
+    });
     if ring_faces.is_empty() {
         if dbg { eprintln!("[ref] m={} no_ring_faces", rim.len()); }
         return None;
@@ -2613,8 +2628,9 @@ fn rbf_loo_ok(
     if m < 4 {
         return false;
     }
-    // The caller's sample order comes from a HashMap walk, so sort the held-out
-    // indices by (u, v) first: the LOO outcome must not depend on hash order.
+    // `build_reference` now collects the ring canonically, but sort the
+    // held-out indices by (u, v) anyway: the LOO outcome must not depend on how
+    // the ring samples were collected.
     let mut order: Vec<usize> = (0..m).collect();
     order.sort_by(|&a, &b| {
         samples[a]
@@ -6938,10 +6954,11 @@ mod tests {
     fn test_boundary_loops_shared_vertex_fixture() {
         // Two rims meeting at the shared vertices 0 and 3. The old edge-marking
         // walker over the per-face half-edge order merged them into a single
-        // 7-vertex loop; the block-stacked order plus the vertex-marking walker
-        // (a port of the Python verifier's `defects._boundary_loops`) returns
-        // this decomposition. Regression for the thingi10k_100827 hole mismatch
-        // where the kernel's loops did not match `defects.detect`.
+        // 7-vertex loop; the canonical vertex-marking walker (the same sorted
+        // traversal as the Python verifier's `defects._boundary_loops`) starts
+        // at the smallest vertex 0 and returns this decomposition. Regression
+        // for the thingi10k_100827 hole mismatch where the kernel's loops did
+        // not match `defects.detect`.
         let tris = vec![[1u32, 3, 2], [0, 3, 4], [0, 1, 2]];
         let directed = directed_boundary_edges(&tris);
         assert_eq!(
@@ -6949,7 +6966,79 @@ mod tests {
             vec![(1, 3), (0, 3), (0, 1), (3, 2), (3, 4), (4, 0), (2, 0)]
         );
         let loops = build_boundary_loops(&directed);
-        assert_eq!(loops, vec![vec![1u32, 3, 0]]);
+        assert_eq!(loops, vec![vec![0u32, 1, 3]]);
+    }
+
+    fn plug_signature(
+        out_verts: &[[f64; 3]],
+        out_tris: &[[u32; 3]],
+        kept: usize,
+    ) -> Vec<[u64; 9]> {
+        let key = |i: u32| {
+            let p = out_verts[i as usize];
+            [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()]
+        };
+        let mut sig: Vec<[u64; 9]> = out_tris[kept..]
+            .iter()
+            .map(|t| {
+                let mut v = [key(t[0]), key(t[1]), key(t[2])];
+                v.sort_unstable();
+                [
+                    v[0][0], v[0][1], v[0][2],
+                    v[1][0], v[1][1], v[1][2],
+                    v[2][0], v[2][1], v[2][2],
+                ]
+            })
+            .collect();
+        sig.sort_unstable();
+        sig
+    }
+
+    #[test]
+    fn boundary_loops_do_not_depend_on_the_directed_edge_order() {
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+        let (_, tris) = grid_4x4_with_removed_faces();
+        let directed = directed_boundary_edges(&tris);
+        let base = build_boundary_loops(&directed);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(11);
+        for _ in 0..8 {
+            let mut shuffled = directed.clone();
+            shuffled.shuffle(&mut rng);
+            assert_eq!(build_boundary_loops(&shuffled), base);
+        }
+    }
+
+    #[test]
+    fn face_permutation_does_not_change_the_plug_choice() {
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+        let (verts, tris) = grid_4x4_with_removed_faces();
+        let config = TamponadeConfig::default();
+        let (ov, ot, base_info) = tamponade_repair(&verts, &tris, &config);
+        let base_sig = plug_signature(&ov, &ot, tris.len());
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        for trial in 0..8 {
+            let mut permuted = tris.clone();
+            permuted.shuffle(&mut rng);
+            let (pv, pt, info) = tamponade_repair(&verts, &permuted, &config);
+            assert_eq!(
+                info.loop_diag, base_info.loop_diag,
+                "trial {trial}: loop decomposition changed with the face order"
+            );
+            assert_eq!(info.plugs, base_info.plugs, "trial {trial}");
+            assert_eq!(
+                info.reference_used, base_info.reference_used,
+                "trial {trial}"
+            );
+            assert_eq!(info.reference_fallback, base_info.reference_fallback, "trial {trial}");
+            assert_eq!(info.patch_vertices, base_info.patch_vertices, "trial {trial}");
+            assert_eq!(
+                plug_signature(&pv, &pt, permuted.len()),
+                base_sig,
+                "trial {trial}: the selected plug geometry changed with the face order"
+            );
+        }
     }
 
     #[test]
