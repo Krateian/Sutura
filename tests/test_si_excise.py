@@ -19,6 +19,7 @@ import pymeshlab as ml  # noqa: E402
 import trimesh  # noqa: E402
 
 import repair  # noqa: E402
+import topology  # noqa: E402
 import sutura_engine.pipeline.pipeline as pipeline_mod  # noqa: E402
 
 
@@ -62,12 +63,11 @@ def _arrays(ms):
 
 def test_clean_mesh_is_noop():
     cube = trimesh.creation.box()
-    ms = _meshset(cube.vertices, cube.faces)
-    v0, t0 = _arrays(ms)
-    _ms, rep = pipeline_mod.si_excise_recap(ms, ml)
+    v0 = np.asarray(cube.vertices, np.float64)
+    t0 = np.asarray(cube.faces, np.int64)
+    v1, t1, rep = pipeline_mod.si_excise_recap(v0, t0)
     assert rep['ran'] is False and rep['initial_si'] == 0, rep
     assert rep['reason'] == 'no_si', rep
-    v1, t1 = _arrays(ms)
     assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
 
 
@@ -76,28 +76,26 @@ def test_excise_reduces_si_and_preserves_topology():
     ms = _meshset(v, t)
     si_before = _si(ms)
     assert si_before > 0, 'fixture must self-intersect'
-    ms, rep = pipeline_mod.si_excise_recap(ms, ml, time_budget=30.0)
+    v, t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
     assert rep['applied'] and rep['rounds'] >= 1, rep
     assert rep['si_after'] == 0, rep
     assert rep['removed_si'] == rep['initial_si'], rep
-    topo = _topo(ms)
+    topo = topology.mesh_topology(v, t)
     assert topo['number_holes'] == 0, topo
     assert topo['non_two_manifold_edges'] == 0, topo
     assert topo['non_two_manifold_vertices'] == 0, topo
-    assert _si(ms) == 0
+    assert topology.self_intersecting_faces(v, t)[1] == 0
 
 
 def test_rollback_on_failed_recap_restores_mesh():
     v, t = _sphere_with_blade(3)
-    ms = _meshset(v, t)
-    v0, t0 = _arrays(ms)
+    v0, t0 = np.asarray(v, np.float64), np.asarray(t, np.int64)
     # maxholesize=1 cannot close the excised loops -> the guard must reject the
     # round and restore the pre-round mesh byte-for-byte.
-    ms, rep = pipeline_mod.si_excise_recap(ms, ml, maxholesize=1, time_budget=30.0)
+    v1, t1, rep = pipeline_mod.si_excise_recap(v0, t0, maxholesize=1, time_budget=30.0)
     assert rep['applied'] is False, rep
     assert rep['rounds'] == 0, rep
     assert rep['reason'] in ('rollback', 'scope'), rep
-    v1, t1 = _arrays(ms)
     assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
 
 
@@ -114,22 +112,19 @@ def test_round_that_splits_the_mesh_is_rejected():
         print('    (corpus mesh missing: skipped)')
         return
     m = trimesh.load(sample)
-    ms = _meshset(np.asarray(m.vertices, np.float64),
-                  np.asarray(m.faces, np.int64))
-    comp_before = _topo(ms)['connected_components_number']
+    v, t = np.asarray(m.vertices, np.float64), np.asarray(m.faces, np.int64)
+    comp_before = topology.mesh_topology(v, t)['connected_components_number']
     assert comp_before == 1, comp_before
-    ms, rep = pipeline_mod.si_excise_recap(ms, ml, time_budget=30.0)
+    v, t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
     assert rep['applied'] is False, rep
-    assert _topo(ms)['connected_components_number'] == comp_before, _topo(ms)
+    assert topology.mesh_topology(v, t)['connected_components_number'] == comp_before
 
 
 def test_budget_zero_skips():
     v, t = _sphere_with_blade(3)
-    ms = _meshset(v, t)
-    v0, t0 = _arrays(ms)
-    _ms, rep = pipeline_mod.si_excise_recap(ms, ml, time_budget=0.0)
+    v0, t0 = np.asarray(v, np.float64), np.asarray(t, np.int64)
+    v1, t1, rep = pipeline_mod.si_excise_recap(v0, t0, time_budget=0.0)
     assert rep['ran'] is False and rep['reason'] == 'budget', rep
-    v1, t1 = _arrays(ms)
     assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
 
 
@@ -166,13 +161,13 @@ def test_full_path_plumbs_a_positive_result():
 
     seen = {}
 
-    def fake_recap(ms, _ml, *, maxholesize=1000, time_budget=5.0, **kw):
+    def fake_recap(v, t, *, maxholesize=1000, time_budget=5.0, **kw):
         seen['maxholesize'] = maxholesize
         seen['time_budget'] = time_budget
         rec = {'ran': True, 'applied': True, 'rounds': 1, 'initial_si': 7,
                'si_after': 0, 'removed_si': 7, 'reason': 'clean',
                'budget_s': time_budget, 'seconds': 0.1, 'history': []}
-        return ms, rec
+        return v, t, rec
 
     saved = pipeline_mod.si_excise_recap
     pipeline_mod.si_excise_recap = fake_recap
@@ -209,9 +204,9 @@ def test_close_holes_step_ignores_removed_refine_env():
     keep = ~((c[:, 2] > 0.75) & (c[:, 0] > -0.3))
     vh, th = np.asarray(v), np.asarray(t)[keep]
 
-    ms = _meshset(vh, th)
-    apply_chain(ms, stage1_chain(ml, maxholesize=1000, mincomponentsize=8))
-    topo = _topo(ms)
+    v, t, _applied, _skipped = apply_chain(
+        vh, th, stage1_chain(ml, maxholesize=1000, mincomponentsize=8))
+    topo = topology.mesh_topology(v, t)
     assert topo['number_holes'] == 0, topo
     assert topo['non_two_manifold_edges'] == 0, topo
 

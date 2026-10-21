@@ -118,7 +118,14 @@ def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8, join_compone
 
 
 def _set_mesh_on_ms(ms, ml, v, t):
-    """Update ms with (v, t), preserving an empty current mesh if empty."""
+    """Update ms with (v, t), preserving an empty current mesh if empty.
+
+    PyMeshLab cannot hold a zero-vertex mesh. The empty case keeps one
+    unreferenced vertex instead of running the old
+    ``meshing_remove_unreferenced_vertices`` filter: every caller here looks
+    at face counts, and W4a removes the last MeshSet edge case without a
+    PyMeshLab call.
+    """
     ms.clear()
     if len(v) > 0 and len(t) > 0:
         ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
@@ -127,82 +134,84 @@ def _set_mesh_on_ms(ms, ml, v, t):
     else:
         ms.add_mesh(ml.Mesh(vertex_matrix=np.zeros((1, 3), dtype=np.float64),
                             face_matrix=np.zeros((0, 3), dtype=np.int32)))
-        ms.apply_filter('meshing_remove_unreferenced_vertices')
 
 
-def apply_chain(ms, chain):
-    import pymeshlab as ml
+def _non_manifold_edge_faces(tris):
+    """Faces incident to an edge used by more than two triangles."""
+    t = np.asarray(tris, dtype=np.int64)
+    if len(t) == 0:
+        return np.zeros(0, dtype=bool)
+    edges, counts, inverse = topology.edge_table(t)
+    bad = np.where(counts > 2)[0]
+    if len(bad) == 0:
+        return np.zeros(len(t), dtype=bool)
+    face_ids = np.concatenate([np.arange(len(t)), np.arange(len(t)),
+                               np.arange(len(t))])
+    selected = np.zeros(len(t), dtype=bool)
+    bad_set = set(int(x) for x in bad)
+    for h, edge_id in enumerate(np.asarray(inverse).tolist()):
+        if edge_id in bad_set:
+            selected[int(face_ids[h])] = True
+    return selected
+
+
+def apply_chain(verts, tris, chain):
+    """Run a Stage-1 chain on plain arrays and return ``(v, t, applied, skipped)``.
+
+    Every filter used by the Stage-1 chains is native; no MeshSet is created.
+    ``set_selection_none`` is a no-op and a preceding
+    ``compute_selection_by_non_manifold_edges_per_face`` writes a mask consumed
+    by ``meshing_remove_selected_faces``.
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    if t.ndim != 2:
+        t = t.reshape(-1, 3)
     applied = 0
     skipped = {}
+    selected = np.zeros(len(t), dtype=bool)
     for name, params in chain:
         try:
-            handled = False
             if name == 'meshing_remove_duplicate_faces':
-                m = ms.current_mesh()
-                t = m.face_matrix()
-                t_new = topology.remove_duplicate_faces(t)
-                if len(t_new) < len(t):
-                    v = m.vertex_matrix()
-                    _set_mesh_on_ms(ms, ml, v, t_new)
-                handled = True
+                t = topology.remove_duplicate_faces(t)
             elif name == 'meshing_remove_null_faces':
-                m = ms.current_mesh()
-                v = m.vertex_matrix()
-                t = m.face_matrix()
-                t_new = topology.remove_null_faces(v, t)
-                if len(t_new) < len(t):
-                    _set_mesh_on_ms(ms, ml, v, t_new)
-                handled = True
+                t = topology.remove_null_faces(v, t)
             elif name == 'meshing_remove_duplicate_vertices':
-                m = ms.current_mesh()
-                v = m.vertex_matrix()
-                t = m.face_matrix()
-                v_new, t_new = topology.remove_duplicate_vertices(v, t)
-                if len(v_new) < len(v):
-                    _set_mesh_on_ms(ms, ml, v_new, t_new)
-                handled = True
+                v, t = topology.remove_duplicate_vertices(v, t)
             elif name == 'meshing_remove_unreferenced_vertices':
-                _remove_unref_vertices_ms(ms, ml)
-                handled = True
+                v, t = topology.remove_unreferenced_vertices(v, t)
             elif name == 'meshing_remove_connected_component_by_face_number':
-                min_sz = params.get('mincomponentsize', 8)
-                remove_unref = params.get('removeunref', True)
-                m = ms.current_mesh()
-                v = m.vertex_matrix()
-                t = m.face_matrix()
-                v_new, t_new = topology.remove_connected_components(v, t, min_faces=min_sz, remove_unref=remove_unref)
-                if len(t_new) < len(t):
-                    _set_mesh_on_ms(ms, ml, v_new, t_new)
-                handled = True
+                v, t = topology.remove_connected_components(
+                    v, t, min_faces=params.get('mincomponentsize', 8),
+                    remove_unref=params.get('removeunref', True))
             elif name == 'meshing_invert_face_orientation':
-                _invert_faces_ms(ms, ml)
-                handled = True
+                t = topology.invert_face_orientation(t)
             elif name == 'meshing_repair_non_manifold_edges':
-                _repair_nme_ms(ms, ml)
-                handled = True
+                t = topology.repair_non_manifold_edges(v, t)
             elif name == 'meshing_re_orient_faces_coherently':
-                _re_orient_faces_ms(ms, ml)
-                handled = True
+                t = topology.re_orient_faces_coherently(t)
             elif name == 'meshing_repair_non_manifold_vertices':
-                _repair_nmv_ms(ms, ml)
-                handled = True
+                v, t = topology.repair_non_manifold_vertices(v, t)
+            elif name == 'compute_selection_by_non_manifold_edges_per_face':
+                selected = _non_manifold_edge_faces(t)
+            elif name == 'set_selection_none':
+                selected = np.zeros(len(t), dtype=bool)
             elif name == 'meshing_remove_selected_faces':
-                _remove_selected_faces_ms(ms, ml)
-                handled = True
+                t = topology.remove_selected_faces(
+                    t, selected[:len(t)] if len(selected) == len(t)
+                    else np.zeros(len(t), dtype=bool))
             elif name == 'meshing_close_holes':
-                _close_holes_ms(
-                    ms, ml, maxholesize=params.get('maxholesize', 1000),
+                v, t, _closed, _new = topology.close_holes(
+                    v, t, maxholesize=params.get('maxholesize', 1000),
                     self_intersection=params.get('selfintersection', True),
                     newfaceselected=params.get('newfaceselected', False))
-                handled = True
-
-            if not handled:
-                ms.apply_filter(name, **params)
+            else:
+                raise ValueError('unhandled native chain filter: %s' % name)
             applied += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a chain step never crashes a repair
             method_health.record_error('stage1:' + name, 'filter', exc)
             skipped[name] = str(exc)
-    return applied, skipped
+    return v, t, applied, skipped
 
 
 def _remove_unref_vertices_ms(ms, ml):
@@ -225,7 +234,13 @@ def _invert_faces_ms(ms, ml):
 
 
 def _re_orient_faces_ms(ms, ml):
-    ms.apply_filter('meshing_re_orient_faces_coherently')
+    """Coherently re-orient faces on a MeshSet with the native kernel."""
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    t_new = topology.re_orient_faces_coherently(t)
+    if not np.array_equal(t_new, t):
+        _set_mesh_on_ms(ms, ml, v, t_new)
 
 
 def _repair_nme_ms(ms, ml):
@@ -260,7 +275,7 @@ def _remove_selected_faces_ms(ms, ml, mask=None):
         _set_mesh_on_ms(ms, ml, v, t_new)
 
 
-def extreme_extra_passes(ms, ml, params):
+def extreme_extra_passes(verts, tris, params):
     """Extreme-mode extra Stage 1 passes (Stage C).
 
     After the main chain has run, select and remove self-intersecting faces
@@ -274,34 +289,22 @@ def extreme_extra_passes(ms, ml, params):
 
     Returns
     (passes_applied, self_intersections_found, self_intersections_removed,
-     second_chain_applied, second_chain_skipped).
+     second_chain_applied, second_chain_skipped, verts, tris).
     When the mesh already has no self-intersecting faces the extra passes are
     skipped harmlessly (no error, nothing removed) and passes_applied is False.
     """
-    if topology.native_si_enabled():
-        m = ms.current_mesh()
-        mask, found = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-        if int(found) >= 0:
-            if int(found) == 0:
-                return False, 0, 0, 0, {}
-            before_removal = m.face_number()
-            _remove_selected_faces_ms(ms, ml, mask=mask)
-            removed = max(before_removal - ms.current_mesh().face_number(), 0)
-            _remove_unref_vertices_ms(ms, ml)
-            applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
-            return True, int(found), removed, applied2, skipped2
-        # Classifier skip sentinel (-1, mesh above the cap): fall through to
-        # the PyMeshLab path rather than treating the mesh as SI-free.
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    found = int(ms.current_mesh().face_selection_array().sum())
-    if found == 0:
-        return False, 0, 0, 0, {}
-    before_removal = ms.current_mesh().face_number()
-    _remove_selected_faces_ms(ms, ml)
-    removed = max(before_removal - ms.current_mesh().face_number(), 0)
-    _remove_unref_vertices_ms(ms, ml)
-    applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
-    return True, found, removed, applied2, skipped2
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    mask, found = topology.self_intersecting_faces(v, t)
+    if int(found) <= 0:
+        return False, max(int(found), 0), 0, 0, {}, v, t
+    before_removal = len(t)
+    t = topology.remove_selected_faces(t, mask)
+    v, t = topology.remove_unreferenced_vertices(v, t)
+    removed = max(before_removal - len(t), 0)
+    v, t, applied2, skipped2 = apply_chain(
+        v, t, stage1_chain(None, **params))
+    return True, int(found), removed, applied2, skipped2, v, t
 
 
 # --- Guarded self-intersection excise + re-cap (Full Mend) ------------------
@@ -422,35 +425,24 @@ def _si_count(ms):
     return cnt
 
 
-def si_excise_recap(ms, ml, *, maxholesize=1000,
+def si_excise_recap(verts, tris, *, maxholesize=1000,
                     max_rounds=SI_EXCISE_MAX_ROUNDS,
                     time_budget=SI_EXCISE_DEFAULT_BUDGET,
                     face_fraction=SI_EXCISE_MAX_FACE_FRACTION):
-    """Guarded self-intersection excise + re-cap for the Full Mend path.
+    """Guarded SI excise + re-cap, array-only (no MeshSet).
 
-    Selects the self-intersecting faces, dilates the selection by one vertex
-    ring, deletes it and re-caps the opened loops with ``meshing_close_holes``
-    (``selfintersection=True`` -- which PREVENTS new self-intersecting caps).
-    The Liepa ``refinehole`` refinement was removed in Phase 4 W3d (the
-    40-mesh corpus check found it changed no excise outcome). On the native
-    exact path a rejected one-ring round is
-    retried once on the same pre-round mesh with two rings only when it reduced
-    (but did not close) the pre-existing boundary: the exact classifier does
-    not flag adjacent shared-vertex / touching faces, so the extra ring clears
-    that contact pocket before re-capping. A round that opens more boundary
-    edges than the pre-round mesh is not retried. A round is
-    committed only when the self-intersection count strictly decreases,
-    non-manifold edges do not increase, the connected-component count does not
-    increase, and the native path closes completely
-    (``holes_after == 0``); the fallback keeps the historical
-    ``holes_after <= holes_before``. Otherwise the pre-round mesh is restored
-    byte-for-byte. The connected-component removal filter is never called (no
-    component is dropped). ``report['dilation_rings']`` is the ring count
-    actually used by the last attempt (and each accepted round records it in
-    ``history``).
-    Returns ``(ms, report)``; ``report`` is JSON-serialisable.
+    Starts with a one-ring dilation. On the native exact path a rejected
+    one-ring round is retried once with two rings only when it reduced (but
+    did not close) the pre-existing boundary: the exact classifier does not
+    flag adjacent shared-vertex / touching faces, so the extra ring clears
+    that contact pocket before re-capping. The round is committed only when
+    self-intersections strictly decrease, non-manifold edges and the
+    connected-component count do not increase, and the mesh closes completely
+    (``holes_after == 0``); otherwise the pre-round arrays are restored.
+    Returns ``(verts, tris, report)``.
     """
-    native_si = topology.native_si_enabled()
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
     report = {
         'ran': False, 'applied': False, 'rounds': 0, 'initial_si': 0,
         'si_after': 0, 'removed_si': 0, 'reason': None,
@@ -460,56 +452,48 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
     }
     init_mask = None
     with method_health.tier_guard('si_excise', 'tier') as _g0:
-        report['initial_si'], init_mask = _si_count_and_mask(ms)
+        init_mask, _si = topology.self_intersecting_faces(v, t)
+        report['initial_si'] = max(int(_si), 0)
+        if int(_si) < 0:
+            init_mask = None
     if _g0.error is not None:
         report['reason'] = 'error: %s' % _g0.error
-        return ms, report
+        return v, t, report
     if report['initial_si'] == 0:
         report['reason'] = 'no_si'
-        return ms, report
+        return v, t, report
     if time_budget is not None and time_budget <= 0.0:
         report['reason'] = 'budget'
-        return ms, report
+        return v, t, report
 
     report['ran'] = True
     t0 = time.perf_counter()
     current_si = report['initial_si']
-    total_faces = int(ms.current_mesh().face_number())
+    total_faces = len(t)
     for round_idx in range(max_rounds):
         if time_budget is not None and (time.perf_counter() - t0) > time_budget:
             report['reason'] = 'budget'
             break
-        topo_before = topology.mesh_topology(ms)
-        # Use boundary EDGES, not ``number_holes``: the latter is unreliable on
-        # meshes with non-manifold vertices (reported -1 on thingi10k_145065,
-        # which let a round that opened 42 boundary loops be accepted).
+        topo_before = topology.mesh_topology(v, t)
         holes_before = int(topo_before.get('boundary_edges', 0) or 0)
         nm_before = (int(topo_before.get('non_two_manifold_edges', 0) or 0)
                      + int(topo_before.get('non_two_manifold_vertices', 0) or 0))
         comp_before = int(topo_before.get('connected_components_number', 0) or 0)
-        saved_v = ms.current_mesh().vertex_matrix().copy()
-        saved_t = ms.current_mesh().face_matrix().copy()
-        if native_si:
-            if round_idx == 0 and init_mask is not None:
-                sel_cur = init_mask
-            else:
-                m_cur = ms.current_mesh()
-                sel_cur, _ = topology.self_intersecting_faces(
-                    m_cur.vertex_matrix(), m_cur.face_matrix())
+        saved_v = v.copy()
+        saved_t = t.copy()
+        if round_idx == 0 and init_mask is not None:
+            sel_cur = np.asarray(init_mask, dtype=bool)
         else:
-            ms.apply_filter('compute_selection_by_self_intersections_per_face')
-            sel_cur = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
-        m_cur = ms.current_mesh()
-        t_cur = np.asarray(m_cur.face_matrix(), dtype=np.int64)
+            sel_cur, _ = topology.self_intersecting_faces(v, t)
+        sel_cur = np.asarray(sel_cur, dtype=bool)
         accepted = False
-        for attempt, rings in enumerate((1, 2) if native_si else (1,)):
+        for attempt, rings in enumerate((1, 2)):
             if attempt:
-                ms.clear()
-                ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
+                v, t = saved_v.copy(), saved_t.copy()
             report['dilation_rings'] = rings
             with method_health.tier_guard('si_excise', 'round') as _gr:
                 sel_dil = topology.dilate_face_selection(
-                    t_cur, sel_cur, rings=rings)
+                    saved_t, sel_cur, rings=rings)
                 selected = int(sel_dil.sum())
                 if selected == 0:
                     report['reason'] = 'no_selection'
@@ -517,29 +501,35 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 if selected > face_fraction * max(total_faces, 1):
                     report['reason'] = 'scope'
                     break
-                _remove_selected_faces_ms(ms, ml, mask=sel_dil)
-                _remove_unref_vertices_ms(ms, ml)
-                _repair_nme_ms(ms, ml)
-                _repair_nmv_ms(ms, ml)
-                _close_holes_ms(ms, ml, maxholesize=maxholesize,
-                                newfaceselected=False, self_intersection=True)
-                _remove_unref_vertices_ms(ms, ml)
-                topo_after = topology.mesh_topology(ms)
+                t_work = topology.remove_selected_faces(saved_t, sel_dil)
+                v_work, t_work = topology.remove_unreferenced_vertices(
+                    saved_v, t_work)
+                t_work = topology.repair_non_manifold_edges(v_work, t_work)
+                v_work, t_work = topology.repair_non_manifold_vertices(
+                    v_work, t_work)
+                v_work, t_work, _closed, _new = topology.close_holes(
+                    v_work, t_work, maxholesize=maxholesize,
+                    self_intersection=True, newfaceselected=False)
+                v_work, t_work = topology.remove_unreferenced_vertices(
+                    v_work, t_work)
+                topo_after = topology.mesh_topology(v_work, t_work)
                 holes_after = int(topo_after.get('boundary_edges', 0) or 0)
                 nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)
                             + int(topo_after.get('non_two_manifold_vertices', 0) or 0))
                 comp_after = int(topo_after.get('connected_components_number', 0) or 0)
-                si_after = _si_count(ms)
+                _, _si_after = topology.self_intersecting_faces(v_work, t_work)
+                si_after = int(_si_after) if int(_si_after) >= 0 else None
             if _gr.error is not None:
-                ms.clear()
-                ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
+                v, t = saved_v.copy(), saved_t.copy()
                 report['reason'] = 'rollback'
                 break
-            holes_ok = holes_after == 0 if native_si else holes_after <= holes_before
+            holes_ok = holes_after == 0
             components_ok = comp_after <= comp_before
-            if (si_after < current_si and holes_ok
-                    and nm_after <= nm_before and components_ok):
+            si_ok = si_after is not None and si_after < current_si
+            if (si_ok and holes_ok and nm_after <= nm_before
+                    and components_ok):
                 accepted = True
+                v, t = v_work, t_work
                 report['history'].append({
                     'round': round_idx + 1,
                     'si_before': int(current_si),
@@ -547,7 +537,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                     'faces_after': int(topo_after.get('faces_number', 0) or 0),
                     'dilation_rings': rings,
                 })
-                current_si = si_after
+                current_si = int(si_after)
                 report['rounds'] += 1
                 if current_si == 0:
                     report['reason'] = 'clean'
@@ -555,15 +545,12 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                     report['reason'] = 'max_rounds'
                 break
             # Retry only the 40886-type rejection: the one-ring round reduced
-            # the pre-existing boundary but could not close it (the contact
-            # pocket needs the second ring). A round that opens *more* boundary
-            # edges than the pre-round mesh must not trigger the larger cut.
-            if (rings == 1 and native_si and holes_after > 0
+            # the pre-existing boundary but could not close it.
+            if (rings == 1 and holes_after > 0
                     and holes_after < holes_before
-                    and si_after < current_si and nm_after <= nm_before):
+                    and si_ok and nm_after <= nm_before):
                 continue
-            ms.clear()
-            ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
+            v, t = saved_v.copy(), saved_t.copy()
             break
         if not accepted:
             if report['reason'] not in ('no_selection', 'scope'):
@@ -575,10 +562,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
     report['removed_si'] = int(report['initial_si'] - current_si)
     report['applied'] = report['rounds'] > 0
     report['seconds'] = round(time.perf_counter() - t0, 3)
-    return ms, report
+    return v, t, report
 
 
-def join_small_components(ms, ml, mincomponentsize, maxholesize):
+def join_small_components(verts, tris, mincomponentsize, maxholesize):
     """Prototype (flag-gated): join small components onto the nearest larger
     one instead of deleting them.
 
@@ -589,14 +576,14 @@ def join_small_components(ms, ml, mincomponentsize, maxholesize):
     not dropped) so it must stay behind ``--experimental-join-components`` and
     is NOT part of the default chain.
 
-    Returns ``(moved, remaining_small)`` -- moved = number of small components
-    joined, remaining_small = small components that could not be joined (no
-    larger component to move onto, or the mesh has only small components).
+    Returns ``(verts, tris, moved, remaining_small)`` -- moved = number of
+    small components joined, remaining_small = small components that could not
+    be joined (no larger component to move onto, or only small components).
     """
-    v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
-    t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
     if len(t) == 0:
-        return 0, 0
+        return v, t, 0, 0
 
     # connected components via union-find over faces sharing a vertex
     parent = list(range(len(t)))
@@ -626,7 +613,7 @@ def join_small_components(ms, ml, mincomponentsize, maxholesize):
     large = [c for c, n in zip(comp_ids, counts) if n >= mincomponentsize]
     small = [c for c, n in zip(comp_ids, counts) if n < mincomponentsize]
     if not large or not small:
-        return 0, len(small)
+        return v, t, 0, len(small)
 
     # per-component vertex index sets (component id -> sorted vertex ids)
     comp_verts = {}
@@ -657,19 +644,10 @@ def join_small_components(ms, ml, mincomponentsize, maxholesize):
         moved += 1
 
     # fuse the coincident vertices and re-close what the move opened
-    # (add_mesh makes the rebuilt mesh current)
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v_new, dtype=np.float32),
-                        face_matrix=np.asarray(t, dtype=np.int32)))
-    for name, params in (('meshing_remove_duplicate_vertices', {}),
-                         ('meshing_repair_non_manifold_vertices', {}),
-                         ('meshing_remove_duplicate_faces', {}),
-                         ('meshing_close_holes', {'maxholesize': maxholesize}),
-                         ('meshing_remove_unreferenced_vertices', {})):
-        try:
-            if name == 'meshing_close_holes':
-                _close_holes_ms(ms, ml, maxholesize=params['maxholesize'])
-            else:
-                ms.apply_filter(name, **params)
-        except Exception:
-            pass
-    return moved, max(len(small) - moved, 0)
+    chain = [('meshing_remove_duplicate_vertices', {}),
+             ('meshing_repair_non_manifold_vertices', {}),
+             ('meshing_remove_duplicate_faces', {}),
+             ('meshing_close_holes', {'maxholesize': maxholesize}),
+             ('meshing_remove_unreferenced_vertices', {})]
+    v_new, t_new, _applied, _skipped = apply_chain(v_new, t, chain)
+    return v_new, t_new, moved, max(len(small) - moved, 0)
