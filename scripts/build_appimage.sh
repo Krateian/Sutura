@@ -2,7 +2,7 @@
 # Build the Sutura AppImage.
 #
 # Bundles one relocatable python-build-standalone runtime:
-#   * Python 3.14 -> usr/lib/sutura/venv     (pymeshlab + PySide6 + sutura_geom)
+#   * Python 3.14 -> usr/lib/sutura/venv     (numpy + PySide6 + sutura_geom)
 # plus the application modules, an AppRun GUI/CLI dispatch entry point, and a
 # .desktop + icon, then packages the whole AppDir with appimagetool.
 #
@@ -64,7 +64,7 @@ echo "==> installing Python 3.14 runtime (stage 1 + GUI)"
 tar xzf "$DL/$(basename "$PBS_314")" -C "$WORK"
 mv "$WORK/python" "$LIB/venv"
 
-echo "==> pip install: stage 1 (pymeshlab + PySide6)"
+echo "==> pip install: stage 1 (numpy + PySide6)"
 "$LIB/venv/bin/python" -m pip install --quiet --upgrade pip
 "$LIB/venv/bin/python" -m pip install --quiet \
     -r "$REPO_ROOT/requirements.txt" -r "$REPO_ROOT/requirements-gui.txt"
