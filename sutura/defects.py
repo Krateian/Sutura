@@ -50,7 +50,11 @@ def _boundary_loops(adj):
     Returns a list of vertex-index lists."""
     used = set()
     loops = []
-    for start in list(adj.keys()):
+    # Iterate in sorted order so the hole count and loop decomposition do not
+    # depend on the face order of the incoming array. Boundary graphs with a
+    # vertex of degree > 2 are ambiguous; this makes the chosen decomposition
+    # deterministic across equivalent face orderings (W4a parity fix).
+    for start in sorted(adj):
         if start in used:
             continue
         loop = [start]
@@ -58,7 +62,7 @@ def _boundary_loops(adj):
         cur, prev = start, None
         while True:
             nxt = None
-            for nb in adj.get(cur, []):
+            for nb in sorted(adj.get(cur, [])):
                 if nb == prev:
                     continue
                 if nb == start and len(loop) > 2:
