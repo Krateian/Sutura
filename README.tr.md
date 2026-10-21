@@ -664,9 +664,12 @@ sınır halkasını dolaşıp kabuğa en dar noktada kavuşan bir tıkaç kurar 
 (`healthy_faces_kept`). Kalan kendini kesmeler daha sonra en derin noktadan
 dışa doğru ince katmanlar hâlinde eritilir ve kesişme sayısını azaltmayan bir
 katman geri alınır, böylece katman hiçbir zaman daha kötü bitmez. Flap ve
-Graft'ın içe dönük karşılığıdır. **Temizlenmiş girdi üzerinde, Flap ve Aşama
-1'den önce bir ön-geçiş olarak** çalışır ve **Aşama 1/Flap kapatma merdiveninden
-sonra, Graft/fTetWild katmanlarından önce ikinci bir şans** alır.
+Graft'ın içe dönük karşılığıdır. Sınır halkası yürüyüşü ve referans yüzeyi
+halkası kanonik bir köşe sırası kullanır; bu yüzden halka ayrıştırması ve
+seçilen tıkaç, girdi üçgenlerinin saklanma sırasına bağlı değildir.
+**Temizlenmiş girdi üzerinde, Flap ve Aşama 1'den önce bir ön-geçiş olarak**
+çalışır ve **Aşama 1/Flap kapatma merdiveninden sonra, Graft/fTetWild
+katmanlarından önce ikinci bir şans** alır.
 
 **Varsayılan olarak açıktır**: kapatmak için `--no-tamponade` (veya
 `SUTURA_TAMPONADE=0`) ya da Seçenekler → Onarım sekmesindeki **Tamponad
