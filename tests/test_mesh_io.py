@@ -285,6 +285,14 @@ def test_read_mesh_dispatches_by_extension():
         try:
             read_mesh(ply)
         except ValueError as exc:
+            assert 'malformed PLY' in str(exc)
+        else:
+            raise AssertionError('a truncated PLY header must raise')
+
+        xyz = _write(tmp, 'part.xyz', '0 0 0\n')
+        try:
+            read_mesh(xyz)
+        except ValueError as exc:
             assert 'unsupported mesh extension' in str(exc)
         else:
             raise AssertionError('unsupported extension must raise')
