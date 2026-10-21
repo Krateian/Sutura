@@ -38,7 +38,7 @@ def run_stage2(inter, out_obj):
 PINCH_SPLIT_MAX_PASSES = 5
 
 
-def _split_pinched_vertices(ml, ms, topo):
+def _split_pinched_vertices(verts, tris, topo):
     """Split pinched vertices of a closed mesh so it becomes two-manifold.
 
     Applies only when the mesh has no hole, no non-manifold edge and at least
@@ -53,30 +53,27 @@ def _split_pinched_vertices(ml, ms, topo):
     ``passes`` and ``adopted``.
     """
     pinched = topo.get('non_two_manifold_vertices', 0)
-    m = ms.current_mesh()
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
     if (pinched == 0 or topo.get('is_mesh_two_manifold')
             or topo.get('non_two_manifold_edges', 0) != 0
-            or boundary_loop_stats(m.vertex_matrix(), m.face_matrix())[0] != 0):
-        return ms, topo, False
-    trial = ml.MeshSet()
-    trial.add_mesh(ml.Mesh(vertex_matrix=np.asarray(m.vertex_matrix(), np.float64),
-                           face_matrix=np.asarray(m.face_matrix(), np.int32)))
+            or boundary_loop_stats(v, t)[0] != 0):
+        return v, t, topo, False
     t_topo, passes = topo, 0
     while passes < PINCH_SPLIT_MAX_PASSES:
         passes += 1
-        _repair_nmv_ms(trial, ml)
-        t_topo = topology.mesh_topology(trial)
+        v, t = topology.repair_non_manifold_vertices(v, t)
+        t_topo = topology.mesh_topology(v, t)
         if t_topo.get('is_mesh_two_manifold'):
             break
-    tm = trial.current_mesh()
-    holes = boundary_loop_stats(tm.vertex_matrix(), tm.face_matrix())[0]
+    holes = boundary_loop_stats(v, t)[0]
     adopted = bool(holes == 0 and t_topo.get('non_two_manifold_edges', 0) == 0
                    and t_topo.get('non_two_manifold_vertices', 0) < pinched)
     report = {'before': int(pinched),
               'after': int(t_topo.get('non_two_manifold_vertices', 0)),
               'passes': passes, 'adopted': adopted}
     if adopted:
-        return trial, t_topo, report
+        return v, t, t_topo, report
     return ms, topo, report
 
 

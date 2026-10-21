@@ -772,7 +772,12 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # strictly watertight mesh is reported as a warning (thingi10k_145065).
     _t_ps = time.perf_counter()
     _ps_in_v, _ps_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-    ms, after, stats['pinched_vertices_split'] = _split_pinched_vertices(ml, ms, after)
+    _pv = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
+    _pt = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
+    _pv, _pt, after, stats['pinched_vertices_split'] = _split_pinched_vertices(
+        _pv, _pt, after)
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=_pv, face_matrix=_pt.astype(np.int32)))
     if trace.is_active():
         _cur_v, _cur_t = _meshset_arrays_safe(ms)
         trace.record_stage('pinch_split', 'stage2._split_pinched_vertices',

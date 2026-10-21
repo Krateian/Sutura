@@ -50,29 +50,31 @@ def test_bowtie_is_split_into_a_two_manifold_mesh():
     assert not topo.get('is_mesh_two_manifold')
     assert topo.get('non_two_manifold_edges', 0) == 0
     assert topo.get('non_two_manifold_vertices', 0) > 0
-    out_ms, out_topo, rep = repair._split_pinched_vertices(ml, ms, topo)
+    v0, t0 = np.asarray(BOWTIE_V), np.asarray(BOWTIE_T)
+    ov, ot, out_topo, rep = repair._split_pinched_vertices(v0, t0, topo)
     assert rep and rep['adopted'], rep
     assert rep['before'] > 0 and rep['after'] == 0 and 1 <= rep['passes'] <= 5
     assert out_topo.get('is_mesh_two_manifold')
-    m = out_ms.current_mesh()
-    assert len(m.face_matrix()) == len(BOWTIE_T)
-    assert repair.boundary_loop_stats(m.vertex_matrix(), m.face_matrix())[0] == 0
+    assert len(ot) == len(BOWTIE_T)
+    assert repair.boundary_loop_stats(ov, ot)[0] == 0
     # geometry unchanged: the split only duplicates vertex 0
-    assert len(m.vertex_matrix()) == len(BOWTIE_V) + 1
+    assert len(ov) == len(BOWTIE_V) + 1
 
 
 def test_clean_cube_is_left_alone():
     ms, topo = _meshset(CUBE_V, CUBE_T)
     assert topo.get('is_mesh_two_manifold')
-    out_ms, out_topo, rep = repair._split_pinched_vertices(ml, ms, topo)
+    v0 = np.asarray(CUBE_V, np.float64); t0 = np.asarray(CUBE_T, np.int64)
+    ov, ot, out_topo, rep = repair._split_pinched_vertices(v0, t0, topo)
     assert rep is False
-    assert out_ms is ms and out_topo is topo
+    assert np.array_equal(ov, v0) and np.array_equal(ot, t0)
 
 
 def test_open_mesh_is_left_alone():
     ms, topo = _meshset(CUBE_V, CUBE_T[:-1])     # one missing face -> a hole
-    out_ms, _topo, rep = repair._split_pinched_vertices(ml, ms, topo)
-    assert rep is False and out_ms is ms
+    v0 = np.asarray(CUBE_V, np.float64); t0 = np.asarray(CUBE_T[:-1], np.int64)
+    ov, ot, _topo, rep = repair._split_pinched_vertices(v0, t0, topo)
+    assert rep is False and np.array_equal(ov, v0) and np.array_equal(ot, t0)
 
 
 def test_real_world_pinched_sample():
