@@ -116,7 +116,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `repeat_repair.py` was integrated into the registry (11 `repeat_auto`,
   12 `repeat_manual`) with `--repeat-source X,Y,Z` / `--repeat-target X,Y,Z`
   for the manual method; the GUI *Use method* entry for #12 opens a picker
-  dialog (kept off the GUI's pymeshlab-free process by loading the mesh in the
+  dialog (kept off the GUI process by loading the mesh in the
   `repeat_picker_render.py` subprocess) so both sides are covered.
 - **Proxy resample + alpha wrap native swap (Phase 4 W3c/W3e):** the proxy-tier
   uniform resampler and hole closure moved from PyMeshLab
@@ -218,7 +218,7 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `stent_used` / `stent_rejected` and the standard per-plug `plug_metrics`
   array; the GUI's tamponade log renders the adopted verdict unchanged. The
   name is deliberately NOT "balloon" to avoid confusion with method #8 Balloon
-  (Poisson surface reconstruction).
+  (native implicit surface reconstruction).
 - **Splint (#18, exact solid rebuild, unreleased):** CLI `--experimental-splint`
   / `--no-splint` and env `SUTURA_SPLINT` (`0/1/true/false/...`) control the
   off-by-default last-resort solid-rebuild tier; the GUI exposes the same as

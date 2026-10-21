@@ -3,8 +3,9 @@
 #
 # The Linux installer uses a pip-only flow. macOS keeps a single conda
 # environment (Homebrew provides the Miniforge/conda toolchain it builds on)
-# so the pinned PySide6 and the fTetWild extra install reproducibly; PyMeshLab
-# is no longer needed at runtime. This script automates that setup.
+# so the pinned PySide6 and the fTetWild extra install reproducibly. The
+# repair engine is native; PyMeshLab is not installed at runtime. This script
+# automates that setup.
 set -euo pipefail
 
 if [ "$(uname -s)" != "Darwin" ]; then

@@ -4,9 +4,9 @@ Repair OrcaSlicer models straight from a dockable panel beside the 3D view:
 the objects on the plate are read through the `orca.host` API, exported to STL
 in world coordinates, repaired with the [separately-installed Sutura
 CLI](https://github.com/Krateian/Sutura), and the repaired copy is loaded back
-into the slicer as a new object. The plugin does not bundle
-PyMeshLab/manifold3d into OrcaSlicer's embedded Python; repair runs through the
-installed Sutura CLI, which requires the mandatory `sutura_geom` extension. The
+into the slicer as a new object. The plugin does not bundle the repair engine
+into OrcaSlicer's embedded Python; repair runs through the installed Sutura CLI,
+which requires the mandatory native `sutura_geom` extension (no PyMeshLab). The
 plugin itself declares `numpy`
 as a plugin dependency (installed by OrcaSlicer's bundled uv) and falls back
 to the numpy-free mesh accessors when numpy is unavailable.
