@@ -101,6 +101,28 @@ def test_rollback_on_failed_recap_restores_mesh():
     assert np.array_equal(v0, v1) and np.array_equal(t0, t1)
 
 
+def test_round_that_splits_the_mesh_is_rejected():
+    """A committed round must not increase the connected-component count.
+
+    thingi10k_63785: the one-ring excise closed the mesh and dropped SI 81 -> 0
+    but left TWO shells (the pre-round mesh is a single component), so every
+    round must be rejected and the excise must stay unapplied with the input's
+    component count preserved."""
+    sample = os.path.join(REPO, 'tests', 'real-world-samples',
+                          'thingi10k_63785.stl')
+    if not os.path.exists(sample):
+        print('    (corpus mesh missing: skipped)')
+        return
+    m = trimesh.load(sample)
+    ms = _meshset(np.asarray(m.vertices, np.float64),
+                  np.asarray(m.faces, np.int64))
+    comp_before = _topo(ms)['connected_components_number']
+    assert comp_before == 1, comp_before
+    ms, rep = pipeline_mod.si_excise_recap(ms, ml, time_budget=30.0)
+    assert rep['applied'] is False, rep
+    assert _topo(ms)['connected_components_number'] == comp_before, _topo(ms)
+
+
 def test_budget_zero_skips():
     v, t = _sphere_with_blade(3)
     ms = _meshset(v, t)

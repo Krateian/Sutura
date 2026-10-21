@@ -460,10 +460,10 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
     (but did not close) the pre-existing boundary: the exact classifier does
     not flag adjacent shared-vertex / touching faces, so the extra ring clears
     that contact pocket before re-capping. A round that opens more boundary
-    edges than the pre-round mesh is not retried. The two-ring retry is also
-    rejected when it increases the connected-component count. A round is
+    edges than the pre-round mesh is not retried. A round is
     committed only when the self-intersection count strictly decreases,
-    non-manifold edges do not increase, and the native path closes completely
+    non-manifold edges do not increase, the connected-component count does not
+    increase, and the native path closes completely
     (``holes_after == 0``); the fallback keeps the historical
     ``holes_after <= holes_before``. Otherwise the pre-round mesh is restored
     byte-for-byte. The connected-component removal filter is never called (no
@@ -564,7 +564,7 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 report['reason'] = 'rollback'
                 break
             holes_ok = holes_after == 0 if native_si else holes_after <= holes_before
-            components_ok = rings != 2 or comp_after <= comp_before
+            components_ok = comp_after <= comp_before
             if (si_after < current_si and holes_ok
                     and nm_after <= nm_before and components_ok):
                 accepted = True
