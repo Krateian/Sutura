@@ -6,6 +6,8 @@ Checks:
   2. build_proxy produces watertight 2-manifold surface without debris.
   3. build_proxy is bounded on a fan mesh whose long thin triangles used to
      hang PyMeshLab's resampler (now handled by the native resampler).
+  3b. build_proxy falls back to the native morph_close strategy when the
+     resample strategies are unavailable.
   4. proxy_template_repair repairs broken sphere with hole, flipped face, and debris.
   5. proxy_template_repair repairs broken torus while preserving topology.
   6. Defensive error handling returns honest error reports without raising.
@@ -195,6 +197,27 @@ def test_build_proxy_bounded_on_fan_mesh():
           f"(method: {info['method']}, faces: {len(pt)}, {elapsed:.1f}s)")
 
 
+def test_build_proxy_morph_close_fallback():
+    """Strategy 3 (native ``morph_close``) must yield a watertight proxy when the
+    resample strategies are unavailable."""
+    v, t = _make_broken_sphere()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError('forced resample failure')
+
+    orig = pr.topology.resample_uniform
+    pr.topology.resample_uniform = _boom
+    try:
+        pv, pt, info = pr.build_proxy(v, t)
+    finally:
+        pr.topology.resample_uniform = orig
+    assert info['method'] == 'morph_close', f"expected morph_close, got {info['method']}"
+    assert len(pt) >= 100, f"proxy too small: {len(pt)} faces"
+    ok, status = sutura_geom.watertight_check(pv, pt)
+    assert ok, f"Proxy Manifold error: {status}"
+    print(f"  ✓ test_build_proxy_morph_close_fallback passed (faces: {len(pt)})")
+
+
 def test_defensive_error_handling():
     empty_v = np.zeros((0, 3), dtype=np.float64)
     empty_t = np.zeros((0, 3), dtype=np.int64)
@@ -216,6 +239,7 @@ def main():
     test_health_mask()
     test_build_proxy()
     test_build_proxy_bounded_on_fan_mesh()
+    test_build_proxy_morph_close_fallback()
     test_proxy_template_repair_sphere()
     test_proxy_template_repair_torus()
     test_defensive_error_handling()

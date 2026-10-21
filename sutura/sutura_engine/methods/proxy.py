@@ -125,7 +125,7 @@ def build_proxy(verts, tris, voxel=None):
     Attempts in order:
       (a) native voxel resample (signed field, offset 0.0) + native hole closing
       (a2) native voxel resample (unsigned distance, offset=voxel)
-      (b) PyMeshLab generate_alpha_wrap fallback
+      (b) native morphological closing (``sutura_geom.morph_close``) fallback
 
     Voxel size is clamped so grid dimensions stay within [32, 256].
 
@@ -159,8 +159,6 @@ def build_proxy(verts, tris, voxel=None):
     if max_dim / voxel < MIN_GRID_CELLS:
         voxel = max_dim / MIN_GRID_CELLS
 
-    import pymeshlab as ml
-
     # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
     try:
         rv, rt, _ = topology.resample_uniform(in_v, in_t, voxel, 0.0, False)
@@ -191,25 +189,15 @@ def build_proxy(verts, tris, voxel=None):
     except Exception:
         pass
 
-    # Strategy 3: Alpha wrap fallback (guaranteed watertight 2-manifold)
+    # Strategy 3: Morphological closing fallback (guaranteed watertight 2-manifold)
     try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        alpha = voxel * 2.0
-        offset = voxel / 4.0
-        ms.apply_filter(
-            'generate_alpha_wrap',
-            alpha=ml.PureValue(alpha),
-            offset=ml.PureValue(offset),
-        )
-        out = ms.current_mesh()
-        pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
-        pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+        rv, rt, _ = sutura_geom.morph_close(
+            in_v, in_t, float(voxel) * 2.0, float(voxel))
+        pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
-                'method': 'alpha_wrap',
+                'method': 'morph_close',
                 'voxel': voxel,
                 'faces': len(pt),
             }
@@ -352,8 +340,6 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
         }
 
     try:
-        import pymeshlab as ml
-
         diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
 
         # 1. Extract healthy original surface
