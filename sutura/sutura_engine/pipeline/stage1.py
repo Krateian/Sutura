@@ -38,6 +38,23 @@ def _close_holes_step(maxholesize):
     return ('meshing_close_holes', params)
 
 
+def _close_holes_ms(ms, ml, maxholesize=1000, self_intersection=True,
+                    newfaceselected=False, refinehole=False,
+                    refineholeedgelen=None):
+    """Apply ``meshing_close_holes`` to a MeshSet in place (native).
+
+    Thin delegate to :func:`topology.close_holes_ms`: the Rust ear-clipping
+    closer handles the plain path, while the Liepa-style ``refinehole=True``
+    refinement is not ported yet (Faz 4D) and is routed to PyMeshLab unchanged.
+    Returns ``(closed_holes, new_faces)`` for the native path and ``None`` for
+    the PyMeshLab fallback.
+    """
+    return topology.close_holes_ms(
+        ms, ml, maxholesize=maxholesize, self_intersection=self_intersection,
+        newfaceselected=newfaceselected, refinehole=refinehole,
+        refineholeedgelen=refineholeedgelen)
+
+
 def stage1_cleanup_chain(ml):
     """The Stage-1 mesh-hygiene passes: duplicate/null removal, non-manifold
     edge/vertex repair and a coherent re-orientation, with NO hole closing and
@@ -182,6 +199,14 @@ def apply_chain(ms, chain):
                 handled = True
             elif name == 'meshing_remove_selected_faces':
                 _remove_selected_faces_ms(ms, ml)
+                handled = True
+            elif name == 'meshing_close_holes':
+                _close_holes_ms(
+                    ms, ml, maxholesize=params.get('maxholesize', 1000),
+                    self_intersection=params.get('selfintersection', True),
+                    newfaceselected=params.get('newfaceselected', False),
+                    refinehole=params.get('refinehole', False),
+                    refineholeedgelen=params.get('refineholeedgelen'))
                 handled = True
 
             if not handled:
@@ -520,12 +545,12 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                 _repair_nmv_ms(ms, ml)
                 close_kwargs = {'maxholesize': maxholesize,
                                 'newfaceselected': False,
-                                'selfintersection': True}
+                                'self_intersection': True}
                 if total_faces <= SI_EXCISE_REFINE_MAX_FACES:
                     close_kwargs['refinehole'] = True
                     close_kwargs['refineholeedgelen'] = ml.PercentageValue(
                         SI_EXCISE_REFINE_EDGE_PCT)
-                ms.apply_filter('meshing_close_holes', **close_kwargs)
+                _close_holes_ms(ms, ml, **close_kwargs)
                 _remove_unref_vertices_ms(ms, ml)
                 topo_after = topology.mesh_topology(ms)
                 holes_after = int(topo_after.get('boundary_edges', 0) or 0)
@@ -669,7 +694,10 @@ def join_small_components(ms, ml, mincomponentsize, maxholesize):
                          ('meshing_close_holes', {'maxholesize': maxholesize}),
                          ('meshing_remove_unreferenced_vertices', {})):
         try:
-            ms.apply_filter(name, **params)
+            if name == 'meshing_close_holes':
+                _close_holes_ms(ms, ml, maxholesize=params['maxholesize'])
+            else:
+                ms.apply_filter(name, **params)
         except Exception:
             pass
     return moved, max(len(small) - moved, 0)
