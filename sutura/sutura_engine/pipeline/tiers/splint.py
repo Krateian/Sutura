@@ -43,7 +43,7 @@ def _count_defects(verts, tris):
     return len(det['holes']), len(det['non_manifold'])
 
 
-def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
+def _splint_tier_ms(ml, ms, after, stats, v, t, tmpdir, splint=False,
                 intensity=None, spec=None, adaptive=None):
     """Exact solid-rebuild tier for registry method 18 (Splint).
 
@@ -179,3 +179,20 @@ def splint_tier(ml, ms, after, stats, v, t, tmpdir, splint=False,
         rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['splint'] = rec
     return ms, after
+
+
+def splint_tier(*args, **kwargs):
+    """Array API; legacy (ml, ms, after, stats, v, t, tmpdir) is forwarded."""
+    if not (len(args) >= 2 and isinstance(args[0], np.ndarray)
+            and isinstance(args[1], np.ndarray)):
+        return _splint_tier_ms(*args, **kwargs)
+    v, t, input_v, input_t, after, stats, tmpdir = args[:7]
+    import pymeshlab as _ml
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after = _splint_tier_ms(_ml, ms, after, stats, input_v, input_t,
+                                tmpdir, **kwargs)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after)

@@ -14,7 +14,7 @@ from sutura_engine.pipeline.p_weld import (
 from sutura_engine.pipeline.presets import GRAFT_MAX_FACES, GRAFT_TIMEOUT
 
 
-def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
+def _graft_tier_ms(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
                spec=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
@@ -176,3 +176,20 @@ def graft_tier(ml, ms, after, stats, v, t, tmpdir, graft=False, intensity=None,
         rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['graft'] = rec
     return ms, after
+
+
+def graft_tier(*args, **kwargs):
+    """Array API; legacy (ml, ms, after, stats, v, t, tmpdir) is forwarded."""
+    if not (len(args) >= 2 and isinstance(args[0], np.ndarray)
+            and isinstance(args[1], np.ndarray)):
+        return _graft_tier_ms(*args, **kwargs)
+    v, t, input_v, input_t, after, stats, tmpdir = args[:7]
+    import pymeshlab as _ml
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after = _graft_tier_ms(_ml, ms, after, stats, input_v, input_t,
+                               tmpdir, **kwargs)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after)

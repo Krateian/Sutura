@@ -415,7 +415,7 @@ def _ftetwild_attempt(ml, tmpdir, inter, tag, params, timeout, v=None, t=None,
     return att, cand
 
 
-def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
+def _ftetwild_tier_ms(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
     """fTetWild basamak of the deep-repair ladder. Returns ``(ms, after)``.
 
     Skipped for inputs above the intensity spec's fTetWild size cap
@@ -542,3 +542,20 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
                 ft_rep['error'] = str(_g.error)
             stats['experimental_ftetwild'] = ft_rep
     return ms, after
+
+
+def _ftetwild_tier(*args, **kwargs):
+    """Array API; legacy (ml, ms, after, stats, v, t, tmpdir) is forwarded."""
+    if not (len(args) >= 2 and isinstance(args[0], np.ndarray)
+            and isinstance(args[1], np.ndarray)):
+        return _ftetwild_tier_ms(*args, **kwargs)
+    v, t, input_v, input_t, after, stats, tmpdir = args[:7]
+    import pymeshlab as _ml
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after = _ftetwild_tier_ms(_ml, ms, after, stats, input_v, input_t,
+                                  tmpdir, **kwargs)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after)

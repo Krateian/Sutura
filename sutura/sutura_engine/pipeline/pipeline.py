@@ -34,16 +34,16 @@ from sutura_engine.pipeline.stage1 import (
 from sutura_engine.pipeline.stage2 import _split_pinched_vertices
 from sutura_engine.pipeline.tiers import ftetwild as _ftetwild_mod
 from sutura_engine.pipeline.tiers.closing import closing_ladder
-from sutura_engine.pipeline.tiers.dressing import dressing_tier
+from sutura_engine.pipeline.tiers.dressing import _dressing_tier_ms
 from sutura_engine.pipeline.tiers.engines import (
     _record_engine_entries, engine_placement_order, run_engines,
 )
 from sutura_engine.pipeline.tiers.flap import _flap_step
-from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier
-from sutura_engine.pipeline.tiers.graft import graft_tier
-from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier
+from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier_ms
+from sutura_engine.pipeline.tiers.graft import _graft_tier_ms
+from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier_ms
 from sutura_engine.pipeline.tiers.repeat import repeat_tier
-from sutura_engine.pipeline.tiers.splint import splint_tier
+from sutura_engine.pipeline.tiers.splint import _splint_tier_ms
 from sutura_engine.pipeline.tiers.tamponade import tamponade_tier
 from sutura_engine.pipeline.tiers.wall import wall_thicken_tier
 from sutura_engine.pipeline.utils import (
@@ -716,7 +716,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # ``stats['graft']``.
     _t_gr = time.perf_counter()
     _gr_in_v, _gr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-    ms, after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
+    ms, after = _graft_tier_ms(ml, ms, after, stats, v, t, tmpdir,
                            graft=(graft is True) and not _tamp_watertight,
                            intensity=(getattr(triage_spec, 'base', None)
                                       or getattr(triage_spec, 'name', None)),
@@ -972,7 +972,7 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
     cur_nm = int(after.get('non_two_manifold_edges', 0))
     if mode == 'local':
         if cur_holes > 0 or cur_nm > 0:
-            ms, after, local_rep = _local_remesh_tier(ml, ms, after)
+            ms, after, local_rep = _local_remesh_tier_ms(ml, ms, after)
             tiers_run.append('local')
         else:
             local_rep = None
@@ -1018,7 +1018,7 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
             # run on it, or already-watertight repairs would change output and
             # pay an unnecessary tier.
             if graft in (True, 'auto') and (cur_holes > 0 or cur_nm > 0):
-                _g_ms, _g_after = graft_tier(ml, ms, after, stats, v, t, tmpdir,
+                _g_ms, _g_after = _graft_tier_ms(ml, ms, after, stats, v, t, tmpdir,
                                              graft=True,
                                              intensity=(getattr(spec, 'base', None)
                                                         or getattr(spec, 'name', None)),
@@ -1058,7 +1058,7 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
             if _dressing_wanted(dressing, _dh, _dnm, _dsi, si_mode):
                 _t_dr = time.perf_counter()
                 _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-                _d_ms, _d_after = dressing_tier(
+                _d_ms, _d_after = _dressing_tier_ms(
                     ml, ms, after, stats, v, t, tmpdir, dressing=True,
                     intensity=(getattr(spec, 'base', None)
                                or getattr(spec, 'name', None)),
@@ -1096,7 +1096,7 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 if _sh > 0 or _snm > 0:
                     _t_sp = time.perf_counter()
                     _sp_in_v, _sp_in_t = (_cur_v, _cur_t) if trace.is_active() else (None, None)
-                    _s_ms, _s_after = splint_tier(
+                    _s_ms, _s_after = _splint_tier_ms(
                         ml, ms, after, stats, v, t, tmpdir, splint=True,
                         intensity=(getattr(spec, 'base', None)
                                    or getattr(spec, 'name', None)),
@@ -1153,7 +1153,7 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
             else:
                 _t_ft = time.perf_counter()
                 _ft_in_v, _ft_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-                ms, after = _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir,
+                ms, after = _ftetwild_tier_ms(ml, ms, after, stats, v, t, tmpdir,
                                            ftetwild, spec=spec)
                 if (stats.get('experimental_ftetwild') or {}).get('ran'):
                     tiers_run.append('ftetwild')
@@ -1192,7 +1192,7 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
         if dressing is True:
             _t_dr = time.perf_counter()
             _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-            _d_ms, _d_after = dressing_tier(
+            _d_ms, _d_after = _dressing_tier_ms(
                 ml, ms, after, stats, v, t, tmpdir, dressing=True,
                 intensity=(getattr(spec, 'base', None)
                            or getattr(spec, 'name', None)),

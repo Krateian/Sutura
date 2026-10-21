@@ -99,7 +99,7 @@ def _dressing_suggestion_text(sug):
             % sug.get('flag'))
 
 
-def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
+def _dressing_tier_ms(ml, ms, after, stats, v, t, tmpdir, dressing=False,
                   intensity=None, drain=None, defects=None,
                   r_max_scale=None, sigma_scale=None, force_adopt=False):
     """Variable-viscosity coat tier for registry method 16 (Dressing).
@@ -271,3 +271,20 @@ def dressing_tier(ml, ms, after, stats, v, t, tmpdir, dressing=False,
         rec['reason'] = 'error: %s: %s' % (type(_g.error).__name__, _g.error)
     stats['dressing'] = rec
     return ms, after
+
+
+def dressing_tier(*args, **kwargs):
+    """Array API; legacy (ml, ms, after, stats, v, t, tmpdir) is forwarded."""
+    if not (len(args) >= 2 and isinstance(args[0], np.ndarray)
+            and isinstance(args[1], np.ndarray)):
+        return _dressing_tier_ms(*args, **kwargs)
+    v, t, input_v, input_t, after, stats, tmpdir = args[:7]
+    import pymeshlab as _ml
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after = _dressing_tier_ms(_ml, ms, after, stats, input_v, input_t,
+                                  tmpdir, **kwargs)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after)

@@ -120,7 +120,7 @@ def _umbrella_fair(verts, tris, first_free, steps):
     return out
 
 
-def _local_remesh_tier(ml, ms, after):
+def _local_remesh_tier_ms(ml, ms, after):
     """Local re-mesh basamak (pymeshlab-only prototype).
 
     The damaged region (faces on a boundary or non-manifold edge, grown by
@@ -228,3 +228,19 @@ def _local_remesh_tier(ml, ms, after):
         rep['error'] = str(_g.error)
     rep['time'] = round(time.perf_counter() - t0, 3)
     return ms, after, rep
+
+
+def _local_remesh_tier(*args, **kwargs):
+    """Array API; legacy (ml, ms, after) is forwarded."""
+    if not (len(args) >= 2 and isinstance(args[0], np.ndarray)
+            and isinstance(args[1], np.ndarray)):
+        return _local_remesh_tier_ms(*args, **kwargs)
+    v, t, input_v, input_t, after = args[:5]
+    import pymeshlab as _ml
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after, rep = _local_remesh_tier_ms(_ml, ms, after)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after, rep)

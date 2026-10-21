@@ -241,15 +241,15 @@ def _run_ladder(graft_body, ft_body):
             return m, a
         return _cube_ms('ftetwild')
 
-    saved = (pipeline.graft_tier, pipeline._ftetwild_tier)
-    pipeline.graft_tier, pipeline._ftetwild_tier = fake_graft, fake_ft
+    saved = (pipeline._graft_tier_ms, pipeline._ftetwild_tier_ms)
+    pipeline._graft_tier_ms, pipeline._ftetwild_tier_ms = fake_graft, fake_ft
     try:
         _ms, out_after = pipeline.deep_repair_ladder(
             ml, ms, after, stats, v, t, tempfile.gettempdir(), mode='full',
             ftetwild='auto', spec=repair.triage.PRESETS['balanced'],
             graft='auto')
     finally:
-        pipeline.graft_tier, pipeline._ftetwild_tier = saved
+        pipeline._graft_tier_ms, pipeline._ftetwild_tier_ms = saved
     return stats, calls, out_after
 
 
