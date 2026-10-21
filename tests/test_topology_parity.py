@@ -21,6 +21,11 @@ sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
 
+try:
+    import pymeshlab
+except ImportError:
+    pymeshlab = None
+
 import topology  # noqa: E402
 
 
@@ -300,10 +305,8 @@ def test_pymeshlab_parity():
     Tests 4 synthetic cases (closed cube, non-manifold edge, non-manifold vertex pinch,
     open triangle) and all tracked corpus meshes from tests/real-world-samples/*.stl.
     """
-    try:
-        import pymeshlab
-    except ImportError:
-        print('pymeshlab not importable, skipping PyMeshLab parity check')
+    if pymeshlab is None:
+        print("skip: pymeshlab not importable, skipping PyMeshLab parity check")
         return
 
     top_keys = (
@@ -467,10 +470,8 @@ def test_phase2_filter_parity():
       - compute_normal_per_face
       - compute_normal_per_vertex
     """
-    try:
-        import pymeshlab
-    except ImportError:
-        print('pymeshlab not importable, skipping phase 2 filter parity check')
+    if pymeshlab is None:
+        print("skip: pymeshlab not importable, skipping phase 2 filter parity check")
         return
 
     import glob

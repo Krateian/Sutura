@@ -19,6 +19,11 @@ sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
 
+try:
+    import pymeshlab
+except ImportError:
+    pymeshlab = None
+
 
 def _half_sphere():
     import trimesh
@@ -34,14 +39,6 @@ def _cube():
     m = trimesh.creation.box(extents=(1, 1, 1))
     return (np.asarray(m.vertices, dtype=np.float64),
             np.asarray(m.faces, dtype=np.int64))
-
-
-def _have_pymeshlab():
-    try:
-        import pymeshlab  # noqa: F401
-        return True
-    except ImportError:
-        return False
 
 
 def test_detect_half_sphere_plane():
@@ -69,6 +66,9 @@ def test_mirror_close_half_sphere():
 
 
 def test_mirror_close_closed_falls_back():
+    if pymeshlab is None:
+        print("skip: pymeshlab required for Poisson fallback")
+        return
     import mirror_repair as MR
     v, t = _cube()
     n, c, score, info = MR.detect_mirror_plane(v, t)

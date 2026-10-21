@@ -22,7 +22,7 @@ as a tested foundation for a future global snap-rounding pass.
 This module resolves residuals patch-by-patch:
 
 1.  Detect the self-intersecting faces (Rust exact classifier up to
-    ``SI_MAX_FACES``, PyMeshLab's spatial-subdivision filter above it).
+    ``SI_MAX_FACES``).
 2.  Partition them into edge-connected clusters and dilate each cluster by
     ``LOCAL_EXACT_K_RINGS`` vertex rings, merging overlapping patches so the
     patches are strictly disjoint.
@@ -43,8 +43,8 @@ This module resolves residuals patch-by-patch:
 
 Runs after Stage 2 + P-WELD, is gated by ``SI > 0`` and an intensity time
 budget, and is byte-identical to the input when there is no self-intersection
-(or when no cluster is accepted).  Pure numpy + stdlib; ``sutura_geom``,
-pymeshlab and ``repair`` are imported lazily.
+(or when no cluster is accepted).  Pure numpy + stdlib; ``sutura_geom``
+and ``repair`` are imported lazily.
 """
 import time
 
@@ -85,30 +85,16 @@ def _require_geom():
     return sutura_geom
 
 
-def _get_ml(ml):
-    """Return a PyMeshLab module, importing it lazily when not supplied."""
-    if ml is not None:
-        return ml
-    try:
-        import pymeshlab as ml
-        return ml
-    except Exception:  # noqa: BLE001 - optional in this process
-        return None
-
-
-def detect_si_face_mask(ml, verts, tris):
+def detect_si_face_mask(verts, tris):
     """Boolean ``(F,)`` mask of self-intersecting faces and the count.
 
-    Uses the Rust exact classifier when the face count is within its cap; for
-    larger meshes falls back to PyMeshLab's
-    ``compute_selection_by_self_intersections_per_face`` (spatial subdivision).
+    Uses the Rust exact classifier when the face count is within its cap.
     Returns ``(mask, count)``; on any failure returns an all-False mask with
     count ``-1`` (the caller treats that as "no SI", a safe no-op).
     """
     F = len(tris)
     if F == 0:
         return np.zeros(0, dtype=bool), 0
-    ml = _get_ml(ml)
     geom = None
     try:
         geom = _require_geom()
@@ -124,20 +110,9 @@ def detect_si_face_mask(ml, verts, tris):
                 mask = np.asarray(mask, dtype=bool)
                 if int(count) >= 0:
                     return mask, int(count)
-            except Exception:  # noqa: BLE001 - fall through to PyMeshLab
+            except Exception:  # noqa: BLE001 - detector failure must not break a repair
                 pass
-    if ml is None or topology.native_si_enabled():
-        return np.zeros(F, dtype=bool), -1
-    try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(
-            vertex_matrix=np.asarray(verts, dtype=np.float64),
-            face_matrix=np.asarray(tris, dtype=np.int32)))
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        sel = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
-        return sel, int(sel.sum())
-    except Exception:  # noqa: BLE001 - detector failure must not break a repair
-        return np.zeros(F, dtype=bool), -1
+    return np.zeros(F, dtype=bool), -1
 
 
 def _edge_keys_undirected(tris):
@@ -444,7 +419,7 @@ def exact_self_union_patch(bvh, verts, patch_idx, v_patch, t_local, si_faces_loc
              'patch_idx': patch_idx}, None)
 
 
-def local_exact_self_union(ml, verts, tris, time_budget=LOCAL_EXACT_DEFAULT_BUDGET,
+def local_exact_self_union(verts, tris, time_budget=LOCAL_EXACT_DEFAULT_BUDGET,
                            k_rings=LOCAL_EXACT_K_RINGS,
                            max_patch_faces=LOCAL_EXACT_MAX_PATCH_FACES,
                            per_cluster_timeout=LOCAL_EXACT_PER_CLUSTER_TIMEOUT):
@@ -478,8 +453,7 @@ def local_exact_self_union(ml, verts, tris, time_budget=LOCAL_EXACT_DEFAULT_BUDG
         return v0, t_in, report
 
     t_start = time.perf_counter()
-    ml = _get_ml(ml)
-    si_mask, si_count = detect_si_face_mask(ml, v0, t0)
+    si_mask, si_count = detect_si_face_mask(v0, t0)
     report['si_before'] = int(si_count)
     report['ran'] = True
     if si_count <= 0 or not si_mask.any():
@@ -647,7 +621,7 @@ def local_exact_self_union(ml, verts, tris, time_budget=LOCAL_EXACT_DEFAULT_BUDG
         report['seconds'] = round(time.perf_counter() - t_start, 3)
         return v0, t_in, report
 
-    report['si_after'] = _si_after_count(ml, cur_v, cur_t)
+    report['si_after'] = _si_after_count(cur_v, cur_t)
     report['holes_before'] = int(base_h)
     report['non_manifold_before'] = int(base_nm)
     report['holes_after'] = int(cur_h)
@@ -667,8 +641,8 @@ def _overlaps_any(faces, patch_faces_list, skip):
     return False
 
 
-def _si_after_count(ml, verts, tris):
-    _mask, count = detect_si_face_mask(ml, verts, tris)
+def _si_after_count(verts, tris):
+    _mask, count = detect_si_face_mask(verts, tris)
     return int(max(count, 0))
 
 

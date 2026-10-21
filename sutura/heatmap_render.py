@@ -24,26 +24,15 @@ from heatmap import render
 def load_mesh(path):
     """Load an input mesh as plain (verts, tris) numpy arrays.
 
-    STL/OBJ load via pymeshlab; 3MF multi-object files are parsed with the
-    stdlib reader and the FIRST object's mesh is returned, matching the
-    defect panel's first-object behaviour. Returns (None, None) on failure.
+    STL/OBJ/3MF load natively without PyMeshLab. 3MF multi-object files return
+    the FIRST object's mesh, matching the defect panel's first-object behaviour.
+    Returns (None, None) on failure.
     """
     try:
-        ext = os.path.splitext(path)[1].lower()
-        if ext == '.3mf':
-            import repair
-            for _name, blocks in repair.parse_3mf_meshes(path).items():
-                if blocks:
-                    vs, ts, _span = blocks[0]
-                    return (np.asarray(vs, dtype=np.float64),
-                            np.asarray(ts, dtype=np.int64))
-            return None, None
-        import pymeshlab as ml
-        ms = ml.MeshSet()
-        ms.load_new_mesh(path)
-        m = ms.current_mesh()
-        return (np.asarray(m.vertex_matrix(), dtype=np.float64),
-                np.asarray(m.face_matrix(), dtype=np.int64))
+        from sutura_engine.pipeline.mesh_io import load_mesh as _load_mesh
+        v, t = _load_mesh(path)
+        return (np.asarray(v, dtype=np.float64),
+                np.asarray(t, dtype=np.int64))
     except Exception:
         return None, None
 

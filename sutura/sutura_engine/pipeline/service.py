@@ -175,7 +175,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         if _should_run_local_exact(report, triage_spec):
             _lse_spec = triage_spec or triage.resolve_intensity(None)
             new_v, new_t, _lse = local_exact.local_exact_self_union(
-                ml, new_v, new_t, time_budget=_local_exact_budget(_lse_spec))
+                new_v, new_t, time_budget=_local_exact_budget(_lse_spec))
             if _lse.get('ran'):
                 report['local_exact'] = _lse
 
@@ -402,7 +402,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
             if _should_run_local_exact(rep, triage_spec):
                 _lse_spec = triage_spec or triage.resolve_intensity(None)
                 new_v, new_t, _lse = local_exact.local_exact_self_union(
-                    ml, new_v, new_t,
+                    new_v, new_t,
                     time_budget=_local_exact_budget(_lse_spec))
                 if _lse.get('ran'):
                     rep['local_exact'] = _lse

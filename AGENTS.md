@@ -196,7 +196,6 @@ The core repair functionality is organized under `sutura/sutura_engine/`. Instal
 - `sutura_engine.methods`: Pluggable repair method registry conforming to `RepairMethodProtocol`. Built-in methods live in `sutura_engine/methods/builtin/` as one named module per method (see the naming table below) and are auto-discovered on import. Special tiers (closing, proxy, repeat, P-WELD) are modularized here.
 - `sutura_engine.triage`: Budget-aware auto-escalation policy (`repair_with_methods`, `_auto`, `_auto_multi`), intensity profiles (`quick`, `balanced`, `thorough`, `extreme`), and per-object 3MF escalation loops. Triage remains strictly stdlib-only on import.
 - `sutura_engine.adapters`: Strict boundaries around third-party libraries:
-  - `pymeshlab_adapter`: Stage 1 VCG repair filter chains (lazy import, never imported at engine top-level).
   - `manifold_adapter`: availability probe for the Manifold kernel in `sutura_geom` (`stage2_rebuild`, `watertight_check`).
   - `ftetwild_adapter`: fTetWild tetrahedralization fallback tier and status checks.
   - `external_adapter`: User-configured external CLI repair engines (`~/.config/sutura/engines/*.toml`).

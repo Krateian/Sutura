@@ -9,6 +9,11 @@ import os
 import subprocess
 import sys
 
+try:
+    import pymeshlab
+except ImportError:
+    pymeshlab = None
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SUTURA = os.path.join(REPO, 'sutura')
 
@@ -61,6 +66,9 @@ def run_worker(arg):
     return json.loads(p.stdout.strip().splitlines()[-1])
 
 def main():
+    if pymeshlab is None:
+        print("skip: pymeshlab required for dilation parity oracle")
+        return
     meshes = subprocess.check_output(
         ['git', '-C', REPO, 'ls-files', 'tests/real-world-samples/*.stl'],
         text=True).splitlines()
@@ -76,6 +84,14 @@ def main():
             print('MISMATCH', r)
         raise SystemExit(1)
     print('dilate parity passed')
+
+
+def test_dilate_parity():
+    if pymeshlab is None:
+        print("skip: pymeshlab required for dilation parity oracle")
+        return
+    main()
+
 
 if __name__ == '__main__':
     main()
