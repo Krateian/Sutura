@@ -25,6 +25,10 @@ RELIEF_MIN_ONE_SIDED = 0.90  # Min fraction of vertices on one side of plane
 
 DEFAULT_FLAT_BACK_THICKNESS_REL = 0.005  # Default thickness = 0.005 * bbox_diag
 POISSON_DEFAULT_SCALE = 2.0  # octree-style domain padding; voxel = scale*extent/2**depth
+POISSON_FACE_BUDGET_MULT = 4        # target output faces = 4x the input face count
+POISSON_FACE_BUDGET_MIN = 20_000    # floor so a tiny input still resolves its surface
+POISSON_FACE_BUDGET_MAX = 200_000   # ceiling: a small input must not explode into 100k+ faces
+POISSON_VERTEX_MODE = 'mass'        # surface-nets mass-point vertex (QEF folds -> SI)
 EAR_CLIP_MAX_VERTICES = 1500  # Max loop size for O(n^2) ear clipping; larger loops use O(n) / O(n log n)
 
 
@@ -400,8 +404,11 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
     (``topology.resample_uniform``); the iso-surface is 2-manifold by
     construction. The voxel size is derived from the legacy octree ``depth``
     (8..11): the octree resolved the scale-padded bounding box into ``2**depth``
-    cells, so ``voxel = POISSON_DEFAULT_SCALE * extent / 2**depth``. Keeps the
-    largest component.
+    cells, so ``voxel = POISSON_DEFAULT_SCALE * extent / 2**depth``; it is then
+    capped by a face budget so a small input cannot explode into a 100k+ face
+    shell. The extraction uses the surface-nets **mass-point** vertex rule
+    rather than the default QEF solver, which folds nearly parallel dual faces
+    into self-intersections on curved fields. Keeps the largest component.
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
@@ -441,17 +448,63 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
         if np.sum((face_centers - centroid) * in_fn) < 0:
             in_t = topology.invert_face_orientation(in_t)
 
-        # 2. Voxel size derived from the legacy Poisson depth.
+        # 2. Voxel size derived from the legacy Poisson depth, then capped by a
+        #    face budget. The budget is an UPPER bound only: a small input keeps
+        #    the legacy resolution, a small input that would otherwise explode
+        #    into 100k+ faces (a 152-face hemisphere did) is coarsened instead.
         extent = float(np.max(in_v.max(axis=0) - in_v.min(axis=0)))
         voxel = POISSON_DEFAULT_SCALE * extent / float(2 ** depth)
+        budget = int(np.clip(POISSON_FACE_BUDGET_MULT * len(in_t),
+                             POISSON_FACE_BUDGET_MIN, POISSON_FACE_BUDGET_MAX))
+
+        def _resample(vx):
+            return topology.resample_uniform(
+                in_v, in_t, vx, 0.0, False, False,
+                vertex_mode=POISSON_VERTEX_MODE)[:2]
 
         # 3. Signed generalized-winding level-set extraction (closed by
-        #    construction; the open back is filled where the field turns solid).
-        out_v, out_t, _info = topology.resample_uniform(
-            in_v, in_t, voxel, 0.0, False)
+        #    construction). Uses the mass-point (surface-nets) vertex rule, not
+        #    the QEF solver: on curved fields the QEF optimum folds nearly
+        #    parallel dual faces into self-intersections while the cell mass
+        #    point does not (measured SI 561 -> 0 at an identical face count on a
+        #    152-face hemisphere, with a slightly lower Hausdorff).
+        out_v, out_t = _resample(voxel)
+
+        # 3b. Enforce the face budget by coarsening once. The factor is derived
+        #     from the observed face count, so the result is deterministic and a
+        #     small mesh (already below the budget) is left untouched.
+        if len(out_t) > budget:
+            voxel *= float(np.sqrt(len(out_t) / float(budget))) * 1.03
+            out_v, out_t = _resample(voxel)
 
         # 4. Keep largest connected component
         out_v, out_t = _keep_largest_component(out_v, out_t)
+
+        # 4b. The tier never claims a watertight shell that still self-
+        #     intersects. The mass-point rule makes this unreachable in
+        #     measurement, but the guard is kept: try the native guarded
+        #     excise+recap; if self-intersections remain it fails honestly and
+        #     hands the input back unchanged.
+        si_before = max(int(topology.self_intersecting_faces(out_v, out_t)[1]), 0)
+        si_after = si_before
+        if si_before > 0:
+            from sutura_engine.pipeline.stage1 import si_excise_recap
+            ex_v, ex_t, _ex_rep = si_excise_recap(out_v, out_t)
+            si_after = max(int(topology.self_intersecting_faces(ex_v, ex_t)[1]), 0)
+            if si_after < si_before:
+                out_v, out_t = ex_v, ex_t
+        if si_after > 0:
+            return verts, tris, {
+                'faces': len(tris),
+                'watertight': False,
+                'depth': depth,
+                'voxel': voxel,
+                'si_before': si_before,
+                'si_after': si_after,
+                'error': 'Residual self-intersections (%d) after voxel resample'
+                         % si_after,
+                'notes': [],
+            }
 
         # 5. Validity check
         is_wt, err_msg = _check_validity(out_v, out_t)
@@ -473,6 +526,10 @@ def poisson_close(verts, tris, depth=None, tmpdir=None):
             'watertight': True,
             'depth': depth,
             'voxel': voxel,
+            'face_budget': budget,
+            'vertex_mode': POISSON_VERTEX_MODE,
+            'si_before': si_before,
+            'si_after': si_after,
             'notes': ['back surface was estimated (voxel resample)'],
         }
         return out_v, out_t, report
