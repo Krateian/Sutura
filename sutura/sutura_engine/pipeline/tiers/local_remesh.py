@@ -203,13 +203,3 @@ def _local_remesh_tier(v, t, input_v, input_t, after, stats=None):
     rep['time'] = round(time.perf_counter() - t0, 3)
     return v, t, after, rep
 
-
-def _local_remesh_tier_ms(ml, ms, after):
-    """Temporary adapter for the current pipeline call site (goat owns pipeline)."""
-    m = ms.current_mesh()
-    v = np.asarray(m.vertex_matrix(), dtype=np.float64)
-    t = np.asarray(m.face_matrix(), dtype=np.int64)
-    nv, nt, tafter, rep = _local_remesh_tier(v, t, v, t, after)
-    trial = ml.MeshSet()
-    trial.add_mesh(ml.Mesh(vertex_matrix=nv, face_matrix=nt.astype(np.int32)))
-    return trial, tafter, rep

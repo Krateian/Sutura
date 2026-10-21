@@ -41,7 +41,7 @@ from sutura_engine.pipeline.tiers.engines import (
 from sutura_engine.pipeline.tiers.flap import _flap_step
 from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier_ms
 from sutura_engine.pipeline.tiers.graft import _graft_tier_ms
-from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier_ms
+from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier
 from sutura_engine.pipeline.tiers.repeat import repeat_tier
 from sutura_engine.pipeline.tiers.splint import _splint_tier_ms
 from sutura_engine.pipeline.tiers.tamponade import tamponade_tier
@@ -977,7 +977,11 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
     cur_nm = int(after.get('non_two_manifold_edges', 0))
     if mode == 'local':
         if cur_holes > 0 or cur_nm > 0:
-            ms, after, local_rep = _local_remesh_tier_ms(ml, ms, after)
+            _lv, _lt = _meshset_arrays_safe(ms)
+            _lv, _lt, after, local_rep = _local_remesh_tier(
+                _lv, _lt, v, t, after)
+            ms = ml.MeshSet()
+            ms.add_mesh(ml.Mesh(vertex_matrix=_lv, face_matrix=_lt.astype(np.int32)))
             tiers_run.append('local')
         else:
             local_rep = None
