@@ -122,11 +122,12 @@ dosyan ─► Tamponad ─► Flap ─► Aşama 1 temizlik ─► (hâlâ açı
    taramalar için boyut ve süre sınırı vardır, takılıp kalmaz.
 5. **Aşama 2: tek bir katı yap (Manifold).** Sonucu geçerli, kapalı bir katı
    olarak yeniden kurar; Bambu Studio'nun kullandığı kütüphanenin aynısı.
-6. **İsteğe bağlı ekler, varsayılan kapalı.** **Pansuman (Dressing)** tüm modeli
-   her zaman kapalı çıkan sanal bir kaplamaya batırır, ama ince ayrıntıyı
-   yumuşatabilir; bu yüzden Sutura onu yalnızca her şey başarısız olduğunda
-   *önerir*, karar senindir. **fTetWild** çok bozuk dosyalar için son çare
-   yeniden kurulumdur.
+6. **İsteğe bağlı ekler, çoğunlukla varsayılan kapalı.** **Pansuman (Dressing)**
+   tüm modeli her zaman kapalı çıkan sanal bir kaplamaya batırır, ama ince
+   ayrıntıyı yumuşatabilir; bu yüzden Sutura onu yalnızca her şey başarısız
+   olduğunda *önerir*, karar senindir; **Splint** isteğe bağlı tam katı yeniden
+   inşadır. **fTetWild** çok bozuk dosyalar için son çare yeniden kurulumdur ve
+   isteğe bağlı eki kuruluysa, stage 1 hâlâ delik bıraktığında otomatik çalışır.
 
 Sutura her adımdan sonra delikleri ve hatalı kenarları, dosya diskten yeniden
 açılmış gibi tekrar sayar; işleri kötüleştiren adım çöpe atılır. Orijinal

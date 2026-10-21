@@ -116,10 +116,12 @@ your file ─► Tamponade ─► Flap ─► Stage 1 clean-up ─► (still ope
    survives. Very large scans have a size and time limit so they never hang.
 5. **Stage 2: make it one solid (Manifold).** Rebuilds the result as a valid
    closed solid, using the same Manifold kernel Bambu Studio uses.
-6. **Optional extras, off by default.** **Dressing** dips the whole model in a
-   virtual coat that always comes out closed, but it can soften fine detail, so
-   Sutura only *suggests* it when everything else failed and you decide.
-   **fTetWild** is a last-resort rebuild for badly broken files.
+6. **Optional extras, mostly off by default.** **Dressing** dips the whole model
+   in a virtual coat that always comes out closed, but it can soften fine
+   detail, so Sutura only *suggests* it when everything else failed and you
+   decide; **Splint** is the opt-in exact solid rebuild. **fTetWild** is a
+   last-resort rebuild for badly broken files and runs automatically when its
+   optional extra is installed and stage 1 still leaves holes.
 
 After every step Sutura counts holes and bad edges again, as if the file had
 been re-opened from disk; a step that makes things worse is thrown away. Your
