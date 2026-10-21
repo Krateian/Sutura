@@ -52,8 +52,8 @@ Unknown `{...}` placeholder tokens are rejected during configuration loading.
 
 When no custom `chain.toml` is present, enabled engines are slotted into Sutura's default repair sequence according to their `placement`:
 
-1. `before_stage1`: Runs before PyMeshLab VCG filter chain.
-2. **`stage1`**: PyMeshLab VCG filter chain (built-in).
+1. `before_stage1`: Runs before the built-in stage-1 filter chain.
+2. **`stage1`**: Native stage-1 filter chain (built-in, `sutura_geom` + `sutura_engine`).
 3. `after_stage1`: Runs after Stage 1, before Stage 2 manifold rebuild.
 4. **`stage2`**: Manifold3d solid rebuild (built-in).
 5. `after_stage2`: Runs after Stage 2.
