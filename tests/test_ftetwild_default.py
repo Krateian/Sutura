@@ -274,7 +274,7 @@ def _postprocess(v, t, fake_stage2):
     try:
         with tempfile.TemporaryDirectory(prefix='sutura-bowtie-') as tmp:
             return ftetwild_mod._ftetwild_manifold_postprocess(
-                ml, tmp, v, t, ms, topo, holes, nm)
+                tmp, v, t, topo, holes, nm)
     finally:
         ftetwild_mod.run_stage2 = saved
 
@@ -298,7 +298,7 @@ def test_bowtie_boundary_gets_the_manifold_postprocess():
         repair.write_obj(out_obj, _SPLIT_V, _SPLIT_T)
         return {'output_triangles': len(_SPLIT_T)}, True
 
-    v, t, _ms, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, fake_stage2)
+    v, t, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, fake_stage2)
     assert calls, 'the manifold post-process was not attempted'
     assert done and holes == 0 and nm == 0
     assert topo.get('is_mesh_two_manifold')
@@ -312,7 +312,7 @@ def test_two_manifold_boundary_is_left_unchanged():
         calls.append(inter)
         return {'error': 'must not be called'}, False
 
-    v, t, _ms, _topo, _h, _nm, done = _postprocess(_SPLIT_V, _SPLIT_T, fake_stage2)
+    v, t, _topo, _h, _nm, done = _postprocess(_SPLIT_V, _SPLIT_T, fake_stage2)
     assert not calls and not done
     assert (v, t) == (_SPLIT_V, _SPLIT_T)
 
@@ -326,7 +326,7 @@ def test_bowtie_with_real_stage2():
     if not ok:
         print('    (stage 2 unavailable: real Manifold check skipped)')
         return
-    _v, _t, _ms, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, None)
+    _v, _t, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, None)
     assert done, 'Manifold post-process not adopted'
     assert holes == 0 and nm == 0 and topo.get('is_mesh_two_manifold')
 

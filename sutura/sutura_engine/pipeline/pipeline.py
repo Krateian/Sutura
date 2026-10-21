@@ -39,7 +39,7 @@ from sutura_engine.pipeline.tiers.engines import (
     _record_engine_entries, engine_placement_order, run_engines,
 )
 from sutura_engine.pipeline.tiers.flap import _flap_step
-from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier_ms
+from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier
 from sutura_engine.pipeline.tiers.graft import _graft_tier_ms
 from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier
 from sutura_engine.pipeline.tiers.repeat import repeat_tier
@@ -1162,8 +1162,14 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
             else:
                 _t_ft = time.perf_counter()
                 _ft_in_v, _ft_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-                ms, after = _ftetwild_tier_ms(ml, ms, after, stats, v, t, tmpdir,
-                                           ftetwild, spec=spec)
+                _ft_cur_v, _ft_cur_t = _meshset_arrays_safe(ms)
+                _ft_cur_v, _ft_cur_t, after = _ftetwild_tier(
+                    np.asarray(_ft_cur_v, dtype=np.float64),
+                    np.asarray(_ft_cur_t, dtype=np.int64), v, t, after, stats,
+                    tmpdir, ftetwild, spec=spec)
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=_ft_cur_v,
+                                    face_matrix=_ft_cur_t.astype(np.int32)))
                 if (stats.get('experimental_ftetwild') or {}).get('ran'):
                     tiers_run.append('ftetwild')
                 if trace.is_active():

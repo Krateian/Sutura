@@ -233,23 +233,26 @@ def _run_ladder(graft_body, ft_body):
         st['graft'] = dict(graft_body)
         return _cube_ms('graft')
 
-    def fake_ft(ml_arg, m, a, st, vv, tt, tmpdir, ftetwild, spec=None):
+    def fake_ft(vv, tt, iv, it, a, st, tmpdir, ftetwild, spec=None):
         calls.append('ftetwild')
         st['experimental_ftetwild'] = dict(ft_body)
         # Like the real tier, an unadopted fTetWild leaves the mesh unchanged.
         if not ft_body.get('adopted'):
-            return m, a
-        return _cube_ms('ftetwild')
+            return vv, tt, a
+        _ms, after = _cube_ms('ftetwild')
+        return (np.asarray(_ms.current_mesh().vertex_matrix(), dtype=np.float64),
+                np.asarray(_ms.current_mesh().face_matrix(), dtype=np.int64),
+                after)
 
-    saved = (pipeline._graft_tier_ms, pipeline._ftetwild_tier_ms)
-    pipeline._graft_tier_ms, pipeline._ftetwild_tier_ms = fake_graft, fake_ft
+    saved = (pipeline._graft_tier_ms, pipeline._ftetwild_tier)
+    pipeline._graft_tier_ms, pipeline._ftetwild_tier = fake_graft, fake_ft
     try:
         _ms, out_after = pipeline.deep_repair_ladder(
             ml, ms, after, stats, v, t, tempfile.gettempdir(), mode='full',
             ftetwild='auto', spec=repair.triage.PRESETS['balanced'],
             graft='auto')
     finally:
-        pipeline._graft_tier_ms, pipeline._ftetwild_tier_ms = saved
+        pipeline._graft_tier_ms, pipeline._ftetwild_tier = saved
     return stats, calls, out_after
 
 
