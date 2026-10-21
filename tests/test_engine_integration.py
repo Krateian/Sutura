@@ -13,7 +13,7 @@
 - CLI: ``engines list|check`` and ``ftetwild status|install --dry-run|
   uninstall --dry-run`` (dry-run only; the real environment is never touched).
 
-Needs the venv (pymeshlab). Usage:
+Needs only numpy + the Rust ``sutura_geom`` extension (no pymeshlab). Usage:
     ~/.local/share/sutura/venv/bin/python tests/test_engine_integration.py
 """
 import json
@@ -28,10 +28,10 @@ if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
 
 import repair  # noqa: E402
 import engines as eng_mod  # noqa: E402
+from sutura_engine.pipeline.mesh_io import load_mesh  # noqa: E402
 
 OPEN_SAMPLE = os.path.join(REPO, 'tests', 'real-world-samples',
                            'thingi10k_100827.stl')
@@ -44,23 +44,55 @@ def ok(name):
     print('ok  %s' % name)
 
 
+def _icosphere(subdiv=3):
+    """Dependency-free icosphere (numpy only); connectivity matches the former
+    ``pymeshlab.MeshSet().create_sphere(subdiv=N)`` fixture."""
+    t = (1.0 + 5.0 ** 0.5) / 2.0
+    raw = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0),
+           (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t),
+           (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+    verts = []
+    for a, b, c in raw:
+        n = (a * a + b * b + c * c) ** 0.5
+        verts.append([a / n, b / n, c / n])
+    verts = np.asarray(verts, dtype=np.float64)
+    faces = np.asarray([
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ], dtype=np.int64)
+    for _ in range(subdiv):
+        cache = {}
+        verts_list = [v for v in verts]
+
+        def mid(a, b):
+            key = (a, b) if a < b else (b, a)
+            if key not in cache:
+                p = verts[a] + verts[b]
+                idx = len(verts_list)
+                verts_list.append(p / np.linalg.norm(p))
+                cache[key] = idx
+            return cache[key]
+
+        out = []
+        for a, b, c in faces:
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            out += [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]
+        verts = np.asarray(verts_list, dtype=np.float64)
+        faces = np.asarray(out, dtype=np.int64)
+    return verts, faces
+
+
 def _sphere_with_hole(z_cut=0.95):
-    ms = ml.MeshSet()
-    ms.create_sphere(subdiv=3)
-    m = ms.current_mesh()
-    v = np.asarray(m.vertex_matrix(), np.float64)
-    t = np.asarray(m.face_matrix(), np.int64)
+    v, t = _icosphere(3)
     keep = v[t][:, :, 2].mean(axis=1) < z_cut
     return np.asarray(v, np.float32), np.asarray(t[keep], np.int32)
 
 
 def _sample():
     if os.path.exists(OPEN_SAMPLE):
-        ms = ml.MeshSet()
-        ms.load_new_mesh(OPEN_SAMPLE)
-        m = ms.current_mesh()
-        return (np.asarray(m.vertex_matrix(), np.float32),
-                np.asarray(m.face_matrix(), np.int32))
+        return load_mesh(OPEN_SAMPLE)
     return _sphere_with_hole()
 
 
@@ -158,16 +190,11 @@ def test_shape_change_flagged_not_rejected():
     with tempfile.TemporaryDirectory(prefix='sutura-eng-') as root:
         scaler = _write_script(os.path.join(root, 'scale.py'), (
             'import sys\n'
+            'sys.path.insert(0, %r)\n' % SUTURA +
             'import numpy as np\n'
-            'import pymeshlab as ml\n'
-            'ms = ml.MeshSet(); ms.load_new_mesh(sys.argv[1])\n'
-            'm = ms.current_mesh()\n'
-            'v = np.asarray(m.vertex_matrix(), np.float64) * 10.0\n'
-            't = np.asarray(m.face_matrix(), np.int32)\n'
-            'o = ml.MeshSet()\n'
-            'o.add_mesh(ml.Mesh(vertex_matrix=v.astype(np.float32),'
-            ' face_matrix=t))\n'
-            'o.save_current_mesh(sys.argv[2])\n'))
+            'from sutura_engine.pipeline.mesh_io import load_mesh, save_mesh\n'
+            'v, t = load_mesh(sys.argv[1])\n'
+            'save_mesh(sys.argv[2], np.asarray(v, np.float64) * 10.0, t)\n'))
         eng_dir = _make_engines_dir(root, {'scale.toml': (
             'name = "huge"\n'
             'command = ["%s", "%s", "{input}", "{output}"]\n'

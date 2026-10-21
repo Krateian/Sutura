@@ -416,8 +416,75 @@ def test_escalation_refreshes_root_triangle_attributes(tmp):
         _entry('3D/Objects/o1.model', _model(o0, '<item objectid="1"/>')),
         _entry('3D/Objects/o2.model', _model(o1, '<item objectid="3"/>')),
     ])
-    res = methods.repair_with_methods(
-        src, out, tmp, None, mode='auto', deep_repair='full', ftetwild='auto')
+
+    # The mesh-aware maxholesize raise lets the real baseline close the plate
+    # in one pass, so no in-repo fixture escalates any more. Drive the
+    # escalation path deterministically with a monkeypatched baseline/ranking
+    # so the root triangle-attribute refresh after the per-object rewrite is
+    # still exercised.
+    from sutura_engine.methods.protocol import RepairMethod
+    real_attempt = getattr(methods, '_attempt', None)
+    real_evaluate = getattr(methods, '_evaluate', None)
+    real_rank = getattr(methods, 'rank_methods', None)
+    cube = np.asarray(CUBE_V, dtype=float)
+    cube_t = np.asarray(CUBE_T, dtype=np.int64)
+
+    def fake_attempt(src_, out_, tmpdir, ctx, multi):
+        _write_zip(out_, [
+            _entry('[Content_Types].xml', CONTENT_TYPES),
+            _entry('_rels/.rels', RELS),
+            _entry('3D/Objects/o1.model', _model(
+                _object(1, _mesh(CUBE_V, CUBE_T)), '<item objectid="1"/>')),
+            _entry('3D/Objects/o2.model', _model(
+                _object(3, _mesh(v1, t1)), '<item objectid="3"/>')),
+        ])
+        return {'object_reports': [
+            {'stage1': {'two_manifold': True, 'holes_remaining': 0,
+                        'non_manifold_edges_remaining': 0},
+             'stage2': {'ok': True}},
+            {'stage1': {'two_manifold': True, 'holes_remaining': 2,
+                        'non_manifold_edges_remaining': 0},
+             'stage2': {'ok': False}},
+        ], 'baseline': True}
+
+    def fake_evaluate(result, path, multi, in_objs, method):
+        ok = bool(isinstance(result, dict) and result.get('simulated'))
+        return {'watertight': ok, 'holes': 0 if ok else 2, 'non_manifold': 0,
+                'hausdorff_rel': None, 'geom_change_pct': None, 'reason': 'x'}
+
+    def fake_rank(analysis, top_n=6):
+        return [methods.Recommendation(99, 'fake_escalation', 'Fake Escalation',
+                                       0.9, 'x', 'mechanical')]
+
+    class _FakeEscalation(RepairMethod):
+        def run(self, verts, tris, tmpdir, ctx=None):
+            return {'_verts': cube, '_tris': cube_t, 'simulated': True,
+                    'stage1': {'two_manifold': True, 'holes_remaining': 0,
+                               'non_manifold_edges_remaining': 0},
+                    'stage2': {'ok': True}}
+
+    methods._attempt = fake_attempt
+    methods._evaluate = fake_evaluate
+    methods.rank_methods = fake_rank
+    methods.register_method(_FakeEscalation(
+        num=99, id='fake_escalation', name='Fake Escalation',
+        description='deterministic escalation stand-in', family='test'))
+    try:
+        res = methods.repair_with_methods(
+            src, out, tmp, None, mode='auto', deep_repair='full',
+            ftetwild='auto')
+    finally:
+        methods.unregister_method(99)
+        if real_attempt is None:
+            del methods._attempt
+        else:
+            methods._attempt = real_attempt
+        if real_evaluate is None:
+            del methods._evaluate
+        else:
+            methods._evaluate = real_evaluate
+        if real_rank is not None:
+            methods.rank_methods = real_rank
     reps = res.get('object_reports', [])
     assert len(reps) == 2, reps
     sources = [r.get('method_used', {}).get('source') for r in reps]

@@ -22,10 +22,10 @@ if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
 
 import classification  # noqa: E402
 import repair  # noqa: E402
+import topology  # noqa: E402
 
 # Two tetrahedra sharing only vertex 0: closed, no non-manifold edge, pinched.
 _TET = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
@@ -39,10 +39,8 @@ SAMPLE = os.path.join(REPO, 'tests', 'real-world-samples', 'thingi10k_145065.stl
 
 
 def _meshset(v, t):
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                        face_matrix=np.asarray(t, np.int32)))
-    return ms, ms.apply_filter('get_topological_measures')
+    return None, topology.mesh_topology(np.asarray(v, np.float64),
+                                        np.asarray(t, np.int64))
 
 
 def test_bowtie_is_split_into_a_two_manifold_mesh():

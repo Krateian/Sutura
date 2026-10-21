@@ -2,7 +2,8 @@
 """Regression tests for the guarded Stage-1 self-intersection excise + re-cap
 (pipeline_mod.si_excise_recap, Full Mend path, SUTURA_SI_EXCISE).
 
-Needs the venv (pymeshlab). pytest-compatible; runnable directly:
+Needs only numpy + the Rust ``sutura_geom`` extension (no pymeshlab). pytest-compatible;
+runnable directly:
     ~/.local/share/sutura/venv/bin/python tests/test_si_excise.py
 """
 import os
@@ -15,12 +16,57 @@ if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
-import trimesh  # noqa: E402
 
 import repair  # noqa: E402
 import topology  # noqa: E402
 import sutura_engine.pipeline.pipeline as pipeline_mod  # noqa: E402
+from sutura_engine.pipeline.mesh_io import load_mesh  # noqa: E402
+
+CUBE_V = np.asarray([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)],
+                    np.float64)
+CUBE_T = np.asarray([(0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5),
+                     (0, 5, 1), (2, 3, 7), (2, 7, 6), (0, 2, 6), (0, 6, 4),
+                     (1, 5, 7), (1, 7, 3)], np.int64)
+
+
+def _icosphere(subdiv=3):
+    """Dependency-free icosphere (numpy only); connectivity matches the former
+    ``trimesh.creation.icosphere``/``pymeshlab.create_sphere`` fixture."""
+    t = (1.0 + 5.0 ** 0.5) / 2.0
+    raw = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0),
+           (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t),
+           (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+    verts = []
+    for a, b, c in raw:
+        n = (a * a + b * b + c * c) ** 0.5
+        verts.append([a / n, b / n, c / n])
+    verts = np.asarray(verts, dtype=np.float64)
+    faces = np.asarray([
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ], dtype=np.int64)
+    for _ in range(subdiv):
+        cache = {}
+        verts_list = [v for v in verts]
+
+        def mid(a, b):
+            key = (a, b) if a < b else (b, a)
+            if key not in cache:
+                p = verts[a] + verts[b]
+                idx = len(verts_list)
+                verts_list.append(p / np.linalg.norm(p))
+                cache[key] = idx
+            return cache[key]
+
+        out = []
+        for a, b, c in faces:
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            out += [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]
+        verts = np.asarray(verts_list, dtype=np.float64)
+        faces = np.asarray(out, dtype=np.int64)
+    return verts, faces
 
 
 def _sphere_with_blade(subdiv=3):
@@ -28,9 +74,9 @@ def _sphere_with_blade(subdiv=3):
 
     A few faces (sphere + tetra) self-intersect, the rest are clean, so the
     excision has a well-conditioned local region to remove and re-cap."""
-    m = trimesh.creation.icosphere(subdivisions=subdiv, radius=1.0)
-    v = np.asarray(m.vertices, np.float64).tolist()
-    t = [tuple(int(x) for x in f) for f in np.asarray(m.faces, np.int64)]
+    m_v, m_t = _icosphere(subdiv)
+    v = np.asarray(m_v, np.float64).tolist()
+    t = [tuple(int(x) for x in f) for f in np.asarray(m_t, np.int64)]
     b = len(v)
     v += [(0.0, 0.0, 1.3), (0.4, 0.0, 0.7), (0.0, 0.4, 0.7), (0.0, 0.0, 0.2)]
     t += [(b, b + 1, b + 2), (b, b + 1, b + 3),
@@ -38,33 +84,13 @@ def _sphere_with_blade(subdiv=3):
     return (np.asarray(v, np.float64), np.asarray(t, np.int64))
 
 
-def _meshset(v, t):
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                        face_matrix=np.asarray(t, np.int32)))
-    return ms
-
-
-def _topo(ms):
-    return ms.apply_filter('get_topological_measures')
-
-
-def _si(ms):
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    n = int(ms.current_mesh().face_selection_array().sum())
-    ms.apply_filter('set_selection_none')
-    return n
-
-
-def _arrays(ms):
-    return (ms.current_mesh().vertex_matrix().copy(),
-            ms.current_mesh().face_matrix().copy())
+def _si(v, t):
+    return int(topology.self_intersecting_faces(v, t)[1])
 
 
 def test_clean_mesh_is_noop():
-    cube = trimesh.creation.box()
-    v0 = np.asarray(cube.vertices, np.float64)
-    t0 = np.asarray(cube.faces, np.int64)
+    v0 = CUBE_V.copy()
+    t0 = CUBE_T.copy()
     v1, t1, rep = pipeline_mod.si_excise_recap(v0, t0)
     assert rep['ran'] is False and rep['initial_si'] == 0, rep
     assert rep['reason'] == 'no_si', rep
@@ -73,8 +99,7 @@ def test_clean_mesh_is_noop():
 
 def test_excise_reduces_si_and_preserves_topology():
     v, t = _sphere_with_blade(3)
-    ms = _meshset(v, t)
-    si_before = _si(ms)
+    si_before = _si(v, t)
     assert si_before > 0, 'fixture must self-intersect'
     v, t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
     assert rep['applied'] and rep['rounds'] >= 1, rep
@@ -111,8 +136,8 @@ def test_round_that_splits_the_mesh_is_rejected():
     if not os.path.exists(sample):
         print('    (corpus mesh missing: skipped)')
         return
-    m = trimesh.load(sample)
-    v, t = np.asarray(m.vertices, np.float64), np.asarray(m.faces, np.int64)
+    m = load_mesh(sample)
+    v, t = np.asarray(m[0], np.float64), np.asarray(m[1], np.int64)
     comp_before = topology.mesh_topology(v, t)['connected_components_number']
     assert comp_before == 1, comp_before
     v, t, rep = pipeline_mod.si_excise_recap(v, t, time_budget=30.0)
@@ -129,9 +154,8 @@ def test_budget_zero_skips():
 
 
 def _repair_cube(**kw):
-    cube = trimesh.creation.box()
-    v = np.asarray(cube.vertices, np.float32)
-    t = np.asarray(cube.faces, np.int32)
+    v = CUBE_V.astype(np.float32)
+    t = CUBE_T.astype(np.int32)
     with tempfile.TemporaryDirectory(prefix='sutura-si-') as tmp:
         return repair.repair_mesh_from_arrays(v, t, tmp, **kw)
 

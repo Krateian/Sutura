@@ -13,8 +13,7 @@
 - Mode resolution: CLI flag > env > config > default, and the pre-ladder
   fTetWild flags keep their meaning.
 
-No fTetWild needed (the tier is faked where it is exercised). Needs the venv
-(pymeshlab). Usage:
+No fTetWild needed (the tier is faked where it is exercised). Usage:
     ~/.local/share/sutura/venv/bin/python tests/test_deep_repair.py
 """
 import json
@@ -29,11 +28,12 @@ if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
 
 import repair  # noqa: E402
+import topology  # noqa: E402
 import sutura_engine.pipeline.tiers.ftetwild as ft_mod  # noqa: E402
 import sutura_engine.pipeline.tiers.local_remesh as local_remesh_mod  # noqa: E402
+from sutura_engine.pipeline.mesh_io import load_mesh  # noqa: E402
 
 OPEN_SAMPLE = os.path.join(REPO, 'tests', 'real-world-samples', 'thingi10k_100827.stl')
 CUBE_V = [(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)]
@@ -41,12 +41,50 @@ CUBE_T = [(0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5), (0, 5, 1),
           (2, 3, 7), (2, 7, 6), (0, 2, 6), (0, 6, 4), (1, 5, 7), (1, 7, 3)]
 
 
+def _icosphere(subdiv=3):
+    """Dependency-free icosphere (numpy only); connectivity matches the former
+    ``pymeshlab.MeshSet().create_sphere(subdiv=N)`` fixture: an icosahedron
+    with midpoint-subdivided faces, midpoints welded, vertices unit-normalised
+    (20 * 4**subdiv faces)."""
+    t = (1.0 + 5.0 ** 0.5) / 2.0
+    raw = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0),
+           (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t),
+           (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+    verts = []
+    for a, b, c in raw:
+        n = (a * a + b * b + c * c) ** 0.5
+        verts.append([a / n, b / n, c / n])
+    verts = np.asarray(verts, dtype=np.float64)
+    faces = np.asarray([
+        [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+        [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+        [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+        [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+    ], dtype=np.int64)
+    for _ in range(subdiv):
+        cache = {}
+        verts_list = [v for v in verts]
+
+        def mid(a, b):
+            key = (a, b) if a < b else (b, a)
+            if key not in cache:
+                p = verts[a] + verts[b]
+                idx = len(verts_list)
+                verts_list.append(p / np.linalg.norm(p))
+                cache[key] = idx
+            return cache[key]
+
+        out = []
+        for a, b, c in faces:
+            ab, bc, ca = mid(a, b), mid(b, c), mid(c, a)
+            out += [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]
+        verts = np.asarray(verts_list, dtype=np.float64)
+        faces = np.asarray(out, dtype=np.int64)
+    return verts, faces
+
+
 def _load(path):
-    ms = ml.MeshSet()
-    ms.load_new_mesh(path)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), np.float32),
-            np.asarray(m.face_matrix(), np.int32))
+    return load_mesh(path)
 
 
 def _repair(v, t, **kw):
@@ -81,11 +119,7 @@ def _face_counter(verts, tris):
 def _sphere_with_hole(z_cut=0.95):
     """Sphere with the cap above ``z_cut`` removed: 0.95 leaves one
     16-edge hole (inside the local tier's scope), 0.8 a 36-edge hole."""
-    ms = ml.MeshSet()
-    ms.create_sphere(subdiv=3)
-    m = ms.current_mesh()
-    v = np.asarray(m.vertex_matrix(), np.float64)
-    t = np.asarray(m.face_matrix(), np.int64)
+    v, t = _icosphere(3)
     keep = v[t][:, :, 2].mean(axis=1) < z_cut
     return v, t[keep]
 
@@ -297,11 +331,7 @@ def test_ftetwild_skipped_for_large_inputs():
 
 def _dense_sphere(subdiv=4):
     """A closed, dense fake fTetWild boundary (5,120 faces at subdiv=4)."""
-    ms = ml.MeshSet()
-    ms.create_sphere(subdiv=subdiv)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), np.float64),
-            np.asarray(m.face_matrix(), np.int64))
+    return _icosphere(subdiv)
 
 
 def _fake_hd(raw_value=0.02, dec_value=0.02):
@@ -435,24 +465,22 @@ def test_hausdorff_rel_is_not_clipped_above_five_percent():
     for rel in (0.008, 0.02, 0.06, 0.3):
         ov = v.copy()
         ov[:, 0] += rel * diag
-        hd, _mean = repair._hausdorff_rel(ml, v, t, ov, t)
+        hd, _mean = repair._hausdorff_rel(None, v, t, ov, t)
         assert abs(hd - rel) < 1e-4, (rel, hd)
     assert hd > 0.05, hd
 
 
 def test_hausdorff_rel_is_zero_for_identical_meshes():
     v, t = _sphere_with_hole()
-    hd_max, hd_mean = repair._hausdorff_rel(ml, v, t, v, t)
+    hd_max, hd_mean = repair._hausdorff_rel(None, v, t, v, t)
     assert hd_max is not None and hd_max < 1e-6 and hd_mean < 1e-6
-    assert repair._hausdorff_rel(ml, v, t, v, t[:0]) == (None, None)
+    assert repair._hausdorff_rel(None, v, t, v, t[:0]) == (None, None)
     # unreferenced vertices (the fTetWild bridge writes interior tet
     # vertices too) must not be sampled
-    ms = ml.MeshSet()
-    ms.create_sphere(subdiv=3)
-    m = ms.current_mesh()
-    sv, st = np.asarray(m.vertex_matrix()), np.asarray(m.face_matrix())
+    ms = None
+    sv, st = _icosphere(3)
     inner = np.random.default_rng(0).random((200, 3)) * 0.6 - 0.3
-    hd_max, _mean = repair._hausdorff_rel(ml, sv, st, np.vstack([sv, inner]), st)
+    hd_max, _mean = repair._hausdorff_rel(ms, sv, st, np.vstack([sv, inner]), st)
     assert hd_max < 1e-6, hd_max
 
 
@@ -479,9 +507,7 @@ def test_off_on_a_clean_mesh_offers_nothing():
 
 def test_local_keeps_faces_outside_the_region():
     v, t = _sphere_with_hole()
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
-    topo = ms.apply_filter('get_topological_measures')
+    topo = topology.mesh_topology(v, t)
     assert repair.boundary_loop_stats(v, t)[0] == 1
     region, n = repair._damaged_region(t)
     assert n == 1 and 0 < region.sum() < len(t)
@@ -495,9 +521,7 @@ def test_local_keeps_faces_outside_the_region():
 
 def test_local_guard_rejects_moved_outside_faces():
     v, t = _sphere_with_hole()
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
-    topo = ms.apply_filter('get_topological_measures')
+    topo = topology.mesh_topology(v, t)
     saved = local_remesh_mod._umbrella_fair
     local_remesh_mod._umbrella_fair = lambda verts, tris, first, steps: verts * 1.01
     try:
@@ -512,9 +536,7 @@ def test_local_guard_rejects_moved_outside_faces():
 def test_local_scope_gate_skips_a_long_boundary_loop():
     v, t = _sphere_with_hole(0.8)
     assert repair.boundary_loop_stats(v, t)[1] > repair.LOCAL_MAX_LOOP_LEN
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
-    topo = ms.apply_filter('get_topological_measures')
+    topo = topology.mesh_topology(v, t)
     ov, ot, _topo, rep = repair._local_remesh_tier(v, t, v, t, topo)
     assert not rep['adopted'] and np.array_equal(ov, v) and np.array_equal(ot, t), rep
     assert rep['reject_reason'] == 'scope: boundary loop too long', rep

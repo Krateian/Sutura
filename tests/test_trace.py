@@ -7,10 +7,14 @@ import subprocess
 import sys
 import tempfile
 import time
-import pytest
 
-from sutura_engine import trace
-from scripts.trace_diff import diff_traces, _load_trace
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _p in (os.path.join(REPO, 'sutura'), REPO):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from sutura_engine import trace  # noqa: E402
+from scripts.trace_diff import diff_traces, _load_trace  # noqa: E402
 
 
 def test_trace_inactive_zero_overhead():

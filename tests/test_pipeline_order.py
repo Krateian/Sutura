@@ -37,7 +37,6 @@ if SUTURA not in sys.path:
     sys.path.insert(0, SUTURA)
 
 import numpy as np  # noqa: E402
-import pymeshlab as ml  # noqa: E402
 
 import methods  # noqa: E402
 import repair  # noqa: E402
@@ -253,11 +252,8 @@ def _run_ladder(graft_body, ft_body):
 
 
 def _load(path):
-    ms = ml.MeshSet()
-    ms.load_new_mesh(path)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), np.float32),
-            np.asarray(m.face_matrix(), np.int32))
+    from sutura_engine.pipeline.mesh_io import load_mesh
+    return load_mesh(path)
 
 
 def test_ladder_faithful_graft_skips_ftetwild():
