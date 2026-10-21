@@ -280,5 +280,13 @@ def main():
     print('updater tests passed')
 
 
+def test_legacy_updater_tombstones_present():
+    """Updaters shipped in 0.5.1-0.9.1 copy these names from the new release
+    without an existence check; deleting them breaks self-update for those
+    installs (0.9.2 regression)."""
+    for name in ("manifold_bridge.py", "csg_bridge.py"):
+        assert os.path.exists(os.path.join(REPO, "sutura", name)), name
+
+
 if __name__ == '__main__':
     main()

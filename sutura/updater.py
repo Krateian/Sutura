@@ -385,9 +385,19 @@ def _copy_sutura_engine(src_dir):
             shutil.copytree(engine_src, dst)
 
 
+def _copy_listed(src, name):
+    """Copy one listed module; a name the new release no longer ships is skipped
+    (a later release may drop a module this list still names)."""
+    path = os.path.join(src, name)
+    if not os.path.exists(path):
+        print("note: %s is not in this release; skipped" % name)
+        return
+    shutil.copy2(path, os.path.join(APP_DIR, name))
+
+
 def _copy_python_files(src_dir):
     for f in APP_MODULES + COPY_EXTRA_MODULES:
-        shutil.copy2(os.path.join(src_dir, 'sutura', f), os.path.join(APP_DIR, f))
+        _copy_listed(os.path.join(src_dir, "sutura"), f)
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):
         shutil.copy2(_license, os.path.join(APP_DIR, 'LICENSE'))
@@ -401,7 +411,7 @@ def _install_linux(src_dir, req_files):
     """install.sh-style copy + venv update only when requirements change."""
     sutura_src = os.path.join(src_dir, 'sutura')
     for f in APP_MODULES + COPY_EXTRA_MODULES + LINUX_EXTRA_FILES:
-        shutil.copy2(os.path.join(sutura_src, f), os.path.join(APP_DIR, f))
+        _copy_listed(sutura_src, f)
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):
         shutil.copy2(_license, os.path.join(APP_DIR, 'LICENSE'))
