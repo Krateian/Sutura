@@ -200,7 +200,7 @@ def _dump_tamp_mesh(dump_dir, name, verts, tris):
         pass
 
 
-def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
+def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
                    intensity=None, spec=None, si_mode='report', prepass=False):
     """Interior-plug tier for registry method 17 (Tamponade).
 
@@ -516,3 +516,24 @@ def tamponade_tier(ml, ms, after, stats, tmpdir, tamponade=False,
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
     stats['tamponade'] = rec
     return ms, after
+
+
+def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None, tmpdir=None, tamponade=False,
+                   intensity=None, spec=None, si_mode='report', prepass=False,
+                   ml=None):
+    """Array API; the legacy (ml, ms, after, stats, tmpdir) call is forwarded."""
+    if hasattr(t, 'current_mesh'):
+        return _tamponade_tier_ms(v, t, input_v, input_t, after, tamponade,
+                                  intensity=intensity, spec=spec,
+                                  si_mode=si_mode, prepass=prepass)
+    import pymeshlab as _ml
+
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after = _tamponade_tier_ms(
+        _ml, ms, after, stats, tmpdir, tamponade=tamponade,
+        intensity=intensity, spec=spec, si_mode=si_mode, prepass=prepass)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after)

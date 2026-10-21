@@ -134,7 +134,7 @@ def _flap_cache_key(base_v, base_t):
     return h.digest()
 
 
-def _flap_step(ml, ms, after, stats, _p=None):
+def _flap_step_ms(ml, ms, after, stats, _p=None):
     """Stage-1 hole fill via the Flap surface filler (on by default in the CLI).
 
     Runs ``sutura_engine.flap.flap_fill`` on the mesh in ``ms`` (the input as
@@ -376,3 +376,18 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
         }
         return cv, ct, info
     return out_verts, out_tris, None
+
+
+def _flap_step(v, t, input_v=None, input_t=None, after=None, stats=None, _p=None, ml=None):
+    """Array API; the legacy (ml, ms, after, stats, _p) call is forwarded."""
+    if hasattr(t, 'current_mesh'):
+        return _flap_step_ms(v, t, input_v, input_t, after)
+    import pymeshlab as _ml
+
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after = _flap_step_ms(_ml, ms, after, stats, _p)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after)

@@ -15,8 +15,8 @@ from sutura_engine.pipeline.p_weld import (
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
-def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
-                   closing=None, proxy_template=False):
+def _closing_ladder_ms(ml, ms, after, stats, v, t, tmpdir,
+                       closing=None, proxy_template=False):
     """Scan-closing / proxy-template tier for registry methods 8/9/10 (P-INT).
 
     ``closing='poisson'`` runs ``closing.poisson_close``; ``'flat_back'`` runs
@@ -110,3 +110,19 @@ def closing_ladder(ml, ms, after, stats, v, t, tmpdir,
         rec['reason'] = 'error: %s' % _g.error
     stats['closing'] = rec
     return ms, after
+
+
+def closing_ladder(v, t, input_v, input_t, after, stats, tmpdir,
+                   closing=None, proxy_template=False, ml=None):
+    """Array API; input_v/input_t is the original surface this tier works from."""
+    import pymeshlab as _ml
+
+    ms = _ml.MeshSet()
+    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
+                         face_matrix=np.asarray(t, np.int32)))
+    ms, after = _closing_ladder_ms(_ml, ms, after, stats, input_v, input_t,
+                                   tmpdir, closing=closing,
+                                   proxy_template=proxy_template)
+    m = ms.current_mesh()
+    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
+            np.asarray(m.face_matrix(), dtype=np.int32), after)
