@@ -43,7 +43,7 @@ from sutura_engine.pipeline.tiers.ftetwild import _ftetwild_tier
 from sutura_engine.pipeline.tiers.graft import graft_tier
 from sutura_engine.pipeline.tiers.local_remesh import _local_remesh_tier
 from sutura_engine.pipeline.tiers.repeat import repeat_tier
-from sutura_engine.pipeline.tiers.splint import _splint_tier_ms
+from sutura_engine.pipeline.tiers.splint import splint_tier
 from sutura_engine.pipeline.tiers.tamponade import tamponade_tier
 from sutura_engine.pipeline.tiers.wall import wall_thicken_tier
 from sutura_engine.pipeline.utils import (
@@ -1122,13 +1122,18 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
                 if _sh > 0 or _snm > 0:
                     _t_sp = time.perf_counter()
                     _sp_in_v, _sp_in_t = (_cur_v, _cur_t) if trace.is_active() else (None, None)
-                    _s_ms, _s_after = _splint_tier_ms(
-                        ml, ms, after, stats, v, t, tmpdir, splint=True,
+                    _s_v, _s_t, _s_after = splint_tier(
+                        np.asarray(_cur_v, dtype=np.float64),
+                        np.asarray(_cur_t, dtype=np.int64), v, t, after,
+                        stats, tmpdir, splint=True,
                         intensity=(getattr(spec, 'base', None)
                                    or getattr(spec, 'name', None)),
                         spec=spec, adaptive=splint_adaptive)
                     if (stats.get('splint') or {}).get('adopted'):
-                        ms, after = _s_ms, _s_after
+                        ms = ml.MeshSet()
+                        ms.add_mesh(ml.Mesh(vertex_matrix=_s_v,
+                                            face_matrix=_s_t.astype(np.int32)))
+                        after = _s_after
                         splint_ok = True
                         tiers_run.append('splint')
                     if trace.is_active():
