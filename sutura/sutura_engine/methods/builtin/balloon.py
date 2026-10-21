@@ -9,7 +9,7 @@ METHOD = RepairMethod(
     id='balloon',
     name='Balloon',
     display_name='Balloon',
-    description='Screened-Poisson surface reconstruction that closes the large opening '
+    description='Native implicit (generalized-winding level-set) reconstruction that closes the large opening '
                 'of a single-sided scan (estimates the missing back surface).',
     family='closing',
     invents_geometry=True,

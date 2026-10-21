@@ -544,7 +544,7 @@ def main():
     parser.add_argument('--flap', action='store_true',
                         help='run the Flap surface-based hole filler as the '
                              'FIRST Stage-1 step (a pre-pass on the input, '
-                             'before the VCG chain): every open boundary loop '
+                             'before the native Stage-1 chain): every open boundary loop '
                              'is covered with a minimum-area triangulation '
                              'refined to the surrounding edge length and faired '
                              'with a thin-plate solve that continues the '

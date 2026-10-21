@@ -107,7 +107,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     ``load_engine_run``; None (library default) runs no external engine and
     keeps the output byte-identical to the pre-engines behaviour.
     ``closing`` selects the standalone scan-closing tier (registry methods 8/9):
-    ``'poisson'`` (screened Poisson reconstruction, ``sutura/closing.py``) or
+    ``'poisson'`` (native implicit reconstruction, legacy alias; ``sutura/closing.py``) or
     ``'flat_back'`` (flat back plane + side walls); ``proxy_template`` selects
     the proxy-template rebuild (registry method 10, ``sutura/proxy_repair.py``).
     Both run on the ORIGINAL input arrays (like the fTetWild tier) and the

@@ -5,7 +5,7 @@
 Evaluates all 17 registered repair methods:
   - Prerequisite and Rust symbol checks via sutura_engine.health
   - Deterministic fixture execution for fast methods (<5s total budget)
-  - Availability-only checks for heavy iterative methods (Poisson, proxy) and interactive addons
+  - Availability-only checks for heavy iterative methods (Balloon/implicit close, proxy) and interactive addons
   - Formatted human output: 'Methods: N/17 OK (X failed, Y skipped)'
 """
 import os
@@ -16,13 +16,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# Methods that cannot fit the <5s budget (iterative solvers: Screened Poisson,
+# Methods that cannot fit the <5s budget (iterative solvers: implicit closing,
 # proxy template resampling, subprocess tetrahedralization) or require manual input.
 # These are verified via health.check_availability_detail() (imports, symbols, and configs).
 AVAILABILITY_ONLY_METHODS = {
-    'balloon',          # Method 8: Poisson reconstruction takes ~3s
+    'balloon',          # Method 8: implicit reconstruction takes ~3s
     'scaffold',         # Method 10: Proxy template resampling takes ~2s
-    'mirror_complete',  # Method 14: Symmetrized Poisson reconstruction takes ~3s
+    'mirror_complete',  # Method 14: Symmetrized implicit reconstruction takes ~3s
     'ftetwild',         # Method 7: Subprocess tetrahedralization
     'transplant_plus',  # Method 12: Interactive manual transplant
 }

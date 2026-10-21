@@ -11,7 +11,7 @@ METHOD = RepairMethod(
     display_name='Mirror Complete',
     description='Complete the missing back of a single-sided scan by mirroring '
                 'the visible surface across its detected symmetry plane '
-                '(mirror_repair.py); falls back to Poisson when the symmetry '
+                '(mirror_repair.py); falls back to the native implicit closer when the symmetry '
                 'is not confident.',
     family='closing',
     invents_geometry=True,

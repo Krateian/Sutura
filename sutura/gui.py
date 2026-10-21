@@ -95,7 +95,7 @@ STRINGS = {
         'method_name_autorefine': 'Autorefine (SI)',
         'method_name_exact_refine': 'Exact Refine (SI, exact)',
         'method_name_ftetwild': 'fTetWild',
-        'method_name_balloon': 'Balloon (Poisson close)',
+        'method_name_balloon': 'Balloon (native implicit close)',
         'method_name_backplate': 'Backplate (flat back)',
         'method_name_scaffold': 'Scaffold (proxy template)',
         'method_name_transplant': 'Transplant (repeat auto)',
@@ -124,7 +124,7 @@ STRINGS = {
             '(re-run the installer or set up a Rust toolchain)',
         'method_tip_mirror_complete': 'MIRROR COMPLETE (#14) — complete the '
             'missing back of a single-sided scan by mirroring the visible '
-            'surface across its detected symmetry plane. Falls back to Poisson '
+            'surface across its detected symmetry plane. Falls back to the native implicit closer '
             'when the symmetry is not confident. Estimated geometry.',
         'method_tip_wall_thicken': 'WALL THICKEN (#15) — opt-in: measure '
             'per-vertex wall thickness from an SDF grid and thicken walls below '
@@ -768,7 +768,7 @@ STRINGS = {
         'method_name_autorefine': 'Kendini Onarım (SI)',
         'method_name_exact_refine': 'Kesin Onarım (SI)',
         'method_name_ftetwild': 'fTetWild',
-        'method_name_balloon': 'Balon (Poisson kapatma)',
+        'method_name_balloon': 'Balon (native örtük kapatma)',
         'method_name_backplate': 'Arka Plaka',
         'method_name_scaffold': 'İskelet (vekil şablon)',
         'method_name_transplant': 'Nakil (yineleme, otomatik)',
@@ -799,8 +799,8 @@ STRINGS = {
             '(kurulumcuyu yeniden çalıştırın veya Rust araç zinciri kurun)',
         'method_tip_mirror_complete': 'AYNALI TAMAMLAMA (#14) — tek taraflı '
             'taramada eksik arka yüzeyi, görünen yüzeyi algılanan simetri '
-            'düzleminde aynalayarak tamamlar. Simetri güveni düşükse Poisson '
-            'yöntemine döner. Tahmini geometri.',
+            'düzleminde aynalayarak tamamlar. Simetri güveni düşükse native örtük '
+            'kapatmaya döner. Tahmini geometri.',
         'method_tip_wall_thicken': 'DUVAR KALINLAŞTIR (#15) — isteğe bağlı: '
             'SDF ızgarasından her tepe için duvar kalınlığını ölçer ve hedefin '
             'altındaki duvarları morfolojik öteleme ile kalınlaştırır. Asla '
@@ -2173,7 +2173,7 @@ class HeatmapWorker(QThread):
     subprocess (``heatmap_render.py``) writing a PNG to a temp file. This
     keeps the mesh-loading/repair stack out of the GUI process entirely --
     running heavy mesh work inside a Qt worker thread alongside a QMainWindow
-    is fragile (an earlier PyMeshLab-based version corrupted the heap at
+    is fragile (an earlier in-process renderer corrupted the heap at
     interpreter shutdown under PySide6 6.11 + Python 3.14) and can freeze the
     UI. The PNG is read back as bytes and decoded to a QPixmap in the main
     thread.
