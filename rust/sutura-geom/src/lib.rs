@@ -37,6 +37,7 @@ pub mod predicates3d;
 pub mod profile;
 pub mod rbf;
 pub mod raycast;
+pub mod resample;
 pub mod shell;
 pub mod splint;
 pub mod tamponade;
@@ -335,7 +336,7 @@ fn parse_box(arr: &PyArrayLike2<'_, f64, AllowTypeChange>) -> PyResult<([f64; 3]
 /// Resolve a grid covering `[bmin - pad*voxel, bmax + pad*voxel]` with an
 /// optional explicit voxel and a default target cell count on the longest
 /// axis.  Coarsens the voxel until the grid fits `MAX_VOXELS`.
-fn plan_grid(
+pub(crate) fn plan_grid(
     bmin: [f64; 3],
     bmax: [f64; 3],
     voxel_opt: Option<f64>,
@@ -1706,6 +1707,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hole::close_holes, m)?)?;
     m.add_function(wrap_pyfunction!(cluster::cluster_decimate, m)?)?;
     m.add_function(wrap_pyfunction!(decimate::decimate_qem, m)?)?;
+    m.add_function(wrap_pyfunction!(resample::resample_uniform, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;

@@ -7,7 +7,8 @@ severe defects (open holes, self-intersections, non-manifold edges, debris).
 Pipeline:
   1. Detect healthy original surface regions (filtering defects, inconsistent winding,
      debris components, and dilating by 1-2 rings).
-  2. Build a coarse watertight proxy surface (resampled uniform mesh + hole closing).
+  2. Build a coarse watertight proxy surface (native voxel resample + hole
+     closing; PyMeshLab alpha-wrap fallback).
   3. Enforce face budget (output <= max(2x input, 20k) faces) and target edge length.
   4. Project proxy vertices onto healthy original surface (>= 90% of healthy subset projected).
   5. Check and rollback collapsed/inverted faces without false-positive reverts.
@@ -37,168 +38,6 @@ PROJECTION_MIN_NORMAL_DOT = 0.0  # alignment threshold for projection
 
 SI_FACE_CAP = 200_000  # cap self-intersection checks above 200k faces
 MIN_FACE_BUDGET = 20_000  # output faces <= max(2x input, 20k)
-
-# PyMeshLab's ``generate_resampled_uniform_mesh`` (VCG) builds a face KdTree
-# whose construction can fail to terminate on meshes that carry very long thin
-# triangles (e.g. a coarse bottom fan meeting a fine grid: max edge / median
-# edge ~ 56). The native loop is not interruptible from Python, so the call is
-# run in a bounded subprocess; on timeout the caller falls through to the next
-# strategy (ultimately ``generate_alpha_wrap``, which is fast and robust).
-PROXY_RESAMPLE_TIMEOUT = 20.0  # seconds, per uniform-resample attempt
-
-# The same non-terminating VCG KdTree construction grows to many GB of resident
-# memory before the time budget expires. The subprocess is therefore also killed
-# once its RSS exceeds this ceiling, so the guard bounds memory as well as time.
-# The value sits far above any healthy resample (measured < 450 MB total, parent
-# included, on the smoke set) and is overridable via
-# ``SUTURA_PROXY_RESAMPLE_MAX_RSS_MB`` (0 disables it).
-PROXY_RESAMPLE_MAX_RSS_MB = 2048
-
-
-def _resample_timeout():
-    """Resolved per-attempt resample budget (env ``SUTURA_PROXY_RESAMPLE_TIMEOUT``)."""
-    import os
-    raw = os.environ.get('SUTURA_PROXY_RESAMPLE_TIMEOUT')
-    if raw:
-        try:
-            val = float(raw)
-            if val > 0:
-                return val
-        except (TypeError, ValueError):
-            pass
-    return PROXY_RESAMPLE_TIMEOUT
-
-
-def _resample_max_rss_kb():
-    """Resolved per-attempt resample memory ceiling in kB (env override, 0 = off)."""
-    import os
-    raw = os.environ.get('SUTURA_PROXY_RESAMPLE_MAX_RSS_MB')
-    mb = PROXY_RESAMPLE_MAX_RSS_MB
-    if raw:
-        try:
-            val = float(raw)
-            if val >= 0:
-                mb = val
-        except (TypeError, ValueError):
-            pass
-    return int(mb) * 1024
-
-
-def _proc_rss_kb(pid):
-    """Resident set size of ``pid`` in kB, or ``None`` if unavailable."""
-    import sys
-    try:
-        if sys.platform.startswith('linux'):
-            with open('/proc/%d/status' % int(pid)) as fh:
-                for line in fh:
-                    if line.startswith('VmRSS:'):
-                        return int(line.split()[1])
-            return None
-        import subprocess
-        out = subprocess.run(['ps', '-o', 'rss=', '-p', str(int(pid))],
-                             capture_output=True, text=True)
-        txt = out.stdout.strip()
-        return int(txt) if txt else None
-    except Exception:
-        return None
-
-
-def _uniform_resample(verts, tris, voxel, offset, absdist):
-    """Run one ``generate_resampled_uniform_mesh`` call and return (verts, faces)."""
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, dtype=np.float64),
-                        face_matrix=np.asarray(tris, np.int32)))
-    ms.apply_filter('generate_resampled_uniform_mesh',
-                    cellsize=ml.PureValue(float(voxel)),
-                    offset=ml.PureValue(float(offset)),
-                    absdist=bool(absdist))
-    out = ms.current_mesh()
-    return (np.asarray(out.vertex_matrix(), dtype=np.float64),
-            np.asarray(out.face_matrix(), dtype=np.int32))
-
-
-def _resample_worker(in_npz, out_npz, voxel, offset, absdist):
-    """Subprocess entry point for :func:`_uniform_resample_isolated`."""
-    data = np.load(in_npz)
-    pv, pt = _uniform_resample(np.asarray(data['v'], dtype=np.float64),
-                               np.asarray(data['t'], dtype=np.int64),
-                               float(voxel), float(offset), bool(absdist))
-    np.savez(out_npz, v=pv, t=pt)
-
-
-def _uniform_resample_isolated(verts, tris, voxel, offset, absdist, timeout=None):
-    """``_uniform_resample`` in a subprocess, bounded by ``timeout`` seconds.
-
-    Protects the repair from the VCG KdTree non-termination described above:
-    on timeout (or any child failure) this raises, and ``build_proxy`` falls
-    through to its next strategy. The child is also killed once its resident
-    set exceeds ``_resample_max_rss_kb()`` so the guard bounds memory too.
-    The child runs under the current interpreter with the parent's ``sys.path``
-    so it resolves the same ``sutura_engine`` package in every install layout.
-    """
-    import os
-    import shutil
-    import subprocess
-    import sys
-    import tempfile
-    import threading
-    import time
-
-    if timeout is None:
-        timeout = _resample_timeout()
-    max_rss_kb = _resample_max_rss_kb()
-    work = tempfile.mkdtemp(prefix='sutura_proxy_resample_')
-    try:
-        in_npz = os.path.join(work, 'in.npz')
-        out_npz = os.path.join(work, 'out.npz')
-        np.savez(in_npz,
-                 v=np.ascontiguousarray(verts, dtype=np.float64),
-                 t=np.ascontiguousarray(tris, np.int32))
-        path = [p for p in sys.path if isinstance(p, str)]
-        code = (
-            "import sys; sys.path[:0] = %r\n"
-            "from sutura_engine.methods.proxy import _resample_worker\n"
-            "_resample_worker(%r, %r, %r, %r, %r)\n"
-            % (path, in_npz, out_npz, float(voxel), float(offset), bool(absdist))
-        )
-        proc = subprocess.Popen([sys.executable, '-c', code],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        over_mem = threading.Event()
-
-        def _watch():
-            while proc.poll() is None:
-                rss = _proc_rss_kb(proc.pid)
-                if max_rss_kb > 0 and rss is not None and rss > max_rss_kb:
-                    over_mem.set()
-                    proc.kill()
-                    return
-                time.sleep(0.2)
-
-        watcher = threading.Thread(target=_watch, daemon=True)
-        watcher.start()
-        try:
-            try:
-                out, err = proc.communicate(timeout=float(timeout))
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                raise TimeoutError(
-                    'proxy resample exceeded the %.1fs budget' % float(timeout))
-        finally:
-            watcher.join(timeout=1.0)
-        if over_mem.is_set():
-            raise RuntimeError(
-                'proxy resample exceeded the %d MB memory cap'
-                % (max_rss_kb // 1024))
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(
-                proc.returncode, 'proxy_resample', output=out, stderr=err)
-        data = np.load(out_npz)
-        return (np.asarray(data['v'], dtype=np.float64),
-                np.asarray(data['t'], dtype=np.int32))
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
 
 
 def _referenced_only(verts, tris):
@@ -280,24 +119,80 @@ def _decimate_to_budget(verts, tris, max_budget):
     return None
 
 
-def build_proxy(verts, tris, voxel=None, resample_timeout=None):
+def _manifold_resample(verts, tris, voxel, offset, absdist, raystab_full=False):
+    """Native voxel resample hardened against an ambiguous sign field (Faz 4 W3c).
+
+    ``sutura_geom.resample_uniform`` extracts the iso-surface with dual
+    contouring.  Where the generalized-winding sign field is ambiguous
+    (inconsistent face winding or self-intersections) dual contouring emits a
+    watertight but *non-manifold* surface (a pinched edge shared by four faces),
+    which the later ``close_holes`` rejects.  Three native steps harden it:
+
+    * the signed pass resamples a coherently re-oriented input, so a locally
+      flipped face no longer corrupts the winding sign;
+    * any residual non-manifold vertices/edges in the extraction are split
+      before hole closing.
+
+    The optional ``raystab_full`` (passed straight to
+    ``topology.resample_uniform``) lets the ray-stabbing vote decide the sign in
+    every cell instead of only the winding-ambiguous band.  It is *not* enabled
+    by ``build_proxy``: it recovers a folded/open flap the winding-only field
+    truncates (``thingi10k_100827``: z_top 30.1 -> 34.4, SI 664 -> 81) but
+    degrades the common case (broken sphere: ``projected_fraction_healthy``
+    0.981 -> 0.878, faces 11298 -> 20000) through scattered single-cell sign
+    flips.  Parked until the vote rule is narrowed to the recovery direction
+    only; see ``/tmp/followups.md`` and
+    ``tests/test_proxy_repair.py::test_build_proxy_open_flap_expected_fail``.
+
+    Returns ``(verts, tris)``.
+    """
+    if not absdist:
+        tris = topology.re_orient_faces_coherently(np.asarray(tris, dtype=np.int64))
+    rv, rt, _info = topology.resample_uniform(
+        verts, tris, voxel, offset, absdist, raystab_full)
+    rv, rt = topology.repair_non_manifold_vertices(rv, rt)
+    rt = topology.repair_non_manifold_edges(rv, rt)
+    return _reload_honest(rv, rt)
+
+
+def _reload_honest(verts, tris):
+    """Weld the proxy into its reload-equivalent form and repair, iterating.
+
+    Dual contouring puts one vertex per cell surface component, so it can leave
+    vertices that are distinct yet collapse onto the same float32 position.  The
+    in-memory mesh is watertight, but the STL the user reloads re-welds those
+    positions and exposes pinched edges, which the closing tier then prunes into
+    holes.  Welding here (the exact form the reloader produces) and repairing
+    again makes the returned proxy reload-honest.  Bounded, converges in a few
+    rounds.
+    """
+    for _ in range(4):
+        nv, nt = topology.weld_reload_equivalent(verts, tris)
+        nv, nt = topology.repair_non_manifold_vertices(nv, nt)
+        nt = topology.repair_non_manifold_edges(nv, nt)
+        nv, nt, _closed, _new = topology.close_holes(nv, nt, maxholesize=10000)
+        is_wt, _ = _check_validity(nv, nt)
+        if is_wt:
+            return nv, nt
+        verts, tris = nv, nt
+    return nv, nt
+
+
+def build_proxy(verts, tris, voxel=None):
     """Construct a watertight, coarse proxy surface for the input mesh.
 
     Attempts in order:
-      (a) PyMeshLab generate_resampled_uniform_mesh (absdist=False, offset=0.0) + meshing_close_holes
-      (a2) PyMeshLab generate_resampled_uniform_mesh (absdist=True, offset=voxel)
-      (b) PyMeshLab generate_alpha_wrap fallback
+      (a) native voxel resample (signed field, offset 0.0) + native hole closing
+      (a2) native voxel resample (unsigned distance, offset=voxel)
+      (b) native morphological closing (``sutura_geom.morph_close``) fallback
 
     Voxel size is clamped so grid dimensions stay within [32, 256].
 
-    ``resample_timeout`` (default: ``_resample_timeout()``) bounds each
-    uniform-resample attempt; the two PyMeshLab resample strategies run in a
-    subprocess so a VCG KdTree non-termination on long thin triangles cannot
-    hang the repair (see ``PROXY_RESAMPLE_TIMEOUT``). The subprocess is also
-    killed once its RSS exceeds ``PROXY_RESAMPLE_MAX_RSS_MB``, so the guard
-    bounds memory as well as time. On either bound the strategy is skipped and
-    the alpha-wrap fallback is used.
-    Returns (pv, pt, info_dict).
+    Strategies (a)/(a2) use the native ``sutura_geom.resample_uniform`` (Faz 4
+    W3c). Unlike the VCG ``generate_resampled_uniform_mesh`` it replaced, the
+    native pass is a bounded voxel-grid extraction, so the former subprocess
+    timeout/RSS guard (a VCG KdTree could fail to terminate on long thin
+    triangles) is no longer needed. Returns (pv, pt, info_dict).
     """
     verts = np.asarray(verts, dtype=np.float64)
     tris = np.asarray(tris, dtype=np.int64)
@@ -323,26 +218,12 @@ def build_proxy(verts, tris, voxel=None, resample_timeout=None):
     if max_dim / voxel < MIN_GRID_CELLS:
         voxel = max_dim / MIN_GRID_CELLS
 
-    import pymeshlab as ml
-    import time
-    import topology
-
-    if resample_timeout is None:
-        resample_timeout = _resample_timeout()
-    resample_start = time.monotonic()
-
     # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
     try:
-        rv, rt = _uniform_resample_isolated(in_v, in_t, voxel, 0.0, False,
-                                            timeout=resample_timeout)
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=rv, face_matrix=np.asarray(rt, np.int32)))
-        topology.close_holes_ms(ms, ml, maxholesize=10000)
-        topology.close_holes_ms(ms, ml, maxholesize=10000)
-        out = ms.current_mesh()
-        pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
-        pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+        rv, rt = _manifold_resample(in_v, in_t, voxel, 0.0, False)
+        for _ in range(2):
+            rv, rt, _closed, _new = topology.close_holes(rv, rt, maxholesize=10000)
+        pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
@@ -355,9 +236,7 @@ def build_proxy(verts, tris, voxel=None, resample_timeout=None):
 
     # Strategy 2: Unsigned distance offset resampling (absdist=True, offset=voxel)
     try:
-        remaining = max(resample_timeout - (time.monotonic() - resample_start), 3.0)
-        rv, rt = _uniform_resample_isolated(in_v, in_t, voxel, voxel, True,
-                                            timeout=remaining)
+        rv, rt = _manifold_resample(in_v, in_t, voxel, voxel, True)
         pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
@@ -369,25 +248,15 @@ def build_proxy(verts, tris, voxel=None, resample_timeout=None):
     except Exception:
         pass
 
-    # Strategy 3: Alpha wrap fallback (guaranteed watertight 2-manifold)
+    # Strategy 3: Morphological closing fallback (guaranteed watertight 2-manifold)
     try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=np.asarray(in_t, np.int32)))
-        alpha = voxel * 2.0
-        offset = voxel / 4.0
-        ms.apply_filter(
-            'generate_alpha_wrap',
-            alpha=ml.PureValue(alpha),
-            offset=ml.PureValue(offset),
-        )
-        out = ms.current_mesh()
-        pv = np.asarray(out.vertex_matrix(), dtype=np.float64)
-        pt = np.asarray(out.face_matrix(), dtype=np.int32)
-        pv, pt = _filter_debris_components(pv, pt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
+        rv, rt, _ = sutura_geom.morph_close(
+            in_v, in_t, float(voxel) * 2.0, float(voxel))
+        pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
         is_wt, _ = _check_validity(pv, pt)
         if is_wt and len(pt) >= 4:
             return pv, pt, {
-                'method': 'alpha_wrap',
+                'method': 'morph_close',
                 'voxel': voxel,
                 'faces': len(pt),
             }
@@ -530,8 +399,6 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
         }
 
     try:
-        import pymeshlab as ml
-
         diag = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
 
         # 1. Extract healthy original surface

@@ -76,6 +76,7 @@ _RUST_FNS = (
     'close_holes',
     'cluster_decimate',
     'decimate_qem',
+    'resample_uniform',
 )
 
 
@@ -1102,6 +1103,64 @@ def decimate_qem(verts, tris, target_faces, target_error=None,
         v, t, target, err, bool(lock_border), attributes)
     return (np.asarray(out_v), np.asarray(out_t).astype(np.int64),
             dict(report))
+
+
+def resample_uniform(verts, tris, voxel, offset=0.0, absdist=False,
+                     raystab_full=False):
+    """Resample ``verts``/``tris`` on a uniform voxel grid.
+
+    Native only (Faz 4 W3c): the Rust ``sutura_geom.resample_uniform`` (a
+    generalized-winding distance field on a uniform grid, extracted with dual
+    contouring) is required -- there is deliberately NO numpy oracle, so a
+    missing extension or symbol raises ``RuntimeError`` rather than silently
+    degrading.  This replaces the two ``generate_resampled_uniform_mesh`` call
+    sites in the proxy tier.
+
+    ``voxel`` is an absolute cell size in model units; ``offset`` shifts the
+    extracted iso-surface and ``absdist=True`` resamples the unsigned
+    nearest-surface distance instead of the signed one.  The output is a
+    closed, two-manifold regular surface; the caller still validates it.
+
+    ``raystab_full=True`` (signed field only, ignored when ``absdist``) lets
+    the ray-stabbing vote decide the sign in every grid cell rather than only
+    the generalized-winding-ambiguous band.  A folded/partial surface can
+    leave the winding below 0.5 over a region the solid encloses (an open
+    flap); the winding-only field then reads it as outside and dual contouring
+    truncates the surface.  The default ``False`` is byte-identical to the
+    winding-only field.
+
+    Returns ``(verts, tris, report)`` with ``report`` carrying ``voxel``/
+    ``offset``/``absdist``/``mode``/``dims``/``faces``/``coarsened``/
+    ``manifold``/``raystab_full``.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float64)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    cell = float(voxel)
+    if not np.isfinite(cell) or cell <= 0.0:
+        raise ValueError("voxel must be a positive finite number")
+    off = float(offset)
+    if not np.isfinite(off):
+        raise ValueError("offset must be finite")
+    use_raystab = bool(raystab_full) and not absdist
+    if len(v) < 3 or len(t) == 0:
+        return v, t, {'voxel': cell, 'offset': off, 'absdist': bool(absdist),
+                      'mode': 'unsigned' if absdist else 'signed',
+                      'dims': (0, 0, 0), 'faces': 0, 'coarsened': False,
+                      'manifold': True, 'raystab_full': use_raystab}
+    if not _has_rust('resample_uniform'):
+        raise RuntimeError(
+            "sutura_geom.resample_uniform required but unavailable in this "
+            "environment (no numpy oracle for voxel resampling)"
+        )
+    out_v, out_t, info = _geom.resample_uniform(
+        v, t, cell, off, bool(absdist), use_raystab)
+    report = dict(info)
+    report['dims'] = tuple(int(d) for d in report.get('dims', (0, 0, 0)))
+    return (np.asarray(out_v), np.asarray(out_t).astype(np.int64), report)
 
 
 def close_holes_ms(ms, ml=None, maxholesize=1000, self_intersection=True,

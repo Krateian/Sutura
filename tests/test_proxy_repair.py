@@ -4,8 +4,15 @@
 Checks:
   1. health_mask detects boundary holes, non-manifold geometry, debris, and dilates.
   2. build_proxy produces watertight 2-manifold surface without debris.
-  3. build_proxy is bounded on a fan mesh whose PyMeshLab resample call hangs
-     (falls back to alpha_wrap within the per-attempt budget).
+  3. build_proxy is bounded on a fan mesh whose long thin triangles used to
+     hang PyMeshLab's resampler (now handled by the native resampler).
+  3b. build_proxy actually selects the signed resample strategy on a mesh with
+     an inconsistently wound face (native resample + non-manifold cleanup).
+  3b-ii. build_proxy's open-flap truncation (thingi10k_100827) is a KNOWN
+      limitation, kept as an expected-fail; the opt-in raystab_full=True param
+      that would fix it is parked because it degrades the common case.
+  3c. build_proxy falls back to the native morph_close strategy when the
+      resample strategies are unavailable.
   4. proxy_template_repair repairs broken sphere with hole, flipped face, and debris.
   5. proxy_template_repair repairs broken torus while preserving topology.
   6. Defensive error handling returns honest error reports without raising.
@@ -80,6 +87,75 @@ def test_build_proxy():
     ok, status = sutura_geom.watertight_check(pv, pt)
     assert ok, f"Proxy Manifold error: {status}"
     print(f"  ✓ test_build_proxy passed (faces: {len(pt)}, method: {info['method']})")
+
+
+def test_build_proxy_prefers_signed_resample():
+    """The signed resample strategy must actually be selected.
+
+    Regression (Faz 4 W3c): the dual-contour signed resample emitted a
+    watertight but non-manifold surface where the generalized-winding sign field
+    was ambiguous (here: one inconsistently wound face).  ``close_holes`` then
+    rejected it, and ``build_proxy`` silently fell through to the
+    outward-offset *unsigned* proxy -- a different shape than the signed proxy
+    the VCG ``generate_resampled_uniform_mesh`` produced.  ``_manifold_resample``
+    re-orients the signed input and splits the residual pinched
+    vertices/edges, so the signed path must now win."""
+    v, t = _make_broken_sphere()
+    pv, pt, info = pr.build_proxy(v, t)
+    assert info['method'] == 'uniform_resampled_signed', (
+        f"expected the signed resample, got {info['method']}")
+    assert len(pt) >= 100, f"proxy too small: {len(pt)} faces"
+    ok, status = sutura_geom.watertight_check(pv, pt)
+    assert ok, f"Signed proxy Manifold error: {status}"
+    print(f"  ✓ test_build_proxy_prefers_signed_resample passed (faces: {len(pt)})")
+
+
+def test_build_proxy_open_flap_expected_fail():
+    """EXPECTED FAIL -- known limitation, kept as evidence (Faz 4 W3c).
+
+    On ``thingi10k_100827`` (a broken scan whose top surface is folded back on
+    itself) the generalized-winding sign is ~0 over the top region, so the
+    winding-only signed field reads it as *outside* and dual contouring truncates
+    the proxy at z ~ 30.1 while the input reaches 34.5 (~38 % of the input
+    vertices sit above the cut).
+
+    The native ``resample_uniform`` already has an opt-in ``raystab_full=True``
+    that recovers the flap (measured: z_top 34.38, Manifold watertight, faces
+    11298 -> 12114 and SI 664 -> 81 on 100827), but enabling it for the whole
+    field degrades the common case: on a plain broken sphere the proxy hits the
+    face budget (11298 -> 20000 faces) and ``projected_fraction_healthy`` drops
+    0.981 -> 0.878, because the full-band vote introduces scattered single-cell
+    sign flips that spawn extra surface where the winding was already clean.  The
+    proxy therefore keeps the winding-only signed path.
+
+    FOLLOW-UP: narrow the vote rule to the recovery direction only (flip
+    outside -> inside, never inside -> outside) so the flap is recovered without
+    the scattered flips, then re-measure 100827 and the broken sphere and pass
+    ``raystab_full=True`` at the signed call site.  Tracked in
+    ``/tmp/followups.md``.
+    """
+    sample = os.path.join(REPO, 'tests', 'real-world-samples',
+                          'thingi10k_100827.stl')
+    if not os.path.exists(sample):
+        print("  ~ test_build_proxy_open_flap_expected_fail skipped (sample missing)")
+        return
+    mesh = trimesh.load(sample, process=True)
+    v = np.asarray(mesh.vertices, np.float64)
+    t = np.asarray(mesh.faces, np.int64)
+
+    _pv, _pt, info = pr.build_proxy(v, t)
+    pv = np.asarray(_pv)
+    z_top = float(pv[:, 2].max())
+    z_max_in = float(v[:, 2].max())
+    if z_top >= 34.0:
+        print(f"  ! test_build_proxy_open_flap_expected_fail UNEXPECTEDLY PASSED "
+              f"(z_top {z_top:.2f}); the limitation may be resolved -- promote it")
+        return
+    print(f"  x test_build_proxy_open_flap_expected_fail (expected): proxy "
+          f"truncates the flap z_top={z_top:.2f} < input {z_max_in:.2f} "
+          f"[method {info['method']}]")
+    print("    follow-up: narrow the vote rule to recovery-only "
+          "(outside -> inside) and enable raystab_full=True")
 
 
 def test_proxy_template_repair_sphere():
@@ -173,18 +249,21 @@ def _make_fan_box(edge=1.0, W=40.0, H=4.0):
 
 
 def test_build_proxy_bounded_on_fan_mesh():
-    """The VCG resample KdTree hang must be bounded, falling back to alpha_wrap.
+    """The long-thin-triangle mesh must resample bounded via the native pass.
 
-    Regression for the H1 plate_b_bump hang: ``build_proxy`` runs the two
-    uniform-resample strategies in a subprocess with a wall-clock budget, so a
-    non-terminating VCG call cannot hang the whole repair."""
+    Regression for the H1 plate_b_bump hang: the former VCG
+    ``generate_resampled_uniform_mesh`` KdTree could fail to terminate on these
+    triangles and had to be run in a bounded subprocess. The native
+    ``sutura_geom.resample_uniform`` (Faz 4 W3c) is a plain voxel-grid pass that
+    cannot hang, so ``build_proxy`` must complete promptly through the native
+    uniform-resample strategies (no alpha-wrap fallback needed)."""
     v, t = _make_fan_box(edge=1.0)
     t0 = time.time()
-    pv, pt, info = pr.build_proxy(v, t, resample_timeout=4.0)
+    pv, pt, info = pr.build_proxy(v, t)
     elapsed = time.time() - t0
-    assert info['method'] == 'alpha_wrap', (
-        f"expected the alpha-wrap fallback on the hang mesh, got {info['method']}")
-    assert len(pt) >= 100, f"alpha-wrap proxy too small: {len(pt)} faces"
+    assert info['method'] in ('uniform_resampled_signed', 'uniform_resampled_unsigned'), (
+        f"expected the native uniform-resample path, got {info['method']}")
+    assert len(pt) >= 100, f"proxy too small: {len(pt)} faces"
     assert elapsed < 25.0, f"build_proxy was not bounded: {elapsed:.1f}s"
     ok, status = sutura_geom.watertight_check(pv, pt)
     assert ok, f"Proxy Manifold error: {status}"
@@ -192,21 +271,25 @@ def test_build_proxy_bounded_on_fan_mesh():
           f"(method: {info['method']}, faces: {len(pt)}, {elapsed:.1f}s)")
 
 
-def test_resample_memory_guard_resolution():
-    """Resample memory ceiling: default, env override, invalid ignored, 0 disables."""
-    from sutura_engine.methods import proxy as _proxy
-    assert _proxy._resample_max_rss_kb() == _proxy.PROXY_RESAMPLE_MAX_RSS_MB * 1024
-    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = '64'
-    assert _proxy._resample_max_rss_kb() == 64 * 1024
-    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = 'nonsense'
-    assert _proxy._resample_max_rss_kb() == _proxy.PROXY_RESAMPLE_MAX_RSS_MB * 1024
-    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = '0'
-    assert _proxy._resample_max_rss_kb() == 0
-    del os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB']
-    # The live-RSS reader must at least report this process's own memory.
-    rss = _proxy._proc_rss_kb(os.getpid())
-    assert rss is None or rss > 0, rss
-    print("  ✓ test_resample_memory_guard_resolution passed")
+def test_build_proxy_morph_close_fallback():
+    """Strategy 3 (native ``morph_close``) must yield a watertight proxy when the
+    resample strategies are unavailable."""
+    v, t = _make_broken_sphere()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError('forced resample failure')
+
+    orig = pr.topology.resample_uniform
+    pr.topology.resample_uniform = _boom
+    try:
+        pv, pt, info = pr.build_proxy(v, t)
+    finally:
+        pr.topology.resample_uniform = orig
+    assert info['method'] == 'morph_close', f"expected morph_close, got {info['method']}"
+    assert len(pt) >= 100, f"proxy too small: {len(pt)} faces"
+    ok, status = sutura_geom.watertight_check(pv, pt)
+    assert ok, f"Proxy Manifold error: {status}"
+    print(f"  ✓ test_build_proxy_morph_close_fallback passed (faces: {len(pt)})")
 
 
 def test_defensive_error_handling():
@@ -229,8 +312,10 @@ def main():
     print("Running proxy-template repair tests (tests/test_proxy_repair.py)...")
     test_health_mask()
     test_build_proxy()
+    test_build_proxy_prefers_signed_resample()
+    test_build_proxy_open_flap_expected_fail()
     test_build_proxy_bounded_on_fan_mesh()
-    test_resample_memory_guard_resolution()
+    test_build_proxy_morph_close_fallback()
     test_proxy_template_repair_sphere()
     test_proxy_template_repair_torus()
     test_defensive_error_handling()
