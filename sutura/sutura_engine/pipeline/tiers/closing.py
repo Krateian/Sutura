@@ -78,7 +78,7 @@ def _closing_ladder_ms(ml, ms, after, stats, v, t, tmpdir,
             # repair what the weld exposes, then check -- never adopt a
             # candidate that is not strict-watertight after a save/reload.
             cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
-            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(cand_v, cand_t)
             cand_v = np.asarray(cand_v, dtype=np.float32)
             cand_t = np.asarray(cand_t, dtype=np.int32)
             det = detect_defects(cand_v, cand_t)

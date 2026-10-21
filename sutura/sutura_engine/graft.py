@@ -753,7 +753,7 @@ def _p_weld(v, t, ml=None):
     if ml is not None:
         try:
             from repair import p_weld_final
-            return p_weld_final(ml, v, t)
+            return p_weld_final(v, t)
         except Exception:  # noqa: BLE001
             pass
     try:

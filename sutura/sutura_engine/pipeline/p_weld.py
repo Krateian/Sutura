@@ -12,12 +12,6 @@ import numpy as np
 
 import topology
 from defects import detect as detect_defects
-from sutura_engine.pipeline.stage1 import (
-    _remove_unref_vertices_ms,
-    _repair_nme_ms,
-    _repair_nmv_ms,
-    _set_mesh_on_ms,
-)
 
 
 def weld_reload_equivalent(verts, tris):
@@ -39,40 +33,31 @@ def weld_reload_equivalent(verts, tris):
     return topology.weld_reload_equivalent(verts, tris)
 
 
-def _repair_welded_topology(ml, verts, tris):
+def _repair_welded_topology(verts, tris):
     """Topology repair of a reload-equivalent mesh (P-FIX).
 
     Merging coincident positions can leave non-manifold edges / duplicate
     faces; this runs the same repair subset the Stage-1 chain uses so a
     legitimately repairable candidate is not falsely rejected. Never raises.
     """
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
-                        face_matrix=np.asarray(tris, np.int32)))
-    for name, params in (('meshing_repair_non_manifold_edges', {}),
-                         ('meshing_remove_duplicate_faces', {}),
-                         ('meshing_repair_non_manifold_vertices', {}),
-                         ('meshing_remove_unreferenced_vertices', {})):
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int64)
+    for name in ('meshing_repair_non_manifold_edges',
+                 'meshing_remove_duplicate_faces',
+                 'meshing_repair_non_manifold_vertices',
+                 'meshing_remove_unreferenced_vertices'):
         try:
             if name == 'meshing_remove_duplicate_faces':
-                m = ms.current_mesh()
-                t = m.face_matrix()
-                t_new = topology.remove_duplicate_faces(t)
-                if len(t_new) < len(t):
-                    v = m.vertex_matrix()
-                    _set_mesh_on_ms(ms, ml, v, t_new)
+                t = topology.remove_duplicate_faces(t)
             elif name == 'meshing_remove_unreferenced_vertices':
-                _remove_unref_vertices_ms(ms, ml)
+                v, t = topology.remove_unreferenced_vertices(v, t)
             elif name == 'meshing_repair_non_manifold_edges':
-                _repair_nme_ms(ms, ml)
+                t = topology.repair_non_manifold_edges(v, t)
             elif name == 'meshing_repair_non_manifold_vertices':
-                _repair_nmv_ms(ms, ml)
-            else:
-                ms.apply_filter(name, **params)
+                v, t = topology.repair_non_manifold_vertices(v, t)
         except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
             pass
-    return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
-            np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
+    return (np.asarray(v, dtype=np.float32), np.asarray(t, dtype=np.int32))
 
 
 def reload_strict_holes_nm(verts, tris):
@@ -137,26 +122,25 @@ def _separate_weld_collisions(verts, tris):
     return v32, t
 
 
-def _close_small_holes(ml, verts, tris):
+def _close_small_holes(verts, tris):
     """Repair non-manifold vertices then cap small boundary loops.
 
     Only used by the P-WELD fallback for a welded mesh that is not a clean
     in-memory topology; a failure leaves the input unchanged."""
     try:
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
-                            face_matrix=np.asarray(tris, np.int32)))
-        _repair_nmv_ms(ms, ml)
-        topology.close_holes_ms(ms, ml, maxholesize=P_WELD_MAX_HOLE)
-        _remove_unref_vertices_ms(ms, ml)
-        m = ms.current_mesh()
-        return (np.asarray(m.vertex_matrix(), dtype=np.float32),
-                np.asarray(m.face_matrix(), dtype=np.int32))
+        v = np.asarray(verts, dtype=np.float64)
+        t = np.asarray(tris, dtype=np.int64)
+        v, t = topology.repair_non_manifold_vertices(v, t)
+        v, t, _closed, _new = topology.close_holes(
+            v, t, maxholesize=P_WELD_MAX_HOLE)
+        v, t = topology.remove_unreferenced_vertices(v, t)
+        return (np.asarray(v, dtype=np.float32),
+                np.asarray(t, dtype=np.int32))
     except Exception:  # noqa: BLE001 - a repair pass never crashes a tier
         return np.asarray(verts, np.float32), np.asarray(tris, np.int32)
 
 
-def p_weld_final(ml, verts, tris):
+def p_weld_final(verts, tris):
     """Reload-safe final pass (P-WELD).
 
     The last mesh of every STL repair is checked in the form the user reloads
@@ -202,9 +186,9 @@ def p_weld_final(ml, verts, tris):
                 return cv, ct, rec
         wv, wt = weld_reload_equivalent(v0, t0)
         welded_faces = max(len(wt), 1)
-        cands = [('weld-repair', _repair_welded_topology(ml, wv, wt))]
+        cands = [('weld-repair', _repair_welded_topology(wv, wt))]
         rep_v, rep_t = cands[0][1]
-        cands.append(('weld-repair+close', _close_small_holes(ml, rep_v, rep_t)))
+        cands.append(('weld-repair+close', _close_small_holes(rep_v, rep_t)))
         for name, (cv, ct) in cands:
             cv = np.asarray(cv, np.float32)
             ct = np.asarray(ct, np.int32)

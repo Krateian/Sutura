@@ -155,7 +155,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # the output worse.
         if ext == '.stl':
             _pw_in_v, _pw_in_t = new_v, new_t
-            new_v, new_t, _pwel = p_weld_final(ml, new_v, new_t)
+            new_v, new_t, _pwel = p_weld_final(new_v, new_t)
             if _pwel is not None:
                 report['p_weld'] = _pwel
             if trace.is_active():

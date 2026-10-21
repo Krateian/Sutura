@@ -187,7 +187,7 @@ def dressing_tier(v, t, input_v, input_t, after, stats, tmpdir, dressing=False,
             rec['reason'] = 'dressing returned no geometry'
         else:
             cand_v, cand_t = weld_reload_equivalent(cand_v, cand_t)
-            cand_v, cand_t = _repair_welded_topology(ml, cand_v, cand_t)
+            cand_v, cand_t = _repair_welded_topology(cand_v, cand_t)
             cand_v = np.asarray(cand_v, dtype=np.float32)
             cand_t = np.asarray(cand_t, dtype=np.int32)
             det = detect_defects(cand_v, cand_t)
