@@ -33,16 +33,21 @@ grants a commercial license.
 
 ## 2. License compatibility — copyleft dependency policy
 
-Sutura's repair pipeline **imports `pymeshlab` (GPL-3.0) in-process**. Because
-the pipeline links against it in the same process, the combined repair
-pipeline is treated as a **GPL-derivative work** for compatibility purposes.
-This has two consequences that every contributor must respect:
+Sutura's repair pipeline does **not** link any copyleft library in-process:
+Stage 1 (topology, hole closing, self-intersection classification,
+decimation) and Stage 2 (Manifold) run in the in-repo native engine
+(`sutura_engine` plus the `sutura_geom` Rust extension), and every runtime
+dependency is permissive (numpy, PySide6/LGPL, Manifold/Apache-2.0,
+fTetWild/MPL-2.0). PyMeshLab (GPL-3.0 / VCG) is retained only as a **test-time
+parity oracle** in `requirements-dev.txt`; it is never imported by `sutura/`
+(enforced by `tests/test_no_runtime_pymeshlab.py`). This has two consequences
+that every contributor must respect:
 
 - **No copying of copyleft code.** You must not copy source code from
   GPL-3.0 (or any copyleft) projects into Sutura — including modified
-  copies, translations, or near-verbatim reuse. This includes pymeshlab
-  itself and any third-party GPL code whose terms would propagate into the
-  project's files.
+  copies, translations, or near-verbatim reuse. This includes the
+  VCG/PyMeshLab sources and any third-party GPL code whose terms would
+  propagate into the project's files.
 - **Attribution is free; copying is not.** You may draw **inspiration at the
   algorithm or formula level** from copyleft projects, reimplement the idea
   independently from the public scientific literature, and cite the source.
@@ -70,8 +75,9 @@ compatible, open an issue and ask before contributing it.
 ## 3. Development workflow
 
 - **Setup.** Run `install.sh` (Linux) or `install-macos.sh` (macOS) — each
-  creates the two virtual environments (PyMeshLab/VCG stage 1 and
-  Manifold stage 2) and the `sutura` CLI.
+  creates the Python environment (the native stage-1 engine plus the
+  `sutura_geom` Rust extension, which bundles the Manifold kernel for Stage 2)
+  and the `sutura` CLI.
 - **Tests.** The suite is script-based (no test framework); run the
   `tests/test_*.py` scripts under the venv, the layered-3MF check
   (`tests/make_layered_multiobject_3mf.py --check`), and the manual harnesses
