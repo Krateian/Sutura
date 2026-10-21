@@ -1079,7 +1079,7 @@ kurulumu tanılamaya ve kurtarmaya yardımcı olur:
 
 * **`sutura --self-check`** kurulumu, onarım yöntemlerini küçük gömülü bir mesh
   üzerinde çalıştırarak doğrular ve birkaç saniye içinde bir özet satırı
-  yazdırır (`Methods: N/17 OK (X failed, Y skipped)`). Yüklenemeyen veya
+  yazdırır (`Methods: N/18 OK (X failed, Y skipped)`). Yüklenemeyen veya
   başarısız olan bir yöntem kontrolü başarısız kılar; yalnızca kurulu olmayan
   isteğe bağlı bir ek, başarısız değil atlanmış olarak bildirilir. Komut,
   herhangi bir yöntem başarısız olursa sıfırdan farklı bir kodla çıkar. GUI,

@@ -1073,7 +1073,7 @@ and recover the installation:
 
 * **`sutura --self-check`** verifies the installation by exercising the repair
   methods on a tiny built-in mesh and prints a summary line
-  (`Methods: N/17 OK (X failed, Y skipped)`) in a couple of seconds. A method
+  (`Methods: N/18 OK (X failed, Y skipped)`) in a couple of seconds. A method
   that cannot be loaded or that fails fails the check; an optional addon that is
   simply not installed is reported as skipped, not failed. The command exits
   non-zero if any method fails. The GUI runs the same availability check when it
