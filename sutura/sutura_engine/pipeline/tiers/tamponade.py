@@ -200,8 +200,9 @@ def _dump_tamp_mesh(dump_dir, name, verts, tris):
         pass
 
 
-def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
-                   intensity=None, spec=None, si_mode='report', prepass=False):
+def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
+                   tmpdir=None, tamponade=False, intensity=None, spec=None,
+                   si_mode='report', prepass=False):
     """Interior-plug tier for registry method 17 (Tamponade).
 
     Runs ``sutura_engine.tamponade.run_tamponade`` on the CURRENT stage-1 result
@@ -220,8 +221,10 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
     and keep >= 99 % of the input faces; a non-manifold rise is tolerated
     (Stage 1 fixes it).  ``rec['placement']`` records which placement ran.
     """
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
     if not tamponade:
-        return ms, after
+        return v, t, after
     rec = {'tier': 'tamponade', 'ran': False, 'adopted': False,
            'placement': 'prepass' if prepass else 'post_stage1',
            'watertight': False, 'reload_watertight': False, 'reason': None,
@@ -249,8 +252,8 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
     if 'tamponade_shell_prepass' in stats:
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
     with method_health.tier_guard('tamponade', 'tier') as _g:
-        cur_v = np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float64)
-        cur_t = np.asarray(ms.current_mesh().face_matrix(), dtype=np.int64)
+        cur_v = v
+        cur_t = t
         dump_dir = os.environ.get('SUTURA_TAMP_DUMP')
         _dump_tamp_mesh(dump_dir, 'tamp_input', cur_v, cur_t)
         rec['input_faces'] = int(len(cur_t))
@@ -292,7 +295,7 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
                 rec['reason'] = ('prepass budget 0 s at intensity %r; tier '
                                  'skipped' % (intensity_val,))
                 stats['tamponade'] = rec
-                return ms, after
+                return v, t, after
 
         # One exact SI scan of the pre-tier mesh, reused for the melt gate, the
         # skip decision and the adoption guard.  It is skipped when si_mode is
@@ -315,13 +318,13 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
             rec['reason'] = ('no holes/non-manifold to plug; melt disabled at '
                              'this intensity; tier skipped')
             stats['tamponade'] = rec
-            return ms, after
+            return v, t, after
         if (not prepass and base_holes == 0 and base_nm == 0
                 and base_si == 0 and not base_si_exact):
             rec['reason'] = ('no holes/non-manifold/self-intersections to plug; '
                              'tier skipped')
             stats['tamponade'] = rec
-            return ms, after
+            return v, t, after
 
         seal_budget = None
         if prepass and prepass_budget is not None:
@@ -331,10 +334,10 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
                 rec['reason'] = ('prepass budget exhausted before the seal '
                                  '(%.2f s left)' % max(remaining, 0.0))
                 stats['tamponade'] = rec
-                return ms, after
+                return v, t, after
             seal_budget = remaining
         out_v, out_t, trec = _tamp.run_tamponade(
-            cur_v, cur_t, intensity=intensity_val, ml=ml,
+            cur_v, cur_t, intensity=intensity_val,
             time_budget_s=seal_budget)
         for key in ('budget_s', 'h_min', 'seconds', 'plugs', 'plug_faces',
                     'plugs_rejected', 'plugs_inconclusive',
@@ -355,7 +358,7 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
         rec['reason'] = trec.get('reason')
         if not trec.get('ran'):
             stats['tamponade'] = rec
-            return ms, after
+            return v, t, after
         rec['ran'] = True
 
         cand_v = np.asarray(out_v, dtype=np.float32)
@@ -476,8 +479,6 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
         si_guard = si_ok if prepass else True
         if (no_rise and geometry_fall and parts_ok and healthy_ok and si_guard
                 and leak_ok and len(cand_t)):
-            ms = ml.MeshSet()
-            ms.add_mesh(ml.Mesh(vertex_matrix=cand_v, face_matrix=cand_t))
             after = topology.mesh_topology(cand_v, cand_t)
             rec['adopted'] = True
             wet = bool(cand_holes == 0 and cand_nm == 0)
@@ -515,25 +516,7 @@ def _tamponade_tier_ms(ml, ms, after, stats, tmpdir, tamponade=False,
     if 'tamponade_shell_prepass' in stats:
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
     stats['tamponade'] = rec
-    return ms, after
-
-
-def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None, tmpdir=None, tamponade=False,
-                   intensity=None, spec=None, si_mode='report', prepass=False,
-                   ml=None):
-    """Array API; the legacy (ml, ms, after, stats, tmpdir) call is forwarded."""
-    if hasattr(t, 'current_mesh'):
-        return _tamponade_tier_ms(v, t, input_v, input_t, after, tamponade,
-                                  intensity=intensity, spec=spec,
-                                  si_mode=si_mode, prepass=prepass)
-    import pymeshlab as _ml
-
-    ms = _ml.MeshSet()
-    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                         face_matrix=np.asarray(t, np.int32)))
-    ms, after = _tamponade_tier_ms(
-        _ml, ms, after, stats, tmpdir, tamponade=tamponade,
-        intensity=intensity, spec=spec, si_mode=si_mode, prepass=prepass)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
-            np.asarray(m.face_matrix(), dtype=np.int32), after)
+    if rec['adopted']:
+        return (np.asarray(cand_v, dtype=np.float64),
+                np.asarray(cand_t, dtype=np.int64), after)
+    return v, t, after

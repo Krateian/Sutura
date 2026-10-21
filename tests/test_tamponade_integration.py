@@ -194,14 +194,13 @@ def test_wrapper_never_raises():
 
 def _tier(in_f, after=None, out_v=None, out_t=None, healthy=None, si_mode='report',
           intensity='balanced'):
-    ml = _FakeML()
-    ms = _FakeMeshSet(_CUBE_V, in_f)
     stats = {}
     info = {'healthy_faces_kept': healthy if healthy is not None else len(in_f)}
     _install_tier(_CUBE_V if out_v is None else out_v,
                   _CUBE_F if out_t is None else out_t, info)
     try:
-        repair.tamponade_tier(ml, ms, after or {'non_two_manifold_edges': 0},
+        repair.tamponade_tier(_CUBE_V, in_f, _CUBE_V, in_f,
+                              after or {'non_two_manifold_edges': 0},
                               stats, '/tmp', tamponade=True,
                               intensity=intensity, si_mode=si_mode)
     finally:
@@ -211,8 +210,6 @@ def _tier(in_f, after=None, out_v=None, out_t=None, healthy=None, si_mode='repor
 
 def test_tier_skips_clean_mesh():
     # A closed cube has no holes/non-manifold/SI -> the tier must not run.
-    ml = _FakeML()
-    ms = _FakeMeshSet(_CUBE_V, _CUBE_F)
     stats = {}
     called = {'n': 0}
 
@@ -221,7 +218,8 @@ def test_tier_skips_clean_mesh():
         return _CUBE_V, _CUBE_F, {'ran': True}
     tamp.run_tamponade = fake
     try:
-        repair.tamponade_tier(ml, ms, {'non_two_manifold_edges': 0}, stats,
+        repair.tamponade_tier(_CUBE_V, _CUBE_F, _CUBE_V, _CUBE_F,
+                              {'non_two_manifold_edges': 0}, stats,
                               '/tmp', tamponade=True, intensity='balanced')
     finally:
         tamp.run_tamponade = _REAL_RUN_TAMPONADE
@@ -233,11 +231,12 @@ def test_tier_skips_clean_mesh():
 
 def test_tier_disabled_is_noop():
     stats = {}
-    ml, ms = _FakeML(), _FakeMeshSet(_CUBE_V, _OPEN1_F)
     after = {'non_two_manifold_edges': 0}
-    out_ms, out_after = repair.tamponade_tier(ml, ms, after, stats, '/tmp',
-                                              tamponade=False)
-    assert out_ms is ms and out_after is after, 'disabled tier must be a no-op'
+    out_v, out_t, out_after = repair.tamponade_tier(
+        _CUBE_V, _OPEN1_F, _CUBE_V, _OPEN1_F, after, stats, '/tmp',
+        tamponade=False)
+    assert out_after is after and np.array_equal(out_v, _CUBE_V)
+    assert np.array_equal(out_t, _OPEN1_F)
     assert 'tamponade' not in stats, stats
     print('ok  tamponade=False is a byte-identical no-op')
 
@@ -325,12 +324,11 @@ def test_prepass_uses_local_si_guard_not_full_scan():
     real = tamp_mod._exact_si_face_count
     tamp_mod._exact_si_face_count = lambda v, t: calls.__setitem__(
         'n', calls['n'] + 1) or 7
-    ml = _FakeML()
-    ms = _FakeMeshSet(_CUBE_V, _OPEN1_F)   # one boundary loop -> the prepass runs
     stats = {}
     _install_tier(_CUBE_V, _CUBE_F, {'healthy_faces_kept': len(_CUBE_F)})
     try:
-        repair.tamponade_tier(ml, ms, {'non_two_manifold_edges': 0}, stats,
+        repair.tamponade_tier(_CUBE_V, _OPEN1_F, _CUBE_V, _OPEN1_F,
+                              {'non_two_manifold_edges': 0}, stats,
                               '/tmp', tamponade=True, intensity='balanced',
                               prepass=True)
         rec = stats['tamponade']
@@ -357,13 +355,12 @@ def test_prepass_uses_local_si_guard_not_full_scan():
 
 def test_prepass_budget_zero_skips():
     import os
-    ml = _FakeML()
-    ms = _FakeMeshSet(_CUBE_V, _OPEN1_F)
     stats = {}
     old = os.environ.get('SUTURA_TAMPONADE_PREPASS_BUDGET')
     os.environ['SUTURA_TAMPONADE_PREPASS_BUDGET'] = '0'
     try:
-        repair.tamponade_tier(ml, ms, {'non_two_manifold_edges': 0}, stats,
+        repair.tamponade_tier(_CUBE_V, _OPEN1_F, _CUBE_V, _OPEN1_F,
+                              {'non_two_manifold_edges': 0}, stats,
                               '/tmp', tamponade=True, intensity='balanced',
                               prepass=True)
         rec = stats['tamponade']
