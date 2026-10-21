@@ -73,6 +73,7 @@ _RUST_FNS = (
     'mesh_topology',
     'mesh_geometric_measures',
     'self_intersecting_faces',
+    'close_holes',
 )
 
 
@@ -976,6 +977,77 @@ def remove_selected_faces(tris, selected):
     return _geom.remove_selected_faces(t, sel)
 
 
+def close_holes(verts, tris, maxholesize=1000, self_intersection=True,
+                newfaceselected=False):
+    """Close boundary loops matching VCGLib ``meshing_close_holes``.
+
+    Native only (Faz 4): the Rust ``sutura_geom.close_holes`` ear-clipping
+    closer is required -- there is deliberately NO numpy oracle, so a missing
+    extension or symbol raises ``RuntimeError`` rather than silently degrading.
+
+    ``maxholesize`` is the largest boundary loop (in edges) to close;
+    ``self_intersection`` rejects ears that would cross the surface and
+    ``newfaceselected`` is accepted for PyMeshLab signature parity (it has no
+    effect on the returned arrays).  Original vertices are preserved
+    bit-for-bit and the new triangles are appended.
+
+    Returns ``(verts, tris, closed_holes, new_faces)``.
+    """
+    v = np.ascontiguousarray(verts, dtype=np.float64)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
+    if v.ndim != 2 or v.shape[1] != 3:
+        raise ValueError("verts must be Nx3")
+    if t.ndim != 2 or t.shape[1] != 3:
+        raise ValueError("tris must be Mx3")
+    if len(t) == 0:
+        return v, t, 0, 0
+    if not _has_rust('close_holes'):
+        raise RuntimeError(
+            "sutura_geom.close_holes required but unavailable in this "
+            "environment (no numpy oracle for the hole closer)"
+        )
+    out_v, out_t, closed, new_faces = _geom.close_holes(
+        v, t, int(maxholesize), bool(self_intersection), bool(newfaceselected))
+    return (np.asarray(out_v), np.asarray(out_t).astype(np.int64),
+            int(closed), int(new_faces))
+
+
+def close_holes_ms(ms, ml=None, maxholesize=1000, self_intersection=True,
+                   newfaceselected=False, refinehole=False,
+                   refineholeedgelen=None):
+    """Apply ``meshing_close_holes`` to a MeshSet in place.
+
+    Uses the native :func:`close_holes`; the Liepa-style ``refinehole=True``
+    refinement is not ported yet (Faz 4D), so such calls are routed to
+    PyMeshLab's filter unchanged.  Returns ``(closed_holes, new_faces)`` for
+    the native path and ``None`` when the PyMeshLab fallback is used.
+    """
+    if refinehole:
+        if ml is None:
+            import pymeshlab as ml  # noqa: F401
+        kw = {'maxholesize': int(maxholesize),
+              'selfintersection': bool(self_intersection),
+              'newfaceselected': bool(newfaceselected),
+              'refinehole': True}
+        if refineholeedgelen is not None:
+            kw['refineholeedgelen'] = refineholeedgelen
+        ms.apply_filter('meshing_close_holes', **kw)
+        return None
+    m = ms.current_mesh()
+    v = m.vertex_matrix()
+    t = m.face_matrix()
+    v_new, t_new, closed, new_faces = close_holes(
+        v, t, maxholesize=maxholesize, self_intersection=self_intersection,
+        newfaceselected=newfaceselected)
+    if len(t_new) != len(t):
+        if ml is None:
+            import pymeshlab as ml
+        ms.clear()
+        ms.add_mesh(ml.Mesh(vertex_matrix=v_new,
+                            face_matrix=t_new.astype(np.int32)))
+    return closed, new_faces
+
+
 def compute_normal_per_face(verts, tris=None):
     """Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0))."""
     if tris is None:
@@ -1403,6 +1475,8 @@ __all__ = [
     'repair_non_manifold_edges',
     'repair_non_manifold_vertices',
     'remove_selected_faces',
+    'close_holes',
+    'close_holes_ms',
     'compute_normal_per_face',
     'compute_normal_per_vertex',
     'mesh_topology',

@@ -176,10 +176,11 @@ def _local_remesh_tier(ml, ms, after):
         _repair_nmv_ms(trial, ml)
         n0 = trial.current_mesh().face_number()
         nv0 = trial.current_mesh().vertex_number()
-        trial.apply_filter('meshing_close_holes', maxholesize=LOCAL_REMESH_MAX_HOLE,
-                           newfaceselected=True, selfintersection=True,
-                           refinehole=LOCAL_REMESH_REFINE and edge_len > 0,
-                           refineholeedgelen=ml.PureValue(edge_len))
+        topology.close_holes_ms(
+            trial, ml, maxholesize=LOCAL_REMESH_MAX_HOLE,
+            newfaceselected=True, self_intersection=True,
+            refinehole=LOCAL_REMESH_REFINE and edge_len > 0,
+            refineholeedgelen=ml.PureValue(edge_len))
         rep['faces_added'] = int(trial.current_mesh().face_number() - n0)
         if time.perf_counter() - t0 > LOCAL_MAX_SECONDS:
             return skip('time')
