@@ -21,12 +21,12 @@ back to numpy on any error.
 Pure API::
 
     dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
-                  r_base=None, r_max=None, sigma=None, ml=None, guard=True,
+                  r_base=None, r_max=None, sigma=None, guard=True,
                   time_budget=None, drain=None, defects=None,
                   r_max_scale=None, sigma_scale=None)
                   -> (verts_out, tris_out, report)
 
-No file is written.  Decimation uses PyMeshLab when a live ``ml`` module is
+No file is written.  Decimation uses the native meshopt kernel when
 passed; without it the raw (well-formed) coat is returned unchanged.
 """
 from __future__ import annotations
@@ -561,12 +561,11 @@ def _target_faces(n_input_faces):
     return int(max(min(int(n_input_faces), FACE_BUDGET_MAX), FACE_BUDGET_MIN))
 
 
-def _qem_decimate(ml, v, t, target_faces):
+def _qem_decimate(v, t, target_faces):
     """Native quadric edge collapse toward ``target_faces`` (Faz 4 W3b).
 
     ``sutura_geom.decimate_qem`` (the MIT ``meshopt`` / meshoptimizer core)
     replaces the PyMeshLab ``meshing_decimation_quadric_edge_collapse`` call;
-    the ``ml`` argument is kept only for call/back-compat and is unused.
     meshopt has no planar-quadric / subset-placement mode (the settings the
     benchmark found necessary to reach 0 self-intersections), so the atomic
     rollback in :func:`_decimate_coat` is now what enforces the 0 hole /
@@ -692,19 +691,19 @@ def _resolve_drain(drain, intensity):
     return float(drain), None, 'custom'
 
 
-def _decimate_coat(ml, v, t, target_faces):
+def _decimate_coat(v, t, target_faces):
     """Decimate the coat toward ``target_faces`` with an atomic rollback.
 
     Adopts the decimated mesh only when it stays 0 holes / 0 non-manifold and
     introduces no exact self-intersection; otherwise the un-decimated coat is
-    returned byte-for-byte.  Decimation is native (``meshopt``), so ``ml`` is
+    returned byte-for-byte.  Decimation is native (``meshopt``), so
     unused and kept only for call/back-compat.
     """
     if len(t) <= target_faces * 1.05:
         return v, t, {'decimated': False, 'reason': 'already_within_budget',
                       'target': int(target_faces)}
     try:
-        dv, dt = _qem_decimate(ml, v, t, target_faces)
+        dv, dt = _qem_decimate(v, t, target_faces)
     except Exception as e:  # noqa: BLE001 - decimation is best-effort
         return v, t, {'decimated': False, 'reason': 'error: %s' % e,
                       'target': int(target_faces)}
@@ -876,7 +875,7 @@ def _clean_coat_components(v0, t0, cv, ct, voxel):
 # main entry point
 # ---------------------------------------------------------------------------
 def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
-                  r_base=None, r_max=None, sigma=None, ml=None, guard=True,
+                  r_base=None, r_max=None, sigma=None, guard=True,
                   time_budget=None, drain=None, defects=None,
                   r_max_scale=None, sigma_scale=None):
     """Dressing (#16) repair: extract the variable-viscosity level set.
@@ -1048,13 +1047,13 @@ def dressing_coat(verts, tris, *, voxel=None, intensity=None, grid_budget=None,
 
     # decimation toward the input face budget, with rollback
     target = _target_faces(len(t0))
-    dv, dt, drec = _decimate_coat(ml, cv, ct, target)
+    dv, dt, drec = _decimate_coat(cv, ct, target)
     report['decimation'] = drec
     report['decimated'] = bool(drec.get('decimated'))
     cv, ct = dv, dt
 
     # reload-safe Stitch (P-WELD) + honest verdict
-    wv, wt, pw = _p_weld(cv, ct, ml)
+    wv, wt, pw = _p_weld(cv, ct)
     h, nm = reload_strict_holes_nm(wv, wt)
     report['p_weld'] = pw
     report['holes_after'] = int(h)

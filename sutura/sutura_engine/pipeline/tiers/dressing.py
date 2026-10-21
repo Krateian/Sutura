@@ -101,8 +101,7 @@ def _dressing_suggestion_text(sug):
 
 def dressing_tier(v, t, input_v, input_t, after, stats, tmpdir, dressing=False,
                   intensity=None, drain=None, defects=None,
-                  r_max_scale=None, sigma_scale=None, force_adopt=False,
-                  ml=None):
+                  r_max_scale=None, sigma_scale=None, force_adopt=False):
     """Variable-viscosity coat tier for registry method 16 (Dressing).
 
     ``v``/``t`` is the result the ladder currently holds and
@@ -156,7 +155,7 @@ def dressing_tier(v, t, input_v, input_t, after, stats, tmpdir, dressing=False,
         in_v = input_v
         in_t = input_t
         cand_v, cand_t, drec = _dressing.dressing_coat(
-            in_v, in_t, ml=ml, intensity=intensity, drain=drain,
+            in_v, in_t, intensity=intensity, drain=drain,
             defects=defects, r_max_scale=r_max_scale, sigma_scale=sigma_scale)
         rec['ran'] = True
         rec['drain'] = drec.get('drain')

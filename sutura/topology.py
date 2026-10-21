@@ -1141,21 +1141,10 @@ def resample_uniform(verts, tris, voxel, offset=0.0, absdist=False,
     return (np.asarray(out_v), np.asarray(out_t).astype(np.int64), report)
 
 
-def compute_normal_per_face(verts, tris=None):
+def compute_normal_per_face(verts, tris):
     """Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0))."""
-    if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            m = verts.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float64)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
@@ -1169,21 +1158,10 @@ def compute_normal_per_face(verts, tris=None):
     return _geom.compute_normal_per_face(v, t)
 
 
-def compute_normal_per_vertex(verts, tris=None):
+def compute_normal_per_vertex(verts, tris):
     """Compute unit per-vertex normals matching VCGLib compute_normal_per_vertex (Simple Average)."""
-    if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            m = verts.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float64)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
@@ -1197,31 +1175,10 @@ def compute_normal_per_vertex(verts, tris=None):
     return _geom.compute_normal_per_vertex(v, t)
 
 
-def mesh_topology(verts, tris=None):
-    """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures).
-
-    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
-    """
-    if tris is None:
-        if hasattr(verts, 'mesh_number') and verts.mesh_number() == 0:
-            v = np.zeros((0, 3), dtype=np.float32)
-            t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'current_mesh'):
-            try:
-                m = verts.current_mesh()
-                v = m.vertex_matrix()
-                t = m.face_matrix()
-            except Exception:
-                v = np.zeros((0, 3), dtype=np.float32)
-                t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+def mesh_topology(verts, tris):
+    """Complete topological measures of a triangle mesh (matching VCGLib get_topological_measures)."""
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float32)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
@@ -1233,31 +1190,10 @@ def mesh_topology(verts, tris=None):
     return _geom.mesh_topology(v, t)
 
 
-def mesh_geometric_measures(verts, tris=None):
-    """Complete geometric measures of a triangle mesh (matching VCGLib get_geometric_measures).
-
-    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
-    """
-    if tris is None:
-        if hasattr(verts, 'mesh_number') and verts.mesh_number() == 0:
-            v = np.zeros((0, 3), dtype=np.float32)
-            t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'current_mesh'):
-            try:
-                m = verts.current_mesh()
-                v = m.vertex_matrix()
-                t = m.face_matrix()
-            except Exception:
-                v = np.zeros((0, 3), dtype=np.float32)
-                t = np.zeros((0, 3), dtype=np.int64)
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
+def mesh_geometric_measures(verts, tris):
+    """Complete geometric measures of a triangle mesh (matching VCGLib get_geometric_measures)."""
+    v = verts
+    t = tris
     v = np.ascontiguousarray(v, dtype=np.float32)
     t = np.ascontiguousarray(t, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:

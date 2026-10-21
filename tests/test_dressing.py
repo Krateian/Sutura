@@ -137,12 +137,12 @@ def test_decimation_rollback_on_topology_violation():
         't': np.asarray(t[:-1], np.int64),  # remove a face -> a hole
     }
 
-    def broken(_ml, _v, _t, _target):
+    def broken(_v, _t, _target):
         return topo['v'], topo['t']
 
     dressing._qem_decimate = broken
     try:
-        dv, dt, rec = dressing._decimate_coat(object(), v, t, 10)
+        dv, dt, rec = dressing._decimate_coat(v, t, 10)
     finally:
         dressing._qem_decimate = orig
     assert rec['decimated'] is False, rec
@@ -153,13 +153,13 @@ def test_decimation_rollback_on_topology_violation():
 
 def test_decimation_noop_when_within_budget():
     v, t = _grid(9)
-    dv, dt, rec = dressing._decimate_coat(None, v, t, len(t))
+    dv, dt, rec = dressing._decimate_coat(v, t, len(t))
     assert rec['decimated'] is False
     assert rec['reason'] == 'already_within_budget'
 
 
 def test_qem_decimation_preserves_topology():
-    """Real PyMeshLab QEM (optimalplacement=False) keeps the mesh 0 holes /
+    """Real native QEM keeps the mesh 0 holes /
     0 NM and does not introduce exact self-intersections."""
     if ml is None or sutura_geom is None:
         print('    (pymeshlab/sutura_geom unavailable: QEM test skipped)')
@@ -168,7 +168,7 @@ def test_qem_decimation_preserves_topology():
     m = trimesh.creation.icosphere(subdivisions=4)  # ~5120 faces
     v = np.asarray(m.vertices, np.float64)
     t = np.asarray(m.faces, np.int64)
-    dv, dt, rec = dressing._decimate_coat(ml, v, t, len(t) // 2)
+    dv, dt, rec = dressing._decimate_coat(v, t, len(t) // 2)
     assert rec['decimated'] is True, rec
     assert len(dt) < len(t)
     h, nm = __import__('repair').reload_strict_holes_nm(dv, dt)
@@ -354,13 +354,13 @@ def test_dressing_tier_adoption_gate():
         stats = {}
         _dv, _dt, _dafter = repair.dressing_tier(
             base['v'], base['t'], base['v'], base['t'], after, stats, '/tmp',
-            dressing=True, ml=ml)
+            dressing=True)
         assert stats['dressing']['adopted'] is True, stats['dressing']
 
         dressing.dressing_coat = fake_low_fid
         stats2 = {}
         repair.dressing_tier(base['v'], base['t'], base['v'], base['t'],
-                             after, stats2, '/tmp', dressing=True, ml=ml)
+                             after, stats2, '/tmp', dressing=True)
         assert stats2['dressing']['adopted'] is False, stats2['dressing']
         assert 'fidelity' in (stats2['dressing']['reason'] or '')
     finally:
@@ -546,7 +546,7 @@ def test_dressing_gate_rejects_volume_parts_normal():
         dressing.dressing_coat = fake_bad
         stats = {}
         repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
-                             dressing=True, ml=ml)
+                             dressing=True)
         rec = stats['dressing']
         assert rec['adopted'] is False, rec
         assert (rec['volume_ok'] is False and rec['parts_ok'] is False
@@ -594,14 +594,14 @@ def test_dressing_force_adopt_bypasses_shape_gates():
         # Without force the shape gates reject it.
         stats = {}
         repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
-                             dressing=True, force_adopt=False, ml=ml)
+                             dressing=True, force_adopt=False)
         rec = stats['dressing']
         assert rec['adopted'] is False and rec['shape_ok'] is False, rec
         assert rec.get('forced') is False, rec
         # With force the same candidate is adopted and marked forced.
         stats = {}
         repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
-                             dressing=True, force_adopt=True, ml=ml)
+                             dressing=True, force_adopt=True)
         rec = stats['dressing']
         assert rec['adopted'] is True, rec
         assert rec['forced'] is True and rec['shape_ok'] is False, rec
@@ -610,7 +610,7 @@ def test_dressing_force_adopt_bypasses_shape_gates():
         dressing.dressing_coat = fake_holes
         stats = {}
         repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
-                             dressing=True, force_adopt=True, ml=ml)
+                             dressing=True, force_adopt=True)
         rec = stats['dressing']
         assert rec['adopted'] is False, rec
     finally:

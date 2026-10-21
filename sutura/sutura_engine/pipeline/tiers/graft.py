@@ -15,7 +15,7 @@ from sutura_engine.pipeline.presets import GRAFT_MAX_FACES, GRAFT_TIMEOUT
 
 
 def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
-               intensity=None, spec=None, ml=None):
+               intensity=None, spec=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
 
     ``v``/``t`` is the result the ladder currently holds and
@@ -84,7 +84,7 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
                              'stage-1 result kept' % (len(in_t), int(cap)))
             stats['graft'] = rec
             return v, t, after
-        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, ml=ml,
+        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t,
                                                  intensity=intensity,
                                                  time_budget=timeout)
         rec['ran'] = True

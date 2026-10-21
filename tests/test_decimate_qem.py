@@ -222,7 +222,7 @@ def test_empty_mesh_is_a_noop():
 def test_dressing_coat_decimation_rollback():
     from sutura_engine import dressing
     v, t = _icosphere(4)  # ~5120 faces
-    dv, dt, rec = dressing._decimate_coat(None, v, t, len(t) // 2)
+    dv, dt, rec = dressing._decimate_coat(v, t, len(t) // 2)
     assert rec['decimated'] is True, rec
     assert len(dt) < len(t)
     assert dv.dtype == np.float64 and dt.dtype == np.int64
@@ -234,7 +234,7 @@ def test_ftetwild_boundary_decimation_is_border_locked():
     # Half the faces carry an extra unreferenced vertex, as the real bridge
     # output does.
     vv = np.vstack([v, np.array([[0.0, 0.0, 5.0]])])
-    out = ftetwild._decimate_boundary(None, vv, t, len(t) // 2)
+    out = ftetwild._decimate_boundary(vv, t, len(t) // 2)
     assert out is not None
     dv, dt = out
     assert len(dt) < len(t)

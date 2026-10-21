@@ -16,7 +16,7 @@ from sutura_engine.pipeline.presets import (
     LOCAL_REMESH_MAX_HOLE, LOCAL_REMESH_REFINE,
 )
 from sutura_engine.pipeline.utils import (
-    _canonical_face_keys, _count_si, _edge_uses, _faces_preserved,
+    _canonical_face_keys, _edge_uses, _faces_preserved,
     _hausdorff_rel, boundary_loop_stats,
 )
 

@@ -13,7 +13,6 @@ import numpy as np
 
 import topology
 from sutura_engine.pipeline.mesh_io import read_obj, write_obj
-from sutura_engine.pipeline.stage1 import _repair_nmv_ms
 from sutura_engine.pipeline.utils import boundary_loop_stats
 
 
@@ -74,7 +73,7 @@ def _split_pinched_vertices(verts, tris, topo):
               'passes': passes, 'adopted': adopted}
     if adopted:
         return v, t, t_topo, report
-    return ms, topo, report
+    return np.asarray(verts, dtype=np.float64), np.asarray(tris, dtype=np.int64), topo, report
 
 
 def maybe_run_stage2(report, verts, tris, tmpdir):

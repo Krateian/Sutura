@@ -100,25 +100,6 @@ def delete_fallback_chain(maxholesize=1000, mincomponentsize=8, join_components=
     return chain
 
 
-def _set_mesh_on_ms(ms, ml, v, t):
-    """Update ms with (v, t), preserving an empty current mesh if empty.
-
-    PyMeshLab cannot hold a zero-vertex mesh. The empty case keeps one
-    unreferenced vertex instead of running the old
-    ``meshing_remove_unreferenced_vertices`` filter: every caller here looks
-    at face counts, and W4a removes the last MeshSet edge case without a
-    PyMeshLab call.
-    """
-    ms.clear()
-    if len(v) > 0 and len(t) > 0:
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
-    elif len(v) > 0:
-        ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=np.zeros((0, 3), dtype=np.int32)))
-    else:
-        ms.add_mesh(ml.Mesh(vertex_matrix=np.zeros((1, 3), dtype=np.float64),
-                            face_matrix=np.zeros((0, 3), dtype=np.int32)))
-
-
 def _non_manifold_edge_faces(tris):
     """Faces incident to an edge used by more than two triangles."""
     t = np.asarray(tris, dtype=np.int64)
@@ -195,67 +176,6 @@ def apply_chain(verts, tris, chain):
             method_health.record_error('stage1:' + name, 'filter', exc)
             skipped[name] = str(exc)
     return v, t, applied, skipped
-
-
-def _remove_unref_vertices_ms(ms, ml):
-    """Remove unreferenced vertices from a MeshSet in-place with native topology."""
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    v_new, t_new = topology.remove_unreferenced_vertices(v, t)
-    if len(v_new) < len(v):
-        _set_mesh_on_ms(ms, ml, v_new, t_new)
-
-
-def _invert_faces_ms(ms, ml):
-    """Invert face orientation on a MeshSet in-place with native topology."""
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    t_new = topology.invert_face_orientation(t)
-    _set_mesh_on_ms(ms, ml, v, t_new)
-
-
-def _re_orient_faces_ms(ms, ml):
-    """Coherently re-orient faces on a MeshSet with the native kernel."""
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    t_new = topology.re_orient_faces_coherently(t)
-    if not np.array_equal(t_new, t):
-        _set_mesh_on_ms(ms, ml, v, t_new)
-
-
-def _repair_nme_ms(ms, ml):
-    """Repair non-manifold edges on a MeshSet in-place with native topology."""
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    t_new = topology.repair_non_manifold_edges(v, t)
-    if len(t_new) < len(t):
-        _set_mesh_on_ms(ms, ml, v, t_new)
-
-
-def _repair_nmv_ms(ms, ml):
-    """Repair non-manifold vertices on a MeshSet in-place with native topology."""
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    v_new, t_new = topology.repair_non_manifold_vertices(v, t)
-    if len(v_new) > len(v):
-        _set_mesh_on_ms(ms, ml, v_new, t_new)
-
-
-def _remove_selected_faces_ms(ms, ml, mask=None):
-    """Remove selected faces on a MeshSet in-place with native topology."""
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    sel = (np.asarray(mask, dtype=bool) if mask is not None
-           else np.asarray(m.face_selection_array(), dtype=bool))
-    if sel.any():
-        t_new = topology.remove_selected_faces(t, sel)
-        _set_mesh_on_ms(ms, ml, v, t_new)
 
 
 def extreme_extra_passes(verts, tris, params):
@@ -384,20 +304,6 @@ def _should_run_local_exact(report, spec):
     if not (report.get('stage2') or {}).get('ok'):
         return False
     return _local_exact_budget(spec or triage.resolve_intensity(None)) > 0.0
-
-
-def _si_count_and_mask(ms):
-    """Exact self-intersection count and face mask; ``-1`` means skipped."""
-    m = ms.current_mesh()
-    mask, count = topology.self_intersecting_faces(
-        m.vertex_matrix(), m.face_matrix())
-    return int(count), mask
-
-
-def _si_count(ms):
-    """Exact self-intersection face count (``-1`` when the classifier skips)."""
-    cnt, _ = _si_count_and_mask(ms)
-    return cnt
 
 
 def si_excise_recap(verts, tris, *, maxholesize=1000,

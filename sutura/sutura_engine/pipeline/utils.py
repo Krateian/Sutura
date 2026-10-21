@@ -146,14 +146,6 @@ def _referenced_only(verts, tris):
     return np.asarray(verts, np.float64)[used], remap[tris]
 
 
-def _count_si(ms):
-    """Exact self-intersection face count (``-1`` when the classifier skips)."""
-    m = ms.current_mesh()
-    _, count = topology.self_intersecting_faces(
-        m.vertex_matrix(), m.face_matrix())
-    return int(count)
-
-
 def _exact_si_face_count(verts, tris):
     """Exact proper-crossing self-intersection face count via the Rust core.
 
