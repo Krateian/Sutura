@@ -67,7 +67,7 @@ def _write_engine_mesh(path, verts, tris):
     save_mesh(path, verts, tris)
 
 
-def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,
+def run_engines(engines, chain, placement, tmpdir, in_v, in_t,
                 base_holes, base_nm, spec, entries):
     """Run the enabled engines at ``placement`` on ``(in_v, in_t)``.
 
@@ -116,7 +116,7 @@ def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,
             entry['output_holes'] = int(cand_holes)
             entry['output_non_manifold'] = int(cand_nm)
             if cand_holes <= base_holes and cand_nm <= base_nm:
-                hd, _ = _hausdorff_rel(ml, in_v, in_t, cand_v, cand_t,
+                hd, _ = _hausdorff_rel(None, in_v, in_t, cand_v, cand_t,
                                        samples=spec.ftetwild_hausdorff_samples)
                 entry['hausdorff_rel'] = hd
                 entry['shape_changed'] = bool(
@@ -144,7 +144,10 @@ def run_after_stage2_engines(ml, report, new_v, new_t, tmpdir, engines,
                              engine_chain, spec):
     """Run after_stage2 engines on the stage-2 result and adopt under the
     shared guard. Returns the (possibly replaced) ``(new_v, new_t)`` and
-    appends one report entry per engine to ``report['engines']``."""
+    appends one report entry per engine to ``report['engines']``.
+
+    ``ml`` is accepted for caller compatibility and is unused: the engines
+    layer is array-native (the shared ``_hausdorff_rel`` ignores it)."""
     if not engine_placement_order(engines, engine_chain, 'after_stage2'):
         return new_v, new_t
     entries = []
@@ -152,7 +155,7 @@ def run_after_stage2_engines(ml, report, new_v, new_t, tmpdir, engines,
     base_nm = topology.mesh_topology(new_v, new_t).get(
         'non_two_manifold_edges', 0)
     cand_v, cand_t, adopted = run_engines(
-        ml, engines, engine_chain, 'after_stage2', tmpdir, new_v, new_t,
+        engines, engine_chain, 'after_stage2', tmpdir, new_v, new_t,
         base_holes, base_nm, spec, entries)
     _record_engine_entries(report, entries)
     if adopted:
