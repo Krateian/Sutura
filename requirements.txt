@@ -1,6 +1,8 @@
-pymeshlab==2025.7.post1
 numpy>=2.4.6,<2.6
 # Nearest-neighbour, EDT, dilation, mesh IO and the pure-Python geometry
 # helpers all live in the in-repo engine (sutura_engine) or the Rust
-# sutura_geom core. Neither SciPy, rtree nor trimesh is required (trimesh is
-# a development/test-only dependency, see requirements-dev.txt).
+# sutura_geom core. Neither PyMeshLab, SciPy, rtree nor trimesh is required:
+# Stage 1 topology, hole closing, self-intersection classification and
+# decimation are now native (sutura_geom + sutura_engine). PyMeshLab survives
+# only as a test-time oracle and trimesh as a test-time builder in
+# requirements-dev.txt.
