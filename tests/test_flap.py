@@ -121,15 +121,14 @@ def test_flap_step_adopts_a_hole_closure():
     ms = _meshset(v, t)
     after = ms.apply_filter('get_topological_measures')
     stats = {'stage1': {}}
-    out, _ = repair._flap_step(ml, ms, after, stats, {'maxholesize': 1000})
+    out_v, out_t, _ = repair._flap_step(v, t, v, t, after, stats,
+                                        {'maxholesize': 1000})
     rec = stats['flap']
     assert rec['ran'] is True, rec
     assert rec['adopted'] is True, rec
     assert rec['baseline_holes'] == 1, rec
     assert rec['candidate_holes'] == 0, rec
     assert rec['candidate_non_manifold'] <= rec['baseline_non_manifold'], rec
-    out_v = np.asarray(out.current_mesh().vertex_matrix())
-    out_t = np.asarray(out.current_mesh().face_matrix())
     assert len(detect(out_v, out_t)['holes']) == 0
 
 
@@ -154,7 +153,9 @@ def test_flap_step_skips_a_clean_mesh():
     ms = _meshset(np.asarray(m.vertices), np.asarray(m.faces))
     after = ms.apply_filter('get_topological_measures')
     stats = {'stage1': {}}
-    _out, _ = repair._flap_step(ml, ms, after, stats, {'maxholesize': 1000})
+    _v, _t, _ = repair._flap_step(np.asarray(m.vertices), np.asarray(m.faces),
+                                  np.asarray(m.vertices), np.asarray(m.faces),
+                                  after, stats, {'maxholesize': 1000})
     rec = stats['flap']
     assert rec['ran'] is False, rec
     assert rec['baseline_holes'] == 0 and rec['baseline_non_manifold'] == 0, rec
@@ -240,13 +241,13 @@ def test_flap_step_never_raises_when_flap_fill_fails():
     flap.flap_fill = _boom
     try:
         stats = {'stage1': {}}
-        out, _ = repair._flap_step(ml, ms, after, stats)
+        out_v, out_t, _ = repair._flap_step(v, t, v, t, after, stats)
     finally:
         flap.flap_fill = orig
     rec = stats['flap']
     assert rec['ran'] is False, rec
     assert 'flap error' in rec['reason'], rec
-    assert out.current_mesh().face_number() == len(t)
+    assert len(out_t) == len(t)
 
 
 def test_flap_step_never_raises_on_malformed_report():
@@ -266,11 +267,11 @@ def test_flap_step_never_raises_on_malformed_report():
     flap.flap_fill = _bad
     try:
         stats = {'stage1': {}}
-        out, _ = repair._flap_step(ml, ms, after, stats)
+        out_v, out_t, _ = repair._flap_step(v, t, v, t, after, stats)
     finally:
         flap.flap_fill = orig
     assert 'flap error' in stats['flap']['reason'], stats['flap']
-    assert out.current_mesh().face_number() == len(t)
+    assert len(out_t) == len(t)
 
 
 def test_flap_step_quick_budget_skips_and_caches_across_repeats():
@@ -279,18 +280,18 @@ def test_flap_step_quick_budget_skips_and_caches_across_repeats():
     ms = _meshset(v, t)
     after = ms.apply_filter('get_topological_measures')
     stats = {'stage1': {}, 'triage_intensity': 'quick'}
-    repair._flap_step(ml, ms, after, stats)
+    repair._flap_step(v, t, v, t, after, stats)
     rec = stats['flap']
     assert rec['ran'] is False, rec
     assert 'budget' in rec['reason'], rec
     # ... while balanced runs it once and reuses the cached candidate on a
     # repeat (the triage escalation path).
     stats1 = {'stage1': {}, 'triage_intensity': 'balanced'}
-    repair._flap_step(ml, _meshset(v, t), after, stats1)
+    repair._flap_step(v, t, v, t, after, stats1)
     assert stats1['flap']['ran'] is True, stats1['flap']
     assert stats1['flap']['cache_hit'] is False, stats1['flap']
     stats2 = {'stage1': {}, 'triage_intensity': 'balanced'}
-    repair._flap_step(ml, _meshset(v, t), after, stats2)
+    repair._flap_step(v, t, v, t, after, stats2)
     assert stats2['flap']['cache_hit'] is True, stats2['flap']
     assert stats2['flap']['adopted'] is True, stats2['flap']
 

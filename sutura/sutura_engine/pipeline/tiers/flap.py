@@ -134,11 +134,12 @@ def _flap_cache_key(base_v, base_t):
     return h.digest()
 
 
-def _flap_step_ms(ml, ms, after, stats, _p=None):
+def _flap_step(v, t, input_v=None, input_t=None, after=None, stats=None,
+               _p=None):
     """Stage-1 hole fill via the Flap surface filler (on by default in the CLI).
 
-    Runs ``sutura_engine.flap.flap_fill`` on the mesh in ``ms`` (the input as
-    it stands before the VCG chain -- normally the original surface, though
+    Runs ``sutura_engine.flap.flap_fill`` on the current arrays ``(v, t)`` (the
+    input as it stands before the VCG chain -- normally the original surface, though
     outer-shell extraction may already have replaced it; see
     ``repair_mesh_from_arrays``), covering the input's open boundary loops with
     a patch that continues the surrounding curvature. The candidate is adopted
@@ -156,6 +157,12 @@ def _flap_step_ms(ml, ms, after, stats, _p=None):
     ``_p`` (the resolved Stage-1 params) is accepted for call-site symmetry and
     ignored: Flap has no threshold that maps onto them.
     """
+    v = np.asarray(v, dtype=np.float64)
+    t = np.asarray(t, dtype=np.int64)
+    if stats is None:
+        stats = {}
+    if after is None:
+        after = {}
     rec = {'ran': False, 'adopted': False, 'reason': None,
            'baseline_holes': None, 'baseline_non_manifold': None,
            'baseline_damage': None, 'candidate_holes': None,
@@ -166,32 +173,32 @@ def _flap_step_ms(ml, ms, after, stats, _p=None):
            'budget_s': None, 'max_orig_vertex_move_mm': None}
     stats['flap'] = rec
     with method_health.tier_guard('flap', 'tier') as _g:
-        return _flap_step_impl(ml, ms, after, stats, rec)
+        return _flap_step_impl(v, t, after, stats, rec)
     if _g.error is not None:
         rec['reason'] = 'flap error: %s' % _g.error
-        return ms, after
+        return v, t, after
 
 
-def _flap_step_impl(ml, ms, after, stats, rec):
-    base_v = np.asarray(ms.current_mesh().vertex_matrix())
-    base_t = np.asarray(ms.current_mesh().face_matrix())
+def _flap_step_impl(v, t, after, stats, rec):
+    base_v = v
+    base_t = t
     with method_health.tier_guard('flap', 'measure') as _gm:
         base_holes, base_nm = reload_strict_holes_nm(base_v, base_t)
     if _gm.error is not None:
         rec['reason'] = 'baseline measure failed: %s' % _gm.error
-        return ms, after
+        return v, t, after
     rec['baseline_holes'] = int(base_holes)
     rec['baseline_non_manifold'] = int(base_nm)
     if base_holes == 0 and base_nm == 0:
         rec['reason'] = 'no residual boundary loops or non-manifold edges'
-        return ms, after
+        return v, t, after
 
     intensity = stats.get('triage_intensity') or 'balanced'
     budget = FLAP_TIMEOUT_BY_INTENSITY.get(intensity, FLAP_DEFAULT_BUDGET)
     rec['budget_s'] = budget
     if budget <= 0.0:
         rec['reason'] = ('budget: disabled by intensity preset %r' % intensity)
-        return ms, after
+        return v, t, after
 
     cache_key = _flap_cache_key(base_v, base_t)
     cached = _FLAP_CACHE.get(cache_key)
@@ -210,7 +217,7 @@ def _flap_step_impl(ml, ms, after, stats, rec):
                                                    time_budget=budget)
         if _gf.error is not None:
             rec['reason'] = 'flap error: %s' % _gf.error
-            return ms, after
+            return v, t, after
         rec['ran'] = True
         rec['time_s'] = round(time.perf_counter() - t0, 3)
         _FLAP_CACHE[cache_key] = (cand_v, cand_t, frep, rec['time_s'])
@@ -228,12 +235,12 @@ def _flap_step_impl(ml, ms, after, stats, rec):
 
     if not len(cand_t):
         rec['reason'] = 'flap returned no geometry'
-        return ms, after
+        return v, t, after
     with method_health.tier_guard('flap', 'measure') as _gc:
         cand_holes, cand_nm = reload_strict_holes_nm(cand_v, cand_t)
     if _gc.error is not None:
         rec['reason'] = 'candidate measure failed: %s' % _gc.error
-        return ms, after
+        return v, t, after
     rec['candidate_holes'] = int(cand_holes)
     rec['candidate_non_manifold'] = int(cand_nm)
     base_damage = int(base_holes) + int(base_nm)
@@ -248,12 +255,9 @@ def _flap_step_impl(ml, ms, after, stats, rec):
         rec['reason'] = ('budget: flap took %ss > %ss at intensity %r; '
                          'candidate not adopted'
                          % (rec['time_s'], budget, intensity))
-        return ms, after
+        return v, t, after
 
     if _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cand_v, np.float32),
-                            face_matrix=np.asarray(cand_t, np.int32)))
         after = topology.mesh_topology(cand_v, cand_t)
         rec['adopted'] = True
         rec['reason'] = ('adopted (holes %d->%d, non-manifold %d->%d; '
@@ -265,7 +269,10 @@ def _flap_step_impl(ml, ms, after, stats, rec):
                          '(holes %d->%d, non-manifold %d->%d)' % (
                              base_damage, cand_damage, base_holes, cand_holes,
                              base_nm, cand_nm))
-    return ms, after
+    if rec['adopted']:
+        return (np.asarray(cand_v, dtype=np.float64),
+                np.asarray(cand_t, dtype=np.int64), after)
+    return v, t, after
 
 
 # Flap debris cleanup: after Flap changes the surface the deep-repair tiers
@@ -377,17 +384,3 @@ def drop_flap_debris(in_verts, in_tris, out_verts, out_tris):
         return cv, ct, info
     return out_verts, out_tris, None
 
-
-def _flap_step(v, t, input_v=None, input_t=None, after=None, stats=None, _p=None, ml=None):
-    """Array API; the legacy (ml, ms, after, stats, _p) call is forwarded."""
-    if hasattr(t, 'current_mesh'):
-        return _flap_step_ms(v, t, input_v, input_t, after)
-    import pymeshlab as _ml
-
-    ms = _ml.MeshSet()
-    ms.add_mesh(_ml.Mesh(vertex_matrix=np.asarray(v, np.float64),
-                         face_matrix=np.asarray(t, np.int32)))
-    ms, after = _flap_step_ms(_ml, ms, after, stats, _p)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
-            np.asarray(m.face_matrix(), dtype=np.int32), after)
