@@ -29,6 +29,14 @@ license is in that directory and is shipped in the wheel together with
 `rust/sutura-geom/THIRD_PARTY.md`; it is separate from the crate's
 MIT/Apache-2.0 license and from Sutura's PolyForm Noncommercial license.
 
+The extension also builds the **meshoptimizer** C++ core through the `meshopt`
+crate (`meshopt = "0.7"`, MIT OR Apache-2.0; vendored meshoptimizer 1.3, MIT,
+Copyright (c) 2016-2026 Arseny Kapoulkine, <https://github.com/zeux/meshoptimizer>).
+It provides the native quadric decimation pass (`decimate.rs`) that replaces
+PyMeshLab's `meshing_decimation_quadric_edge_collapse`. The C++ is compiled from
+the crate's own vendored sources at build time and its MIT license text is shipped
+as `rust/sutura-geom/third_party/meshoptimizer/LICENSE` (also in the wheel).
+
 Corpus composition (40 meshes):
 
 | Group | Count | Files |

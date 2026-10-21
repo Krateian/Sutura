@@ -18,6 +18,7 @@ pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
 pub mod cluster;
+pub mod decimate;
 pub mod dressing;
 pub mod dual_contour;
 pub mod flap;
@@ -1704,6 +1705,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::compute_normal_per_vertex, m)?)?;
     m.add_function(wrap_pyfunction!(hole::close_holes, m)?)?;
     m.add_function(wrap_pyfunction!(cluster::cluster_decimate, m)?)?;
+    m.add_function(wrap_pyfunction!(decimate::decimate_qem, m)?)?;
     m.add_function(wrap_pyfunction!(flap::flap_fill_py, m)?)?;
     m.add_function(wrap_pyfunction!(lava::lava_octree, m)?)?;
     m.add_function(wrap_pyfunction!(tamponade_py, m)?)?;

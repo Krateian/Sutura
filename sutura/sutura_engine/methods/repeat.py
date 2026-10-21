@@ -75,21 +75,16 @@ def _referenced_only(verts, tris):
 
 
 def _decimate_faces(verts, tris, target):
-    """Quadric-decimate to ``target`` faces via PyMeshLab (lazy import).
+    """Quadric-decimate to ``target`` faces (Faz 4 W3b, native).
 
-    Replaces the former ``trimesh`` simplifier; PyMeshLab is already a runtime
-    dependency, so the engine needs no ``trimesh`` for this.  Returns
-    ``(verts float64, tris int32)``.
+    Uses ``sutura_geom.decimate_qem`` (meshopt); no PyMeshLab or trimesh is
+    needed.  The picker only needs a light LOD, so no border lock or normal
+    attribute is passed.  Returns ``(verts float64, tris int32)``.
     """
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
-                        face_matrix=np.asarray(tris, np.int32)))
-    ms.apply_filter('meshing_decimation_quadric_edge_collapse',
-                    targetfacenum=int(target), preservetopology=True)
-    m = ms.current_mesh()
-    return (np.asarray(m.vertex_matrix(), dtype=np.float64),
-            np.asarray(m.face_matrix(), dtype=np.int32))
+    dv, dt, _rec = topology.decimate_qem(
+        verts, tris, int(target), lock_border=False, preserve_normal=False)
+    return (np.asarray(dv, dtype=np.float64),
+            np.asarray(dt, dtype=np.int32))
 
 
 def check_mesh_validity(verts, tris):

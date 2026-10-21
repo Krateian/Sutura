@@ -17,6 +17,7 @@ Pipeline:
 import numpy as np
 
 import sutura_geom
+import topology
 
 # Shared with the closing tier: the pure-numpy watertight verdict and the
 # input->output one-sided Hausdorff. Kept as a single implementation (bit-identical
@@ -255,6 +256,28 @@ def _keep_largest_component(verts, tris):
     remap = np.full(n_v, -1, dtype=np.int32)
     remap[used_verts] = np.arange(len(used_verts))
     return verts[used_verts], remap[keep_faces]
+
+
+def _decimate_to_budget(verts, tris, max_budget):
+    """Best-effort native QEM decimation to ``max_budget`` faces (Faz 4 W3b).
+
+    Uses ``sutura_geom.decimate_qem`` (meshopt).  Returns ``(verts, tris)``
+    when the decimated proxy stays watertight and keeps at least 4 faces, else
+    ``None`` (the caller keeps the un-decimated proxy).  Never raises.
+    """
+    try:
+        dv, dt, _rec = topology.decimate_qem(
+            verts, tris, int(max_budget), lock_border=False,
+            preserve_normal=False)
+        dv = np.asarray(dv, dtype=np.float64)
+        dt = np.asarray(dt, dtype=np.int32)
+        dv, dt = _filter_debris_components(dv, dt)
+        is_wt, _ = _check_validity(dv, dt)
+        if is_wt and len(dt) >= 4:
+            return dv, dt
+    except Exception:
+        pass
+    return None
 
 
 def build_proxy(verts, tris, voxel=None, resample_timeout=None):
@@ -565,24 +588,9 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
         # 4. Enforce face budget: output <= max(2x input, 20k)
         max_budget = max(len(tris) * 2, MIN_FACE_BUDGET)
         if len(pt) > max_budget:
-            try:
-                ms_dec = ml.MeshSet()
-                ms_dec.add_mesh(ml.Mesh(vertex_matrix=pv, face_matrix=np.asarray(pt, np.int32)))
-                ms_dec.apply_filter(
-                    'meshing_decimation_quadric_edge_collapse',
-                    targetfacenum=max_budget,
-                    preservetopology=True,
-                    planarquadric=True,
-                )
-                out_dec = ms_dec.current_mesh()
-                candidate_pv = np.asarray(out_dec.vertex_matrix(), dtype=np.float64)
-                candidate_pt = np.asarray(out_dec.face_matrix(), dtype=np.int32)
-                candidate_pv, candidate_pt = _filter_debris_components(candidate_pv, candidate_pt)
-                is_wt, _ = _check_validity(candidate_pv, candidate_pt)
-                if is_wt and len(candidate_pt) >= 4:
-                    pv, pt = candidate_pv, candidate_pt
-            except Exception:
-                pass
+            dec = _decimate_to_budget(pv, pt, max_budget)
+            if dec is not None:
+                pv, pt = dec
 
         # 5. Proximity & projection onto healthy original surface
         # Unprojected proxy face normals (unnormalised is fine: only the sign
@@ -638,24 +646,9 @@ def proxy_template_repair(verts, tris, voxel=None, max_iters=3):
 
         # Post-projection face budget enforcement
         if len(pt) > max_budget:
-            try:
-                ms_dec = ml.MeshSet()
-                ms_dec.add_mesh(ml.Mesh(vertex_matrix=projected_pv, face_matrix=np.asarray(pt, np.int32)))
-                ms_dec.apply_filter(
-                    'meshing_decimation_quadric_edge_collapse',
-                    targetfacenum=max_budget,
-                    preservetopology=True,
-                    planarquadric=True,
-                )
-                out_dec = ms_dec.current_mesh()
-                dec_pv = np.asarray(out_dec.vertex_matrix(), dtype=np.float64)
-                dec_pt = np.asarray(out_dec.face_matrix(), dtype=np.int32)
-                dec_pv, dec_pt = _filter_debris_components(dec_pv, dec_pt)
-                is_wt_dec, _ = _check_validity(dec_pv, dec_pt)
-                if is_wt_dec and len(dec_pt) >= 4:
-                    projected_pv, pt = dec_pv, dec_pt
-            except Exception:
-                pass
+            dec = _decimate_to_budget(projected_pv, pt, max_budget)
+            if dec is not None:
+                projected_pv, pt = dec
 
         # 7. Final validity check
         is_wt, err_msg = _check_validity(projected_pv, pt)

@@ -101,6 +101,7 @@ jobs:
           W=$(ls rust/sutura-geom/dist/*.whl)
           unzip -l "$W" | grep -q 'THIRD_PARTY.md'
           unzip -l "$W" | grep -q 'third_party/geogram_delaunay_psm/LICENSE'
+          unzip -l "$W" | grep -q 'third_party/meshoptimizer/LICENSE'
 
       - name: Check universal2 extension
         if: matrix.name == 'macos-universal2'

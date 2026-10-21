@@ -27,3 +27,27 @@ The `sutura_geom` extension vendors the standalone **Geogram Delaunay PSM**
 
 The Geogram notice is separate from the crate's `MIT OR Apache-2.0` license and
 from Sutura's PolyForm Noncommercial application license.
+
+## meshopt / meshoptimizer
+
+The `sutura_geom` extension depends on the **`meshopt`** crate
+(`meshopt = "0.7"`), which builds the vendored **meshoptimizer** C++ core
+(`vendor/src/*.cpp`, compiled by the crate's `build.rs`) and exposes it as a
+Rust API.  The native quadric decimation pass (`decimate.rs`, Faz 4 W3b) uses
+`meshopt::simplify` / `simplify_with_attributes_and_locks`.
+
+- Upstream C++: meshoptimizer, <https://github.com/zeux/meshoptimizer>
+- Upstream Rust: the `meshopt` crate, <https://crates.io/crates/meshopt>
+- Versions: `meshopt` crate **0.7.0** (crates.io checksum
+  `a403c16e3ca5752600e1d4c5ba3ba2a6496f407ded66e767f05279514363f461`), which
+  vendors meshoptimizer **1.3** (`#define MESHOPTIMIZER_VERSION 1030`
+  in the vendored `vendor/src/meshoptimizer.h`).
+- License: **MIT** — both the Rust crate (`MIT OR Apache-2.0`) and the vendored
+  meshoptimizer C++ (`MIT`, Copyright (c) 2016-2026 Arseny Kapoulkine).  The
+  full MIT text ships as `third_party/meshoptimizer/LICENSE`.
+- Provenance: the C++ is compiled from the crate's own `vendor/` directory at
+  build time (no network); the vendored `vendor/src/simplifier.cpp`
+  SHA-256 is `719303b6970398631e30724e8eebc6cd2e7e08b67fe8ab7cbf7eecafdaa08616`.
+- The crate is a build-time dependency only; a `cargo build` needs a C++11
+  compiler (the Geogram build already requires C++20).
+
