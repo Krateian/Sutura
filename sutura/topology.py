@@ -924,46 +924,22 @@ def repair_non_manifold_edges(verts, tris):
     return _geom.repair_non_manifold_edges(v, t)
 
 
-def repair_non_manifold_vertices(verts, tris=None):
+def repair_non_manifold_vertices(verts, tris):
     """Repair non-manifold pinch vertices by splitting them (matching VCGLib meshing_repair_non_manifold_vertices).
 
-    Accepts either (verts, tris) as arrays or a PyMeshLab MeshSet / Mesh object.
-    Returns (verts, tris) as arrays, or modifies MeshSet in-place if MeshSet passed.
+    Returns ``(verts, tris)`` as arrays.
     """
-    is_ms = False
-    if tris is None:
-        if hasattr(verts, 'current_mesh'):
-            ms = verts
-            m = ms.current_mesh()
-            v = m.vertex_matrix()
-            t = m.face_matrix()
-            is_ms = True
-        elif hasattr(verts, 'vertex_matrix'):
-            v = verts.vertex_matrix()
-            t = verts.face_matrix()
-        else:
-            raise ValueError("Expected (verts, tris) or a mesh/MeshSet object")
-    else:
-        v = verts
-        t = tris
-    v = np.ascontiguousarray(v, dtype=np.float32)
-    t = np.ascontiguousarray(t, dtype=np.int64)
+    v = np.ascontiguousarray(verts, dtype=np.float32)
+    t = np.ascontiguousarray(tris, dtype=np.int64)
     if v.ndim != 2 or v.shape[1] != 3:
         raise ValueError("verts must be Nx3")
     if t.ndim != 2 or t.shape[1] != 3:
         raise ValueError("tris must be Mx3")
     if len(v) == 0 or len(t) == 0:
-        out_v, out_t = v, t
-    elif engine() == 'python':
-        out_v, out_t = _repair_non_manifold_vertices_numpy(v, t)
-    else:
-        out_v, out_t = _geom.repair_non_manifold_vertices(v, t)
-
-    if is_ms and len(out_v) > len(v):
-        import pymeshlab as ml
-        ms.clear()
-        ms.add_mesh(ml.Mesh(vertex_matrix=out_v, face_matrix=out_t.astype(np.int32)))
-        return ms
+        return v, t
+    if engine() == 'python':
+        return _repair_non_manifold_vertices_numpy(v, t)
+    out_v, out_t = _geom.repair_non_manifold_vertices(v, t)
     return out_v, out_t
 
 
@@ -1165,42 +1141,6 @@ def resample_uniform(verts, tris, voxel, offset=0.0, absdist=False,
     return (np.asarray(out_v), np.asarray(out_t).astype(np.int64), report)
 
 
-def close_holes_ms(ms, ml=None, maxholesize=1000, self_intersection=True,
-                   newfaceselected=False, refinehole=False,
-                   refineholeedgelen=None):
-    """Apply ``meshing_close_holes`` to a MeshSet in place.
-
-    Uses the native :func:`close_holes`; the Liepa-style ``refinehole=True``
-    refinement is not ported yet (Faz 4D), so such calls are routed to
-    PyMeshLab's filter unchanged.  Returns ``(closed_holes, new_faces)`` for
-    the native path and ``None`` when the PyMeshLab fallback is used.
-    """
-    if refinehole:
-        if ml is None:
-            import pymeshlab as ml  # noqa: F401
-        kw = {'maxholesize': int(maxholesize),
-              'selfintersection': bool(self_intersection),
-              'newfaceselected': bool(newfaceselected),
-              'refinehole': True}
-        if refineholeedgelen is not None:
-            kw['refineholeedgelen'] = refineholeedgelen
-        ms.apply_filter('meshing_close_holes', **kw)
-        return None
-    m = ms.current_mesh()
-    v = m.vertex_matrix()
-    t = m.face_matrix()
-    v_new, t_new, closed, new_faces = close_holes(
-        v, t, maxholesize=maxholesize, self_intersection=self_intersection,
-        newfaceselected=newfaceselected)
-    if len(t_new) != len(t):
-        if ml is None:
-            import pymeshlab as ml
-        ms.clear()
-        ms.add_mesh(ml.Mesh(vertex_matrix=v_new,
-                            face_matrix=t_new.astype(np.int32)))
-    return closed, new_faces
-
-
 def compute_normal_per_face(verts, tris=None):
     """Compute unnormalized per-face normals matching VCGLib compute_normal_per_face ((p1-p0) x (p2-p0))."""
     if tris is None:
@@ -1340,15 +1280,6 @@ meshing_invert_face_orientation = invert_face_orientation
 meshing_remove_connected_component_by_face_number = remove_connected_components
 meshing_compute_normal_per_face = compute_normal_per_face
 meshing_compute_normal_per_vertex = compute_normal_per_vertex
-
-
-def native_si_enabled():
-    """Compatibility shim: exact self-intersection detection is always on.
-
-    Kept only for callers that still branch on it (the last one is
-    ``pipeline.py``, which removes its PyMeshLab fallback separately).
-    """
-    return True
 
 
 def native_nme_enabled():
@@ -1580,13 +1511,11 @@ __all__ = [
     'repair_non_manifold_vertices',
     'remove_selected_faces',
     'close_holes',
-    'close_holes_ms',
     'compute_normal_per_face',
     'compute_normal_per_vertex',
     'mesh_topology',
     'mesh_geometric_measures',
     'connected_components',
-    'native_si_enabled',
     'native_nme_enabled',
     'native_nmv_enabled',
     'native_measures_enabled',

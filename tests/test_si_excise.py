@@ -205,7 +205,7 @@ def test_close_holes_step_ignores_removed_refine_env():
     vh, th = np.asarray(v), np.asarray(t)[keep]
 
     v, t, _applied, _skipped = apply_chain(
-        vh, th, stage1_chain(ml, maxholesize=1000, mincomponentsize=8))
+        vh, th, stage1_chain(maxholesize=1000, mincomponentsize=8))
     topo = topology.mesh_topology(v, t)
     assert topo['number_holes'] == 0, topo
     assert topo['non_two_manifold_edges'] == 0, topo

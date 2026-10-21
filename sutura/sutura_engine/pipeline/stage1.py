@@ -27,24 +27,7 @@ def _close_holes_step(maxholesize):
     return ('meshing_close_holes', {'maxholesize': maxholesize})
 
 
-def _close_holes_ms(ms, ml, maxholesize=1000, self_intersection=True,
-                    newfaceselected=False, refinehole=False,
-                    refineholeedgelen=None):
-    """Apply ``meshing_close_holes`` to a MeshSet in place (native).
-
-    Thin delegate to :func:`topology.close_holes_ms`: the Rust ear-clipping
-    closer handles the plain path, while the Liepa-style ``refinehole=True``
-    refinement is not ported yet (Faz 4D) and is routed to PyMeshLab unchanged.
-    Returns ``(closed_holes, new_faces)`` for the native path and ``None`` for
-    the PyMeshLab fallback.
-    """
-    return topology.close_holes_ms(
-        ms, ml, maxholesize=maxholesize, self_intersection=self_intersection,
-        newfaceselected=newfaceselected, refinehole=refinehole,
-        refineholeedgelen=refineholeedgelen)
-
-
-def stage1_cleanup_chain(ml):
+def stage1_cleanup_chain():
     """The Stage-1 mesh-hygiene passes: duplicate/null removal, non-manifold
     edge/vertex repair and a coherent re-orientation, with NO hole closing and
     NO component removal.
@@ -75,8 +58,8 @@ def stage1_cleanup_chain(ml):
     ]
 
 
-def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
-    chain = stage1_cleanup_chain(ml) + [
+def stage1_chain(maxholesize=1000, mincomponentsize=8, join_components=False):
+    chain = stage1_cleanup_chain() + [
         _close_holes_step(maxholesize),
         # --experimental-join-components replaces this removal step with a
         # join (small components are moved onto the nearest larger component
@@ -93,7 +76,7 @@ def stage1_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False
     return chain
 
 
-def delete_fallback_chain(ml, maxholesize=1000, mincomponentsize=8, join_components=False):
+def delete_fallback_chain(maxholesize=1000, mincomponentsize=8, join_components=False):
     chain = [
         ('meshing_remove_duplicate_faces', {}),
         ('meshing_remove_null_faces', {}),
@@ -303,7 +286,7 @@ def extreme_extra_passes(verts, tris, params):
     v, t = topology.remove_unreferenced_vertices(v, t)
     removed = max(before_removal - len(t), 0)
     v, t, applied2, skipped2 = apply_chain(
-        v, t, stage1_chain(None, **params))
+        v, t, stage1_chain(**params))
     return True, int(found), removed, applied2, skipped2, v, t
 
 

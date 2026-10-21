@@ -5,8 +5,8 @@
 
 Internal geometry arrays stay float64 through the pipeline. Downcasting to
 float32 happens only when writing STL (or another float32 output format);
-never coerce a Stage-1 or tier result to float32 at a MeshSet/array boundary,
-because it changes exact duplicate/weld decisions and cascades into the tiers.
+never coerce a Stage-1 or tier result to float32 at an array boundary, because
+it changes exact duplicate/weld decisions and cascades into the tiers.
 """
 import os
 import tempfile
@@ -141,7 +141,6 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # direct API) funnels through here, so a missing/stale sutura_geom cannot
     # silently degrade when the function is called as a library.
     method_health.require_geometry()
-    import pymeshlab as ml
     method_health.reset_if_unscoped()
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int32)
@@ -359,7 +358,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _t_pre = time.perf_counter()
         _tp_in_v, _tp_in_t = v, t
         _tp_v, _tp_t, _tp_a, _tp_s = apply_chain(
-            v, t, stage1_cleanup_chain(ml))
+            v, t, stage1_cleanup_chain())
         _tafter = topology.mesh_topology(_tp_v, _tp_t)
         _tp_v, _tp_t, _tafter = tamponade_tier(
             _tp_v, _tp_t, v, t, _tafter, stats, tmpdir, tamponade=True,
@@ -421,7 +420,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     cur_v, cur_t = np.asarray(v, np.float64), np.asarray(t, np.int64)
     cur_v, cur_t, applied, skipped = apply_chain(
-        cur_v, cur_t, stage1_chain(ml, **_p, join_components=join_components))
+        cur_v, cur_t, stage1_chain(**_p, join_components=join_components))
     after = topology.mesh_topology(cur_v, cur_t)
     if trace.is_active():
         trace.record_stage('stage1_chain', 'stage1.apply_chain',
@@ -454,7 +453,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             ar_rep.update(ar_info)
             if len(ar_t) > 0:
                 ar_v, ar_t, _a, _s = apply_chain(
-                    ar_v, ar_t, stage1_chain(ml, **_p, join_components=join_components))
+                    ar_v, ar_t, stage1_chain(**_p, join_components=join_components))
                 cand_after = topology.mesh_topology(ar_v, ar_t)
                 cand_holes = boundary_loop_stats(ar_v, ar_t)[0]
                 cand_nm = cand_after.get('non_two_manifold_edges', 0)
@@ -492,7 +491,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 ia_rep.update(al_info)
                 if len(ia_t) > 0:
                     ia_v, ia_t, _a, _s = apply_chain(
-                        ia_v, ia_t, stage1_chain(ml, **_p, join_components=join_components))
+                        ia_v, ia_t, stage1_chain(**_p, join_components=join_components))
                     cand_after = topology.mesh_topology(ia_v, ia_t)
                     cand_holes = boundary_loop_stats(ia_v, ia_t)[0]
                     cand_nm = cand_after.get('non_two_manifold_edges', 0)
@@ -516,7 +515,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _t_fb = time.perf_counter()
         _fb_in_v, _fb_in_t = cur_v, cur_t
         fb_v, fb_t, fapplied, fskipped = apply_chain(
-            cur_v, cur_t, delete_fallback_chain(ml, **_p, join_components=join_components))
+            cur_v, cur_t, delete_fallback_chain(**_p, join_components=join_components))
         fafter = topology.mesh_topology(fb_v, fb_t)
         _adopted = (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0))
@@ -719,7 +718,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         graft=(graft is True) and not _tamp_watertight,
         intensity=(getattr(triage_spec, 'base', None)
                    or getattr(triage_spec, 'name', None)),
-        spec=triage_spec, ml=ml)
+        spec=triage_spec)
     cur_v = np.asarray(_g_v, dtype=np.float64)
     cur_t = np.asarray(_g_t, dtype=np.int64)
     if trace.is_active():
@@ -750,8 +749,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                    splint=(splint if not _tamp_watertight
                                            else False),
                                    splint_adaptive=splint_adaptive,
-                                   dressing_force_adopt=dressing_force_adopt,
-                                   ml=ml)
+                                   dressing_force_adopt=dressing_force_adopt)
     cur_v = np.asarray(_cv, dtype=np.float64)
     cur_t = np.asarray(_ct, dtype=np.int64)
 
@@ -871,10 +869,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     })
 
     # Self-intersection count on the FINAL stage-1 output (repair_score.py's
-    # health metric). The count is measured from the final arrays; the
-    # opt-out fallback (``SUTURA_NATIVE_SI=0``) builds a throwaway MeshSet just
-    # for the selection filter, which only sets the face-selection array and
-    # does not alter geometry.
+    # health metric). The count is measured from the final arrays with the
+    # exact Rust classifier.
     #
     # Assumption (documented, not silent): stage 2 (Manifold) only runs on a
     # watertight closed mesh and REBUILDS the watertight solid, so its output
@@ -882,21 +878,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # 2's output is NOT re-measured here. When stage 2 runs and writes the
     # final mesh, this value is a conservative stage-1-based upper bound on
     # the health signal, which is fine for scoring.
-    # Under --si-mode off the policy is 'not measured': skip the (estimated)
-    # count entirely and report None. The guarded si_excise pass keeps its own
-    # pymeshlab count independently, so it is unaffected.
+    # Under --si-mode off the policy is 'not measured': skip the count entirely
+    # and report None.
     if si_mode == 'off':
         stats['stage1']['self_intersections_remaining'] = None
-    elif topology.native_si_enabled():
+    else:
         _, count = topology.self_intersecting_faces(new_verts, new_tris)
         stats['stage1']['self_intersections_remaining'] = (
             None if int(count) < 0 else int(count))
-    else:
-        _si_ms = ml.MeshSet()
-        _si_ms.add_mesh(ml.Mesh(vertex_matrix=new_verts, face_matrix=new_tris))
-        _si_ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        stats['stage1']['self_intersections_remaining'] = int(
-            _si_ms.current_mesh().face_selection_array().sum())
     stats['method_errors'] = method_health.current().to_dicts()
     return stats, new_verts, new_tris
 
@@ -947,7 +936,7 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                        dressing_drain=None, dressing_defects=None,
                        dressing_rmax_scale=None, dressing_sigma_scale=None,
                        si_mode='report', splint=False, splint_adaptive=None,
-                       dressing_force_adopt=False, ml=None):
+                       dressing_force_adopt=False):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``cur_v``/``cur_t`` is the result the ladder currently holds and
     ``input_v``/``input_t`` the original user surface. ``mode`` is one of
@@ -1035,7 +1024,7 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                     after, stats, tmpdir, graft=True,
                     intensity=(getattr(spec, 'base', None)
                                or getattr(spec, 'name', None)),
-                    spec=spec, ml=ml)
+                    spec=spec)
                 _g = stats.get('graft') or {}
                 if _g.get('adopted'):
                     # Adopt only a watertight candidate that is faithful AND
@@ -1087,7 +1076,7 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                     drain=dressing_drain, defects=dressing_defects,
                     r_max_scale=dressing_rmax_scale,
                     sigma_scale=dressing_sigma_scale,
-                    force_adopt=dressing_force_adopt, ml=ml)
+                    force_adopt=dressing_force_adopt)
                 if (stats.get('dressing') or {}).get('adopted'):
                     cur_v = np.asarray(_d_v, dtype=np.float64)
                     cur_t = np.asarray(_d_t, dtype=np.int64)
@@ -1249,7 +1238,7 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                 drain=dressing_drain, defects=dressing_defects,
                 r_max_scale=dressing_rmax_scale,
                 sigma_scale=dressing_sigma_scale,
-                force_adopt=dressing_force_adopt, ml=ml)
+                force_adopt=dressing_force_adopt)
             if (stats.get('dressing') or {}).get('adopted'):
                 cur_v = np.asarray(_d_v, dtype=np.float64)
                 cur_t = np.asarray(_d_t, dtype=np.int64)
