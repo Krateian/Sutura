@@ -755,34 +755,21 @@ def one_sided_hausdorff(in_v, in_t, out_v, out_t, samples=100000):
     if diag <= 1e-12:
         return None, None
 
-    # pymeshlab's get_hausdorff_distance segfaults on a zero-area sampled
-    # mesh (observed with a single collinear "healthy" triangle in Proxy
-    # repair on thingi10k_100827).  There is no meaningful distance to
-    # report in that case, so skip the native call entirely.
+    # A zero-area sampled mesh has no meaningful surface distance; skip it
+    # (the former VCG filter also segfaulted on this case).
     out_diag = float(np.linalg.norm(out_v.max(axis=0) - out_v.min(axis=0)))
     if not _has_positive_area(in_v, in_t, diag) or not _has_positive_area(
             out_v, out_t, out_diag):
         return None, None
 
     try:
-        import pymeshlab as ml
+        from sutura_engine.pipeline.utils import one_sided_hausdorff
 
-        hd = ml.MeshSet()
-        hd.add_mesh(ml.Mesh(vertex_matrix=in_v, face_matrix=in_t))  # mesh 0: input
-        hd.add_mesh(ml.Mesh(vertex_matrix=out_v, face_matrix=out_t))  # mesh 1: output
+        max_d, mean_d = one_sided_hausdorff(
+            in_v, in_t, out_v, out_t, samples=samples)
+        if max_d is None:
+            return None, None
+        return round(max_d / diag, 6), round(mean_d / diag, 6)
 
-        r = hd.apply_filter(
-            'get_hausdorff_distance',
-            sampledmesh=0,
-            targetmesh=1,
-            samplevert=True,
-            sampleface=True,
-            samplenum=samples,
-            maxdist=ml.PercentageValue(100),
-        )
-        max_d = float(r.get('max') or 0.0) / diag
-        mean_d = float(r.get('mean') or 0.0) / diag
-        return round(max_d, 6), round(mean_d, 6)
-
-    except Exception:
+    except Exception:  # noqa: BLE001 - fidelity metric never breaks a tier
         return None, None

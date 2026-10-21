@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 
 import pymeshlab as ml
+import sutura_geom
 
 from defects import detect, defect_type_colors
 from heatmap_render import load_mesh
@@ -93,31 +94,24 @@ def _decimate_lod(verts, tris, target=LOD_TARGET):
 def _surface_distance(measure_verts, measure_tris, ref_verts, ref_tris):
     """Per-vertex unsigned distance from the measure mesh to the ref surface.
 
-    Uses pymeshlab's nearest-surface-point filter (unsigned), so the two
-    meshes need not share topology. Returns a (len(measure_verts),) float64
-    array."""
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(measure_verts, np.float64),
-                        face_matrix=np.asarray(measure_tris, np.int32)), 'measure')
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(ref_verts, np.float64),
-                        face_matrix=np.asarray(ref_tris, np.int32)), 'ref')
-    ms.apply_filter('compute_scalar_by_distance_from_another_mesh_per_vertex',
-                    measuremesh=0, refmesh=1, signeddist=False)
-    return np.asarray(ms.mesh(0).vertex_scalar_array(), dtype=np.float64)
+    Uses the Rust BVH nearest-surface query, so the two meshes need not share
+    topology. Returns a (len(measure_verts),) float64 array."""
+    _q, d, _f = sutura_geom.closest_points(
+        np.asarray(ref_verts, np.float64), np.asarray(ref_tris, np.int32),
+        np.asarray(measure_verts, np.float64))
+    return np.asarray(d, dtype=np.float64)
 
 
 def _hausdorff(verts, tris, rverts, rtris):
-    """Global one-sided Hausdorff distance of original -> repaired (max of
-    the sampled-mesh vertex qualities)."""
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
-                        face_matrix=np.asarray(tris, np.int32)), 'a')
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(rverts, np.float64),
-                        face_matrix=np.asarray(rtris, np.int32)), 'b')
-    ms.apply_filter('get_hausdorff_distance', sampledmesh=0, targetmesh=1,
-                    samplenum=100000)
-    q = np.asarray(ms.mesh(0).vertex_scalar_array(), dtype=np.float64)
-    return float(q.max()) if len(q) else 0.0
+    """Global one-sided Hausdorff distance of original -> repaired.
+
+    Same native sampler as the repair-path fidelity metric (vertices plus
+    area-weighted surface samples), so the two numbers stay comparable."""
+    from sutura_engine.pipeline.utils import one_sided_hausdorff
+
+    mx, _mn = one_sided_hausdorff(
+        verts, tris, rverts, rtris, samples=100000)
+    return float(mx) if mx is not None else 0.0
 
 
 def main():

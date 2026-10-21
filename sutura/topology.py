@@ -1495,11 +1495,12 @@ def dilate_face_selection(tris, selected, rings=1):
 
 
 def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
-    """Select self-intersecting faces in MeshSet in-place.
+    """Return the self-intersecting face mask for a MeshSet.
 
-    When SUTURA_NATIVE_SI is enabled, computes the mask via native exact
-    predicates and applies it to the MeshSet. Otherwise delegates to
-    PyMeshLab's 'compute_selection_by_self_intersections_per_face'.
+    With SUTURA_NATIVE_SI the exact classifier is used and the mask is
+    returned array-only (no MeshSet selection is written; callers must use
+    the returned mask). The PyMeshLab fallback keeps the legacy behaviour and
+    writes the selection so the old opt-out path still works.
 
     Returns (mask, count).
     """
@@ -1513,14 +1514,6 @@ def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
         v = m.vertex_matrix()
         t = m.face_matrix()
         mask, count = self_intersecting_faces(v, t)
-
-    try:
-        ms.apply_filter('set_selection_none')
-        if count is not None and int(count) > 0:
-            m.add_face_custom_scalar_attribute(mask.astype(np.float64), '_native_si')
-            ms.apply_filter('compute_selection_by_condition_per_face', condselect='_native_si > 0.5')
-    except Exception:
-        pass
     return mask, int(count)
 
 

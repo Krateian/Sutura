@@ -3,8 +3,9 @@
 """Pure geometry/topology helpers shared by the repair tiers.
 
 Moved verbatim from sutura/repair.py (P1a split); no logic change. These are
-stdlib + numpy only (the two SI helpers lazy-import ``sutura_geom``), so the
-module stays importable without pymeshlab.
+stdlib + numpy only (the two SI helpers and the Hausdorff helper lazy-import
+``sutura_geom``/``sutura_engine.wall``), so the module stays importable
+without pymeshlab.
 """
 from collections import defaultdict
 
@@ -259,45 +260,77 @@ def _count_vertex_components(n_verts, tris):
     return int(len({find(int(i)) for i in used.tolist()}))
 
 
+def _surface_samples(verts, tris, samples, seed=12345):
+    """Deterministic query points for a one-sided surface distance.
+
+    All referenced vertices are kept when they fit in the budget; the
+    remaining budget is filled with area-weighted surface samples. Keeping the
+    vertices is important for sharp features, and the area-weighted samples
+    keep the metric comparable to the former VCG sampler.
+    """
+    v = np.asarray(verts, dtype=np.float64)
+    t = np.asarray(tris, dtype=np.int64)
+    n = int(samples)
+    if len(v) == 0 or len(t) == 0 or n <= 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    if len(v) >= n:
+        idx = np.linspace(0, len(v) - 1, n, dtype=np.int64)
+        return v[idx]
+    from sutura_engine.wall import sample_surface
+
+    pts, _ = sample_surface(v, t, n_samples=n - len(v), seed=int(seed))
+    if len(pts) == 0:
+        return v
+    return np.vstack([v, pts])
+
+
+def one_sided_hausdorff(va, ta, vb, tb, samples=HAUSDORFF_SAMPLES, seed=12345):
+    """One-sided distance from ``(va, ta)`` to ``(vb, tb)``: ``(max, mean)``.
+
+    Pure numpy + ``sutura_geom.closest_points`` (Rust BVH). ``None, None`` for
+    an empty mesh. The caller normalises by its own bbox diagonal.
+    """
+    if len(ta) == 0 or len(tb) == 0:
+        return None, None
+    va, ta = _referenced_only(va, ta)
+    vb, tb = _referenced_only(vb, tb)
+    if len(va) == 0 or len(vb) == 0 or len(ta) == 0 or len(tb) == 0:
+        return None, None
+    pts = _surface_samples(va, ta, samples, seed=seed)
+    if len(pts) == 0:
+        return None, None
+    import sutura_geom
+
+    _q, d, _f = sutura_geom.closest_points(vb, tb, pts)
+    d = np.asarray(d, dtype=np.float64)
+    if len(d) == 0:
+        return None, None
+    return float(d.max()), float(d.mean())
+
+
 def _hausdorff_rel(ml, in_v, in_t, out_v, out_t, samples=HAUSDORFF_SAMPLES):
     """One-sided Hausdorff distance, samples on the output, distance to the
     input, relative to the input bounding-box diagonal: ``(max, mean)``, or
     ``(None, None)`` for an empty mesh or a zero diagonal. Also used by
     scripts/benchmark_repair_corpus.py.
 
-    Both meshes are reduced to the vertices their faces reference first:
-    ``get_hausdorff_distance(samplevert=True)`` also samples unreferenced
-    vertices, and the fTetWild bridge output carries every tetrahedron
-    vertex, interior ones included (a closed sphere plus random interior
-    points measures ~26 % instead of 0)."""
+    Both meshes are reduced to the vertices their faces reference first: the
+    fTetWild bridge output carries every tetrahedron vertex, interior ones
+    included (a closed sphere plus random interior points measures ~26 %
+    instead of 0)."""
     if len(in_t) == 0 or len(out_t) == 0:
         return None, None
     in_v, in_t = _referenced_only(in_v, in_t)
     out_v, out_t = _referenced_only(out_v, out_t)
+    if len(in_v) == 0 or len(out_v) == 0:
+        return None, None
     diag = float(np.linalg.norm(in_v.max(0) - in_v.min(0)))
     if not diag:
         return None, None
-    # The filter's ``maxdist`` is a ``PercentageValue`` and CLIPS every
-    # distance above it, reporting exactly the cap (a raw and a decimated
-    # candidate would then look equally far from the input). It is hard-capped
-    # at 100 by pymeshlab (``InvalidPercentageException`` above that), and
-    # 100 % is measured against the UNION bounding box of the two meshes, i.e.
-    # exactly the largest possible point-to-point distance between them
-    # (verified: displacements of 1.5x-100x the input diagonal come back
-    # unclipped). ``PercentageValue(100)`` is therefore the maximum the API
-    # allows AND provably clipping-free; smaller values do clip (5 %/50 %
-    # return a capped or empty result). Do not lower it.
-    hd = ml.MeshSet()
-    hd.add_mesh(ml.Mesh(vertex_matrix=in_v,
-                        face_matrix=np.asarray(in_t, np.int32)))      # id 0
-    hd.add_mesh(ml.Mesh(vertex_matrix=np.asarray(out_v, np.float64),
-                        face_matrix=np.asarray(out_t, np.int32)))     # id 1
-    r = hd.apply_filter('get_hausdorff_distance', sampledmesh=1, targetmesh=0,
-                        samplevert=True, sampleface=True,
-                        samplenum=samples,
-                        maxdist=ml.PercentageValue(100))
-    return (round(float(r.get('max') or 0) / diag, 6),
-            round(float(r.get('mean') or 0) / diag, 6))
+    mx, mn = one_sided_hausdorff(out_v, out_t, in_v, in_t, samples=samples)
+    if mx is None:
+        return None, None
+    return round(mx / diag, 6), round(mn / diag, 6)
 
 
 def _obj_closed_result(r):
