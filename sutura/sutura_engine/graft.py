@@ -32,7 +32,7 @@ Pure API::
                remesh=True, fill_cavities=False, max_tries=3,
                target_edge=None, si_check=True, guard=True,
                grid_budget=None, detail_tol=None, intensity=None,
-               sign_field=None)
+               sign_field=None, hybrid=False)
         -> (verts_out, tris_out, report)
 
 No file is written.  ``report['per_vertex_deviation']`` carries the per-result-
@@ -53,6 +53,7 @@ from defects import detect as detect_defects
 from sutura_engine.pipeline.p_weld import (
     _separate_weld_collisions,
     reload_strict_holes_nm,
+    weld_reload_equivalent,
 )
 from sutura_engine.pipeline.tiers.local_remesh import _damaged_region
 from sutura_engine.pipeline.utils import _referenced_only
@@ -855,6 +856,18 @@ def _hybrid_close(v0, t0, region_mask):
         ov, ot = _cap_boundary_loops(ov, ot)
         ov, ot, _ = _p_weld(ov, ot)
         h, nm = reload_strict_holes_nm(ov, ot)
+        if h != 0:
+            # The float32 reload can open a boundary loop that is clean in
+            # memory. Split the weld collisions first (removes the non-manifold
+            # edges), then cap the exposed loop on the welded form, which is
+            # what the saved STL will reload as.
+            sv, st = _separate_weld_collisions(ov, ot)
+            wv, wt = weld_reload_equivalent(sv, st)
+            wv, wt = _cap_boundary_loops(wv, wt)
+            wh, wnm = reload_strict_holes_nm(wv, wt)
+            if wh == 0 and wnm == 0:
+                ov, ot = wv, wt
+                h, nm = 0, 0
         if h == 0 and nm == 0:
             return ov, ot
     except Exception:  # noqa: BLE001
@@ -959,7 +972,7 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
                remesh=True, fill_cavities=False, max_tries=MAX_TRIES,
                target_edge=None, si_check=True, guard=True,
                grid_budget=None, detail_tol=None, intensity=None,
-               time_budget=None, sign_field=None,
+               time_budget=None, sign_field=None, hybrid=False,
                raystab=None, raystab_dirs=None, raystab_seed=0,
                raystab_parity=False, antipodal=None):
     """Graft (shell wrap) repair.
@@ -1284,17 +1297,12 @@ def shell_wrap(verts, tris, *, r=None, voxel=None, box=None, local=None,
         # envelope is used for the r decision; when it is too coarse to carry
         # the healthy detail through the projection, this guarantees zero
         # deviation on the healthy surface.
-        if (region_mask is not None
+        if (hybrid and region_mask is not None
                 and not (h == 0 and nm == 0 and fidelity_ok)):
             hy = _hybrid_close(v0, t0, region_mask)
             if hy is not None:
                 hy_h, hy_nm = reload_strict_holes_nm(*hy)
-                hy_parts = topology.mesh_topology(*hy).get(
-                    'connected_components_number', 0)
-                env_parts = topology.mesh_topology(wv, wt).get(
-                    'connected_components_number', 0)
-                if (hy_h == 0 and hy_nm == 0
-                        and hy_parts <= env_parts):
+                if hy_h == 0 and hy_nm == 0:
                     wv, wt = hy
                     h, nm = hy_h, hy_nm
                     mode = "hybrid"

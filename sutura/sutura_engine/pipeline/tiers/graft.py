@@ -84,7 +84,7 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
                              'stage-1 result kept' % (len(in_t), int(cap)))
             stats['graft'] = rec
             return v, t, after
-        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t,
+        cand_v, cand_t, grec = _graft.shell_wrap(in_v, in_t, hybrid=True,
                                                  intensity=intensity,
                                                  time_budget=timeout)
         rec['ran'] = True

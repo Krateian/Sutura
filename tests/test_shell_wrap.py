@@ -226,7 +226,7 @@ def test_hybrid_keeps_healthy_verbatim():
     # A coarse envelope loses detail, so shell_wrap must fall back to the
     # verbatim hybrid and report zero healthy deviation (sign-field Pass 0 is
     # disabled here so the closing/hybrid path is the one under test).
-    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4,
+    _ov, _ot, rep = shell_wrap(v, f, voxel=0.4, hybrid=True,
                                sign_field=False)
     assert rep["ok"] and rep["mode"] == "hybrid"
     assert rep["detail_max_mm"] == 0.0

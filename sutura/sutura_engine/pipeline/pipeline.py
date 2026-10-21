@@ -1033,8 +1033,11 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                     # thingi10k_100827) is held aside like a fidelity failure so
                     # the ladder falls through to fTetWild/next tier; it is
                     # never preferred over fTetWild by the deviation tie-break.
-                    if (_g.get('fidelity_ok') is not False
-                            and _g.get('coverage_ok') is not False):
+                    _fid = _g.get('fidelity_ok')
+                    _cov = _g.get('coverage_ok')
+                    _fid_failed = (_fid is not None and not bool(_fid))
+                    _cov_failed = (_cov is not None and not bool(_cov))
+                    if not _fid_failed and not _cov_failed:
                         cur_v = np.asarray(_g_v, dtype=np.float64)
                         cur_t = np.asarray(_g_t, dtype=np.int64)
                         after = _g_after
@@ -1045,7 +1048,7 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                         graft_t = np.asarray(_g_t, dtype=np.int64)
                         graft_after = _g_after
                         graft_dev = _g.get('hausdorff_healthy')
-                        graft_cov_failed = (_g.get('coverage_ok') is False)
+                        graft_cov_failed = _cov_failed
 
             # Dressing (#16) sits AFTER Graft and BEFORE fTetWild: its
             # volumetric skin targets the whole-shell folds and heavy
