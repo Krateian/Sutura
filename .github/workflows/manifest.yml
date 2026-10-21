@@ -47,6 +47,11 @@ jobs:
             echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Install manifest dependencies
+        # sutura/__init__ imports repair.py, which imports numpy at module level;
+        # without it VERSION cannot be read.
+        run: python3 -m pip install --quiet "numpy>=2.4.6,<2.6"
+
       - name: Generate manifest.json
         run: |
           PYTHONPATH=. python3 -m sutura.manifest --out manifest.json
