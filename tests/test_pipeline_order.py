@@ -204,13 +204,12 @@ def test_auto_deferred_graft_none_deviation_edges():
 # Part 2: deep_repair_ladder                                                   #
 # --------------------------------------------------------------------------- #
 
-def _cube_ms(marker):
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(CUBE_V, np.float64),
-                        face_matrix=np.asarray(CUBE_T, np.int32)))
-    after = ms.apply_filter('get_topological_measures')
-    after['_tier'] = marker
-    return ms, after
+def _cube_arrays():
+    return (np.asarray(CUBE_V, np.float64), np.asarray(CUBE_T, np.int64))
+
+
+def _cube_after(marker):
+    return {'non_two_manifold_edges': 0, '_tier': marker}
 
 
 def _run_ladder(graft_body, ft_body):
@@ -221,9 +220,7 @@ def _run_ladder(graft_body, ft_body):
     report.  Returns ``(stats, calls, after)``.
     """
     v, t = _load(OPEN_SAMPLE)
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
-    after = ms.apply_filter('get_topological_measures')
+    after = {'non_two_manifold_edges': 0}
     stats = {}
     calls = []
 
@@ -231,10 +228,8 @@ def _run_ladder(graft_body, ft_body):
         calls.append('graft')
         assert graft_body is not None, 'Graft tier must not run'
         st['graft'] = dict(graft_body)
-        _ms, after = _cube_ms('graft')
-        return (np.asarray(_ms.current_mesh().vertex_matrix(), dtype=np.float64),
-                np.asarray(_ms.current_mesh().face_matrix(), dtype=np.int64),
-                after)
+        cv, ct = _cube_arrays()
+        return cv, ct, _cube_after('graft')
 
     def fake_ft(vv, tt, iv, it, a, st, tmpdir, ftetwild, spec=None):
         calls.append('ftetwild')
@@ -242,16 +237,14 @@ def _run_ladder(graft_body, ft_body):
         # Like the real tier, an unadopted fTetWild leaves the mesh unchanged.
         if not ft_body.get('adopted'):
             return vv, tt, a
-        _ms, after = _cube_ms('ftetwild')
-        return (np.asarray(_ms.current_mesh().vertex_matrix(), dtype=np.float64),
-                np.asarray(_ms.current_mesh().face_matrix(), dtype=np.int64),
-                after)
+        cv, ct = _cube_arrays()
+        return cv, ct, _cube_after('ftetwild')
 
     saved = (pipeline.graft_tier, pipeline._ftetwild_tier)
     pipeline.graft_tier, pipeline._ftetwild_tier = fake_graft, fake_ft
     try:
-        _ms, out_after = pipeline.deep_repair_ladder(
-            ml, ms, after, stats, v, t, tempfile.gettempdir(), mode='full',
+        _cv, _ct, out_after = pipeline.deep_repair_ladder(
+            v, t, v, t, after, stats, tempfile.gettempdir(), mode='full',
             ftetwild='auto', spec=repair.triage.PRESETS['balanced'],
             graft='auto')
     finally:
