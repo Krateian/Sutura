@@ -352,15 +352,15 @@ def test_dressing_tier_adoption_gate():
     try:
         dressing.dressing_coat = fake_ok
         stats = {}
-        _ms, _after = repair.dressing_tier(ml, ml.MeshSet(), after, stats,
-                                           base['v'], base['t'], '/tmp',
-                                           dressing=True)
+        _dv, _dt, _dafter = repair.dressing_tier(
+            base['v'], base['t'], base['v'], base['t'], after, stats, '/tmp',
+            dressing=True, ml=ml)
         assert stats['dressing']['adopted'] is True, stats['dressing']
 
         dressing.dressing_coat = fake_low_fid
         stats2 = {}
-        repair.dressing_tier(ml, ml.MeshSet(), after, stats2,
-                             base['v'], base['t'], '/tmp', dressing=True)
+        repair.dressing_tier(base['v'], base['t'], base['v'], base['t'],
+                             after, stats2, '/tmp', dressing=True, ml=ml)
         assert stats2['dressing']['adopted'] is False, stats2['dressing']
         assert 'fidelity' in (stats2['dressing']['reason'] or '')
     finally:
@@ -545,8 +545,8 @@ def test_dressing_gate_rejects_volume_parts_normal():
     try:
         dressing.dressing_coat = fake_bad
         stats = {}
-        repair.dressing_tier(ml, ms, after, stats, v, t, '/tmp',
-                             dressing=True)
+        repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
+                             dressing=True, ml=ml)
         rec = stats['dressing']
         assert rec['adopted'] is False, rec
         assert (rec['volume_ok'] is False and rec['parts_ok'] is False
@@ -593,15 +593,15 @@ def test_dressing_force_adopt_bypasses_shape_gates():
         dressing.dressing_coat = fake_bad
         # Without force the shape gates reject it.
         stats = {}
-        repair.dressing_tier(ml, ms, after, stats, v, t, '/tmp',
-                             dressing=True, force_adopt=False)
+        repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
+                             dressing=True, force_adopt=False, ml=ml)
         rec = stats['dressing']
         assert rec['adopted'] is False and rec['shape_ok'] is False, rec
         assert rec.get('forced') is False, rec
         # With force the same candidate is adopted and marked forced.
         stats = {}
-        repair.dressing_tier(ml, ml.MeshSet(), after, stats, v, t, '/tmp',
-                             dressing=True, force_adopt=True)
+        repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
+                             dressing=True, force_adopt=True, ml=ml)
         rec = stats['dressing']
         assert rec['adopted'] is True, rec
         assert rec['forced'] is True and rec['shape_ok'] is False, rec
@@ -609,8 +609,8 @@ def test_dressing_force_adopt_bypasses_shape_gates():
         # force never bypasses the strict watertight requirement.
         dressing.dressing_coat = fake_holes
         stats = {}
-        repair.dressing_tier(ml, ml.MeshSet(), after, stats, v, t, '/tmp',
-                             dressing=True, force_adopt=True)
+        repair.dressing_tier(v, t, v, t, after, stats, '/tmp',
+                             dressing=True, force_adopt=True, ml=ml)
         rec = stats['dressing']
         assert rec['adopted'] is False, rec
     finally:

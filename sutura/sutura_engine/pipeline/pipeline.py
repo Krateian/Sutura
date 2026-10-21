@@ -34,7 +34,7 @@ from sutura_engine.pipeline.stage1 import (
 from sutura_engine.pipeline.stage2 import _split_pinched_vertices
 from sutura_engine.pipeline.tiers import ftetwild as _ftetwild_mod
 from sutura_engine.pipeline.tiers.closing import closing_ladder
-from sutura_engine.pipeline.tiers.dressing import _dressing_tier_ms
+from sutura_engine.pipeline.tiers.dressing import dressing_tier
 from sutura_engine.pipeline.tiers.engines import (
     _record_engine_entries, engine_placement_order, run_engines,
 )
@@ -1067,16 +1067,22 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
             if _dressing_wanted(dressing, _dh, _dnm, _dsi, si_mode):
                 _t_dr = time.perf_counter()
                 _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-                _d_ms, _d_after = _dressing_tier_ms(
-                    ml, ms, after, stats, v, t, tmpdir, dressing=True,
+                _dr_cur_v, _dr_cur_t = _meshset_arrays_safe(ms)
+                _d_v, _d_t, _d_after = dressing_tier(
+                    np.asarray(_dr_cur_v, dtype=np.float64),
+                    np.asarray(_dr_cur_t, dtype=np.int64), v, t, after, stats,
+                    tmpdir, dressing=True,
                     intensity=(getattr(spec, 'base', None)
                                or getattr(spec, 'name', None)),
                     drain=dressing_drain, defects=dressing_defects,
                     r_max_scale=dressing_rmax_scale,
                     sigma_scale=dressing_sigma_scale,
-                    force_adopt=dressing_force_adopt)
+                    force_adopt=dressing_force_adopt, ml=ml)
                 if (stats.get('dressing') or {}).get('adopted'):
-                    ms, after = _d_ms, _d_after
+                    ms = ml.MeshSet()
+                    ms.add_mesh(ml.Mesh(vertex_matrix=_d_v,
+                                        face_matrix=_d_t.astype(np.int32)))
+                    after = _d_after
                     dressing_ok = True
                     tiers_run.append('dressing')
                 if trace.is_active():
@@ -1207,16 +1213,22 @@ def _deep_repair_ladder_ms(ml, ms, after, stats, v, t, tmpdir, mode=None,
         if dressing is True:
             _t_dr = time.perf_counter()
             _dr_in_v, _dr_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-            _d_ms, _d_after = _dressing_tier_ms(
-                ml, ms, after, stats, v, t, tmpdir, dressing=True,
+            _dr_cur_v, _dr_cur_t = _meshset_arrays_safe(ms)
+            _d_v, _d_t, _d_after = dressing_tier(
+                np.asarray(_dr_cur_v, dtype=np.float64),
+                np.asarray(_dr_cur_t, dtype=np.int64), v, t, after, stats,
+                tmpdir, dressing=True,
                 intensity=(getattr(spec, 'base', None)
                            or getattr(spec, 'name', None)),
                 drain=dressing_drain, defects=dressing_defects,
                 r_max_scale=dressing_rmax_scale,
                 sigma_scale=dressing_sigma_scale,
-                force_adopt=dressing_force_adopt)
+                force_adopt=dressing_force_adopt, ml=ml)
             if (stats.get('dressing') or {}).get('adopted'):
-                ms, after = _d_ms, _d_after
+                ms = ml.MeshSet()
+                ms.add_mesh(ml.Mesh(vertex_matrix=_d_v,
+                                    face_matrix=_d_t.astype(np.int32)))
+                after = _d_after
                 tiers_run.append('dressing')
             if trace.is_active():
                 _cur_v, _cur_t = _meshset_arrays_safe(ms)
