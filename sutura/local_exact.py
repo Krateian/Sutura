@@ -126,7 +126,7 @@ def detect_si_face_mask(ml, verts, tris):
                     return mask, int(count)
             except Exception:  # noqa: BLE001 - fall through to PyMeshLab
                 pass
-    if ml is None:
+    if ml is None or topology.native_si_enabled():
         return np.zeros(F, dtype=bool), -1
     try:
         ms = ml.MeshSet()

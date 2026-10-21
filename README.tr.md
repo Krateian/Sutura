@@ -217,11 +217,17 @@ açıktır:
   önerilmez) açar.
 * *Full Mend içinde, Stage 1'den sonra:* **guard'lı self-intersection kesme +
   yeniden kapatma** artakalan self-intersection yüzlerini (yüzler ve bir
-  halkalık kuşak) kaldırır, açılan döngüleri PyMeshLab'ın rafine delik
+  halkalık kuşak; exact yolda bu tur mevcut sınırı azaltıp yine de kapatamazsa
+  aynı tur bir kez iki halkalık kuşakla yeniden denenir ve retry bağlı bileşen
+  sayısını artırırsa reddedilir) kaldırır, açılan döngüleri PyMeshLab'ın rafine delik
   doldurmasıyla (`refinehole=True`, `selfintersection=True` — bu yeni kesişen
   kapakları *önler*) kapatır ve bir turu yalnızca self-intersection sayısı
-  kesin azalırken delikler ve non-manifold kenarlar artmadığında kabul eder;
-  aksi hâlde tur-öncesi ağ bayt bayt geri yüklenir. Hiçbir bağlı bileşen
+  kesin azalırken, non-manifold kenarlar artmazken ve exact yolda ağ tamamen
+  kapanırken (sınır kenarı yok) kabul eder; fallback önceki "öncekinden kötü
+  değil" delik kuralını korur; aksi hâlde tur-öncesi ağ bayt bayt geri
+  yüklenir. Self-intersection tespiti varsayılan olarak exact Rust
+  sınıflandırıcısını kullanır; `SUTURA_SI_EXACT=0` (eski adı
+  `SUTURA_NATIVE_SI=0`) PyMeshLab filtresini geri getirir. Hiçbir bağlı bileşen
   düşürülmez, yoğunluk ön ayarının zaman bütçesiyle (Balanced 5 sn, Thorough
   20 sn, Extreme 60 sn) en fazla üç tur çalışır ve self-intersection içermeyen
   ağlarda no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır. Stage 1 delik

@@ -446,8 +446,13 @@ def _ftetwild_tier(ml, ms, after, stats, v, t, tmpdir, ftetwild, spec=None):
         cur_nm = after.get('non_two_manifold_edges', 0)
         cur_si = 0
         if ftetwild is True:
-            ms.apply_filter('compute_selection_by_self_intersections_per_face')
-            cur_si = int(ms.current_mesh().face_selection_array().sum())
+            if topology.native_si_enabled():
+                m = ms.current_mesh()
+                _, cur_si = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
+                cur_si = max(int(cur_si), 0)
+            else:
+                ms.apply_filter('compute_selection_by_self_intersections_per_face')
+                cur_si = int(ms.current_mesh().face_selection_array().sum())
         if cur_si > 0 or cur_holes > 0 or cur_nm > 0:
             if (spec.ftetwild_max_faces is not None
                     and len(t) > spec.ftetwild_max_faces):

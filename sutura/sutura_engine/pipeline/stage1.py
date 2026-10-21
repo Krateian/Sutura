@@ -273,8 +273,7 @@ def extreme_extra_passes(ms, ml, params):
             if int(found) == 0:
                 return False, 0, 0, 0, {}
             before_removal = m.face_number()
-            topology.select_self_intersections_ms(ms, ml, mask=mask, count=int(found))
-            _remove_selected_faces_ms(ms, ml)
+            _remove_selected_faces_ms(ms, ml, mask=mask)
             removed = max(before_removal - ms.current_mesh().face_number(), 0)
             _remove_unref_vertices_ms(ms, ml)
             applied2, skipped2 = apply_chain(ms, stage1_chain(ml, **params))
@@ -426,20 +425,33 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
                     face_fraction=SI_EXCISE_MAX_FACE_FRACTION):
     """Guarded self-intersection excise + refined re-cap for the Full Mend path.
 
-    Selects the self-intersecting faces, dilates the selection by one ring,
-    deletes it, then re-caps the opened loops with ``meshing_close_holes``
+    Selects the self-intersecting faces, dilates the selection by one vertex
+    ring, deletes it and re-caps the opened loops with ``meshing_close_holes``
     (``selfintersection=True`` -- which PREVENTS new self-intersecting caps;
     ``refinehole=True`` only up to ``SI_EXCISE_REFINE_MAX_FACES``, since the
     Liepa refinement costs ~3 s/round on a 90k mesh without changing the
-    corpus outcome). A round is committed only when the
-    self-intersection count strictly decreases and holes / non-manifold edges
-    do not increase; otherwise the pre-round mesh is restored byte-for-byte.
-    The connected-component removal filter is never called (no component is
-    dropped). Returns ``(ms, report)``; ``report`` is JSON-serialisable.
+    corpus outcome). On the native exact path a rejected one-ring round is
+    retried once on the same pre-round mesh with two rings only when it reduced
+    (but did not close) the pre-existing boundary: the exact classifier does
+    not flag adjacent shared-vertex / touching faces, so the extra ring clears
+    that contact pocket before re-capping. A round that opens more boundary
+    edges than the pre-round mesh is not retried. The two-ring retry is also
+    rejected when it increases the connected-component count. A round is
+    committed only when the self-intersection count strictly decreases,
+    non-manifold edges do not increase, and the native path closes completely
+    (``holes_after == 0``); the fallback keeps the historical
+    ``holes_after <= holes_before``. Otherwise the pre-round mesh is restored
+    byte-for-byte. The connected-component removal filter is never called (no
+    component is dropped). ``report['dilation_rings']`` is the ring count
+    actually used by the last attempt (and each accepted round records it in
+    ``history``).
+    Returns ``(ms, report)``; ``report`` is JSON-serialisable.
     """
+    native_si = topology.native_si_enabled()
     report = {
         'ran': False, 'applied': False, 'rounds': 0, 'initial_si': 0,
         'si_after': 0, 'removed_si': 0, 'reason': None,
+        'dilation_rings': 1,
         'budget_s': (None if time_budget is None else float(time_budget)),
         'seconds': 0.0, 'history': [],
     }
@@ -471,69 +483,96 @@ def si_excise_recap(ms, ml, *, maxholesize=1000,
         holes_before = int(topo_before.get('boundary_edges', 0) or 0)
         nm_before = (int(topo_before.get('non_two_manifold_edges', 0) or 0)
                      + int(topo_before.get('non_two_manifold_vertices', 0) or 0))
+        comp_before = int(topo_before.get('connected_components_number', 0) or 0)
         saved_v = ms.current_mesh().vertex_matrix().copy()
         saved_t = ms.current_mesh().face_matrix().copy()
-        with method_health.tier_guard('si_excise', 'round') as _gr:
-            if topology.native_si_enabled():
-                if round_idx == 0 and init_mask is not None:
-                    topology.select_self_intersections_ms(ms, ml, mask=init_mask, count=current_si)
-                else:
-                    topology.select_self_intersections_ms(ms, ml)
+        if native_si:
+            if round_idx == 0 and init_mask is not None:
+                sel_cur = init_mask
             else:
-                ms.apply_filter('compute_selection_by_self_intersections_per_face')
-            m_cur = ms.current_mesh()
-            t_cur = np.asarray(m_cur.face_matrix(), dtype=np.int64)
-            sel_cur = np.asarray(m_cur.face_selection_array(), dtype=bool)
-            sel_dil = topology.dilate_face_selection(t_cur, sel_cur)
-            selected = int(sel_dil.sum())
-            if selected == 0:
-                report['reason'] = 'no_selection'
-                break
-            if selected > face_fraction * max(total_faces, 1):
-                report['reason'] = 'scope'
-                break
-            _remove_selected_faces_ms(ms, ml, mask=sel_dil)
-            _remove_unref_vertices_ms(ms, ml)
-            _repair_nme_ms(ms, ml)
-            _repair_nmv_ms(ms, ml)
-            close_kwargs = {'maxholesize': maxholesize,
-                            'newfaceselected': False,
-                            'selfintersection': True}
-            if total_faces <= SI_EXCISE_REFINE_MAX_FACES:
-                close_kwargs['refinehole'] = True
-                close_kwargs['refineholeedgelen'] = ml.PercentageValue(
-                    SI_EXCISE_REFINE_EDGE_PCT)
-            ms.apply_filter('meshing_close_holes', **close_kwargs)
-            _remove_unref_vertices_ms(ms, ml)
-            topo_after = topology.mesh_topology(ms)
-            holes_after = int(topo_after.get('boundary_edges', 0) or 0)
-            nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)
-                        + int(topo_after.get('non_two_manifold_vertices', 0) or 0))
-            si_after = _si_count(ms)
-        if _gr.error is not None:
-            ms.clear()
-            ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
-            report['reason'] = 'rollback'
-            break
-        if (si_after < current_si and holes_after <= holes_before
-                and nm_after <= nm_before):
-            report['history'].append({
-                'round': round_idx + 1,
-                'si_before': int(current_si),
-                'si_after': int(si_after),
-                'faces_after': int(topo_after.get('faces_number', 0) or 0),
-            })
-            current_si = si_after
-            report['rounds'] += 1
-            if current_si == 0:
-                report['reason'] = 'clean'
-                break
-            if round_idx + 1 >= max_rounds:
-                report['reason'] = 'max_rounds'
+                m_cur = ms.current_mesh()
+                sel_cur, _ = topology.self_intersecting_faces(
+                    m_cur.vertex_matrix(), m_cur.face_matrix())
         else:
+            ms.apply_filter('compute_selection_by_self_intersections_per_face')
+            sel_cur = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
+        m_cur = ms.current_mesh()
+        t_cur = np.asarray(m_cur.face_matrix(), dtype=np.int64)
+        accepted = False
+        for attempt, rings in enumerate((1, 2) if native_si else (1,)):
+            if attempt:
+                ms.clear()
+                ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
+            report['dilation_rings'] = rings
+            with method_health.tier_guard('si_excise', 'round') as _gr:
+                sel_dil = topology.dilate_face_selection(
+                    t_cur, sel_cur, rings=rings)
+                selected = int(sel_dil.sum())
+                if selected == 0:
+                    report['reason'] = 'no_selection'
+                    break
+                if selected > face_fraction * max(total_faces, 1):
+                    report['reason'] = 'scope'
+                    break
+                _remove_selected_faces_ms(ms, ml, mask=sel_dil)
+                _remove_unref_vertices_ms(ms, ml)
+                _repair_nme_ms(ms, ml)
+                _repair_nmv_ms(ms, ml)
+                close_kwargs = {'maxholesize': maxholesize,
+                                'newfaceselected': False,
+                                'selfintersection': True}
+                if total_faces <= SI_EXCISE_REFINE_MAX_FACES:
+                    close_kwargs['refinehole'] = True
+                    close_kwargs['refineholeedgelen'] = ml.PercentageValue(
+                        SI_EXCISE_REFINE_EDGE_PCT)
+                ms.apply_filter('meshing_close_holes', **close_kwargs)
+                _remove_unref_vertices_ms(ms, ml)
+                topo_after = topology.mesh_topology(ms)
+                holes_after = int(topo_after.get('boundary_edges', 0) or 0)
+                nm_after = (int(topo_after.get('non_two_manifold_edges', 0) or 0)
+                            + int(topo_after.get('non_two_manifold_vertices', 0) or 0))
+                comp_after = int(topo_after.get('connected_components_number', 0) or 0)
+                si_after = _si_count(ms)
+            if _gr.error is not None:
+                ms.clear()
+                ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
+                report['reason'] = 'rollback'
+                break
+            holes_ok = holes_after == 0 if native_si else holes_after <= holes_before
+            components_ok = rings != 2 or comp_after <= comp_before
+            if (si_after < current_si and holes_ok
+                    and nm_after <= nm_before and components_ok):
+                accepted = True
+                report['history'].append({
+                    'round': round_idx + 1,
+                    'si_before': int(current_si),
+                    'si_after': int(si_after),
+                    'faces_after': int(topo_after.get('faces_number', 0) or 0),
+                    'dilation_rings': rings,
+                })
+                current_si = si_after
+                report['rounds'] += 1
+                if current_si == 0:
+                    report['reason'] = 'clean'
+                elif round_idx + 1 >= max_rounds:
+                    report['reason'] = 'max_rounds'
+                break
+            # Retry only the 40886-type rejection: the one-ring round reduced
+            # the pre-existing boundary but could not close it (the contact
+            # pocket needs the second ring). A round that opens *more* boundary
+            # edges than the pre-round mesh must not trigger the larger cut.
+            if (rings == 1 and native_si and holes_after > 0
+                    and holes_after < holes_before
+                    and si_after < current_si and nm_after <= nm_before):
+                continue
             ms.clear()
             ms.add_mesh(ml.Mesh(vertex_matrix=saved_v, face_matrix=saved_t))
-            report['reason'] = 'rollback'
+            break
+        if not accepted:
+            if report['reason'] not in ('no_selection', 'scope'):
+                report['reason'] = 'rollback'
+            break
+        if report['reason'] in ('clean', 'max_rounds'):
             break
     report['si_after'] = int(current_si)
     report['removed_si'] = int(report['initial_si'] - current_si)

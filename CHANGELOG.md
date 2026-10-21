@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **Exact self-intersection detection is now the default.** Stage 1 and every self-intersection consumer use the exact Rust classifier instead of PyMeshLab's filter; `SUTURA_SI_EXACT=0` (legacy `SUTURA_NATIVE_SI=0`) restores the old path. The Full Mend self-intersection excise starts with a one-ring dilation and, only when that round reduces but cannot close the pre-existing boundary, retries once with two rings on the exact path; the retry is rejected if it adds a connected component. A round is accepted only after the mesh closes completely (no boundary edges); the PyMeshLab fallback is unchanged.
+
 ## [0.9.2] - 2026-10-21
 
 ### Added
