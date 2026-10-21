@@ -4,8 +4,8 @@
 Checks:
   1. health_mask detects boundary holes, non-manifold geometry, debris, and dilates.
   2. build_proxy produces watertight 2-manifold surface without debris.
-  3. build_proxy is bounded on a fan mesh whose PyMeshLab resample call hangs
-     (falls back to alpha_wrap within the per-attempt budget).
+  3. build_proxy is bounded on a fan mesh whose long thin triangles used to
+     hang PyMeshLab's resampler (now handled by the native resampler).
   4. proxy_template_repair repairs broken sphere with hole, flipped face, and debris.
   5. proxy_template_repair repairs broken torus while preserving topology.
   6. Defensive error handling returns honest error reports without raising.
@@ -173,40 +173,26 @@ def _make_fan_box(edge=1.0, W=40.0, H=4.0):
 
 
 def test_build_proxy_bounded_on_fan_mesh():
-    """The VCG resample KdTree hang must be bounded, falling back to alpha_wrap.
+    """The long-thin-triangle mesh must resample bounded via the native pass.
 
-    Regression for the H1 plate_b_bump hang: ``build_proxy`` runs the two
-    uniform-resample strategies in a subprocess with a wall-clock budget, so a
-    non-terminating VCG call cannot hang the whole repair."""
+    Regression for the H1 plate_b_bump hang: the former VCG
+    ``generate_resampled_uniform_mesh`` KdTree could fail to terminate on these
+    triangles and had to be run in a bounded subprocess. The native
+    ``sutura_geom.resample_uniform`` (Faz 4 W3c) is a plain voxel-grid pass that
+    cannot hang, so ``build_proxy`` must complete promptly through the native
+    uniform-resample strategies (no alpha-wrap fallback needed)."""
     v, t = _make_fan_box(edge=1.0)
     t0 = time.time()
-    pv, pt, info = pr.build_proxy(v, t, resample_timeout=4.0)
+    pv, pt, info = pr.build_proxy(v, t)
     elapsed = time.time() - t0
-    assert info['method'] == 'alpha_wrap', (
-        f"expected the alpha-wrap fallback on the hang mesh, got {info['method']}")
-    assert len(pt) >= 100, f"alpha-wrap proxy too small: {len(pt)} faces"
+    assert info['method'] in ('uniform_resampled_signed', 'uniform_resampled_unsigned'), (
+        f"expected the native uniform-resample path, got {info['method']}")
+    assert len(pt) >= 100, f"proxy too small: {len(pt)} faces"
     assert elapsed < 25.0, f"build_proxy was not bounded: {elapsed:.1f}s"
     ok, status = sutura_geom.watertight_check(pv, pt)
     assert ok, f"Proxy Manifold error: {status}"
     print(f"  ✓ test_build_proxy_bounded_on_fan_mesh passed "
           f"(method: {info['method']}, faces: {len(pt)}, {elapsed:.1f}s)")
-
-
-def test_resample_memory_guard_resolution():
-    """Resample memory ceiling: default, env override, invalid ignored, 0 disables."""
-    from sutura_engine.methods import proxy as _proxy
-    assert _proxy._resample_max_rss_kb() == _proxy.PROXY_RESAMPLE_MAX_RSS_MB * 1024
-    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = '64'
-    assert _proxy._resample_max_rss_kb() == 64 * 1024
-    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = 'nonsense'
-    assert _proxy._resample_max_rss_kb() == _proxy.PROXY_RESAMPLE_MAX_RSS_MB * 1024
-    os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB'] = '0'
-    assert _proxy._resample_max_rss_kb() == 0
-    del os.environ['SUTURA_PROXY_RESAMPLE_MAX_RSS_MB']
-    # The live-RSS reader must at least report this process's own memory.
-    rss = _proxy._proc_rss_kb(os.getpid())
-    assert rss is None or rss > 0, rss
-    print("  ✓ test_resample_memory_guard_resolution passed")
 
 
 def test_defensive_error_handling():
@@ -230,7 +216,6 @@ def main():
     test_health_mask()
     test_build_proxy()
     test_build_proxy_bounded_on_fan_mesh()
-    test_resample_memory_guard_resolution()
     test_proxy_template_repair_sphere()
     test_proxy_template_repair_torus()
     test_defensive_error_handling()

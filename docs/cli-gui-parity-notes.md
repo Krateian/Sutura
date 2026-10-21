@@ -118,6 +118,15 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   for the manual method; the GUI *Use method* entry for #12 opens a picker
   dialog (kept off the GUI's pymeshlab-free process by loading the mesh in the
   `repeat_picker_render.py` subprocess) so both sides are covered.
+- **Proxy resample + alpha wrap native swap (Phase 4 W3c/W3e):** the proxy-tier
+  uniform resampler and hole closure moved from PyMeshLab
+  (`generate_resampled_uniform_mesh` + `meshing_close_holes`) to the native
+  `sutura_geom.resample_uniform` + `topology.close_holes`, and the alpha-wrap
+  fallback moved to `sutura_geom.morph_close`. This is an implementation detail
+  behind methods #9/#10, so CLI and GUI use it identically and no control is
+  added. The former isolation switches `SUTURA_PROXY_RESAMPLE_TIMEOUT` /
+  `SUTURA_PROXY_RESAMPLE_MAX_RSS_MB` (env-only) were removed with the VCG
+  subprocess guard they configured.
 - **P3 (GUI method tagging):** closed that gap. The GUI file list gained a
   third **Method** column and a right-click menu (*Analyze*, *Recommended
   methods*, *Use method* with a checkable keep-open popup, *External engines*,
