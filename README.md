@@ -210,20 +210,18 @@ whenever its optional extra is installed:
   turns it on.
 * *In Full Mend, after stage 1:* a **guarded self-intersection excise + re-cap**
   removes residual self-intersecting faces (the faces plus a one-ring band;
-  on the exact path, if that round reduces but cannot close the pre-existing
-  boundary, the same round is retried once with a two-ring band, and the retry
-  is rejected if it adds a connected component), closes the opened loops with the
-  native hole fill (`selfintersection=True` — which *prevents* new
-  crossing caps) and commits a round only when the self-intersection count
-  strictly drops, non-manifold edges do not increase, and — on the exact
-  path — the mesh closes completely (no boundary edges); the fallback keeps the
-  historical no-worse-than-before hole rule, and otherwise the pre-round
-  mesh is restored byte-for-byte. Self-intersection detection uses the exact
-  Rust classifier by default; `SUTURA_SI_EXACT=0` (legacy
-  `SUTURA_NATIVE_SI=0`) restores PyMeshLab's filter. No connected component is ever dropped, at
-  most three rounds run under the intensity preset's time budget (Balanced 5 s,
-  Thorough 20 s, Extreme 60 s), and the step is a no-op on meshes without
-  self-intersections. Disable it with `SUTURA_SI_EXCISE=0`.
+  if that round reduces but cannot close the pre-existing boundary, the same
+  round is retried once with a two-ring band, and the retry is rejected if it
+  adds a connected component), closes the opened loops with the native hole
+  fill (`selfintersection=True` — which *prevents* new crossing caps) and
+  commits a round only when the self-intersection count strictly drops,
+  non-manifold edges do not increase, and the mesh closes completely (no
+  boundary edges); otherwise the pre-round mesh is restored byte-for-byte.
+  Self-intersection detection uses the exact Rust classifier. No connected
+  component is ever dropped, at most three rounds run under the intensity
+  preset's time budget (Balanced 5 s, Thorough 20 s, Extreme 60 s), and the
+  step is a no-op on meshes without self-intersections. Disable it with
+  `SUTURA_SI_EXCISE=0`.
 
 These after-stage-1 tiers form the **deep-repair ladder**, selected with
 `--deep-repair {off,local,full}` (or `SUTURA_DEEP_REPAIR`, or the
@@ -2317,8 +2315,8 @@ versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
   and add no part); **Flap** per-loop candidate selection (on by default, tries
   alternative fills only when the primary patch is rejected, charged to the Flap
   budget; `SUTURA_FLAP_SELECT=0` opts out); a memory/time guard on the Scaffold
-  resample (#10); native self-intersection detection behind the off-by-default
-  `SUTURA_NATIVE_SI`; and dependency reduction (Phase 1 drops `psutil` /
+  resample (#10); native exact self-intersection detection; and dependency
+  reduction (Phase 1 drops `psutil` /
   `pyrobust-predicates`, Phase 2a/2b route Stage-1 cleaning to the Rust kernel).
 - **v0.8.1 — 2026-10-03** — Repairs speed up via a native Rust topology kernel
   (vertex welding, duplicate-face and edge counting; bit-for-bit identical output,

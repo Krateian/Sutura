@@ -404,9 +404,6 @@ def main():
         if side in ('optout', 'candidate') and args.opt_out_env:
             k, v = args.opt_out_env.split('=', 1)
             run_env[k] = v
-        if side in ('default', 'baseline'):
-            run_env.pop('SUTURA_SI_EXACT', None)
-            run_env.pop('SUTURA_NATIVE_SI', None)
         rc, sout, serr, el = run_cli(cmd, run_env, repo_x, args.timeout)
         if not os.path.exists(out_stl):
             print('  %s: no output (rc=%d) %s' % (side, rc, serr.strip()[:160]), flush=True)

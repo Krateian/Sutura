@@ -169,10 +169,9 @@ def _count_self_intersections(v: np.ndarray, t: np.ndarray) -> Tuple[int, bool]:
             from .. import topology
         except (ImportError, ValueError):
             import topology
-        if topology.native_si_enabled():
-            _, count = topology.self_intersecting_faces(v, t)
-            if count >= 0:
-                return int(count), False
+        _, count = topology.self_intersecting_faces(v, t)
+        if count >= 0:
+            return int(count), False
     except Exception:
         pass
     return 0, False

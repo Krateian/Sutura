@@ -146,18 +146,12 @@ def _referenced_only(verts, tris):
     return np.asarray(verts, np.float64)[used], remap[tris]
 
 
-def _count_si(ml, ms):
-    if topology.native_si_enabled():
-        m = ms.current_mesh()
-        _, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-        if int(count) >= 0:
-            return int(count)
-        # Classifier skip sentinel (-1, mesh above the cap): fall through to the
-        # PyMeshLab filter rather than silently reporting 0 flags.
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    n = int(ms.current_mesh().face_selection_array().sum())
-    ms.apply_filter('set_selection_none')
-    return n
+def _count_si(ms):
+    """Exact self-intersection face count (``-1`` when the classifier skips)."""
+    m = ms.current_mesh()
+    _, count = topology.self_intersecting_faces(
+        m.vertex_matrix(), m.face_matrix())
+    return int(count)
 
 
 def _exact_si_face_count(verts, tris):

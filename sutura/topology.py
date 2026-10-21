@@ -1343,31 +1343,12 @@ meshing_compute_normal_per_vertex = compute_normal_per_vertex
 
 
 def native_si_enabled():
-    """Return True if native self-intersection detection is enabled.
+    """Compatibility shim: exact self-intersection detection is always on.
 
-    Default ON: self-intersection queries use the exact geometric predicates
-    in sutura_geom rather than PyMeshLab's VCGLib filter. Opt out with
-    ``SUTURA_SI_EXACT=0``; the legacy ``SUTURA_NATIVE_SI=0`` is also accepted.
-    Precedence: ``SUTURA_SI_EXACT`` > ``SUTURA_NATIVE_SI`` > default True.
+    Kept only for callers that still branch on it (the last one is
+    ``pipeline.py``, which removes its PyMeshLab fallback separately).
     """
-    env_exact = os.environ.get('SUTURA_SI_EXACT', '').strip().lower()
-    if env_exact in ('1', 'true', 'yes', 'on'):
-        return True
-    if env_exact in ('0', 'false', 'no', 'off'):
-        return False
-    env = os.environ.get('SUTURA_NATIVE_SI', '').strip().lower()
-    if env in ('0', 'false', 'no', 'off'):
-        return False
     return True
-
-
-def native_orient_enabled():
-    """Return True if native coherent face reorientation is enabled.
-
-    Default True (active). Opt out with ``SUTURA_NATIVE_ORIENT=0``.
-    """
-    env = os.environ.get('SUTURA_NATIVE_ORIENT', '').strip().lower()
-    return env not in ('0', 'false', 'no', 'off')
 
 
 def native_nme_enabled():
@@ -1496,29 +1477,6 @@ def dilate_face_selection(tris, selected, rings=1):
     return sel
 
 
-def select_self_intersections_ms(ms, ml=None, mask=None, count=None):
-    """Return the self-intersecting face mask for a MeshSet.
-
-    With SUTURA_NATIVE_SI the exact classifier is used and the mask is
-    returned array-only (no MeshSet selection is written; callers must use
-    the returned mask). The PyMeshLab fallback keeps the legacy behaviour and
-    writes the selection so the old opt-out path still works.
-
-    Returns (mask, count).
-    """
-    if not native_si_enabled():
-        ms.apply_filter('compute_selection_by_self_intersections_per_face')
-        res_mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
-        return res_mask, int(res_mask.sum())
-
-    m = ms.current_mesh()
-    if mask is None or count is None:
-        v = m.vertex_matrix()
-        t = m.face_matrix()
-        mask, count = self_intersecting_faces(v, t)
-    return mask, int(count)
-
-
 def connected_components(graph=None, *, directed=False, connection='weak',
                          return_labels=True, n_nodes=None, edges=None):
     """Connected components of an undirected graph.
@@ -1629,12 +1587,10 @@ __all__ = [
     'mesh_geometric_measures',
     'connected_components',
     'native_si_enabled',
-    'native_orient_enabled',
     'native_nme_enabled',
     'native_nmv_enabled',
     'native_measures_enabled',
     'self_intersecting_faces',
-    'select_self_intersections_ms',
     'si_face_count',
     'SI_MAX_FACES',
     'engine',

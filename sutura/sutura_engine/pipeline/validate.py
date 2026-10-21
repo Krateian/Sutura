@@ -27,9 +27,8 @@ def validate_mesh_from_arrays(verts, tris, engine='experimental',
                               declared_unit=None, si_mode=None):
     """Analyze one mesh WITHOUT repairing it.
 
-    Combines defects.detect(), the mesh classifier and cheap pymeshlab
-    measures (self-intersecting faces, connected components) into a
-    read-only report. Never writes anything. ``declared_unit`` feeds the
+    Combines defects.detect(), the mesh classifier and the native measures
+    (exact self-intersections, connected components) into a read-only report. Never writes anything. ``declared_unit`` feeds the
     non-blocking unit-warning heuristic (3MF only). ``si_mode`` selects the
     self-intersection policy; under 'off' the count is reported as None
     ('not measured') and is not required by the watertight predicate."""

@@ -142,26 +142,25 @@ def test_sites_agree():
     print('sites OK (topology/utils/dressing/graft agree; Graft capped -> None)')
 
 
-def test_sentinel_falls_back():
-    """A -1 sentinel at the operational sites falls back to PyMeshLab, not 0."""
-    saved_native = topology.native_si_enabled
+def test_sentinel_is_reported():
+    """A -1 sentinel is returned as unknown; there is no PyMeshLab fallback."""
     saved_sif = topology.self_intersecting_faces
     try:
-        topology.native_si_enabled = lambda: True
         topology.self_intersecting_faces = lambda *a, **k: (
             np.zeros(3, dtype=bool), -1)
 
         ms = _FakeMeshSet(sel=(1.0, 0.0, 1.0))
-        assert utils._count_si(None, ms) == 2, utils._count_si(None, ms)
+        assert utils._count_si(ms) == -1, utils._count_si(ms)
+        assert ms.filters == [], ms.filters
 
         ms2 = _FakeMeshSet(sel=(1.0, 0.0, 1.0))
         n, mask = stage1._si_count_and_mask(ms2)
-        assert n == 2, n
-        assert mask.dtype == bool and int(mask.sum()) == 2
+        assert n == -1, n
+        assert mask.dtype == bool and int(mask.sum()) == 0
+        assert ms2.filters == [], ms2.filters
     finally:
-        topology.native_si_enabled = saved_native
         topology.self_intersecting_faces = saved_sif
-    print('sentinel OK (-1 -> PyMeshLab fallback, never 0)')
+    print('sentinel OK (-1 reported, no PyMeshLab fallback)')
 
 
 def test_no_stale_cache():
@@ -187,17 +186,14 @@ def test_report_site_reports_none():
         return
     from sutura_engine.pipeline import validate
 
-    saved_native = topology.native_si_enabled
     saved_sif = topology.self_intersecting_faces
     try:
-        topology.native_si_enabled = lambda: True
         topology.self_intersecting_faces = lambda *a, **k: (
             np.zeros(3, dtype=bool), -1)
         v, t = _clean_cube()
         rep = validate.validate_mesh_from_arrays(v, t, si_mode='report')
         assert rep['validation']['self_intersections'] is None, rep['validation']
     finally:
-        topology.native_si_enabled = saved_native
         topology.self_intersecting_faces = saved_sif
     print('report site OK (skipped classifier -> None, not 0)')
 
@@ -205,7 +201,7 @@ def test_report_site_reports_none():
 def main():
     test_contract()
     test_sites_agree()
-    test_sentinel_falls_back()
+    test_sentinel_is_reported()
     test_no_stale_cache()
     test_report_site_reports_none()
     print('test_si_caps: all passed')

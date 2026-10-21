@@ -217,20 +217,17 @@ açıktır:
   önerilmez) açar.
 * *Full Mend içinde, Stage 1'den sonra:* **guard'lı self-intersection kesme +
   yeniden kapatma** artakalan self-intersection yüzlerini (yüzler ve bir
-  halkalık kuşak; exact yolda bu tur mevcut sınırı azaltıp yine de kapatamazsa
-  aynı tur bir kez iki halkalık kuşakla yeniden denenir ve retry bağlı bileşen
-  sayısını artırırsa reddedilir) kaldırır, açılan döngüleri native delik
-  doldurmasıyla (`selfintersection=True` — bu yeni kesişen
-  kapakları *önler*) kapatır ve bir turu yalnızca self-intersection sayısı
-  kesin azalırken, non-manifold kenarlar artmazken ve exact yolda ağ tamamen
-  kapanırken (sınır kenarı yok) kabul eder; fallback önceki "öncekinden kötü
-  değil" delik kuralını korur; aksi hâlde tur-öncesi ağ bayt bayt geri
-  yüklenir. Self-intersection tespiti varsayılan olarak exact Rust
-  sınıflandırıcısını kullanır; `SUTURA_SI_EXACT=0` (eski adı
-  `SUTURA_NATIVE_SI=0`) PyMeshLab filtresini geri getirir. Hiçbir bağlı bileşen
-  düşürülmez, yoğunluk ön ayarının zaman bütçesiyle (Balanced 5 sn, Thorough
-  20 sn, Extreme 60 sn) en fazla üç tur çalışır ve self-intersection içermeyen
-  ağlarda no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır.
+  halkalık kuşak; bu tur mevcut sınırı azaltıp yine de kapatamazsa aynı tur bir
+  kez iki halkalık kuşakla yeniden denenir ve retry bağlı bileşen sayısını
+  artırırsa reddedilir) kaldırır, açılan döngüleri native delik doldurmasıyla
+  (`selfintersection=True` — bu yeni kesişen kapakları *önler*) kapatır ve bir
+  turu yalnızca self-intersection sayısı kesin azalırken, non-manifold kenarlar
+  artmazken ve ağ tamamen kapanırken (sınır kenarı yok) kabul eder; aksi hâlde
+  tur-öncesi ağ bayt bayt geri yüklenir. Self-intersection tespiti exact Rust
+  sınıflandırıcısını kullanır. Hiçbir bağlı bileşen düşürülmez, yoğunluk ön
+  ayarının zaman bütçesiyle (Balanced 5 sn, Thorough 20 sn, Extreme 60 sn) en
+  fazla üç tur çalışır ve self-intersection içermeyen ağlarda no-op'tur.
+  `SUTURA_SI_EXCISE=0` ile kapatılır.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya
@@ -2327,8 +2324,8 @@ düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGE
   kalmalı ve parça eklememeli); **Flap** halka-başına aday seçimi (varsayılan
   açık, alternatif dolgular yalnızca birincil yama reddedilince denenir ve Flap
   bütçesinden düşülür; `SUTURA_FLAP_SELECT=0` kapatır); Scaffold resample (#10)
-  için bellek/süre koruması; varsayılan kapalı `SUTURA_NATIVE_SI` arkasında yerel
-  self-intersection tespiti; ve bağımlılık azaltımı (Faz 1 `psutil` /
+  için bellek/süre koruması; native exact self-intersection tespiti; ve
+  bağımlılık azaltımı (Faz 1 `psutil` /
   `pyrobust-predicates` kaldırır, Faz 2a/2b Aşama-1 temizliğini Rust çekirdeğine
   yönlendirir).
 - **v0.8.1 — 2026-10-03** — Onarımlar yerel bir Rust topoloji çekirdeğiyle

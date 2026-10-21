@@ -404,23 +404,15 @@ def _should_run_local_exact(report, spec):
 
 
 def _si_count_and_mask(ms):
-    """Number of faces flagged and boolean mask (or None)."""
-    if topology.native_si_enabled():
-        m = ms.current_mesh()
-        mask, count = topology.self_intersecting_faces(m.vertex_matrix(), m.face_matrix())
-        if int(count) >= 0:
-            return int(count), mask
-        # Classifier skip sentinel (-1): fall through to the PyMeshLab path.
-    ms.apply_filter('compute_selection_by_self_intersections_per_face')
-    mask = np.asarray(ms.current_mesh().face_selection_array(), dtype=bool)
-    n = int(mask.sum())
-    ms.apply_filter('set_selection_none')
-    return n, mask
+    """Exact self-intersection count and face mask; ``-1`` means skipped."""
+    m = ms.current_mesh()
+    mask, count = topology.self_intersecting_faces(
+        m.vertex_matrix(), m.face_matrix())
+    return int(count), mask
 
 
 def _si_count(ms):
-    """Number of faces flagged by the self-intersection filter (selection is
-    cleared afterwards; the filter never changes geometry)."""
+    """Exact self-intersection face count (``-1`` when the classifier skips)."""
     cnt, _ = _si_count_and_mask(ms)
     return cnt
 

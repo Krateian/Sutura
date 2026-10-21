@@ -231,12 +231,11 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   `--no-splint` / `SUTURA_SPLINT=0` are the disable path on both sides. The
   resolution, hash and wall-clock rules live in the shared
   `pipeline.presets.resolve_splint`, so CLI and GUI cannot diverge.
-- **Native self-intersection detection (default ON):** the Rust-counted exact
-  self-intersection classifier is the default for every SI consumer; the env
-  opt-out is `SUTURA_SI_EXACT=0` (legacy `SUTURA_NATIVE_SI=0` restores
-  PyMeshLab's filter). It has deliberately NO CLI flag or GUI control, so the
-  CLI and the GUI behave identically (parity by construction, like the
-  ray-stab vote).
+- **Native self-intersection detection (always ON):** the Rust-counted exact
+  self-intersection classifier is the only path for every SI consumer; the
+  PyMeshLab opt-out was removed. It has deliberately NO CLI flag or GUI
+  control, so the CLI and the GUI behave identically (parity by construction,
+  like the ray-stab vote).
 - **fTetWild deterministic retry + time abort (v0.9.1):** the retry after a boundary
   that fails the holes/non-manifold guard is a pure function of that verdict (no
   wall-clock gate), and `FTETWILD_TIMEOUT` is only an outer all-or-nothing abort that
