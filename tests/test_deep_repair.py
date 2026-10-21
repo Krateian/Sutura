@@ -485,11 +485,10 @@ def test_local_keeps_faces_outside_the_region():
     assert repair.boundary_loop_stats(v, t)[0] == 1
     region, n = repair._damaged_region(t)
     assert n == 1 and 0 < region.sum() < len(t)
-    out_ms, _topo, rep = repair._local_remesh_tier(ml, ms, topo)
+    ov, ot, _topo, rep = repair._local_remesh_tier(v, t, v, t, topo)
     assert rep['adopted'] and rep['outside_unchanged'], rep
     assert rep['holes_after'] == 0 and rep['nm_after'] == 0, rep
-    m = out_ms.current_mesh()
-    have = _face_counter(m.vertex_matrix(), m.face_matrix())
+    have = _face_counter(ov, ot)
     for key, c in _face_counter(v, t[~region]).items():
         assert have[key] >= c
 
@@ -502,12 +501,12 @@ def test_local_guard_rejects_moved_outside_faces():
     saved = local_remesh_mod._umbrella_fair
     local_remesh_mod._umbrella_fair = lambda verts, tris, first, steps: verts * 1.01
     try:
-        out_ms, _topo, rep = repair._local_remesh_tier(ml, ms, topo)
+        ov, ot, _topo, rep = repair._local_remesh_tier(v, t, v, t, topo)
     finally:
         local_remesh_mod._umbrella_fair = saved
     assert not rep['adopted'] and not rep['outside_unchanged'], rep
     assert rep['reject_reason'] == 'faces outside the region changed'
-    assert out_ms is ms
+    assert np.array_equal(ov, v) and np.array_equal(ot, t)
 
 
 def test_local_scope_gate_skips_a_long_boundary_loop():
@@ -516,8 +515,8 @@ def test_local_scope_gate_skips_a_long_boundary_loop():
     ms = ml.MeshSet()
     ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t.astype(np.int32)))
     topo = ms.apply_filter('get_topological_measures')
-    out_ms, _topo, rep = repair._local_remesh_tier(ml, ms, topo)
-    assert not rep['adopted'] and out_ms is ms, rep
+    ov, ot, _topo, rep = repair._local_remesh_tier(v, t, v, t, topo)
+    assert not rep['adopted'] and np.array_equal(ov, v) and np.array_equal(ot, t), rep
     assert rep['reject_reason'] == 'scope: boundary loop too long', rep
 
 
