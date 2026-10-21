@@ -4,7 +4,7 @@ Runs as a SEPARATE PROCESS spawned by the GUI (``BeforeAfterWorker``), for the
 same reason as heatmap_render.py: using pymeshlab inside a Qt worker thread
 while a QMainWindow exists corrupts the heap at interpreter shutdown (PySide6
 6.11 + Python 3.14). This subprocess loads the original and the repaired mesh
-with pymeshlab, detects defects on BOTH, and renders four PNGs:
+natively without PyMeshLab, detects defects on BOTH, and renders four PNGs:
 
   * before  - original mesh, defect regions red on the neutral grey body
   * after   - repaired mesh in the tri-state scheme: grey where nothing was

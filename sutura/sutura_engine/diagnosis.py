@@ -429,7 +429,7 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
 def analyze_file(path: str, engine: str = 'experimental',
                  extra_features: bool = False) -> List[ObjectAnalysis]:
     """Analyze every object in a file (one for STL/OBJ, one per 3MF object)."""
-    from sutura_engine.core import load_meshes
+    from sutura_engine.pipeline.mesh_io import load_meshes
     meshes = load_meshes(path)
     return [analyze_mesh(v, t, engine=engine, extra_features=extra_features, model=name)
             for name, v, t in meshes]

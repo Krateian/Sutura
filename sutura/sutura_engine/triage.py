@@ -457,7 +457,8 @@ def _resolve_fn(name: str, default_fn: Callable) -> Callable:
 
 def _load_objects(path: str) -> list:
     """[(model_name|None, verts, tris)] for a file (one per 3MF object)."""
-    return _repair_mod().load_meshes(path)
+    from sutura_engine.pipeline.mesh_io import load_meshes
+    return load_meshes(path)
 
 
 def _safe_load(path: str) -> list:
@@ -469,11 +470,10 @@ def _safe_load(path: str) -> list:
 
 def one_sided_hausdorff(in_v, in_t, out_v, out_t, samples=None):
     """One-sided input -> output Hausdorff, relative to the input bbox diagonal."""
-    import pymeshlab as ml
-    repair = _repair_mod()
+    from sutura_engine.pipeline import utils
     if samples is None:
-        samples = repair.HAUSDORFF_SAMPLES
-    return repair._hausdorff_rel(ml, in_v, in_t, out_v, out_t, samples=samples)
+        samples = utils.HAUSDORFF_SAMPLES
+    return utils._hausdorff_rel(None, in_v, in_t, out_v, out_t, samples=samples)
 
 
 def _worst_hausdorff(in_objs, out_objs):

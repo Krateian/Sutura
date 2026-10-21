@@ -61,6 +61,32 @@ def test_import_from_sutura_directory():
     assert 'sutura-dir import OK' in r.stdout
 
 
+def test_renderers_and_triage_io_without_pymeshlab():
+    sample = os.path.join(REPO, 'tests', 'real-world-samples', 'thingi10k_100045.stl')
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {SUTURA!r})\n"
+        "sys.modules['pymeshlab'] = None\n"
+        "import heatmap_render\n"
+        "import before_after_render\n"
+        "from sutura_engine.triage import _load_objects, one_sided_hausdorff\n"
+        "from sutura_engine.diagnosis import analyze_file\n"
+        f"v, t = heatmap_render.load_mesh({sample!r})\n"
+        "assert v is not None and len(v) > 0\n"
+        f"objs = _load_objects({sample!r})\n"
+        "assert len(objs) == 1\n"
+        "ov, ot = objs[0][1], objs[0][2]\n"
+        "mx, _mn = one_sided_hausdorff(ov, ot, ov, ot, samples=50)\n"
+        "assert mx == 0.0\n"
+        f"rep = analyze_file({sample!r})\n"
+        "assert len(rep) == 1 and rep[0].faces > 0\n"
+        "print('renderers and triage IO OK without pymeshlab')\n"
+    )
+    r = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True)
+    assert r.returncode == 0, f"Execution failed without pymeshlab:\nSTDOUT:\n{r.stdout}\nSTDERR:\n{r.stderr}"
+    assert 'renderers and triage IO OK without pymeshlab' in r.stdout
+
+
 if __name__ == '__main__':
     test_import_engine_without_pymeshlab()
     print('ok test_import_engine_without_pymeshlab')
@@ -68,3 +94,5 @@ if __name__ == '__main__':
     print('ok test_root_bootstrap_imports_from_repo_root')
     test_import_from_sutura_directory()
     print('ok test_import_from_sutura_directory')
+    test_renderers_and_triage_io_without_pymeshlab()
+    print('ok test_renderers_and_triage_io_without_pymeshlab')

@@ -96,7 +96,6 @@ def load_meshes(src: str) -> List[Tuple[Optional[str], np.ndarray, np.ndarray]]:
     MeshSet is created.
     """
     from sutura_engine.pipeline.mesh_io import load_meshes as _load_meshes
-
     return _load_meshes(src)
 
 
