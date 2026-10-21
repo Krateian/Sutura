@@ -2305,6 +2305,12 @@ community — but for now, it will continue like this.
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.9.3 — 2026-10-22** — **No PyMeshLab any more:** hole closing,
+  self-intersection detection, cleanup, decimation, distance measurement and
+  mesh reading/writing all run in Sutura's own Rust core and Python engine, so
+  installs are smaller and simpler; on the 40-mesh corpus no mesh got worse.
+  Balloon (#8) rebuilds natively without self-intersections, and installs from
+  0.5.1–0.9.1 can self-update again.
 - **v0.9.2 — 2026-10-21** — **Splint (#18)** as an opt-in exact solid-rebuild tier
   (off by default; evaluated on the 40-mesh corpus and adopted on none so far);
   `sutura --self-check`, `--diagnostics` and `--self-repair`; a print-impact
