@@ -353,13 +353,127 @@ def read_stl(path):
     return _read_stl_ascii(path)
 
 
+_PLY_TYPES = {
+    'char': 'i1', 'uchar': 'u1', 'int8': 'i1', 'uint8': 'u1',
+    'short': 'i2', 'ushort': 'u2', 'int16': 'i2', 'uint16': 'u2',
+    'int': 'i4', 'uint': 'u4', 'int32': 'i4', 'uint32': 'u4',
+    'float': 'f4', 'float32': 'f4', 'double': 'f8', 'float64': 'f8',
+}
+_PLY_STRUCT = {'i1': 'b', 'u1': 'B', 'i2': 'h', 'u2': 'H',
+               'i4': 'i', 'u4': 'I', 'f4': 'f', 'f8': 'd'}
+
+
+def _ply_key(prop):
+    return prop[3] if prop[0] == 'list' else prop[2]
+
+
+def read_ply(path):
+    """Read an ASCII or binary_little_endian PLY (vertex xyz + face list)."""
+    with open(path, 'rb') as f:
+        raw = f.read()
+    cut = raw.find(b'end_header')
+    if cut < 0:
+        raise ValueError('malformed PLY: missing end_header')
+    nl = raw.find(b'\n', cut)
+    header = raw[:nl + 1].decode('ascii', 'replace').splitlines()
+    body = raw[nl + 1:]
+    fmt = None
+    elements = []
+    current = None
+    for line in header:
+        parts = line.strip().split()
+        if not parts:
+            continue
+        if parts[0] == 'format':
+            fmt = parts[1]
+        elif parts[0] == 'element':
+            current = {'name': parts[1], 'count': int(parts[2]), 'props': []}
+            elements.append(current)
+        elif parts[0] == 'property' and current is not None:
+            if parts[1] == 'list':
+                current['props'].append(('list', parts[2], parts[3], parts[4]))
+            else:
+                current['props'].append(('scalar', parts[1], parts[2]))
+    v_el = next((e for e in elements if e['name'] == 'vertex'), None)
+    f_el = next((e for e in elements if e['name'] == 'face'), None)
+    if v_el is None:
+        raise ValueError('PLY has no vertex element')
+    vprops = v_el['props']
+    axes = []
+    for axis in ('x', 'y', 'z'):
+        idx = next((i for i, p in enumerate(vprops)
+                    if p[0] == 'scalar' and p[2] == axis), None)
+        if idx is None:
+            raise ValueError('PLY vertex has no %s property' % axis)
+        axes.append(idx)
+    vertex_dtype = np.dtype([(_ply_key(p), _PLY_TYPES[p[1]]) for p in vprops])
+    if fmt == 'ascii':
+        lines = body.decode('ascii', 'replace').splitlines()
+        vals = [[float(x) for x in ln.split()] for ln in lines if ln.strip()]
+        vrows = vals[:v_el['count']]
+        rest = vals[v_el['count']:]
+        verts = np.asarray([[r[i] for i in axes] for r in vrows], dtype=np.float32)
+        faces = []
+        if f_el is not None:
+            for row in rest[:f_el['count']]:
+                n = int(row[0])
+                faces.append([int(x) for x in row[1:1 + n]])
+    elif fmt == 'binary_little_endian':
+        rec = vertex_dtype.itemsize
+        arr = np.frombuffer(body, dtype=vertex_dtype, count=v_el['count'])
+        verts = np.stack([arr[vprops[a][2]] for a in axes], axis=1)
+        verts = np.asarray(verts, dtype=np.float32)
+        off = v_el['count'] * rec
+        faces = []
+        if f_el is not None:
+            list_prop = next((p for p in f_el['props'] if p[0] == 'list'), None)
+            if list_prop is None:
+                raise ValueError('PLY face element has no list property')
+            cchar = _PLY_STRUCT[_PLY_TYPES[list_prop[1]]]
+            ichar = _PLY_STRUCT[_PLY_TYPES[list_prop[2]]]
+            ctype = '<' + cchar
+            csz = struct.calcsize(ctype)
+            isz = struct.calcsize(ichar)
+            for _ in range(f_el['count']):
+                n = struct.unpack_from(ctype, body, off)[0]
+                off += csz
+                idx = list(struct.unpack_from('<%d%s' % (n, ichar),
+                                              body, off))
+                off += isz * n
+                faces.append(idx)
+    else:
+        raise ValueError('unsupported PLY format: %s' % fmt)
+    tris = (np.asarray(faces, dtype=np.int32) if faces
+            else np.zeros((0, 3), dtype=np.int32))
+    return verts, tris.reshape(-1, 3)
+
+
+def write_ply(path, verts, tris):
+    """Write a binary_little_endian PLY with only vertex xyz and face lists."""
+    v = np.asarray(verts, dtype=np.float32).reshape(-1, 3)
+    t = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
+    head = ('ply\nformat binary_little_endian 1.0\n'
+            'element vertex %d\nproperty float x\nproperty float y\n'
+            'property float z\nelement face %d\n'
+            'property list uchar int vertex_indices\nend_header\n'
+            % (len(v), len(t)))
+    with open(path, 'wb') as f:
+        f.write(head.encode('ascii'))
+        f.write(v.astype('<f4').tobytes())
+        for tri in t:
+            f.write(struct.pack('<B', 3))
+            f.write(struct.pack('<3i', *[int(x) for x in tri]))
+
+
 def read_mesh(path):
-    """Read an STL or OBJ file into (verts float32, tris int32) by extension."""
+    """Read an STL, OBJ or PLY file into (verts float32, tris int32)."""
     ext = os.path.splitext(str(path))[1].lower()
     if ext == '.obj':
         return read_obj(path)
     if ext == '.stl':
         return read_stl(path)
+    if ext == '.ply':
+        return read_ply(path)
     raise ValueError('unsupported mesh extension for reading: %s' % ext)
 
 
@@ -493,12 +607,60 @@ def should_extract_outer_shell(verts, tris, mesh_type=None, si_count=0):
         return False
 
 
+def _write_3mf_single(out_path, verts, tris):
+    """Write one object as a minimal, standards-compliant 3MF container."""
+    out_dir = os.path.dirname(os.path.abspath(out_path)) or '.'
+    os.makedirs(out_dir, exist_ok=True)
+    model = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<model unit="millimeter" xml:lang="en-US" '
+        'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n'
+        '<resources>\n<object id="1" type="model">\n'
+        + build_mesh_block(verts, tris)
+        + '\n</object>\n</resources>\n'
+        '<build><item objectid="1"/></build>\n</model>\n'
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">\n'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>\n'
+        '<Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>\n'
+        '</Types>\n'
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n'
+        '<Relationship Target="/3D/3dmodel.model" Id="rel0" '
+        'Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>\n'
+        '</Relationships>\n'
+    )
+    with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml', content_types)
+        z.writestr('_rels/.rels', rels)
+        z.writestr('3D/3dmodel.model', model)
+
+
 def save_mesh(out_path, verts, tris):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
-                        face_matrix=np.asarray(tris, np.int32)))
-    ms.save_current_mesh(out_path)
+    """Write one mesh natively, dispatched by extension.
+
+    STL is binary (the existing reload-equivalent writer), OBJ uses the
+    standard ``v``/``f`` records, and 3MF is a single-object container.
+    Multi-object 3MF rewriting remains the existing ``rewrite_3mf_meshes``
+    path.
+    """
+    ext = os.path.splitext(str(out_path))[1].lower()
+    v = np.asarray(verts, dtype=np.float32)
+    t = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
+    if ext == '.stl':
+        stl_write_binary(out_path, v, t)
+    elif ext == '.obj':
+        write_obj(out_path, v, t)
+    elif ext == '.3mf':
+        _write_3mf_single(out_path, v, t)
+    elif ext == '.ply':
+        write_ply(out_path, v, t)
+    else:
+        raise ValueError('unsupported mesh extension for writing: %s' % ext)
 
 
 def scan_bad_coordinates(path):
@@ -936,14 +1098,37 @@ def _read_zip_entry(z, name):
     return _read_zip_info(z, z.getinfo(name))
 
 
-def load_meshes(src):
-    """Load a mesh file as a list of (model_name|None, verts, tris).
+def _read_native_single(src):
+    """Read one STL/OBJ and match the former loader's vertex semantics.
 
-    STL/OBJ give one entry with ``model_name`` None; a 3MF yields one entry
-    per object (or an empty list when it has no mesh objects). Shared by
-    validate and dry-run so both see exactly what repair would see."""
-    import pymeshlab as ml
-    ext = os.path.splitext(src)[1].lower()
+    The former PyMeshLab STL loader welded exactly coincident positions; OBJ
+    is already index-based and keeps duplicate vertex records. The native STL
+    reader returns three unshared vertices per triangle, so apply the same
+    exact-position weld here (the topology kernel is bit-for-bit with the
+    reload weld used elsewhere).
+    """
+    ext = os.path.splitext(str(src))[1].lower()
+    if ext == '.stl':
+        v, t = read_stl(src)
+        import topology
+
+        return topology.remove_duplicate_vertices(v, t)
+    if ext == '.obj':
+        return read_obj(src)
+    if ext == '.ply':
+        return read_ply(src)
+    raise ValueError('unsupported mesh extension for reading: %s' % ext)
+
+
+def load_meshes(src):
+    """Load a mesh file as a list of (model_name|None, verts float32, tris int32).
+
+    STL (binary/ascii) and OBJ give one entry with ``model_name`` None; a 3MF
+    yields one entry per mesh block (or an empty list when it has no mesh
+    objects). Shared by validate and dry-run so both see exactly what repair
+    would see. Fully native: no MeshSet is created.
+    """
+    ext = os.path.splitext(str(src))[1].lower()
     if ext == '.3mf':
         out = []
         for name, blocks in parse_3mf_meshes(src).items():
@@ -951,8 +1136,20 @@ def load_meshes(src):
                 out.append((name, np.asarray(vs, dtype=np.float32),
                             np.asarray(ts, dtype=np.int32)))
         return out
-    load_ms = ml.MeshSet()
-    load_ms.load_new_mesh(src)
-    m = load_ms.current_mesh()
-    return [(None, np.asarray(m.vertex_matrix(), dtype=np.float32),
-             np.asarray(m.face_matrix(), dtype=np.int32))]
+    v, t = _read_native_single(src)
+    return [(None, np.asarray(v, dtype=np.float32),
+             np.asarray(t, dtype=np.int32))]
+
+
+def load_mesh(src):
+    """Load one mesh as ``(verts float32, tris int32)``.
+
+    STL/OBJ give their single mesh; for a multi-object 3MF the first mesh
+    block is returned (use ``load_meshes`` for every object). Raises
+    ``ValueError`` when the file has no mesh geometry.
+    """
+    meshes = load_meshes(src)
+    if not meshes:
+        raise ValueError('no mesh geometry found in %s' % src)
+    _name, verts, tris = meshes[0]
+    return verts, tris

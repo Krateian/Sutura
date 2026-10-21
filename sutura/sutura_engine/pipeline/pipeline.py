@@ -1,7 +1,13 @@
 # Copyright (C) 2026 Sutura Authors
 # SPDX-License-Identifier: Apache-2.0
 """Central repair pipeline: repair_mesh_from_arrays and the deep-repair ladder
-(P1a split). Moved verbatim from sutura/repair.py; no logic change."""
+(P1a split). Moved verbatim from sutura/repair.py; no logic change.
+
+Internal geometry arrays stay float64 through the pipeline. Downcasting to
+float32 happens only when writing STL (or another float32 output format);
+never coerce a Stage-1 or tier result to float32 at a MeshSet/array boundary,
+because it changes exact duplicate/weld decisions and cascades into the tiers.
+"""
 import os
 import tempfile
 import time
@@ -72,6 +78,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                              si_mode=None, dressing_force_adopt=False,
                              splint=False, splint_adaptive=None):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
+
+    Internal arrays stay float64; the final verts/tris are float32 for output
+    (the same rule as the module docstring).
 
     ``mode`` is one of REPAIR_MODES: 'auto' (the default) uses the mesh
     classifier + confidence gate exactly as before; the fixed modes
@@ -360,10 +369,12 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     if tamponade is True:
         _t_pre = time.perf_counter()
         _tp_in_v, _tp_in_t = v, t
+        _tp_v, _tp_t, _tp_a, _tp_s = apply_chain(
+            v, t, stage1_cleanup_chain(ml))
         _tms = ml.MeshSet()
-        _tms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-        apply_chain(_tms, stage1_cleanup_chain(ml))
-        _tafter = topology.mesh_topology(_tms)
+        _tms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(_tp_v, np.float64),
+                              face_matrix=np.asarray(_tp_t, np.int32)))
+        _tafter = topology.mesh_topology(_tp_v, _tp_t)
         _tms, _tafter = tamponade_tier(
             ml, _tms, _tafter, stats, tmpdir, tamponade=True,
             intensity=(getattr(triage_spec, 'base', None)
@@ -423,24 +434,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     _t_s1 = time.perf_counter()
     _s1_in_v, _s1_in_t = v, t
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
 
-    applied, skipped = apply_chain(
-        ms, stage1_chain(ml, **_p, join_components=join_components))
-    after = topology.mesh_topology(ms)
+    cur_v, cur_t = np.asarray(v, np.float64), np.asarray(t, np.int64)
+    cur_v, cur_t, applied, skipped = apply_chain(
+        cur_v, cur_t, stage1_chain(ml, **_p, join_components=join_components))
+    after = topology.mesh_topology(cur_v, cur_t)
     if trace.is_active():
-        try:
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
-            trace.record_stage('stage1_chain', 'stage1.apply_chain',
-                               _s1_in_v, _s1_in_t, _cur_v, _cur_t,
-                               gate={'status': 'applied', 'filters': applied,
-                                     'skipped': len(skipped) if hasattr(skipped, '__len__') else skipped},
-                               elapsed=round(time.perf_counter() - _t_s1, 4))
-        except Exception as e:
-            trace.record_stage('stage1_chain', 'stage1.apply_chain',
-                               _s1_in_v, _s1_in_t, _s1_in_v, _s1_in_t,
-                               gate={'status': 'applied', 'trace_hook_error': str(e)})
+        trace.record_stage('stage1_chain', 'stage1.apply_chain',
+                           _s1_in_v, _s1_in_t, cur_v, cur_t,
+                           gate={'status': 'applied', 'filters': applied,
+                                 'skipped': len(skipped) if hasattr(skipped, '__len__') else skipped},
+                           elapsed=round(time.perf_counter() - _t_s1, 4))
 
     # --experimental-autorefine prototype: resolve self-intersections on the
     # INPUT mesh by subdividing the intersecting triangles along their
@@ -465,23 +469,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             ar_v, ar_t, ar_info = _autorefine.autorefine(ar_v, ar_t)
             ar_rep.update(ar_info)
             if len(ar_t) > 0:
-                ms_cand = ml.MeshSet()
-                ms_cand.add_mesh(ml.Mesh(vertex_matrix=np.asarray(ar_v, np.float32),
-                                         face_matrix=np.asarray(ar_t, np.int32)))
-                apply_chain(ms_cand, stage1_chain(ml, **_p, join_components=join_components))
-                cand_after = topology.mesh_topology(ms_cand)
-                cand_holes = boundary_loop_stats(
-                    ms_cand.current_mesh().vertex_matrix(),
-                    ms_cand.current_mesh().face_matrix())[0]
+                ar_v, ar_t, _a, _s = apply_chain(
+                    ar_v, ar_t, stage1_chain(ml, **_p, join_components=join_components))
+                cand_after = topology.mesh_topology(ar_v, ar_t)
+                cand_holes = boundary_loop_stats(ar_v, ar_t)[0]
                 cand_nm = cand_after.get('non_two_manifold_edges', 0)
-                base_holes = boundary_loop_stats(
-                    ms.current_mesh().vertex_matrix(),
-                    ms.current_mesh().face_matrix())[0]
+                base_holes = boundary_loop_stats(cur_v, cur_t)[0]
                 base_nm = after.get('non_two_manifold_edges', 0)
                 adopted = bool(cand_holes <= base_holes and cand_nm <= base_nm)
                 ar_rep['adopted'] = adopted
                 if adopted:
-                    ms = ms_cand
+                    cur_v, cur_t = ar_v, ar_t
                     after = cand_after
         if _ga.error is not None:
             ar_rep['error'] = str(_ga.error)
@@ -509,23 +507,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 ia_v, ia_t, al_info = indirect_bridge.arrangement_lite_arrays(v, t)
                 ia_rep.update(al_info)
                 if len(ia_t) > 0:
-                    ms_cand = ml.MeshSet()
-                    ms_cand.add_mesh(ml.Mesh(vertex_matrix=np.asarray(ia_v, np.float32),
-                                             face_matrix=np.asarray(ia_t, np.int32)))
-                    apply_chain(ms_cand, stage1_chain(ml, **_p, join_components=join_components))
-                    cand_after = topology.mesh_topology(ms_cand)
-                    cand_holes = boundary_loop_stats(
-                        ms_cand.current_mesh().vertex_matrix(),
-                        ms_cand.current_mesh().face_matrix())[0]
+                    ia_v, ia_t, _a, _s = apply_chain(
+                        ia_v, ia_t, stage1_chain(ml, **_p, join_components=join_components))
+                    cand_after = topology.mesh_topology(ia_v, ia_t)
+                    cand_holes = boundary_loop_stats(ia_v, ia_t)[0]
                     cand_nm = cand_after.get('non_two_manifold_edges', 0)
-                    base_holes = boundary_loop_stats(
-                        ms.current_mesh().vertex_matrix(),
-                        ms.current_mesh().face_matrix())[0]
+                    base_holes = boundary_loop_stats(cur_v, cur_t)[0]
                     base_nm = after.get('non_two_manifold_edges', 0)
                     adopted = bool(cand_holes <= base_holes and cand_nm <= base_nm)
                     ia_rep['adopted'] = adopted
                     if adopted:
-                        ms = ms_cand
+                        cur_v, cur_t = ia_v, ia_t
                         after = cand_after
             if _gi.error is not None:
                 if isinstance(_gi.error, ImportError):
@@ -538,27 +530,23 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
     if after.get('non_two_manifold_edges', 0) > 0 or after.get('non_two_manifold_vertices', 0) > 0:
         _t_fb = time.perf_counter()
-        _fb_in_v, _fb_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-        fb = ml.MeshSet()
-        fb.add_mesh(ml.Mesh(vertex_matrix=v, face_matrix=t))
-        fapplied, fskipped = apply_chain(
-            fb, delete_fallback_chain(ml, **_p, join_components=join_components))
-        fafter = topology.mesh_topology(fb)
+        _fb_in_v, _fb_in_t = cur_v, cur_t
+        fb_v, fb_t, fapplied, fskipped = apply_chain(
+            cur_v, cur_t, delete_fallback_chain(ml, **_p, join_components=join_components))
+        fafter = topology.mesh_topology(fb_v, fb_t)
         _adopted = (fafter.get('non_two_manifold_edges', 0) + fafter.get('non_two_manifold_vertices', 0)
                 < after.get('non_two_manifold_edges', 0) + after.get('non_two_manifold_vertices', 0))
         if _adopted:
-            ms, after, applied, skipped = fb, fafter, fapplied, fskipped
+            cur_v, cur_t, after, applied, skipped = fb_v, fb_t, fafter, fapplied, fskipped
         if trace.is_active():
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
             trace.record_stage('stage1_delete_fallback', 'stage1.delete_fallback_chain',
-                               _fb_in_v, _fb_in_t, _cur_v, _cur_t,
+                               _fb_in_v, _fb_in_t, cur_v, cur_t,
                                gate={'status': 'adopted' if _adopted else 'rejected'},
                                elapsed=round(time.perf_counter() - _t_fb, 4))
     else:
         if trace.is_active():
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
             trace.record_stage('stage1_delete_fallback', 'stage1.delete_fallback_chain',
-                               _cur_v, _cur_t, _cur_v, _cur_t,
+                               cur_v, cur_t, cur_v, cur_t,
                                gate={'status': 'skipped', 'reason': 'clean_manifold'})
 
     # --experimental-join-components prototype: instead of deleting small
@@ -566,11 +554,11 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # above), move them onto the nearest larger component and re-close.
     stats['experimental_join_components'] = False
     if join_components:
-        moved, remaining = join_small_components(
-            ms, ml, _p['mincomponentsize'], _p['maxholesize'])
+        cur_v, cur_t, moved, remaining = join_small_components(
+            cur_v, cur_t, _p['mincomponentsize'], _p['maxholesize'])
         stats['experimental_join_components'] = {'moved': moved,
                                                  'remaining_small': remaining}
-        after = topology.mesh_topology(ms)
+        after = topology.mesh_topology(cur_v, cur_t)
 
     if after.get('faces_number', 0) == 0:
         if mode == 'extreme':
@@ -586,9 +574,9 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     _shell_adopted_for_si = (stats.get('tamponade_shell_prepass') or {}).get('shell_adopted', False)
     if deep_repair == 'full' and mode != 'extreme' and si_excise_enabled() and not _shell_adopted_for_si:
         _t_si = time.perf_counter()
-        _si_in_v, _si_in_t = _meshset_arrays_safe(ms) if trace.is_active() else (None, None)
-        ms, _si_rec = si_excise_recap(
-            ms, ml, maxholesize=_p['maxholesize'],
+        _si_in_v, _si_in_t = cur_v, cur_t
+        cur_v, cur_t, _si_rec = si_excise_recap(
+            cur_v, cur_t, maxholesize=_p['maxholesize'],
             time_budget=_si_excise_budget(triage_spec))
         # Only report when a round was actually accepted (self-intersections
         # strictly reduced, holes/nm not worse); a mesh the excision cannot
@@ -596,17 +584,15 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         # and output byte-identical.
         if _si_rec.get('applied'):
             stats['si_excise'] = _si_rec
-            after = topology.mesh_topology(ms)
+            after = topology.mesh_topology(cur_v, cur_t)
         if trace.is_active():
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
             trace.record_stage('si_excise', 'stage1.si_excise_recap',
-                               _si_in_v, _si_in_t, _cur_v, _cur_t,
+                               _si_in_v, _si_in_t, cur_v, cur_t,
                                gate=_si_rec, elapsed=round(time.perf_counter() - _t_si, 4))
     else:
         if trace.is_active():
-            _cur_v, _cur_t = _meshset_arrays_safe(ms)
             trace.record_stage('si_excise', 'stage1.si_excise_recap',
-                               _cur_v, _cur_t, _cur_v, _cur_t,
+                               cur_v, cur_t, cur_v, cur_t,
                                gate={'status': 'skipped', 'reason': 'disabled_or_not_full'})
 
     # Extreme-only extra passes (Stage C): self-intersection cleanup + one more
@@ -616,8 +602,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # scope: it can unpredictably change topology.
     stats['extreme_passes_applied'] = False
     if mode == 'extreme':
-        applied_extra, si_found, si_removed, applied2, skipped2 = \
-            extreme_extra_passes(ms, ml, _p)
+        applied_extra, si_found, si_removed, applied2, skipped2, cur_v, cur_t = \
+            extreme_extra_passes(cur_v, cur_t, _p)
         stats['extreme_passes_applied'] = applied_extra
         applied += applied2
         if skipped2:
@@ -625,11 +611,17 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         if si_found:
             stats['self_intersections_found'] = si_found
             stats['self_intersections_removed'] = si_removed
-        after = topology.mesh_topology(ms)
+        after = topology.mesh_topology(cur_v, cur_t)
         if after.get('faces_number', 0) == 0:
             raise ExtremeRemovedAllError(
                 'Extreme mode removed all geometry (small connected component '
                 'below the size threshold); try a less aggressive mode (e.g. Auto)')
+
+    # Downstream tiers still take a MeshSet; build the single boundary object
+    # here, after the array-only Stage-1/delete-fallback/join/SI-extreme path.
+    ms = ml.MeshSet()
+    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(cur_v, np.float64),
+                        face_matrix=np.asarray(cur_t, np.int32)))
 
     # fTetWild fallback tier (FAZ17): guaranteed-correct last-resort
     # solidifier. Tetrahedralize the ORIGINAL input surface and extract its

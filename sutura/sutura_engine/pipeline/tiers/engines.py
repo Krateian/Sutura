@@ -54,19 +54,17 @@ def engine_placement_order(engines, chain, placement):
 
 
 def _read_engine_mesh(path):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.load_new_mesh(path)
-    return (np.asarray(ms.current_mesh().vertex_matrix(), dtype=np.float32),
-            np.asarray(ms.current_mesh().face_matrix(), dtype=np.int32))
+    """Read an engine mesh with the native mesh_io loader (STL/OBJ/3MF/PLY)."""
+    from sutura_engine.pipeline.mesh_io import load_mesh
+
+    return load_mesh(path)
 
 
 def _write_engine_mesh(path, verts, tris):
-    import pymeshlab as ml
-    ms = ml.MeshSet()
-    ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float32),
-                        face_matrix=np.asarray(tris, np.int32)))
-    ms.save_current_mesh(path)
+    """Write an engine mesh with the native mesh_io writer."""
+    from sutura_engine.pipeline.mesh_io import save_mesh
+
+    save_mesh(path, verts, tris)
 
 
 def run_engines(ml, engines, chain, placement, tmpdir, in_v, in_t,

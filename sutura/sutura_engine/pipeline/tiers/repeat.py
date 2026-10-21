@@ -16,9 +16,6 @@ def _clean_and_orient(ml, verts, tris):
     """Cleanup of a generated surface: dedup + coherent orientation."""
     try:
         from sutura_engine.pipeline.stage1 import apply_chain
-        ms = ml.MeshSet()
-        ms.add_mesh(ml.Mesh(vertex_matrix=np.asarray(verts, np.float64),
-                            face_matrix=np.asarray(tris, np.int32)))
         chain = [(filt, {}) for filt in (
             'meshing_remove_duplicate_vertices',
             'meshing_remove_duplicate_faces',
@@ -26,10 +23,9 @@ def _clean_and_orient(ml, verts, tris):
             'meshing_repair_non_manifold_edges',
             'meshing_re_orient_faces_coherently',
         )]
-        apply_chain(ms, chain)
-        cur = ms.current_mesh()
-        return (np.asarray(cur.vertex_matrix(), dtype=np.float64),
-                np.asarray(cur.face_matrix(), dtype=np.int32))
+        v_new, t_new, _applied, _skipped = apply_chain(verts, tris, chain)
+        return (np.asarray(v_new, dtype=np.float64),
+                np.asarray(t_new, dtype=np.int32))
     except Exception:
         return verts, tris
 
