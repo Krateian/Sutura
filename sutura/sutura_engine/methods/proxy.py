@@ -130,6 +130,10 @@ def _manifold_resample(verts, tris, voxel, offset, absdist, raystab_full=False):
 
     * the signed pass resamples a coherently re-oriented input, so a locally
       flipped face no longer corrupts the winding sign;
+    * the signed pass uses the surface-nets **mass-point** vertex rule
+      (``vertex_mode='mass_point'``) instead of the default QEF solver: the QEF
+      optimum folds nearly parallel dual faces into self-intersections on curved
+      fields, which the mass point avoids (see ``closing.poisson_close``);
     * any residual non-manifold vertices/edges in the extraction are split
       before hole closing.
 
@@ -149,7 +153,8 @@ def _manifold_resample(verts, tris, voxel, offset, absdist, raystab_full=False):
     if not absdist:
         tris = topology.re_orient_faces_coherently(np.asarray(tris, dtype=np.int64))
     rv, rt, _info = topology.resample_uniform(
-        verts, tris, voxel, offset, absdist, raystab_full)
+        verts, tris, voxel, offset, absdist, raystab_full,
+        vertex_mode='mass_point')
     rv, rt = topology.repair_non_manifold_vertices(rv, rt)
     rt = topology.repair_non_manifold_edges(rv, rt)
     return _reload_honest(rv, rt)
