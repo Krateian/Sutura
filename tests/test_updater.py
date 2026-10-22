@@ -272,6 +272,150 @@ def test_perform_update_geom_failure_rolls_back():
     assert 'sutura_geom' in msg, msg
 
 
+def _copy_python_fixture(tmp):
+    """Temp source with a sutura/ tree whose modules are NOT all in
+    APP_MODULES, plus a temp APP_DIR. Returns (src_dir, app_dir)."""
+    src = os.path.join(tmp, 'src')
+    mod = os.path.join(src, 'sutura')
+    os.makedirs(mod)
+    for name in ('__init__.py', 'repair.py', 'brand_new_module.py'):
+        with open(os.path.join(mod, name), 'w') as f:
+            f.write('# %s\n' % name)
+    app = os.path.join(tmp, 'app')
+    os.makedirs(app)
+    return src, app
+
+
+def _run_copy_python(src, app):
+    """Call _copy_python_files with the fixed-list copy and the engine copy
+    neutralised, so only the list-independent source scan is exercised."""
+    import updater
+    orig = (updater.APP_DIR, updater.APP_MODULES, updater.COPY_EXTRA_MODULES,
+            updater._copy_sutura_engine)
+    updater.APP_DIR = app
+    updater.APP_MODULES = ()
+    updater.COPY_EXTRA_MODULES = ()
+    updater._copy_sutura_engine = lambda _src: None
+    try:
+        updater._copy_python_files(src)
+    finally:
+        (updater.APP_DIR, updater.APP_MODULES, updater.COPY_EXTRA_MODULES,
+         updater._copy_sutura_engine) = orig
+
+
+def test_install_copies_every_source_module():
+    """A module the new release ships is installed even when it is absent from
+    every fixed list. Regression for the 0.8.1 -> 0.9.3 update, where the
+    updater's own hard-coded APP_MODULES left newly added modules behind and
+    --self-check failed."""
+    import tempfile
+    import shutil
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    try:
+        src, app = _copy_python_fixture(tmp)
+        _run_copy_python(src, app)
+        for name in ('__init__.py', 'repair.py', 'brand_new_module.py'):
+            assert os.path.isfile(os.path.join(app, name)), name
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_source_py_modules_excludes_nested_dirs_and_non_py():
+    """The scan lists only top-level *.py; the sutura_engine/ package and any
+    non-module files are not flattened into APP_DIR."""
+    import tempfile
+    import shutil
+    import updater
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    try:
+        src, _app = _copy_python_fixture(tmp)
+        os.makedirs(os.path.join(src, 'sutura', 'sutura_engine'))
+        with open(os.path.join(src, 'sutura', 'sutura_engine', 'core.py'), 'w') as f:
+            f.write('')
+        with open(os.path.join(src, 'sutura', 'repair_score_config.json'), 'w') as f:
+            f.write('{}')
+        found = updater._source_py_modules(src)
+        assert found == ['__init__.py', 'brand_new_module.py', 'repair.py'], found
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_missing_installed_flags_uninstalled_module():
+    """_missing_installed names exactly the modules absent from APP_DIR."""
+    import tempfile
+    import shutil
+    import updater
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    orig = updater.APP_DIR
+    try:
+        updater.APP_DIR = tmp
+        with open(os.path.join(tmp, 'present.py'), 'w') as f:
+            f.write('')
+        assert updater._missing_installed(
+            ['present.py', 'absent.py']) == ['absent.py']
+        assert updater._missing_installed(['present.py']) == []
+    finally:
+        updater.APP_DIR = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_health_check_fails_on_missing_module():
+    """A shipped module absent from the install makes the health check fail
+    before it touches the installed wrapper."""
+    import tempfile
+    import shutil
+    import updater
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    orig = updater.APP_DIR
+    try:
+        updater.APP_DIR = tmp
+        ok, msg = updater.health_check(
+            'v9.9.9', expected_modules=['definitely_absent_module.py'])
+        assert ok is False, (ok, msg)
+        assert 'definitely_absent_module.py' in msg, msg
+    finally:
+        updater.APP_DIR = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_perform_update_verifies_source_modules():
+    """perform_update snapshots the source's modules and hands them to the
+    health check, so the completeness gate is actually wired in."""
+    import tempfile
+    import shutil
+    import updater
+    tmp = tempfile.mkdtemp(prefix='sutura-updater-test-')
+    src, _app = _copy_python_fixture(tmp)
+    seen = []
+    orig = (updater.VERSION, updater.is_appimage,
+            updater.crosses_license_boundary, updater.backup_install,
+            updater.download_source, updater.install_source,
+            updater.health_check, updater.rollback)
+    updater.VERSION = '0.9.1'
+    updater.is_appimage = lambda: False
+    updater.crosses_license_boundary = lambda v, t: False
+    updater.backup_install = lambda: None
+    updater.download_source = lambda tag, d: src
+    updater.install_source = lambda _src: None
+
+    def _hc(tag, expected_modules=None):
+        seen.append(expected_modules)
+        return True, 'ok'
+
+    updater.health_check = _hc
+    updater.rollback = lambda v: None
+    try:
+        ok, msg, prev = updater.perform_update('0.9.3')
+    finally:
+        (updater.VERSION, updater.is_appimage,
+         updater.crosses_license_boundary, updater.backup_install,
+         updater.download_source, updater.install_source,
+         updater.health_check, updater.rollback) = orig
+        shutil.rmtree(tmp, ignore_errors=True)
+    assert ok is True, (ok, msg)
+    assert seen == [['__init__.py', 'brand_new_module.py', 'repair.py']], seen
+
+
 def main():
     for name, fn in sorted(globals().items()):
         if name.startswith('test_') and callable(fn):

@@ -395,9 +395,41 @@ def _copy_listed(src, name):
     shutil.copy2(path, os.path.join(APP_DIR, name))
 
 
+def _source_py_modules(src_dir):
+    """Every top-level application module the new release ships under sutura/.
+
+    The installed layout is flat: each module lands directly in APP_DIR, so
+    only the ``*.py`` files directly under ``src/sutura`` are modules. The
+    ``sutura_engine/`` package subtree is a package copied wholesale by
+    _copy_sutura_engine, and tests/ or scripts/ nested under sutura/ (should a
+    release ever put them there) are not application modules and are excluded
+    by keeping the scan non-recursive. Returns sorted names.
+
+    Enumerating the source is what makes the copy independent of any
+    hard-coded list, so a release that adds a module cannot be installed
+    without it (the 0.8.1 -> 0.9.3 missing-module regression, where an old
+    updater copied only its own fixed list and left the new modules behind).
+    """
+    src = os.path.join(src_dir, 'sutura')
+    if not os.path.isdir(src):
+        return []
+    names = []
+    for name in os.listdir(src):
+        if not name.endswith('.py') or name.startswith('.'):
+            continue
+        if os.path.isfile(os.path.join(src, name)):
+            names.append(name)
+    return sorted(names)
+
+
 def _copy_python_files(src_dir):
-    for f in APP_MODULES + COPY_EXTRA_MODULES:
-        _copy_listed(os.path.join(src_dir, "sutura"), f)
+    sutura_src = os.path.join(src_dir, "sutura")
+    # Listed first (so a name this release dropped still prints its skip note),
+    # then every module the source actually ships - list-independent.
+    names = list(dict.fromkeys(
+        APP_MODULES + COPY_EXTRA_MODULES + tuple(_source_py_modules(src_dir))))
+    for f in names:
+        _copy_listed(sutura_src, f)
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):
         shutil.copy2(_license, os.path.join(APP_DIR, 'LICENSE'))
@@ -410,7 +442,10 @@ def _copy_python_files(src_dir):
 def _install_linux(src_dir, req_files):
     """install.sh-style copy + venv update only when requirements change."""
     sutura_src = os.path.join(src_dir, 'sutura')
-    for f in APP_MODULES + COPY_EXTRA_MODULES + LINUX_EXTRA_FILES:
+    names = list(dict.fromkeys(
+        APP_MODULES + COPY_EXTRA_MODULES + LINUX_EXTRA_FILES
+        + tuple(_source_py_modules(src_dir))))
+    for f in names:
         _copy_listed(sutura_src, f)
     _license = os.path.join(src_dir, 'LICENSE')
     if os.path.exists(_license):
@@ -566,8 +601,28 @@ def _make_test_stl(path):
             f.write(struct.pack('<H', 0))
 
 
-def health_check(expected_version):
-    """Return (ok, message). Verifies --version and a real repair round-trip."""
+def _missing_installed(module_names):
+    """Names from module_names that are absent from the installed APP_DIR.
+
+    Used by health_check to prove every module the new release ships actually
+    landed, so a partial copy can never pass verification.
+    """
+    return sorted(n for n in module_names
+                  if not os.path.isfile(os.path.join(APP_DIR, n)))
+
+
+def health_check(expected_version, expected_modules=None):
+    """Return (ok, message). Verifies --version and a real repair round-trip.
+
+    expected_modules, when given, is the set of top-level sutura/*.py names the
+    new release ships; every one must be present in APP_DIR or the check fails
+    before anything else runs (a list-independent install completeness gate).
+    """
+    if expected_modules:
+        missing = _missing_installed(expected_modules)
+        if missing:
+            return False, ('modules missing after update: %s'
+                           % ', '.join(missing))
     want = expected_version.lstrip('v')
     wrapper = os.path.expanduser('~/.local/bin/sutura')
     # version
@@ -689,10 +744,14 @@ def perform_update(tag, progress=None):
     backup_install()
     try:
         tmp = tempfile.mkdtemp(prefix='sutura-update-')
+        expected_modules = None
         try:
             if progress:
                 progress('downloading')
             src = download_source(tag, tmp)
+            # Snapshot the shipped modules before the temp source is removed,
+            # so the health check can prove they all landed.
+            expected_modules = _source_py_modules(src)
             if progress:
                 progress('installing')
             install_source(src)
@@ -700,7 +759,7 @@ def perform_update(tag, progress=None):
             shutil.rmtree(tmp, ignore_errors=True)
         if progress:
             progress('verifying')
-        ok, msg = health_check(tag)
+        ok, msg = health_check(tag, expected_modules)
         if not ok:
             raise RuntimeError(msg)
     except Exception as e:
