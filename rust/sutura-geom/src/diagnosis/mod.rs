@@ -11,6 +11,9 @@ use rayon::prelude::*;
 use crate::topology::DisjointSet;
 use crate::winding::MeshBvh;
 
+pub mod loops;
+pub mod si;
+
 #[derive(Clone, Copy, Debug)]
 struct Bbox {
     lo: [f64; 3],
@@ -140,6 +143,7 @@ pub struct Parts {
     pub overlap_edges: Vec<(usize, usize)>,
     pub nested_shells: Vec<(usize, usize)>,
     pub overlap_estimated: bool,
+    pub nested_estimated: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -149,6 +153,8 @@ pub struct DiagReport {
     pub duplicates: Duplicates,
     pub degenerate: Degenerate,
     pub parts: Parts,
+    pub self_intersections: si::SelfIntersections,
+    pub loops: loops::Loops,
     pub face_mask: Vec<u8>,
     pub vertex_mask: Vec<u8>,
     pub regions: Vec<Region>,
@@ -785,7 +791,12 @@ fn part_report(
     }
     let gdiag = global.diag();
     let max_vol = vols.iter().map(|v| v.abs()).fold(0.0, f64::max);
+    let mut faces_by_comp: Vec<Vec<usize>> = vec![Vec::new(); ncomp];
+    for (f, &c) in comp.iter().enumerate() {
+        faces_by_comp[c].push(f);
+    }
     let mut out = Parts::default();
+    let mut debris_regions = 0usize;
     for c in 0..ncomp {
         if open[c] {
             out.open += 1;
@@ -796,21 +807,34 @@ fn part_report(
             bboxes[c].diag() < 0.02 * gdiag || (max_vol > 0.0 && vols[c].abs() < 1e-3 * max_vol);
         if small {
             out.debris += 1;
-            let fs: Vec<usize> = (0..tris.len()).filter(|&f| comp[f] == c).collect();
-            regions.push(region_from_faces(
-                "part",
-                "debris_part",
-                &fs,
-                tris,
-                verts,
-                1.0,
-                0.9,
-                comp,
-            ));
+            // The final report keeps at most 256 regions; building every
+            // debris region on a fragmented raw STL is quadratic and useless.
+            if debris_regions < 256 {
+                debris_regions += 1;
+                regions.push(region_from_faces(
+                    "part",
+                    "debris_part",
+                    &faces_by_comp[c],
+                    tris,
+                    verts,
+                    1.0,
+                    0.9,
+                    comp,
+                ));
+            }
         }
     }
-    for a in 0..ncomp {
+    // Triangle soup can have tens of thousands of components; an O(n^2)
+    // AABB pass is not affordable.  Cap the work (deterministically) and mark
+    // the graph estimated instead of blocking the fast budget.
+    const MAX_COMPONENT_PAIR_TESTS: usize = 250_000;
+    let mut tested = 0usize;
+    'pairs: for a in 0..ncomp {
         for b in (a + 1)..ncomp {
+            if tested >= MAX_COMPONENT_PAIR_TESTS {
+                break 'pairs;
+            }
+            tested += 1;
             if bboxes[a].overlaps(&bboxes[b]) {
                 out.overlap_edges.push((a, b));
             }
@@ -818,7 +842,8 @@ fn part_report(
     }
     out.overlap_estimated = true;
     let mut candidates = Vec::new();
-    for a in 0..ncomp {
+    let mut nested_tests = 0usize;
+    'nested: for a in 0..ncomp {
         if open[a] {
             continue;
         }
@@ -826,12 +851,22 @@ fn part_report(
             if a == b || open[b] {
                 continue;
             }
+            if nested_tests >= MAX_COMPONENT_PAIR_TESTS {
+                out.nested_estimated = true;
+                break 'nested;
+            }
+            nested_tests += 1;
             if bboxes[b].contains(&bboxes[a]) {
                 candidates.push((a, b));
             }
         }
     }
     if !candidates.is_empty() {
+        const MAX_NESTED_QUERIES: usize = 512;
+        if candidates.len() > MAX_NESTED_QUERIES {
+            out.nested_estimated = true;
+            candidates.truncate(MAX_NESTED_QUERIES);
+        }
         // Query the winding of `a`'s centroid against `b`'s surface only: a
         // whole-mesh BVH makes a component count itself and falsely nests a
         // part sitting in the nook of another part.
@@ -926,7 +961,7 @@ fn region_from_vertices(
     }
 }
 
-pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], _detail: &str) -> DiagReport {
+pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], detail: &str) -> DiagReport {
     let mut report = DiagReport {
         faces: tris.len(),
         vertices: verts.len(),
@@ -996,6 +1031,34 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], _detail: &str) -> 
     let t4 = std::time::Instant::now();
     report.parts = part_report(verts, tris, &edges, &fg, &comp, ncomp, &mut regions);
     report.timings.push(("parts", t4.elapsed().as_secs_f64()));
+    let t5 = std::time::Instant::now();
+    let (sinfo, inter_pairs) = si::si_report(
+        verts,
+        tris,
+        &comp,
+        detail,
+        &mut report.face_mask,
+        &mut regions,
+    );
+    report.self_intersections = sinfo;
+    if report.self_intersections.reason.is_none() {
+        report.parts.overlap_edges = inter_pairs;
+        report.parts.overlap_estimated = false;
+    }
+    report
+        .timings
+        .push(("self_intersection", t5.elapsed().as_secs_f64()));
+    let t6 = std::time::Instant::now();
+    report.loops = loops::loop_report(
+        verts,
+        tris,
+        &comp,
+        &mut report.vertex_mask,
+        &mut regions,
+    );
+    report
+        .timings
+        .push(("loops", t6.elapsed().as_secs_f64()));
     regions.sort_by(|a, b| {
         a.channel
             .cmp(&b.channel)
@@ -1007,6 +1070,9 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], _detail: &str) -> 
             .then_with(|| a.bbox[5].total_cmp(&b.bbox[5]))
             .then_with(|| a.faces.cmp(&b.faces))
             .then_with(|| a.vertices.cmp(&b.vertices))
+            .then_with(|| a.centroid[0].total_cmp(&b.centroid[0]))
+            .then_with(|| a.centroid[1].total_cmp(&b.centroid[1]))
+            .then_with(|| a.centroid[2].total_cmp(&b.centroid[2]))
             .then_with(|| a.min_face.cmp(&b.min_face))
             .then_with(|| a.kind.cmp(&b.kind))
     });
@@ -1159,11 +1225,27 @@ pub fn report_to_pydict<'py>(
     )?;
     ch.set_item(
         "self_intersection",
-        channel_dict(py, None, true, false, 0.0, 0.0, "phase2")?,
+        channel_dict(
+            py,
+            r.self_intersections.total.map(|v| v as i64),
+            r.self_intersections.estimated,
+            r.self_intersections.available,
+            r.self_intersections.total.unwrap_or(0) as f64,
+            1.0,
+            r.self_intersections.method,
+        )?,
     )?;
     ch.set_item(
         "loops",
-        channel_dict(py, None, true, false, 0.0, 0.0, "phase2")?,
+        channel_dict(
+            py,
+            Some(r.loops.count as i64),
+            r.loops.estimated,
+            true,
+            r.loops.count as f64,
+            1.0,
+            "boundary_walk",
+        )?,
     )?;
     ch.set_item(
         "parts",
@@ -1232,7 +1314,53 @@ pub fn report_to_pydict<'py>(
     p.set_item("overlap_edges", r.parts.overlap_edges.clone())?;
     p.set_item("nested_shells", r.parts.nested_shells.clone())?;
     p.set_item("overlap_estimated", r.parts.overlap_estimated)?;
+    p.set_item("nested_estimated", r.parts.nested_estimated)?;
     root.set_item("parts", p)?;
+
+    let si = PyDict::new(py);
+    si.set_item("total", r.self_intersections.total)?;
+    si.set_item("intra_body", r.self_intersections.intra_body)?;
+    si.set_item("inter_body", r.self_intersections.inter_body)?;
+    si.set_item("coplanar", r.self_intersections.coplanar)?;
+    si.set_item("touch", r.self_intersections.touch)?;
+    si.set_item("clusters", r.self_intersections.clusters)?;
+    si.set_item("estimated", r.self_intersections.estimated)?;
+    si.set_item("available", r.self_intersections.available)?;
+    si.set_item("reason", r.self_intersections.reason)?;
+    si.set_item("candidate_pairs", r.self_intersections.candidate_pairs)?;
+    si.set_item("scanned_pairs", r.self_intersections.scanned_pairs)?;
+    si.set_item("scanned_total", r.self_intersections.scanned_total)?;
+    root.set_item("self_intersections", si)?;
+
+    let lp = PyDict::new(py);
+    lp.set_item("count", r.loops.count)?;
+    lp.set_item("total_length", r.loops.total_length)?;
+    lp.set_item("largest", r.loops.largest)?;
+    lp.set_item("planar", r.loops.planar)?;
+    lp.set_item("pinched", r.loops.pinched)?;
+    lp.set_item("open_edges", r.loops.open_edges)?;
+    lp.set_item("estimated", r.loops.estimated)?;
+    let items = PyList::empty(py);
+    for info in &r.loops.items {
+        let d = PyDict::new(py);
+        d.set_item("kind", info.kind)?;
+        d.set_item("length", info.length)?;
+        d.set_item("perimeter", finite(info.perimeter))?;
+        d.set_item("diameter", finite(info.diameter))?;
+        d.set_item("ratio", finite(info.ratio))?;
+        d.set_item("planar", info.planar)?;
+        d.set_item("simple", info.simple)?;
+        d.set_item("pinched", info.pinched)?;
+        d.set_item("rms", finite(info.rms))?;
+        d.set_item("min_angle", finite(info.min_angle))?;
+        d.set_item("difficulty", finite(info.difficulty))?;
+        d.set_item("estimated", info.estimated)?;
+        d.set_item("bbox", finite6(info.bbox))?;
+        d.set_item("centroid", finite3(info.centroid))?;
+        items.append(d)?;
+    }
+    lp.set_item("items", items)?;
+    root.set_item("loops", lp)?;
 
     if masks {
         root.set_item("face_mask", mask_dict(py, &r.face_mask, "rle")?)?;
@@ -1257,14 +1385,26 @@ pub fn report_to_pydict<'py>(
     meta.set_item("faces", r.faces)?;
     meta.set_item("vertices", r.vertices)?;
     meta.set_item("seconds", finite(seconds))?;
-    meta.set_item("phase", 1)?;
+    meta.set_item("phase", 2)?;
     meta.set_item("fast_budget_s", 1.0)?;
     meta.set_item("fast_budget_met", seconds <= 1.0)?;
     let timings = PyDict::new(py);
+    let mut slowest: Option<(&str, f64)> = None;
     for (name, sec) in &r.timings {
         timings.set_item(name, finite(*sec))?;
+        if slowest.map(|(_, s)| *sec > s).unwrap_or(true) {
+            slowest = Some((name, *sec));
+        }
     }
     meta.set_item("channel_seconds", timings)?;
+    if seconds > 1.0 {
+        if let Some((name, sec)) = slowest {
+            meta.set_item(
+                "fast_budget_reason",
+                format!("{} ({:.2} s)", name, finite(sec)),
+            )?;
+        }
+    }
     meta.set_item(
         "channels_available",
         vec![
@@ -1273,6 +1413,8 @@ pub fn report_to_pydict<'py>(
             "duplicate",
             "degenerate",
             "parts",
+            "self_intersection",
+            "loops",
         ],
     )?;
     root.set_item("meta", meta)?;
@@ -1361,6 +1503,135 @@ mod tests {
         let r = diagnose_core(&vv, &ff, "fast");
         assert_eq!(r.parts.closed, 2);
         assert!(r.parts.overlap_edges.is_empty());
+    }
+
+    fn translated_cubes(offset: [f64; 3]) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let (v, f) = cube();
+        let mut vv = v.clone();
+        let mut v2 = v.clone();
+        for p in &mut v2 {
+            p[0] += offset[0];
+            p[1] += offset[1];
+            p[2] += offset[2];
+        }
+        vv.extend(v2);
+        let base = v.len();
+        let mut ff = f.clone();
+        for t in &f {
+            ff.push([t[0] + base, t[1] + base, t[2] + base]);
+        }
+        (vv, ff)
+    }
+
+    #[test]
+    fn inter_body_self_intersection_refines_part_overlap() {
+        let (v, f) = translated_cubes([0.5, 0.5, 0.5]);
+        let r = diagnose_core(&v, &f, "fast");
+        assert_eq!(r.parts.closed, 2);
+        assert!(r.self_intersections.inter_body.unwrap() > 0);
+        assert_eq!(r.self_intersections.intra_body, Some(0));
+        assert!(!r.parts.overlap_edges.is_empty());
+        assert!(!r.parts.overlap_estimated);
+        assert!(r.face_mask.iter().any(|&b| b & 16 != 0));
+        assert!(r
+            .regions
+            .iter()
+            .any(|g| g.channel == "self_intersection" && g.kind == "inter_body_overlap"));
+        let deep = diagnose_core(&v, &f, "deep");
+        assert_eq!(deep.self_intersections.inter_body, r.self_intersections.inter_body);
+        assert!(!deep.self_intersections.estimated);
+    }
+
+    #[test]
+    fn intra_body_self_intersection_is_classified() {
+        // Two unit cubes sharing the edge (0,0,0)-(1,0,0); the second is
+        // rotated 45 degrees about that edge so the two surfaces cross while
+        // remaining one edge-connected component.
+        let (v, f) = cube();
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let rotate = |p: [f64; 3]| [p[0], p[1] * s - p[2] * s, p[1] * s + p[2] * s];
+        let mut vv = v.clone();
+        vv.extend(v.iter().map(|p| rotate(*p)));
+        let base = v.len();
+        let mut ff = f.clone();
+        for t in &f {
+            ff.push([t[0] + base, t[1] + base, t[2] + base]);
+        }
+        // Vertices 0 and 1 are invariant under the rotation: reuse the
+        // originals so the shared edge is exactly one edge in the index graph.
+        for t in ff.iter_mut().skip(f.len()) {
+            for x in t.iter_mut() {
+                if *x == base {
+                    *x = 0;
+                } else if *x == base + 1 {
+                    *x = 1;
+                }
+            }
+        }
+        let r = diagnose_core(&vv, &ff, "fast");
+        assert!(r.self_intersections.intra_body.unwrap() > 0);
+        assert_eq!(r.self_intersections.inter_body, Some(0));
+        let deep = diagnose_core(&vv, &ff, "deep");
+        assert_eq!(deep.self_intersections.intra_body, r.self_intersections.intra_body);
+        assert!(!deep.self_intersections.estimated);
+    }
+
+    #[test]
+    fn coplanar_overlap_is_counted_separately() {
+        let v = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.5, 0.5, 0.0],
+            [2.5, 0.5, 0.0],
+            [0.5, 2.5, 0.0],
+        ];
+        let f = vec![[0, 1, 2], [3, 4, 5]];
+        let r = diagnose_core(&v, &f, "fast");
+        assert!(r.self_intersections.coplanar.unwrap() > 0);
+        assert_eq!(r.self_intersections.intra_body, Some(0));
+        assert!(r
+            .regions
+            .iter()
+            .any(|g| g.channel == "self_intersection" && g.kind == "coplanar_overlap"));
+    }
+
+    #[test]
+    fn open_cube_has_one_planar_loop() {
+        let (v, f) = cube();
+        let f: Vec<[usize; 3]> = f
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| *i != 10 && *i != 11)
+            .map(|(_, t)| t)
+            .collect();
+        let r = diagnose_core(&v, &f, "fast");
+        assert_eq!(r.loops.count, 1);
+        let info = &r.loops.items[0];
+        assert_eq!(info.length, 4);
+        assert!(info.planar);
+        assert!(info.simple);
+        assert!(!info.pinched);
+        assert!((info.ratio - 2.828427).abs() < 1e-4);
+        assert!(info.difficulty >= 0.0 && info.difficulty <= 1.0);
+        assert!(r.vertex_mask.iter().any(|&b| b & 32 != 0));
+        assert!(r.regions.iter().any(|g| g.channel == "loops"));
+    }
+
+    #[test]
+    fn two_adjacent_missing_faces_make_a_non_planar_loop() {
+        let (v, f) = cube();
+        let drop = [2usize, 3, 10, 11];
+        let f: Vec<[usize; 3]> = f
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| !drop.contains(i))
+            .map(|(_, t)| t)
+            .collect();
+        let r = diagnose_core(&v, &f, "fast");
+        assert_eq!(r.loops.count, 1);
+        assert_eq!(r.loops.items[0].length, 6);
+        assert!(!r.loops.items[0].planar);
     }
 
 
@@ -1469,6 +1740,36 @@ mod tests {
         let b = diagnose_core(&v, &fp, "fast");
         assert_eq!(a.orientation.volume_signs, b.orientation.volume_signs);
         assert_eq!(a.parts.overlap_edges, b.parts.overlap_edges);
+    }
+
+    #[test]
+    fn soup_of_20k_components_stays_within_the_fast_budget() {
+        let n = 20_000usize;
+        let mut verts = Vec::with_capacity(n * 3);
+        let mut tris = Vec::with_capacity(n);
+        for i in 0..n {
+            let x = i as f64;
+            verts.push([x, 0.0, 0.0]);
+            verts.push([x + 1.0, 0.0, 0.0]);
+            verts.push([x, 1.0, 0.0]);
+            tris.push([3 * i, 3 * i + 1, 3 * i + 2]);
+        }
+        let start = std::time::Instant::now();
+        let r = diagnose_core(&verts, &tris, "fast");
+        let elapsed = start.elapsed().as_secs_f64();
+        assert_eq!(r.loops.count, n);
+        assert!(r.loops.items.len() <= loops::MAX_LOOP_ITEMS);
+        // Every triangle is its own open component, so there is no closed
+        // nesting candidate and the quadratic pair pass must not run.
+        assert_eq!(r.parts.open, n);
+        // Debug builds are not the fast budget; the release check lives in
+        // tests/test_diagnosis_determinism.py (meta.fast_budget_met).  This
+        // only catches an accidental quadratic regression in debug.
+        assert!(
+            elapsed < 10.0,
+            "20k-component soup took {:.3}s in a debug build",
+            elapsed
+        );
     }
 
     #[test]

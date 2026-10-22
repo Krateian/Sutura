@@ -92,6 +92,7 @@ def dump(case):
 
 
 def main():
+    import sutura_geom
     cases = ["mobius", "coplanar", "perm-mobius:3", "perm-coplanar:11"]
     for case in cases:
         outs = []
@@ -117,8 +118,25 @@ def main():
             capture_output=True, text=True, check=True).stdout)
         assert perm == base, f"coplanar dump changed under permutation {seed}"
 
+    # A 20k-component triangle soup must stay inside the fast budget: the
+    # component pair and loop-region work is capped, not quadratic.
+    import time
+    n = 20_000
+    soup_v = np.empty((n * 3, 3), dtype=np.float64)
+    for i in range(n):
+        soup_v[3 * i] = [float(i), 0.0, 0.0]
+        soup_v[3 * i + 1] = [float(i) + 1.0, 0.0, 0.0]
+        soup_v[3 * i + 2] = [float(i), 1.0, 0.0]
+    soup_f = np.arange(n * 3, dtype=np.int32).reshape(n, 3)
+    start = time.perf_counter()
+    soup = sutura_geom.diagnose(soup_v, soup_f)
+    elapsed = time.perf_counter() - start
+    assert soup["loops"]["count"] == n
+    assert len(soup["loops"]["items"]) <= 512
+    assert soup["meta"]["fast_budget_met"], (
+        elapsed, soup["meta"]["channel_seconds"])
+
     # Out-of-range triangle indices are a clear error, not a panic.
-    import sutura_geom
     try:
         sutura_geom.diagnose(np.zeros((3, 3)), np.array([[0, 1, 9]]))
     except ValueError as exc:

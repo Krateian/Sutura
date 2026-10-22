@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnosis v2 phase-1: channels, masks, permutation and JSON wrapper."""
+"""Diagnosis v2 phase 2: channels, masks, permutation and JSON wrapper."""
 import os
 import sys
 
@@ -38,6 +38,12 @@ def main():
     assert r["parts"]["closed"] == 1
     assert r["face_mask"]["length"] == len(f)
     assert not decode(r["face_mask"]).any()
+    assert r["channels"]["self_intersection"]["available"]
+    assert r["channels"]["self_intersection"]["count"] == 0
+    assert r["channels"]["loops"]["available"]
+    assert r["channels"]["loops"]["count"] == 0
+    assert r["self_intersections"]["total"] == 0
+    assert r["loops"]["count"] == 0
 
     vf, ff = cube()
     ff[0] = [0, 2, 1]
@@ -64,6 +70,27 @@ def main():
     assert rp["parts"]["closed"] == 2
     assert rp["parts"]["overlap_edges"] == []
 
+    # Interpenetrating cubes: exact inter-body SI refines the AABB overlap.
+    v3 = v.copy()
+    v3[:, 0] += 0.5
+    v3[:, 1] += 0.5
+    v3[:, 2] += 0.5
+    vi = np.vstack([v, v3])
+    fi = np.vstack([f, f + len(v)])
+    ri = sutura_geom.diagnose(vi, fi)
+    assert ri["self_intersections"]["inter_body"] > 0
+    assert ri["self_intersections"]["intra_body"] == 0
+    assert len(ri["parts"]["overlap_edges"]) == 1
+    assert not ri["parts"]["overlap_estimated"]
+    assert any(g["kind"] == "inter_body_overlap" for g in ri["regions"])
+
+    # Open cube: one planar, simple boundary loop with a cap difficulty.
+    ro = sutura_geom.diagnose(v, f[:-2])
+    assert ro["loops"]["count"] == 1
+    loop = ro["loops"]["items"][0]
+    assert loop["length"] == 4 and loop["planar"] and loop["simple"]
+    assert 0.0 <= loop["difficulty"] <= 1.0
+
     # Permutation: counts are stable, masks map back exactly.
     rng = np.random.default_rng(7)
     pv = rng.permutation(len(v))
@@ -77,6 +104,8 @@ def main():
     perm = sutura_geom.diagnose(vp, fp)
     assert perm["channels"]["orientation"]["count"] == rf["channels"]["orientation"]["count"]
     assert perm["channels"]["nm_vertex"]["count"] == rf["channels"]["nm_vertex"]["count"]
+    assert perm["channels"]["self_intersection"]["count"] == rf["channels"]["self_intersection"]["count"]
+    assert perm["loops"]["count"] == rf["loops"]["count"]
     back = np.zeros_like(decode(perm["face_mask"]))
     back[pf] = decode(perm["face_mask"])
     assert np.array_equal(back, decode(rf["face_mask"]))
@@ -90,7 +119,7 @@ def main():
     d = diagnosis.to_dict(a)
     assert "diagnosis_v2" in d
     assert d["faces"] == 12
-    print("diagnosis v2 phase-1 ok")
+    print("diagnosis v2 phase-2 ok")
 
 
 if __name__ == "__main__":

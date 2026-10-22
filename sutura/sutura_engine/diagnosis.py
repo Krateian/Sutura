@@ -46,7 +46,7 @@ SI_MODERATE = 20
 SI_HEAVY = 200
 
 CLASSIFIER_ENGINES = ('classic', 'experimental')
-DIAGNOSIS_V2_VERSION = 'phase1'
+DIAGNOSIS_V2_VERSION = 'phase2'
 
 
 @dataclass

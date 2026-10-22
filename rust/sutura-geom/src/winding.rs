@@ -1218,6 +1218,72 @@ impl MeshBvh {
     }
 
     /// High-performance parallel self-intersection scan over the BVH: `(mask, count, skipped)`.
+    /// Enumerate unordered triangle pairs whose leaf AABBs overlap.
+    ///
+    /// This is the broad phase for callers that need the pair list itself
+    /// (diagnosis self-intersection classification); `self_intersections`
+    /// consumes the same traversal internally for the faster mask-only path.
+    pub fn candidate_pairs(
+        &self,
+        verts: &[[f64; 3]],
+        tris: &[[usize; 3]],
+    ) -> Vec<(usize, usize)> {
+        let f = tris.len();
+        if f < 2 {
+            return Vec::new();
+        }
+        let tri_boxes: Vec<Aabb> = (0..f)
+            .map(|i| {
+                let mut b = Aabb::empty();
+                b.expand_point(verts[tris[i][0]]);
+                b.expand_point(verts[tris[i][1]]);
+                b.expand_point(verts[tris[i][2]]);
+                b
+            })
+            .collect();
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        let mut stack: Vec<(usize, usize)> = vec![(0, 0)];
+        while let Some((a_idx, b_idx)) = stack.pop() {
+            let na = &self.nodes[a_idx];
+            let nb = &self.nodes[b_idx];
+            if !na.bbox.overlaps(&nb.bbox) {
+                continue;
+            }
+            if na.left < 0 && nb.left < 0 {
+                let (ka0, ka1) = (na.start as usize, (na.start + na.count) as usize);
+                let (kb0, kb1) = (nb.start as usize, (nb.start + nb.count) as usize);
+                for k1 in ka0..ka1 {
+                    let i = self.order[k1] as usize;
+                    let j0 = if a_idx == b_idx { k1 + 1 } else { kb0 };
+                    for k2 in j0..kb1 {
+                        let j = self.order[k2] as usize;
+                        if i == j || !tri_boxes[i].overlaps(&tri_boxes[j]) {
+                            continue;
+                        }
+                        out.push(if i < j { (i, j) } else { (j, i) });
+                    }
+                }
+            } else if na.left < 0 {
+                stack.push((a_idx, nb.left as usize));
+                stack.push((a_idx, nb.right as usize));
+            } else if nb.left < 0 {
+                stack.push((na.left as usize, b_idx));
+                stack.push((na.right as usize, b_idx));
+            } else if a_idx == b_idx {
+                stack.push((na.left as usize, na.left as usize));
+                stack.push((na.right as usize, na.right as usize));
+                stack.push((na.left as usize, na.right as usize));
+            } else if na.bbox.size_sq() > nb.bbox.size_sq() {
+                stack.push((na.left as usize, b_idx));
+                stack.push((na.right as usize, b_idx));
+            } else {
+                stack.push((a_idx, nb.left as usize));
+                stack.push((a_idx, nb.right as usize));
+            }
+        }
+        out
+    }
+
     pub fn self_intersections(
         &self,
         verts: &[[f64; 3]],
