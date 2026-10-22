@@ -169,6 +169,11 @@ def detect_non_manifold(verts, tris, with_indices=False):
     groups = {}
     for i, f in enumerate(nm_faces):
         groups.setdefault(find(i), []).append(f)
+    # ``groups`` insertion order follows face index, so iterating
+    # ``groups.values()`` directly would make the region LIST ORDER depend on
+    # the input face order.  Sort by the (permutation-invariant) sorted vertex
+    # ids of each region so the output is canonical; the per-region content is
+    # already order-independent.
     regions = []
     for g in groups.values():
         region_verts = np.unique(tris[g].reshape(-1))
@@ -177,8 +182,9 @@ def detect_non_manifold(verts, tris, with_indices=False):
         if with_indices:
             region['verts_idx'] = [int(i) for i in region_verts]
             region['faces_idx'] = [int(i) for i in g]
-        regions.append(region)
-    return regions
+        regions.append((region_verts, region))
+    regions.sort(key=lambda kv: kv[0].tolist())
+    return [region for _, region in regions]
 
 
 def detect(verts, tris, with_indices=False):
