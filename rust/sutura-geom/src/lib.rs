@@ -295,7 +295,10 @@ fn parse_mesh(
             }
             let (a, b, c) = (a as usize, b as usize, c as usize);
             if a >= n || b >= n || c >= n {
-                return Err(PyValueError::new_err("triangle index out of range"));
+                return Err(PyValueError::new_err(format!(
+                    "triangle index out of range: [{}, {}, {}] with {} vertices",
+                    a, b, c, n
+                )));
             }
             rust_tris.push([a, b, c]);
         }
@@ -307,7 +310,10 @@ fn parse_mesh(
             }
             let (a, b, c) = (a as usize, b as usize, c as usize);
             if a >= n || b >= n || c >= n {
-                return Err(PyValueError::new_err("triangle index out of range"));
+                return Err(PyValueError::new_err(format!(
+                    "triangle index out of range: [{}, {}, {}] with {} vertices",
+                    a, b, c, n
+                )));
             }
             rust_tris.push([a, b, c]);
         }

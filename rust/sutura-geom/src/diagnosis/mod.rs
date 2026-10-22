@@ -98,6 +98,7 @@ pub struct Region {
     pub components: Vec<usize>,
     pub severity: f64,
     pub confidence: f64,
+    pub min_face: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -171,6 +172,18 @@ fn canon(a: usize, b: usize) -> (usize, usize) {
     }
 }
 
+/// Deterministic iteration order for the edge map: `HashMap` iteration is
+/// salted per process, and the orientation DFS is sensitive to neighbour order
+/// on a non-orientable mesh (a Mobius strip otherwise yields a different
+/// `flipped_faces` count every run).
+fn sorted_edge_keys(
+    edges: &HashMap<(usize, usize), Vec<(usize, bool)>>,
+) -> Vec<(usize, usize)> {
+    let mut keys: Vec<(usize, usize)> = edges.keys().copied().collect();
+    keys.sort_unstable();
+    keys
+}
+
 fn build_edges(tris: &[[usize; 3]]) -> HashMap<(usize, usize), Vec<(usize, bool)>> {
     let mut edges: HashMap<(usize, usize), Vec<(usize, bool)>> = HashMap::new();
     for (fid, t) in tris.iter().enumerate() {
@@ -221,7 +234,8 @@ fn components(
     edges: &HashMap<(usize, usize), Vec<(usize, bool)>>,
 ) -> (Vec<usize>, usize) {
     let mut ds = DisjointSet::new(nf);
-    for uses in edges.values() {
+    for key in sorted_edge_keys(edges) {
+        let uses = &edges[&key];
         for w in uses.windows(2) {
             ds.union(w[0].0, w[1].0);
         }
@@ -241,12 +255,61 @@ fn components(
     (comp, n)
 }
 
+/// Renumber components by a permutation-independent geometric key:
+/// bounding-box centroid, face count and the per-axis minimum vertex.  The
+/// `first face` order is otherwise visible through `volume_signs` and the
+/// component ids in regions/overlap pairs.
+fn canonical_component_ids(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    comp: &[usize],
+    ncomp: usize,
+) -> (Vec<usize>, usize) {
+    if ncomp == 0 {
+        return (comp.to_vec(), 0);
+    }
+    let mut bboxes = vec![Bbox::empty(); ncomp];
+    let mut face_counts = vec![0usize; ncomp];
+    let mut min_vertex = vec![[f64::INFINITY; 3]; ncomp];
+    for (f, &c) in comp.iter().enumerate() {
+        face_counts[c] += 1;
+        for &v in &tris[f] {
+            let p = verts[v];
+            bboxes[c].add(p);
+            for k in 0..3 {
+                if p[k] < min_vertex[c][k] {
+                    min_vertex[c][k] = p[k];
+                }
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..ncomp).collect();
+    order.sort_by(|&a, &b| {
+        let ca = bboxes[a].centroid();
+        let cb = bboxes[b].centroid();
+        ca[0].total_cmp(&cb[0])
+            .then_with(|| ca[1].total_cmp(&cb[1]))
+            .then_with(|| ca[2].total_cmp(&cb[2]))
+            .then_with(|| face_counts[a].cmp(&face_counts[b]))
+            .then_with(|| min_vertex[a][0].total_cmp(&min_vertex[b][0]))
+            .then_with(|| min_vertex[a][1].total_cmp(&min_vertex[b][1]))
+            .then_with(|| min_vertex[a][2].total_cmp(&min_vertex[b][2]))
+            .then_with(|| a.cmp(&b))
+    });
+    let mut remap = vec![0usize; ncomp];
+    for (new, &old) in order.iter().enumerate() {
+        remap[old] = new;
+    }
+    (comp.iter().map(|&c| remap[c]).collect(), ncomp)
+}
+
 fn adjacency_from_edges(
     nf: usize,
     edges: &HashMap<(usize, usize), Vec<(usize, bool)>>,
 ) -> Vec<Vec<(usize, bool)>> {
     let mut adj = vec![Vec::new(); nf];
-    for uses in edges.values() {
+    for key in sorted_edge_keys(edges) {
+        let uses = &edges[&key];
         if uses.len() == 2 {
             let same = uses[0].1 == uses[1].1;
             let (a, b) = (uses[0].0, uses[1].0);
@@ -268,7 +331,8 @@ fn orientation_report(
 ) -> Orientation {
     let mut out = Orientation::default();
     let adj = adjacency_from_edges(tris.len(), edges);
-    for uses in edges.values() {
+    for key in sorted_edge_keys(edges) {
+        let uses = &edges[&key];
         if uses.len() > 2 || (uses.len() == 2 && uses[0].1 == uses[1].1) {
             out.inconsistent_edges += 1;
         }
@@ -371,7 +435,7 @@ fn nm_vertex_report(
         }
     }
     let mut vert_edges: Vec<Vec<(usize, usize)>> = vec![Vec::new(); nv];
-    for (&(a, b), _) in edges.iter() {
+    for (a, b) in sorted_edge_keys(edges) {
         vert_edges[a].push((a, b));
         vert_edges[b].push((a, b));
     }
@@ -419,7 +483,7 @@ fn nm_vertex_report(
         }
     }
     let mut adj_v: Vec<Vec<usize>> = vec![Vec::new(); nv];
-    for (&(a, b), _) in edges.iter() {
+    for (a, b) in sorted_edge_keys(edges) {
         adj_v[a].push(b);
         adj_v[b].push(a);
     }
@@ -487,7 +551,10 @@ fn duplicate_report(
         groups.entry(k).or_default().push(f);
     }
     let mut dup_faces = HashSet::new();
-    for (&k, fs) in groups.iter() {
+    let mut group_keys: Vec<[usize; 3]> = groups.keys().copied().collect();
+    group_keys.sort_unstable();
+    for k in group_keys {
+        let fs = &groups[&k];
         if fs.len() > 1 {
             out.faces += fs.len() - 1;
             for &f in fs {
@@ -704,7 +771,8 @@ fn part_report(
         face_counts[c] += 1;
         vols[c] += face_volume(verts, tris[f]);
     }
-    for uses in edges.values() {
+    for key in sorted_edge_keys(edges) {
+        let uses = &edges[&key];
         if uses.len() != 2 {
             for &(f, _) in uses {
                 open[comp[f]] = true;
@@ -764,9 +832,19 @@ fn part_report(
         }
     }
     if !candidates.is_empty() {
-        let bvh = MeshBvh::from_arrays(verts, tris);
+        // Query the winding of `a`'s centroid against `b`'s surface only: a
+        // whole-mesh BVH makes a component count itself and falsely nests a
+        // part sitting in the nook of another part.
+        let mut bvh_cache: HashMap<usize, MeshBvh> = HashMap::new();
         for (a, b) in candidates {
-            if bvh.winding_at(bboxes[a].centroid()) > 0.5 {
+            if !bvh_cache.contains_key(&b) {
+                let sub: Vec<[usize; 3]> = (0..tris.len())
+                    .filter(|&f| comp[f] == b)
+                    .map(|f| tris[f])
+                    .collect();
+                bvh_cache.insert(b, MeshBvh::from_arrays(verts, &sub));
+            }
+            if bvh_cache[&b].winding_at(bboxes[a].centroid()).abs() > 0.5 {
                 out.nested_shells.push((a, b));
             }
         }
@@ -808,6 +886,7 @@ fn region_from_faces(
         components,
         severity,
         confidence,
+        min_face: faces.iter().copied().min().unwrap_or(usize::MAX),
     }
 }
 
@@ -843,6 +922,7 @@ fn region_from_vertices(
         components,
         severity,
         confidence,
+        min_face: faces.iter().copied().min().unwrap_or(usize::MAX),
     }
 }
 
@@ -858,6 +938,7 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], _detail: &str) -> 
     let fg = face_geometry(verts, tris);
     let edges = build_edges(tris);
     let (comp, ncomp) = components(tris.len(), &edges);
+    let (comp, ncomp) = canonical_component_ids(verts, tris, &comp, ncomp);
     report.face_mask = vec![0u8; tris.len()];
     report.vertex_mask = vec![0u8; verts.len()];
     let mut regions = Vec::new();
@@ -918,21 +999,46 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], _detail: &str) -> 
     regions.sort_by(|a, b| {
         a.channel
             .cmp(&b.channel)
-            .then_with(|| {
-                a.bbox[0]
-                    .partial_cmp(&b.bbox[0])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| {
-                a.bbox[1]
-                    .partial_cmp(&b.bbox[1])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .then_with(|| a.bbox[0].total_cmp(&b.bbox[0]))
+            .then_with(|| a.bbox[1].total_cmp(&b.bbox[1]))
+            .then_with(|| a.bbox[2].total_cmp(&b.bbox[2]))
+            .then_with(|| a.bbox[3].total_cmp(&b.bbox[3]))
+            .then_with(|| a.bbox[4].total_cmp(&b.bbox[4]))
+            .then_with(|| a.bbox[5].total_cmp(&b.bbox[5]))
             .then_with(|| a.faces.cmp(&b.faces))
+            .then_with(|| a.vertices.cmp(&b.vertices))
+            .then_with(|| a.min_face.cmp(&b.min_face))
+            .then_with(|| a.kind.cmp(&b.kind))
     });
     regions.truncate(256);
     report.regions = regions;
     report
+}
+
+/// Python/JSON cannot represent NaN or infinity; every float in the report is
+/// clamped to a finite value before it crosses the binding.
+#[inline]
+fn finite(x: f64) -> f64 {
+    if x.is_finite() {
+        x
+    } else {
+        0.0
+    }
+}
+
+fn finite3(a: [f64; 3]) -> [f64; 3] {
+    [finite(a[0]), finite(a[1]), finite(a[2])]
+}
+
+fn finite6(a: [f64; 6]) -> [f64; 6] {
+    [
+        finite(a[0]),
+        finite(a[1]),
+        finite(a[2]),
+        finite(a[3]),
+        finite(a[4]),
+        finite(a[5]),
+    ]
 }
 
 fn rle(mask: &[u8]) -> Vec<(usize, usize, u8)> {
@@ -966,8 +1072,8 @@ fn channel_dict<'py>(
     d.set_item("count", count)?;
     d.set_item("estimated", estimated)?;
     d.set_item("available", available)?;
-    d.set_item("severity", severity)?;
-    d.set_item("confidence", confidence)?;
+    d.set_item("severity", finite(severity))?;
+    d.set_item("confidence", finite(confidence))?;
     d.set_item("method", method)?;
     Ok(d)
 }
@@ -1089,7 +1195,14 @@ pub fn report_to_pydict<'py>(
     o.set_item("inconsistent_edges", r.orientation.inconsistent_edges)?;
     o.set_item("flipped_faces", r.orientation.flipped_faces)?;
     o.set_item("flipped_patches", r.orientation.flipped_patches)?;
-    o.set_item("volume_signs", r.orientation.volume_signs.clone())?;
+    o.set_item(
+        "volume_signs",
+        r.orientation
+            .volume_signs
+            .iter()
+            .map(|x| finite(*x))
+            .collect::<Vec<f64>>(),
+    )?;
     root.set_item("orientation", o)?;
 
     let n = PyDict::new(py);
@@ -1109,7 +1222,7 @@ pub fn report_to_pydict<'py>(
     g.set_item("zero_area", r.degenerate.zero_area)?;
     g.set_item("needle", r.degenerate.needle)?;
     g.set_item("load_bearing", r.degenerate.load_bearing)?;
-    g.set_item("quality_p99", r.degenerate.quality_p99)?;
+    g.set_item("quality_p99", finite(r.degenerate.quality_p99))?;
     root.set_item("degenerate", g)?;
 
     let p = PyDict::new(py);
@@ -1130,26 +1243,26 @@ pub fn report_to_pydict<'py>(
         let d = PyDict::new(py);
         d.set_item("channel", &g.channel)?;
         d.set_item("kind", &g.kind)?;
-        d.set_item("bbox", g.bbox)?;
-        d.set_item("centroid", g.centroid)?;
+        d.set_item("bbox", finite6(g.bbox))?;
+        d.set_item("centroid", finite3(g.centroid))?;
         d.set_item("faces", g.faces)?;
         d.set_item("vertices", g.vertices)?;
         d.set_item("components", g.components.clone())?;
-        d.set_item("severity", g.severity)?;
-        d.set_item("confidence", g.confidence)?;
+        d.set_item("severity", finite(g.severity))?;
+        d.set_item("confidence", finite(g.confidence))?;
         regions.append(d)?;
     }
     root.set_item("regions", regions)?;
     let meta = PyDict::new(py);
     meta.set_item("faces", r.faces)?;
     meta.set_item("vertices", r.vertices)?;
-    meta.set_item("seconds", seconds)?;
+    meta.set_item("seconds", finite(seconds))?;
     meta.set_item("phase", 1)?;
     meta.set_item("fast_budget_s", 1.0)?;
     meta.set_item("fast_budget_met", seconds <= 1.0)?;
     let timings = PyDict::new(py);
     for (name, sec) in &r.timings {
-        timings.set_item(name, sec)?;
+        timings.set_item(name, finite(*sec))?;
     }
     meta.set_item("channel_seconds", timings)?;
     meta.set_item(
@@ -1248,6 +1361,114 @@ mod tests {
         let r = diagnose_core(&vv, &ff, "fast");
         assert_eq!(r.parts.closed, 2);
         assert!(r.parts.overlap_edges.is_empty());
+    }
+
+
+    fn box_mesh(lo: f64, hi: f64) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let (v, f) = cube();
+        let v = v
+            .iter()
+            .map(|p| [lo + p[0] * (hi - lo), lo + p[1] * (hi - lo), lo + p[2] * (hi - lo)])
+            .collect();
+        (v, f)
+    }
+
+    /// Closed L-shaped prism: a non-convex part whose bounding box has an
+    /// empty nook.
+    fn l_prism() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let poly = [
+            [0.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ];
+        let mut v = Vec::with_capacity(12);
+        for z in [0.0, 1.0] {
+            for p in &poly {
+                v.push([p[0], p[1], z]);
+            }
+        }
+        let mut f = Vec::new();
+        for t in [[0, 1, 2], [0, 2, 3], [0, 3, 4], [0, 4, 5]] {
+            // Top (z = 1) keeps the CCW order (+z); the bottom is reversed.
+            f.push([t[0] + 6, t[1] + 6, t[2] + 6]);
+            f.push([t[2], t[1], t[0]]);
+        }
+        for i in 0..6 {
+            let j = (i + 1) % 6;
+            f.push([i, j, j + 6]);
+            f.push([i, j + 6, i + 6]);
+        }
+        (v, f)
+    }
+
+    fn append_meshes(
+        a: (Vec<[f64; 3]>, Vec<[usize; 3]>),
+        b: (Vec<[f64; 3]>, Vec<[usize; 3]>),
+    ) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let base = a.0.len();
+        let mut v = a.0;
+        v.extend(b.0);
+        let mut f = a.1;
+        for t in b.1 {
+            f.push([t[0] + base, t[1] + base, t[2] + base]);
+        }
+        (v, f)
+    }
+
+    fn two_cubes(offset: [f64; 3]) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let mut second = cube();
+        for p in &mut second.0 {
+            for k in 0..3 {
+                p[k] += offset[k];
+            }
+        }
+        append_meshes(cube(), second)
+    }
+
+    #[test]
+    fn nested_shell_does_not_count_the_part_itself() {
+        let lshape = l_prism();
+        // A cube in the empty nook: inside the L's bbox, outside its solid.
+        let nook = box_mesh(0.0, 1.0);
+        let nook = (
+            nook.0
+                .iter()
+                .map(|p| [1.5 + p[0], 1.5 + p[1], 0.2 + 0.6 * p[2]])
+                .collect(),
+            nook.1,
+        );
+        let (v, f) = append_meshes(lshape.clone(), nook);
+        let r = diagnose_core(&v, &f, "fast");
+        assert_eq!(r.parts.closed, 2);
+        assert!(r.parts.nested_shells.is_empty());
+
+        // The same cube inside the L arm is genuinely nested.
+        let arm = box_mesh(0.0, 1.0);
+        let arm = (
+            arm.0
+                .iter()
+                .map(|p| [0.2 + 0.6 * p[0], 0.2 + 0.6 * p[1], 0.2 + 0.6 * p[2]])
+                .collect(),
+            arm.1,
+        );
+        let (v2, f2) = append_meshes(lshape, arm);
+        let r2 = diagnose_core(&v2, &f2, "fast");
+        assert_eq!(r2.parts.closed, 2);
+        assert!(!r2.parts.nested_shells.is_empty());
+    }
+
+    #[test]
+    fn component_ids_are_face_order_independent() {
+        let (v, f) = two_cubes([3.0, 0.0, 0.0]);
+        let a = diagnose_core(&v, &f, "fast");
+        let mut fp: Vec<[usize; 3]> = f.iter().rev().cloned().collect();
+        fp.swap(1, 7);
+        let b = diagnose_core(&v, &fp, "fast");
+        assert_eq!(a.orientation.volume_signs, b.orientation.volume_signs);
+        assert_eq!(a.parts.overlap_edges, b.parts.overlap_edges);
     }
 
     #[test]
