@@ -98,7 +98,9 @@ jobs:
         run: ./venv/bin/python tests/test_repair_score.py
 
       - name: "Test: updater"
-        run: ./venv/bin/python tests/test_updater.py
+        run: |
+          ./venv/bin/python tests/test_updater.py
+          ./venv/bin/python tests/test_order_independence.py
 
       - name: "Test: suggestions"
         run: ./venv/bin/python tests/test_suggestions.py
