@@ -184,6 +184,58 @@ def test_non_manifold_rejected():
     print('  non-manifold rejection OK')
 
 
+def test_planar_cap_on_fold_seam():
+    # A planar, simple boundary loop (a scan's fold seam) must be capped flat
+    # without introducing self-intersections: the weight-based ear-clipper can
+    # otherwise pick ears that slice through the folded body.  thingi10k_1038439
+    # holds two such 85-gons; each must close with exact zero proper crossings.
+    try:
+        import trimesh
+        import collections
+    except ImportError:
+        print('  trimesh absent; planar-cap fold-seam test skipped')
+        return
+    path = os.path.join(SAMPLES, 'thingi10k_1038439.stl')
+    if not os.path.exists(path):
+        print('  sample absent; planar-cap fold-seam test skipped')
+        return
+    m = trimesh.load(path, process=True)
+    V = np.asarray(m.vertices, dtype=np.float64)
+    T = np.asarray(m.faces, dtype=np.int64)
+    ef = collections.defaultdict(list)
+    for fi, t in enumerate(T):
+        for j in range(3):
+            a, b = int(t[j]), int(t[(j + 1) % 3])
+            ef[(min(a, b), max(a, b))].append(fi)
+    par = list(range(len(T)))
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    for fs in ef.values():
+        for k in range(1, len(fs)):
+            ra, rb = find(fs[0]), find(fs[k])
+            if ra != rb:
+                par[ra] = rb
+    groups = collections.defaultdict(list)
+    for fi in range(len(T)):
+        groups[find(fi)].append(fi)
+    comps = sorted(groups.values(), key=len, reverse=True)
+    assert len(comps) >= 2, 'expected multiple components in the sample'
+    for comp in comps[:2]:
+        used = np.unique(T[comp])
+        remap = {int(v): k for k, v in enumerate(used)}
+        cv = V[used]
+        ct = np.array([[remap[int(x)] for x in T[fi]] for fi in comp], dtype=np.int64)
+        rv, rt, closed, _ = _close(cv, ct)
+        _, si = sutura_geom.self_intersecting_faces(_f64(rv), _i64(rt))
+        assert closed == 1 and si == 0, ('fold seam not SI-free', closed, si)
+    print('  planar cap OK: fold-seam 85-gons close with zero self-intersections')
+
+
 def test_pymeshlab_quality():
     try:
         import pymeshlab
@@ -233,6 +285,7 @@ def main():
     test_determinism()
     test_exact_coordinates()
     test_non_manifold_rejected()
+    test_planar_cap_on_fold_seam()
     test_pymeshlab_quality()
     print('close_holes parity tests passed')
 
