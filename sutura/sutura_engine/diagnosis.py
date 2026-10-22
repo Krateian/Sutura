@@ -46,6 +46,7 @@ SI_MODERATE = 20
 SI_HEAVY = 200
 
 CLASSIFIER_ENGINES = ('classic', 'experimental')
+DIAGNOSIS_V2_VERSION = 'phase1'
 
 
 @dataclass
@@ -71,6 +72,7 @@ class ObjectAnalysis:
     model: Optional[str] = None
     classifier_engine: str = ''
     classifier_version: str = ''
+    diagnosis_v2: Optional[dict] = None
 
 
 # --- Classifier Glue --------------------------------------------------------
@@ -351,9 +353,9 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
     cache_key = None
     if use_cache and cache.is_cache_enabled():
         m_hash = cache.hash_arrays(v, t)
-        cache_key = '%s|%s|%d|%s' % (version, engine,
+        cache_key = '%s|%s|%d|%s|diagv2:%s' % (version, engine,
                                      1 if extra_features else 0,
-                                     CLASSIFIER_VERSION)
+                                     CLASSIFIER_VERSION, DIAGNOSIS_V2_VERSION)
         cached_dict = cache.get_cached_analysis(m_hash, cache_key)
         if cached_dict is not None:
             # Rehydrate from cached dict
@@ -419,6 +421,14 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
             except Exception:
                 pass
 
+    try:
+        import sutura_geom
+        if hasattr(sutura_geom, 'diagnose'):
+            analysis.diagnosis_v2 = sutura_geom.diagnose(
+                v, t, detail='fast', masks=True)
+    except Exception:
+        analysis.diagnosis_v2 = None
+
     if use_cache and m_hash and cache.is_cache_enabled():
         cache.put_cached_analysis(m_hash, cache_key, to_dict(analysis))
 
@@ -442,6 +452,7 @@ def combine(objs: Sequence[ObjectAnalysis]) -> ObjectAnalysis:
         return objs[0]
     c = dataclasses.replace(objs[0])
     c.model = None
+    c.diagnosis_v2 = None
     c.faces = max(o.faces for o in objs)
     c.vertices = max(o.vertices for o in objs)
     c.components = max(o.components for o in objs)
@@ -484,4 +495,6 @@ def to_dict(analysis: ObjectAnalysis) -> dict:
         'model': analysis.model,
         'classifier_engine': analysis.classifier_engine,
         'classifier_version': analysis.classifier_version,
+        **({'diagnosis_v2': analysis.diagnosis_v2}
+           if analysis.diagnosis_v2 is not None else {}),
     }
