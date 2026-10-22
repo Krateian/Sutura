@@ -331,7 +331,7 @@ def analyze_mesh(verts: np.ndarray, tris: np.ndarray, engine: str = 'experimenta
         return analysis
 
     # Cache lookup
-    version = '0.9.3'
+    version = '0.9.4'
     try:
         from repair import VERSION
         version = VERSION
