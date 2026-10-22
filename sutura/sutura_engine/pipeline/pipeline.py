@@ -22,6 +22,7 @@ from sutura_engine.pipeline.mesh_io import check_units, should_extract_outer_she
 from sutura_engine.pipeline.order import (
     FINAL_TIER_PRECEDENCE, ftetwild_supersedes_graft,
 )
+from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
 from sutura_engine.pipeline.presets import (
     ExtremeRemovedAllError, cad_likeness, classify_with_engine,
     estimate_deep_repair_time, resolve_mode_params, resolve_si_mode,
@@ -324,14 +325,37 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
 
         # Any phase that is not adopted -> today's path unchanged
         if not _shell_adopted:
-            with method_health.tier_guard('outer_shell', 'tier') as _go:
-                import repeat_repair as _rr
-                _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
-                if len(_shell_t) > 0:
-                    verts = np.asarray(_shell_v, dtype=np.float32)
-                    tris = np.asarray(_shell_t, dtype=np.int32)
-                    v, t = verts, tris
-                    stats['outer_shell_extracted'] = True
+            # Guard A (P0): an input that is ALREADY reload-equivalent watertight
+            # and multi-part needs no outer-shell union. extract_outer_shell ->
+            # outer_shell_union ends in largest_component(), which keeps only the
+            # largest part and deletes the rest (thingi10k_248395: 4 parts,
+            # 13264 -> 6944 faces, -58% volume). The reload-equivalent metric is
+            # the right separator: 248395 reloads as (holes, nm) == (0, 0),
+            # whereas a mesh that genuinely needs the union (Rubik-style touching
+            # cubies, reloaded as non-manifold) does not match. This gate only
+            # guards the fallback, not the P-a/P-b/P-c prepass (which is safe and
+            # load-bearing for other samples).
+            _in_rholes, _in_rnm = reload_strict_holes_nm(verts, tris)
+            if _in_rholes == 0 and _in_rnm == 0:
+                stats['outer_shell_skipped'] = 'healthy_multipart_input'
+            else:
+                with method_health.tier_guard('outer_shell', 'tier') as _go:
+                    import repeat_repair as _rr
+                    _shell_v, _shell_t = _rr.extract_outer_shell(verts, tris)
+                    if len(_shell_t) > 0:
+                        # Guard B: the union may only improve the reload topology,
+                        # never worsen it. Keeps the useful case (55772: input
+                        # reloads (3, 12), union closes to (0, 0)) while making
+                        # the fallback unable to degrade a damaged input.
+                        _out_rholes, _out_rnm = reload_strict_holes_nm(
+                            _shell_v, _shell_t)
+                        if _out_rholes <= _in_rholes and _out_rnm <= _in_rnm:
+                            verts = np.asarray(_shell_v, dtype=np.float32)
+                            tris = np.asarray(_shell_t, dtype=np.int32)
+                            v, t = verts, tris
+                            stats['outer_shell_extracted'] = True
+                        else:
+                            stats['outer_shell_rejected'] = 'topology_regressed'
             # on error the guard records it and the input is kept unchanged
 
     before = topology.mesh_topology(v, t)
