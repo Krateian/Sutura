@@ -326,6 +326,11 @@ jobs:
       - name: "Test: splint core"
         run: ./.venv/bin/python tests/test_splint.py
 
+      # Coaptation (#19) needs the Rust topology core (close_holes / union_pair);
+      # the CI-safe checks are pure-numpy and the end-to-end smoke is guarded.
+      - name: "Test: coaptation tier (method #19)"
+        run: ./.venv/bin/python tests/test_coaptation.py
+
       # Graft (#13) needs the Rust extension plus trimesh; the real repair
       # venv has pymeshlab (the verbatim-hybrid test skips without it).
       - name: Install Graft test deps

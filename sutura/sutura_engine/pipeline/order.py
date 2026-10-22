@@ -27,8 +27,9 @@ so ``triage`` can import it without pulling anything in.
 """
 
 # Run order of the deep-repair tiers (local re-mesh first, fTetWild last;
-# Splint sits after Dressing and before fTetWild).
-DEEP_TIER_ORDER = ('local', 'graft', 'dressing', 'splint', 'ftetwild')
+# Splint sits after Dressing; Coaptation after Splint and before fTetWild).
+DEEP_TIER_ORDER = ('local', 'graft', 'dressing', 'splint', 'coaptation',
+                   'ftetwild')
 
 # Registry method number for each tier.
 DEEP_TIER_METHOD_NUM = {
@@ -36,13 +37,15 @@ DEEP_TIER_METHOD_NUM = {
     'graft': 13,      # Graft
     'dressing': 16,   # Dressing
     'splint': 18,     # Splint
+    'coaptation': 19,  # Coaptation
     'ftetwild': 7,    # fTetWild
 }
 
 # Precedence used by ``_deep_repair_offer`` when naming the reported final
 # tier. Kept separate from DEEP_TIER_ORDER because the reporting precedence is
 # not the run order (fTetWild is named first, not last).
-FINAL_TIER_PRECEDENCE = ('ftetwild', 'graft', 'dressing', 'splint', 'local')
+FINAL_TIER_PRECEDENCE = ('ftetwild', 'graft', 'dressing', 'splint',
+                         'coaptation', 'local')
 
 # Convenience aliases for the two tiers whose relative order the auto policy
 # guarantees explicitly.

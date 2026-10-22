@@ -83,6 +83,7 @@ def test_trace_schema_and_content(tmp_path):
         "graft",
         "dressing",
         "splint",
+        "coaptation",
         "ftetwild",
         "pinch_split",
         "stage2",
@@ -188,5 +189,5 @@ def test_trace_diff_identifies_ftetwild_divergence(tmp_path):
     res = subprocess.run(diff_cmd, capture_output=True, text=True)
 
     assert res.returncode == 1
-    assert "FIRST DIVERGING STAGE: Step 11 ['ftetwild']" in res.stdout
-    assert "Verdict: Runs first diverged at Step 11 ['ftetwild']." in res.stdout
+    assert "FIRST DIVERGING STAGE: Step 12 ['ftetwild']" in res.stdout
+    assert "Verdict: Runs first diverged at Step 12 ['ftetwild']." in res.stdout

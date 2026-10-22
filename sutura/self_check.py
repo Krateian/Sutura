@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Sutura --self-check: deterministic health and method verification.
 
-Evaluates all 17 registered repair methods:
+Evaluates all 19 registered repair methods:
   - Prerequisite and Rust symbol checks via sutura_engine.health
   - Deterministic fixture execution for fast methods (<5s total budget)
   - Availability-only checks for heavy iterative methods (Balloon/implicit close, proxy) and interactive addons
-  - Formatted human output: 'Methods: N/17 OK (X failed, Y skipped)'
+  - Formatted human output: 'Methods: N/19 OK (X failed, Y skipped)'
 """
 import os
 import sys

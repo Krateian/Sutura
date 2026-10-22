@@ -141,7 +141,7 @@ def _remove_duplicate_faces_numpy(tris):
     return t[last_idx]
 
 
-def _remove_null_faces_numpy(verts, tris):
+def _remove_null_faces_numpy(verts, tris, safe=False):
     v = np.asarray(verts, dtype=np.float32)
     t = np.asarray(tris, dtype=np.int64)
     if len(t) == 0:
@@ -157,8 +157,32 @@ def _remove_null_faces_numpy(verts, tris):
     d2 = p2 - p0
     cross = np.cross(d1, d2)
     norm2 = np.sum(cross**2, axis=1)
-    valid = (norm2 > 0.0) & np.isfinite(norm2)
-    return t_cand[valid]
+    finite = np.isfinite(norm2)
+    valid = (norm2 > 0.0) & finite
+    if not safe:
+        return t_cand[valid]
+    deg = (~valid) & finite
+    if not deg.any():
+        return t_cand[valid]
+    edges = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]], axis=0)
+    a = edges[:, 0]
+    b = edges[:, 1]
+    keep = a != b
+    lo = np.minimum(a, b)[keep].astype(np.int64)
+    hi = np.maximum(a, b)[keep].astype(np.int64)
+    counts = {}
+    for x, y in zip(lo.tolist(), hi.tolist()):
+        key = (x, y)
+        counts[key] = counts.get(key, 0) + 1
+    result = valid.copy()
+    for k in np.nonzero(deg)[0]:
+        x0, x1, x2 = (int(t_cand[k, 0]), int(t_cand[k, 1]), int(t_cand[k, 2]))
+        for x, y in ((x0, x1), (x1, x2), (x2, x0)):
+            key = (x, y) if x < y else (y, x)
+            if counts.get(key, 0) <= 2:
+                result[k] = True
+                break
+    return t_cand[result]
 
 
 def _remove_duplicate_vertices_numpy(verts, tris):
@@ -804,10 +828,32 @@ def remove_duplicate_faces(tris):
     return _geom.remove_duplicate_faces(t)
 
 
-def remove_null_faces(verts, tris):
+_RUST_NULL_SAFE = None
+
+
+def _rust_null_safe_supported():
+    """Whether the installed ``sutura_geom.remove_null_faces`` accepts ``safe``."""
+    global _RUST_NULL_SAFE
+    if _RUST_NULL_SAFE is None:
+        try:
+            _geom.remove_null_faces(
+                np.zeros((0, 3), dtype=np.float32),
+                np.zeros((0, 3), dtype=np.int64), True)
+            _RUST_NULL_SAFE = True
+        except Exception:
+            _RUST_NULL_SAFE = False
+    return _RUST_NULL_SAFE
+
+
+def remove_null_faces(verts, tris, safe=False):
     """Remove null / degenerate faces matching VCGLib meshing_remove_null_faces.
 
     Removes repeated vertices (a==b, b==c, c==a) and zero-area / collinear faces.
+    With ``safe=True`` a zero-area but topologically valid face is kept when
+    removing it would turn one of its edges into a boundary edge (the edge is
+    used by fewer than three faces) -- see the Rust / ``_remove_null_faces_numpy``
+    docstring. Older ``sutura_geom`` wheels without the ``safe`` argument fall
+    back to the numpy oracle for that mode.
     """
     v = np.ascontiguousarray(verts, dtype=np.float32)
     t = np.ascontiguousarray(tris, dtype=np.int64)
@@ -818,7 +864,11 @@ def remove_null_faces(verts, tris):
     if len(t) == 0:
         return t
     if engine() == 'python' or not (v.size == 0 or bool(np.isfinite(v).all())):
-        return _remove_null_faces_numpy(v, t)
+        return _remove_null_faces_numpy(v, t, safe)
+    if safe:
+        if not _rust_null_safe_supported():
+            return _remove_null_faces_numpy(v, t, True)
+        return _geom.remove_null_faces(v, t, True)
     return _geom.remove_null_faces(v, t)
 
 

@@ -212,6 +212,33 @@ def splint_available() -> Tuple[bool, Optional[str]]:
         return False, 'splint unavailable: %s' % e
 
 
+def coaptation_available() -> Tuple[bool, Optional[str]]:
+    """Registry method 19 needs the Rust topology core.
+
+    Available when the installed ``sutura_geom`` advertises both ``close_holes``
+    and ``union_pair``; the Rust extension is mandatory, so its absence is a
+    FAIL (never a SKIP)."""
+    try:
+        try:
+            spec = importlib.util.find_spec('sutura_geom')
+        except Exception as e:
+            return False, 'rust extension sutura_geom is not installed (%s)' % e
+        if spec is None:
+            return False, 'rust extension sutura_geom is not installed'
+        try:
+            import sutura_geom
+            for _name in ('close_holes', 'union_pair'):
+                if not hasattr(sutura_geom, _name):
+                    return False, 'sutura_geom has no %s (rebuild needed)' % _name
+        except Exception as e:
+            return False, 'sutura_geom import failed: %s' % e
+        if importlib.util.find_spec('numpy') is None:
+            return False, 'numpy is not available'
+        return True, None
+    except Exception as e:
+        return False, 'coaptation unavailable: %s' % e
+
+
 def graft_available() -> Tuple[bool, Optional[str]]:
     """Registry method 13 needs the Rust morphology core (Cast)."""
     try:

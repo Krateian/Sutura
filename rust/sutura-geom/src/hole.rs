@@ -25,6 +25,7 @@ use pyo3::prelude::*;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+use crate::predicates2d::{orient2d_sign, Point2};
 use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
 
 type V3 = [f64; 3];
@@ -164,6 +165,397 @@ fn proper_tri_tri_intersect(a: [V3; 3], b: [V3; 3]) -> bool {
     )
 }
 
+/// A boundary loop is capped in its own best-fit plane when it is planar
+/// within this relative tolerance (max out-of-plane distance / loop extent).
+/// Measured on the open shells of `thingi10k_1038439` (the motivating case):
+/// the fold boundary loops read `~3.5e-6`, three orders of magnitude below.
+const PLANAR_TOL: f64 = 1e-4;
+
+/// Loops longer than this fall back to the ear-clipper: the O(k^2) planar
+/// validation is not worth it for very large loops.
+const PLANAR_MAX_LOOP: usize = 1024;
+
+/// Number of start vertices tried by the in-plane planar cap.  Greedy
+/// ear-clipping is start-order sensitive: a cap that crosses the body from one
+/// start can be traced without any crossing from another, so the search retries
+/// deterministically from successive start vertices (up to this many, or the
+/// loop length) and keeps the first triangulation the crossing check accepts.
+/// Measured on `thingi10k_1038439`'s two open 85-gons (starts 0 and 3), far
+/// inside this bound.
+const PLANAR_MAX_STARTS: usize = 128;
+
+/// Best-fit plane of a loop: `(centroid, unit normal, extent, max out-of-plane
+/// distance)`.  The normal is the Newell normal (translation invariant); the
+/// extent is the loop's bounding-box diagonal.  `None` for a degenerate loop.
+fn loop_plane(pts: &[V3]) -> Option<(V3, V3, f64, f64)> {
+    let k = pts.len();
+    if k < 3 {
+        return None;
+    }
+    let mut c = [0.0f64; 3];
+    for p in pts {
+        c[0] += p[0];
+        c[1] += p[1];
+        c[2] += p[2];
+    }
+    c[0] /= k as f64;
+    c[1] /= k as f64;
+    c[2] /= k as f64;
+    let mut n = [0.0f64; 3];
+    for i in 0..k {
+        let a = pts[i];
+        let b = pts[(i + 1) % k];
+        n[0] += a[1] * b[2] - a[2] * b[1];
+        n[1] += a[2] * b[0] - a[0] * b[2];
+        n[2] += a[0] * b[1] - a[1] * b[0];
+    }
+    let nl = norm(n);
+    if !(nl > 0.0) || !nl.is_finite() {
+        return None;
+    }
+    let n = [n[0] / nl, n[1] / nl, n[2] / nl];
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for p in pts {
+        for d in 0..3 {
+            if p[d] < lo[d] {
+                lo[d] = p[d];
+            }
+            if p[d] > hi[d] {
+                hi[d] = p[d];
+            }
+        }
+    }
+    let extent = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+    if !(extent > 0.0) || !extent.is_finite() {
+        return None;
+    }
+    let mut maxd = 0.0f64;
+    for p in pts {
+        let d = dot(sub(*p, c), n).abs();
+        if d > maxd {
+            maxd = d;
+        }
+    }
+    Some((c, n, extent, maxd))
+}
+
+/// Right-handed orthonormal 2D basis `(u, v)` of the plane with normal `n`
+/// (`u x v == n`).
+fn plane_basis(n: V3) -> (V3, V3) {
+    let ax = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
+        [1.0, 0.0, 0.0]
+    } else if n[1].abs() <= n[2].abs() {
+        [0.0, 1.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
+    let u = normalize(cross(n, ax));
+    let v = cross(n, u);
+    (u, v)
+}
+
+/// Signed area of a 2D polygon (positive == counter-clockwise).
+fn signed_area_2d(uv: &[[f64; 2]]) -> f64 {
+    let k = uv.len();
+    let mut s = 0.0;
+    for i in 0..k {
+        let a = uv[i];
+        let b = uv[(i + 1) % k];
+        s += a[0] * b[1] - b[0] * a[1];
+    }
+    0.5 * s
+}
+
+/// Exact 2D segment orientation predicate (`robust` adaptive arithmetic), used
+/// for the planar-cap triangulation so near-degenerate seam geometry cannot
+/// stall the ear-clipper.
+fn ori2(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    orient2d_sign(
+        &Point2::Explicit(a),
+        &Point2::Explicit(b),
+        &Point2::Explicit(c),
+    )
+}
+
+/// Do two 2D segments cross (proper interior intersection or a collinear
+/// touch/overlap)?  Endpoint-only touching where the contact is a shared
+/// polygon vertex is filtered by the caller; here any contact counts.
+fn seg_proper_intersect(p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], p4: [f64; 2]) -> bool {
+    let d1 = ori2(p3, p4, p1);
+    let d2 = ori2(p3, p4, p2);
+    let d3 = ori2(p1, p2, p3);
+    let d4 = ori2(p1, p2, p4);
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        return true;
+    }
+    let on = |a: [f64; 2], b: [f64; 2], c: [f64; 2], d: f64| {
+        d == 0.0
+            && c[0] >= a[0].min(b[0])
+            && c[0] <= a[0].max(b[0])
+            && c[1] >= a[1].min(b[1])
+            && c[1] <= a[1].max(b[1])
+    };
+    on(p3, p4, p1, d1) || on(p3, p4, p2, d2) || on(p1, p2, p3, d3) || on(p1, p2, p4, d4)
+}
+
+/// Is the projected polygon simple (no non-adjacent edge crossings)?
+fn polygon_simple(uv: &[[f64; 2]]) -> bool {
+    let k = uv.len();
+    for i in 0..k {
+        let a1 = uv[i];
+        let a2 = uv[(i + 1) % k];
+        for j in (i + 1)..k {
+            if j == i + 1 || (i == 0 && j == k - 1) {
+                continue; // adjacent edges share a vertex
+            }
+            if seg_proper_intersect(a1, a2, uv[j], uv[(j + 1) % k]) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Greedy ear-clipping of a CCW simple polygon (indices into `uv`), returned as
+/// counter-clockwise index triples.  `None` when the loop stalls (numerically
+/// degenerate input).  Greedy clipping is start-order sensitive, so the caller
+/// retries from several start vertices and keeps the first cap that survives its
+/// crossing check.
+fn earcut_ccw(uv: &[[f64; 2]], order: &mut Vec<usize>) -> Option<Vec<(usize, usize, usize)>> {
+    let n = order.len();
+    if n < 3 {
+        return None;
+    }
+    let mut out: Vec<(usize, usize, usize)> = Vec::with_capacity(n.saturating_sub(2));
+    let guard_cap = n * n + 16;
+    let mut guard = 0usize;
+    while order.len() > 3 {
+        let m = order.len();
+        let mut found = false;
+        for j in 0..m {
+            let i0 = order[(j + m - 1) % m];
+            let i1 = order[j];
+            let i2 = order[(j + 1) % m];
+            let a = uv[i0];
+            let b = uv[i1];
+            let c = uv[i2];
+            if ori2(a, b, c) <= 0.0 {
+                continue; // reflex or degenerate corner
+            }
+            let mut inside = false;
+            for &v in order.iter() {
+                if v == i0 || v == i1 || v == i2 {
+                    continue;
+                }
+                let p = uv[v];
+                let d1 = ori2(a, b, p);
+                let d2 = ori2(b, c, p);
+                let d3 = ori2(c, a, p);
+                let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+                let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+                if !(neg && pos) {
+                    inside = true;
+                    break;
+                }
+            }
+            if inside {
+                continue;
+            }
+            out.push((i0, i1, i2));
+            order.remove(j);
+            found = true;
+            break;
+        }
+        guard += 1;
+        if !found || guard > guard_cap {
+            return None;
+        }
+    }
+    out.push((order[0], order[1], order[2]));
+    if out.len() != n - 2 {
+        return None;
+    }
+    Some(out)
+}
+
+/// True when original face `f` makes cap/ear triangle `t` invalid: a duplicate
+/// face (all three vertices shared), a face sharing a non-cap edge (a chord),
+/// or a face that properly crosses `t` (the same proper-crossing definition the
+/// self-intersection metric uses).  `border` holds the edges of `t` that are
+/// legitimate continuations of the surface.
+fn face_blocks(
+    verts: &[V3],
+    tris_in: &[[i64; 3]],
+    border: &HashSet<(i64, i64)>,
+    f: u32,
+    t: [i64; 3],
+) -> bool {
+    let ft = tris_in[f as usize];
+    let mut shared = 0usize;
+    for &x in &t {
+        if ft.contains(&x) {
+            shared += 1;
+        }
+    }
+    match shared {
+        3 => true,
+        2 => {
+            let mut e = [0i64; 2];
+            let mut k = 0;
+            for &x in &t {
+                if ft.contains(&x) {
+                    e[k] = x;
+                    k += 1;
+                }
+            }
+            !border.contains(&canon(e[0], e[1]))
+        }
+        _ => {
+            let tv = [
+                verts[ft[0] as usize],
+                verts[ft[1] as usize],
+                verts[ft[2] as usize],
+            ];
+            let ta = Triangle::explicit(verts[t[0] as usize], verts[t[1] as usize], verts[t[2] as usize]);
+            let tb = Triangle::explicit(tv[0], tv[1], tv[2]);
+            matches!(
+                intersect_triangles(&ta, &tb),
+                TriangleIntersection::ProperSegment { .. }
+            )
+        }
+    }
+}
+
+/// Reject an in-plane cap that properly crosses the surrounding surface.  The
+/// cap's own edges (including diagonals) are legitimate, so a face sharing two
+/// cap vertices is allowed only when that edge belongs to the cap.  Only a
+/// `ProperSegment` crossing is rejected -- the same definition the
+/// self-intersection metric uses (shared-vertex and coplanar contacts are not
+/// counted).  Every candidate face incident to any loop vertex is tested against
+/// every cap triangle, not just the faces incident to that triangle's own
+/// vertices, because a body face crossing one cap triangle need not be incident
+/// to that triangle.
+fn cap_ok(verts: &[V3], tris_in: &[[i64; 3]], cand_faces: &[u32], cap: &[[i64; 3]]) -> bool {
+    let mut border: HashSet<(i64, i64)> = HashSet::new();
+    for t in cap {
+        border.insert(canon(t[0], t[1]));
+        border.insert(canon(t[1], t[2]));
+        border.insert(canon(t[2], t[0]));
+    }
+    for t in cap {
+        for &f in cand_faces {
+            if face_blocks(verts, tris_in, &border, f, *t) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Cap a planar + simple boundary loop in its own plane.
+///
+/// Returns the cap triangles with the boundary-cancelling winding (each loop
+/// half-edge appears once, reversed), or `None` when the loop is not planar,
+/// not simple (a repeated vertex, i.e. a pinch), too long, or when the in-plane
+/// cap would properly cross the surrounding surface -- the caller then keeps the
+/// ear-clipper.  This guarantees a flat, non-self-intersecting cap for a
+/// genuinely planar boundary such as a scan's fold seam, which the weight-based
+/// ear-clipper can otherwise slice through the body.
+fn planar_cap(
+    verts: &[V3],
+    tris_in: &[[i64; 3]],
+    _vfaces: &[Vec<u32>],
+    loop_v: &[i64],
+) -> Option<Vec<[i64; 3]>> {
+    let k = loop_v.len();
+    if k < 3 || k > PLANAR_MAX_LOOP {
+        return None;
+    }
+    {
+        let mut seen: HashSet<i64> = HashSet::with_capacity(k);
+        for &v in loop_v {
+            if !seen.insert(v) {
+                return None; // pinched loop is not simple
+            }
+        }
+    }
+    let pts: Vec<V3> = loop_v.iter().map(|&v| verts[v as usize]).collect();
+    let (c, n, extent, maxd) = loop_plane(&pts)?;
+    if !(maxd <= PLANAR_TOL * extent) {
+        return None;
+    }
+    let (u, vv) = plane_basis(n);
+    let uv: Vec<[f64; 2]> = pts
+        .iter()
+        .map(|p| {
+            let d = sub(*p, c);
+            [dot(d, u), dot(d, vv)]
+        })
+        .collect();
+    if !polygon_simple(&uv) {
+        return None;
+    }
+    let area = signed_area_2d(&uv);
+    if area == 0.0 || !area.is_finite() {
+        return None;
+    }
+    // Work in a CCW copy; track whether the working order is the loop or its
+    // reverse so the final winding cancels the boundary half-edges.
+    let reversed = area < 0.0;
+    let mut base: Vec<usize> = (0..k).collect();
+    if reversed {
+        base.reverse();
+    }
+    // Any face whose bbox overlaps the loop's bbox is a candidate the cap could
+    // cross.  A body face that properly crosses a cap triangle need not be
+    // incident to any loop vertex (and may share no vertex with the cap triangle
+    // it pierces), so the candidate set is bbox-filtered over ALL faces, not just
+    // those incident to loop vertices.
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for p in &pts {
+        for d in 0..3 {
+            lo[d] = lo[d].min(p[d]);
+            hi[d] = hi[d].max(p[d]);
+        }
+    }
+    let cand: Vec<u32> = tris_in
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            let a = verts[t[0] as usize];
+            let b = verts[t[1] as usize];
+            let c = verts[t[2] as usize];
+            (0..3).all(|d| {
+                a[d].max(b[d]).max(c[d]) >= lo[d] && a[d].min(b[d]).min(c[d]) <= hi[d]
+            })
+        })
+        .map(|(i, _)| i as u32)
+        .collect();
+    // Greedy ear-clipping is start-order sensitive: the same polygon capped from
+    // a different start vertex can trace a different diagonal set, one that does
+    // not slice the folded body.  Retry deterministically from successive starts
+    // and keep the first cap the crossing check accepts.
+    let starts = k.min(PLANAR_MAX_STARTS);
+    for s in 0..starts {
+        let mut order: Vec<usize> = base[s..].iter().chain(&base[..s]).copied().collect();
+        let tris2 = match earcut_ccw(&uv, &mut order) {
+            Some(t) => t,
+            None => continue,
+        };
+        let mut cap: Vec<[i64; 3]> = Vec::with_capacity(tris2.len());
+        for (a, b, cc) in tris2 {
+            let (va, vb, vc) = (loop_v[a], loop_v[b], loop_v[cc]);
+            cap.push(if reversed { [va, vb, vc] } else { [va, vc, vb] });
+        }
+        if cap_ok(verts, tris_in, &cand, &cap) {
+            return Some(cap);
+        }
+    }
+    None
+}
 /// Result of one close pass.
 pub struct CloseReport {
     pub verts: Vec<V3>,
@@ -567,6 +959,20 @@ pub fn close_holes_core(
         if k < 3 || k as i64 > max_hole_size {
             continue;
         }
+        let loop_v: Vec<i64> = seq
+            .iter()
+            .map(|&he| tris_in[he / 3][he % 3])
+            .collect();
+        // A genuinely planar, simple loop is capped flat in its own plane: the
+        // weight-based ear-clipper can otherwise pick ears that slice through
+        // the body (measured on thingi10k_1038439's fold seam), and a flat cap
+        // is both self-intersection-free and shape-faithful.
+        if let Some(cap) = planar_cap(verts, tris_in, &vf, &loop_v) {
+            closed_holes += 1;
+            new_faces += cap.len();
+            out_tris.extend(cap);
+            continue;
+        }
         let mut nodes: Vec<Node> = Vec::with_capacity(k);
         for (i, &he) in seq.iter().enumerate() {
             let f = he / 3;
@@ -814,5 +1220,104 @@ mod tests {
             let b = close_holes_core(&v, &t, 1000, true).unwrap();
             assert_eq!(a.tris, b.tris);
         }
+    }
+
+    #[test]
+    fn planar_cap_triangulates_nonconvex_loop() {
+        // L-shaped (non-convex) planar hexagon at z=0, area 5.
+        let verts: Vec<V3> = vec![
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 3.0, 0.0],
+            [0.0, 3.0, 0.0],
+        ];
+        let tris: Vec<[i64; 3]> = vec![];
+        let vfaces = vertex_faces(verts.len(), &tris);
+        let loop_v: Vec<i64> = (0..6).collect();
+        let cap = planar_cap(&verts, &tris, &vfaces, &loop_v).expect("planar cap");
+        assert_eq!(cap.len(), 4, "an n-gon needs n-2 triangles");
+        let mut area = 0.0;
+        for t in &cap {
+            let p = [
+                verts[t[0] as usize],
+                verts[t[1] as usize],
+                verts[t[2] as usize],
+            ];
+            area += 0.5 * norm(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+        }
+        assert!((area - 5.0).abs() < 1e-9, "cap area {area} != polygon area");
+        // Boundary-cancelling winding: every loop edge appears once, reversed.
+        let mut dir: HashMap<(i64, i64), i32> = HashMap::new();
+        for t in &cap {
+            for j in 0..3 {
+                *dir.entry((t[j], t[(j + 1) % 3])).or_insert(0) += 1;
+            }
+        }
+        for i in 0..6 {
+            let f = loop_v[i];
+            let g = loop_v[(i + 1) % 6];
+            assert_eq!(
+                dir.get(&(g, f)).copied().unwrap_or(0),
+                1,
+                "reversed loop edge {g}->{f} missing"
+            );
+            assert_eq!(
+                dir.get(&(f, g)).copied().unwrap_or(0),
+                0,
+                "forward loop edge {f}->{g} present"
+            );
+        }
+    }
+
+    #[test]
+    fn planar_cap_rejects_pinched_loop() {
+        let verts: Vec<V3> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ];
+        let tris: Vec<[i64; 3]> = vec![];
+        let vfaces = vertex_faces(verts.len(), &tris);
+        // Vertex 1 appears twice -> a pinch, not a simple polygon.
+        let loop_v = vec![0i64, 1, 2, 1, 3];
+        assert!(planar_cap(&verts, &tris, &vfaces, &loop_v).is_none());
+    }
+
+    #[test]
+    fn planar_cap_rejects_nonplanar_loop() {
+        let verts: Vec<V3> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.5],
+            [0.0, 1.0, 0.0],
+        ];
+        let tris: Vec<[i64; 3]> = vec![];
+        let vfaces = vertex_faces(verts.len(), &tris);
+        let loop_v = vec![0i64, 1, 2, 3];
+        assert!(planar_cap(&verts, &tris, &vfaces, &loop_v).is_none());
+    }
+
+    #[test]
+    fn planar_cap_rejects_crossing_body() {
+        // Planar rectangle loop in z=0 with a body face passing through it.
+        let verts: Vec<V3> = vec![
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 0.5, 1.0],
+            [2.0, 0.5, -1.0],
+            [2.6, 0.5, 1.0],
+        ];
+        // Face [4,5,6] is not incident to any loop vertex; its 4-5 edge pierces
+        // the plane at (2.0,0.5,0), which lies inside the rectangle whichever
+        // diagonal the cap uses, so every triangulation has a proper crossing.
+        let tris: Vec<[i64; 3]> = vec![[4, 5, 6]];
+        let vfaces = vertex_faces(verts.len(), &tris);
+        let loop_v = vec![0i64, 1, 2, 3];
+        assert!(planar_cap(&verts, &tris, &vfaces, &loop_v).is_none());
     }
 }

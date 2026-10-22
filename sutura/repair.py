@@ -70,7 +70,7 @@ from sutura_engine.pipeline.presets import (
    resolve_dressing_scale, resolve_dressing_sigma_scale, resolve_flap,
    resolve_ftetwild, resolve_ftetwild_optimize, resolve_graft,
    resolve_mode_params, resolve_si_mode, resolve_splint, resolve_tamponade,
-   tuning_applied_for
+   resolve_coaptation, tuning_applied_for
 )
 from sutura_engine.pipeline.mesh_io import (
     write_obj, check_units, read_3mf_units, read_obj, stl_write_binary,
@@ -174,6 +174,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  tamponade=False,
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
+                 coaptation=False,
                  trace_path=None):
     """Repair one file. Returns (result_dict, category).
 
@@ -253,6 +254,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             tamponade=tamponade,
             si_mode=si_mode,
             splint=splint, splint_adaptive=splint_adaptive,
+            coaptation=coaptation,
             dressing_force_adopt=dressing_force_adopt))
 
         # Post-repair confidence + Health/Risk scores (needed for the budget
@@ -541,6 +543,22 @@ def main():
                         help='disable the Splint (#18) exact solid-rebuild tier '
                              '(it is off by default; this forces it off even '
                              'when SUTURA_SPLINT / the default switch enables it)')
+    parser.add_argument('--coaptation', action='store_true',
+                        help='enable the Coaptation tier (#19): it is ON by '
+                             'default (this flag is kept for compatibility); '
+                             'disable with --no-coaptation. Rebuilds a folded / '
+                             'overlapping multi-body soup: the reload-equivalent '
+                             'float32 soup is split into bodies, boundary '
+                             '(seam) vertices within one float32 ULP are welded, '
+                             'each body is closed and the bodies are folded with '
+                             'the exact union. Runs after Splint and before '
+                             'fTetWild; adopted only when STRICTLY better '
+                             '(watertight, 0 exact self-intersections, no worse '
+                             'on holes / non-manifold / components). '
+                             'env: SUTURA_COAPTATION / SUTURA_COAPTATION_DEFAULT')
+    parser.add_argument('--no-coaptation', action='store_true',
+                        help='disable the Coaptation tier (#19); it is on by '
+                             'default, so this turns it off')
     parser.add_argument('--flap', action='store_true',
                         help='run the Flap surface-based hole filler as the '
                              'FIRST Stage-1 step (a pre-pass on the input, '
@@ -983,6 +1001,11 @@ def main():
     # --experimental-splint forces.
     _splint_arg = resolve_splint(no_splint=args.no_splint,
                                  force=args.experimental_splint)
+    # Coaptation (#19): ON by default; --no-coaptation disables it and
+    # --coaptation forces it. SUTURA_COAPTATION (0/1) and
+    # SUTURA_COAPTATION_DEFAULT override the built-in default.
+    _coaptation_arg = resolve_coaptation(no_coaptation=args.no_coaptation,
+                                         force=args.coaptation)
     # Flap: on by default; --no-flap disables it, --flap forces it, SUTURA_FLAP
     # may set 0/1 and SUTURA_FLAP_DEFAULT overrides the built-in default.
     _flap_arg = resolve_flap(no_flap=args.no_flap, force=args.flap)
@@ -1028,6 +1051,7 @@ def main():
                             dressing_rmax_scale=_dressing_rmax_scale,
                             dressing_sigma_scale=_dressing_sigma_scale,
                             splint=_splint_arg,
+                            coaptation=_coaptation_arg,
                             si_mode=si_mode,
                             dressing_force_adopt=args.dressing_force_adopt,
                             indirect_autorefine=args.experimental_indirect_autorefine,

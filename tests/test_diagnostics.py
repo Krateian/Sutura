@@ -42,10 +42,11 @@ def test_collect_system_info():
 
 def test_collect_methods_availability():
     methods = diagnostics.collect_methods_availability()
-    assert len(methods) == 18
+    assert len(methods) == 19
     ids = {m['id'] for m in methods}
     assert 'quick_clean' in ids
     assert 'tamponade' in ids
+    assert 'coaptation' in ids
     assert 'graft' in ids
 
 
@@ -69,7 +70,7 @@ def test_create_diagnostics_zip():
             assert sys_info['sutura_version'] == res['version']
 
             avail = json.loads(zf.read('methods_availability.json'))
-            assert len(avail) == 18
+            assert len(avail) == 19
 
 
 def test_run_diagnostics_cli():
