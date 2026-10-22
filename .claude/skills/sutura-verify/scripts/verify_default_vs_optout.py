@@ -45,6 +45,10 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import verify_repair_shape as vrs  # noqa: E402
+try:
+    import verify_visual_qa as vvq
+except ImportError:
+    vvq = None
 
 PRIVATE_HINT = ("private samples: pass the path on the command line only; "
                 "never add their name to a tracked file")
@@ -318,6 +322,15 @@ def _markdown_modes(results, mode):
             b['two_sided_max_mm'], c['two_sided_max_mm'],
             b['volume_error_rel'], c['volume_error_rel'], bp, cp,
             r['verdict'], 'yes' if r.get('changed') else 'no'))
+    vqa_bad = [r for r in results if r.get('verdict') == 'VISUAL-WORSE']
+    if vqa_bad:
+        lines.append('')
+        lines.append('## Visual QA Failures')
+        for r in vqa_bad:
+            vqa = r.get('vqa') or {}
+            sheet = vqa.get('contact_sheet') or ''
+            sheet_str = f' (sheet: {sheet})' if sheet else ''
+            lines.append('* **%s**: %s%s' % (r['name'], r.get('verdict_reason', ''), sheet_str))
     return '\n'.join(lines) + '\n'
 
 
@@ -347,8 +360,24 @@ def main():
     ap.add_argument('--extra-arg', action='append', default=[])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=900)
+    ap.add_argument('--visual', dest='visual', action='store_true', default=None,
+                    help='visual QA: render comparison on changed meshes (default on with --quality)')
+    ap.add_argument('--no-visual', dest='visual', action='store_false',
+                    help='disable visual QA render comparison')
     args = ap.parse_args()
     mode = 'byte' if args.byte else 'quality' if args.quality else 'feature'
+    visual_enabled = args.visual if args.visual is not None else (mode == 'quality')
+    has_visual = (vvq is not None and getattr(vvq, 'HAS_PYSIDE6', False))
+    if not has_visual:
+        if args.visual is True:
+            print('error: PySide6 is required for --visual', file=sys.stderr)
+            return 2
+        elif args.visual is None and mode == 'quality':
+            print('warning: PySide6 not installed; visual QA skipped in quality mode', file=sys.stderr)
+            visual_enabled = False
+        else:
+            visual_enabled = False
+
     if args.exclude_nondeterministic and mode == 'feature':
         print('error: --exclude-nondeterministic needs --byte or --quality', file=sys.stderr)
         return 2
@@ -458,9 +487,30 @@ def main():
         else:
             verdict, reason = judge_quality(b, c, b.get('tolerance_mm', 0.05))
         changed = bool(b.get('md5') != c.get('md5'))
+
+        vqa_res = None
+        if visual_enabled and vvq is not None and changed and verdict in ('CHANGED', 'BETTER'):
+            b_stl = os.path.join(out_dir, key_b, '%s.stl' % name)
+            c_stl = os.path.join(out_dir, key_c, '%s.stl' % name)
+            if os.path.exists(b_stl) and os.path.exists(c_stl):
+                try:
+                    sheet_path = os.path.join(out_dir, '%s_vqa_diff.png' % name)
+                    vqa_res = vvq.evaluate_visual_diff(in_path, b_stl, c_stl, out_sheet=sheet_path)
+                    if vqa_res and vqa_res.get('is_visual_worse'):
+                        verdict = 'VISUAL-WORSE'
+                        reason = vqa_res['reason']
+                except Exception as ex:
+                    print('  visual QA warning: %s' % ex, flush=True)
+
         print('  -> %s (%s)' % (verdict, reason), flush=True)
-        return {'name': name, key_b: b, key_c: c, 'verdict': verdict,
-                'verdict_reason': reason, 'changed': changed}
+        res = {'name': name, key_b: b, key_c: c, 'verdict': verdict,
+               'verdict_reason': reason, 'changed': changed}
+        if vqa_res:
+            res['vqa'] = vqa_res
+        return res
+
+    if visual_enabled and vvq is not None:
+        vvq.ensure_qapp()
 
     results = []
     jobs = max(1, int(args.jobs))
@@ -481,7 +531,7 @@ def main():
         md = _markdown_modes(results, mode)
     with open(os.path.join(out_dir, 'report.md'), 'w') as f:
         f.write(md)
-    bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR')]
+    bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR', 'VISUAL-WORSE')]
     skipped = [r['name'] for r in results if r['verdict'] == 'SKIPPED-NONDET']
     print('\nwrote %s/summary.json and report.md' % out_dir)
     print('FAIL: %s' % (', '.join(bad) if bad else 'none'))

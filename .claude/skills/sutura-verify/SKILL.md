@@ -24,6 +24,14 @@ This skill is how an agent that did NOT write the change checks the claim.
   farther than the tolerance.
 - tolerance = `clamp(bbox_diag / 10000, 0.0125, 0.05)` mm (the Tamponade plug
   gate; keep the same formula so numbers are comparable across tiers).
+- visual QA: 12-camera spherical rig comparison via `verify_visual_qa.py` (default
+  on with `--quality`; opt out with `--no-visual`). Requires only `numpy` and
+  `PySide6` (zero external dependencies: no scipy, no Pillow). Separate flags for
+  `EXCESS_FOREGROUND` (debris/swelling), `MISSING_FOREGROUND` (capped holes/lost
+  features), `VOXEL_STEPPING` and `SURFACE_DISTORTION`. Dual scoring for real
+  broken models (unmasked full vs masked healthy-skin). Generates 512px zoomed
+  detail renders for flagged/boundary cases. Fails as `VISUAL-WORSE` with an
+  annotated contact sheet.
 - wall-clock runtime of each run.
 
 ## Rules
@@ -56,7 +64,9 @@ The comparison script has three modes:
   worse on watertight (holes/NM), SI-after, two-sided Hausdorff (existing
   tolerance), MC-GWN union volume (0.1 % of input) or parts. Every changed mesh
   is listed. Missing SI is a hard failure. `--exclude-nondeterministic` also
-  works here, because fTetWild output is not deterministic.
+  works here, because fTetWild output is not deterministic. `--visual` is
+  enabled by default here (runs on changed meshes; disable with `--no-visual`);
+  any visual regression triggers `VISUAL-WORSE` with an annotated contact sheet.
 
 `--jobs N` runs meshes in parallel (`--jobs 4` for gates). Baseline outputs are
 cached under `--cache-dir` (default `~/.cache/sutura-verify`) keyed by the input
@@ -94,6 +104,11 @@ The comparison half (runs the repair twice per mesh, default vs opt-out):
     [MESH ...] --repo <repo> --python <repair-venv>/bin/python \
     --opt-out-flag --no-tamponade --out-dir /tmp/<scratch>
 ```
+The visual QA comparison (baseline vs candidate vs input):
+```
+<repair-venv>/bin/python .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
+    BASELINE.stl CANDIDATE.stl [--input INPUT.stl] [--contact-sheet DIFF.png]
+```
 With no MESH it uses the public corpus `tests/real-world-samples/`; `--limit N`
 caps the count. The runner exits non-zero when any mesh is WORSE and writes
 `summary.json` + `report.md`. `--python` must be the repair venv interpreter (numpy + the mandatory
@@ -101,9 +116,12 @@ caps the count. The runner exits non-zero when any mesh is WORSE and writes
 
 ## Portability (Linux + macOS)
 - `--repo` resolves by walking up to `sutura/repair.py`; never hard-code it.
-- `sutura_geom` and PySide6 are optional: without them distance/leak/SI and
-  rendering degrade to zeros/None rather than failing. Read the printed
-  `si_output_note` / `render_error` to see which parts actually ran.
+- `sutura_geom` and PySide6 are optional for base shape checks: without them
+  distance/leak/SI and rendering degrade to zeros/None rather than failing.
+  Read the printed `si_output_note` / `render_error` to see which parts actually ran.
+  For visual QA (`verify_visual_qa.py`), only `numpy` and `PySide6` are needed;
+  if PySide6 is absent, explicit `--visual` exits with code 2, while `--quality`
+  prints a warning and continues without visual QA.
 - OrcaSlicer is found via `SUTURA_ORCA`, the macOS app bundle, or `PATH`; when
   absent the Orca columns are `?`/`unknown` and the verdict falls back to the
   components count.
