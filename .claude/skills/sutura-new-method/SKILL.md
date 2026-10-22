@@ -13,7 +13,7 @@ Skip any one and an install, the GUI, or a reviewer silently loses the method.
 Every step below is required unless marked optional.
 
 ## 0. Design first
-- Read `AGENTS.md` → "How to add a repair method" and the registry code
+- Read `docs/agents/tiers-registry.md` → "How to add a repair method" and the registry code
   (`graphify query "repair method registry"`, `graphify explain RepairMethod`).
 - Decide `num`, canonical `id` (slug), `display_name`, `family`,
   `invents_geometry`, and whether it needs user input (`needs_user_input`

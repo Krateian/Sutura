@@ -23,6 +23,22 @@ Single source of truth for Claude, OpenCode workers and other agents.
 - Every worker prompt must tell the worker to use graphify and to refresh it
   after commits.
 
+## Ponytail ladder (before new code)
+- Ask, in order: is it needed? -> is it already in the codebase (`graphify`)?
+  -> do stdlib/platform provide it? -> does an installed dependency provide it?
+  -> for a new tool/module, does `patent --fast --json "<idea>"` show a ready
+  implementation? -> will one line do? Only then write minimal code.
+- The plan's Challenges section records these answers in one line each.
+  `patent` is only for a genuinely new tool/module idea; do not call it for
+  ordinary fixes.
+
+## Surgical changes (Karpathy)
+- Touch only the requested lines. Delete dead code you created; do **not**
+  delete existing dead code — mark it in `docs/agents/legacy-and-duplicates.md`.
+- If a refactor touches far more lines than the requested behaviour change,
+  justify it in the commit/PR. An approved documentation migration is an
+  explicit exception; code changes are not.
+
 ## Anatomy / dead-code rule
 - `scripts/anatomy.sh` cross-checks vulture (static, `--min-confidence 60`)
   against coverage.py (dynamic) over `sutura/`. It writes `vulture.txt`,

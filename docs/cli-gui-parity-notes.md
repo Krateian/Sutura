@@ -1,6 +1,6 @@
 # CLI / GUI feature parity notes
 
-The standing rule (AGENTS.md, FAZ14): **every CLI feature must have a GUI
+The standing rule (`AGENTS.md` hard rule 9; details in `docs/agents/gui-viewer.md`, FAZ14): **every CLI feature must have a GUI
 control and every GUI control a CLI flag** — a feature is added to BOTH by
 default; only when one side is technically impossible is it omitted, and that
 omission must be documented here. This file records the current parity gaps
