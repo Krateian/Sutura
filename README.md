@@ -662,7 +662,10 @@ input faces are carried through verbatim (`healthy_faces_kept`). Residual
 self-intersections are then melted in thin layers from the deepest point
 outward, and a layer that would not reduce the crossing count is rolled back, so
 the tier never ends up worse. It is the interior counterpart of Flap and Graft.
-It runs as a **pre-pass on the cleaned input, before Flap and Stage 1**, and
+The boundary walk and the reference-surface ring use a canonical vertex order,
+so the loop decomposition and the selected plug do not depend on the order the
+input triangles are stored in. It runs as a **pre-pass on the cleaned input,
+before Flap and Stage 1**, and
 gets a **second chance after the Stage-1/Flap closing ladder, before the
 Graft/fTetWild tiers**.
 

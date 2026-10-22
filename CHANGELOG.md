@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Tamponade's boundary-loop decomposition and reference-plug choice are independent of the input face order.** The greedy loop walker visited starts and neighbours in the order the input triangles produced them, and the reference-surface ring was collected in `HashMap` order; a permuted face list could therefore split a pinched / non-manifold rim differently and select a different plug (on `thingi10k_100827` six face permutations gave six decompositions and one to four plugs). The walker now traverses in ascending vertex-id order (the same canonical order as the Python verifier's `defects._boundary_loops`), and the ring faces are collected in sorted-vertex-triple order. The selected plug is now identical for every face permutation. An out-of-range plug candidate (a stale multi-sub-plug vertex base) is also rejected as a structural failure instead of panicking.
+
 ## [0.9.3] - 2026-10-22
 
 **In short:** Sutura no longer needs PyMeshLab. Every repair step now runs in Sutura's own Rust core and Python engine: hole closing, self-intersection detection, cleanup, decimation, distance measurement and mesh reading/writing. Installs get smaller and simpler, and results stay the same or get better: on the 40-mesh test corpus nothing got worse. Older installs can also self-update again.
