@@ -138,15 +138,14 @@ def _manifold_resample(verts, tris, voxel, offset, absdist, raystab_full=False):
       before hole closing.
 
     The optional ``raystab_full`` (passed straight to
-    ``topology.resample_uniform``) lets the ray-stabbing vote decide the sign in
-    every cell instead of only the winding-ambiguous band.  It is *not* enabled
-    by ``build_proxy``: it recovers a folded/open flap the winding-only field
-    truncates (``thingi10k_100827``: z_top 30.1 -> 34.4, SI 664 -> 81) but
-    degrades the common case (broken sphere: ``projected_fraction_healthy``
-    0.981 -> 0.878, faces 11298 -> 20000) through scattered single-cell sign
-    flips.  Parked until the vote rule is narrowed to the recovery direction
-    only; see ``/tmp/followups.md`` and
-    ``tests/test_proxy_repair.py::test_build_proxy_open_flap_expected_fail``.
+    ``topology.resample_uniform``) runs a **recovery-only** ray-stab pass:
+    cells the winding calls outside are flipped to inside when a stable
+    supermajority of the cast rays votes inside, and a cell the winding calls
+    inside is never flipped outside.  That recovers a folded/open flap the
+    winding-only field truncates (``thingi10k_100827``) without the scattered
+    reverse flips that used to degrade a clean field (broken sphere).  The
+    signed strategy enables it; see
+    ``tests/test_proxy_repair.py::test_build_proxy_open_flap_recovers``.
 
     Returns ``(verts, tris)``.
     """
@@ -223,9 +222,11 @@ def build_proxy(verts, tris, voxel=None):
     if max_dim / voxel < MIN_GRID_CELLS:
         voxel = max_dim / MIN_GRID_CELLS
 
-    # Strategy 1: Signed resampling with hole closure (produces a single watertight shell)
+    # Strategy 1: Signed resampling with hole closure (produces a single watertight shell).
+    # The recovery-only ray-stab vote (raystab_full) restores a folded/open flap
+    # the winding-only sign field truncates; it never flips inside -> outside.
     try:
-        rv, rt = _manifold_resample(in_v, in_t, voxel, 0.0, False)
+        rv, rt = _manifold_resample(in_v, in_t, voxel, 0.0, False, raystab_full=True)
         for _ in range(2):
             rv, rt, _closed, _new = topology.close_holes(rv, rt, maxholesize=10000)
         pv, pt = _filter_debris_components(rv, rt, min_faces=MIN_DEBRIS_COMPONENT_FACES)
