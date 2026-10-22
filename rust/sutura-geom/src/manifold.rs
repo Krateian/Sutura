@@ -685,47 +685,79 @@ pub fn outer_shell_union<'py>(
         }
     }
     let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
-    let dil = dilation.unwrap_or(5e-4 * if diag > 1e-6 { diag } else { 100.0 });
-
-    let mut united: Option<Manifold> = None;
-    for (cv, ct) in comps {
-        let c = area_weighted_centroid(&cv, &ct);
-        let ext = extents(&cv);
-        let scale = [
-            (ext[0] + dil) / ext[0].max(1e-6),
-            (ext[1] + dil) / ext[1].max(1e-6),
-            (ext[2] + dil) / ext[2].max(1e-6),
-        ];
-        let scaled: Vec<[f64; 3]> = cv
-            .iter()
-            .map(|p| {
-                [
-                    (p[0] - c[0]) * scale[0] + c[0],
-                    (p[1] - c[1]) * scale[1] + c[1],
-                    (p[2] - c[2]) * scale[2] + c[2],
-                ]
-            })
-            .collect();
-        let Ok(m) = f32_mesh(&scaled, &ct) else {
-            continue;
-        };
-        if m.status().is_err() || m.is_empty() {
-            continue;
-        }
-        united = Some(match united {
-            Some(u) => u.union(&m),
-            None => m,
-        });
-    }
-    let Some(u) = united else {
+    let Some((lv, lt)) = union_ladder(&comps, diag, dilation) else {
         return f64_arrays(py, &v, &t);
     };
-    if u.status().is_err() || u.is_empty() {
-        return f64_arrays(py, &v, &t);
-    }
-    let (ov, ot) = mesh_to_f32(&u);
-    let (lv, lt) = largest_component(&ov, &ot);
     f64_arrays(py, &lv, &lt)
+}
+
+/// Dilation ladder for `outer_shell_union`. Tries ZERO dilation first: the
+/// historical default `5e-4*diag` dilation pushed result vertices outside the
+/// input (the measured "leak"). Zero dilation keeps the outward result vertices
+/// on the input surface, and is preferred whenever it preserves at least as much
+/// material (faces after `largest_component`) as the default; this removes the
+/// leak at no topology cost. Only when the default keeps strictly more faces
+/// (the parts need a bridge) is the default used. An explicit `dilation`
+/// argument is honoured verbatim (single attempt, unchanged behaviour). Pure so
+/// it can be unit-tested without the Python GIL; returns the final
+/// (`largest_component`) f64 arrays.
+fn union_ladder(
+    comps: &[(Vec<[f64; 3]>, Vec<[usize; 3]>)],
+    diag: f64,
+    dilation: Option<f64>,
+) -> Option<(Vec<[f64; 3]>, Vec<[usize; 3]>)> {
+    let unite = |dil: f64| -> Option<Manifold> {
+        let mut united: Option<Manifold> = None;
+        for (cv, ct) in comps {
+            let c = area_weighted_centroid(cv, ct);
+            let ext = extents(cv);
+            let scale = [
+                (ext[0] + dil) / ext[0].max(1e-6),
+                (ext[1] + dil) / ext[1].max(1e-6),
+                (ext[2] + dil) / ext[2].max(1e-6),
+            ];
+            let scaled: Vec<[f64; 3]> = cv
+                .iter()
+                .map(|p| {
+                    [
+                        (p[0] - c[0]) * scale[0] + c[0],
+                        (p[1] - c[1]) * scale[1] + c[1],
+                        (p[2] - c[2]) * scale[2] + c[2],
+                    ]
+                })
+                .collect();
+            let Ok(m) = f32_mesh(&scaled, ct) else {
+                continue;
+            };
+            if m.status().is_err() || m.is_empty() {
+                continue;
+            }
+            united = Some(match united {
+                Some(u) => u.union(&m),
+                None => m,
+            });
+        }
+        united
+    };
+    let attempt = |dil: f64| -> Option<(Vec<[f64; 3]>, Vec<[usize; 3]>)> {
+        let u = unite(dil)?;
+        if u.status().is_err() || u.is_empty() {
+            return None;
+        }
+        let (ov, ot) = mesh_to_f32(&u);
+        Some(largest_component(&ov, &ot))
+    };
+
+    if let Some(d) = dilation {
+        return attempt(d);
+    }
+
+    let dil_default = 5e-4 * if diag > 1e-6 { diag } else { 100.0 };
+    match (attempt(0.0), attempt(dil_default)) {
+        (Some(zero), Some(def)) => Some(if zero.1.len() >= def.1.len() { zero } else { def }),
+        (Some(zero), None) => Some(zero),
+        (None, def) => def,
+    }
 }
 
 /// Union two f64 meshes (Graft local stitch).
@@ -905,5 +937,89 @@ mod tests {
         let (cv, ct) = component_arrays(&verts, &tris, &comps[0]);
         assert_eq!(cv, vec![verts[1], verts[2], verts[3]]);
         assert_eq!(ct, vec![[2, 0, 1]]);
+    }
+
+    fn cube(cx: f64, cy: f64, cz: f64, side: f64) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let h = side / 2.0;
+        let v = vec![
+            [cx - h, cy - h, cz - h],
+            [cx + h, cy - h, cz - h],
+            [cx + h, cy + h, cz - h],
+            [cx - h, cy + h, cz - h],
+            [cx - h, cy - h, cz + h],
+            [cx + h, cy - h, cz + h],
+            [cx + h, cy + h, cz + h],
+            [cx - h, cy + h, cz + h],
+        ];
+        let t = vec![
+            [0, 2, 1], [0, 3, 2],
+            [4, 5, 6], [4, 6, 7],
+            [0, 1, 5], [0, 5, 4],
+            [1, 2, 6], [1, 6, 5],
+            [2, 3, 7], [2, 7, 6],
+            [3, 0, 4], [3, 4, 7],
+        ];
+        (v, t)
+    }
+
+    fn bbox(v: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
+        let mut lo = v[0];
+        let mut hi = v[0];
+        for p in v {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        (lo, hi)
+    }
+
+    fn two_overlapping_cubes() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let (av, at) = cube(0.0, 0.0, 0.0, 1.0);
+        let (bv, bt) = cube(0.5, 0.0, 0.0, 1.0);
+        let mut verts = av.clone();
+        verts.extend_from_slice(&bv);
+        let off = av.len();
+        let mut tris = at;
+        tris.extend(
+            bt.iter()
+                .map(|t| [t[0] + off, t[1] + off, t[2] + off]),
+        );
+        (verts, tris)
+    }
+
+    #[test]
+    fn union_ladder_prefers_zero_dilation_when_components_fuse() {
+        let (verts, tris) = two_overlapping_cubes();
+        let comps = split_components(&verts, &tris);
+        assert_eq!(comps.len(), 2);
+        let (lo, hi) = bbox(&verts);
+        let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+        let out = union_ladder(&comps, diag, None).expect("union of overlapping cubes");
+        let (ov, _ot) = out;
+        let (olo, ohi) = bbox(&ov);
+        let eps = 1e-4;
+        for k in 0..3 {
+            assert!(
+                olo[k] >= lo[k] - eps && ohi[k] <= hi[k] + eps,
+                "auto ladder leaked outside the input bbox on axis {k}: {olo:?}..{ohi:?} vs {lo:?}..{hi:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn union_explicit_dilation_grows_beyond_input() {
+        let (verts, tris) = two_overlapping_cubes();
+        let comps = split_components(&verts, &tris);
+        let (lo, hi) = bbox(&verts);
+        let diag = ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+        let out = union_ladder(&comps, diag, Some(5e-4 * diag)).expect("union with explicit dilation");
+        let (ov, _ot) = out;
+        let (olo, ohi) = bbox(&ov);
+        let eps = 1e-4;
+        assert!(
+            olo[0] < lo[0] - eps || ohi[0] > hi[0] + eps,
+            "explicit dilation did not grow the result: {olo:?}..{ohi:?} vs {lo:?}..{hi:?}"
+        );
     }
 }
