@@ -57,7 +57,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                  dressing_rmax_scale=None, dressing_sigma_scale=None,
                  tamponade=False,
                  si_mode=None, dressing_force_adopt=False,
-                 splint=False, splint_adaptive=None):
+                 splint=False, splint_adaptive=None, coaptation=False):
     """Repair a single STL/OBJ/3MF file. Returns the report dict."""
     bad_coords = scan_bad_coordinates(src)
     if bad_coords:
@@ -124,6 +124,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
             tamponade=run_tamponade,
             si_mode=si_mode,
             splint=splint, splint_adaptive=splint_adaptive,
+            coaptation=coaptation,
             dressing_force_adopt=dressing_force_adopt)
         report['_fp'] = history.mesh_fingerprint(verts, tris)
         report['defects'] = detect_defects(verts, tris)
@@ -318,7 +319,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                dressing_rmax_scale=None, dressing_sigma_scale=None,
                tamponade=False,
                si_mode=None, dressing_force_adopt=False,
-               splint=False, splint_adaptive=None):
+               splint=False, splint_adaptive=None, coaptation=False):
     """Repair every object mesh in a 3MF archive, preserving structure.
 
     Per-object Stage 2: any object that stage 1 closes (two-manifold with no
@@ -380,6 +381,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
                 tamponade=tamponade,
                 si_mode=si_mode,
                 splint=splint, splint_adaptive=splint_adaptive,
+                coaptation=coaptation,
                 dressing_force_adopt=dressing_force_adopt)
             rep['defects'] = detect_defects(verts, tris)
             rep['_fp'] = history.mesh_fingerprint(verts, tris)

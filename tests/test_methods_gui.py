@@ -118,13 +118,13 @@ def main():
         'method_auto_rec', 3, gui._method_name(3), 82), w._item_by_path[a].text(1)
     print('ok  recommendation shown in the Method column')
 
-    # Use method menu: 18 entries, placeholders / needs-input disabled
+    # Use method menu: 19 entries, placeholders / needs-input disabled
     w._on_tag_toggle([b], 'method', 3)
     m = gui.QMenu(w.tree)
     um = gui._KeepOpenMenu(gui._t('menu_use_method'), m)
     w._build_use_method_menu(um, [b], b)
     acts = um.actions()
-    assert len(acts) == 18, len(acts)
+    assert len(acts) == 19, len(acts)
     assert acts[2].isChecked() and '\u2713 1' in acts[2].text(), acts[2].text()
     # 8-12 are implemented and enabled (12 opens the repeat picker); 14
     # (Mirror Complete) is enabled.  13 Graft needs the Rust sutura_geom
@@ -153,6 +153,11 @@ def main():
     assert '#17' in w._item_by_path[b].text(1), w._item_by_path[b].text(1)
     w._on_tag_toggle([b], 'method', 17)
     assert '#17' not in w._item_by_path[b].text(1), w._item_by_path[b].text(1)
+    # 19 Coaptation is selectable; enabled iff the Rust extension exposes the
+    # seam-weld/union kernel (coaptation_available).
+    assert 'Coaptation' in acts[18].text(), acts[18].text()
+    c_ok, _c_reason = methods.get_method(19).available()
+    assert acts[18].isEnabled() is c_ok, (acts[18].isEnabled(), c_ok)
     print('ok  Use method list, availability and order badge')
 
     # 4.1: unchecking a method renumbers the siblings' order badges live
@@ -553,6 +558,35 @@ def main():
     assert w._splint is False
     assert (w.chk_splint, False) in w._options_defaults
     print('ok  Splint checkbox + worker flag + defaults')
+
+    # Coaptation (#19, seam union): ON by default; checkbox -> --coaptation /
+    # --no-coaptation (the opt-out), maps to MainWindow._coaptation and is
+    # registered in the defaults.
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], coaptation=True)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--coaptation' in captured['args'], captured['args']
+    assert '--no-coaptation' not in captured['args'], captured['args']
+    captured.clear()
+    gui.subprocess.Popen = _fake_popen
+    try:
+        rw = gui.RepairWorker([b], coaptation=False)
+        rw._run_one(b)
+    finally:
+        gui.subprocess.Popen = orig_popen
+    assert '--no-coaptation' in captured['args'], captured['args']
+    assert '--coaptation' not in captured['args'], captured['args']
+    assert w._coaptation is True and w.chk_coaptation.isChecked()
+    w.chk_coaptation.setChecked(False)
+    assert w._coaptation is False
+    w.chk_coaptation.setChecked(True)
+    assert w._coaptation is True
+    assert (w.chk_coaptation, True) in w._options_defaults
+    print('ok  Coaptation checkbox + worker flag + defaults')
 
     # The post-batch "Try Dressing" button appears only when a finished result
     # suggested Dressing, and clicking it force-reruns exactly those files.

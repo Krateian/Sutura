@@ -96,6 +96,8 @@ _METHOD_ALIASES: Dict[str, int] = {
     '17': 17, 'm17': 17, 'tamponade': 17, 'lava': 17,
     # 18: Splint (exact solid rebuild)
     '18': 18, 'm18': 18, 'splint': 18,
+    # 19: Coaptation (tolerance seam-weld + per-body union)
+    '19': 19, 'm19': 19, 'coaptation': 19, 'seam_weld': 19, 'coapt': 19,
 }
 
 
@@ -202,6 +204,7 @@ _CANONICAL_BY_NUM = {
     13: 'graft', 14: 'mirror_complete', 15: 'wall_thicken', 16: 'dressing',
     17: 'tamponade',
     18: 'splint',
+    19: 'coaptation',
 }
 
 
@@ -276,6 +279,17 @@ def _score(method_id: str, analysis: Any) -> Tuple[float, str, str, Tuple[Any, .
                  + 0.25 * _clamp01(si / 200.0))
         return (_clamp01(score), 'damage reconstructable by an exact solid rebuild',
                 'rec_reason_splint', ())
+    if method_id == 'coaptation':
+        # Default-on in the ladder, but only useful for a folded/overlapping
+        # multi-body soup: a high component count with real damage is the
+        # signal.  Unavailable geometry is filtered out before scoring.
+        multi = _clamp01((components - 1) / 3.0)
+        score = (0.5 * multi
+                 + 0.3 * _clamp01((holes + nm) / 3.0)
+                 + 0.2 * _clamp01(si / 200.0))
+        return (_clamp01(score),
+                'folded/overlapping multi-body soup (seam-weld union)',
+                'rec_reason_coaptation', ())
     if method_id == 'balloon':
         single = _clamp01(_a(analysis, 'single_side_score'))
         relief = _clamp01(_a(analysis, 'relief_score'))

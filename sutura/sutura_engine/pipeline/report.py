@@ -691,6 +691,22 @@ def human_report(r, show_defects=False, show_diff=False):
                         sp_r.get('seconds', 0), sp_r.get('res'),
                         sp_r.get('adaptive'), sp_r.get('output_parts'),
                         state))
+    cp_r = r.get('coaptation')
+    if cp_r and cp_r.get('ran'):
+        if cp_r.get('adopted'):
+            state = ' adopted'
+        else:
+            state = ' NOT adopted (%s)' % (cp_r.get('reject_reason')
+                                           or cp_r.get('reason') or '?')
+        _c_cand = cp_r.get('candidate') or {}
+        lines.append('  Coaptation (seam union) : %s bodies -> %s faces, '
+                     'si %s -> %s, parts %s -> %s, %s'
+                     % (cp_r.get('bodies_after_weld', cp_r.get('bodies_in')),
+                        cp_r.get('output_faces') or _c_cand.get('faces', 0),
+                        (cp_r.get('baseline') or {}).get('si'),
+                        _c_cand.get('si'),
+                        (cp_r.get('baseline') or {}).get('parts'),
+                        _c_cand.get('parts'), state))
     eng_r = r.get('engines')
     if eng_r:
         lines.append('')

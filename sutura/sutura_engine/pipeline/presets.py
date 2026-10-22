@@ -327,6 +327,64 @@ SPLINT_DEFAULT_ENABLED = False
 SPLINT_ENV = 'SUTURA_SPLINT'
 
 
+# Coaptation (#19) tolerance seam-weld + per-body union tier.  It runs on the
+# ORIGINAL input arrays: the reload-equivalent soup is split into bodies, seam
+# vertices within COAPTATION_SEAM_ULP_K float32 ULPs of the largest coordinate
+# are merged, each body is closed and the bodies are folded with the exact
+# union.  It sits after Splint and before fTetWild and is ON by default because
+# its result is adopted only when it is STRICTLY better than the result the
+# ladder currently holds (so a mesh that does not benefit is byte-identical).
+# COAPTATION_MAX_FACES is a hard input cap; COAPTATION_TIMEOUT is the outer
+# wall-clock abort (all-or-nothing), consistent with the fTetWild timeout.
+COAPTATION_SEAM_ULP_K = 1
+
+COAPTATION_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
+
+COAPTATION_TIMEOUT = _BALANCED_INTENSITY.ftetwild_timeout
+
+COAPTATION_DEFAULT_ENABLED = True
+
+COAPTATION_ENV = 'SUTURA_COAPTATION'
+
+
+def _coaptation_default_enabled():
+    """The single Coaptation-default switch: module constant overridden by the
+    ``SUTURA_COAPTATION_DEFAULT`` env var (truthy = run the tier by default)."""
+    raw = os.environ.get('SUTURA_COAPTATION_DEFAULT')
+    if raw is None:
+        return bool(COAPTATION_DEFAULT_ENABLED)
+    return str(raw).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def resolve_coaptation(no_coaptation=False, force=False, environ=None,
+                       default_enabled=None):
+    """Resolve the ``coaptation`` argument (method #19, seam-weld union).
+
+    Returns ``False`` (disabled), ``True`` (forced) or ``'auto'`` (the ladder
+    fallback: tried on every full-mode input, adopting only a strictly better
+    union).  Precedence: ``--no-coaptation`` disables; ``--coaptation`` forces;
+    ``SUTURA_COAPTATION`` may set ``0/1``.  With none of those set the answer
+    follows the single default switch (:data:`COAPTATION_DEFAULT_ENABLED`, ON,
+    or the ``SUTURA_COAPTATION_DEFAULT`` env var; ``default_enabled`` overrides
+    both for tests).  The library default in ``repair_mesh_from_arrays`` stays
+    ``False``.
+    """
+    if no_coaptation:
+        return False
+    if force:
+        return True
+    env = environ if environ is not None else os.environ.get(COAPTATION_ENV)
+    if env is not None:
+        val = str(env).strip().lower()
+        if val in ('0', 'false', 'no', 'off'):
+            return False
+        if val in ('1', 'true', 'yes', 'on'):
+            return True
+    if default_enabled is None:
+        default_enabled = _coaptation_default_enabled()
+    return 'auto' if default_enabled else False
+
+
 # Decimation of a wastefully dense fTetWild boundary. fTetWild with
 # optimize=False can return a boundary far denser than the input (measured on
 # thingi10k_73444: 473,212 output faces at 7,882 input faces, against 14,012

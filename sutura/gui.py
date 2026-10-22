@@ -103,6 +103,7 @@ STRINGS = {
         'method_name_graft': 'Graft (shell wrap)',
         'method_name_dressing': 'Dressing (viscosity coat)',
         'method_name_splint': 'Splint (exact solid rebuild)',
+        'method_name_coaptation': 'Coaptation (seam union)',
         'method_name_mirror_complete': 'Mirror Complete',
         'method_name_wall_thicken': 'Wall Thicken',
         'method_tip_splint': 'SPLINT (#18) — exact solid rebuild: proxy the '
@@ -110,6 +111,13 @@ STRINGS = {
             'produce a watertight solid boundary. Deterministic and addon-free; '
             'the last-resort deep-repair tier (after Dressing, before fTetWild), '
             'adopted only when it reloads strict-watertight. Opt-in.',
+        'method_tip_coaptation': 'COAPTATION (#19) — tolerance seam-weld + '
+            'per-body union: split a folded/overlapping multi-body soup into '
+            'edge-connected bodies, coapt the boundary seam within one float32 '
+            'ULP and fold the bodies with the exact union. Adopted only when it '
+            'reloads strict-watertight with no self-intersections and no worse '
+            'component count. On by default in the deep-repair ladder (after '
+            'Splint, before fTetWild).',
         'method_tip_dressing': 'DRESSING (#16) — variable-viscosity volumetric '
             'skinning: extract a narrow-band generalized-winding isosurface '
             'whose radius is thin over detailed healthy surface and thicker '
@@ -314,6 +322,8 @@ STRINGS = {
         'repair_log_splint_not': 'Splint (exact rebuild): %d parts (not adopted: %s)',
         'repair_log_splint_aborted': 'Splint: stopped for time; previous stage kept',
         'repair_log_splint_budget': 'Splint: input over the face cap; skipped',
+        'repair_log_coaptation': 'Coaptation (seam union): %s bodies -> %s faces, SI %s->%s, parts %s->%s',
+        'repair_log_coaptation_not': 'Coaptation (seam union): not adopted (%s)',
         'repair_log_tamponade': 'Tamponade (interior plug): %s plugs, %s faces, holes %s->%s',
         'repair_log_tamponade_not': 'Tamponade: not adopted (%s)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d faces (adopted)',
@@ -364,8 +374,16 @@ STRINGS = {
                       'deep-repair tier: proxy the surface, Delaunay-'
                       'tetrahedralise it and cut away the interior to produce a '
                       'watertight solid boundary. Deterministic and addon-free; '
-                      'tried after Dressing and before fTetWild, adopted only '
-                      'when it reloads strict-watertight.',
+                       'tried after Dressing and before fTetWild, adopted only '
+                       'when it reloads strict-watertight.',
+        'coaptation_label': 'Coaptation (seam union)',
+        'coaptation_tip': 'Coaptation (#19) \u2014 on by default; turn it off here '
+                          'or with --no-coaptation / SUTURA_COAPTATION=0. Weld '
+                          'the one-float32-ULP seam of a folded/overlapping '
+                          'multi-body soup and fold the bodies with the exact '
+                          'union. Adopted only when it reloads strict-watertight '
+                          'with no self-intersections and no worse component '
+                          'count; a mesh that does not benefit is unchanged.',
         'tamponade_label': 'Tamponade (fill holes from inside)',
         'tamponade_tip': 'Tamponade (#17) \u2014 on by default; turn it off here '
                          'or with --no-tamponade / SUTURA_TAMPONADE=0. Runs '
@@ -776,6 +794,7 @@ STRINGS = {
         'method_name_graft': 'Graft (kabuk sarma)',
         'method_name_dressing': 'Pansuman (Dressing)',
         'method_name_splint': 'Splint (kesin katı yeniden inşa)',
+        'method_name_coaptation': 'Coaptation (dikiş birleştirme)',
         'method_name_mirror_complete': 'Aynalı Tamamlama',
         'method_name_wall_thicken': 'Duvar Kalınlaştır',
         'method_tip_splint': 'SPLINT (#18) — kesin katı yeniden inşa: yüzeyi '
@@ -784,6 +803,14 @@ STRINGS = {
             'gerektirmez; son çare derin onarım katmanıdır (Pansuman\u2019dan '
             'sonra, fTetWild\u2019dan önce) ve yalnızca yeniden yüklendiğinde '
             'kesin su geçirmez olduğunda benimsenir. İsteğe bağlıdır.',
+        'method_tip_coaptation': 'COAPTATION (#19) — toleranslı dikiş kaynağı + '
+            'gövde-başına birleştirme: katlanmış/üst üste binmiş çok-gövdeli bir '
+            'çorbayı kenar-bağlantılı gövdelere ayırır, sınır dikişini bir '
+            'float32 ULP içinde kaynatır ve gövdeleri kesin birleştirmeyle '
+            'katlar. Yalnızca yeniden yüklendiğinde kesin su geçirmez, '
+            'kendisiyle-kesişimsiz ve bileşen sayısı daha kötü olmadığında '
+            'benimsenir. Derin onarım sıralamasında varsayılan olarak açıktır '
+            '(Splint\u2019ten sonra, fTetWild\u2019dan önce).',
         'method_tip_dressing': 'PANSUMAN (Dressing) (#16) — değişken viskoziteli hacimsel '
             'kaplama: genelleştirilmiş sarımlı, dar bantlı bir seviye '
             'kümesi çıkarır; yarıçap sağlıklı ince yüzeyde ince, hasar '
@@ -990,6 +1017,8 @@ STRINGS = {
         'repair_log_splint_not': 'Splint (kesin yeniden inşa): %d parça (benimsenmedi: %s)',
         'repair_log_splint_aborted': 'Splint: süre nedeniyle durduruldu; önceki aşama korundu',
         'repair_log_splint_budget': 'Splint: girdi yüz üst sınırını aşıyor; atlandı',
+        'repair_log_coaptation': 'Coaptation (dikiş birleştirme): %s gövde -> %s yüz, SI %s->%s, parça %s->%s',
+        'repair_log_coaptation_not': 'Coaptation (dikiş birleştirme): benimsenmedi (%s)',
         'repair_log_tamponade': 'Tampon (içeriden tıkaç): %s tıkaç, %s yüz, delik %s->%s',
         'repair_log_tamponade_not': 'Tampon: benimsenmedi (%s)',
         'repair_log_indirect': 'Indirect autorefine: SI %d -> %d, %d yüz (uygulandı)',
@@ -1046,6 +1075,16 @@ STRINGS = {
                       'gerektirmez; Pansuman\u2019dan sonra ve fTetWild\u2019dan önce '
                       'denenir, yalnızca yeniden yüklendiğinde kesin su geçirmez '
                       'olduğunda benimsenir.',
+        'coaptation_label': 'Coaptation (dikiş birleştirme)',
+        'coaptation_tip': 'Coaptation (#19) \u2014 varsayılan olarak açık; buradan '
+                          'ya da --no-coaptation / SUTURA_COAPTATION=0 ile '
+                          'kapatın. Katlanmış/üst üste binmiş çok-gövdeli bir '
+                          'çorbanın bir-float32-ULP dikişini kaynatır ve '
+                          'gövdeleri kesin birleştirmeyle katlar. Yalnızca '
+                          'yeniden yüklendiğinde kesin su geçirmez, '
+                          'kendisiyle-kesişimsiz ve bileşen sayısı daha kötü '
+                          'olmadığında benimsenir; fayda sağlamayan ağ '
+                          'değişmeden kalır.',
         'tamponade_label': 'Tamponad (delikleri içeriden doldur)',
         'tamponade_tip': 'Tamponad (#17) \u2014 varsayılan olarak açık; buradan '
                          'ya da --no-tamponade / SUTURA_TAMPONADE=0 ile '
@@ -1859,7 +1898,7 @@ class RepairWorker(QThread):
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
                  dressing_sigma_scale=None, dressing_force_adopt=False,
-                 splint=False,
+                 splint=False, coaptation=False,
                  intensity='balanced',
                  si_mode='report',
                  methods_by_path=None,
@@ -1887,6 +1926,7 @@ class RepairWorker(QThread):
         self._dressing_sigma_scale = dressing_sigma_scale
         self._dressing_force_adopt = dressing_force_adopt
         self._splint = splint
+        self._coaptation = coaptation
         self._si_mode = si_mode
         # P3 per-file tags: path -> ordered method numbers / engine names.
         self._methods_by_path = dict(methods_by_path or {})
@@ -1981,6 +2021,10 @@ class RepairWorker(QThread):
                 args.append('--dressing-force-adopt')
             if self._splint:
                 args.append('--experimental-splint')
+            if self._coaptation:
+                args.append('--coaptation')
+            else:
+                args.append('--no-coaptation')
             method_nums = self._methods_by_path.get(path)
             if method_nums:
                 args += ['--methods', ','.join(str(n) for n in method_nums)]
@@ -3390,11 +3434,12 @@ class OptionsDialog(QDialog):
         main.profile_btn_delete.clicked.connect(main._profile_delete)
         main._reload_intensity_combo()
         main._refresh_profile_controls()
-        # The two on-by-default switches (Tamponade interior plug, Flap
-        # surface hole fill) sit together on the Repair tab, so the
-        # Experimental tab stays strictly opt-in / off by default.
+        # The three on-by-default switches (Tamponade interior plug, Coaptation
+        # seam union, Flap surface hole fill) sit together on the Repair tab, so
+        # the Experimental tab stays strictly opt-in / off by default.
         flap_tamp_row = QHBoxLayout()
         flap_tamp_row.addWidget(main.chk_tamponade)
+        flap_tamp_row.addWidget(main.chk_coaptation)
         flap_tamp_row.addWidget(main.chk_flap)
         flap_tamp_row.addStretch(1)
         r.addLayout(flap_tamp_row)
@@ -3849,6 +3894,10 @@ class MainWindow(QMainWindow):
         self._flap = True             # batch-wide Flap surface hole fill (Stage 1, on by default)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
         self._splint = False          # batch-wide opt-in Splint exact solid rebuild (#18)
+        # Batch-wide Coaptation (#19, seam union): ON by default. A missing or
+        # legacy config key is treated as ON so an old config cannot silently
+        # keep it off (matches the CLI default).
+        self._coaptation = bool(updater.load_config().get('coaptation', True))
         # Batch-wide Tamponade (#17, incl. Stent): ON by default. A missing or
         # legacy config key is treated as ON so an old opt-in-era config cannot
         # silently keep it off.
@@ -4034,6 +4083,12 @@ class MainWindow(QMainWindow):
         self.chk_tamponade.setToolTip(_t('tamponade_tip'))
         self.chk_tamponade.setChecked(self._tamponade)
         self.chk_tamponade.toggled.connect(self._on_tamponade_toggled)
+        # Coaptation seam union (#19, batch-wide; on by default)
+        self.chk_coaptation = QCheckBox(_t('coaptation_label'))
+        self.chk_coaptation.setToolTip(_t('coaptation_tip'))
+        self.chk_coaptation.setChecked(self._coaptation)
+        self.chk_coaptation.toggled.connect(
+            lambda on: setattr(self, '_coaptation', on))
         # Drain (healthy-region erode-back) override for Dressing; the empty
         # entry means "use the intensity preset default".
         self.cmb_dressing_drain = QComboBox()
@@ -4096,6 +4151,7 @@ class MainWindow(QMainWindow):
             (self.chk_dressing_force_adopt, False),
             (self.chk_splint, False),
             (self.chk_tamponade, True),
+            (self.chk_coaptation, True),
         )
         self._options_dialog = OptionsDialog(self)
         self._sync_intensity_checkboxes()
@@ -4759,6 +4815,7 @@ class MainWindow(QMainWindow):
                                    dressing_sigma_scale=self._dressing_sigma_scale,
                                    dressing_force_adopt=self._dressing_force_adopt,
                                    splint=self._splint,
+                                   coaptation=self._coaptation,
                                    si_mode=self._si_mode,
                                    intensity=self._intensity,
                                    methods_by_path=methods_by_path,
@@ -5253,6 +5310,21 @@ class MainWindow(QMainWindow):
                                 or sp_r.get('reason') or '?'))
         elif sp_r and sp_r.get('skipped_budget'):
             lines.append(_t('repair_log_splint_budget'))
+        cp_r = data.get('coaptation')
+        if cp_r and cp_r.get('ran'):
+            if cp_r.get('adopted'):
+                _cp_b = cp_r.get('baseline') or {}
+                _cp_c = cp_r.get('candidate') or {}
+                lines.append(_t(
+                    'repair_log_coaptation',
+                    cp_r.get('bodies_after_weld', cp_r.get('bodies_in')),
+                    cp_r.get('output_faces') or _cp_c.get('faces', 0),
+                    _cp_b.get('self_intersections'), _cp_c.get('self_intersections'),
+                    _cp_b.get('parts'), _cp_c.get('parts')))
+            else:
+                lines.append(_t('repair_log_coaptation_not',
+                                cp_r.get('reject_reason')
+                                or cp_r.get('reason') or '?'))
         tp_r = data.get('tamponade')
         if tp_r and tp_r.get('ran'):
             if tp_r.get('adopted'):

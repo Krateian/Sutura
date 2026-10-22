@@ -35,6 +35,7 @@ from sutura_engine.pipeline.stage1 import (
 from sutura_engine.pipeline.stage2 import _split_pinched_vertices
 from sutura_engine.pipeline.tiers import ftetwild as _ftetwild_mod
 from sutura_engine.pipeline.tiers.closing import closing_ladder
+from sutura_engine.pipeline.tiers.coaptation import coaptation_tier
 from sutura_engine.pipeline.tiers.dressing import dressing_tier
 from sutura_engine.pipeline.tiers.engines import (
     _record_engine_entries, engine_placement_order, run_engines,
@@ -66,7 +67,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                              dressing_rmax_scale=None, dressing_sigma_scale=None,
                              tamponade=False,
                              si_mode=None, dressing_force_adopt=False,
-                             splint=False, splint_adaptive=None):
+                             splint=False, splint_adaptive=None,
+                             coaptation=False):
     """Repair one mesh given as numpy arrays. Returns (report, verts, tris).
 
     Internal arrays stay float64; the final verts/tris are float32 for output
@@ -177,6 +179,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 t = np.asarray(_ct, dtype=np.int32)
                 verts, tris = v, t
         _record_engine_entries(stats, _entries)
+
+    # The true ORIGINAL surface captured for the Coaptation tier (#19): it is
+    # taken here, before the outer-shell extraction / Tamponade / Flap
+    # pre-passes replace ``v``/``t``.  Coaptation's whole trigger is the
+    # un-preprocessed folded sheet's one-float32-ULP seam, which the Flap caps
+    # (and the cleanup chain's vertex weld) destroy, so it must see these arrays
+    # rather than the (often pre-passed) arrays the deep-repair ladder receives.
+    _bu_raw_v, _bu_raw_t = v, t
 
     # Non-blocking unit warning: the size-based Stage 1 thresholds assume
     # millimetres, so a mesh that was probably authored in inches/cm deserves
@@ -756,6 +766,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     _cv = np.asarray(cur_v, dtype=np.float32)
     _ct = np.asarray(cur_t, dtype=np.int32)
     _cv, _ct, after = deep_repair_ladder(_cv, _ct, v, t, after, stats, tmpdir,
+                                   raw_input_v=_bu_raw_v,
+                                   raw_input_t=_bu_raw_t,
                                    mode=deep_repair,
                                    ftetwild=(ftetwild if not _tamp_watertight
                                              else False),
@@ -773,7 +785,10 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                                    splint=(splint if not _tamp_watertight
                                            else False),
                                    splint_adaptive=splint_adaptive,
-                                   dressing_force_adopt=dressing_force_adopt)
+                                   dressing_force_adopt=dressing_force_adopt,
+                                   coaptation=(coaptation
+                                               if not _tamp_watertight
+                                               else False))
     cur_v = np.asarray(_cv, dtype=np.float64)
     cur_t = np.asarray(_ct, dtype=np.int64)
 
@@ -960,7 +975,8 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                        dressing_drain=None, dressing_defects=None,
                        dressing_rmax_scale=None, dressing_sigma_scale=None,
                        si_mode='report', splint=False, splint_adaptive=None,
-                       dressing_force_adopt=False):
+                       dressing_force_adopt=False, coaptation=False,
+                       raw_input_v=None, raw_input_t=None):
     """Single entry point of the deep-repair ladder, called after the stage-1
     chain. ``cur_v``/``cur_t`` is the result the ladder currently holds and
     ``input_v``/``input_t`` the original user surface. ``mode`` is one of
@@ -1173,6 +1189,52 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                                        _cur_v, _cur_t, _cur_v, _cur_t,
                                        gate={'status': 'skipped', 'reason': 'not_wanted'})
 
+            # Coaptation (#19) sits AFTER Splint and BEFORE fTetWild.  Unlike
+            # the other tiers it is NOT gated on holes/non-manifold: its trigger
+            # is a multi-body reload-equivalent soup whose seam coapts within
+            # one float32 ULP (a folded/overlapping sheet that stage 1 already
+            # closed but that still self-intersects).  It rebuilds the ORIGINAL
+            # input and adopts only a strictly better union.
+            coaptation_ok = False
+            if (coaptation in (True, 'auto') and not dressing_ok
+                    and not graft_ok and not splint_ok):
+                _t_cp = time.perf_counter()
+                _cp_cur_v = np.asarray(cur_v, dtype=np.float32)
+                _cp_cur_t = np.asarray(cur_t, dtype=np.int32)
+                _cp_in_v, _cp_in_t = ((_cp_cur_v, _cp_cur_t)
+                                      if trace.is_active() else (None, None))
+                _c_v, _c_t, _c_after = coaptation_tier(
+                    np.asarray(_cp_cur_v, dtype=np.float64),
+                    np.asarray(_cp_cur_t, dtype=np.int64),
+                    raw_input_v if raw_input_v is not None else input_v,
+                    raw_input_t if raw_input_t is not None else input_t,
+                    after, stats, tmpdir, coaptation=True,
+                    intensity=(getattr(spec, 'base', None)
+                               or getattr(spec, 'name', None)),
+                    spec=spec)
+                if (stats.get('coaptation') or {}).get('adopted'):
+                    cur_v = np.asarray(_c_v, dtype=np.float64)
+                    cur_t = np.asarray(_c_t, dtype=np.int64)
+                    after = _c_after
+                    coaptation_ok = True
+                    tiers_run.append('coaptation')
+                if trace.is_active():
+                    trace.record_stage(
+                        'coaptation', 'tiers.coaptation.coaptation_tier',
+                        _cp_in_v, _cp_in_t,
+                        np.asarray(cur_v, dtype=np.float32),
+                        np.asarray(cur_t, dtype=np.int32),
+                        gate=stats.get('coaptation', {}),
+                        elapsed=round(time.perf_counter() - _t_cp, 4))
+            else:
+                if trace.is_active():
+                    _cur_v = np.asarray(cur_v, dtype=np.float32)
+                    _cur_t = np.asarray(cur_t, dtype=np.int32)
+                    trace.record_stage(
+                        'coaptation', 'tiers.coaptation.coaptation_tier',
+                        _cur_v, _cur_t, _cur_v, _cur_t,
+                        gate={'status': 'skipped', 'reason': 'not_wanted'})
+
             if dressing_ok:
                 stats['experimental_ftetwild'] = False
                 if graft_v is not None:
@@ -1195,6 +1257,17 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
                     trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
                                        _cur_v, _cur_t, _cur_v, _cur_t,
                                        gate={'status': 'skipped', 'reason': 'superseded_by_splint'})
+            elif coaptation_ok:
+                stats['experimental_ftetwild'] = False
+                if graft_v is not None:
+                    stats['graft']['adopted'] = False
+                    stats['graft']['reason'] = 'superseded by Coaptation'
+                if trace.is_active():
+                    _cur_v = np.asarray(cur_v, dtype=np.float32)
+                    _cur_t = np.asarray(cur_t, dtype=np.int32)
+                    trace.record_stage('ftetwild', 'pipeline._ftetwild_tier',
+                                       _cur_v, _cur_t, _cur_v, _cur_t,
+                                       gate={'status': 'skipped', 'reason': 'superseded_by_coaptation'})
             elif graft_ok:
                 stats['experimental_ftetwild'] = False
                 if trace.is_active():
@@ -1304,6 +1377,7 @@ def deep_repair_ladder(cur_v, cur_t, input_v, input_t, after, stats, tmpdir,
             'graft': stats.get('graft') or None,
             'dressing': stats.get('dressing') or None,
             'splint': stats.get('splint') or None,
+            'coaptation': stats.get('coaptation') or None,
             'cad_likeness': cad,
             'dressing_damage': dmg,
             'available': None,
@@ -1327,6 +1401,7 @@ def _deep_repair_offer(stats, holes, nm, n_faces, spec=None):
         'graft': stats.get('graft'),
         'dressing': stats.get('dressing'),
         'splint': stats.get('splint'),
+        'coaptation': stats.get('coaptation'),
         'local': dr.get('local'),
     }
     for _tier in FINAL_TIER_PRECEDENCE:

@@ -162,6 +162,7 @@ jobs:
           ./.venv/bin/python tests/test_sutura_geom.py
           ./.venv/bin/python tests/test_sutura_geom_arrangement.py
           ./.venv/bin/python tests/test_splint.py
+          ./.venv/bin/python tests/test_coaptation.py
 
       - name: Exercise the install helper (SUTURA_GEOM_WHEEL path)
         run: |
