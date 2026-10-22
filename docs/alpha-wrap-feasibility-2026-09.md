@@ -27,7 +27,7 @@ Grounded in direct reads of `sutura/repair.py` (the graph at `graphify-out/` is 
 
 ## 2. Prototyping environment (what's actually available)
 
-This machine (macOS, Apple Silicon) does **not** use the two-venv Linux layout described in AGENTS.md. There is a **single conda env** `sutura-env` (Python 3.11.16) — `~/.local/bin/sutura` execs `/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/bin/python`. It holds both pymeshlab and manifold3d. Findings:
+This machine (macOS, Apple Silicon) does **not** use the two-venv Linux layout described in `docs/agents/packaging-updater-selfrepair.md`. There is a **single conda env** `sutura-env` (Python 3.11.16) — `~/.local/bin/sutura` execs `/opt/homebrew/Caskroom/miniforge/base/envs/sutura-env/bin/python`. It holds both pymeshlab and manifold3d. Findings:
 
 | Package | Status | Install | Size (wheel) | License |
 |---|---|---|---|---|
@@ -53,7 +53,7 @@ Key verifications performed this session:
 
 ## 3. Regression / benchmark targets
 
-The AGENTS.md SI numbers (thingi10k_804302 = 14,730 SI; Ephebe = 2,491 SI + 327 NM; thingi10k_147525; Athena) come from a **75-model corpus that is not present on this machine** (not in `/tmp`, not in the benchmark tar.gz, not in `tests/real-world-samples/`). I measured SI counts directly (pymeshlab `compute_selection_by_self_intersections_per_face`) on the corpora that **are** available:
+The historical SI numbers in `docs/agents/legacy-and-duplicates.md` (backlog section) (thingi10k_804302 = 14,730 SI; Ephebe = 2,491 SI + 327 NM; thingi10k_147525; Athena) come from a **75-model corpus that is not present on this machine** (not in `/tmp`, not in the benchmark tar.gz, not in `tests/real-world-samples/`). I measured SI counts directly (pymeshlab `compute_selection_by_self_intersections_per_face`) on the corpora that **are** available:
 
 **Available SI-heavy targets — `tests/real-world-samples/` (40 meshes, committed to repo):**
 | mesh | SI faces | total faces |
