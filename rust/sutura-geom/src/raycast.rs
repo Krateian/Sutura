@@ -40,6 +40,12 @@ pub const AMBIG_LO: f32 = 0.3;
 pub const AMBIG_HI: f32 = 0.7;
 /// Weight of an escaping ("strong outside") ray in the majority score.
 pub const DEFAULT_ESCAPE_WEIGHT: f64 = 2.0;
+/// A recovery flip (winding outside -> ray vote inside) needs a supermajority,
+/// not a bare majority: a cell just outside the surface usually has a split
+/// vote, and flipping those cells is what spawns the scattered extra surface.
+/// Two thirds of the cast rays must vote inside (and no unresolved run).
+pub const RECOVERY_INSIDE_NUM: usize = 2;
+pub const RECOVERY_INSIDE_DEN: usize = 3;
 
 const JITTER: f64 = 0.05;
 const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
@@ -204,6 +210,13 @@ pub struct RayStabStats {
 /// unresolved votes keep their existing sign, so a "no opinion" result falls
 /// back to the winding number.  Parallel over z-slices like the other grid
 /// passes.
+///
+/// `recover_only` narrows the vote to the *recovery direction*: only cells the
+/// winding calls outside (`signed >= 0`) are considered, and they may only be
+/// flipped to inside, on a stable supermajority
+/// ([`RECOVERY_INSIDE_NUM`]/[`RECOVERY_INSIDE_DEN`]).  A cell the winding
+/// calls inside is never flipped outside.  This is what recovers a folded/open
+/// flap without the scattered reverse flips that degrade a clean field.
 #[allow(clippy::too_many_arguments)]
 pub fn disambiguate_sdf(
     bvh: &MeshBvh,
@@ -216,12 +229,14 @@ pub fn disambiguate_sdf(
     stabber: &Stabber,
     lo: f32,
     hi: f32,
+    recover_only: bool,
 ) -> RayStabStats {
     let t_start = Instant::now();
     let slice = dims[0] * dims[1];
     let ambiguous = AtomicU64::new(0);
     let flipped = AtomicU64::new(0);
     let unresolved = AtomicU64::new(0);
+    let n_dirs = stabber.n_dirs();
     signed
         .par_chunks_mut(slice)
         .enumerate()
@@ -235,7 +250,14 @@ pub fn disambiguate_sdf(
                 let row = j * dims[0];
                 for i in 0..dims[0] {
                     let w = wch[row + i];
-                    if !(w > lo && w < hi) {
+                    let s_before = sch[row + i];
+                    if recover_only {
+                        // Only outside -> inside. A cell the winding already
+                        // calls inside is left exactly as it is.
+                        if s_before < 0.0 {
+                            continue;
+                        }
+                    } else if !(w > lo && w < hi) {
                         continue;
                     }
                     ambiguous.fetch_add(1, Ordering::Relaxed);
@@ -245,13 +267,23 @@ pub fn disambiguate_sdf(
                         unresolved.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
+                    if recover_only {
+                        let stable = v.inside
+                            && (v.inside_votes as usize) * RECOVERY_INSIDE_DEN
+                                >= n_dirs * RECOVERY_INSIDE_NUM;
+                        if !stable {
+                            continue;
+                        }
+                    }
                     let s = uch[row + i];
                     // `s` is an UNSIGNED distance (always >= 0); the previous
                     // inside/outside state comes from the SIGNED slice.
-                    let was_inside = sch[row + i] < 0.0;
+                    let was_inside = s_before < 0.0;
                     if was_inside != v.inside {
                         flipped.fetch_add(1, Ordering::Relaxed);
                     }
+                    // In recovery mode `v.inside` is guaranteed true here, so
+                    // this never writes an outside sign.
                     sch[row + i] = if v.inside { -s } else { s };
                 }
             }
@@ -359,6 +391,47 @@ mod tests {
     }
 
     #[test]
+    fn recovery_only_never_flips_inside_to_outside() {
+        // Folded top face: the winding reads part of the solid as outside while
+        // the ray vote reads it as inside. Recovery must flip those cells, and
+        // must leave every winding-inside cell byte-identical.
+        let (v, mut f) = cube();
+        f[2] = [4, 6, 5];
+        f[3] = [4, 7, 6];
+        let bvh = MeshBvh::from_arrays(&v, &f);
+        let (origin, voxel, dims, _) =
+            crate::plan_grid(bvh.bounds().min, bvh.bounds().max, Some(0.1), 96.0, 2);
+        let (w, u, s0) = bvh.sdf_grid(origin, voxel, dims);
+        let mut s = s0.clone();
+        let st = stabber(&bvh, false);
+        let stats = disambiguate_sdf(
+            &bvh,
+            &w,
+            &u,
+            &mut s,
+            origin,
+            voxel,
+            dims,
+            &st,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            true,
+        );
+        assert!(stats.cells_flipped > 0, "the folded sign was not recovered");
+        for (i, (&before, &after)) in s0.iter().zip(&s).enumerate() {
+            if before < 0.0 {
+                assert_eq!(after, before, "cell {i} was flipped inside -> outside");
+            }
+        }
+        assert!(
+            s.iter()
+                .zip(&s0)
+                .any(|(&after, &before)| before >= 0.0 && after < 0.0),
+            "no winding-outside cell was recovered"
+        );
+    }
+
+    #[test]
     fn escape_is_a_strong_outside_vote() {
         let (v, f) = cube();
         let bvh = MeshBvh::from_arrays(&v, &f);
@@ -457,7 +530,7 @@ mod tests {
         let mut s = vec![1.0f32, 2.0, -3.0];
         let st = stabber(&bvh, false);
         let stats =
-            disambiguate_sdf(&bvh, &w, &u, &mut s, origin, voxel, dims, &st, AMBIG_LO, AMBIG_HI);
+            disambiguate_sdf(&bvh, &w, &u, &mut s, origin, voxel, dims, &st, AMBIG_LO, AMBIG_HI, false);
         assert_eq!(stats.cells_ambiguous, 1);
         // Cells outside the band are byte-identical.
         assert_eq!(s[0], 1.0);

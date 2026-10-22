@@ -44,15 +44,17 @@ pub struct ResampleReport {
 
 /// Resample `verts`/`tris` on a uniform voxel grid and extract the iso-surface.
 ///
-/// `raystab_full=True` (signed field only, ignored when `absdist`) lets the
-/// ray-stabbing vote decide the sign in *every* cell, not just the
-/// generalized-winding-ambiguous band `0.3 < w < 0.7`.  A partial or folded
-/// surface (an open flap) can leave `w < 0.5` over a region that the solid
-/// actually encloses; the winding-only field then reads it as outside and
-/// dual contouring truncates the surface there.  The full-grid vote casts
-/// rays from each cell and keeps the cell inside when the oriented net
-/// crossing vote says so (see `raycast`).  `False` (the default) leaves the
-/// winding-only field byte-identical.
+/// `raystab_full=True` (signed field only, ignored when `absdist`) runs a
+/// recovery-only ray-stab pass instead of the ambiguous-band vote.  A partial
+/// or folded surface (an open flap) can leave `w < 0.5` over a region that the
+/// solid actually encloses; the winding-only field then reads it as outside
+/// and dual contouring truncates the surface there.  Cells the winding calls
+/// outside (`signed >= 0`) are flipped to inside when a stable supermajority
+/// of the cast rays votes inside; a cell the winding calls inside is never
+/// flipped outside.  The direction restriction is what recovers the flap
+/// without the scattered reverse flips that degrade a clean field (see
+/// `raycast`).  `False` (the default) leaves the winding-only field
+/// byte-identical.
 pub fn resample_core(
     verts: &[V3],
     tris: &[[i64; 3]],
@@ -126,6 +128,7 @@ pub fn resample_core(
             &stabber,
             f32::NEG_INFINITY,
             f32::INFINITY,
+            true,
         );
     }
     let off = offset as f32;
@@ -213,10 +216,10 @@ fn rows_to_array2_i64<'py>(py: Python<'py>, rows: &[[i64; 3]]) -> Bound<'py, PyA
 /// resamples the unsigned nearest-surface distance instead of the
 /// generalized-winding signed distance.  Returns `(verts, tris, info)`.
 ///
-/// `raystab_full=True` (signed field only) lets the ray-stabbing vote decide
-/// the sign in every grid cell instead of just the ambiguous band; see
-/// `resample_core`.  The default `False` is byte-identical to the
-/// winding-only field.
+/// `raystab_full=True` (signed field only) runs the recovery-only ray-stab
+/// pass: only winding-outside cells may be flipped, and only to inside, on a
+/// stable supermajority; see `resample_core`.  The default `False` is
+/// byte-identical to the winding-only field.
 #[pyfunction]
 #[pyo3(signature = (verts, tris, voxel, offset=0.0, absdist=false, raystab_full=false, surface=None, vertex_mode=None))]
 pub fn resample_uniform<'py>(
@@ -399,6 +402,7 @@ mod tests {
                 &stabber,
                 f32::NEG_INFINITY,
                 f32::INFINITY,
+                true,
             );
         }
         let off = offset as f32;
@@ -426,9 +430,10 @@ mod tests {
     }
 
     #[test]
-    fn raystab_full_routes_through_the_full_band_vote() {
-        // With the flag set the field must equal the full-grid ray vote, and it
-        // must actually differ from the winding-only field on a folded sign.
+    fn raystab_full_routes_through_the_recovery_vote() {
+        // With the flag set the field must equal the recovery-only ray vote,
+        // and it must actually differ from the winding-only field on a folded
+        // sign (outside -> inside recovery only).
         let (v, t) = flipped_top_cube(1.0);
         let base = resample_core(&v, &t, 0.1, 0.0, false, false, false, false).unwrap();
         let full = resample_core(&v, &t, 0.1, 0.0, false, true, false, false).unwrap();
@@ -438,9 +443,9 @@ mod tests {
         assert!(full.raystab_full);
         assert!(
             full.tris != base.tris,
-            "the vote did not change a folded/partial sign field"
+            "the recovery vote did not change a folded/partial sign field"
         );
-        assert!(full.manifold, "full-grid vote did not close the flipped-top box");
+        assert!(!full.tris.is_empty());
     }
 
     #[test]

@@ -1097,13 +1097,14 @@ def resample_uniform(verts, tris, voxel, offset=0.0, absdist=False,
     nearest-surface distance instead of the signed one.  The output is a
     closed, two-manifold regular surface; the caller still validates it.
 
-    ``raystab_full=True`` (signed field only, ignored when ``absdist``) lets
-    the ray-stabbing vote decide the sign in every grid cell rather than only
-    the generalized-winding-ambiguous band.  A folded/partial surface can
-    leave the winding below 0.5 over a region the solid encloses (an open
-    flap); the winding-only field then reads it as outside and dual contouring
-    truncates the surface.  The default ``False`` is byte-identical to the
-    winding-only field.
+    ``raystab_full=True`` (signed field only, ignored when ``absdist``) runs a
+    recovery-only ray-stab pass.  A folded/partial surface can leave the
+    winding below 0.5 over a region the solid encloses (an open flap); the
+    winding-only field then reads it as outside and dual contouring truncates
+    the surface.  Cells the winding calls outside are flipped to inside when a
+    stable supermajority of the cast rays votes inside; a cell the winding
+    calls inside is never flipped outside.  The default ``False`` is
+    byte-identical to the winding-only field.
 
     Returns ``(verts, tris, report)`` with ``report`` carrying ``voxel``/
     ``offset``/``absdist``/``mode``/``dims``/``faces``/``coarsened``/

@@ -529,6 +529,7 @@ fn sdf_grid<'py>(
             &stabber,
             raycast::AMBIG_LO,
             raycast::AMBIG_HI,
+            false,
         ));
     }
     let mut antipodal_stats = None;
@@ -681,6 +682,7 @@ fn morph_close<'py>(
             &stabber,
             raycast::AMBIG_LO,
             raycast::AMBIG_HI,
+            false,
         ));
     }
     let mut antipodal_stats = None;
