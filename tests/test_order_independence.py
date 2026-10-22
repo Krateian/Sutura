@@ -66,6 +66,22 @@ def _open_cube():
     return v, t[:-1]
 
 
+def _near_threshold_mesh():
+    # One face's neighbour-normal average lands within ~1 ULP of the -0.3
+    # flipped threshold, so the old ``edge_faces.values()`` accumulation order
+    # could flip its colour depending on the input face order.
+    v = np.array([
+        (0.0, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.5, 0.8660254037844386, 0.0),
+        (0.6232446202246301, 1.0701575699914248, -0.3567753442787744),
+        (1.1719436368886393, 1.0709816629411106, -1.3256337188478635),
+        (0.41221766420837447, 1.3233066219615126, -0.353156230568332),
+    ], dtype=np.float64)
+    t = np.array([[0, 1, 2], [0, 1, 3], [1, 2, 4], [2, 0, 5]], dtype=np.int64)
+    return v, t
+
+
 def _canon_regions(regions):
     # centroid + face count + (permutation-invariant) sorted vertex ids; the
     # input face indices in ``faces_idx`` are intentionally NOT compared.
@@ -124,6 +140,19 @@ def test_mesh_topology_order_independent():
                 got = dict(topology._geom.mesh_topology(
                     v.astype(np.float32), _permute(t, seed).astype(np.int64)))
                 assert got == base, (seed, got, base)
+
+
+def test_defect_type_colors_order_independent():
+    v, t = _near_threshold_mesh()
+    base = defects.defect_type_colors(v, t)
+    # the fixture must straddle the threshold, otherwise the test is vacuous
+    assert tuple(int(x) for x in base[0]) == (255, 140, 60), base
+    for seed in _SEEDS:
+        p = np.random.default_rng(seed).permutation(len(t))
+        got = defects.defect_type_colors(v, t[p])
+        inv = np.empty_like(p)
+        inv[p] = np.arange(len(t))
+        assert np.array_equal(got[inv], base), (seed, got[inv], base)
 
 
 def main():

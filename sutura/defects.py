@@ -9,6 +9,8 @@ Convention: all coordinates/lengths are in the input mesh's units (STL files
 are normally millimetres, but Sutura does not rescale, so callers should treat
 values as "mesh units").
 """
+import math
+
 import numpy as np
 
 import topology
@@ -253,14 +255,26 @@ def defect_type_colors(verts, tris):
     edge_faces = {}
     for i in range(len(edges)):
         edge_faces.setdefault(int(keys[i]), []).append(int(face_of[i]))
-    adj_sum = np.zeros((F, 3))
-    adj_cnt = np.zeros(F)
+    # The neighbour normals contributing to a face are a permutation-invariant
+    # multiset; only their float summation order followed the input face order
+    # (``edge_faces.values()``).  ``math.fsum`` is the correctly-rounded exact
+    # sum, so ``adj_sum`` -- and therefore the near-threshold ``cosang`` verdict
+    # -- no longer depends on that order.
+    contrib = [[] for _ in range(F)]
     for faces in edge_faces.values():
         for f1 in faces:
             for f2 in faces:
                 if f1 != f2:
-                    adj_sum[f1] += n[f2]
-                    adj_cnt[f1] += 1
+                    contrib[f1].append(n[f2])
+    adj_sum = np.zeros((F, 3))
+    adj_cnt = np.zeros(F)
+    for f1 in range(F):
+        col = contrib[f1]
+        if col:
+            adj_sum[f1, 0] = math.fsum(c[0] for c in col)
+            adj_sum[f1, 1] = math.fsum(c[1] for c in col)
+            adj_sum[f1, 2] = math.fsum(c[2] for c in col)
+            adj_cnt[f1] = len(col)
     # flipped: normal clearly OPPOSITE to the neighbours' average, and only
     # when the neighbours are self-consistent (perpendicular neighbours -- e.g.
     # the four faces around a cube face -- average to ~0 and must NOT flag).
