@@ -2313,6 +2313,13 @@ topluluğa bırakmaktır — ama şimdilik böyle devam.
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](CHANGELOG.md).
 
+- **v0.9.3 — 2026-10-22** — **Artık PyMeshLab yok:** delik kapatma,
+  self-intersection tespiti, temizlik, sadeleştirme (decimation), mesafe ölçümü
+  ve mesh okuma/yazma tamamen Sutura'nın kendi Rust çekirdeğinde ve Python
+  motorunda çalışıyor; kurulum daha küçük ve basit. 40 mesh'lik test
+  setinde hiçbir mesh kötüleşmedi. Balloon (#8) artık native olarak ve
+  self-intersection üretmeden yeniden inşa ediyor; 0.5.1–0.9.1 kurulumları
+  yeniden kendini güncelleyebiliyor.
 - **v0.9.2 — 2026-10-21** — İsteğe bağlı kesin katı yeniden inşa katmanı
   **Splint (#18)** (varsayılan kapalı; 40 mesh'lik korpusta değerlendirildi ve
   henüz hiçbirinde benimsenmedi); `sutura --self-check`, `--diagnostics` ve
