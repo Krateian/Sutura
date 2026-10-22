@@ -310,16 +310,39 @@ pub fn remove_duplicate_faces<'py>(
 }
 
 /// Remove null / degenerate faces (matching VCGLib / PyMeshLab meshing_remove_null_faces).
+///
+/// ``safe`` keeps a *zero-area but topologically valid* face (three distinct,
+/// in-range, collinear vertices) when removing it would turn one of its edges
+/// into a boundary edge -- i.e. when that edge is used by fewer than three
+/// faces. Such a face contributes no area but it is part of a closed surface,
+/// so dropping it opens a hole (thingi10k_248395: 226 collinear faces, all
+/// interior, deleting them leaves 47 holes). PyMeshLab / ADMesh likewise keep
+/// these faces. Faces with a repeated index, an out-of-range index or a
+/// non-finite normal are always dropped (structurally invalid), and with
+/// ``safe=False`` the historical drop-everything behaviour is unchanged.
 #[pyfunction]
-#[pyo3(signature = (verts, tris))]
+#[pyo3(signature = (verts, tris, safe=false))]
 pub fn remove_null_faces<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f32, AllowTypeChange>,
     tris: PyArrayLike2<'py, i64, AllowTypeChange>,
+    safe: bool,
 ) -> PyResult<Bound<'py, PyArray2<i64>>> {
     let vrows = read_f32_rows(&verts)?;
     let trows = read_i64_rows(&tris)?;
     let nv = vrows.len();
+    let mut incidence: HashMap<(i64, i64), u32> = HashMap::new();
+    if safe {
+        for r in &trows {
+            for (a, b) in [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])] {
+                if a == b {
+                    continue;
+                }
+                let key = if a < b { (a, b) } else { (b, a) };
+                *incidence.entry(key).or_insert(0) += 1;
+            }
+        }
+    }
     let mut out: Vec<[i64; 3]> = Vec::with_capacity(trows.len());
     for r in trows {
         if r[0] == r[1] || r[1] == r[2] || r[0] == r[2] {
@@ -338,7 +361,22 @@ pub fn remove_null_faces<'py>(
         let cy = d1[2] * d2[0] - d1[0] * d2[2];
         let cz = d1[0] * d2[1] - d1[1] * d2[0];
         let norm2 = cx * cx + cy * cy + cz * cz;
-        if norm2 == 0.0 || !norm2.is_finite() {
+        if !norm2.is_finite() {
+            continue;
+        }
+        if norm2 == 0.0 {
+            if safe {
+                // Keep it when deleting it would open a boundary edge.
+                let opens = [(r[0], r[1]), (r[1], r[2]), (r[2], r[0])]
+                    .iter()
+                    .any(|&(a, b)| {
+                        let key = if a < b { (a, b) } else { (b, a) };
+                        incidence.get(&key).copied().unwrap_or(0) <= 2
+                    });
+                if opens {
+                    out.push(r);
+                }
+            }
             continue;
         }
         out.push(r);

@@ -27,7 +27,7 @@ def _close_holes_step(maxholesize):
     return ('meshing_close_holes', {'maxholesize': maxholesize})
 
 
-def stage1_cleanup_chain():
+def stage1_cleanup_chain(safe_null=False):
     """The Stage-1 mesh-hygiene passes: duplicate/null removal, non-manifold
     edge/vertex repair and a coherent re-orientation, with NO hole closing and
     NO component removal.
@@ -35,10 +35,17 @@ def stage1_cleanup_chain():
     ``stage1_chain`` builds on this list; the Tamponade prepass (T4) also uses
     it verbatim so the reference-based hole plug runs on the same cleaned
     surface the chain would otherwise hand to its generic ``close_holes``.
+
+    ``safe_null`` switches ``meshing_remove_null_faces`` to the safe mode: a
+    zero-area but topologically valid face is kept when removing it would open
+    a boundary edge. ``stage1_chain`` and the Tamponade prepass pass True (a
+    closed surface's null faces are load-bearing and the prepass cleans the
+    same surface the chain hands over), while the delete fallback keeps the
+    historical drop-everything behaviour.
     """
     return [
         ('meshing_remove_duplicate_faces', {}),
-        ('meshing_remove_null_faces', {}),
+        ('meshing_remove_null_faces', {'safe': True} if safe_null else {}),
         ('meshing_remove_duplicate_vertices', {}),
         # layered/duplicated-vertex meshes (e.g. Bambu/Orca exports) collapse
         # onto few unique vertices here; the faces become duplicates only
@@ -59,7 +66,7 @@ def stage1_cleanup_chain():
 
 
 def stage1_chain(maxholesize=1000, mincomponentsize=8, join_components=False):
-    chain = stage1_cleanup_chain() + [
+    chain = stage1_cleanup_chain(safe_null=True) + [
         _close_holes_step(maxholesize),
         # --experimental-join-components replaces this removal step with a
         # join (small components are moved onto the nearest larger component
@@ -139,7 +146,7 @@ def apply_chain(verts, tris, chain):
             if name == 'meshing_remove_duplicate_faces':
                 t = topology.remove_duplicate_faces(t)
             elif name == 'meshing_remove_null_faces':
-                t = topology.remove_null_faces(v, t)
+                t = topology.remove_null_faces(v, t, safe=bool(params.get('safe', False)))
             elif name == 'meshing_remove_duplicate_vertices':
                 v, t = topology.remove_duplicate_vertices(v, t)
             elif name == 'meshing_remove_unreferenced_vertices':

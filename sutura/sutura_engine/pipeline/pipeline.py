@@ -382,7 +382,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
         _t_pre = time.perf_counter()
         _tp_in_v, _tp_in_t = v, t
         _tp_v, _tp_t, _tp_a, _tp_s = apply_chain(
-            v, t, stage1_cleanup_chain())
+            v, t, stage1_cleanup_chain(safe_null=True))
         _tafter = topology.mesh_topology(_tp_v, _tp_t)
         _tp_v, _tp_t, _tafter = tamponade_tier(
             _tp_v, _tp_t, v, t, _tafter, stats, tmpdir, tamponade=True,

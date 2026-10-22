@@ -98,6 +98,7 @@ def _run_all(topo_engine):
         d = defects.detect(v, t, with_indices=True)
         df = topology.remove_duplicate_faces(t)
         nf = topology.remove_null_faces(v, t)
+        nf_safe = topology.remove_null_faces(v, t, True)
         dv_v, dv_t = topology.remove_duplicate_vertices(v, t)
         unv_v, unv_t = topology.remove_unreferenced_vertices(v, t)
         rcc_v, rcc_t = topology.remove_connected_components(v, t, min_faces=2, remove_unref=True)
@@ -126,6 +127,7 @@ def _run_all(topo_engine):
             'detect': json.dumps(d, sort_keys=True),
             'remove_duplicate_faces': df.tobytes(),
             'remove_null_faces': nf.tobytes(),
+            'remove_null_faces_safe': nf_safe.tobytes(),
             'remove_duplicate_vertices': (dv_v.tobytes(), dv_t.tobytes()),
             'remove_unreferenced_vertices': (unv_v.tobytes(), unv_t.tobytes()),
             'remove_connected_components': (rcc_v.tobytes(), rcc_t.tobytes()),
@@ -282,6 +284,28 @@ def test_repair_nme_parity():
         assert len(out_rs) == 2
         assert np.array_equal(out_rs, [[0, 1, 2], [0, 1, 3]])
     print('repair_non_manifold_edges parity OK (Rust == numpy oracle, bit-for-bit)')
+
+
+def test_remove_null_faces_safe():
+    """safe=True keeps a load-bearing zero-area face, drops the invalid ones."""
+    v, t = _cube()
+    v = np.vstack([np.asarray(v, np.float32), np.array([(0.5, 0.0, 0.0)], np.float32)])
+    mid = len(v) - 1
+    t = np.vstack([np.asarray(t, np.int64),
+                   np.array([[0, 1, mid], [0, 0, 1]], dtype=np.int64)])
+    unsafe = topology.remove_null_faces(v, t, False)
+    safe = topology.remove_null_faces(v, t, True)
+    # both zero-area faces dropped (collinear + repeated-index)
+    assert len(unsafe) == 12, len(unsafe)
+    # the collinear face sits on an interior edge (count <= 2 on its side edges)
+    assert len(safe) == 13, len(safe)
+    assert np.array_equal(safe[12], np.array([0, 1, mid]))
+    if topology._rust_kernel_available():
+        rs = topology._geom.remove_null_faces(
+            np.ascontiguousarray(v, np.float32),
+            np.ascontiguousarray(t, np.int64), True)
+        assert np.array_equal(rs, safe)
+    print('remove_null_faces safe mode OK (keeps load-bearing null face, drops invalid)')
 
 
 def test_geometric_measures_parity():
@@ -621,6 +645,7 @@ def main():
     test_parity()
     test_re_orient_parity()
     test_repair_nme_parity()
+    test_remove_null_faces_safe()
     test_geometric_measures_parity()
     test_pymeshlab_parity()
     test_phase2_filter_parity()
