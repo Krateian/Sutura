@@ -121,6 +121,10 @@ Options window, never in the way of the plain repair.
   file names in both languages. Edit the topic page, not the landing page;
   touch the landing page only when its own content changes (method count,
   highlights, install commands, page list).
+- The full procedure (which page owns what, EN/TR rules, link checker) is the
+  `sutura-docs` skill: `.claude/skills/sutura-docs/SKILL.md`. Run
+  `python3 .claude/skills/sutura-docs/scripts/check_docs.py .` before a docs
+  commit; it must report 0 problems.
 - If a user-visible behaviour is added or changed in this session (CLI flag,
   GUI behaviour, install step, new feature), update the matching
   `docs/guide/` page in the same session — without the user asking.
