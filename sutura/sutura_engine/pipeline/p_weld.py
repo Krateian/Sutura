@@ -78,10 +78,13 @@ def reload_topology(verts, tris):
 def reload_strict_holes_nm(verts, tris):
     """Strict (holes, non-manifold edges) on the save/reload-equivalent mesh.
 
-    Backwards-compatible wrapper around :func:`reload_topology`; callers that
-    also need pinched vertices should use the three-value form."""
-    holes, nm, _n2m = reload_topology(verts, tris)
-    return holes, nm
+    This is the cheap legacy check used by tier/candidate loops: it deliberately
+    does **not** compute the non-manifold-vertex count. Use
+    :func:`reload_topology` (and pass ``include_n2m=True`` to the verdict) when
+    the STL save/reload pinch matters."""
+    wv, wt = weld_reload_equivalent(verts, tris)
+    d = detect_defects(wv, wt)
+    return len(d['holes']), len(d['non_manifold'])
 
 
 P_WELD_MAX_NUDGE_ATTEMPTS = 12
@@ -225,12 +228,16 @@ def enforce_reload_verdict(report, verts, tris, include_n2m=True):
     """Honest top-level verdict: never claim watertight for a mesh that is
     not strict-watertight after the reload-equivalent weld (P-HONEST).
 
-    Only a report that currently claims watertight is considered: stage 1
-    two-manifold with no hole AND a successful stage-2 rebuild. If the saved
-    mesh fails the reload check, the fields ``classification.classify()``
-    reads are rewritten so the category can no longer be watertight, plus
-    explicit reload markers. A genuinely watertight mesh returns False with
-    NO report change, so its report and output stay byte-identical.
+    A report whose stage 1 is two-manifold with no remaining hole is checked,
+    regardless of the stage-2 outcome: a stage-2 error, skipped stage 2 or
+    never-run stage 2 (macOS in-process fallback, missing bridge) does NOT
+    bypass the reload check. For STL (``include_n2m=True``, the default) the
+    check also includes non-manifold vertices; OBJ/3MF pass
+    ``include_n2m=False`` and keep the legacy holes/nm check. If the saved mesh
+    fails the reload check, the fields ``classification.classify()`` reads are
+    rewritten so the category can no longer be watertight, plus explicit reload
+    markers. A genuinely clean mesh returns False with NO report change, so its
+    report and output stay byte-identical.
     Returns True when the report was downgraded."""
     if not isinstance(report, dict):
         return False
