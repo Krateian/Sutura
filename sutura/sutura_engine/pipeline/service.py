@@ -196,7 +196,8 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
         # P-HONEST: the verdict must describe the mesh actually saved, not the
         # in-memory index topology. The final mesh is chosen above; judge it in
         # the save/reload-equivalent form and let that verdict win.
-        enforce_reload_verdict(report, new_v, new_t)
+        enforce_reload_verdict(report, new_v, new_t,
+                               include_n2m=(ext == '.stl'))
         if trace.is_active():
             trace.record_stage('validate', 'service.enforce_reload_verdict',
                                new_v, new_t, new_v, new_t,
@@ -419,7 +420,7 @@ def repair_3mf(src, out, tmpdir, mode='auto', profile=None, engine='experimental
             # P-HONEST: judge the per-object mesh actually written into the
             # archive (reload-equivalent form) before the confidence/score
             # below, so those see the honest verdict too.
-            enforce_reload_verdict(rep, new_v, new_t)
+            enforce_reload_verdict(rep, new_v, new_t, include_n2m=False)
             if trace.is_active():
                 trace.record_stage('validate', 'service.enforce_reload_verdict',
                                    new_v, new_t, new_v, new_t,

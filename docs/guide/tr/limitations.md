@@ -61,6 +61,12 @@ güvenilir şekilde algılayabilir.
 * **Manifold çekirdeği.** Açık kenarlı herhangi bir girdiyi reddeder;
   aşama 1 bir deliği kapatamazsa aşama 2 atlanır ve aşama 1 sonucu olduğu gibi
   kullanılır (rapor bunu belirtir).
+* **STL yeniden yükleme ve sıkışmış köşeler.** STL köşe paylaşımı saklamaz;
+  bellekte iki-manifold olan bir mesh, iki ayrı float32 konumunun birleşmesiyle
+  yeniden yüklendiğinde sıkışmış köşeler taşıyabilir. P-WELD yaygın float32
+  çakışması durumunu ayırır; çözemezse rapor dürüst kalır
+  (`reload_watertight=false`, `reload_non_manifold_vertices`). Patolojik
+  durumlarda kaydedilen dosyayı dilimleyicinizde kontrol edin.
 * **Katmanlı/yinelenen köşeli 3MF dışa aktarımları.** Bazı dilimleyiciler
   (Bambu Studio dahil) nesnelerinin her köşe konumunu ~15 kez ayrı köşe girişi
   olarak tekrarlayan ve yüzeyleri katlanmış (bir kenarda birkaç yüz çakışık)

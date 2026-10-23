@@ -373,6 +373,7 @@ def test_reload_strict_holes_nm_flags_weld_only(tmp):
     d = defects.detect(v, t)
     assert len(d['holes']) == 0 and len(d['non_manifold']) == 0, d
     assert repair.reload_strict_holes_nm(v, t) == (0, 1)
+    assert repair.reload_topology(v, t) == (0, 1, 0)
 
 
 def test_enforce_reload_verdict_downgrades_false_watertight(tmp):
@@ -394,6 +395,7 @@ def test_enforce_reload_verdict_downgrades_false_watertight(tmp):
     assert repair.enforce_reload_verdict(rep, v, t) is True
     assert rep['stage1']['two_manifold'] is False, rep
     assert rep['reload_watertight'] is False, rep
+    assert rep['stage1']['reload_non_manifold_vertices'] == 0, rep
     assert rep['stage2']['watertight_after_reload'] is False, rep
     category, _issues, _key = classification.classify(rep)
     assert category == 'warning', (category, rep)
@@ -417,7 +419,9 @@ def test_p_weld_final_separates_float32_collisions(tmp):
     nv, nt, rec = repair.p_weld_final(v, t)
     assert rec is not None and rec['applied'], rec
     assert rec['method'] == 'split-collisions', rec
+    assert rec['non_two_manifold_before'] == 0, rec
     assert repair.reload_strict_holes_nm(nv, nt) == (0, 0), rec
+    assert repair.reload_topology(nv, nt) == (0, 0, 0), rec
     assert len(nt) == len(t), (len(nt), len(t))
     # geometry moved by at most a few float32 ULPs
     assert np.abs(nv.astype(np.float64) - v.astype(np.float64)).max() < 1e-5

@@ -235,6 +235,17 @@ validated the closed solid. If stage 1 closes a mesh but stage 2 is skipped,
 errors, or never runs (for example the macOS/conda in-process fallback being
 unavailable), the file is reported as a warning, not watertight.
 
+A saved STL can still reload with **pinched (non-manifold) vertices** even when
+stage 2 is two-manifold in memory: STL stores no vertex sharing, so two vertices
+that are distinct in memory but identical after the float32 write are welded
+into one. The P-WELD pass checks this reload form, separates the
+float32-coincident vertices when that is the cause (face count unchanged,
+sub-ULP geometry nudge), and records `p_weld`
+(`non_two_manifold_before`/`after`, `vertices_nudged`, `method`). If the issue
+cannot be resolved, the report carries `reload_watertight=false` and
+`stage1.reload_non_manifold_vertices`, and the file is a warning, never
+watertight.
+
 Multi-object 3MF files are handled natively: every object mesh is repaired
 independently and written back into the archive, so no object is lost. An
 object that stage 1 closes (two-manifold, no holes remaining) is then passed

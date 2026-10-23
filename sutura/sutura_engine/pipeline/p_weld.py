@@ -60,14 +60,28 @@ def _repair_welded_topology(verts, tris):
     return (np.asarray(v, dtype=np.float32), np.asarray(t, dtype=np.int32))
 
 
-def reload_strict_holes_nm(verts, tris):
-    """Strict (holes, non-manifold) on the STL save/reload-equivalent mesh.
+def reload_topology(verts, tris):
+    """Strict reload topology: ``(holes, non_manifold_edges, non_manifold_vertices)``.
 
     Applies ``weld_reload_equivalent`` (positions cast to float32 with
-    exactly-coincident positions merged) and then ``defects.detect`` -- the
-    same strict metric the repair guards use, measured on the mesh the user
-    gets back after a save/reload rather than the in-memory index topology.
-    Pure numpy (no pymeshlab)."""
+    exactly-coincident positions merged), then the same pure-numpy hole/edge
+    check as before plus ``topology.mesh_topology`` for pinched vertices.
+    The independent verification gate (and the original oracle finding) counts
+    those vertices, so the verdict must too. Pure numpy/Rust, no pymeshlab."""
+    wv, wt = weld_reload_equivalent(verts, tris)
+    d = detect_defects(wv, wt)
+    topo = topology.mesh_topology(wv, wt)
+    return (len(d['holes']), len(d['non_manifold']),
+            int(topo.get('non_two_manifold_vertices', 0)))
+
+
+def reload_strict_holes_nm(verts, tris):
+    """Strict (holes, non-manifold edges) on the save/reload-equivalent mesh.
+
+    This is the cheap legacy check used by tier/candidate loops: it deliberately
+    does **not** compute the non-manifold-vertex count. Use
+    :func:`reload_topology` (and pass ``include_n2m=True`` to the verdict) when
+    the STL save/reload pinch matters."""
     wv, wt = weld_reload_equivalent(verts, tris)
     d = detect_defects(wv, wt)
     return len(d['holes']), len(d['non_manifold'])
@@ -145,42 +159,47 @@ def p_weld_final(verts, tris):
 
     The last mesh of every STL repair is checked in the form the user reloads
     (float32 positions with exactly-coincident vertices welded). When that form
-    is not strict-watertight the pass tries, in order:
+    is not strict-watertight (holes, non-manifold edges **or pinched
+    vertices**) the pass tries, in order:
 
       1. splitting float32-coincidence collisions when the in-memory index
-         topology is already a clean 2-manifold (the common stage-2 seam case);
+         topology is already a clean 2-manifold (the common stage-2 seam case,
+         and the only cause seen on the dense-SI corpus sample);
       2. topologically repairing the welded mesh (remove/split the extra faces)
          and capping the small holes that creates.
 
-    A candidate is adopted only when it is strict-watertight after the weld
-    (0 holes, 0 non-manifold) and, for the fallback, keeps at least
-    ``P_WELD_MIN_FACE_FRACTION`` of the welded faces. The untouched mesh is
-    returned otherwise, so the pass can never make the output worse. Returns
-    ``(verts, tris, report)`` with ``report`` None when the mesh was already
-    reload-watertight.
+    A candidate is adopted only when it is reload-topology-clean (0 holes, 0
+    non-manifold edges, 0 non-manifold vertices) and, for the fallback, keeps
+    at least ``P_WELD_MIN_FACE_FRACTION`` of the welded faces. The untouched
+    mesh is returned otherwise, so the pass can never make the output worse.
+    Returns ``(verts, tris, report)`` with ``report`` None when the mesh was
+    already reload-topology-clean.
     """
     v0 = np.asarray(verts)
     t0 = np.asarray(tris)
-    base_h, base_nm = reload_strict_holes_nm(v0, t0)
-    if base_h == 0 and base_nm == 0:
+    base_h, base_nm, base_n2m = reload_topology(v0, t0)
+    if base_h == 0 and base_nm == 0 and base_n2m == 0:
         return v0, t0, None
     rec = {'applied': False, 'method': None,
            'holes_before': int(base_h),
            'non_manifold_before': int(base_nm),
+           'non_two_manifold_before': int(base_n2m),
            'holes_after': int(base_h),
            'non_manifold_after': int(base_nm),
+           'non_two_manifold_after': int(base_n2m),
            'vertices_nudged': 0, 'faces_before': int(len(t0)),
            'faces_after': int(len(t0))}
     try:
         d = detect_defects(v0, t0)
         if len(d['holes']) == 0 and len(d['non_manifold']) == 0:
             cv, ct = _separate_weld_collisions(v0, t0)
-            ch, cnm = reload_strict_holes_nm(cv, ct)
-            if ch == 0 and cnm == 0:
+            ch, cnm, cn2m = reload_topology(cv, ct)
+            if ch == 0 and cnm == 0 and cn2m == 0:
                 nudged = int((np.asarray(cv, np.float32)
                               != np.asarray(v0, np.float32)).any(axis=1).sum())
                 rec.update(applied=True, method='split-collisions',
                            holes_after=0, non_manifold_after=0,
+                           non_two_manifold_after=0,
                            vertices_nudged=nudged,
                            faces_after=int(len(ct)))
                 return cv, ct, rec
@@ -194,26 +213,31 @@ def p_weld_final(verts, tris):
             ct = np.asarray(ct, np.int32)
             if len(ct) < P_WELD_MIN_FACE_FRACTION * welded_faces:
                 continue
-            ch, cnm = reload_strict_holes_nm(cv, ct)
-            if ch == 0 and cnm == 0:
+            ch, cnm, cn2m = reload_topology(cv, ct)
+            if ch == 0 and cnm == 0 and cn2m == 0:
                 rec.update(applied=True, method=name, holes_after=0,
-                           non_manifold_after=0, faces_after=int(len(ct)))
+                           non_manifold_after=0, non_two_manifold_after=0,
+                           faces_after=int(len(ct)))
                 return cv, ct, rec
     except Exception:  # noqa: BLE001 - the final pass never crashes a repair
         pass
     return v0, t0, rec
 
 
-def enforce_reload_verdict(report, verts, tris):
+def enforce_reload_verdict(report, verts, tris, include_n2m=True):
     """Honest top-level verdict: never claim watertight for a mesh that is
     not strict-watertight after the reload-equivalent weld (P-HONEST).
 
-    Only a report that currently claims watertight is considered: stage 1
-    two-manifold with no hole AND a successful stage-2 rebuild. If the saved
-    mesh fails the reload check, the fields ``classification.classify()``
-    reads are rewritten so the category can no longer be watertight, plus
-    explicit reload markers. A genuinely watertight mesh returns False with
-    NO report change, so its report and output stay byte-identical.
+    A report whose stage 1 is two-manifold with no remaining hole is checked,
+    regardless of the stage-2 outcome: a stage-2 error, skipped stage 2 or
+    never-run stage 2 (macOS in-process fallback, missing bridge) does NOT
+    bypass the reload check. For STL (``include_n2m=True``, the default) the
+    check also includes non-manifold vertices; OBJ/3MF pass
+    ``include_n2m=False`` and keep the legacy holes/nm check. If the saved mesh
+    fails the reload check, the fields ``classification.classify()`` reads are
+    rewritten so the category can no longer be watertight, plus explicit reload
+    markers. A genuinely clean mesh returns False with NO report change, so its
+    report and output stay byte-identical.
     Returns True when the report was downgraded."""
     if not isinstance(report, dict):
         return False
@@ -221,17 +245,25 @@ def enforce_reload_verdict(report, verts, tris):
     if not isinstance(s1, dict):
         return False
     s2 = report.get('stage2')
+    # Stage 1 may close a mesh without stage 2 (stage-2 skipped/errored); the
+    # saved file can still reload with a pinched vertex, so the reload verdict
+    # must cover the stage-1-only path too. The watertight *category* still
+    # requires stage 2 via classification.classify().
     claims = (bool(s1.get('two_manifold'))
-              and s1.get('holes_remaining', 0) == 0
-              and bool(s2 and s2.get('ok')))
+              and s1.get('holes_remaining', 0) == 0)
     if not claims:
         return False
-    holes, nm = reload_strict_holes_nm(verts, tris)
-    if holes == 0 and nm == 0:
+    if include_n2m:
+        holes, nm, n2m = reload_topology(verts, tris)
+    else:
+        holes, nm = reload_strict_holes_nm(verts, tris)
+        n2m = 0
+    if holes == 0 and nm == 0 and n2m == 0:
         return False
     s1['reload_holes'] = int(holes)
     s1['reload_non_manifold'] = int(nm)
-    s1['two_manifold'] = bool(nm == 0)
+    s1['reload_non_manifold_vertices'] = int(n2m)
+    s1['two_manifold'] = bool(holes == 0 and nm == 0 and n2m == 0)
     s1['holes_remaining'] = int(holes)
     report['reload_watertight'] = False
     if isinstance(s2, dict):

@@ -5,6 +5,7 @@
 Enables an extensible plugin architecture where repair methods are independent
 modules conforming to the RepairMethod protocol.
 """
+import os
 from collections import namedtuple
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Protocol, Tuple, runtime_checkable
@@ -130,13 +131,16 @@ class RepairMethod:
         from sutura_engine.methods import _score
         return _score(self.id, analysis)
 
-    def run(self, verts: np.ndarray, tris: np.ndarray, tmpdir: str, ctx: Optional[dict] = None) -> dict:
+    def run(self, verts: np.ndarray, tris: np.ndarray, tmpdir: str,
+            ctx: Optional[dict] = None, out_ext: str = '.stl') -> dict:
         """Array-level thin wrapper over the existing pipeline.
 
         Returns the repair report with the output arrays attached under the
         transient ``_verts``/``_tris`` keys. ``ctx`` is the base
         ``repair_mesh_from_arrays`` kwargs dict; the method's ``kwargs``
-        override it.
+        override it. ``out_ext`` selects whether the reload verdict includes
+        non-manifold vertices (STL only); the array API has no file path, so
+        callers pass the output/input extension and default to STL.
         """
         repair = _repair_mod()
         merged = dict(ctx or {})
@@ -148,7 +152,13 @@ class RepairMethod:
             verts, tris, tmpdir, mode=mode, profile=profile, engine=engine,
             **merged)
         out_v, out_t = repair.maybe_run_stage2(report, out_v, out_t, tmpdir)
-        repair.enforce_reload_verdict(report, out_v, out_t)
+        # The array-level method API has no output path: an explicit
+        # ctx.extra['out_path']/['output_path'] wins, else the source extension
+        # (the caller normally writes the same format), else STL. OBJ/3MF keep
+        # the legacy holes/nm verdict; STL also verifies pinched vertices.
+        repair.enforce_reload_verdict(
+            report, out_v, out_t,
+            include_n2m=str(out_ext or '.stl').lower() == '.stl')
         report = dict(report)
         report['_verts'] = out_v
         report['_tris'] = out_t
@@ -158,7 +168,15 @@ class RepairMethod:
         """Execute the method on the provided context and return MethodResult."""
         import tempfile
         tmp = ctx.tmpdir or tempfile.mkdtemp()
-        rep = self.run(ctx.verts, ctx.tris, tmp, ctx.params)
+        extra = getattr(ctx, 'extra', None) or {}
+        out_path = extra.get('out_path') or extra.get('output_path')
+        if out_path:
+            out_ext = os.path.splitext(str(out_path))[1] or '.stl'
+        elif getattr(ctx, 'src_path', None):
+            out_ext = os.path.splitext(str(ctx.src_path))[1] or '.stl'
+        else:
+            out_ext = '.stl'
+        rep = self.run(ctx.verts, ctx.tris, tmp, ctx.params, out_ext=out_ext)
         out_v = rep.get('_verts')
         out_t = rep.get('_tris')
         ok = bool(rep.get('ok', True))

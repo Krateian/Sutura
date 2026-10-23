@@ -20,6 +20,7 @@ from sutura_engine.pipeline.mesh_io import (
 from sutura_engine.pipeline.pipeline import repair_mesh_from_arrays
 from sutura_engine.pipeline.p_weld import (
     enforce_reload_verdict, p_weld_final, reload_strict_holes_nm,
+    reload_topology,
     weld_reload_equivalent,
 )
 from sutura_engine.pipeline.presets import (
