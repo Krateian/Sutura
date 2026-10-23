@@ -1564,7 +1564,7 @@ def assemble_v2_sheet(title_lines, rows, out_path, tol=None):
 
 
 def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
-                tol, out_sheet=None, cluster_dir=None):
+                tol, out_sheet=None, cluster_dir=None, force_sheet=False):
     """Compute the V2 metrics and images for one reference/candidate pair."""
     t0 = time.perf_counter()
     all_v = np.concatenate([v_ref, v_cand], axis=0)
@@ -1673,10 +1673,6 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
             normals=src_n if cl["side"] == "reference" else None,
             missing_mask=ref_over if cl["side"] == "reference" else None)
         cluster_imgs.append(rgb)
-        if cluster_dir:
-            os.makedirs(cluster_dir, exist_ok=True)
-            save_rgb_png(rgb, os.path.join(cluster_dir, "cluster_%d_%s.png" % (
-                i + 1, cl["side"])))
     timings["clusters_s"] = time.perf_counter() - t_clu
 
     t_sharp = time.perf_counter()
@@ -1768,7 +1764,13 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
         "thresholds_provisional": V2_THRESHOLDS,
     }
 
-    if out_sheet:
+    write_sheet = out_sheet is not None and (bool(flags) or force_sheet)
+    if write_sheet:
+        if cluster_dir:
+            os.makedirs(cluster_dir, exist_ok=True)
+            for i, (cl, img) in enumerate(zip(clusters, cluster_imgs), 1):
+                save_rgb_png(img, os.path.join(
+                    cluster_dir, "cluster_%d_%s.png" % (i, cl["side"])))
         rows = [
             {"name": "PCA / reference", "images": ref_imgs,
              "captions": [_short_view_name(c[0]) for c in cameras]},
@@ -1817,7 +1819,8 @@ def save_rgb_png(arr_rgb, path):
     return qimg.save(path, "PNG")
 
 
-def assemble_contact_sheet(title_lines, views_data, col_names, out_path, detail_data=None):
+def assemble_contact_sheet(title_lines, views_data, col_names, out_path, detail_data=None,
+                           footer=None):
     """Assemble a multi-view contact sheet image and write to PNG using QPainter."""
     if not HAS_PYSIDE6:
         raise RuntimeError("PySide6 is required to generate contact sheet")
@@ -1836,7 +1839,8 @@ def assemble_contact_sheet(title_lines, views_data, col_names, out_path, detail_
     row_lbl_w = 90
 
     total_w = row_lbl_w + n_cols * cell_w + (n_cols + 1) * pad
-    total_h = hdr_h + n_rows * cell_h + (n_rows + 1) * pad
+    footer_h = 26 if footer else 0
+    total_h = hdr_h + n_rows * cell_h + (n_rows + 1) * pad + footer_h
 
     canvas = QImage(total_w, total_h, QImage.Format_RGB32)
     canvas.fill(QColor(25, 27, 31))
@@ -1895,6 +1899,9 @@ def assemble_contact_sheet(title_lines, views_data, col_names, out_path, detail_
                     p.setPen(QColor(255, 225, 100))
                     p.drawText(cx + 6, ry + cell_h - 6, cap)
 
+    if footer:
+        p.setPen(QColor(205, 210, 220))
+        p.drawText(pad, total_h - 8, footer)
     p.end()
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     canvas.save(out_path, "PNG")
@@ -1975,8 +1982,90 @@ def _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
     return agg, view_renders
 
 
+def make_dev_montage(images, cell=256):
+    """One 256 px cell with the three canonical angles (Iso | Front | Top)."""
+    if not HAS_PYSIDE6:
+        raise RuntimeError("PySide6 is required for the deviation montage")
+    ensure_qapp()
+    out = QImage(cell, cell, QImage.Format_RGB32)
+    out.fill(0)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    half = cell // 2
+    slots = [((0, 0), "Iso"), ((half, 0), "Front"), ((0, half), "Top")]
+    for img, (x, y), label in zip(images, [s[0] for s in slots], [s[1] for s in slots]):
+        rgb = np.ascontiguousarray(img, dtype=np.uint8)
+        q = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.shape[1] * 3,
+                   QImage.Format_RGB888)
+        q = q.scaled(half, half, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        p.drawImage(x, y, q)
+        p.fillRect(QRect(x, y, 54, 16), QColor(0, 0, 0, 170))
+        p.setPen(QColor(235, 235, 235))
+        p.drawText(x + 4, y + 12, label)
+    p.end()
+    raw = np.frombuffer(out.constBits(), dtype=np.uint8).reshape((cell, cell, 4))
+    return raw[:, :, [2, 1, 0]].copy()
+
+
+LAMBERT_LIGHT = np.array([-0.35, 0.55, 0.76], dtype=np.float64)
+LAMBERT_LIGHT = LAMBERT_LIGHT / np.linalg.norm(LAMBERT_LIGHT)
+
+
+def lambert_face_colors(normals, rot):
+    """Plain grey Lambert shading per face for the human-facing deviation row."""
+    n_cam = np.asarray(normals, dtype=np.float64) @ np.asarray(rot, dtype=np.float64).T
+    ndl = np.clip(n_cam @ LAMBERT_LIGHT, 0.0, 1.0)
+    val = (0.35 + 0.65 * ndl) * 200.0
+    return np.repeat(val[:, None], 3, axis=1).astype(np.uint8)
+
+
+def deviation_overlay_colors(normals, rot, face_dev, tol):
+    """Grey Lambert + blue (<= tol) / red (> tol) two-sided output deviation."""
+    base = lambert_face_colors(normals, rot).astype(np.float64)
+    blue = np.array([50.0, 110.0, 230.0])
+    red = np.array([230.0, 60.0, 45.0])
+    ok = np.asarray(face_dev) <= tol
+    out = base.copy()
+    out[ok] = base[ok] * 0.45 + blue * 0.55
+    out[~ok] = base[~ok] * 0.25 + red * 0.75
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def deviation_diff_colors(face_dev, tol):
+    colors = np.tile(np.array([35, 35, 40], dtype=np.uint8), (len(face_dev), 1))
+    colors[np.asarray(face_dev) > tol] = np.array([230, 60, 45], dtype=np.uint8)
+    return colors
+
+
+def render_with_missing(out_v, out_t, out_colors, ref_v, ref_t, missing_mask,
+                        rot, center, scale, w, h):
+    """Render an output with reference-material-missing faces in magenta."""
+    miss_t = ref_t[missing_mask] if missing_mask is not None else ref_t[:0]
+    if len(miss_t):
+        sv = np.concatenate([out_v, ref_v], axis=0)
+        st = np.concatenate([out_t, miss_t + len(out_v)], axis=0)
+        sc = np.concatenate([
+            out_colors,
+            np.tile(np.asarray(MISSING_COLOR, dtype=np.uint8), (len(miss_t), 1)),
+        ], axis=0)
+    else:
+        sv, st, sc = out_v, out_t, out_colors
+    rgb, _, _, _ = render_view(sv, st, np.zeros((len(st), 3)), rot, center, scale,
+                               w=w, h=h, face_colors=sc, need_depth=False)
+    return rgb
+
+
+def _resolve_tolerance(v_ref, v_cand, tolerance):
+    if tolerance is not None:
+        return float(tolerance)
+    all_v = np.concatenate([v_ref, v_cand], axis=0)
+    diag = float(np.linalg.norm(all_v.max(axis=0) - all_v.min(axis=0)))
+    return min(0.05, max(0.0125, diag / 10000.0))
+
+
 def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_center=None,
-                         w=256, h=256, tolerance=None, enable_v2=True):
+                         w=256, h=256, tolerance=None, enable_v2=True,
+                         force_v2_sheet=False):
     """Three-way comparison: Input vs Baseline vs Candidate.
 
     Returns dict with metrics, separate flags, masked/unmasked scores, and contact sheet.
@@ -1999,6 +2088,7 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
     else:
         v_base, t_base, n_base, _ = load_mesh(base_path)
     v_cand, t_cand, n_cand, _ = load_mesh(cand_path)
+    tol = _resolve_tolerance(v_ref, v_cand, tolerance)
     base_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
                                             v_base, t_base, n_base, dodec, w, h)
     cand_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
@@ -2102,6 +2192,57 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
                     f"Diff Cand (SSIM:{rc['metrics']['normal_ssim']:.2f})"
                 ]
             })
+        # Human-facing two-sided deviation row, same 5-column layout: plain grey
+        # Lambert shading with blue/red output deviation and magenta reference
+        # material missing from that output.
+        dev_b = surface_deviation(v_ref, t_ref, v_base, t_base, tol)
+        dev_c = surface_deviation(v_ref, t_ref, v_cand, t_cand, tol)
+        center_common, scale_common, _ = compute_shared_frame(
+            [v_ref, v_base, v_cand], w=w, h=h, pad=16)
+        dev_sets = {"ref": [], "base": [], "base_diff": [], "cand": [], "cand_diff": []}
+        for cam_name, rot in canonical:
+            ref_grey = render_view(
+                v_ref, t_ref, n_ref, rot, center_common, scale_common, w=w, h=h,
+                face_colors=lambert_face_colors(n_ref, rot), need_depth=False)[0]
+            b_col = (deviation_overlay_colors(n_base, rot, dev_b["face_distance"], tol)
+                     if dev_b.get("face_distance") is not None else lambert_face_colors(n_base, rot))
+            c_col = (deviation_overlay_colors(n_cand, rot, dev_c["face_distance"], tol)
+                     if dev_c.get("face_distance") is not None else lambert_face_colors(n_cand, rot))
+            b_miss = (dev_b["ref_face_distance"] > tol
+                      if dev_b.get("ref_face_distance") is not None else None)
+            c_miss = (dev_c["ref_face_distance"] > tol
+                      if dev_c.get("ref_face_distance") is not None else None)
+            b_img = render_with_missing(v_base, t_base, b_col, v_ref, t_ref, b_miss,
+                                        rot, center_common, scale_common, w, h)
+            c_img = render_with_missing(v_cand, t_cand, c_col, v_ref, t_ref, c_miss,
+                                        rot, center_common, scale_common, w, h)
+            b_diff = render_with_missing(
+                v_base, t_base,
+                deviation_diff_colors(dev_b["face_distance"], tol)
+                if dev_b.get("face_distance") is not None else lambert_face_colors(n_base, rot),
+                v_ref, t_ref, b_miss, rot, center_common, scale_common, w, h)
+            c_diff = render_with_missing(
+                v_cand, t_cand,
+                deviation_diff_colors(dev_c["face_distance"], tol)
+                if dev_c.get("face_distance") is not None else lambert_face_colors(n_cand, rot),
+                v_ref, t_ref, c_miss, rot, center_common, scale_common, w, h)
+            dev_sets["ref"].append(ref_grey)
+            dev_sets["base"].append(b_img)
+            dev_sets["base_diff"].append(b_diff)
+            dev_sets["cand"].append(c_img)
+            dev_sets["cand_diff"].append(c_diff)
+        views_data.append({
+            "view_name": "Deviation",
+            "images": [make_dev_montage(dev_sets[k]) for k in
+                       ("ref", "base", "base_diff", "cand", "cand_diff")],
+            "captions": [
+                "Input / Ref",
+                "Baseline dev",
+                "Diff Base",
+                "Candidate dev",
+                "Diff Cand",
+            ],
+        })
         col_names = [
             "Input / Reference",
             "Baseline Output",
@@ -2116,7 +2257,11 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
             f"Candidate: {cand_eval['vqa_score']}/100 (healthy: {cand_eval['vqa_score_healthy']}) | {reason_str}"
         ]
         t_stage = time.perf_counter()
-        sheet_saved = assemble_contact_sheet(title, views_data, col_names, out_sheet, detail_data=detail_row)
+        sheet_saved = assemble_contact_sheet(
+            title, views_data, col_names, out_sheet, detail_data=detail_row,
+            footer=("Deviation row panels: Iso | Front | Top.  blue <= tol, red > tol, "
+                    "magenta = reference material missing in that output (tol = %.4g mm)"
+                    % tol))
         timings["v1_sheet_s"] = time.perf_counter() - t_stage
 
     v2 = None
@@ -2135,7 +2280,8 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
                 diag = float(np.linalg.norm(all_v.max(axis=0) - all_v.min(axis=0)))
                 tol = min(0.05, max(0.0125, diag / 10000.0))
             v2 = evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
-                             tol, out_sheet=v2_sheet, cluster_dir=cluster_dir)
+                             tol, out_sheet=v2_sheet, cluster_dir=cluster_dir,
+                             force_sheet=force_v2_sheet)
         except Exception as ex:  # noqa: BLE001 - V2 must never break the V1 report
             v2 = {"error": str(ex)}
 
@@ -2169,12 +2315,19 @@ def main():
                     help="Deviation tolerance in mesh units (default clamp(diag/10000, 0.0125, 0.05))")
     ap.add_argument("--no-v2", dest="v2", action="store_false",
                     help="Disable the V2 PCA/X-ray/slice/deviation metrics")
+    ap.add_argument("--v2-sheet", dest="v2_sheet", action="store_true",
+                    help="Force the detailed V2 review sheet even with no V2 flag "
+                         "(requires --contact-sheet)")
     args = ap.parse_args()
 
     if not HAS_PYSIDE6:
         print("error: PySide6 is required for verify_visual_qa.py", file=sys.stderr)
         return 2
 
+    if args.v2_sheet and not args.contact_sheet:
+        print("error: --v2-sheet requires --contact-sheet for the output path",
+              file=sys.stderr)
+        return 2
     if not os.path.exists(args.baseline) or not os.path.exists(args.candidate):
         print("error: baseline or candidate mesh file does not exist", file=sys.stderr)
         return 2
@@ -2189,7 +2342,7 @@ def main():
     res = evaluate_visual_diff(args.input, args.baseline, args.candidate,
                                out_sheet=args.contact_sheet, defect_center=center,
                                w=args.res, h=args.res, tolerance=args.tolerance,
-                               enable_v2=args.v2)
+                               enable_v2=args.v2, force_v2_sheet=args.v2_sheet)
 
     if args.json:
         print(json.dumps(res, indent=2))

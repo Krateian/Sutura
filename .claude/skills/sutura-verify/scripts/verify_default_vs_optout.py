@@ -331,6 +331,22 @@ def _markdown_modes(results, mode):
             sheet = vqa.get('contact_sheet') or ''
             sheet_str = f' (sheet: {sheet})' if sheet else ''
             lines.append('* **%s**: %s%s' % (r['name'], r.get('verdict_reason', ''), sheet_str))
+    v2_review = []
+    for r in results:
+        v2 = ((r.get('vqa') or {}).get('v2') or {})
+        flags = v2.get('flags') or []
+        sheet = v2.get('contact_sheet')
+        if flags or sheet:
+            v2_review.append((r['name'], flags, sheet))
+    if v2_review:
+        lines.append('')
+        lines.append('## Visual QA v2 review aids')
+        lines.append('')
+        lines.append('Optional detailed sheets; the table above and the V1 sheet remain the gate.')
+        for name, flags, sheet in v2_review:
+            flag_str = ', '.join(flags) if flags else 'forced'
+            sheet_str = f' (sheet: {sheet})' if sheet else ''
+            lines.append('* **%s**: %s%s' % (name, flag_str, sheet_str))
     return '\n'.join(lines) + '\n'
 
 

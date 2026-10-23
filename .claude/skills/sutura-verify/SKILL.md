@@ -33,6 +33,13 @@ This skill is how an agent that did NOT write the change checks the claim.
   broken models (unmasked full vs masked healthy-skin). Generates 512px zoomed
   detail renders for flagged/boundary cases. Fails as `VISUAL-WORSE` with an
   annotated contact sheet.
+- The **V1 contact sheet** stays the human-facing sheet. It gains one
+  `Deviation` row in the same 5-column layout (Input/Ref | Baseline | Diff |
+  Candidate | Diff) with a 2x2 Iso/Front/Top montage per cell: plain grey
+  Lambert geometry with the two-sided deviation overlay (blue <= tol, red >
+  tol) and magenta for reference material missing from that output, plus a
+  one-line tolerance legend. The added row is display-only and never feeds the
+  V1 score.
 - Visual QA **V2 channels** (additions; every V1 output is unchanged): four
   PCA-axis views with tight per-view framing; 1024 px raster silhouette IoU;
   X-ray ray-parity through `sutura_geom.raycast_points` (`MeshBvh::intersect_ray`)
@@ -132,8 +139,12 @@ The visual QA comparison (baseline vs candidate vs input):
 <repair-venv>/bin/python .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
     BASELINE.stl CANDIDATE.stl [--input INPUT.stl] [--contact-sheet DIFF.png]
 ```
-V2 is on by default (`--no-v2` disables it; `--tolerance` overrides the
-`clamp(diag/10000, 0.0125, 0.05)` deviation tolerance). The default rasteriser
+V2 metrics/flags are computed by default (`--no-v2` disables them;
+`--tolerance` overrides the `clamp(diag/10000, 0.0125, 0.05)` deviation
+tolerance). The detailed V2 sheet is written only when a V2 flag is raised, or
+with `--v2-sheet` (which requires `--contact-sheet`); `report.md` lists it under
+"Visual QA v2 review aids" as an optional aid, while the V1 sheet and the table
+remain the gate. The default rasteriser
 is `sutura_geom.rasterize` (a Rust painter's-algorithm port with the same
 ascending mean-z order as the legacy QPainter path); set `SUTURA_VQA_QT=1` to
 force the legacy renderer for an exact old-score reproduction. The identical-pair
