@@ -322,8 +322,8 @@ def render_view(verts, tris, normals, rot, center, scale, w=256, h=256, defect_v
 
     ``view_center`` shifts the projected view-space origin (used by the V2
     tight per-view framing).  ``face_colors`` replaces the normal shading with
-    one RGB colour per face and skips the depth pass.  The defaults reproduce
-    the V1 output byte-for-byte.
+    one RGB colour per face and skips the depth pass.  The Rust path reproduces
+    the V1 scores within +/-0.5 per mesh (the raster is not byte-identical).
     """
     if not HAS_PYSIDE6:
         raise RuntimeError("PySide6 is required for headless CPU rasterization")
@@ -1835,7 +1835,7 @@ def assemble_contact_sheet(title_lines, views_data, col_names, out_path, detail_
 
     cell_w, cell_h = 256, 256
     pad = 12
-    hdr_h = 70
+    hdr_h = 120
     row_lbl_w = 90
 
     total_w = row_lbl_w + n_cols * cell_w + (n_cols + 1) * pad
@@ -1852,7 +1852,8 @@ def assemble_contact_sheet(title_lines, views_data, col_names, out_path, detail_
     p.drawText(pad, 26, title_lines[0])
     if len(title_lines) > 1:
         p.setPen(QColor(160, 165, 175))
-        p.drawText(pad, 48, title_lines[1])
+        p.drawText(QRect(pad, 36, total_w - 2 * pad, 58),
+                   Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop, title_lines[1])
 
     p.setPen(QColor(200, 210, 225))
     for c, cname in enumerate(col_names):
