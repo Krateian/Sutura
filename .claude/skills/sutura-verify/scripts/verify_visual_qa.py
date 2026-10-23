@@ -626,6 +626,7 @@ V2_SLICE_COUNT = 16
 V2_SHARP_ANGLE_DEG = 35.0
 V2_CLUSTER_TOP = 3
 V2_CLUSTER_RES = 512
+MISSING_COLOR = (230, 40, 200)
 # frac(sqrt(2) - 1), frac(sqrt(3) - 1): a deterministic irrational sub-pixel
 # offset, so the ray grid never lands on a mesh vertex or edge by construction.
 V2_RAY_OFFSET = (0.41421356237309515, 0.7320508075688772)
@@ -682,17 +683,51 @@ def _view_rot(forward, up_ref):
     return np.stack([right, up, f], axis=0)
 
 
-def get_pca_cameras(evecs):
-    """Four deterministic principal-axis views (broadside/profile/section/iso)."""
+def _projected_aspect(verts, rot):
+    p = np.asarray(verts, dtype=np.float64) @ np.asarray(rot, dtype=np.float64).T
+    du = float(np.ptp(p[:, 0]))
+    dv = float(np.ptp(p[:, 1]))
+    return max(du, dv) / max(min(du, dv), 1e-12)
+
+
+def get_pca_cameras(evecs, verts=None, max_aspect=8.0, oblique_deg=30.0):
+    """Four deterministic principal-axis views (broadside/profile/section/iso).
+
+    When ``verts`` is supplied, a view whose projected bbox aspect ratio exceeds
+    ``max_aspect`` (a flat plate seen edge-on) is replaced by a 30-degree
+    oblique view tilted toward the principal axis that minimises the aspect.
+    """
     emax = evecs[:, 0]
     emid = evecs[:, 1]
     emin = evecs[:, 2]
-    return [
-        ("PCA Broadside", _view_rot(emin, emax)),
-        ("PCA Profile", _view_rot(emid, emax)),
-        ("PCA Cross-Section", _view_rot(emax, emid)),
-        ("PCA Isometric", _view_rot(emin + emid + emax, emax)),
+    specs = [
+        ("PCA Broadside", emin, emax),
+        ("PCA Profile", emid, emax),
+        ("PCA Cross-Section", emax, emid),
+        ("PCA Isometric", emin + emid + emax, emax),
     ]
+    axes = [emax, emid, emin]
+    out = []
+    theta = np.deg2rad(oblique_deg)
+    for name, f, up in specs:
+        rot = _view_rot(f, up)
+        if verts is not None and _projected_aspect(verts, rot) > max_aspect:
+            best = None
+            for g in axes:
+                gg = np.asarray(g, dtype=np.float64)
+                ff = np.asarray(f, dtype=np.float64)
+                if abs(float(np.dot(gg, ff))) > 0.9:
+                    continue
+                f2 = np.cos(theta) * ff + np.sin(theta) * gg
+                r2 = _view_rot(f2, up)
+                a2 = _projected_aspect(verts, r2)
+                if best is None or a2 < best[0]:
+                    best = (a2, r2)
+            if best is not None:
+                out.append((name + " (oblique %g)" % oblique_deg, best[1]))
+                continue
+        out.append((name, rot))
+    return out
 
 
 def tight_view_frame(verts_list, rot, center, w, h, pad=16):
@@ -832,6 +867,9 @@ def _xray_image(ref_counts, cand_counts=None):
     if cand_counts is None:
         cov = ref_counts["covered"]
         img[cov] = (112, 118, 128)
+        # Show interior/overlap layers in the reference itself: two interpenetrating
+        # closed bodies give 4 crossings (2 layers) on the overlap rays.
+        img[ref_counts["layers"] >= 2] = (255, 140, 60)
         img[ref_counts["leak"]] = (178, 90, 235)
         return img
     cov = ref_counts["covered"] | cand_counts["covered"]
@@ -855,6 +893,8 @@ def _xray_compare_stats(ref, cand):
         "missing_layer_px": int(np.count_nonzero((cand["layers"] < ref["layers"]) & union)),
         "mean_abs_layer_delta": float(layer_diff[union].mean()) if denom else 0.0,
         "covered_px": denom,
+        "ref_max_layers": int(ref["layers"].max()) if ref["layers"].size else 0,
+        "cand_max_layers": int(cand["layers"].max()) if cand["layers"].size else 0,
         "suspect_ref_px": ref["suspect_px"],
         "suspect_cand_px": cand["suspect_px"],
         "image_ref": _xray_image(ref),
@@ -1227,38 +1267,37 @@ def sharp_edge_ratio(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
     }
 
 
-def surface_deviation(v_ref, t_ref, v_cand, t_cand, tol):
-    """Per-candidate-vertex point-to-surface distance to the reference mesh."""
+def _one_way_deviation(v_src, t_src, v_dst, t_dst, tol):
+    """Point-to-surface distance from source vertices to the destination mesh."""
     method = None
     dist = None
     if HAS_SUTURA_GEOM and hasattr(sutura_geom, "closest_points"):
         try:
             _, dist, _ = sutura_geom.closest_points(
-                np.asarray(v_ref, dtype=np.float64),
-                np.asarray(t_ref, dtype=np.int32),
-                np.asarray(v_cand, dtype=np.float64))
+                np.asarray(v_dst, dtype=np.float64),
+                np.asarray(t_dst, dtype=np.int32),
+                np.asarray(v_src, dtype=np.float64))
             dist = np.asarray(dist, dtype=np.float64)
             method = "surface"
         except Exception:  # noqa: BLE001
             dist = None
     if dist is None and HAS_SUTURA_GEOM and hasattr(sutura_geom, "KdTree"):
         try:
-            tree = sutura_geom.KdTree(np.asarray(v_ref, dtype=np.float64))
-            d, _ = tree.query(np.asarray(v_cand, dtype=np.float64), k=1)
+            tree = sutura_geom.KdTree(np.asarray(v_dst, dtype=np.float64))
+            d, _ = tree.query(np.asarray(v_src, dtype=np.float64), k=1)
             dist = np.asarray(d, dtype=np.float64)
             method = "vertex"
         except Exception:  # noqa: BLE001
             dist = None
     if dist is None:
-        return {"method": None, "max": None, "p95": None, "p99": None,
-                "mean": None, "over_tol_faces": 0, "over_tol_area_rel": 0.0,
-                "vertex_distance": None, "face_distance": None}
-    face_dev = dist[t_cand].max(axis=1)
-    tri = v_cand[t_cand]
-    areas = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+        return None
+    face_dev = dist[t_src].max(axis=1)
+    tri = v_src[t_src]
+    areas = 0.5 * np.linalg.norm(
+        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
     over = face_dev > tol
     total_area = float(areas.sum())
-    return {
+    stats = {
         "method": method,
         "max": float(dist.max()),
         "p95": float(np.percentile(dist, 95)),
@@ -1266,9 +1305,52 @@ def surface_deviation(v_ref, t_ref, v_cand, t_cand, tol):
         "mean": float(dist.mean()),
         "over_tol_faces": int(np.count_nonzero(over)),
         "over_tol_area_rel": float(areas[over].sum() / total_area) if total_area > 0 else 0.0,
-        "vertex_distance": dist,
-        "face_distance": face_dev,
     }
+    return stats, dist, face_dev
+
+
+def surface_deviation(v_ref, t_ref, v_cand, t_cand, tol):
+    """Two-sided point-to-surface deviation (candidate->ref and ref->candidate).
+
+    The top-level max/p95/p99/mean and the V2_DEVIATION flag use both
+    directions; per-direction stats and arrays are kept for the heatmaps.
+    """
+    cand = _one_way_deviation(v_cand, t_cand, v_ref, t_ref, tol)
+    ref = _one_way_deviation(v_ref, t_ref, v_cand, t_cand, tol)
+    if cand is None and ref is None:
+        return {
+            "method": None, "max": None, "p95": None, "p99": None,
+            "mean": None, "over_tol_faces": 0, "over_tol_area_rel": 0.0,
+            "candidate_to_reference": None, "reference_to_candidate": None,
+            "vertex_distance": None, "face_distance": None,
+            "ref_vertex_distance": None, "ref_face_distance": None,
+        }
+    parts = [p for p in (cand, ref) if p is not None]
+    method = parts[0][0]["method"]
+    combined = np.concatenate([p[1] for p in parts])
+    cstats = cand[0] if cand is not None else None
+    rstats = ref[0] if ref is not None else None
+    return {
+        "method": method,
+        "max": float(max(p[0]["max"] for p in parts)),
+        "p95": float(max(p[0]["p95"] for p in parts)),
+        "p99": float(max(p[0]["p99"] for p in parts)),
+        "mean": float(combined.mean()),
+        "over_tol_faces": int(sum(p[0]["over_tol_faces"] for p in parts)),
+        "over_tol_area_rel": float(max(p[0]["over_tol_area_rel"] for p in parts)),
+        "candidate_to_reference": cstats,
+        "reference_to_candidate": rstats,
+        "vertex_distance": cand[1] if cand is not None else None,
+        "face_distance": cand[2] if cand is not None else None,
+        "ref_vertex_distance": ref[1] if ref is not None else None,
+        "ref_face_distance": ref[2] if ref is not None else None,
+    }
+
+
+def normal_face_colors(normals, rot):
+    """The same flat normal colours used by render_view's normal map."""
+    n_cam = np.asarray(normals, dtype=np.float64) @ np.asarray(rot, dtype=np.float64).T
+    return np.clip((n_cam * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
 
 
 def deviation_colors(dist, tol):
@@ -1361,7 +1443,8 @@ def _global_up(normal):
     return z
 
 
-def render_cluster_zoom(v, t, face_colors, center, radius, normal, res=V2_CLUSTER_RES):
+def render_cluster_zoom(v, t, face_colors, center, radius, normal, res=V2_CLUSTER_RES,
+                        normals=None, missing_mask=None):
     """512 px local close-up, normal-aligned with a 15 degree elevation + wireframe."""
     n = np.asarray(normal, dtype=np.float64)
     n = n / max(np.linalg.norm(n), 1e-12)
@@ -1376,7 +1459,14 @@ def render_cluster_zoom(v, t, face_colors, center, radius, normal, res=V2_CLUSTE
         fm = np.ones(len(t), dtype=bool)
     lv = v
     lt = t[fm]
-    lc = face_colors[fm]
+    if face_colors is not None:
+        lc = face_colors[fm]
+    elif normals is not None:
+        lc = normal_face_colors(normals, rot)[fm].copy()
+        if missing_mask is not None:
+            lc[missing_mask[fm]] = np.asarray(MISSING_COLOR, dtype=np.uint8)
+    else:
+        lc = np.full((len(lt), 3), 200, dtype=np.uint8)
     local_vidx = np.unique(lt.ravel())
     cu, cv, scale, _ = tight_view_frame([lv[local_vidx]], rot, center, res, res, pad=24)
     rgb, _, sil, _ = render_view(lv, lt, np.zeros((len(lv), 3)), rot, center,
@@ -1385,7 +1475,7 @@ def render_cluster_zoom(v, t, face_colors, center, radius, normal, res=V2_CLUSTE
     return rgb, sil.sum()
 
 
-def assemble_v2_sheet(title_lines, rows, out_path):
+def assemble_v2_sheet(title_lines, rows, out_path, tol=None):
     """Assemble the V2 contact sheet (PCA deviation, X-ray, cluster zooms)."""
     if not HAS_PYSIDE6:
         raise RuntimeError("PySide6 is required to generate the V2 contact sheet")
@@ -1394,9 +1484,10 @@ def assemble_v2_sheet(title_lines, rows, out_path):
     pad = 12
     hdr_h = 78
     row_lbl_w = 118
+    legend_h = 112
     n_cols = max(1, max(len(r["images"]) for r in rows))
     total_w = row_lbl_w + n_cols * cell_w + (n_cols + 1) * pad
-    total_h = hdr_h + len(rows) * cell_h + (len(rows) + 1) * pad
+    total_h = hdr_h + len(rows) * cell_h + (len(rows) + 1) * pad + legend_h
     canvas = QImage(total_w, total_h, QImage.Format_RGB32)
     canvas.fill(QColor(25, 27, 31))
     p = QPainter(canvas)
@@ -1423,6 +1514,43 @@ def assemble_v2_sheet(title_lines, rows, out_path):
                 p.fillRect(QRect(cx, ry + cell_h - 22, cell_w, 22), QColor(0, 0, 0, 180))
                 p.setPen(QColor(235, 235, 235))
                 p.drawText(cx + 6, ry + cell_h - 6, cap[c])
+    # Legends: X-ray colour key and the two-sided deviation ramp in mm.
+    ly = hdr_h + len(rows) * (cell_h + pad) + pad
+    legend_font = QFont()
+    legend_font.setPointSize(8)
+    p.setFont(legend_font)
+    p.setPen(QColor(220, 222, 228))
+    p.drawText(12, ly + 14, "X-ray colour key (per view):")
+    key = [
+        ((112, 118, 128), "covered"),
+        ((255, 140, 60), "extra / overlap layers"),
+        ((60, 190, 230), "fewer layers"),
+        ((178, 90, 235), "odd parity (leak)"),
+    ]
+    kx = 12
+    for color, label in key:
+        p.fillRect(QRect(kx, ly + 24, 12, 12), QColor(*color))
+        p.setPen(QColor(210, 213, 220))
+        p.drawText(kx + 16, ly + 34, label)
+        kx += 20 + 7 * len(label)
+    tol_v = float(tol) if tol else 0.05
+    bx, by, bw, bh = 660, ly + 24, 280, 14
+    p.setPen(QColor(220, 222, 228))
+    p.drawText(bx, ly + 14, "Two-sided deviation (mm):")
+    for i in range(bw):
+        d = 1.5 * tol_v * i / max(1, bw - 1)
+        c = deviation_colors(np.array([d]), tol_v)[0]
+        p.fillRect(QRect(bx + i, by, 1, bh), QColor(int(c[0]), int(c[1]), int(c[2])))
+    p.setPen(QColor(210, 213, 220))
+    for frac, label in ((0.0, "0"), (1.0 / 3.0, "%.3g" % (0.5 * tol_v)),
+                        (2.0 / 3.0, "%.3g (tol)" % tol_v),
+                        (1.0, "%.3g" % (1.5 * tol_v))):
+        tx = bx + int(frac * (bw - 1))
+        p.drawText(tx - 6 if frac else tx, by + bh + 12, label)
+    mx = bx + bw + 18
+    p.fillRect(QRect(mx, by, 12, 12), QColor(*MISSING_COLOR))
+    p.setPen(QColor(210, 213, 220))
+    p.drawText(mx + 16, by + 10, "missing on reference (> tol)")
     p.end()
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     canvas.save(out_path, "PNG")
@@ -1437,7 +1565,7 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
     center = (all_v.min(axis=0) + all_v.max(axis=0)) * 0.5
     diag = float(np.linalg.norm(all_v.max(axis=0) - all_v.min(axis=0)))
     _, evecs = compute_pca_axes(all_v)
-    cameras = get_pca_cameras(evecs)
+    cameras = get_pca_cameras(evecs, all_v)
     timings = {}
     t_sil = t_xray = 0.0
 
@@ -1479,21 +1607,27 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
     timings["silhouette_s"] = t_sil
     timings["xray_s"] = t_xray
 
-    # Reference / candidate normal renders and candidate deviation colours.
+    # Two-sided deviation: candidate->reference (ramp) and reference->candidate
+    # (missing material, magenta on the reference views and cluster zooms).
     ref_imgs = []
     dev_imgs = []
     t_dev = time.perf_counter()
     dev = surface_deviation(v_ref, t_ref, v_cand, t_cand, tol)
-    if dev.get("face_distance") is not None:
-        fcolors = deviation_colors(dev["face_distance"], tol)
-    else:
-        fcolors = None
+    fcolors = (deviation_colors(dev["face_distance"], tol)
+               if dev.get("face_distance") is not None else None)
+    ref_face_dev = dev.get("ref_face_distance")
+    ref_over = (ref_face_dev > tol) if ref_face_dev is not None else None
     timings["deviation_s"] = time.perf_counter() - t_dev
     t_views = time.perf_counter()
     for name, rot in cameras:
         cu, cv, scale, _ = tight_view_frame([v_ref, v_cand], rot, center, 384, 384, pad=16)
+        ref_colors = normal_face_colors(n_ref, rot)
+        if ref_over is not None and np.any(ref_over):
+            ref_colors = ref_colors.copy()
+            ref_colors[ref_over] = np.asarray(MISSING_COLOR, dtype=np.uint8)
         rgb_ref, _, _, _ = render_view(v_ref, t_ref, n_ref, rot, center, scale,
-                                       w=384, h=384, view_center=(cu, cv))
+                                       w=384, h=384, view_center=(cu, cv),
+                                       face_colors=ref_colors, need_depth=False)
         ref_imgs.append(rgb_ref)
         if fcolors is not None:
             rgb_dev, _, _, _ = render_view(v_cand, t_cand, n_cand, rot, center, scale,
@@ -1508,21 +1642,35 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
     cluster_imgs = []
     t_clu = time.perf_counter()
     if dev.get("face_distance") is not None:
-        clusters = deviation_clusters(v_cand, t_cand, dev["face_distance"], tol)
-        for i, cl in enumerate(clusters):
-            normals_c = n_cand[cl["faces"]]
-            nmean = normals_c.mean(axis=0) if len(normals_c) else np.array([0.0, 0.0, 1.0])
-            nm = np.linalg.norm(nmean)
-            if nm < 1e-9:
-                nmean = np.array([0.0, 0.0, 1.0])
-            else:
-                nmean = nmean / nm
-            rgb, _ = render_cluster_zoom(v_cand, t_cand, fcolors, cl["center"],
-                                         cl["radius"], nmean)
-            cluster_imgs.append(rgb)
-            if cluster_dir:
-                os.makedirs(cluster_dir, exist_ok=True)
-                save_rgb_png(rgb, os.path.join(cluster_dir, "cluster_%d.png" % (i + 1)))
+        clusters.extend(deviation_clusters(v_cand, t_cand, dev["face_distance"], tol))
+        for c in clusters:
+            c["side"] = "candidate"
+    if ref_face_dev is not None:
+        ref_clusters = deviation_clusters(v_ref, t_ref, ref_face_dev, tol)
+        for c in ref_clusters:
+            c["side"] = "reference"
+        clusters.extend(ref_clusters)
+    clusters.sort(key=lambda c: (c["score"], c["max_dev"]), reverse=True)
+    clusters = clusters[:V2_CLUSTER_TOP]
+    for i, cl in enumerate(clusters):
+        if cl["side"] == "reference":
+            src_v, src_t, src_n = v_ref, t_ref, n_ref
+        else:
+            src_v, src_t, src_n = v_cand, t_cand, n_cand
+        normals_c = src_n[cl["faces"]]
+        nmean = normals_c.mean(axis=0) if len(normals_c) else np.array([0.0, 0.0, 1.0])
+        nm = np.linalg.norm(nmean)
+        nmean = nmean / nm if nm >= 1e-9 else np.array([0.0, 0.0, 1.0])
+        rgb, _ = render_cluster_zoom(
+            src_v, src_t, fcolors if cl["side"] == "candidate" else None,
+            cl["center"], cl["radius"], nmean,
+            normals=src_n if cl["side"] == "reference" else None,
+            missing_mask=ref_over if cl["side"] == "reference" else None)
+        cluster_imgs.append(rgb)
+        if cluster_dir:
+            os.makedirs(cluster_dir, exist_ok=True)
+            save_rgb_png(rgb, os.path.join(cluster_dir, "cluster_%d_%s.png" % (
+                i + 1, cl["side"])))
     timings["clusters_s"] = time.perf_counter() - t_clu
 
     t_sharp = time.perf_counter()
@@ -1540,6 +1688,8 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
     extra = int(sum(x["extra_layer_px"] for x in xr_ok))
     missing = int(sum(x["missing_layer_px"] for x in xr_ok))
     layer_delta = float(np.mean([x["mean_abs_layer_delta"] for x in xr_ok])) if xr_ok else 0.0
+    max_layers_ref = int(max((x["ref_max_layers"] for x in xr_ok), default=0))
+    max_layers_cand = int(max((x["cand_max_layers"] for x in xr_ok), default=0))
 
     flags = []
     reasons = []
@@ -1593,15 +1743,19 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
             "extra_layer_px": extra,
             "missing_layer_px": missing,
             "mean_layer_delta": layer_delta,
+            "max_layers_ref": max_layers_ref,
+            "max_layers_cand": max_layers_cand,
             "ran": bool(xr_ok),
         },
         "slices": slices,
         "sharp_edges": sharp,
         "deviation": {k: v for k, v in dev.items()
-                      if k not in ("vertex_distance", "face_distance")},
-        "clusters": [{k: (c[k].tolist() if isinstance(c[k], np.ndarray) else c[k])
-                      for k in ("face_count", "area", "max_dev", "mean_dev",
-                                "center", "radius", "score")}
+                      if k not in ("vertex_distance", "face_distance",
+                                   "ref_vertex_distance", "ref_face_distance")},
+        "clusters": [{**{k: (c[k].tolist() if isinstance(c[k], np.ndarray) else c[k])
+                         for k in ("face_count", "area", "max_dev", "mean_dev",
+                                   "center", "radius", "score")},
+                      "side": c["side"]}
                      for c in clusters],
         "flags": flags,
         "reason": "; ".join(reasons) if reasons else "V2 metrics within provisional thresholds",
@@ -1610,7 +1764,7 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
 
     if out_sheet:
         rows = [
-            {"name": "PCA / ref normals", "images": ref_imgs,
+            {"name": "PCA / reference", "images": ref_imgs,
              "captions": [c[0] for c in cameras]},
             {"name": "PCA / candidate dev", "images": dev_imgs,
              "captions": ["%s dev" % c[0].split()[-1] for c in cameras]},
@@ -1619,7 +1773,7 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
             {"name": "X-ray cand", "images": xray_rows_delta,
              "captions": ["%s layers" % c[0].split()[-1] for c in cameras]},
             {"name": "Top clusters", "images": cluster_imgs,
-             "captions": ["cluster %d (%.2f mm)" % (i + 1, c["max_dev"])
+             "captions": ["%s %d (%.2f mm)" % (c["side"], i + 1, c["max_dev"])
                           for i, c in enumerate(clusters)]},
         ]
         mesh_tag = os.path.splitext(os.path.basename(out_sheet))[0]
@@ -1627,7 +1781,7 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
             "Visual QA v2: %s | flags: %s" % (
                 mesh_tag, ", ".join(flags) if flags else "NONE"),
             "silhouette min %.4f | xray leak %d / layers %.3f | slice area %.2f%% | "
-            "sharp %.3f | dev max %.4f mm | %.1f s" % (
+            "sharp %.3f | two-sided dev max %.4f mm | %.1f s" % (
                 min(ious) if ious else 1.0, leak_cand, layer_delta,
                 100.0 * slices["max_area_rel"],
                 sharp["ratio"] if sharp["ratio"] is not None else float("nan"),
@@ -1635,7 +1789,7 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
                 runtime_s),
         ]
         t_sheet = time.perf_counter()
-        result["contact_sheet"] = assemble_v2_sheet(title, rows, out_sheet)
+        result["contact_sheet"] = assemble_v2_sheet(title, rows, out_sheet, tol=tol)
         timings["sheet_s"] = time.perf_counter() - t_sheet
         result["runtime_s"] = time.perf_counter() - t0
         if cluster_dir:

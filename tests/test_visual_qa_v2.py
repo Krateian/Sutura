@@ -74,6 +74,69 @@ def test_xray_binding_available_when_expected():
     print('ok  sutura_geom.raycast_points present')
 
 
+def _cube(offset=(0.0, 0.0, 0.0)):
+    verts = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                      [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]], dtype=np.float64)
+    verts = verts + np.asarray(offset, dtype=np.float64)
+    tris = np.array([[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7],
+                     [0, 1, 5], [0, 5, 4], [3, 7, 6], [3, 6, 2],
+                     [0, 4, 7], [0, 7, 3], [1, 2, 6], [1, 6, 5]],
+                    dtype=np.int32)
+    return verts, tris
+
+
+def test_xray_overlap_layers_are_visible_in_reference():
+    if not getattr(vvq, 'HAS_SUTURA_GEOM', False):
+        print('skip: sutura_geom is not installed')
+        return
+    if not hasattr(vvq.sutura_geom, 'raycast_points'):
+        print('skip: installed sutura_geom lacks raycast_points')
+        return
+    a, ta = _cube()
+    b, tb = _cube((0.5, 0.0, 0.5))
+    verts = np.concatenate([a, b], axis=0)
+    tris = np.concatenate([ta, tb + 8], axis=0)
+    center = (verts.min(axis=0) + verts.max(axis=0)) * 0.5
+    grid = vvq._ray_grid_for_view([verts], np.eye(3), center)
+    stats = vvq._xray_counts(verts, tris, grid)
+    assert int(stats['layers'].max()) >= 2, 'overlap must produce >= 2 layers'
+    assert int(stats['leak'].sum()) == 0, 'closed cubes must have no odd rays'
+    img = vvq._xray_image(stats)
+    orange = np.array([255, 140, 60], dtype=np.uint8)
+    assert np.any(np.all(img == orange, axis=2)), 'reference map must show overlap layers'
+    print('ok  xray overlap layers on reference')
+
+
+def test_two_sided_deviation_sees_missing_material():
+    if not getattr(vvq, 'HAS_SUTURA_GEOM', False):
+        print('skip: sutura_geom is not installed')
+        return
+    a, ta = _cube()
+    b, tb = _cube((0.5, 0.0, 0.0))
+    dev = vvq.surface_deviation(a, ta, b, tb, 0.01)
+    if dev['method'] is None:
+        print('skip: no closest-point backend')
+        return
+    assert dev['candidate_to_reference'] is not None
+    assert dev['reference_to_candidate'] is not None
+    assert dev['max'] > 0.4
+    assert dev['max'] == max(dev['candidate_to_reference']['max'],
+                             dev['reference_to_candidate']['max'])
+    print('ok  two-sided deviation')
+
+
+def test_oblique_replaces_flat_plate_sliver():
+    # A flat plate (10 x 10 x 0.1) is edge-on in the profile/cross-section views.
+    verts = np.array([[x, y, z] for x in (0.0, 10.0) for y in (0.0, 10.0)
+                      for z in (0.0, 0.1)], dtype=np.float64)
+    _, evecs = vvq.compute_pca_axes(verts)
+    cams = vvq.get_pca_cameras(evecs, verts)
+    assert any('oblique' in name for name, _ in cams), 'flat plate must get an oblique view'
+    for name, rot in cams:
+        assert vvq._projected_aspect(verts, rot) <= 8.0 + 1e-6, (name, 'still a sliver')
+    print('ok  oblique plate views')
+
+
 if __name__ == '__main__':
     for name, fn in sorted(globals().items()):
         if name.startswith('test_'):

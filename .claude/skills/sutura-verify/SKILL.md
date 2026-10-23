@@ -37,12 +37,17 @@ This skill is how an agent that did NOT write the change checks the claim.
   PCA-axis views with tight per-view framing; 1024 px raster silhouette IoU;
   X-ray ray-parity through `sutura_geom.raycast_points` (`MeshBvh::intersect_ray`)
   on a deterministic 256x256 orthographic grid with an irrational sub-pixel
-  offset (odd crossings = leak/hole, extra layers = interior/overlap, ref vs
-  out); 16 deterministic Z-slices at heights nudged off every vertex z (area,
-  loop count, 2D Hausdorff); dihedral sharp-edge length ratio (>= 35 deg); and a
-  true 3D point-to-surface deviation heatmap via `sutura_geom.closest_points`,
-  with the top-3 over-tolerance clusters rendered as 512 px normal-aligned
-  wireframe zooms. All V2 flags are **relative** (candidate worse than the
+  offset (odd crossings = leak/hole, extra layers = interior/overlap; the
+  reference map also colours its own >=2-layer overlaps orange); 16
+  deterministic Z-slices at heights nudged off every vertex z (area, loop
+  count, 2D Hausdorff); dihedral sharp-edge length ratio (>= 35 deg); and a
+  **two-sided** 3D point-to-surface deviation (candidate->reference and
+  reference->candidate) via `sutura_geom.closest_points`. Missing material on
+  the reference is magenta in the reference views and cluster zooms; the
+  top-3 over-tolerance clusters can be reference-side. Views whose projected
+  aspect ratio exceeds 8 (flat plates edge-on) are replaced by 30-degree
+  oblique views. The sheet carries an X-ray colour key and a deviation colour
+  bar with mm ticks. All V2 flags are **relative** (candidate worse than the
   reference; an identical pair gives zero flags); thresholds are provisional
   until calibrated against the core oracle. The V2 sheet is
   `<contact>_v2.png` and the cluster zooms are `<contact>_v2_clusters/`.
