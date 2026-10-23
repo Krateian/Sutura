@@ -103,6 +103,13 @@ def main():
     assert r["channels"]["loops"]["available"]
     assert r["channels"]["loops"]["count"] == 0
     assert r["self_intersections"]["total"] == 0
+    assert 0 <= r["self_intersections"]["filtered_pairs"] <= r["self_intersections"]["candidate_pairs"]
+    assert r["self_intersections"]["prefilter"] == "coplanar_aware_plane"
+    assert r["channels"]["self_intersection"]["method"] == "broad_phase+prefilter+exact"
+    rd = sutura_geom.diagnose(v, f, "deep")
+    assert rd["self_intersections"]["filtered_pairs"] is None
+    assert rd["self_intersections"]["prefilter"] is None
+    assert rd["channels"]["self_intersection"]["method"] == "broad_phase+exact+shared"
     assert r["loops"]["count"] == 0
     assert r["meta"]["phase"] == 3
     for ch in ("interior", "thin_wall", "noise"):

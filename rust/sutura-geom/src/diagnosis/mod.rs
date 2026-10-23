@@ -1599,6 +1599,8 @@ pub fn report_to_pydict<'py>(
     si.set_item("available", r.self_intersections.available)?;
     si.set_item("reason", r.self_intersections.reason)?;
     si.set_item("candidate_pairs", r.self_intersections.candidate_pairs)?;
+    si.set_item("filtered_pairs", r.self_intersections.filtered_pairs)?;
+    si.set_item("prefilter", r.self_intersections.prefilter)?;
     si.set_item("scanned_pairs", r.self_intersections.scanned_pairs)?;
     si.set_item("scanned_total", r.self_intersections.scanned_total)?;
     root.set_item("self_intersections", si)?;
