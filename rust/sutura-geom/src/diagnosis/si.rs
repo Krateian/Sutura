@@ -52,7 +52,6 @@ pub struct SelfIntersections {
 }
 
 #[inline]
-#[inline]
 fn pa_min(verts: &[[f64; 3]], t: [usize; 3], k: usize) -> f64 {
     verts[t[0]][k].min(verts[t[1]][k]).min(verts[t[2]][k])
 }

@@ -114,7 +114,42 @@ fn covariance(points: &[[f64; 3]], centroid: [f64; 3]) -> [[f64; 3]; 3] {
     c
 }
 
+/// Rotate the cycle to start at its lexicographically smallest vertex
+/// (ties broken by the following vertices).  The boundary walk's start is
+/// face-order dependent, so summing the cycle in raw traversal order drifts at
+/// the last bit when the mesh is permuted; this makes every accumulated value
+/// (centroid, perimeter, Newell area, covariance) bit-exact under rotation.
+fn canonical_rotation(points: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    let k = points.len();
+    if k < 2 {
+        return points.to_vec();
+    }
+    let cyclic_less = |a: usize, b: usize| -> bool {
+        for d in 0..k {
+            let p = points[(a + d) % k];
+            let q = points[(b + d) % k];
+            for c in 0..3 {
+                match p[c].total_cmp(&q[c]) {
+                    std::cmp::Ordering::Less => return true,
+                    std::cmp::Ordering::Greater => return false,
+                    std::cmp::Ordering::Equal => {}
+                }
+            }
+        }
+        false
+    };
+    let mut best = 0usize;
+    for i in 1..k {
+        if cyclic_less(i, best) {
+            best = i;
+        }
+    }
+    (0..k).map(|j| points[(best + j) % k]).collect()
+}
+
 fn loop_metrics(points: &[[f64; 3]]) -> LoopInfo {
+    let ordered = canonical_rotation(points);
+    let points = &ordered[..];
     let k = points.len();
     let mut bbox = Bbox::empty();
     let mut centroid = [0.0f64; 3];

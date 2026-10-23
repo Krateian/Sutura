@@ -108,15 +108,24 @@ def main():
         if "coplanar" in case:
             assert r["duplicates"]["faces"] > 0
 
-    base = json.loads(subprocess.run(
-        [sys.executable, os.path.abspath(__file__), "--dump", "coplanar"],
-        capture_output=True, text=True, check=True).stdout)
-    for seed in (1, 7, 23):
-        perm = json.loads(subprocess.run(
-            [sys.executable, os.path.abspath(__file__), "--dump",
-             f"perm-coplanar:{seed}"],
+    for case in ("mobius", "coplanar"):
+        base = json.loads(subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--dump", case],
             capture_output=True, text=True, check=True).stdout)
-        assert perm == base, f"coplanar dump changed under permutation {seed}"
+        for seed in (1, 7, 23):
+            perm = json.loads(subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "--dump",
+                 f"perm-{case}:{seed}"],
+                capture_output=True, text=True, check=True).stdout)
+            if case == "coplanar":
+                assert perm == base, f"{case} dump changed under permutation {seed}"
+            else:
+                # A non-orientable patch may resolve its flip side differently
+                # under permutation; the loop metrics themselves must be
+                # bit-exact (canonical cycle order).  Compare every float in
+                # loops.items exactly.
+                assert perm["loops"] == base["loops"], (
+                    f"{case} loop metrics changed under permutation {seed}")
 
     # A 20k-component triangle soup must stay inside the fast budget: the
     # component pair and loop-region work is capped, not quadratic.
