@@ -16,9 +16,10 @@ use crate::winding::MeshBvh;
 
 use super::{region_from_faces, Region};
 
-/// Main's raw fast cap.  A mesh whose broad phase is at or below this was
-/// exact in the pre-prefilter implementation, so fast mode must scan every
-/// filtered survivor for it.  A mesh above it was already estimated.
+/// Main's raw fast cap, and the threshold at or below which fast mode takes
+/// main's exact path unchanged.  A mesh whose broad phase is above it was
+/// already `estimated` in main, so only such a mesh is eligible for the
+/// coplanar-aware prefilter.
 pub const FAST_MAX_RAW_PAIRS: usize = 1_000_000;
 
 /// Deterministic ceiling for the **prefiltered** pair list in `detail='fast'`,
@@ -56,9 +57,10 @@ pub struct SelfIntersections {
     pub touch: Option<usize>,
     pub clusters: Option<usize>,
     pub candidate_pairs: usize,
-    /// Pairs left after the fast coplanar-aware prefilter; `None` in deep mode.
+    /// Pairs left after the fast coplanar-aware prefilter; `None` unless the
+    /// fast path prefilters (raw broad phase above [`FAST_MAX_RAW_PAIRS`]).
     pub filtered_pairs: Option<usize>,
-    /// `Some("coplanar_aware_plane")` in fast mode, `None` in deep mode.
+    /// `Some("coplanar_aware_plane")` only when the fast path prefilters.
     pub prefilter: Option<&'static str>,
     pub scanned_pairs: usize,
     /// Defect pairs (proper + coplanar) found in the scanned prefix.
@@ -388,13 +390,15 @@ pub fn si_report(
     out.candidate_pairs = candidates.len();
     let use_exact = detail == "deep";
 
-    // Fast mode: drop pairs the conservative plane filter proves disjoint, and
-    // skip shared-vertex pairs (the fast scope already ignored them).  The cap
-    // is applied to the filtered survivors, not to the raw broad phase.
+    // Fast mode drops pairs the conservative plane filter proves disjoint only
+    // once the raw broad phase exceeds main's fast cap, where it measurably
+    // pays off.  At or below the cap the prefilter costs more than it saves, so
+    // take exactly main's path (no filter, no extra allocations) and match its
+    // work and output.  The survivor cap below applies only to the >1M branch.
+    let prefilter_fast = !use_exact && candidates.len() > FAST_MAX_RAW_PAIRS;
+
     let mut filtered: Vec<(usize, usize)> = Vec::new();
-    let pairs_all: &[(usize, usize)] = if use_exact {
-        &candidates
-    } else {
+    let pairs_all: &[(usize, usize)] = if prefilter_fast {
         out.prefilter = Some("coplanar_aware_plane");
         let planes: Vec<[f64; 4]> = tris.iter().map(|&t| tri_plane(verts, t)).collect();
         let points: Vec<[[f64; 3]; 3]> = tris
@@ -414,14 +418,14 @@ pub fn si_report(
             .collect();
         out.filtered_pairs = Some(filtered.len());
         &filtered
+    } else {
+        &candidates
     };
-    // Exactness guard: the pre-prefilter fast mode was exact whenever the raw
-    // broad phase fit in FAST_MAX_RAW_PAIRS.  In that case scan every filtered
-    // survivor (the filter is conservative, so the counts match main); only a
-    // mesh that was already estimated in main may have its survivors capped.
-    let truncated = !use_exact
-        && candidates.len() > FAST_MAX_RAW_PAIRS
-        && pairs_all.len() > FAST_MAX_FILTERED_PAIRS;
+    // Survivor scan guard: only a mesh whose raw broad phase already exceeded
+    // FAST_MAX_RAW_PAIRS (i.e. was `estimated` in main) may have its filtered
+    // survivors capped.  A mesh at or below the cap never prefilters, so its
+    // counts stay exact exactly as in main.
+    let truncated = prefilter_fast && pairs_all.len() > FAST_MAX_FILTERED_PAIRS;
     if truncated {
         out.estimated = true;
         out.reason = Some("pair_cap");
@@ -435,8 +439,10 @@ pub fn si_report(
     out.scanned_pairs = pairs.len();
     if use_exact {
         out.method = "broad_phase+exact+shared";
-    } else {
+    } else if prefilter_fast {
         out.method = "broad_phase+prefilter+exact";
+    } else {
+        out.method = "broad_phase+exact";
     }
 
     // In fast mode ring neighbours (any shared vertex) are skipped: they
