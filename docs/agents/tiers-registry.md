@@ -4,16 +4,17 @@ Trigger: Method numbers/slugs/aliases, registry, adding a method, Tamponade/Flap
 
 Source: `origin/main:AGENTS.md` @ 5e28b78, ranges 75-103, 154-166, 220-246, 247-299.
 
-- **Repair method registry (`sutura_engine.methods`, v0.7.0).** Eighteen methods with
+- **Repair method registry (`sutura_engine.methods`, v0.7.0).** Nineteen methods with
   stable user-facing numbers and canonical slugs (1 `quick_clean`, 2 `local_mend`,
   3 `full_mend`, 4 `join`, 5 `autorefine`, 6 `exact_refine`, 7 `ftetwild`,
   8 `balloon`, 9 `backplate`, 10 `scaffold`, 11 `transplant`,
   12 `transplant_plus`, 13 `graft`, 14 `mirror_complete`, 15 `wall_thicken`,
-  16 `dressing`, 17 `tamponade`, 18 `splint`).
+  16 `dressing`, 17 `tamponade`, 18 `splint`, 19 `coaptation`).
   Method #13 `graft` is the morphology shell-wrap tier (`sutura_engine/graft.py`);
   #16 `dressing` is the variable-viscosity volumetric-skinning tier
   (`sutura_engine/dressing.py`, opt-in); #17 `tamponade` is the on-by-default
-  interior hole plug; #18 `splint` is the opt-in exact solid rebuild. #12
+  interior hole plug; #18 `splint` is the opt-in exact solid rebuild; #19
+  `coaptation` is the on-by-default seam-weld union. #12
   `transplant_plus` retains `repeat_manual` and `transplant+` aliases.
   `--list-methods`/`--analyze`/`--methods` are the CLI
   surface; the GUI exposes the same via the file list's **Method** column and a
@@ -50,7 +51,7 @@ Source: `origin/main:AGENTS.md` @ 5e28b78, ranges 75-103, 154-166, 220-246, 247-
 
 ### Method naming
 
-Each built-in method module is named after its user-facing slug; `num` (1-18), the old
+Each built-in method module is named after its user-facing slug; `num` (1-19), the old
 slug and the new slug are all accepted by `get_method` / `--methods` / saved GUI tags.
 `display_name` is what the GUI and CLI print.
 
@@ -74,6 +75,7 @@ slug and the new slug are all accepted by `get_method` / `--methods` / saved GUI
 | 16 | `dressing.py` | `dressing` | Dressing | `coat`, `dipcoat`, `m16`, `16` |
 | 17 | `tamponade.py` | `tamponade` | Tamponade | `lava`, `m17`, `17` |
 | 18 | `splint.py` | `splint` | Splint | `m18`, `18` |
+| 19 | `coaptation.py` | `coaptation` | Coaptation | `seam_weld`, `coapt`, `m19`, `19` |
 
 ## How to add a repair method
 

@@ -2,7 +2,18 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.9.4] - 2026-10-23
+
+**In short:** a new repair step, **Coaptation (#19)**, is on by default. It joins a
+model that has folded or overlapping parts along the seam where they touch and
+folds them into one clean solid, and it only keeps the result when it is strictly
+better than what the repair already had. This release also fixes several
+shape-and-safety issues: a flat folded seam is now capped flat instead of with
+self-crossing faces, a healthy multi-part model no longer loses its parts, the
+union of parts no longer puffs the surface up off the model, small load-bearing
+faces that hold a surface closed are no longer deleted, and a few results that
+used to depend on the order of the triangles in the file are now the same every
+time. Self-update now always installs every module a release ships.
 
 ### Added
 
