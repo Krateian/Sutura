@@ -488,19 +488,26 @@ def main():
             verdict, reason = judge_quality(b, c, b.get('tolerance_mm', 0.05))
         changed = bool(b.get('md5') != c.get('md5'))
 
+        # Visual QA follows the judge's non-determinism rule: an adopted fTetWild
+        # result is stochastic, so the comparison is skipped (in every run,
+        # --exclude-nondeterministic or not) and never turns into VISUAL-WORSE.
+        mesh_nondet = bool(b.get('ftetwild_adopted') or c.get('ftetwild_adopted'))
         vqa_res = None
         if visual_enabled and vvq is not None and changed and verdict in ('CHANGED', 'BETTER'):
-            b_stl = os.path.join(out_dir, key_b, '%s.stl' % name)
-            c_stl = os.path.join(out_dir, key_c, '%s.stl' % name)
-            if os.path.exists(b_stl) and os.path.exists(c_stl):
-                try:
-                    sheet_path = os.path.join(out_dir, '%s_vqa_diff.png' % name)
-                    vqa_res = vvq.evaluate_visual_diff(in_path, b_stl, c_stl, out_sheet=sheet_path)
-                    if vqa_res and vqa_res.get('is_visual_worse'):
-                        verdict = 'VISUAL-WORSE'
-                        reason = vqa_res['reason']
-                except Exception as ex:
-                    print('  visual QA warning: %s' % ex, flush=True)
+            if mesh_nondet:
+                vqa_res = {'skipped': 'nondet'}
+            else:
+                b_stl = os.path.join(out_dir, key_b, '%s.stl' % name)
+                c_stl = os.path.join(out_dir, key_c, '%s.stl' % name)
+                if os.path.exists(b_stl) and os.path.exists(c_stl):
+                    try:
+                        sheet_path = os.path.join(out_dir, '%s_vqa_diff.png' % name)
+                        vqa_res = vvq.evaluate_visual_diff(in_path, b_stl, c_stl, out_sheet=sheet_path)
+                        if vqa_res and vqa_res.get('is_visual_worse'):
+                            verdict = 'VISUAL-WORSE'
+                            reason = vqa_res['reason']
+                    except Exception as ex:
+                        print('  visual QA warning: %s' % ex, flush=True)
 
         print('  -> %s (%s)' % (verdict, reason), flush=True)
         res = {'name': name, key_b: b, key_c: c, 'verdict': verdict,

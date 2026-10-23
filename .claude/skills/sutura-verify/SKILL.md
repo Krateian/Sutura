@@ -67,6 +67,10 @@ The comparison script has three modes:
   works here, because fTetWild output is not deterministic. `--visual` is
   enabled by default here (runs on changed meshes; disable with `--no-visual`);
   any visual regression triggers `VISUAL-WORSE` with an annotated contact sheet.
+  Visual QA follows the judge's non-determinism rule in every run (flag or not):
+  when either side has an adopted fTetWild result the render comparison is
+  skipped (`vqa.skipped='nondet'`), so a stochastic mesh can never become
+  `VISUAL-WORSE`; the geometric verdict is left exactly as the judge set it.
 
 `--jobs N` runs meshes in parallel (`--jobs 4` for gates). Baseline outputs are
 cached under `--cache-dir` (default `~/.cache/sutura-verify`) keyed by the input
