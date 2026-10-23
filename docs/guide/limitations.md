@@ -58,6 +58,12 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 * **Manifold kernel.** It rejects any input with open edges; if stage 1
   cannot close a hole, stage 2 is skipped and the stage 1 result is used as-is
   (the report says so).
+* **STL reload and pinched vertices.** STL stores no vertex sharing; a mesh
+  that is two-manifold in memory can reload with pinched vertices where two
+  distinct float32 positions weld into one. P-WELD separates the common
+  float32-coincidence case and the report stays honest
+  (`reload_watertight=false`, `reload_non_manifold_vertices`) when it cannot.
+  For pathological cases, inspect the saved file in your slicer.
 * **Layered/duplicated-vertex 3MF exports.** Some slicers (Bambu Studio
   included) write 3MFs whose objects repeat every vertex position ~15x as
   separate vertex entries, and whose surfaces are folded (several faces

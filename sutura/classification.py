@@ -17,6 +17,7 @@ ISSUE_LABELS = {
     'stage2_skipped': 'Stage 2 skipped',
     'stage2_error': 'Stage 2 error',
     'partial': 'Partial repair (holes remaining)',
+    'reload_non_manifold_vertices': 'Saved mesh reloads with non-manifold vertices',
     'malformed': 'Malformed input',
     'error': 'Error',
     'budget_exceeded': 'Repair budget exceeded',
@@ -125,7 +126,11 @@ def classify(data):
         return _classify_objects(reports, issues)
 
     s1 = data.get('stage1', {})
-    watertight_s1 = bool(s1.get('two_manifold')) and s1.get('holes_remaining', 0) == 0
+    watertight_s1 = (bool(s1.get('two_manifold'))
+                     and s1.get('holes_remaining', 0) == 0
+                     and not s1.get('reload_non_manifold_vertices'))
+    if s1.get('reload_non_manifold_vertices'):
+        issues.append('reload_non_manifold_vertices')
 
     # An adopted fTetWild result that moved far from the input (Hausdorff
     # above repair.FTETWILD_MAX_HAUSDORFF_REL): an issue of its own, it does

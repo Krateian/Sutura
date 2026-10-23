@@ -264,6 +264,7 @@ STRINGS = {
         'method_note_fallback_skipped': 'fallback skipped: baseline too slow',
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
+        'issue_reload_non_manifold_vertices': 'Saved mesh reloads with non-manifold vertices',
         'issue_malformed': 'Malformed input', 'issue_error': 'Error',
         'issue_extreme_removed_object': ('Extreme mode removed all geometry '
                                          '(component below size threshold) — try '
@@ -959,6 +960,7 @@ STRINGS = {
         'method_note_fallback_skipped': 'yedek yöntem atlandı: temel onarım çok yavaş',
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
+        'issue_reload_non_manifold_vertices': 'Kaydedilen mesh, manifold olmayan vertexlerle yeniden yükleniyor',
         'issue_malformed': 'Hatalı girdi', 'issue_error': 'Hata',
         'issue_extreme_removed_object': ('Extreme mod tüm geometriyi sildi '
                                          '(bileşen boyut eşiğinin altında) — '

@@ -233,6 +233,16 @@ Bir mesh yalnızca aşama 2 gerçekten çalışıp kapalı katıyı doğruladı�
 verir veya hiç çalışmazsa (ör. macOS/conda yerinde geri dönüşün kullanılamaması)
 dosya su geçirmez değil, uyarı olarak raporlanır.
 
+Kaydedilen bir STL, aşama 2 bellekte iki-manifold olsa bile yeniden
+yüklendiğinde **sıkışmış (non-manifold) köşeler** taşıyabilir: STL köşe
+paylaşımı saklamaz; bellekte ayrı olan iki köşe float32 yazımında aynı olursa
+yüklemede birleşir. P-WELD geçişi bu yeniden yükleme biçimini kontrol eder,
+neden float32 çakışmasıysa köşeleri ayırır (yüz sayısı değişmez, geometri
+sub-ULP düzeyinde oynar) ve `p_weld` alanını
+(`non_two_manifold_before`/`after`, `vertices_nudged`, `method`) kaydeder.
+Sorun çözülemezse rapor `reload_watertight=false` ve
+`stage1.reload_non_manifold_vertices` taşır; dosya su geçirmez değil, uyarıdır.
+
 Çok nesneli 3MF dosyaları yerel olarak işlenir: her nesne meshi bağımsız
 onarılır ve arşive geri yazılır, böylece hiçbir nesne kaybolmaz. Aşama 1'in
 kapattığı (iki-manifold, kalan delik yok) her nesne, tek-mesh dosyalarıyla aynı

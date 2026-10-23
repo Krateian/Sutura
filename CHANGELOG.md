@@ -12,6 +12,10 @@ All notable changes to this project are documented here.
 
 - **Documentation reorganised.** `README.md` and `README.tr.md` are now short landing pages (highlights, install, quick use, a short description of the pipeline and a documentation index); the full user documentation moved unchanged into topic pages under `docs/guide/` (English) and `docs/guide/tr/` (Turkish): how it works, methods, install, usage, troubleshooting, feature status, limitations, mesh classifier, architecture, privacy, testing and version history. The maintainer note now states that releases follow no fixed schedule.
 
+### Fixed
+
+- **STL reload with pinched vertices is detected and healed.** STL stores no vertex sharing, so a mesh that is two-manifold in memory can reload with a pinched (non-manifold) vertex where two distinct float32 positions weld into one. The P-WELD pass now measures `non_two_manifold_vertices` on the reload-equivalent mesh, separates the common float32-coincidence case (face count unchanged, sub-ULP geometry nudge), and the report no longer calls such a result watertight when the issue remains (`reload_watertight=false`, `reload_non_manifold_vertices`). OBJ and 3MF outputs are unchanged.
+
 ## [0.9.4] - 2026-10-23
 
 **In short:** a new repair step, **Coaptation (#19)**, is on by default. It joins a

@@ -19,20 +19,26 @@ Source: `origin/main:AGENTS.md` @ 5e28b78, ranges 35-38, 41-43, 70-71, 167-183, 
 - **Reload-honest watertight verdict (P-HONEST + P-WELD, v0.6.0).** STL drops
   vertex sharing, so an index-watertight mesh can reload non-manifold once the
   loader re-welds exactly-coincident float32 positions.
-  `repair.weld_reload_equivalent` + `reload_strict_holes_nm` are the
-  reload-equivalent metric; `enforce_reload_verdict` downgrades a
-  false-watertight claim (`reload_watertight=false`,
-  `stage1.reload_holes`/`reload_non_manifold`,
-  `stage2.watertight_after_reload=false`). `p_weld_final` (STL outputs, before
-  the verdict) HEALS the seam: `_separate_weld_collisions` nudges all-but-one
-  vertex per float32-coincidence group by a few float32 ULPs when the in-memory
-  topology is already clean (face count unchanged, move < 1e-6 relative);
-  otherwise it repairs the welded mesh + caps small holes. Adopt only when the
-  saved mesh reloads strict-watertight (fallback also needs >= 98 % of the
-  welded faces), so it can never worsen the output. Report key `p_weld`;
-  `--human` prints *Reload-safe final pass*. It turned all 7 previously-downgraded
-  real-world samples watertight again with unchanged face counts. Regression:
-  `tests/test_methods.py::test_p_weld_final_separates_float32_collisions`.
+  `repair.weld_reload_equivalent` + `reload_topology` (holes,
+  non-manifold edges, **non-manifold vertices**) are the reload-equivalent
+  metric; `reload_strict_holes_nm` remains the two-value compatibility wrapper.
+  `enforce_reload_verdict` downgrades a false-watertight claim
+  (`reload_watertight=false`, `stage1.reload_holes`/`reload_non_manifold`/
+  `reload_non_manifold_vertices`, `stage2.watertight_after_reload=false`) and
+  covers the stage-1-only path. `p_weld_final` (STL outputs, before the verdict)
+  HEALS the seam: `_separate_weld_collisions` nudges all-but-one vertex per
+  float32-coincidence group by a few float32 ULPs when the in-memory topology is
+  already clean (face count unchanged, move < 1e-6 relative); otherwise it
+  repairs the welded mesh + caps small holes. Adopt only when the saved mesh
+  reloads fully clean (0 holes, 0 non-manifold edges, 0 non-manifold vertices;
+  fallback also needs >= 98 % of the welded faces), so it can never worsen the
+  output. A remaining n2m is an honest warning, never watertight. OBJ/3MF keep
+  the old holes/nm check (`include_n2m=False`). Report key `p_weld` with
+  `non_two_manifold_before/after` + `vertices_nudged`; `--human` prints
+  *Reload-safe final pass*. It turned all 7 previously-downgraded real-world
+  samples watertight again with unchanged face counts. Regression:
+  `tests/test_methods.py::test_p_weld_final_separates_float32_collisions` and
+  `tests/test_reload_n2m.py`.
 
 ## Sutura Engine Architecture (`sutura_engine`)
 

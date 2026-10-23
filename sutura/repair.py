@@ -97,6 +97,7 @@ from sutura_engine.pipeline.stage2 import (
 )
 from sutura_engine.pipeline.p_weld import (
     weld_reload_equivalent, _repair_welded_topology, reload_strict_holes_nm,
+    reload_topology,
     _separate_weld_collisions, _close_small_holes, p_weld_final,
     enforce_reload_verdict, P_WELD_MAX_NUDGE_ATTEMPTS, P_WELD_MAX_HOLE,
     P_WELD_MIN_FACE_FRACTION,
