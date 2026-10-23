@@ -1031,21 +1031,18 @@ def _slice_area(loops):
 
 
 def _point_in_polygon(points, poly):
-    x = points[:, 0]
-    y = points[:, 1]
+    """Even-odd ray casting, vectorised over both probe points and vertices."""
+    x = points[:, 0:1]
+    y = points[:, 1:2]
     xp = poly[:, 0]
     yp = poly[:, 1]
-    inside = np.zeros(len(points), dtype=bool)
-    j = len(poly) - 1
-    for i in range(len(poly)):
-        cond = ((yp[i] > y) != (yp[j] > y))
-        denom = yp[j] - yp[i]
-        if abs(denom) < 1e-300:
-            denom = 1e-300
-        xi = (xp[j] - xp[i]) * (y - yp[i]) / denom + xp[i]
-        inside ^= cond & (x < xi)
-        j = i
-    return inside
+    xq = np.roll(xp, -1)
+    yq = np.roll(yp, -1)
+    cond = (yp[None, :] > y) != (yq[None, :] > y)
+    denom = yq - yp
+    denom = np.where(np.abs(denom) < 1e-300, 1e-300, denom)
+    xi = (xq - xp)[None, :] * (y - yp[None, :]) / denom[None, :] + xp[None, :]
+    return (np.count_nonzero(cond & (x < xi), axis=1) % 2) == 1
 
 
 def _point_segment_distance(points, segments):
