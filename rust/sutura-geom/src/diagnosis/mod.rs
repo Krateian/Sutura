@@ -311,6 +311,51 @@ pub(crate) fn point3_cmp(a: [f64; 3], b: [f64; 3]) -> std::cmp::Ordering {
         .then_with(|| a[2].total_cmp(&b[2]))
 }
 
+/// Canonical geometric key for a region's face set: bbox min/max, bbox
+/// centroid and face count.  Used to order or truncate candidate regions
+/// before the raw face-id fallback, so a permutation cannot change which
+/// regions survive a cap.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RegionKey {
+    pub bbox: [f64; 6],
+    pub centroid: [f64; 3],
+    pub faces: usize,
+}
+
+pub(crate) fn region_key(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    faces: &[usize],
+) -> RegionKey {
+    let mut b = Bbox::empty();
+    for &f in faces {
+        for &v in &tris[f] {
+            b.add(verts[v]);
+        }
+    }
+    RegionKey {
+        bbox: b.flat(),
+        centroid: b.centroid(),
+        faces: faces.len(),
+    }
+}
+
+pub(crate) fn region_key_cmp(a: &RegionKey, b: &RegionKey) -> std::cmp::Ordering {
+    for k in 0..6 {
+        let o = a.bbox[k].total_cmp(&b.bbox[k]);
+        if o != std::cmp::Ordering::Equal {
+            return o;
+        }
+    }
+    for k in 0..3 {
+        let o = a.centroid[k].total_cmp(&b.centroid[k]);
+        if o != std::cmp::Ordering::Equal {
+            return o;
+        }
+    }
+    a.faces.cmp(&b.faces)
+}
+
 /// Total order on a face that depends only on its geometry (centroid, then the
 /// canonical vertex coordinates).  Used wherever a channel must sample or sum
 /// in an order that survives a face permutation.

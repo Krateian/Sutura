@@ -29,7 +29,8 @@ use crate::topology::DisjointSet;
 use crate::winding::MeshBvh;
 
 use super::{
-    face_geo_cmp, group_faces, region_from_faces, tri_centroid, unit_normal, Bbox, Region,
+    face_geo_cmp, group_faces, region_from_faces, region_key, region_key_cmp, tri_centroid,
+    unit_normal, Bbox, Region,
 };
 
 pub const FACE_MASK_BIT: u8 = 64;
@@ -484,7 +485,7 @@ pub fn interior_report(
             &group,
             tris,
             verts,
-            group.len() as f64,
+            (group.len() as f64 / nf as f64).clamp(0.0, 1.0),
             CLOSED_CONFIDENCE,
             comp,
         ));
@@ -496,7 +497,7 @@ pub fn interior_report(
             &group,
             tris,
             verts,
-            group.len() as f64,
+            (group.len() as f64 / nf as f64).clamp(0.0, 1.0),
             OPEN_CONFIDENCE,
             comp,
         ));
@@ -520,16 +521,18 @@ pub fn interior_report(
             let r = fold_ds.find(fold_index[&f]);
             fold_groups.entry(r).or_default().push(f);
         }
-        let mut fold_regions: Vec<(f64, Vec<usize>)> = fold_groups
+        let mut fold_regions: Vec<(super::RegionKey, usize, f64, Vec<usize>)> = fold_groups
             .into_values()
             .map(|mut g| {
                 g.sort_unstable();
                 let sev = g.iter().map(|&f| fold_sev[f]).fold(0.0, f64::max);
-                (sev, g)
+                let key = region_key(verts, tris, &g);
+                let min_face = g.iter().copied().min().unwrap_or(usize::MAX);
+                (key, min_face, sev, g)
             })
             .collect();
-        fold_regions.sort_by(|a, b| a.1.cmp(&b.1));
-        for (sev, group) in fold_regions {
+        fold_regions.sort_by(|a, b| region_key_cmp(&a.0, &b.0).then_with(|| a.1.cmp(&b.1)));
+        for (_, _, sev, group) in fold_regions {
             for &f in &group {
                 face_mask[f] |= FACE_MASK_BIT;
             }

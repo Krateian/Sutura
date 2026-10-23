@@ -22,8 +22,8 @@ use std::collections::HashMap;
 use crate::winding::MeshBvh;
 
 use super::{
-    canonical_tri, face_geo_cmp, group_faces, point3_cmp, region_from_faces, tri_centroid,
-    unit_normal, Bbox, Region,
+    canonical_tri, face_geo_cmp, group_faces, point3_cmp, region_from_faces, region_key,
+    region_key_cmp, tri_centroid, unit_normal, Bbox, Region,
 };
 
 pub const FACE_MASK_BIT: u8 = 128;
@@ -250,27 +250,32 @@ pub fn thin_report(
         face_mask[f] |= FACE_MASK_BIT;
     }
 
-    let mut groups = group_faces(&thin_faces, edges);
-    // Deterministic region cap: keep the groups with the smallest thickness.
-    groups.sort_by(|a, b| {
-        let ta = a
-            .iter()
-            .filter_map(|f| face_thickness.get(f))
-            .fold(f64::INFINITY, |x, &y| x.min(y));
-        let tb = b
-            .iter()
-            .filter_map(|f| face_thickness.get(f))
-            .fold(f64::INFINITY, |x, &y| x.min(y));
-        ta.total_cmp(&tb).then_with(|| a.cmp(b))
+    // Deterministic region cap: smallest thickness first, then the canonical
+    // geometric key and only then the raw face id.  A face-index tie-break
+    // alone would let a permutation change which equal-thickness regions
+    // survive the cap.
+    let mut keyed: Vec<(f64, super::RegionKey, usize, Vec<usize>)> =
+        group_faces(&thin_faces, edges)
+            .into_iter()
+            .map(|group| {
+                let min_th = group
+                    .iter()
+                    .filter_map(|f| face_thickness.get(f))
+                    .fold(f64::INFINITY, |x, &y| x.min(y));
+                let key = region_key(verts, tris, &group);
+                let min_face = group.iter().copied().min().unwrap_or(usize::MAX);
+                (min_th, key, min_face, group)
+            })
+            .collect();
+    keyed.sort_by(|a, b| {
+        a.0.total_cmp(&b.0)
+            .then_with(|| region_key_cmp(&a.1, &b.1))
+            .then_with(|| a.2.cmp(&b.2))
     });
-    if groups.len() > MAX_THIN_REGIONS {
-        groups.truncate(MAX_THIN_REGIONS);
+    if keyed.len() > MAX_THIN_REGIONS {
+        keyed.truncate(MAX_THIN_REGIONS);
     }
-    for group in groups {
-        let min_th = group
-            .iter()
-            .filter_map(|f| face_thickness.get(f))
-            .fold(f64::INFINITY, |x, &y| x.min(y));
+    for (min_th, _, _, group) in keyed {
         let sev = if min_th.is_finite() {
             (1.0 - min_th / threshold_raw).clamp(0.0, 1.0)
         } else {

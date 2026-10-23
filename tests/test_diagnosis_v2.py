@@ -40,6 +40,21 @@ def box(sx, sy, sz):
     return v * np.array([sx, sy, sz], dtype=np.float64), f
 
 
+def many_thin_slabs(n=20):
+    # 5x5x0.05 slabs: thin relative to the global diagonal, while the side
+    # faces stay above the needle threshold (degenerate would otherwise fill
+    # the global 256-region budget before thin_wall).
+    base_v, base_f = box(5.0, 5.0, 0.05)
+    vs, fs = [], []
+    off = 0
+    for j in range(n):
+        for i in range(n):
+            vs.append(base_v + [i * 6.0, j * 6.0, 0.0])
+            fs.append(base_f + off)
+            off += len(base_v)
+    return np.vstack(vs), np.vstack(fs)
+
+
 def region_keys(r):
     return sorted(
         (g["channel"], g["kind"], tuple(g["bbox"]), tuple(g["centroid"]),
@@ -57,9 +72,9 @@ def permuted(v, f, seed):
     return v[pv], inv_v[f][pf], pv, pf
 
 
-def check_permutation(v, f, r, seed):
+def check_permutation(v, f, r, seed, detail="fast"):
     vp, fp, pv, pf = permuted(v, f, seed)
-    p = sutura_geom.diagnose(vp, fp)
+    p = sutura_geom.diagnose(vp, fp, detail)
     for ch in ("orientation", "nm_vertex", "duplicate", "degenerate",
                "self_intersection", "loops", "interior", "thin_wall", "noise"):
         assert p["channels"][ch]["count"] == r["channels"][ch]["count"], ch
@@ -152,6 +167,17 @@ def main():
     check_permutation(vv, ff, ri, 3)
     check_permutation(tv, tf, rt, 5)
     check_permutation(pv, pf, rpeg, 9)
+
+    # More than MAX_THIN_REGIONS (256) equal-thickness regions: the cap must
+    # select the same geometric regions under a permutation, not the same face
+    # index lists.
+    mv, mf = many_thin_slabs()
+    rm = sutura_geom.diagnose(mv, mf, "deep")
+    thin_regions = sum(1 for g in rm["regions"]
+                       if g["kind"] == "thin_wall_patch")
+    assert thin_regions == 256, thin_regions
+    assert rm["thin_wall"]["thin_faces"] > 256
+    check_permutation(mv, mf, rm, 13, detail="deep")
 
     vf, ff = cube()
     ff[0] = [0, 2, 1]
