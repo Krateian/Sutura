@@ -112,6 +112,12 @@ Options window, never in the way of the plain repair.
 - **Test/corpus output location:** corpus and test-run files always go to
   `/tmp`, never committed to the repo (see also Cleanup discipline below).
 
+## Heavy jobs
+
+Long tests, corpus runs, benchmarks and release builds go through the `sq`
+queue (one heavy job at a time, results in `~/.sq/`); workers do not wait on
+them. Full rules: `.claude/skills/sutura-dev/SKILL.md` (Heavy jobs).
+
 ## README upkeep
 
 - **Layout (since 23 Oct 2026):** `README.md` / `README.tr.md` are short landing
