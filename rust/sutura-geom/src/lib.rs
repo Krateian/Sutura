@@ -46,7 +46,7 @@ pub mod topology;
 pub mod triangle_intersection;
 pub mod winding;
 
-use numpy::ndarray::{Array3, ShapeBuilder};
+use numpy::ndarray::{Array2, Array3, ShapeBuilder};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::types::PyList;
 use rayon::prelude::*;
@@ -1226,6 +1226,253 @@ fn closest_points<'py>(
     ))
 }
 
+/// Pure rasterisation core (no Python): projected integer vertices + view z.
+///
+/// Faces are painted in ascending mean z (or the supplied permutation) with the
+/// painter's rule that a later face always replaces an earlier one, matching
+/// the legacy QPainter path.  Returns `(rgb, depth, silhouette)`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn rasterize_core(
+    pxy: &[[i32; 2]],
+    pz: &[f64],
+    rt: &[[usize; 3]],
+    width: usize,
+    height: usize,
+    colors: Option<&[[u8; 3]]>,
+    depth_colors: Option<&[u8]>,
+    silhouette_only: bool,
+    order: Option<&[usize]>,
+) -> (Vec<u8>, Vec<u8>, Vec<bool>) {
+    let n = width * height;
+    let eps = 1e-6;
+    if silhouette_only {
+        let mut sil = vec![false; n];
+        for t in rt {
+            let a = pxy[t[0]];
+            let b = pxy[t[1]];
+            let c = pxy[t[2]];
+            let area = (b[0] - a[0]) as f64 * (c[1] - a[1]) as f64
+                - (b[1] - a[1]) as f64 * (c[0] - a[0]) as f64;
+            if area.abs() < 1e-12 {
+                continue;
+            }
+            let xmin = a[0].min(b[0]).min(c[0]).max(0);
+            let xmax = a[0].max(b[0]).max(c[0]).min(width as i32 - 1);
+            let ymin = a[1].min(b[1]).min(c[1]).max(0);
+            let ymax = a[1].max(b[1]).max(c[1]).min(height as i32 - 1);
+            if xmin > xmax || ymin > ymax {
+                continue;
+            }
+            for y in ymin..=ymax {
+                let fy = y as f64 + 0.5;
+                let row = y as usize * width;
+                for x in xmin..=xmax {
+                    let fx = x as f64 + 0.5;
+                    let w0 = ((b[0] as f64 - fx) * (c[1] as f64 - fy)
+                        - (b[1] as f64 - fy) * (c[0] as f64 - fx))
+                        / area;
+                    let w1 = ((c[0] as f64 - fx) * (a[1] as f64 - fy)
+                        - (c[1] as f64 - fy) * (a[0] as f64 - fx))
+                        / area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 >= -eps && w1 >= -eps && w2 >= -eps {
+                        sil[row + x as usize] = true;
+                    }
+                }
+            }
+        }
+        return (vec![0u8; n * 3], vec![0u8; n], sil);
+    }
+    let zf: Vec<f32> = rt
+        .iter()
+        .map(|t| ((pz[t[0]] + pz[t[1]] + pz[t[2]]) / 3.0) as f32)
+        .collect();
+    let owned;
+    let order: &[usize] = match order {
+        Some(o) => o,
+        None => {
+            owned = {
+                let mut v: Vec<usize> = (0..rt.len()).collect();
+                v.sort_by(|&a, &b| {
+                    zf[a].partial_cmp(&zf[b]).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                v
+            };
+            &owned
+        }
+    };
+    let mut cbuf = vec![0u8; n * 3];
+    let mut dbuf = vec![0u8; n];
+    let mut sil = vec![false; n];
+    for &fi in order {
+        let t = &rt[fi];
+        let a = pxy[t[0]];
+        let b = pxy[t[1]];
+        let c = pxy[t[2]];
+        let area = (b[0] - a[0]) as f64 * (c[1] - a[1]) as f64
+            - (b[1] - a[1]) as f64 * (c[0] - a[0]) as f64;
+        if area.abs() < 1e-12 {
+            continue;
+        }
+        let xmin = a[0].min(b[0]).min(c[0]).max(0);
+        let xmax = a[0].max(b[0]).max(c[0]).min(width as i32 - 1);
+        let ymin = a[1].min(b[1]).min(c[1]).max(0);
+        let ymax = a[1].max(b[1]).max(c[1]).min(height as i32 - 1);
+        if xmin > xmax || ymin > ymax {
+            continue;
+        }
+        let ci = colors.map(|v| v[fi]).unwrap_or([255, 255, 255]);
+        let di = depth_colors.map(|v| v[fi]).unwrap_or(0);
+        for y in ymin..=ymax {
+            let fy = y as f64 + 0.5;
+            let row = y as usize * width;
+            for x in xmin..=xmax {
+                let fx = x as f64 + 0.5;
+                let w0 = ((b[0] as f64 - fx) * (c[1] as f64 - fy)
+                    - (b[1] as f64 - fy) * (c[0] as f64 - fx))
+                    / area;
+                let w1 = ((c[0] as f64 - fx) * (a[1] as f64 - fy)
+                    - (c[1] as f64 - fy) * (a[0] as f64 - fx))
+                    / area;
+                let w2 = 1.0 - w0 - w1;
+                if w0 >= -eps && w1 >= -eps && w2 >= -eps {
+                    let idx = row + x as usize;
+                    sil[idx] = true;
+                    cbuf[idx * 3] = ci[0];
+                    cbuf[idx * 3 + 1] = ci[1];
+                    cbuf[idx * 3 + 2] = ci[2];
+                    dbuf[idx] = di;
+                }
+            }
+        }
+    }
+    (cbuf, dbuf, sil)
+}
+
+/// Flat-shaded painter's-algorithm rasteriser (colour / depth / silhouette).
+///
+/// Projects the soup with the same integer pixel rounding as the Python
+/// QPainter fallback and paints in the supplied order (default: ascending mean
+/// view-space z), so it reproduces the established V1 scores without the
+/// per-face Python `drawPolygon` cost.  QA/diagnostic use only; never called by
+/// the repair pipeline.
+/// Returns `(rgb, depth, silhouette)`; `colors` is one RGB per face and
+/// `depth_colors` one byte per face.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, rot, center, view_center, scale, width, height, colors = None, depth_colors = None, silhouette_only = false, order = None))]
+fn rasterize<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    rot: PyArrayLike2<'py, f64, AllowTypeChange>,
+    center: (f64, f64, f64),
+    view_center: (f64, f64),
+    scale: f64,
+    width: usize,
+    height: usize,
+    colors: Option<PyArrayLike2<'py, u8, AllowTypeChange>>,
+    depth_colors: Option<PyArrayLike1<'py, u8, AllowTypeChange>>,
+    silhouette_only: bool,
+    order: Option<PyArrayLike1<'py, i32, AllowTypeChange>>,
+) -> PyResult<(
+    Bound<'py, PyArray3<u8>>,
+    Bound<'py, PyArray2<u8>>,
+    Bound<'py, PyArray2<bool>>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    if rv.is_empty() || rt.is_empty() {
+        return Err(PyValueError::new_err("empty mesh"));
+    }
+    if width == 0 || height == 0 {
+        return Err(PyValueError::new_err("width and height must be positive"));
+    }
+    let rr = rot.as_array();
+    if rr.nrows() != 3 || rr.ncols() != 3 {
+        return Err(PyValueError::new_err("rot must be 3x3"));
+    }
+    let r = [
+        [rr[[0, 0]], rr[[0, 1]], rr[[0, 2]]],
+        [rr[[1, 0]], rr[[1, 1]], rr[[1, 2]]],
+        [rr[[2, 0]], rr[[2, 1]], rr[[2, 2]]],
+    ];
+    let col: Option<Vec<[u8; 3]>> = match &colors {
+        Some(c) => {
+            let a = c.as_array();
+            if a.nrows() != rt.len() || a.ncols() != 3 {
+                return Err(PyValueError::new_err("colors must be Mx3 for M faces"));
+            }
+            Some(
+                (0..a.nrows())
+                    .map(|i| [a[[i, 0]], a[[i, 1]], a[[i, 2]]])
+                    .collect(),
+            )
+        }
+        None => None,
+    };
+    let dcol: Option<Vec<u8>> = match &depth_colors {
+        Some(d) => {
+            let a = d.as_array();
+            if a.len() != rt.len() {
+                return Err(PyValueError::new_err("depth_colors must have M entries"));
+            }
+            Some(a.iter().copied().collect())
+        }
+        None => None,
+    };
+
+    let mut pxy: Vec<[i32; 2]> = Vec::with_capacity(rv.len());
+    let mut pz: Vec<f64> = Vec::with_capacity(rv.len());
+    for p in &rv {
+        let dx = p[0] - center.0;
+        let dy = p[1] - center.1;
+        let dz = p[2] - center.2;
+        let cx = r[0][0] * dx + r[0][1] * dy + r[0][2] * dz;
+        let cy = r[1][0] * dx + r[1][1] * dy + r[1][2] * dz;
+        let cz = r[2][0] * dx + r[2][1] * dy + r[2][2] * dz;
+        let sx = width as f64 * 0.5 + (cx - view_center.0) * scale;
+        let sy = height as f64 * 0.5 - (cy - view_center.1) * scale;
+        pxy.push([sx as i32, sy as i32]);
+        pz.push(cz);
+    }
+
+    let order_vec: Option<Vec<usize>> = match &order {
+        Some(o) => {
+            let a = o.as_array();
+            if a.len() != rt.len() {
+                return Err(PyValueError::new_err("order must have M entries"));
+            }
+            let mut seen = vec![false; rt.len()];
+            let mut v = Vec::with_capacity(a.len());
+            for i in 0..a.len() {
+                let k = a[i];
+                if k < 0 || k as usize >= rt.len() || seen[k as usize] {
+                    return Err(PyValueError::new_err("order must be a permutation"));
+                }
+                seen[k as usize] = true;
+                v.push(k as usize);
+            }
+            Some(v)
+        }
+        None => None,
+    };
+    let (cbuf, dbuf, sil) = rasterize_core(
+        &pxy, &pz, &rt, width, height,
+        col.as_deref(), dcol.as_deref(), silhouette_only,
+        order_vec.as_deref(),
+    );
+    let rgb = Array3::from_shape_vec((height, width, 3), cbuf)
+        .map_err(|e| PyValueError::new_err(format!("rgb shape error: {e}")))?;
+    let depth = Array2::from_shape_vec((height, width), dbuf)
+        .map_err(|e| PyValueError::new_err(format!("depth shape error: {e}")))?;
+    let mask = Array2::from_shape_vec((height, width), sil)
+        .map_err(|e| PyValueError::new_err(format!("mask shape error: {e}")))?;
+    Ok((
+        PyArray3::from_owned_array(py, rgb),
+        PyArray2::from_owned_array(py, depth),
+        PyArray2::from_owned_array(py, mask),
+    ))
+}
+
 /// Faces involved in a self-intersection.
 ///
 /// Runs a spatial-hash broad phase and the exact triangle-triangle classifier;
@@ -1373,6 +1620,87 @@ fn raystab_points<'py>(
         PyArray1::from_vec(py, iv),
         PyArray1::from_vec(py, ov),
         PyArray1::from_vec(py, ev),
+    ))
+}
+
+/// Cast one ray per query against the triangle soup.
+///
+/// Returns `(net, crossings, nearest_t, suspect)` per ray, where `net` is the
+/// oriented crossing sum (`+1` when the outward face normal points along the
+/// ray), `crossings` is the deduplicated raw crossing count and `suspect` flags
+/// near-coincident hits with disagreeing signs (grazing/shared-edge hits).
+/// `origins` and `dirs` are `(M, 3)`; directions are normalized here.  A
+/// non-finite or zero direction produces a miss.  `max_t = None` uses the mesh
+/// bounding-box diagonal; `merge_eps` is an absolute distance along the ray
+/// used to merge coincident hits from adjacent triangles.  Queries are
+/// evaluated in parallel.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, origins, dirs, max_t = None, merge_eps = 0.0))]
+fn raycast_points<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    origins: PyArrayLike2<'py, f64, AllowTypeChange>,
+    dirs: PyArrayLike2<'py, f64, AllowTypeChange>,
+    max_t: Option<f64>,
+    merge_eps: f64,
+) -> PyResult<(
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<i32>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<bool>>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    if rv.is_empty() || rt.is_empty() {
+        return Err(PyValueError::new_err("empty mesh"));
+    }
+    let oo = origins.as_array();
+    let dd = dirs.as_array();
+    if oo.ncols() != 3 || dd.ncols() != 3 || oo.nrows() != dd.nrows() {
+        return Err(PyValueError::new_err(
+            "origins and dirs must both be Mx3 with the same M",
+        ));
+    }
+    if max_t.is_some_and(|t| !t.is_finite() || t < 0.0) {
+        return Err(PyValueError::new_err("max_t must be finite and >= 0"));
+    }
+    let bvh = winding::MeshBvh::from_arrays(&rv, &rt);
+    let bounds = bvh.bounds();
+    let t_max = max_t.unwrap_or_else(|| {
+        if bounds.is_empty() {
+            0.0
+        } else {
+            bounds.size_sq().sqrt() * 2.0 + 1.0
+        }
+    });
+    let m = oo.nrows();
+    let out: Vec<winding::RayQuery> = (0..m)
+        .into_par_iter()
+        .map(|i| {
+            let o = [oo[[i, 0]], oo[[i, 1]], oo[[i, 2]]];
+            let raw = [dd[[i, 0]], dd[[i, 1]], dd[[i, 2]]];
+            let norm = (raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]).sqrt();
+            if !norm.is_finite() || norm <= 1e-300 {
+                return winding::RayQuery {
+                    net: 0,
+                    crossings: 0,
+                    nearest_t: f64::INFINITY,
+                    suspect: false,
+                };
+            }
+            let d = [raw[0] / norm, raw[1] / norm, raw[2] / norm];
+            bvh.intersect_ray(o, d, t_max, merge_eps)
+        })
+        .collect();
+    let net: Vec<i32> = out.iter().map(|q| q.net).collect();
+    let crossings: Vec<i32> = out.iter().map(|q| q.crossings as i32).collect();
+    let nearest: Vec<f64> = out.iter().map(|q| q.nearest_t).collect();
+    let suspect: Vec<bool> = out.iter().map(|q| q.suspect).collect();
+    Ok((
+        PyArray1::from_vec(py, net),
+        PyArray1::from_vec(py, crossings),
+        PyArray1::from_vec(py, nearest),
+        PyArray1::from_vec(py, suspect),
     ))
 }
 
@@ -1710,10 +2038,12 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(edt_grid, m)?)?;
     m.add_function(wrap_pyfunction!(dilate_occupancy, m)?)?;
     m.add_function(wrap_pyfunction!(closest_points, m)?)?;
+    m.add_function(wrap_pyfunction!(rasterize, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersecting_faces, m)?)?;
     m.add_function(wrap_pyfunction!(self_intersections_subset, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_points, m)?)?;
     m.add_function(wrap_pyfunction!(raystab_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(raycast_points, m)?)?;
     m.add_function(wrap_pyfunction!(antipodal_points, m)?)?;
     m.add_function(wrap_pyfunction!(topology::edge_table, m)?)?;
     m.add_function(wrap_pyfunction!(topology::weld_vertices, m)?)?;
@@ -1918,5 +2248,72 @@ mod tests {
         let (mask2, count2, _) = super::self_intersections_core(&verts2, &tris2);
         assert_eq!(count2, 0);
         assert!(!mask2[0] && !mask2[1]);
+    }
+}
+
+#[cfg(test)]
+mod raster_tests {
+    use super::rasterize_core;
+
+    fn full_screen() -> (Vec<[i32; 2]>, Vec<f64>) {
+        (vec![[-10, -10], [30, -10], [-10, 30]], vec![0.0, 0.0, 0.0])
+    }
+
+    #[test]
+    fn painter_order_last_face_wins() {
+        let (pxy, mut pz) = full_screen();
+        pz = vec![0.0, 0.0, 0.0];
+        let mut pxy2 = pxy.clone();
+        pxy2.extend_from_slice(&pxy);
+        let pz2 = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let rt = vec![[0, 1, 2], [3, 4, 5]];
+        let colors = vec![[255, 0, 0], [0, 0, 255]];
+        let (rgb, _, sil) = rasterize_core(
+            &pxy2, &pz2, &rt, 8, 8, Some(&colors), None, false, None);
+        assert!(sil.iter().all(|&b| b));
+        assert_eq!(&rgb[0..3], &[0, 0, 255], "higher z (later) must win");
+        let reversed = vec![1usize, 0];
+        let (rgb2, _, _) = rasterize_core(
+            &pxy2, &pz2, &rt, 8, 8, Some(&colors), None, false, Some(&reversed));
+        assert_eq!(&rgb2[0..3], &[255, 0, 0], "explicit order must be honoured");
+        let _ = pz;
+    }
+
+    #[test]
+    fn silhouette_only_returns_mask_without_colours() {
+        let (pxy, pz) = full_screen();
+        let rt = vec![[0, 1, 2]];
+        let (rgb, depth, sil) = rasterize_core(
+            &pxy, &pz, &rt, 8, 8, None, None, true, None);
+        assert!(sil.iter().all(|&b| b));
+        assert!(rgb.iter().all(|&v| v == 0));
+        assert!(depth.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn degenerate_and_out_of_bounds_do_not_panic() {
+        let pxy = vec![[0, 0], [0, 0], [0, 0], [100, 100], [120, 100], [100, 120]];
+        let pz = vec![0.0; 6];
+        let rt = vec![[0, 1, 2], [3, 4, 5]];
+        let (_rgb, _depth, sil) = rasterize_core(
+            &pxy, &pz, &rt, 8, 8, None, None, false, None);
+        assert!(sil.iter().all(|&b| !b));
+    }
+
+    #[test]
+    fn output_is_deterministic() {
+        let (pxy, pz) = full_screen();
+        let mut pxy2 = pxy.clone();
+        pxy2.extend_from_slice(&pxy);
+        let pz2 = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let rt = vec![[0, 1, 2], [3, 4, 5]];
+        let colors = vec![[17, 42, 91], [200, 10, 30]];
+        let a = rasterize_core(&pxy2, &pz2, &rt, 16, 16,
+                               Some(&colors), None, false, None);
+        let b = rasterize_core(&pxy2, &pz2, &rt, 16, 16,
+                               Some(&colors), None, false, None);
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.1, b.1);
+        assert_eq!(a.2, b.2);
     }
 }
