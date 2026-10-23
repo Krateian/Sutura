@@ -683,6 +683,12 @@ def _view_rot(forward, up_ref):
     return np.stack([right, up, f], axis=0)
 
 
+def _short_view_name(name):
+    """Compact sheet caption: "PCA Profile (oblique 30)" -> "Profile 30"."""
+    n = name[4:] if name.startswith("PCA ") else name
+    return n.replace(" (oblique 30)", " 30")
+
+
 def _projected_aspect(verts, rot):
     p = np.asarray(verts, dtype=np.float64) @ np.asarray(rot, dtype=np.float64).T
     du = float(np.ptp(p[:, 0]))
@@ -1765,13 +1771,13 @@ def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
     if out_sheet:
         rows = [
             {"name": "PCA / reference", "images": ref_imgs,
-             "captions": [c[0] for c in cameras]},
+             "captions": [_short_view_name(c[0]) for c in cameras]},
             {"name": "PCA / candidate dev", "images": dev_imgs,
-             "captions": ["%s dev" % c[0].split()[-1] for c in cameras]},
+             "captions": ["%s dev" % _short_view_name(c[0]) for c in cameras]},
             {"name": "X-ray ref", "images": xray_rows_ref,
-             "captions": ["%s parity" % c[0].split()[-1] for c in cameras]},
+             "captions": ["%s parity" % _short_view_name(c[0]) for c in cameras]},
             {"name": "X-ray cand", "images": xray_rows_delta,
-             "captions": ["%s layers" % c[0].split()[-1] for c in cameras]},
+             "captions": ["%s layers" % _short_view_name(c[0]) for c in cameras]},
             {"name": "Top clusters", "images": cluster_imgs,
              "captions": ["%s %d (%.2f mm)" % (c["side"], i + 1, c["max_dev"])
                           for i, c in enumerate(clusters)]},
