@@ -67,9 +67,29 @@ Single source of truth for Claude, OpenCode workers and other agents.
   /clear.
 - Never switch worker models without asking; expensive models need explicit
   permission.
-- Prompts for workers are shown to the maintainer in their own clean code
-  block, never mixed with commentary.
+- Prompts for workers go to the worker only; they are not pasted into the
+  conversation with the maintainer.
 - Check workers every 10-15 minutes; always schedule the next check.
+
+## Heavy jobs: the `sq` queue (nobody waits for tests)
+- Heavy work runs through the queue on the Mac, never inline in a worker's
+  turn: corpus/benchmark runs (10/40/100/core sets, oracle), the full pytest
+  suite, `maturin` release builds, anything expected to take more than ~3 min.
+  `sq add NAME -- CMD` queues it (cwd = where it is called), `sq ls`,
+  `sq show NAME`, `sq kill NAME`. The runner (`sq-runner`, tmux window
+  `bench`) executes one job at a time and logs to `~/.sq/logs/NAME.log`;
+  the status line records exit code, wall time and load before/after.
+- After queueing, the worker does not sleep-poll: it reports the job name and
+  moves on to light work (plan, review, docs, small Python edits). The lead
+  watches the queue and hands the result file back for analysis.
+- While a job runs: no second heavy job and no Rust build outside the queue.
+- Correctness results (gate, holes/nm/n2m, byte-identity, deviation) are
+  valid under load. Timing results are not: jobs named `timing-*` run with
+  nothing else active, and a timeout seen under load is re-run once alone
+  before it counts as a failure.
+- Test tiers: during iteration only a smoke set (touched unit tests + a few
+  representative meshes, a couple of minutes); the full 10/40/100 comparison
+  runs once per branch before the PR, through the queue.
 
 ## Challenges (objections) — mandatory
 - Every worker plan opens with a "Challenges" section: what in the brief or
