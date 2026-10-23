@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnosis v2 phase 2: channels, masks, permutation and JSON wrapper."""
+"""Diagnosis v2 phase 3: channels, masks, permutation and JSON wrapper."""
 import os
 import sys
 
@@ -30,6 +30,51 @@ def decode(mask):
     return out
 
 
+def scaled_cube(lo, hi):
+    v, f = cube()
+    return v * (hi - lo) + lo, f
+
+
+def box(sx, sy, sz):
+    v, f = cube()
+    return v * np.array([sx, sy, sz], dtype=np.float64), f
+
+
+def region_keys(r):
+    return sorted(
+        (g["channel"], g["kind"], tuple(g["bbox"]), tuple(g["centroid"]),
+         g["faces"], g["vertices"], tuple(g["components"]),
+         g["severity"], g["confidence"])
+        for g in r["regions"])
+
+
+def permuted(v, f, seed):
+    rng = np.random.default_rng(seed)
+    pv = rng.permutation(len(v))
+    inv_v = np.empty_like(pv)
+    inv_v[pv] = np.arange(len(pv))
+    pf = rng.permutation(len(f))
+    return v[pv], inv_v[f][pf], pv, pf
+
+
+def check_permutation(v, f, r, seed):
+    vp, fp, pv, pf = permuted(v, f, seed)
+    p = sutura_geom.diagnose(vp, fp)
+    for ch in ("orientation", "nm_vertex", "duplicate", "degenerate",
+               "self_intersection", "loops", "interior", "thin_wall", "noise"):
+        assert p["channels"][ch]["count"] == r["channels"][ch]["count"], ch
+    assert p["interior"] == r["interior"]
+    assert p["thin_wall"] == r["thin_wall"]
+    assert p["noise"] == r["noise"]
+    assert region_keys(p) == region_keys(r)
+    back = np.zeros_like(decode(p["face_mask"]))
+    back[pf] = decode(p["face_mask"])
+    assert np.array_equal(back, decode(r["face_mask"]))
+    back_v = np.zeros_like(decode(p["vertex_mask"]))
+    back_v[pv] = decode(p["vertex_mask"])
+    assert np.array_equal(back_v, decode(r["vertex_mask"]))
+
+
 def main():
     v, f = cube()
     r = sutura_geom.diagnose(v, f)
@@ -44,6 +89,45 @@ def main():
     assert r["channels"]["loops"]["count"] == 0
     assert r["self_intersections"]["total"] == 0
     assert r["loops"]["count"] == 0
+    assert r["meta"]["phase"] == 3
+    for ch in ("interior", "thin_wall", "noise"):
+        assert ch in r["meta"]["channels_available"]
+    assert r["interior"]["available"]
+    assert r["interior"]["faces"] == 0
+    assert r["thin_wall"]["available"]
+    assert r["thin_wall"]["units"] == "mm_assumed"
+    assert r["thin_wall"]["thin_faces"] == 0
+    assert r["thin_wall"]["estimated"]
+    assert r["noise"]["available"]
+    assert r["noise"]["noise_score"] == 0.0
+
+    # Phase 3: an embedded cube is interior on both sides; an inverted one is
+    # a cavity (solid on one side, void on the other) and is not interior.
+    outer_v, outer_f = scaled_cube(0.0, 10.0)
+    inner_v, inner_f = scaled_cube(3.0, 7.0)
+    vv = np.vstack([outer_v, inner_v])
+    ff = np.vstack([outer_f, inner_f + len(outer_v)])
+    ri = sutura_geom.diagnose(vv, ff)
+    assert ri["interior"]["faces"] == 12, ri["interior"]
+    assert ri["channels"]["interior"]["count"] == 12
+    assert any(g["kind"] == "interior_surface" for g in ri["regions"])
+    cavity_f = np.vstack([outer_f, inner_f[:, ::-1] + len(outer_v)])
+    rc = sutura_geom.diagnose(vv, cavity_f)
+    assert rc["interior"]["faces"] == 0, rc["interior"]
+
+    # Phase 3: a thin slab reports both normalized and mm_assumed values.
+    tv, tf = box(10.0, 10.0, 0.05)
+    rt = sutura_geom.diagnose(tv, tf)
+    tw = rt["thin_wall"]
+    assert tw["available"] and tw["thin_faces"] > 0
+    assert abs(tw["min"] - 0.05) < 1e-5, tw
+    diag = float(np.linalg.norm(tv.max(axis=0) - tv.min(axis=0)))
+    assert abs(tw["min_norm"] - tw["min"] / diag) < 1e-12
+    assert tw["thin_ratio"] > 0.0
+    assert any(g["kind"] == "thin_wall_patch" for g in rt["regions"])
+
+    check_permutation(vv, ff, ri, 3)
+    check_permutation(tv, tf, rt, 5)
 
     vf, ff = cube()
     ff[0] = [0, 2, 1]
@@ -119,7 +203,7 @@ def main():
     d = diagnosis.to_dict(a)
     assert "diagnosis_v2" in d
     assert d["faces"] == 12
-    print("diagnosis v2 phase-2 ok")
+    print("diagnosis v2 phase-3 ok")
 
 
 if __name__ == "__main__":

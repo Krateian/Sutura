@@ -1,6 +1,7 @@
-//! Diagnosis v2 phase 1: topology channels (orientation, non-manifold vertices,
-//! duplicates, degeneracy) and part analysis.  The output is additive: the
-//! legacy `ObjectAnalysis` fields stay in Python until the later parity phase.
+//! Diagnosis v2 phases 1-3: topology channels (orientation, non-manifold
+//! vertices, duplicates, degeneracy), parts, self-intersections, boundary
+//! loops, interior/folds, thin wall and scan noise.  The output is additive:
+//! the legacy `ObjectAnalysis` fields stay in Python until the parity phase.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,8 +12,11 @@ use rayon::prelude::*;
 use crate::topology::DisjointSet;
 use crate::winding::MeshBvh;
 
+pub mod interior;
 pub mod loops;
+pub mod noise;
 pub mod si;
+pub mod thin;
 
 #[derive(Clone, Copy, Debug)]
 struct Bbox {
@@ -155,6 +159,9 @@ pub struct DiagReport {
     pub parts: Parts,
     pub self_intersections: si::SelfIntersections,
     pub loops: loops::Loops,
+    pub interior: interior::Interior,
+    pub thin_wall: thin::ThinWall,
+    pub noise: noise::Noise,
     pub face_mask: Vec<u8>,
     pub vertex_mask: Vec<u8>,
     pub regions: Vec<Region>,
@@ -235,6 +242,108 @@ fn face_volume(verts: &[[f64; 3]], t: [usize; 3]) -> f64 {
         / 6.0
 }
 
+#[inline]
+pub(crate) fn unit_normal(verts: &[[f64; 3]], t: [usize; 3]) -> [f64; 3] {
+    let a = verts[t[0]];
+    let b = verts[t[1]];
+    let c = verts[t[2]];
+    let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let cr = [
+        e1[1] * e2[2] - e1[2] * e2[1],
+        e1[2] * e2[0] - e1[0] * e2[2],
+        e1[0] * e2[1] - e1[1] * e2[0],
+    ];
+    let len = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+    if len > 0.0 {
+        [cr[0] / len, cr[1] / len, cr[2] / len]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
+#[inline]
+pub(crate) fn tri_centroid(verts: &[[f64; 3]], t: [usize; 3]) -> [f64; 3] {
+    [
+        (verts[t[0]][0] + verts[t[1]][0] + verts[t[2]][0]) / 3.0,
+        (verts[t[0]][1] + verts[t[1]][1] + verts[t[2]][1]) / 3.0,
+        (verts[t[0]][2] + verts[t[1]][2] + verts[t[2]][2]) / 3.0,
+    ]
+}
+
+/// Rotate a triangle cyclically so its lexicographically smallest vertex comes
+/// first (ties broken by the following vertices).  Unlike a full sort this
+/// preserves the winding, so normals and barycentric samples stay meaningful;
+/// it also makes a face's geometric key independent of the input face order.
+pub(crate) fn canonical_tri(verts: &[[f64; 3]], t: [usize; 3]) -> [usize; 3] {
+    let mut best = 0usize;
+    for i in 1..3 {
+        if cyclic_tri_less(
+            verts,
+            [t[i], t[(i + 1) % 3], t[(i + 2) % 3]],
+            [t[best], t[(best + 1) % 3], t[(best + 2) % 3]],
+        ) {
+            best = i;
+        }
+    }
+    [t[best], t[(best + 1) % 3], t[(best + 2) % 3]]
+}
+
+fn cyclic_tri_less(verts: &[[f64; 3]], a: [usize; 3], b: [usize; 3]) -> bool {
+    for d in 0..3 {
+        let pa = verts[a[d]];
+        let pb = verts[b[d]];
+        for k in 0..3 {
+            match pa[k].total_cmp(&pb[k]) {
+                std::cmp::Ordering::Less => return true,
+                std::cmp::Ordering::Greater => return false,
+                std::cmp::Ordering::Equal => {}
+            }
+        }
+    }
+    false
+}
+
+/// Total order on a face that depends only on its geometry (centroid, then the
+/// canonical vertex coordinates).  Used wherever a channel must sample or sum
+/// in an order that survives a face permutation.
+pub(crate) fn face_geo_cmp(verts: &[[f64; 3]], a: [usize; 3], b: [usize; 3]) -> std::cmp::Ordering {
+    let ca = tri_centroid(verts, a);
+    let cb = tri_centroid(verts, b);
+    for k in 0..3 {
+        let o = ca[k].total_cmp(&cb[k]);
+        if o != std::cmp::Ordering::Equal {
+            return o;
+        }
+    }
+    let ra = canonical_tri(verts, a);
+    let rb = canonical_tri(verts, b);
+    for d in 0..3 {
+        for k in 0..3 {
+            let o = verts[ra[d]][k].total_cmp(&verts[rb[d]][k]);
+            if o != std::cmp::Ordering::Equal {
+                return o;
+            }
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+#[cfg(test)]
+pub(crate) fn build_edges_for_tests(
+    tris: &[[usize; 3]],
+) -> HashMap<(usize, usize), Vec<(usize, bool)>> {
+    build_edges(tris)
+}
+
+#[cfg(test)]
+pub(crate) fn components_for_tests(
+    nf: usize,
+    edges: &HashMap<(usize, usize), Vec<(usize, bool)>>,
+) -> (Vec<usize>, usize) {
+    components(nf, edges)
+}
+
 fn components(
     nf: usize,
     edges: &HashMap<(usize, usize), Vec<(usize, bool)>>,
@@ -307,6 +416,48 @@ fn canonical_component_ids(
         remap[old] = new;
     }
     (comp.iter().map(|&c| remap[c]).collect(), ncomp)
+}
+
+/// Connected components (via exactly-two-use shared edges) of a face subset.
+/// Used by the phase-3 channels to turn a flagged face set into deterministic
+/// regions.  Members are returned sorted; groups are ordered by their smallest
+/// face id.
+pub(crate) fn group_faces(
+    faces: &[usize],
+    edges: &HashMap<(usize, usize), Vec<(usize, bool)>>,
+) -> Vec<Vec<usize>> {
+    if faces.is_empty() {
+        return Vec::new();
+    }
+    let member: HashSet<usize> = faces.iter().copied().collect();
+    let mut ds = DisjointSet::new(faces.len());
+    let mut index: HashMap<usize, usize> = HashMap::with_capacity(faces.len());
+    for (i, &f) in faces.iter().enumerate() {
+        index.insert(f, i);
+    }
+    let mut keys: Vec<(usize, usize)> = edges.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let uses = &edges[&key];
+        if uses.len() != 2 {
+            continue;
+        }
+        let (a, b) = (uses[0].0, uses[1].0);
+        if member.contains(&a) && member.contains(&b) {
+            ds.union(index[&a], index[&b]);
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for &f in faces {
+        let r = ds.find(index[&f]);
+        groups.entry(r).or_default().push(f);
+    }
+    let mut out: Vec<Vec<usize>> = groups.into_values().collect();
+    for g in &mut out {
+        g.sort_unstable();
+    }
+    out.sort_by_key(|g| g.first().copied().unwrap_or(usize::MAX));
+    out
 }
 
 fn adjacency_from_edges(
@@ -1032,6 +1183,13 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], detail: &str) -> D
     report.parts = part_report(verts, tris, &edges, &fg, &comp, ncomp, &mut regions);
     report.timings.push(("parts", t4.elapsed().as_secs_f64()));
     let t5 = std::time::Instant::now();
+    // One whole-mesh BVH is shared by the self-intersection, interior and
+    // thin-wall channels; building it once keeps phase-3 inside the budget.
+    let bvh: Option<MeshBvh> = if tris.len() <= crate::SI_MAX_FACES {
+        Some(MeshBvh::from_arrays(verts, tris))
+    } else {
+        None
+    };
     let (sinfo, inter_pairs) = si::si_report(
         verts,
         tris,
@@ -1039,6 +1197,7 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], detail: &str) -> D
         detail,
         &mut report.face_mask,
         &mut regions,
+        bvh.as_ref(),
     );
     report.self_intersections = sinfo;
     if report.self_intersections.reason.is_none() {
@@ -1049,16 +1208,43 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], detail: &str) -> D
         .timings
         .push(("self_intersection", t5.elapsed().as_secs_f64()));
     let t6 = std::time::Instant::now();
-    report.loops = loops::loop_report(
+    report.loops = loops::loop_report(verts, tris, &comp, &mut report.vertex_mask, &mut regions);
+    report.timings.push(("loops", t6.elapsed().as_secs_f64()));
+    let t7 = std::time::Instant::now();
+    report.interior = interior::interior_report(
         verts,
         tris,
+        &edges,
         &comp,
-        &mut report.vertex_mask,
+        ncomp,
+        &mut report.face_mask,
         &mut regions,
     );
     report
         .timings
-        .push(("loops", t6.elapsed().as_secs_f64()));
+        .push(("interior", t7.elapsed().as_secs_f64()));
+    let t8 = std::time::Instant::now();
+    report.thin_wall = thin::thin_report(
+        verts,
+        tris,
+        &edges,
+        bvh.as_ref(),
+        &mut report.face_mask,
+        &mut regions,
+    );
+    report
+        .timings
+        .push(("thin_wall", t8.elapsed().as_secs_f64()));
+    let t9 = std::time::Instant::now();
+    report.noise = noise::noise_report(
+        verts,
+        tris,
+        &edges,
+        &mut report.face_mask,
+        &mut report.vertex_mask,
+        &mut regions,
+    );
+    report.timings.push(("noise", t9.elapsed().as_secs_f64()));
     regions.sort_by(|a, b| {
         a.channel
             .cmp(&b.channel)
@@ -1261,15 +1447,47 @@ pub fn report_to_pydict<'py>(
     )?;
     ch.set_item(
         "interior",
-        channel_dict(py, None, true, false, 0.0, 0.0, "phase3")?,
+        channel_dict(
+            py,
+            Some(r.interior.faces as i64),
+            r.interior.estimated,
+            r.interior.available,
+            r.interior.faces as f64,
+            r.interior.confidence,
+            r.interior.method,
+        )?,
     )?;
     ch.set_item(
         "thin_wall",
-        channel_dict(py, None, true, false, 0.0, 0.0, "phase3")?,
+        channel_dict(
+            py,
+            if r.thin_wall.available {
+                Some(r.thin_wall.thin_faces as i64)
+            } else {
+                None
+            },
+            r.thin_wall.estimated,
+            r.thin_wall.available,
+            r.thin_wall.thin_ratio,
+            r.thin_wall.confidence,
+            "ray_thickness",
+        )?,
     )?;
     ch.set_item(
         "noise",
-        channel_dict(py, None, true, false, 0.0, 0.0, "phase3")?,
+        channel_dict(
+            py,
+            if r.noise.available {
+                Some(r.noise.flagged_vertices as i64)
+            } else {
+                None
+            },
+            r.noise.estimated,
+            r.noise.available,
+            r.noise.noise_score,
+            r.noise.confidence,
+            "ring_deviation",
+        )?,
     )?;
     root.set_item("channels", ch)?;
 
@@ -1362,6 +1580,53 @@ pub fn report_to_pydict<'py>(
     lp.set_item("items", items)?;
     root.set_item("loops", lp)?;
 
+    let it = PyDict::new(py);
+    it.set_item("available", r.interior.available)?;
+    it.set_item("candidates", r.interior.candidates)?;
+    it.set_item("candidate_components", r.interior.candidate_components)?;
+    it.set_item("faces", r.interior.faces)?;
+    it.set_item("low_confidence", r.interior.low_confidence)?;
+    it.set_item("fold_faces", r.interior.fold_faces)?;
+    it.set_item("estimated", r.interior.estimated)?;
+    it.set_item("method", r.interior.method)?;
+    it.set_item("confidence", finite(r.interior.confidence))?;
+    root.set_item("interior", it)?;
+
+    let tw = PyDict::new(py);
+    tw.set_item("available", r.thin_wall.available)?;
+    tw.set_item("samples", r.thin_wall.samples)?;
+    tw.set_item("samples_hit", r.thin_wall.samples_hit)?;
+    tw.set_item("min", finite(r.thin_wall.min))?;
+    tw.set_item("p5", finite(r.thin_wall.p5))?;
+    tw.set_item("median", finite(r.thin_wall.median))?;
+    tw.set_item("min_norm", finite(r.thin_wall.min_norm))?;
+    tw.set_item("p5_norm", finite(r.thin_wall.p5_norm))?;
+    tw.set_item("median_norm", finite(r.thin_wall.median_norm))?;
+    tw.set_item("thin_samples", r.thin_wall.thin_samples)?;
+    tw.set_item("thin_faces", r.thin_wall.thin_faces)?;
+    tw.set_item("thin_ratio", finite(r.thin_wall.thin_ratio))?;
+    tw.set_item("threshold_norm", finite(r.thin_wall.threshold_norm))?;
+    tw.set_item("threshold_mm", finite(r.thin_wall.threshold_mm))?;
+    tw.set_item("units", r.thin_wall.units)?;
+    tw.set_item("estimated", r.thin_wall.estimated)?;
+    tw.set_item("confidence", finite(r.thin_wall.confidence))?;
+    root.set_item("thin_wall", tw)?;
+
+    let nz = PyDict::new(py);
+    nz.set_item("available", r.noise.available)?;
+    nz.set_item("noise_score", finite(r.noise.noise_score))?;
+    nz.set_item("noise_ratio", finite(r.noise.noise_ratio))?;
+    nz.set_item("flagged_vertices", r.noise.flagged_vertices)?;
+    nz.set_item("eligible_vertices", r.noise.eligible_vertices)?;
+    nz.set_item("dev_p50", finite(r.noise.dev_p50))?;
+    nz.set_item("dev_p95", finite(r.noise.dev_p95))?;
+    nz.set_item("valence_mean", finite(r.noise.valence_mean))?;
+    nz.set_item("valence_std", finite(r.noise.valence_std))?;
+    nz.set_item("edge_cv", finite(r.noise.edge_cv))?;
+    nz.set_item("estimated", r.noise.estimated)?;
+    nz.set_item("confidence", finite(r.noise.confidence))?;
+    root.set_item("noise", nz)?;
+
     if masks {
         root.set_item("face_mask", mask_dict(py, &r.face_mask, "rle")?)?;
         root.set_item("vertex_mask", mask_dict(py, &r.vertex_mask, "rle")?)?;
@@ -1385,7 +1650,7 @@ pub fn report_to_pydict<'py>(
     meta.set_item("faces", r.faces)?;
     meta.set_item("vertices", r.vertices)?;
     meta.set_item("seconds", finite(seconds))?;
-    meta.set_item("phase", 2)?;
+    meta.set_item("phase", 3)?;
     meta.set_item("fast_budget_s", 1.0)?;
     meta.set_item("fast_budget_met", seconds <= 1.0)?;
     let timings = PyDict::new(py);
@@ -1415,6 +1680,9 @@ pub fn report_to_pydict<'py>(
             "parts",
             "self_intersection",
             "loops",
+            "interior",
+            "thin_wall",
+            "noise",
         ],
     )?;
     root.set_item("meta", meta)?;
@@ -1538,7 +1806,10 @@ mod tests {
             .iter()
             .any(|g| g.channel == "self_intersection" && g.kind == "inter_body_overlap"));
         let deep = diagnose_core(&v, &f, "deep");
-        assert_eq!(deep.self_intersections.inter_body, r.self_intersections.inter_body);
+        assert_eq!(
+            deep.self_intersections.inter_body,
+            r.self_intersections.inter_body
+        );
         assert!(!deep.self_intersections.estimated);
     }
 
@@ -1572,7 +1843,10 @@ mod tests {
         assert!(r.self_intersections.intra_body.unwrap() > 0);
         assert_eq!(r.self_intersections.inter_body, Some(0));
         let deep = diagnose_core(&vv, &ff, "deep");
-        assert_eq!(deep.self_intersections.intra_body, r.self_intersections.intra_body);
+        assert_eq!(
+            deep.self_intersections.intra_body,
+            r.self_intersections.intra_body
+        );
         assert!(!deep.self_intersections.estimated);
     }
 
@@ -1634,12 +1908,17 @@ mod tests {
         assert!(!r.loops.items[0].planar);
     }
 
-
     fn box_mesh(lo: f64, hi: f64) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
         let (v, f) = cube();
         let v = v
             .iter()
-            .map(|p| [lo + p[0] * (hi - lo), lo + p[1] * (hi - lo), lo + p[2] * (hi - lo)])
+            .map(|p| {
+                [
+                    lo + p[0] * (hi - lo),
+                    lo + p[1] * (hi - lo),
+                    lo + p[2] * (hi - lo),
+                ]
+            })
             .collect();
         (v, f)
     }
