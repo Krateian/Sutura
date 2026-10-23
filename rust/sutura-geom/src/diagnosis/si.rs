@@ -10,9 +10,9 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::winding::MeshBvh;
 use crate::topology::DisjointSet;
 use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
+use crate::winding::MeshBvh;
 
 use super::{region_from_faces, Region};
 
@@ -64,7 +64,6 @@ fn pa_max(verts: &[[f64; 3]], t: [usize; 3], k: usize) -> f64 {
 fn shared_vertices(a: [usize; 3], b: [usize; 3]) -> usize {
     a.iter().filter(|v| b.contains(v)).count()
 }
-
 
 /// Signed area of a 2D polygon (CCW positive).
 fn poly_area(poly: &[[f64; 2]]) -> f64 {
@@ -204,7 +203,6 @@ fn classify_pair(
     }
 }
 
-
 /// Public entry: classify every broad-phase candidate and add the cluster
 /// regions to `regions`.  Returns the channel summary and the component pairs
 /// that actually intersect (used to refine the part overlap graph).
@@ -215,6 +213,7 @@ pub fn si_report(
     detail: &str,
     face_mask: &mut [u8],
     regions: &mut Vec<Region>,
+    bvh: Option<&MeshBvh>,
 ) -> (SelfIntersections, Vec<(usize, usize)>) {
     let mut out = SelfIntersections {
         available: true,
@@ -237,7 +236,14 @@ pub fn si_report(
         return (out, Vec::new());
     }
 
-    let bvh = MeshBvh::from_arrays(verts, tris);
+    let owned;
+    let bvh = match bvh {
+        Some(b) => b,
+        None => {
+            owned = MeshBvh::from_arrays(verts, tris);
+            &owned
+        }
+    };
     let candidates = bvh.candidate_pairs(verts, tris);
     out.candidate_pairs = candidates.len();
     let truncated = detail == "fast" && candidates.len() > FAST_MAX_PAIRS;

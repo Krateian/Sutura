@@ -60,11 +60,31 @@ def coplanar_duplicates():
     return v, np.vstack([f, extra])
 
 
+def cube_at(lo, hi):
+    v, f = cube()
+    return v * (hi - lo) + lo, f
+
+
+def nested_cubes():
+    ov, of = cube_at(0.0, 10.0)
+    iv, inf = cube_at(3.0, 7.0)
+    return np.vstack([ov, iv]), np.vstack([of, inf + len(ov)])
+
+
+def thin_slab():
+    v, f = cube()
+    return v * np.array([10.0, 10.0, 0.05], dtype=np.float64), f
+
+
 def build(case):
     if case == "mobius":
         return mobius()
     if case == "coplanar":
         return coplanar_duplicates()
+    if case == "nested":
+        return nested_cubes()
+    if case == "thin":
+        return thin_slab()
     raise SystemExit("unknown case")
 
 
@@ -93,7 +113,8 @@ def dump(case):
 
 def main():
     import sutura_geom
-    cases = ["mobius", "coplanar", "perm-mobius:3", "perm-coplanar:11"]
+    cases = ["mobius", "coplanar", "nested", "thin",
+             "perm-mobius:3", "perm-coplanar:11", "perm-nested:7", "perm-thin:5"]
     for case in cases:
         outs = []
         for _ in range(6):
@@ -107,8 +128,12 @@ def main():
             assert r["channels"]["orientation"]["count"] > 0
         if "coplanar" in case:
             assert r["duplicates"]["faces"] > 0
+        if "nested" in case:
+            assert r["interior"]["faces"] == 12
+        if "thin" in case:
+            assert r["thin_wall"]["thin_faces"] > 0
 
-    for case in ("mobius", "coplanar"):
+    for case in ("mobius", "coplanar", "nested", "thin"):
         base = json.loads(subprocess.run(
             [sys.executable, os.path.abspath(__file__), "--dump", case],
             capture_output=True, text=True, check=True).stdout)
@@ -117,15 +142,19 @@ def main():
                 [sys.executable, os.path.abspath(__file__), "--dump",
                  f"perm-{case}:{seed}"],
                 capture_output=True, text=True, check=True).stdout)
-            if case == "coplanar":
-                assert perm == base, f"{case} dump changed under permutation {seed}"
-            else:
+            if case == "mobius":
                 # A non-orientable patch may resolve its flip side differently
                 # under permutation; the loop metrics themselves must be
                 # bit-exact (canonical cycle order).  Compare every float in
-                # loops.items exactly.
+                # loops.items exactly; the phase-3 channels are geometry-driven
+                # and must match bit-for-bit too.
                 assert perm["loops"] == base["loops"], (
                     f"{case} loop metrics changed under permutation {seed}")
+                for ch in ("interior", "thin_wall", "noise"):
+                    assert perm[ch] == base[ch], (
+                        f"{case} {ch} changed under permutation {seed}")
+            else:
+                assert perm == base, f"{case} dump changed under permutation {seed}"
 
     # A 20k-component triangle soup must stay inside the fast budget: the
     # component pair and loop-region work is capped, not quadratic.

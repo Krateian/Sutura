@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnosis v2 phase 2: channels, masks, permutation and JSON wrapper."""
+"""Diagnosis v2 phase 3: channels, masks, permutation and JSON wrapper."""
 import os
 import sys
 
@@ -30,6 +30,66 @@ def decode(mask):
     return out
 
 
+def scaled_cube(lo, hi):
+    v, f = cube()
+    return v * (hi - lo) + lo, f
+
+
+def box(sx, sy, sz):
+    v, f = cube()
+    return v * np.array([sx, sy, sz], dtype=np.float64), f
+
+
+def many_thin_slabs(n=20):
+    # 5x5x0.05 slabs: thin relative to the global diagonal, while the side
+    # faces stay above the needle threshold (degenerate would otherwise fill
+    # the global 256-region budget before thin_wall).
+    base_v, base_f = box(5.0, 5.0, 0.05)
+    vs, fs = [], []
+    off = 0
+    for j in range(n):
+        for i in range(n):
+            vs.append(base_v + [i * 6.0, j * 6.0, 0.0])
+            fs.append(base_f + off)
+            off += len(base_v)
+    return np.vstack(vs), np.vstack(fs)
+
+
+def region_keys(r):
+    return sorted(
+        (g["channel"], g["kind"], tuple(g["bbox"]), tuple(g["centroid"]),
+         g["faces"], g["vertices"], tuple(g["components"]),
+         g["severity"], g["confidence"])
+        for g in r["regions"])
+
+
+def permuted(v, f, seed):
+    rng = np.random.default_rng(seed)
+    pv = rng.permutation(len(v))
+    inv_v = np.empty_like(pv)
+    inv_v[pv] = np.arange(len(pv))
+    pf = rng.permutation(len(f))
+    return v[pv], inv_v[f][pf], pv, pf
+
+
+def check_permutation(v, f, r, seed, detail="fast"):
+    vp, fp, pv, pf = permuted(v, f, seed)
+    p = sutura_geom.diagnose(vp, fp, detail)
+    for ch in ("orientation", "nm_vertex", "duplicate", "degenerate",
+               "self_intersection", "loops", "interior", "thin_wall", "noise"):
+        assert p["channels"][ch]["count"] == r["channels"][ch]["count"], ch
+    assert p["interior"] == r["interior"]
+    assert p["thin_wall"] == r["thin_wall"]
+    assert p["noise"] == r["noise"]
+    assert region_keys(p) == region_keys(r)
+    back = np.zeros_like(decode(p["face_mask"]))
+    back[pf] = decode(p["face_mask"])
+    assert np.array_equal(back, decode(r["face_mask"]))
+    back_v = np.zeros_like(decode(p["vertex_mask"]))
+    back_v[pv] = decode(p["vertex_mask"])
+    assert np.array_equal(back_v, decode(r["vertex_mask"]))
+
+
 def main():
     v, f = cube()
     r = sutura_geom.diagnose(v, f)
@@ -44,6 +104,80 @@ def main():
     assert r["channels"]["loops"]["count"] == 0
     assert r["self_intersections"]["total"] == 0
     assert r["loops"]["count"] == 0
+    assert r["meta"]["phase"] == 3
+    for ch in ("interior", "thin_wall", "noise"):
+        assert ch in r["meta"]["channels_available"]
+    assert r["interior"]["available"]
+    assert r["interior"]["faces"] == 0
+    assert r["thin_wall"]["available"]
+    assert r["thin_wall"]["units"] == "mm_assumed"
+    assert r["thin_wall"]["thin_faces"] == 0
+    assert r["thin_wall"]["estimated"]
+    assert r["noise"]["available"]
+    assert r["noise"]["noise_score"] == 0.0
+
+    # Phase 3: an embedded cube is interior on both sides; an inverted one is
+    # a cavity (solid on one side, void on the other) and is not interior.
+    outer_v, outer_f = scaled_cube(0.0, 10.0)
+    inner_v, inner_f = scaled_cube(3.0, 7.0)
+    vv = np.vstack([outer_v, inner_v])
+    ff = np.vstack([outer_f, inner_f + len(outer_v)])
+    ri = sutura_geom.diagnose(vv, ff)
+    assert ri["interior"]["faces"] == 12, ri["interior"]
+    assert ri["channels"]["interior"]["count"] == 12
+    assert any(g["kind"] == "interior_surface" for g in ri["regions"])
+    cavity_f = np.vstack([outer_f, inner_f[:, ::-1] + len(outer_v)])
+    rc = sutura_geom.diagnose(vv, cavity_f)
+    assert rc["interior"]["faces"] == 0, rc["interior"]
+
+    # Phase 3: a thin slab reports both normalized and mm_assumed values.
+    tv, tf = box(10.0, 10.0, 0.05)
+    rt = sutura_geom.diagnose(tv, tf)
+    tw = rt["thin_wall"]
+    assert tw["available"] and tw["thin_faces"] > 0
+    assert abs(tw["min"] - 0.05) < 1e-5, tw
+    diag = float(np.linalg.norm(tv.max(axis=0) - tv.min(axis=0)))
+    assert abs(tw["min_norm"] - tw["min"] / diag) < 1e-12
+    assert tw["thin_ratio"] > 0.0
+    assert any(g["kind"] == "thin_wall_patch" for g in rt["regions"])
+    assert rt["thin_wall"]["samples"] == 512
+    assert rt["thin_wall"]["sample_stride"] == 8
+    assert "stride" in rt["channels"]["thin_wall"]["method"]
+    assert "stride" in rt["channels"]["noise"]["method"]
+    rd = sutura_geom.diagnose(tv, tf, "deep")
+    assert rd["thin_wall"]["samples"] == 4096
+    assert rd["thin_wall"]["sample_stride"] == 1
+    assert rd["channels"]["thin_wall"]["method"] == "ray_thickness"
+    assert rd["noise"]["sample_stride"] == 1
+    assert rd["channels"]["noise"]["method"] == "ring_deviation"
+
+    # An interpenetrating peg is not bbox-contained; its buried end face is
+    # found by the AABB-overlap face path.
+    cv, cf = cube()
+    peg_v = np.empty_like(cv)
+    peg_v[:, 0] = 8.0 + 4.0 * cv[:, 0]
+    peg_v[:, 1] = 4.0 + 2.0 * cv[:, 1]
+    peg_v[:, 2] = 4.0 + 2.0 * cv[:, 2]
+    pv = np.vstack([outer_v, peg_v])
+    pf = np.vstack([outer_f, cf + len(outer_v)])
+    rpeg = sutura_geom.diagnose(pv, pf)
+    assert rpeg["interior"]["faces"] >= 1, rpeg["interior"]
+    assert rpeg["interior"]["method"] == "gwn"
+
+    check_permutation(vv, ff, ri, 3)
+    check_permutation(tv, tf, rt, 5)
+    check_permutation(pv, pf, rpeg, 9)
+
+    # More than MAX_THIN_REGIONS (256) equal-thickness regions: the cap must
+    # select the same geometric regions under a permutation, not the same face
+    # index lists.
+    mv, mf = many_thin_slabs()
+    rm = sutura_geom.diagnose(mv, mf, "deep")
+    thin_regions = sum(1 for g in rm["regions"]
+                       if g["kind"] == "thin_wall_patch")
+    assert thin_regions == 256, thin_regions
+    assert rm["thin_wall"]["thin_faces"] > 256
+    check_permutation(mv, mf, rm, 13, detail="deep")
 
     vf, ff = cube()
     ff[0] = [0, 2, 1]
@@ -119,7 +253,7 @@ def main():
     d = diagnosis.to_dict(a)
     assert "diagnosis_v2" in d
     assert d["faces"] == 12
-    print("diagnosis v2 phase-2 ok")
+    print("diagnosis v2 phase-3 ok")
 
 
 if __name__ == "__main__":
