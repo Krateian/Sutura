@@ -186,6 +186,18 @@ def main():
     assert rm["thin_wall"]["thin_faces"] > 256
     check_permutation(mv, mf, rm, 13, detail="deep")
 
+    # Exactness guard: 145065 has 782,768 raw candidates (main was exact) and
+    # 203,792 filtered survivors (> FAST_MAX_FILTERED_PAIRS).  The survivor cap
+    # must not apply because main was exact, so the totals stay measured.
+    from sutura_engine.pipeline.mesh_io import load_meshes
+    _, gv, gf = load_meshes(
+        os.path.join(HERE, "tests", "real-world-samples",
+                     "thingi10k_145065.stl"))[0]
+    rg = sutura_geom.diagnose(gv.astype(np.float64), gf)
+    assert rg["self_intersections"]["filtered_pairs"] > 100_000
+    assert rg["self_intersections"]["estimated"] is False
+    assert rg["self_intersections"]["total"] is not None
+
     vf, ff = cube()
     ff[0] = [0, 2, 1]
     rf = sutura_geom.diagnose(vf, ff)

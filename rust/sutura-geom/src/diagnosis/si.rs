@@ -16,10 +16,15 @@ use crate::winding::MeshBvh;
 
 use super::{region_from_faces, Region};
 
-/// Deterministic ceiling for the **prefiltered** pair list in `detail='fast'`;
-/// `deep` only uses the crate-wide `SI_MAX_FACES` face cap.  Above this the
-/// scanned prefix is still reported as a diagnostic hint but the public counts
-/// stay `None`.
+/// Main's raw fast cap.  A mesh whose broad phase is at or below this was
+/// exact in the pre-prefilter implementation, so fast mode must scan every
+/// filtered survivor for it.  A mesh above it was already estimated.
+pub const FAST_MAX_RAW_PAIRS: usize = 1_000_000;
+
+/// Deterministic ceiling for the **prefiltered** pair list in `detail='fast'`,
+/// applied only when the raw broad phase exceeded [`FAST_MAX_RAW_PAIRS`] (i.e.
+/// the pre-prefilter fast mode was already `estimated`).  This can never turn
+/// a formerly exact result into `None`.
 pub const FAST_MAX_FILTERED_PAIRS: usize = 100_000;
 
 /// Plane normals whose cross product norm is below this are treated as
@@ -410,7 +415,13 @@ pub fn si_report(
         out.filtered_pairs = Some(filtered.len());
         &filtered
     };
-    let truncated = !use_exact && pairs_all.len() > FAST_MAX_FILTERED_PAIRS;
+    // Exactness guard: the pre-prefilter fast mode was exact whenever the raw
+    // broad phase fit in FAST_MAX_RAW_PAIRS.  In that case scan every filtered
+    // survivor (the filter is conservative, so the counts match main); only a
+    // mesh that was already estimated in main may have its survivors capped.
+    let truncated = !use_exact
+        && candidates.len() > FAST_MAX_RAW_PAIRS
+        && pairs_all.len() > FAST_MAX_FILTERED_PAIRS;
     if truncated {
         out.estimated = true;
         out.reason = Some("pair_cap");
