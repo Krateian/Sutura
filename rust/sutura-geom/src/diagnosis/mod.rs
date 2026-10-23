@@ -304,6 +304,13 @@ fn cyclic_tri_less(verts: &[[f64; 3]], a: [usize; 3], b: [usize; 3]) -> bool {
     false
 }
 
+#[inline]
+pub(crate) fn point3_cmp(a: [f64; 3], b: [f64; 3]) -> std::cmp::Ordering {
+    a[0].total_cmp(&b[0])
+        .then_with(|| a[1].total_cmp(&b[1]))
+        .then_with(|| a[2].total_cmp(&b[2]))
+}
+
 /// Total order on a face that depends only on its geometry (centroid, then the
 /// canonical vertex coordinates).  Used wherever a channel must sample or sum
 /// in an order that survives a face permutation.
@@ -435,10 +442,9 @@ pub(crate) fn group_faces(
     for (i, &f) in faces.iter().enumerate() {
         index.insert(f, i);
     }
-    let mut keys: Vec<(usize, usize)> = edges.keys().copied().collect();
-    keys.sort_unstable();
-    for key in keys {
-        let uses = &edges[&key];
+    // The union order cannot change the resulting partition, so the unsorted
+    // map is safe here and avoids an O(E log E) sort on every region pass.
+    for uses in edges.values() {
         if uses.len() != 2 {
             continue;
         }
@@ -1229,6 +1235,7 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], detail: &str) -> D
         tris,
         &edges,
         bvh.as_ref(),
+        detail,
         &mut report.face_mask,
         &mut regions,
     );
@@ -1240,6 +1247,7 @@ pub fn diagnose_core(verts: &[[f64; 3]], tris: &[[usize; 3]], detail: &str) -> D
         verts,
         tris,
         &edges,
+        detail,
         &mut report.face_mask,
         &mut report.vertex_mask,
         &mut regions,
@@ -1470,7 +1478,7 @@ pub fn report_to_pydict<'py>(
             r.thin_wall.available,
             r.thin_wall.thin_ratio,
             r.thin_wall.confidence,
-            "ray_thickness",
+            r.thin_wall.method,
         )?,
     )?;
     ch.set_item(
@@ -1486,7 +1494,7 @@ pub fn report_to_pydict<'py>(
             r.noise.available,
             r.noise.noise_score,
             r.noise.confidence,
-            "ring_deviation",
+            r.noise.method,
         )?,
     )?;
     root.set_item("channels", ch)?;
@@ -1608,6 +1616,8 @@ pub fn report_to_pydict<'py>(
     tw.set_item("threshold_norm", finite(r.thin_wall.threshold_norm))?;
     tw.set_item("threshold_mm", finite(r.thin_wall.threshold_mm))?;
     tw.set_item("units", r.thin_wall.units)?;
+    tw.set_item("sample_stride", r.thin_wall.sample_stride)?;
+    tw.set_item("method", r.thin_wall.method)?;
     tw.set_item("estimated", r.thin_wall.estimated)?;
     tw.set_item("confidence", finite(r.thin_wall.confidence))?;
     root.set_item("thin_wall", tw)?;
@@ -1623,6 +1633,8 @@ pub fn report_to_pydict<'py>(
     nz.set_item("valence_mean", finite(r.noise.valence_mean))?;
     nz.set_item("valence_std", finite(r.noise.valence_std))?;
     nz.set_item("edge_cv", finite(r.noise.edge_cv))?;
+    nz.set_item("sample_stride", r.noise.sample_stride)?;
+    nz.set_item("method", r.noise.method)?;
     nz.set_item("estimated", r.noise.estimated)?;
     nz.set_item("confidence", finite(r.noise.confidence))?;
     root.set_item("noise", nz)?;

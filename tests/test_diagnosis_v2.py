@@ -125,9 +125,33 @@ def main():
     assert abs(tw["min_norm"] - tw["min"] / diag) < 1e-12
     assert tw["thin_ratio"] > 0.0
     assert any(g["kind"] == "thin_wall_patch" for g in rt["regions"])
+    assert rt["thin_wall"]["samples"] == 512
+    assert rt["thin_wall"]["sample_stride"] == 8
+    assert "stride" in rt["channels"]["thin_wall"]["method"]
+    assert "stride" in rt["channels"]["noise"]["method"]
+    rd = sutura_geom.diagnose(tv, tf, "deep")
+    assert rd["thin_wall"]["samples"] == 4096
+    assert rd["thin_wall"]["sample_stride"] == 1
+    assert rd["channels"]["thin_wall"]["method"] == "ray_thickness"
+    assert rd["noise"]["sample_stride"] == 1
+    assert rd["channels"]["noise"]["method"] == "ring_deviation"
+
+    # An interpenetrating peg is not bbox-contained; its buried end face is
+    # found by the AABB-overlap face path.
+    cv, cf = cube()
+    peg_v = np.empty_like(cv)
+    peg_v[:, 0] = 8.0 + 4.0 * cv[:, 0]
+    peg_v[:, 1] = 4.0 + 2.0 * cv[:, 1]
+    peg_v[:, 2] = 4.0 + 2.0 * cv[:, 2]
+    pv = np.vstack([outer_v, peg_v])
+    pf = np.vstack([outer_f, cf + len(outer_v)])
+    rpeg = sutura_geom.diagnose(pv, pf)
+    assert rpeg["interior"]["faces"] >= 1, rpeg["interior"]
+    assert rpeg["interior"]["method"] == "gwn"
 
     check_permutation(vv, ff, ri, 3)
     check_permutation(tv, tf, rt, 5)
+    check_permutation(pv, pf, rpeg, 9)
 
     vf, ff = cube()
     ff[0] = [0, 2, 1]

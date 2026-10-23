@@ -22,13 +22,17 @@ use std::collections::HashMap;
 use crate::winding::MeshBvh;
 
 use super::{
-    canonical_tri, face_geo_cmp, group_faces, region_from_faces, unit_normal, Bbox, Region,
+    canonical_tri, face_geo_cmp, group_faces, point3_cmp, region_from_faces, tri_centroid,
+    unit_normal, Bbox, Region,
 };
 
 pub const FACE_MASK_BIT: u8 = 128;
 
-/// Deterministic sample count (a work cap: the aggregate is an estimate).
+/// Deterministic sample count for `deep` (a work cap: the aggregate is an
+/// estimate).  `fast` uses a fixed stride over the same sample positions.
 pub const TARGET_SAMPLES: usize = 4096;
+pub const FAST_SAMPLES: usize = 512;
+pub const FAST_STRIDE: usize = TARGET_SAMPLES / FAST_SAMPLES;
 
 /// Default reporting threshold as a fraction of the bounding-box diagonal.
 /// The plan deliberately keeps the FDM/SLA millimetre numbers as labels only.
@@ -55,6 +59,8 @@ pub struct ThinWall {
     pub threshold_norm: f64,
     pub threshold_mm: f64,
     pub units: &'static str,
+    pub sample_stride: usize,
+    pub method: &'static str,
     pub estimated: bool,
     pub confidence: f64,
 }
@@ -86,12 +92,21 @@ pub fn thin_report(
     tris: &[[usize; 3]],
     edges: &HashMap<(usize, usize), Vec<(usize, bool)>>,
     bvh: Option<&MeshBvh>,
+    detail: &str,
     face_mask: &mut [u8],
     regions: &mut Vec<Region>,
 ) -> ThinWall {
+    let deep = detail == "deep";
+    let stride = if deep { 1 } else { FAST_STRIDE };
     let mut out = ThinWall {
         threshold_norm: THRESHOLD_NORM,
         units: "mm_assumed",
+        sample_stride: stride,
+        method: if deep {
+            "ray_thickness"
+        } else {
+            "ray_thickness+stride"
+        },
         estimated: true,
         confidence: CONFIDENCE,
         ..Default::default()
@@ -108,9 +123,14 @@ pub fn thin_report(
     let diag = global.diag().max(1e-12);
     out.threshold_mm = THRESHOLD_NORM * diag;
 
-    // Geometry in a permutation-independent order.
+    // Geometry in a permutation-independent order.  The precomputed centroid
+    // is the primary key (cheap comparisons); the full geometric comparator
+    // only runs on exact centroid ties.
+    let centroids: Vec<[f64; 3]> = tris.iter().map(|&t| tri_centroid(verts, t)).collect();
     let mut order: Vec<usize> = (0..nf).collect();
-    order.sort_by(|&a, &b| face_geo_cmp(verts, tris[a], tris[b]));
+    order.sort_by(|&a, &b| {
+        point3_cmp(centroids[a], centroids[b]).then_with(|| face_geo_cmp(verts, tris[a], tris[b]))
+    });
     let mut areas = vec![0.0f64; nf];
     let mut prefix = Vec::with_capacity(nf);
     let mut acc = 0.0f64;
@@ -145,7 +165,7 @@ pub fn thin_report(
     let mut face_thickness: HashMap<usize, f64> = HashMap::new();
     let mut thin_samples = 0usize;
 
-    for k in 0..TARGET_SAMPLES {
+    for k in (0..TARGET_SAMPLES).step_by(stride) {
         let target = (k as f64 + 0.5) * inv_n * acc;
         let pos = prefix.partition_point(|&x| x < target).min(nf - 1);
         let f = order[pos];
@@ -208,7 +228,7 @@ pub fn thin_report(
 
     thicknesses.sort_by(|a, b| a.total_cmp(b));
     out.available = true;
-    out.samples = TARGET_SAMPLES;
+    out.samples = TARGET_SAMPLES / stride;
     out.samples_hit = thicknesses.len();
     out.min = thicknesses.first().copied().unwrap_or(0.0);
     out.p5 = percentile(&thicknesses, 0.05);
@@ -306,20 +326,20 @@ mod tests {
         (v, f)
     }
 
-    fn run(v: &[[f64; 3]], f: &[[usize; 3]]) -> (ThinWall, Vec<u8>, Vec<Region>) {
+    fn run(v: &[[f64; 3]], f: &[[usize; 3]], detail: &str) -> (ThinWall, Vec<u8>, Vec<Region>) {
         let edges = build_edges_for_tests(f);
         let (_comp, _n) = components_for_tests(f.len(), &edges);
         let bvh = MeshBvh::from_arrays(v, f);
         let mut mask = vec![0u8; f.len()];
         let mut regions = Vec::new();
-        let r = thin_report(v, f, &edges, Some(&bvh), &mut mask, &mut regions);
+        let r = thin_report(v, f, &edges, Some(&bvh), detail, &mut mask, &mut regions);
         (r, mask, regions)
     }
 
     #[test]
     fn thin_slab_is_detected() {
         let (v, f) = box_tris(1, 1, 0.05);
-        let (r, mask, regions) = run(&v, &f);
+        let (r, mask, regions) = run(&v, &f, "deep");
         assert!(r.available);
         assert!((r.min - 0.05).abs() < 1e-6, "{r:?}");
         assert!(r.thin_ratio > 0.0, "{r:?}");
@@ -328,12 +348,17 @@ mod tests {
         assert!(regions.iter().any(|g| g.kind == "thin_wall_patch"));
         assert_eq!(r.units, "mm_assumed");
         assert!(r.min_norm > 0.0);
+        let (fast, _m, _r) = run(&v, &f, "fast");
+        assert_eq!(fast.samples, FAST_SAMPLES);
+        assert_eq!(fast.sample_stride, FAST_STRIDE);
+        assert!(fast.method.contains("stride"));
+        assert!(fast.estimated);
     }
 
     #[test]
     fn solid_cube_has_no_thin_wall() {
         let (v, f) = box_tris(1, 1, 1.0);
-        let (r, mask, _regions) = run(&v, &f);
+        let (r, mask, _regions) = run(&v, &f, "deep");
         assert!(r.available);
         assert!((r.min - 1.0).abs() < 1e-6, "{r:?}");
         assert_eq!(r.thin_faces, 0);

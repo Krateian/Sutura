@@ -42,6 +42,8 @@ pub const MAX_INTERIOR_PAIR_TESTS: usize = 100_000;
 pub const MAX_INTERIOR_PAIRS: usize = 4_096;
 pub const MAX_INTERIOR_POINTS: usize = 4;
 pub const MAX_INTERIOR_POINTS_TOTAL: usize = 1_024;
+pub const MAX_INTERIOR_FACE_QUERIES: usize = 1_024;
+pub const MAX_INTERIOR_FACES_PER_PAIR: usize = 128;
 pub const MAX_INTERIOR_BVHS: usize = 64;
 
 /// `dot(n1, n2) < -0.94` means the normals differ by more than ~160 degrees.
@@ -125,6 +127,22 @@ fn sample_faces(
     (out, true)
 }
 
+/// Deterministically keep at most `max_items` entries spread over `items`.
+fn even_sample<T: Copy + PartialEq>(items: &[T], max_items: usize) -> Vec<T> {
+    if items.len() <= max_items || max_items == 0 {
+        return items.to_vec();
+    }
+    if max_items == 1 {
+        return vec![items[0]];
+    }
+    let mut out = Vec::with_capacity(max_items);
+    for k in 0..max_items {
+        out.push(items[k * (items.len() - 1) / (max_items - 1)]);
+    }
+    out.dedup();
+    out
+}
+
 pub fn interior_report(
     verts: &[[f64; 3]],
     tris: &[[usize; 3]],
@@ -168,6 +186,14 @@ pub fn interior_report(
         }
     }
     let vols = component_volume(verts, tris, comp, ncomp);
+    let mut face_boxes = Vec::with_capacity(nf);
+    for t in tris {
+        let mut b = Bbox::empty();
+        for &v in t {
+            b.add(verts[v]);
+        }
+        face_boxes.push(b);
+    }
 
     // Fold creases.  Marking booleans and taking a max are commutative, so the
     // unsorted `edges` map is safe here; only the grouping needs a sorted walk.
@@ -181,6 +207,7 @@ pub fn interior_report(
     }
     let mut fold_face = vec![false; nf];
     let mut fold_sev = vec![0.0f64; nf];
+    let mut fold_edges: Vec<(usize, usize)> = Vec::new();
     for uses in edges.values() {
         if uses.len() != 2 {
             continue;
@@ -198,13 +225,17 @@ pub fn interior_report(
             fold_face[b] = true;
             fold_sev[a] = fold_sev[a].max(sev);
             fold_sev[b] = fold_sev[b].max(sev);
+            fold_edges.push((a, b));
         }
     }
 
-    // Candidate pairs: AABB overlap with one bbox containing the other.  A
-    // partially interpenetrating pair is the self-intersection channel's job;
-    // here only a fully contained component can be an interior/cavity shell.
-    let mut pairs: Vec<(usize, usize)> = Vec::new(); // (contained, enclosing)
+    // Candidate pairs.  (a) A bbox-contained closed component is an
+    // embedded/cavity shell (component-level decision).  (b) Every AABB
+    // overlap between two closed components is a face-level candidate: a face
+    // of A whose bbox lies in the A∩B overlap box may be buried inside B
+    // (interpenetrating Tinkercad-style bodies).
+    let mut contained_pairs: Vec<(usize, usize)> = Vec::new(); // (contained, enclosing)
+    let mut overlap_pairs: Vec<(usize, usize)> = Vec::new(); // ordered (a, b)
     let mut tested = 0usize;
     'scan: for a in 0..ncomp {
         for b in (a + 1)..ncomp {
@@ -213,24 +244,49 @@ pub fn interior_report(
                 break 'scan;
             }
             tested += 1;
+            if !bboxes[a].overlaps(&bboxes[b]) {
+                continue;
+            }
             if bboxes[a].contains(&bboxes[b]) {
-                pairs.push((b, a));
+                contained_pairs.push((b, a));
             } else if bboxes[b].contains(&bboxes[a]) {
-                pairs.push((a, b));
+                contained_pairs.push((a, b));
+            }
+            if !open[a] && !open[b] {
+                overlap_pairs.push((a, b));
+                overlap_pairs.push((b, a));
             }
         }
     }
-    if pairs.len() > MAX_INTERIOR_PAIRS {
-        pairs.truncate(MAX_INTERIOR_PAIRS);
+    if contained_pairs.len() > MAX_INTERIOR_PAIRS {
+        contained_pairs.truncate(MAX_INTERIOR_PAIRS);
+        out.estimated = true;
+    }
+    if overlap_pairs.len() > MAX_INTERIOR_PAIRS {
+        overlap_pairs.truncate(MAX_INTERIOR_PAIRS);
         out.estimated = true;
     }
 
     let mut bvh_cache: HashMap<usize, MeshBvh> = HashMap::new();
     let mut bvhs_built = 0usize;
+    let get_bvh =
+        |b: usize, cache: &mut HashMap<usize, MeshBvh>, built: &mut usize| -> Option<()> {
+            if cache.contains_key(&b) {
+                return Some(());
+            }
+            if *built >= MAX_INTERIOR_BVHS {
+                return None;
+            }
+            let sub: Vec<[usize; 3]> = faces_by_comp[b].iter().map(|&f| tris[f]).collect();
+            cache.insert(b, MeshBvh::from_arrays(verts, &sub));
+            *built += 1;
+            Some(())
+        };
+
     let mut points_used = 0usize;
     let mut decided = vec![false; ncomp];
-    let mut confirmed: Vec<usize> = Vec::new();
-    let mut unconfirmed: Vec<usize> = Vec::new();
+    let mut confirmed_flag = vec![false; nf];
+    let mut unconfirmed_flag = vec![false; nf];
     let mut did_gwn = false;
     let mut did_raystab = false;
     let stabber = Stabber::new(
@@ -241,7 +297,8 @@ pub fn interior_report(
         raycast::DEFAULT_ESCAPE_WEIGHT,
     );
 
-    for &(a, b) in &pairs {
+    // (a) Component-level embedded/cavity shells.
+    for &(a, b) in &contained_pairs {
         if decided[a] {
             continue;
         }
@@ -255,14 +312,9 @@ pub fn interior_report(
             out.estimated = true;
             break;
         }
-        if !bvh_cache.contains_key(&b) {
-            if bvhs_built >= MAX_INTERIOR_BVHS {
-                out.estimated = true;
-                break;
-            }
-            let sub: Vec<[usize; 3]> = faces_by_comp[b].iter().map(|&f| tris[f]).collect();
-            bvh_cache.insert(b, MeshBvh::from_arrays(verts, &sub));
-            bvhs_built += 1;
+        if get_bvh(b, &mut bvh_cache, &mut bvhs_built).is_none() {
+            out.estimated = true;
+            break;
         }
         points_used += samples.len();
         out.candidate_components += 1;
@@ -293,7 +345,7 @@ pub fn interior_report(
             if inside * 2 > samples.len() && unresolved * 2 <= samples.len() {
                 decided[a] = true;
                 for &f in &faces_by_comp[a] {
-                    unconfirmed.push(f);
+                    unconfirmed_flag[f] = true;
                 }
             }
             continue;
@@ -319,14 +371,94 @@ pub fn interior_report(
         // Every sample must be inside the enclosing component and all must
         // agree on the orientation.  Same orientation as the enclosing solid
         // = embedded material (interior); opposite = a cavity, not interior.
-        if inside == samples.len() && consistent && sign_sum.signum() == vol_sign {
+        if inside == samples.len() && consistent {
             decided[a] = true;
-            for &f in &faces_by_comp[a] {
-                confirmed.push(f);
+            if sign_sum.signum() == vol_sign {
+                for &f in &faces_by_comp[a] {
+                    confirmed_flag[f] = true;
+                }
             }
         }
     }
 
+    // (b) Face-level buried faces for interpenetrating closed bodies: only
+    // faces whose bbox lies in A∩B are worth a winding query, and the query
+    // runs against B's own BVH (B is closed).  Pairs and queried faces are
+    // capped and sampled deterministically; a capped run is `estimated`.
+    let mut face_queries = 0usize;
+    'pairs: for &(a, b) in &overlap_pairs {
+        if decided[a] {
+            continue;
+        }
+        if face_queries >= MAX_INTERIOR_FACE_QUERIES {
+            out.estimated = true;
+            break;
+        }
+        let lo = [
+            bboxes[a].lo[0].max(bboxes[b].lo[0]),
+            bboxes[a].lo[1].max(bboxes[b].lo[1]),
+            bboxes[a].lo[2].max(bboxes[b].lo[2]),
+        ];
+        let hi = [
+            bboxes[a].hi[0].min(bboxes[b].hi[0]),
+            bboxes[a].hi[1].min(bboxes[b].hi[1]),
+            bboxes[a].hi[2].min(bboxes[b].hi[2]),
+        ];
+        let mut cand: Vec<usize> = faces_by_comp[a]
+            .iter()
+            .copied()
+            .filter(|&f| {
+                let fb = &face_boxes[f];
+                fb.any
+                    && fb.lo[0] >= lo[0]
+                    && fb.lo[1] >= lo[1]
+                    && fb.lo[2] >= lo[2]
+                    && fb.hi[0] <= hi[0]
+                    && fb.hi[1] <= hi[1]
+                    && fb.hi[2] <= hi[2]
+            })
+            .collect();
+        if cand.is_empty() {
+            continue;
+        }
+        cand.sort_by(|&x, &y| face_geo_cmp(verts, tris[x], tris[y]));
+        if cand.len() > MAX_INTERIOR_FACES_PER_PAIR {
+            cand = even_sample(&cand, MAX_INTERIOR_FACES_PER_PAIR);
+            out.estimated = true;
+        }
+        let remaining = MAX_INTERIOR_FACE_QUERIES - face_queries;
+        if cand.len() > remaining {
+            cand = even_sample(&cand, remaining);
+            out.estimated = true;
+        }
+        if cand.is_empty() {
+            continue;
+        }
+        if get_bvh(b, &mut bvh_cache, &mut bvhs_built).is_none() {
+            out.estimated = true;
+            break;
+        }
+        did_gwn = true;
+        out.candidate_components += 1;
+        let bvh = &bvh_cache[&b];
+        let q = cand.len();
+        for f in cand {
+            let c = tri_centroid(verts, tris[f]);
+            let w = bvh.winding_at(c);
+            face_queries += 1;
+            if w.abs() > 0.5 {
+                confirmed_flag[f] = true;
+            }
+        }
+        out.candidates += q;
+        if face_queries >= MAX_INTERIOR_FACE_QUERIES {
+            out.estimated = true;
+            break 'pairs;
+        }
+    }
+
+    let confirmed: Vec<usize> = (0..nf).filter(|&f| confirmed_flag[f]).collect();
+    let unconfirmed: Vec<usize> = (0..nf).filter(|&f| unconfirmed_flag[f]).collect();
     out.faces = confirmed.len();
     out.low_confidence = unconfirmed.len();
     out.fold_faces = fold_face.iter().filter(|&&x| x).count();
@@ -378,14 +510,7 @@ pub fn interior_report(
         for (i, &f) in folds.iter().enumerate() {
             fold_index.insert(f, i);
         }
-        let mut keys: Vec<(usize, usize)> = edges.keys().copied().collect();
-        keys.sort_unstable();
-        for key in keys {
-            let uses = &edges[&key];
-            if uses.len() != 2 {
-                continue;
-            }
-            let (a, b) = (uses[0].0, uses[1].0);
+        for &(a, b) in &fold_edges {
             if fold_member.contains(&a) && fold_member.contains(&b) {
                 fold_ds.union(fold_index[&a], fold_index[&b]);
             }
@@ -531,6 +656,22 @@ mod tests {
         let r = interior_report(&v, &f, &edges, &comp, ncomp, &mut mask, &mut regions);
         assert!(r.fold_faces >= 2, "{r:?}");
         assert!(regions.iter().any(|g| g.kind == "fold_crease"));
+    }
+
+    #[test]
+    fn interpenetrating_peg_reports_buried_face() {
+        // A peg enters a closed cube from the side: it is not bbox-contained,
+        // so the face-level overlap path must find its buried end face.
+        let (mut v, mut f) = cube(0.0, 10.0);
+        let (vi, fi) = cube(0.0, 1.0);
+        let base = v.len();
+        for p in vi {
+            v.push([8.0 + 4.0 * p[0], 4.0 + 2.0 * p[1], 4.0 + 2.0 * p[2]]);
+        }
+        f.extend(fi.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+        let r = run(&v, &f, None);
+        assert!(r.faces >= 1, "{r:?}");
+        assert_eq!(r.method, "gwn");
     }
 
     #[test]
