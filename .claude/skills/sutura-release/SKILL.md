@@ -29,7 +29,7 @@ Claude, OpenCode workers and any other agent read this same file.
 - A default change must reach every entry point: CLI flag + env, GUI checkbox
   (with migration of legacy saved settings), Dolphin ServiceMenu, macOS Quick
   Action, OrcaSlicer plugin.
-- Grep the whole repo (sutura/, docs/, README.md, README.tr.md, CHANGELOG.md,
+- Grep the whole repo (sutura/, docs/ incl. docs/guide/, README.md, README.tr.md, CHANGELOG.md,
   GUI tooltips EN + TR, orcaslicer plugin, share/) for stale wording:
   "opt-in", "off by default", old pipeline order, old method count.
 - GUI labels and tooltips match current behaviour in BOTH languages.
@@ -50,8 +50,9 @@ Claude, OpenCode workers and any other agent read this same file.
 - Version bumped everywhere (sutura/repair.py VERSION, engine __init__,
   diagnosis, OrcaSlicer plugin).
 - CHANGELOG [x.y.z] with date, written in plain language for ordinary users.
-- README.md and README.tr.md in sync: feature status table, version history,
-  pipeline order.
+- User docs in sync, EN `docs/guide/` and TR `docs/guide/tr/`: feature-status,
+  version-history, how-it-works pipeline order; README landing pages
+  (`README.md`, `README.tr.md`): method count, highlights, install commands.
 - Screenshots regenerated (LANG=en_US.UTF-8, offscreen) and every PNG looked
   at: the defect must be visible in before/after, the options dialog shows
   the current defaults.

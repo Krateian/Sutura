@@ -71,10 +71,13 @@ Every step below is required unless marked optional.
   mesh, `thingi10k_100827` included.
 
 ## 7. Docs + versioning
-- `README.md` AND `README.tr.md`: the method table row (#, slug, display name,
-  family, what it does, invents geometry), the Feature Status percentage, and a
-  section if it is substantial; add a "Version history" line for a user-visible
-  feature. Keep the academic/neutral tone.
+- User docs (EN `docs/guide/` and TR `docs/guide/tr/`, kept in sync): the
+  method table row in `methods.md` (#, slug, display name, family, what it
+  does, invents geometry), the percentage in `feature-status.md`, a section in
+  `methods.md` / `how-it-works.md` if it is substantial, and a
+  `version-history.md` line for a user-visible feature. Update the method count
+  in the README landing pages (`README.md`, `README.tr.md`) when it changes.
+  Keep the academic/neutral tone.
 - `CHANGELOG.md` entry under the unreleased section. Do NOT bump the version or
   tag without explicit maintainer approval.
 

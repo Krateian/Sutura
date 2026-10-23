@@ -107,8 +107,9 @@ Single source of truth for Claude, OpenCode workers and other agents.
 ## Product rules
 - Improvements ship ON by default (opt-out); shape-deforming passes stay
   opt-in behind a warning.
-- Keep README.md and README.tr.md in sync with any user-visible change, in the
-  same work. Release notes and docs in plain language.
+- Keep the user docs in sync with any user-visible change, in the same work:
+  short landing pages `README.md` / `README.tr.md`, detail in `docs/guide/`
+  (EN) and `docs/guide/tr/` (TR), always updated as a pair. Release notes and docs in plain language.
 - Every feature: check the macOS side (install-macos.sh, conda) as well as
   Linux; say explicitly if something cannot work on macOS.
 - Clean-room only: no code from CGAL, VCG/MeshLab, MeshFix or Blender; papers

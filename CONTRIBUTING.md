@@ -88,14 +88,17 @@ compatible, open an issue and ask before contributing it.
   request. One logical change per PR.
 - **Standing rules.** CLI features must have a GUI counterpart and vice versa
   (see `docs/cli-gui-parity-notes.md`); a user-visible change must update the
-  README (EN and TR), the CHANGELOG and the "Version history" section when it
-  adds a feature; the pre-push secret-scan hook runs on every push.
+  user docs (EN `docs/guide/` and TR `docs/guide/tr/`, plus the README landing
+  pages when their content changes), the CHANGELOG and
+  `docs/guide/version-history.md` when it adds a feature; the pre-push secret-scan hook runs on every push.
 
 ## 4. Pull request checklist
 
 - Tests pass (including the suites relevant to the change).
-- User-visible behaviour changes update README.md, README.tr.md and, for
-  feature additions, the "Version history" section; CHANGELOG.md is updated.
+- User-visible behaviour changes update the user docs in both languages
+  (`docs/guide/`, `docs/guide/tr/`, and the README landing pages when needed)
+  and, for feature additions, `docs/guide/version-history.md`; CHANGELOG.md is
+  updated.
 - Commit identity is `Krateian <294938791+Krateian@users.noreply.github.com>`; commits are in
   English, one logical change each.
 - No secrets, no large corpus files (the benchmark corpus lives outside the
@@ -109,7 +112,8 @@ maintainer explicitly decides on a minor bump; changes accumulate in
 the maintainer's machine with the maintainer's own `gh` (a user token).
 
 1. Bump the version constant in `sutura/repair.py`, update `CHANGELOG.md`
-   (and the README "Version history" row when the release adds a feature), and
+   (and `docs/guide/version-history.md` plus its TR copy when the release adds a
+   feature), and
    push `main`.
 2. Publish the release (this creates the tag `vX.Y.Z` at `main` and publishes
    the release as the user):
