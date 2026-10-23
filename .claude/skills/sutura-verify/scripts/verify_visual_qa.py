@@ -1755,8 +1755,7 @@ def evaluate_mesh_quality(ref_path, cand_path, cameras=None, w=256, h=256):
 
 
 def _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
-                             v_cand, t_cand, n_cand, cameras, w=256, h=256,
-                             ref_cache=None):
+                             v_cand, t_cand, n_cand, cameras, w=256, h=256):
     """V1 comparison for already-loaded arrays (shared by the three-way API)."""
     center, scale, extent = compute_shared_frame([v_ref, v_cand], w=w, h=h, pad=16)
 
@@ -1764,16 +1763,9 @@ def _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
     view_renders = []
 
     for name, rot in cameras:
-        key = (id(v_ref), id(rot))
-        cached = ref_cache.get(key) if ref_cache is not None else None
         t0 = time.perf_counter()
-        if cached is not None:
-            norm_ref, depth_ref, sil_ref, def_mask_2d = cached
-        else:
-            norm_ref, depth_ref, sil_ref, def_mask_2d = render_view(
-                v_ref, t_ref, n_ref, rot, center, scale, w=w, h=h, defect_vidx=def_ref)
-            if ref_cache is not None:
-                ref_cache[key] = (norm_ref, depth_ref, sil_ref, def_mask_2d)
+        norm_ref, depth_ref, sil_ref, def_mask_2d = render_view(
+            v_ref, t_ref, n_ref, rot, center, scale, w=w, h=h, defect_vidx=def_ref)
         norm_cand, depth_cand, sil_cand, _ = render_view(
             v_cand, t_cand, n_cand, rot, center, scale, w=w, h=h)
         dt = time.perf_counter() - t0
@@ -1847,13 +1839,10 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
     else:
         v_base, t_base, n_base, _ = load_mesh(base_path)
     v_cand, t_cand, n_cand, _ = load_mesh(cand_path)
-    ref_cache = {}
     base_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
-                                            v_base, t_base, n_base, dodec, w, h,
-                                            ref_cache=ref_cache)
+                                            v_base, t_base, n_base, dodec, w, h)
     cand_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
-                                            v_cand, t_cand, n_cand, dodec, w, h,
-                                            ref_cache=ref_cache)
+                                            v_cand, t_cand, n_cand, dodec, w, h)
     timings = {"v1_dodeca_s": time.perf_counter() - t_stage}
 
     delta_vqa = cand_eval["vqa_score"] - base_eval["vqa_score"]
@@ -1932,13 +1921,10 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
     if out_sheet:
         t_stage = time.perf_counter()
         canonical = get_canonical_cameras()
-        can_cache = {}
         _, base_can_renders = _evaluate_quality_arrays(
-            v_ref, t_ref, n_ref, def_ref, v_base, t_base, n_base, canonical, w, h,
-            ref_cache=can_cache)
+            v_ref, t_ref, n_ref, def_ref, v_base, t_base, n_base, canonical, w, h)
         _, cand_can_renders = _evaluate_quality_arrays(
-            v_ref, t_ref, n_ref, def_ref, v_cand, t_cand, n_cand, canonical, w, h,
-            ref_cache=can_cache)
+            v_ref, t_ref, n_ref, def_ref, v_cand, t_cand, n_cand, canonical, w, h)
         timings["v1_canonical_s"] = time.perf_counter() - t_stage
 
         views_data = []
