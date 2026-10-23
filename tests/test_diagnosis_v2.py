@@ -103,6 +103,15 @@ def main():
     assert r["channels"]["loops"]["available"]
     assert r["channels"]["loops"]["count"] == 0
     assert r["self_intersections"]["total"] == 0
+    # A mesh below FAST_MAX_RAW_PAIRS takes main's fast path: no prefilter keys
+    # and main's method string, matching c137f54 exactly.
+    assert "filtered_pairs" not in r["self_intersections"]
+    assert "prefilter" not in r["self_intersections"]
+    assert r["channels"]["self_intersection"]["method"] == "broad_phase+exact"
+    rd = sutura_geom.diagnose(v, f, "deep")
+    assert "filtered_pairs" not in rd["self_intersections"]
+    assert "prefilter" not in rd["self_intersections"]
+    assert rd["channels"]["self_intersection"]["method"] == "broad_phase+exact+shared"
     assert r["loops"]["count"] == 0
     assert r["meta"]["phase"] == 3
     for ch in ("interior", "thin_wall", "noise"):
@@ -178,6 +187,32 @@ def main():
     assert thin_regions == 256, thin_regions
     assert rm["thin_wall"]["thin_faces"] > 256
     check_permutation(mv, mf, rm, 13, detail="deep")
+
+    # Main-path parity: 145065 has 782,768 raw candidates, below
+    # FAST_MAX_RAW_PAIRS, so fast mode takes main's path unchanged: no prefilter
+    # keys and the totals stay measured, exactly as in main c137f54.
+    from sutura_engine.pipeline.mesh_io import load_meshes
+    _, gv, gf = load_meshes(
+        os.path.join(HERE, "tests", "real-world-samples",
+                     "thingi10k_145065.stl"))[0]
+    rg = sutura_geom.diagnose(gv.astype(np.float64), gf)
+    assert "filtered_pairs" not in rg["self_intersections"]
+    assert "prefilter" not in rg["self_intersections"]
+    assert rg["self_intersections"]["estimated"] is False
+    assert rg["self_intersections"]["total"] is not None
+
+    # 100281 has 1,084,675 raw candidates (> FAST_MAX_RAW_PAIRS): the >1M branch
+    # prefilters, scans every survivor (well under FAST_MAX_FILTERED_PAIRS) and
+    # still reports an exact total.
+    _, kv, kf = load_meshes(
+        os.path.join(HERE, "tests", "real-world-samples",
+                     "thingi10k_100281.stl"))[0]
+    rk = sutura_geom.diagnose(kv.astype(np.float64), kf)
+    assert rk["self_intersections"]["prefilter"] == "coplanar_aware_plane"
+    assert (rk["self_intersections"]["filtered_pairs"]
+            == rk["self_intersections"]["scanned_pairs"])
+    assert rk["self_intersections"]["estimated"] is False
+    assert rk["self_intersections"]["total"] is not None
 
     vf, ff = cube()
     ff[0] = [0, 2, 1]

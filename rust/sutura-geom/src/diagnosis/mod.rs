@@ -1599,6 +1599,14 @@ pub fn report_to_pydict<'py>(
     si.set_item("available", r.self_intersections.available)?;
     si.set_item("reason", r.self_intersections.reason)?;
     si.set_item("candidate_pairs", r.self_intersections.candidate_pairs)?;
+    // Only the >1M fast path prefilters; elsewhere these keys are absent so the
+    // dict matches main c137f54.
+    if let Some(filtered_pairs) = r.self_intersections.filtered_pairs {
+        si.set_item("filtered_pairs", filtered_pairs)?;
+    }
+    if let Some(prefilter) = r.self_intersections.prefilter {
+        si.set_item("prefilter", prefilter)?;
+    }
     si.set_item("scanned_pairs", r.self_intersections.scanned_pairs)?;
     si.set_item("scanned_total", r.self_intersections.scanned_total)?;
     root.set_item("self_intersections", si)?;
