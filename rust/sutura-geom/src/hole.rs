@@ -564,6 +564,123 @@ pub struct CloseReport {
     pub new_faces: usize,
 }
 
+/// Boundary half-edge topology shared by the hole closer and diagnosis.
+///
+/// `loops` holds half-edge indices (`face * 3 + edge`) in boundary order.
+/// `incomplete` is set when a walk could not close (an edge with more than
+/// two uses, or a repeated half-edge), which the diagnosis loops channel
+/// reports as an estimate.
+pub(crate) struct BoundaryTopology {
+    pub twin: Vec<Option<usize>>,
+    pub edges: HashSet<(i64, i64)>,
+    pub loops: Vec<Vec<usize>>,
+    pub boundary_edges: usize,
+    pub incomplete: bool,
+}
+
+/// Walk the boundary half-edge loops of `tris_in`.
+///
+/// With `reject_non_manifold` the function fails on any edge used more than
+/// twice, which is the `close_holes_core` contract; diagnosis passes `false`
+/// so it can still describe the loops it finds and flag the result as
+/// incomplete.
+pub(crate) fn boundary_topology(
+    tris_in: &[[i64; 3]],
+    reject_non_manifold: bool,
+) -> Result<BoundaryTopology, String> {
+    let n_he = tris_in.len() * 3;
+    let mut edge_map: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (fi, t) in tris_in.iter().enumerate() {
+        for j in 0..3 {
+            edge_map
+                .entry(canon(t[j], t[(j + 1) % 3]))
+                .or_default()
+                .push(fi * 3 + j);
+        }
+    }
+    if reject_non_manifold {
+        for v in edge_map.values() {
+            if v.len() > 2 {
+                return Err("mesh has non-2-manifold edges".into());
+            }
+        }
+    }
+    let boundary_edges = edge_map.values().filter(|v| v.len() == 1).count();
+    let mut twin: Vec<Option<usize>> = vec![None; n_he];
+    for v in edge_map.values() {
+        if v.len() == 2 {
+            twin[v[0]] = Some(v[1]);
+            twin[v[1]] = Some(v[0]);
+        }
+    }
+    let edges: HashSet<(i64, i64)> = edge_map.keys().cloned().collect();
+
+    // Walk from a boundary half-edge to the next boundary half-edge of the
+    // same loop: step to the next edge of the face, cross its twin while the
+    // edge is interior, and repeat.
+    let next_border = |he: usize| -> Option<usize> {
+        let f = he / 3;
+        let j = he % 3;
+        let mut e = f * 3 + (j + 1) % 3;
+        let mut guard = 0usize;
+        loop {
+            match twin[e] {
+                None => return Some(e),
+                Some(tw) => {
+                    e = (tw / 3) * 3 + (tw % 3 + 1) % 3;
+                }
+            }
+            guard += 1;
+            if guard > n_he + 3 {
+                return None;
+            }
+        }
+    };
+
+    let mut visited = vec![false; n_he];
+    let mut loops: Vec<Vec<usize>> = Vec::new();
+    let mut incomplete = false;
+    for he in 0..n_he {
+        if twin[he].is_some() || visited[he] {
+            continue;
+        }
+        let start = he;
+        let mut cur = start;
+        let mut seq: Vec<usize> = Vec::new();
+        let mut ok = true;
+        loop {
+            visited[cur] = true;
+            seq.push(cur);
+            match next_border(cur) {
+                Some(nx) => cur = nx,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+            if cur == start {
+                break;
+            }
+            if visited[cur] {
+                ok = false;
+                break;
+            }
+        }
+        if ok && seq.len() >= 3 {
+            loops.push(seq);
+        } else if !ok {
+            incomplete = true;
+        }
+    }
+    Ok(BoundaryTopology {
+        twin,
+        edges,
+        loops,
+        boundary_edges,
+        incomplete,
+    })
+}
+
 /// Build the vertex -> incident-face incidence for the original faces.
 fn vertex_faces(nv: usize, tris: &[[i64; 3]]) -> Vec<Vec<u32>> {
     let mut out = vec![Vec::new(); nv];
@@ -860,7 +977,6 @@ pub fn close_holes_core(
     self_intersection: bool,
 ) -> Result<CloseReport, String> {
     let nv = verts.len();
-    let nf = tris_in.len();
     for t in tris_in {
         for &v in t {
             if v < 0 || v as usize >= nv {
@@ -868,84 +984,9 @@ pub fn close_holes_core(
             }
         }
     }
-    let n_he = nf * 3;
-    let mut edge_map: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
-    for (fi, t) in tris_in.iter().enumerate() {
-        for j in 0..3 {
-            edge_map
-                .entry(canon(t[j], t[(j + 1) % 3]))
-                .or_default()
-                .push(fi * 3 + j);
-        }
-    }
-    for v in edge_map.values() {
-        if v.len() > 2 {
-            return Err("mesh has non-2-manifold edges".into());
-        }
-    }
-    let mut twin: Vec<Option<usize>> = vec![None; n_he];
-    for v in edge_map.values() {
-        if v.len() == 2 {
-            twin[v[0]] = Some(v[1]);
-            twin[v[1]] = Some(v[0]);
-        }
-    }
-    let edges: HashSet<(i64, i64)> = edge_map.keys().cloned().collect();
-
-    // Walk from a boundary half-edge to the next boundary half-edge of the
-    // same loop: step to the next edge of the face, cross its twin while the
-    // edge is interior, and repeat.
-    let next_border = |he: usize| -> Option<usize> {
-        let f = he / 3;
-        let j = he % 3;
-        let mut e = f * 3 + (j + 1) % 3;
-        let mut guard = 0usize;
-        loop {
-            match twin[e] {
-                None => return Some(e),
-                Some(tw) => {
-                    e = (tw / 3) * 3 + (tw % 3 + 1) % 3;
-                }
-            }
-            guard += 1;
-            if guard > n_he + 3 {
-                return None;
-            }
-        }
-    };
-
-    let mut visited = vec![false; n_he];
-    let mut loops: Vec<Vec<usize>> = Vec::new();
-    for he in 0..n_he {
-        if twin[he].is_some() || visited[he] {
-            continue;
-        }
-        let start = he;
-        let mut cur = start;
-        let mut seq: Vec<usize> = Vec::new();
-        let mut ok = true;
-        loop {
-            visited[cur] = true;
-            seq.push(cur);
-            match next_border(cur) {
-                Some(nx) => cur = nx,
-                None => {
-                    ok = false;
-                    break;
-                }
-            }
-            if cur == start {
-                break;
-            }
-            if visited[cur] {
-                ok = false;
-                break;
-            }
-        }
-        if ok && seq.len() >= 3 {
-            loops.push(seq);
-        }
-    }
+    let axis = boundary_topology(tris_in, true)?;
+    let edges = axis.edges;
+    let loops = axis.loops;
 
     let vf = vertex_faces(nv, tris_in);
     let vnrm = vertex_normals(verts, tris_in, nv);

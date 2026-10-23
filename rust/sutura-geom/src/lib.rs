@@ -19,6 +19,7 @@ pub mod arrangement;
 pub mod cdt2d;
 pub mod cluster;
 pub mod decimate;
+pub mod diagnosis;
 pub mod dressing;
 pub mod dual_contour;
 pub mod flap;
@@ -294,7 +295,10 @@ fn parse_mesh(
             }
             let (a, b, c) = (a as usize, b as usize, c as usize);
             if a >= n || b >= n || c >= n {
-                return Err(PyValueError::new_err("triangle index out of range"));
+                return Err(PyValueError::new_err(format!(
+                    "triangle index out of range: [{}, {}, {}] with {} vertices",
+                    a, b, c, n
+                )));
             }
             rust_tris.push([a, b, c]);
         }
@@ -306,7 +310,10 @@ fn parse_mesh(
             }
             let (a, b, c) = (a as usize, b as usize, c as usize);
             if a >= n || b >= n || c >= n {
-                return Err(PyValueError::new_err("triangle index out of range"));
+                return Err(PyValueError::new_err(format!(
+                    "triangle index out of range: [{}, {}, {}] with {} vertices",
+                    a, b, c, n
+                )));
             }
             rust_tris.push([a, b, c]);
         }
@@ -1665,6 +1672,25 @@ fn splint_error<'py>(
     Ok((verts_np, tris_np, d))
 }
 
+/// Phase-1 diagnosis: topology channels, part analysis, masks and regions.
+#[pyfunction]
+#[pyo3(signature = (verts, tris, detail="fast", masks=true))]
+fn diagnose<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'_, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'_, i32, AllowTypeChange>,
+    detail: &str,
+    masks: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    if detail != "fast" && detail != "deep" {
+        return Err(PyValueError::new_err("detail must be 'fast' or 'deep'"));
+    }
+    let (v, t) = parse_mesh(&verts, &tris)?;
+    let start = std::time::Instant::now();
+    let report = diagnosis::diagnose_core(&v, &t, detail);
+    diagnosis::report_to_pydict(py, &report, detail, masks, start.elapsed().as_secs_f64())
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -1706,6 +1732,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(topology::remove_selected_faces, m)?)?;
     m.add_function(wrap_pyfunction!(topology::compute_normal_per_face, m)?)?;
     m.add_function(wrap_pyfunction!(topology::compute_normal_per_vertex, m)?)?;
+    m.add_function(wrap_pyfunction!(diagnose, m)?)?;
     m.add_function(wrap_pyfunction!(hole::close_holes, m)?)?;
     m.add_function(wrap_pyfunction!(cluster::cluster_decimate, m)?)?;
     m.add_function(wrap_pyfunction!(decimate::decimate_qem, m)?)?;
