@@ -25,13 +25,27 @@ This skill is how an agent that did NOT write the change checks the claim.
 - tolerance = `clamp(bbox_diag / 10000, 0.0125, 0.05)` mm (the Tamponade plug
   gate; keep the same formula so numbers are comparable across tiers).
 - visual QA: 12-camera spherical rig comparison via `verify_visual_qa.py` (default
-  on with `--quality`; opt out with `--no-visual`). Requires only `numpy` and
-  `PySide6` (zero external dependencies: no scipy, no Pillow). Separate flags for
+  on with `--quality`; opt out with `--no-visual`). Requires only `numpy`,
+  `PySide6` and (for the V2 channels) `sutura_geom` (zero external dependencies:
+  no scipy, no Pillow). Separate flags for
   `EXCESS_FOREGROUND` (debris/swelling), `MISSING_FOREGROUND` (capped holes/lost
   features), `VOXEL_STEPPING` and `SURFACE_DISTORTION`. Dual scoring for real
   broken models (unmasked full vs masked healthy-skin). Generates 512px zoomed
   detail renders for flagged/boundary cases. Fails as `VISUAL-WORSE` with an
   annotated contact sheet.
+- Visual QA **V2 channels** (additions; every V1 output is unchanged): four
+  PCA-axis views with tight per-view framing; 1024 px raster silhouette IoU;
+  X-ray ray-parity through `sutura_geom.raycast_points` (`MeshBvh::intersect_ray`)
+  on a deterministic 256x256 orthographic grid with an irrational sub-pixel
+  offset (odd crossings = leak/hole, extra layers = interior/overlap, ref vs
+  out); 16 deterministic Z-slices at heights nudged off every vertex z (area,
+  loop count, 2D Hausdorff); dihedral sharp-edge length ratio (>= 35 deg); and a
+  true 3D point-to-surface deviation heatmap via `sutura_geom.closest_points`,
+  with the top-3 over-tolerance clusters rendered as 512 px normal-aligned
+  wireframe zooms. All V2 flags are **relative** (candidate worse than the
+  reference; an identical pair gives zero flags); thresholds are provisional
+  until calibrated against the core oracle. The V2 sheet is
+  `<contact>_v2.png` and the cluster zooms are `<contact>_v2_clusters/`.
 - wall-clock runtime of each run.
 
 ## Rules
@@ -113,6 +127,13 @@ The visual QA comparison (baseline vs candidate vs input):
 <repair-venv>/bin/python .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
     BASELINE.stl CANDIDATE.stl [--input INPUT.stl] [--contact-sheet DIFF.png]
 ```
+V2 is on by default (`--no-v2` disables it; `--tolerance` overrides the
+`clamp(diag/10000, 0.0125, 0.05)` deviation tolerance). The default rasteriser
+is `sutura_geom.rasterize` (a Rust painter's-algorithm port with the same
+ascending mean-z order as the legacy QPainter path); set `SUTURA_VQA_QT=1` to
+force the legacy renderer for an exact old-score reproduction. The identical-pair
+invariant is covered by `tests/test_visual_qa_v2.py` (five corpus meshes, no V2
+flags and zero deltas when the reference and candidate are the same file).
 With no MESH it uses the public corpus `tests/real-world-samples/`; `--limit N`
 caps the count. The runner exits non-zero when any mesh is WORSE and writes
 `summary.json` + `report.md`. `--python` must be the repair venv interpreter (numpy + the mandatory
@@ -123,9 +144,11 @@ caps the count. The runner exits non-zero when any mesh is WORSE and writes
 - `sutura_geom` and PySide6 are optional for base shape checks: without them
   distance/leak/SI and rendering degrade to zeros/None rather than failing.
   Read the printed `si_output_note` / `render_error` to see which parts actually ran.
-  For visual QA (`verify_visual_qa.py`), only `numpy` and `PySide6` are needed;
-  if PySide6 is absent, explicit `--visual` exits with code 2, while `--quality`
-  prints a warning and continues without visual QA.
+  For visual QA (`verify_visual_qa.py`), `numpy` and `PySide6` are needed; the
+  V2 X-ray channel additionally needs `sutura_geom.raycast_points` (an older
+  extension reports `xray.ran=false` and skips only that channel). If PySide6 is
+  absent, explicit `--visual` exits with code 2, while `--quality` prints a
+  warning and continues without visual QA.
 - OrcaSlicer is found via `SUTURA_ORCA`, the macOS app bundle, or `PATH`; when
   absent the Orca columns are `?`/`unknown` and the verdict falls back to the
   components count.

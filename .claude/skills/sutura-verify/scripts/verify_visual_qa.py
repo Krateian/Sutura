@@ -17,8 +17,16 @@ Dual use-cases:
      with automated VISUAL-WORSE gating and contact sheet generation.
 
 Zero runtime dependency: dev-only tool under .claude/skills/sutura-verify/.
-Requires only numpy and PySide6 (no scipy, no Pillow).
+Requires numpy and PySide6 (no scipy, no Pillow); the V2 X-ray channel uses
+the mandatory `sutura_geom` extension (`raycast_points`) and degrades that
+channel only when an older extension lacks it.
 Never hardcodes private sample names or paths.
+
+V2 additions (all V1 scores, flags and images are unchanged): PCA views with
+tight framing, 1024 px silhouette IoU, X-ray ray parity/layers, deterministic
+Z-slices, dihedral sharp-edge ratio, true 3D surface deviation and top-3
+cluster zoom renders.  V2 flags are relative to the reference: an identical
+pair must produce no flags.
 """
 import argparse
 import json
@@ -30,12 +38,20 @@ import time
 
 import numpy as np
 
+try:
+    import sutura_geom
+    HAS_SUTURA_GEOM = True
+except ImportError:  # pragma: no cover - optional for the V2 metrics only
+    sutura_geom = None
+    HAS_SUTURA_GEOM = False
+
 # Ensure offscreen Qt platform before any QtGui import
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
     from PySide6.QtCore import QPoint, QRect, Qt
-    from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPolygon
+    from PySide6.QtGui import (QColor, QFont, QGuiApplication, QImage, QPainter,
+                               QPen, QPolygon)
     HAS_PYSIDE6 = True
 except ImportError:
     HAS_PYSIDE6 = False
@@ -237,48 +253,34 @@ def compute_shared_frame(verts_list, w=256, h=256, pad=16):
 
 
 # --------------------------------------------------------------------------- #
-# Headless CPU Rasterizer (QPainter Format_RGB32)
+# Headless CPU Rasterizer (Rust z-buffer, QPainter fallback)
 # --------------------------------------------------------------------------- #
-def render_view(verts, tris, normals, rot, center, scale, w=256, h=256, defect_vidx=None):
-    """Render normal map, depth map, silhouette and 2D defect mask."""
-    if not HAS_PYSIDE6:
-        raise RuntimeError("PySide6 is required for headless CPU rasterization")
+def _fast_raster():
+    if os.environ.get("SUTURA_VQA_QT", "0") not in ("0", "", "false", "False"):
+        return False
+    return HAS_SUTURA_GEOM and hasattr(sutura_geom, "rasterize")
 
-    if len(tris) == 0:
-        return (np.zeros((h, w, 3), dtype=np.uint8),
-                np.zeros((h, w), dtype=np.float32),
-                np.zeros((h, w), dtype=bool),
-                np.zeros((h, w), dtype=bool))
 
-    # Transform vertices to view space
-    v_cam = (verts - center) @ rot.T
-    px = w * 0.5 + v_cam[:, 0] * scale
-    py = h * 0.5 - v_cam[:, 1] * scale
-    z = v_cam[:, 2]
-
-    # Depth sort
-    z_face = z[tris].mean(axis=1)
-    order = np.argsort(z_face)
-
-    # Normals to view space
-    n_cam = normals @ rot.T
-    norm_colors = np.clip((n_cam * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
-
-    # Normalize depth
-    z_min = float(z_face.min())
-    z_max = float(z_face.max())
-    z_span = (z_max - z_min) if (z_max - z_min) > 1e-6 else 1.0
-    depth_vals = np.clip((z_face - z_min) / z_span * 255.0, 0, 255).astype(np.uint8)
-
+def _render_view_qt(px, py, tris, norm_colors, depth_vals, order, w, h,
+                    need_depth=True, wireframe=False):
+    """Legacy QPainter painter's-algorithm rasteriser (fallback / wireframe)."""
     img_norm = QImage(w, h, QImage.Format_RGB32)
     img_norm.fill(0)
     p_norm = QPainter(img_norm)
-    p_norm.setPen(Qt.NoPen)
+    if wireframe:
+        pen = QPen(QColor(255, 255, 255, 70))
+        pen.setWidthF(0.6)
+        p_norm.setPen(pen)
+    else:
+        p_norm.setPen(Qt.NoPen)
 
-    img_depth = QImage(w, h, QImage.Format_RGB32)
-    img_depth.fill(0)
-    p_depth = QPainter(img_depth)
-    p_depth.setPen(Qt.NoPen)
+    img_depth = None
+    p_depth = None
+    if need_depth:
+        img_depth = QImage(w, h, QImage.Format_RGB32)
+        img_depth.fill(0)
+        p_depth = QPainter(img_depth)
+        p_depth.setPen(Qt.NoPen)
 
     for idx in order:
         t = tris[idx]
@@ -291,20 +293,86 @@ def render_view(verts, tris, normals, rot, center, scale, w=256, h=256, defect_v
         p_norm.setBrush(QColor(int(nc[0]), int(nc[1]), int(nc[2])))
         p_norm.drawPolygon(poly)
 
-        dc = depth_vals[idx]
-        p_depth.setBrush(QColor(int(dc), int(dc), int(dc)))
-        p_depth.drawPolygon(poly)
+        if p_depth is not None:
+            dc = depth_vals[idx]
+            p_depth.setBrush(QColor(int(dc), int(dc), int(dc)))
+            p_depth.drawPolygon(poly)
 
     p_norm.end()
-    p_depth.end()
+    if p_depth is not None:
+        p_depth.end()
 
     raw_norm = np.frombuffer(img_norm.constBits(), dtype=np.uint8).reshape((h, w, 4))
     rgb_norm = raw_norm[:, :, [2, 1, 0]].copy()
 
-    raw_depth = np.frombuffer(img_depth.constBits(), dtype=np.uint8).reshape((h, w, 4))
-    val_depth = raw_depth[:, :, 0].copy().astype(np.float32) / 255.0
+    if img_depth is not None:
+        raw_depth = np.frombuffer(img_depth.constBits(), dtype=np.uint8).reshape((h, w, 4))
+        val_depth = raw_depth[:, :, 0].copy().astype(np.float32) / 255.0
+    else:
+        val_depth = np.zeros((h, w), dtype=np.float32)
 
     silhouette = (rgb_norm[:, :, 0] > 0) | (rgb_norm[:, :, 1] > 0) | (rgb_norm[:, :, 2] > 0)
+    return rgb_norm, val_depth, silhouette
+
+
+def render_view(verts, tris, normals, rot, center, scale, w=256, h=256, defect_vidx=None,
+                view_center=(0.0, 0.0), face_colors=None, need_depth=True,
+                wireframe=False):
+    """Render normal map, depth map, silhouette and 2D defect mask.
+
+    ``view_center`` shifts the projected view-space origin (used by the V2
+    tight per-view framing).  ``face_colors`` replaces the normal shading with
+    one RGB colour per face and skips the depth pass.  The defaults reproduce
+    the V1 output byte-for-byte.
+    """
+    if not HAS_PYSIDE6:
+        raise RuntimeError("PySide6 is required for headless CPU rasterization")
+
+    if len(tris) == 0:
+        return (np.zeros((h, w, 3), dtype=np.uint8),
+                np.zeros((h, w), dtype=np.float32),
+                np.zeros((h, w), dtype=bool),
+                np.zeros((h, w), dtype=bool))
+
+    # Transform vertices to view space
+    v_cam = (verts - center) @ rot.T
+    px = w * 0.5 + (v_cam[:, 0] - float(view_center[0])) * scale
+    py = h * 0.5 - (v_cam[:, 1] - float(view_center[1])) * scale
+    z = v_cam[:, 2]
+
+    # Depth sort
+    z_face = z[tris].mean(axis=1)
+    order = np.argsort(z_face)
+
+    # Normals to view space
+    n_cam = normals @ rot.T
+    norm_colors = np.clip((n_cam * 0.5 + 0.5) * 255.0, 0, 255).astype(np.uint8)
+    if face_colors is not None:
+        norm_colors = np.ascontiguousarray(face_colors, dtype=np.uint8)
+
+    # Normalize depth
+    z_min = float(z_face.min())
+    z_max = float(z_face.max())
+    z_span = (z_max - z_min) if (z_max - z_min) > 1e-6 else 1.0
+    depth_vals = np.clip((z_face - z_min) / z_span * 255.0, 0, 255).astype(np.uint8)
+
+    if _fast_raster() and not wireframe:
+        rgb, dep, sil = sutura_geom.rasterize(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int32),
+            np.asarray(rot, dtype=np.float64),
+            (float(center[0]), float(center[1]), float(center[2])),
+            (float(view_center[0]), float(view_center[1])),
+            float(scale), int(w), int(h),
+            colors=norm_colors, depth_colors=depth_vals,
+            silhouette_only=False, order=np.asarray(order, dtype=np.int32))
+        rgb_norm = np.asarray(rgb)
+        val_depth = np.asarray(dep, dtype=np.float32) / 255.0
+        silhouette = np.asarray(sil, dtype=bool)
+    else:
+        rgb_norm, val_depth, silhouette = _render_view_qt(
+            px, py, tris, norm_colors, depth_vals, order, w, h,
+            need_depth=need_depth and face_colors is None, wireframe=wireframe)
 
     # 2D Defect Mask Projection (for masking out open holes / boundaries on broken input)
     defect_mask_2d = np.zeros((h, w), dtype=bool)
@@ -323,14 +391,13 @@ def render_view(verts, tris, normals, rot, center, scale, w=256, h=256, defect_v
 # --------------------------------------------------------------------------- #
 # Image Metrics: Asymmetric Silhouette, Normal SSIM, Angular Error, Depth MAE
 # --------------------------------------------------------------------------- #
-def compute_ssim(im1, im2, mask=None):
-    """Compute channel-wise SSIM with Gaussian filtering."""
+def _ssim_maps(im1, im2):
+    """Per-channel SSIM maps (shared by the full and healthy-mask scores)."""
     im1 = im1.astype(np.float64)
     im2 = im2.astype(np.float64)
     C1 = (0.01 * 255.0) ** 2
     C2 = (0.03 * 255.0) ** 2
-
-    ssim_channels = []
+    maps = []
     for ch in range(im1.shape[2]):
         c1 = im1[:, :, ch]
         c2 = im2[:, :, ch]
@@ -339,16 +406,25 @@ def compute_ssim(im1, im2, mask=None):
         sigma1_sq = np_gaussian_filter2d(c1 * c1, 1.5) - (mu1 * mu1)
         sigma2_sq = np_gaussian_filter2d(c2 * c2, 1.5) - (mu2 * mu2)
         sigma12 = np_gaussian_filter2d(c1 * c2, 1.5) - (mu1 * mu2)
-
         num = (2.0 * mu1 * mu2 + C1) * (2.0 * sigma12 + C2)
         den = (mu1 * mu1 + mu2 * mu2 + C1) * (sigma1_sq + sigma2_sq + C2)
-        ssim_map = num / den
+        maps.append(num / den)
+    return maps
 
+
+def _ssim_from_maps(maps, mask=None):
+    vals = []
+    for m in maps:
         if mask is not None and mask.sum() > 0:
-            ssim_channels.append(float(ssim_map[mask].mean()))
+            vals.append(float(m[mask].mean()))
         else:
-            ssim_channels.append(float(ssim_map.mean()))
-    return float(np.mean(ssim_channels))
+            vals.append(float(m.mean()))
+    return float(np.mean(vals))
+
+
+def compute_ssim(im1, im2, mask=None):
+    """Compute channel-wise SSIM with Gaussian filtering."""
+    return _ssim_from_maps(_ssim_maps(im1, im2), mask)
 
 
 def compare_views(norm_ref, depth_ref, sil_ref, norm_cand, depth_cand, sil_cand, defect_mask_ref=None):
@@ -386,7 +462,8 @@ def compare_views(norm_ref, depth_ref, sil_ref, norm_cand, depth_cand, sil_cand,
         dot = np.clip(np.sum(n_ref * n_cand, axis=2), -1.0, 1.0)
         angle_deg = np.arccos(dot) * (180.0 / np.pi)
         mean_angle_err = float(angle_deg[inter_mask].mean())
-        ssim = compute_ssim(norm_ref, norm_cand, mask=inter_mask)
+        ssim_maps = _ssim_maps(norm_ref, norm_cand)
+        ssim = _ssim_from_maps(ssim_maps, inter_mask)
         depth_mae = float(np.abs(depth_ref[inter_mask] - depth_cand[inter_mask]).mean())
     else:
         mean_angle_err = 180.0
@@ -400,9 +477,8 @@ def compare_views(norm_ref, depth_ref, sil_ref, norm_cand, depth_cand, sil_cand,
     if defect_mask_ref is not None and defect_mask_ref.sum() > 0:
         healthy_inter = inter_mask & (~defect_mask_ref)
         if healthy_inter.sum() > 0:
-            ssim_h = compute_ssim(norm_ref, norm_cand, mask=healthy_inter)
-            dot_h = np.clip(np.sum(n_ref * n_cand, axis=2), -1.0, 1.0)
-            ang_h = float((np.arccos(dot_h) * (180.0 / np.pi))[healthy_inter].mean())
+            ssim_h = _ssim_from_maps(ssim_maps, healthy_inter)
+            ang_h = float(angle_deg[healthy_inter].mean())
             depth_h = float(np.abs(depth_ref[healthy_inter] - depth_cand[healthy_inter]).mean())
             d_term_h = max(0.0, min(1.0, 1.0 - 5.0 * depth_h))
 
@@ -486,19 +562,29 @@ def find_most_changed_region(v_ref, v_cand, custom_center=None):
     sample_cand = np.asarray(v_cand[::stride], dtype=np.float64)
     v_ref_arr = np.asarray(v_ref, dtype=np.float64)
 
-    # Exact nearest neighbor distance against full reference in chunks (no ref subsampling)
-    cand_sq = np.sum(sample_cand ** 2, axis=1)
-    min_sq = np.full(len(sample_cand), np.inf, dtype=np.float64)
-    chunk_size = 8000
-
-    for i in range(0, len(v_ref_arr), chunk_size):
-        chunk = v_ref_arr[i:i + chunk_size]
-        ref_sq = np.sum(chunk ** 2, axis=1)
-        dot = sample_cand @ chunk.T
-        d_sq = cand_sq[:, None] - 2.0 * dot + ref_sq[None, :]
-        min_sq = np.minimum(min_sq, np.min(d_sq, axis=1))
-
-    dists = np.sqrt(np.maximum(min_sq, 0.0))
+    # Exact nearest-vertex distance against the full reference.  The KdTree
+    # path is the same metric (nearest reference vertex), not a surface query,
+    # so the V1 zoom centre/radius are unchanged; it replaces the O(N*M) chunk
+    # scan that dominated the detail pass on 90k-face meshes.
+    dists = None
+    if HAS_SUTURA_GEOM and hasattr(sutura_geom, "KdTree"):
+        try:
+            tree = sutura_geom.KdTree(v_ref_arr)
+            d, _ = tree.query(sample_cand, k=1)
+            dists = np.asarray(d, dtype=np.float64)
+        except Exception:  # noqa: BLE001
+            dists = None
+    if dists is None:
+        cand_sq = np.sum(sample_cand ** 2, axis=1)
+        min_sq = np.full(len(sample_cand), np.inf, dtype=np.float64)
+        chunk_size = 8000
+        for i in range(0, len(v_ref_arr), chunk_size):
+            chunk = v_ref_arr[i:i + chunk_size]
+            ref_sq = np.sum(chunk ** 2, axis=1)
+            dot = sample_cand @ chunk.T
+            d_sq = cand_sq[:, None] - 2.0 * dot + ref_sq[None, :]
+            min_sq = np.minimum(min_sq, np.min(d_sq, axis=1))
+        dists = np.sqrt(np.maximum(min_sq, 0.0))
     worst_idx = np.argmax(dists)
     max_dev = float(dists[worst_idx])
     worst_pt = sample_cand[worst_idx]
@@ -525,6 +611,1039 @@ def render_zoomed_detail(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
     diff = create_diff_map(norm_ref, sil_ref, norm_cand, sil_cand)
 
     return norm_ref, norm_cand, diff
+
+
+# --------------------------------------------------------------------------- #
+# V2: PCA views, 1024 px silhouettes, X-ray parity, slices, sharp edges,
+# 3D surface deviation and top-3 cluster zooms.
+#
+# These metrics are ADDITIONS: every V1 score, flag and image is unchanged.
+# The thresholds are provisional until calibrated against the core oracle.
+# --------------------------------------------------------------------------- #
+V2_SILHOUETTE_RES = 1024
+V2_RAY_GRID = 256
+V2_SLICE_COUNT = 16
+V2_SHARP_ANGLE_DEG = 35.0
+V2_CLUSTER_TOP = 3
+V2_CLUSTER_RES = 512
+# frac(sqrt(2) - 1), frac(sqrt(3) - 1): a deterministic irrational sub-pixel
+# offset, so the ray grid never lands on a mesh vertex or edge by construction.
+V2_RAY_OFFSET = (0.41421356237309515, 0.7320508075688772)
+
+V2_THRESHOLDS = {
+    "silhouette_iou": 0.985,
+    "xray_leak_px": 0,
+    "xray_layer_delta": 0.05,
+    "slice_area_rel": 0.02,
+    "slice_loop_delta": 0,
+    "sharp_edge_ratio": 0.90,
+    "deviation_max_tol_factor": 1.5,
+}
+
+
+def compute_pca_axes(verts):
+    """Return (eigenvalues descending, eigenvectors as columns)."""
+    v = np.asarray(verts, dtype=np.float64)
+    if len(v) < 3:
+        return np.ones(3), np.eye(3)
+    c = v.mean(axis=0)
+    d = v - c
+    cov = (d.T @ d) / float(len(d))
+    vals, vecs = np.linalg.eigh(cov)
+    order = np.argsort(vals)[::-1]
+    vals = vals[order]
+    vecs = vecs[:, order]
+    for i in range(3):
+        j = int(np.argmax(np.abs(vecs[:, i])))
+        if vecs[j, i] < 0.0:
+            vecs[:, i] = -vecs[:, i]
+    return vals, vecs
+
+
+def _view_rot(forward, up_ref):
+    """Right-handed view basis with rows (right, up, forward)."""
+    f = np.asarray(forward, dtype=np.float64)
+    n = np.linalg.norm(f)
+    if n < 1e-12:
+        f = np.array([0.0, 0.0, 1.0])
+    else:
+        f = f / n
+    up = np.asarray(up_ref, dtype=np.float64)
+    up = up - np.dot(up, f) * f
+    if np.linalg.norm(up) < 1e-8:
+        alt = np.array([1.0, 0.0, 0.0])
+        if abs(np.dot(alt, f)) > 0.9:
+            alt = np.array([0.0, 1.0, 0.0])
+        up = alt - np.dot(alt, f) * f
+    up = up / np.linalg.norm(up)
+    right = np.cross(up, f)
+    right = right / np.linalg.norm(right)
+    up = np.cross(f, right)
+    return np.stack([right, up, f], axis=0)
+
+
+def get_pca_cameras(evecs):
+    """Four deterministic principal-axis views (broadside/profile/section/iso)."""
+    emax = evecs[:, 0]
+    emid = evecs[:, 1]
+    emin = evecs[:, 2]
+    return [
+        ("PCA Broadside", _view_rot(emin, emax)),
+        ("PCA Profile", _view_rot(emid, emax)),
+        ("PCA Cross-Section", _view_rot(emax, emid)),
+        ("PCA Isometric", _view_rot(emin + emid + emax, emax)),
+    ]
+
+
+def tight_view_frame(verts_list, rot, center, w, h, pad=16):
+    """Equal-scale frame from the combined projected bounding box."""
+    all_v = np.concatenate([np.asarray(v, dtype=np.float64) for v in verts_list], axis=0)
+    p = (all_v - center) @ rot.T
+    u0, u1 = float(p[:, 0].min()), float(p[:, 0].max())
+    v0, v1 = float(p[:, 1].min()), float(p[:, 1].max())
+    cu = (u0 + u1) * 0.5
+    cv = (v0 + v1) * 0.5
+    extent = max(u1 - u0, v1 - v0)
+    scale = (min(w, h) - 2 * pad) / extent if extent > 1e-9 else 1.0
+    return cu, cv, scale, extent
+
+
+def raster_silhouette(verts, tris, rot, center, view_center, scale, w, h):
+    """Rasterise the projected triangles into a boolean silhouette."""
+    out = np.zeros((h, w), dtype=bool)
+    if len(tris) == 0:
+        return out
+    if _fast_raster():
+        _, _, sil = sutura_geom.rasterize(
+            np.asarray(verts, dtype=np.float64),
+            np.asarray(tris, dtype=np.int32),
+            np.asarray(rot, dtype=np.float64),
+            (float(center[0]), float(center[1]), float(center[2])),
+            (float(view_center[0]), float(view_center[1])),
+            float(scale), int(w), int(h), silhouette_only=True)
+        return np.asarray(sil, dtype=bool)
+    v_cam = (np.asarray(verts, dtype=np.float64) - center) @ rot.T
+    px = np.rint(w * 0.5 + (v_cam[:, 0] - float(view_center[0])) * scale).astype(np.int64)
+    py = np.rint(h * 0.5 - (v_cam[:, 1] - float(view_center[1])) * scale).astype(np.int64)
+    img = QImage(w, h, QImage.Format_RGB32)
+    img.fill(0)
+    p = QPainter(img)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(255, 255, 255))
+    for t in tris:
+        p.drawPolygon(QPolygon([
+            QPoint(int(px[t[0]]), int(py[t[0]])),
+            QPoint(int(px[t[1]]), int(py[t[1]])),
+            QPoint(int(px[t[2]]), int(py[t[2]])),
+        ]))
+    p.end()
+    raw = np.frombuffer(img.constBits(), dtype=np.uint8).reshape((h, w, 4))
+    out = raw[:, :, 0] > 0
+    return out
+
+
+def silhouette_iou_v2(v_ref, t_ref, v_cand, t_cand, rot, center):
+    cu, cv, scale, _ = tight_view_frame([v_ref, v_cand], rot, center,
+                                        V2_SILHOUETTE_RES, V2_SILHOUETTE_RES, pad=24)
+    s_ref = raster_silhouette(v_ref, t_ref, rot, center, (cu, cv), scale,
+                              V2_SILHOUETTE_RES, V2_SILHOUETTE_RES)
+    s_cand = raster_silhouette(v_cand, t_cand, rot, center, (cu, cv), scale,
+                               V2_SILHOUETTE_RES, V2_SILHOUETTE_RES)
+    inter = int(np.count_nonzero(s_ref & s_cand))
+    union = int(np.count_nonzero(s_ref | s_cand))
+    iou = float(inter) / float(union) if union else 1.0
+    return {
+        "iou": iou,
+        "ref_px": int(np.count_nonzero(s_ref)),
+        "cand_px": int(np.count_nonzero(s_cand)),
+        "missing_px": int(np.count_nonzero(s_ref & (~s_cand))),
+        "excess_px": int(np.count_nonzero((~s_ref) & s_cand)),
+    }
+
+
+def _ray_grid_for_view(verts_list, rot, center, n=V2_RAY_GRID):
+    """Fixed orthographic ray grid covering the combined tight frame."""
+    all_v = np.concatenate([np.asarray(v, dtype=np.float64) for v in verts_list], axis=0)
+    p = (all_v - center) @ rot.T
+    x0, x1 = float(p[:, 0].min()), float(p[:, 0].max())
+    y0, y1 = float(p[:, 1].min()), float(p[:, 1].max())
+    z0, z1 = float(p[:, 2].min()), float(p[:, 2].max())
+    extent = max(x1 - x0, y1 - y0)
+    if extent <= 1e-9:
+        return None
+    step = extent / float(n - 1)
+    cx = (x0 + x1) * 0.5
+    cy = (y0 + y1) * 0.5
+    half = (n - 1) * 0.5
+    xs = cx + (np.arange(n, dtype=np.float64) - half + (V2_RAY_OFFSET[0] - 0.5)) * step
+    ys = cy + (np.arange(n, dtype=np.float64) - half + (V2_RAY_OFFSET[1] - 0.5)) * step
+    gx, gy = np.meshgrid(xs, ys)
+    back = (z1 - z0) + 2.0 * max(0.01 * extent, step)
+    origins = (center
+               + gx.reshape(-1, 1) * rot[0]
+               + gy.reshape(-1, 1) * rot[1]
+               + (z1 + back) * rot[2])
+    dirs = np.tile(-rot[2], (origins.shape[0], 1))
+    t_max = back + (z1 - z0) + step
+    return origins, dirs, t_max, (n, n), max(1e-12, (z1 - z0) * 1e-9)
+
+
+def _xray_stats(crossings, suspect, shape):
+    crossings = np.asarray(crossings, dtype=np.int64).reshape(shape)
+    suspect = np.asarray(suspect, dtype=bool).reshape(shape)
+    return {
+        "crossings": crossings,
+        "layers": crossings // 2,
+        "leak": (crossings % 2) == 1,
+        "covered": crossings > 0,
+        "suspect_px": int(np.count_nonzero(suspect)),
+    }
+
+
+def _raycast_many(verts, tris, grids):
+    """One BVH build for all PCA-view ray grids of a mesh."""
+    if not HAS_SUTURA_GEOM or not hasattr(sutura_geom, "raycast_points"):
+        raise RuntimeError("sutura_geom.raycast_points is required for X-ray parity")
+    origins = np.concatenate([g[0] for g in grids], axis=0)
+    dirs = np.concatenate([g[1] for g in grids], axis=0)
+    t_max = max(g[2] for g in grids)
+    merge_eps = max(g[4] for g in grids)
+    _, crossings, _, suspect = sutura_geom.raycast_points(
+        np.asarray(verts, dtype=np.float64),
+        np.asarray(tris, dtype=np.int32),
+        origins, dirs, max_t=t_max, merge_eps=merge_eps)
+    out = []
+    pos = 0
+    for g in grids:
+        n = int(np.prod(g[3]))
+        out.append(_xray_stats(crossings[pos:pos + n], suspect[pos:pos + n], g[3]))
+        pos += n
+    return out
+
+
+def _xray_counts(verts, tris, grid):
+    return _raycast_many(verts, tris, [grid])[0]
+
+
+def _xray_image(ref_counts, cand_counts=None):
+    h, w = ref_counts["crossings"].shape
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:] = (18, 20, 24)
+    if cand_counts is None:
+        cov = ref_counts["covered"]
+        img[cov] = (112, 118, 128)
+        img[ref_counts["leak"]] = (178, 90, 235)
+        return img
+    cov = ref_counts["covered"] | cand_counts["covered"]
+    img[cov] = (88, 94, 104)
+    extra = cand_counts["layers"] > ref_counts["layers"]
+    missing = cand_counts["layers"] < ref_counts["layers"]
+    img[missing & cov] = (60, 190, 230)
+    img[extra & cov] = (255, 140, 60)
+    img[cand_counts["leak"]] = (178, 90, 235)
+    return img
+
+
+def _xray_compare_stats(ref, cand):
+    union = ref["covered"] | cand["covered"]
+    denom = max(1, int(np.count_nonzero(union)))
+    layer_diff = np.abs(cand["layers"] - ref["layers"]).astype(np.float64)
+    return {
+        "leak_ref_px": int(np.count_nonzero(ref["leak"])),
+        "leak_cand_px": int(np.count_nonzero(cand["leak"])),
+        "extra_layer_px": int(np.count_nonzero((cand["layers"] > ref["layers"]) & union)),
+        "missing_layer_px": int(np.count_nonzero((cand["layers"] < ref["layers"]) & union)),
+        "mean_abs_layer_delta": float(layer_diff[union].mean()) if denom else 0.0,
+        "covered_px": denom,
+        "suspect_ref_px": ref["suspect_px"],
+        "suspect_cand_px": cand["suspect_px"],
+        "image_ref": _xray_image(ref),
+        "image_delta": _xray_image(ref, cand),
+    }
+
+
+def xray_compare(v_ref, t_ref, v_cand, t_cand, rot, center):
+    """Ray-parity / layer comparison for one PCA view."""
+    grid = _ray_grid_for_view([v_ref, v_cand], rot, center)
+    if grid is None:
+        return None
+    return _xray_compare_stats(_xray_counts(v_ref, t_ref, grid),
+                               _xray_counts(v_cand, t_cand, grid))
+
+
+def _slice_segments(verts, tris, z):
+    """Oriented plane/triangle intersection segments at z.
+
+    Segments are directed so a closed outer loop is counter-clockwise
+    (outer boundary positive, holes negative) when the face winding is
+    consistent; no shoelace orientation guessing or nesting test is needed.
+    """
+    if len(tris) == 0:
+        return np.zeros((0, 2, 2), dtype=np.float64)
+    tri_v = np.asarray(verts, dtype=np.float64)[tris]
+    zt = tri_v[:, :, 2]
+    zmin = zt.min(axis=1)
+    zmax = zt.max(axis=1)
+    sel = (zmin < z) & (zmax > z)
+    if not np.any(sel):
+        return np.zeros((0, 2, 2), dtype=np.float64)
+    tri_v = tri_v[sel]
+    zt = zt[sel]
+    tri_idx = []
+    pts = []
+    for i, j in ((0, 1), (1, 2), (2, 0)):
+        m = (zt[:, i] - z) * (zt[:, j] - z) < 0.0
+        if not np.any(m):
+            continue
+        tt = (z - zt[m, i]) / (zt[m, j] - zt[m, i])
+        p = tri_v[m, i, :2] + tt[:, None] * (tri_v[m, j, :2] - tri_v[m, i, :2])
+        tri_idx.append(np.nonzero(m)[0])
+        pts.append(p)
+    if not tri_idx:
+        return np.zeros((0, 2, 2), dtype=np.float64)
+    idx = np.concatenate(tri_idx)
+    pp = np.concatenate(pts, axis=0)
+    order = np.argsort(idx, kind="stable")
+    idx = idx[order]
+    pp = pp[order]
+    counts = np.bincount(idx)
+    if not np.all(counts == 2):
+        segs = []
+        start = 0
+        for c in counts:
+            if c == 2:
+                segs.append(pp[start:start + 2])
+            start += c
+        seg = np.asarray(segs, dtype=np.float64) if segs else np.zeros((0, 2, 2))
+    else:
+        seg = pp.reshape(-1, 2, 2)
+    if len(seg) == 0:
+        return seg
+    tri_sel = tri_v[idx[::2]]
+    n = np.cross(tri_sel[:, 1] - tri_sel[:, 0], tri_sel[:, 2] - tri_sel[:, 0])
+    d = np.stack([-n[:, 1], n[:, 0]], axis=1)
+    dot = np.sum((seg[:, 1] - seg[:, 0]) * d, axis=1)
+    flip = dot < 0.0
+    if np.any(flip):
+        seg[flip] = seg[flip][:, ::-1]
+    return seg
+
+
+def _chain_loops(segments, tol):
+    """Chain undirected 2D segments into closed loops / open chains."""
+    if len(segments) == 0:
+        return [], 0
+    pts = np.concatenate([segments[:, 0], segments[:, 1]], axis=0)
+    keys = np.rint(pts / tol).astype(np.int64)
+    uniq, inv = np.unique(keys, axis=0, return_inverse=True)
+    ids = inv.reshape(2, -1).T
+    id_pt = np.zeros((len(uniq), 2), dtype=np.float64)
+    nseg = len(segments)
+    for i in range(nseg):
+        id_pt[ids[i, 0]] = pts[i]
+        id_pt[ids[i, 1]] = pts[i + nseg]
+    adj = [[] for _ in range(len(uniq))]
+    for si, (a, b) in enumerate(ids):
+        adj[int(a)].append(si)
+        adj[int(b)].append(si)
+    visited = set()
+    loops = []
+    open_chains = 0
+    for si in range(nseg):
+        if si in visited:
+            continue
+        a = int(ids[si, 0])
+        b = int(ids[si, 1])
+        visited.add(si)
+        poly = [id_pt[a], id_pt[b]]
+        start = a
+        cur = b
+        closed = False
+        while cur != start:
+            nxts = [sj for sj in adj[cur] if sj not in visited]
+            if not nxts:
+                break
+            sj = min(nxts)
+            visited.add(sj)
+            cur = int(ids[sj, 0]) if int(ids[sj, 1]) == cur else int(ids[sj, 1])
+            poly.append(id_pt[cur])
+        if cur == start and len(poly) >= 4:
+            loops.append(np.asarray(poly[:-1], dtype=np.float64))
+            closed = True
+        if not closed:
+            open_chains += 1
+    return loops, open_chains
+
+
+def _polygon_area(poly):
+    x = poly[:, 0]
+    y = poly[:, 1]
+    return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _interior_point(poly):
+    """A point just inside a simple polygon, independent of its orientation."""
+    n = len(poly)
+    if n < 3:
+        return poly.mean(axis=0)
+    e = np.roll(poly, -1, axis=0) - poly
+    length2 = np.sum(e * e, axis=1)
+    i = int(np.argmax(length2))
+    if length2[i] <= 1e-30:
+        return poly.mean(axis=0)
+    mid = (poly[i] + poly[(i + 1) % n]) * 0.5
+    d = e[i] / np.sqrt(length2[i])
+    nrm = np.array([-d[1], d[0]])
+    span = max(float(np.ptp(poly[:, 0])), float(np.ptp(poly[:, 1])))
+    eps = max(span * 1e-6, 1e-9)
+    for sign in (1.0, -1.0):
+        q = mid + sign * nrm * eps
+        if _point_in_polygon(q[None, :], poly)[0]:
+            return q
+    return poly.mean(axis=0)
+
+
+def _slice_area(loops):
+    """Net closed-loop area with a depth (outer minus hole) nesting test.
+
+    A bounding-box prefilter keeps the containment step near-linear on slices
+    with hundreds of disjoint loops (noise/debris); only loops whose bbox
+    contains the probe point are tested.
+    """
+    if not loops:
+        return 0.0
+    areas = np.array([_polygon_area(p) for p in loops], dtype=np.float64)
+    pts = np.array([_interior_point(p) for p in loops], dtype=np.float64)
+    bbox = np.array([[p[:, 0].min(), p[:, 1].min(),
+                      p[:, 0].max(), p[:, 1].max()] for p in loops],
+                    dtype=np.float64)
+    total = 0.0
+    for i in range(len(loops)):
+        qx, qy = pts[i]
+        cand = np.nonzero((qx >= bbox[:, 0]) & (qx <= bbox[:, 2])
+                          & (qy >= bbox[:, 1]) & (qy <= bbox[:, 3]))[0]
+        depth = 0
+        for j in cand:
+            if j != i and _point_in_polygon(pts[i:i + 1], loops[j])[0]:
+                depth += 1
+        total += areas[i] if depth % 2 == 0 else -areas[i]
+    return abs(float(total))
+
+
+def _point_in_polygon(points, poly):
+    x = points[:, 0]
+    y = points[:, 1]
+    xp = poly[:, 0]
+    yp = poly[:, 1]
+    inside = np.zeros(len(points), dtype=bool)
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        cond = ((yp[i] > y) != (yp[j] > y))
+        denom = yp[j] - yp[i]
+        if abs(denom) < 1e-300:
+            denom = 1e-300
+        xi = (xp[j] - xp[i]) * (y - yp[i]) / denom + xp[i]
+        inside ^= cond & (x < xi)
+        j = i
+    return inside
+
+
+def _point_segment_distance(points, segments):
+    if len(points) == 0 or len(segments) == 0:
+        return np.zeros(len(points), dtype=np.float64)
+    a = segments[None, :, 0, :]
+    b = segments[None, :, 1, :]
+    ab = b - a
+    den = np.sum(ab * ab, axis=-1)
+    den[den < 1e-30] = 1e-30
+    out = np.empty(len(points), dtype=np.float64)
+    chunk = 128
+    for s in range(0, len(points), chunk):
+        p = points[s:s + chunk, None, :]
+        ap = p - a
+        t = np.clip(np.sum(ap * ab, axis=-1) / den, 0.0, 1.0)
+        proj = a + t[..., None] * ab
+        d = np.linalg.norm(p - proj, axis=-1).min(axis=1)
+        out[s:s + chunk] = d
+    return out
+
+
+def _sample_segments(segments, per=4):
+    """Sample each segment at ``per + 1`` equally spaced points (2D)."""
+    t = np.linspace(0.0, 1.0, per + 1, dtype=np.float64)[None, :, None]
+    pts = segments[:, None, 0, :] * (1.0 - t) + segments[:, None, 1, :] * t
+    return pts.reshape(-1, 2)
+
+
+def _segments_hausdorff(seg_a, seg_b):
+    """Approximate 2D segment-set Hausdorff distance.
+
+    Exact point-to-segment distance is O(S^2) and dominated the slice pass on
+    dense scans.  The tree version samples every segment (4 sub-segments) and
+    queries a `sutura_geom.KdTree` in both directions, which is O(S log S); the
+    sampling error is below a quarter of one segment length.
+    """
+    if len(seg_a) == 0 or len(seg_b) == 0:
+        return None
+    if HAS_SUTURA_GEOM and hasattr(sutura_geom, "KdTree"):
+        qa = _sample_segments(seg_a)
+        qb = _sample_segments(seg_b)
+        # The mandatory tree is 3D; slices live in z = 0.
+        pa = np.column_stack([qa, np.zeros(len(qa))])
+        pb = np.column_stack([qb, np.zeros(len(qb))])
+        tree_b = sutura_geom.KdTree(pb)
+        da = np.asarray(tree_b.query(pa, k=1)[0], dtype=np.float64).max()
+        tree_a = sutura_geom.KdTree(pa)
+        db = np.asarray(tree_a.query(pb, k=1)[0], dtype=np.float64).max()
+        return float(max(da, db))
+    # Dependency-free fallback: cap the query count so a dense slice cannot go
+    # quadratic without bound.
+    qa = np.concatenate([seg_a[:, 0], seg_a[:, 1],
+                         (seg_a[:, 0] + seg_a[:, 1]) * 0.5], axis=0)
+    qb = np.concatenate([seg_b[:, 0], seg_b[:, 1],
+                         (seg_b[:, 0] + seg_b[:, 1]) * 0.5], axis=0)
+    if len(qa) > 4000:
+        qa = qa[::max(1, len(qa) // 4000)]
+    if len(qb) > 4000:
+        qb = qb[::max(1, len(qb) // 4000)]
+    da = _point_segment_distance(qa, seg_b).max()
+    db = _point_segment_distance(qb, seg_a).max()
+    return float(max(da, db))
+
+
+def _nudge_slice_height(z, sorted_zs, spacing):
+    """Shift z by a deterministic irrational fraction until it misses every vertex."""
+    if len(sorted_zs) == 0:
+        return z
+    for k in range(1, 8):
+        pos = int(np.searchsorted(sorted_zs, z))
+        near = []
+        if pos > 0:
+            near.append(abs(sorted_zs[pos - 1] - z))
+        if pos < len(sorted_zs):
+            near.append(abs(sorted_zs[pos] - z))
+        if min(near) > 1e-9 * max(1.0, spacing):
+            return z
+        z += (V2_RAY_OFFSET[0] + k * 0.112702) * spacing
+    return z
+
+
+def slice_compare(v_ref, t_ref, v_cand, t_cand, n=V2_SLICE_COUNT):
+    """Z-slice area / loop / 2D-Hausdorff comparison at n deterministic heights."""
+    all_v = np.concatenate([v_ref, v_cand], axis=0)
+    z0 = float(all_v[:, 2].min())
+    z1 = float(all_v[:, 2].max())
+    span = z1 - z0
+    if span <= 1e-9:
+        return {"slices": [], "mean_area_rel": 0.0, "max_area_rel": 0.0,
+                "max_loop_delta": 0, "max_hausdorff": 0.0}
+    spacing = span / n
+    sorted_zs = np.unique(all_v[:, 2])
+    diag = float(np.linalg.norm(all_v.max(axis=0) - all_v.min(axis=0)))
+    tol = max(1e-9, diag * 1e-7)
+    per = []
+    for k in range(n):
+        z = z0 + (k + 0.5) * spacing
+        z = _nudge_slice_height(z, sorted_zs, spacing)
+        sr = _slice_segments(v_ref, t_ref, z)
+        sc = _slice_segments(v_cand, t_cand, z)
+        lr, orr = _chain_loops(sr, tol)
+        lc, orc = _chain_loops(sc, tol)
+        ar = _slice_area(lr)
+        ac = _slice_area(lc)
+        valid = bool(orr == 0 and orc == 0 and len(lr) > 0 and len(lc) > 0)
+        area_rel = abs(ac - ar) / max(ar, ac, 1e-9)
+        area_rel_ref = abs(ac - ar) / ar if ar > 1e-9 else 0.0
+        hd = _segments_hausdorff(sc, sr)
+        per.append({
+            "z": z,
+            "valid": valid,
+            "ref_segments": int(len(sr)),
+            "cand_segments": int(len(sc)),
+            "ref_loops": int(len(lr)),
+            "cand_loops": int(len(lc)),
+            "ref_open": int(orr),
+            "cand_open": int(orc),
+            "ref_area": ar,
+            "cand_area": ac,
+            "area_rel": float(area_rel),
+            "area_rel_ref": float(area_rel_ref),
+            "loop_delta": int(abs(len(lc) - len(lr))),
+            "hausdorff": hd,
+        })
+    valid_slices = [s for s in per if s["valid"]]
+    return {
+        "z_min": z0,
+        "z_max": z1,
+        "slice_count": n,
+        "valid_slices": len(valid_slices),
+        "invalid_slices": n - len(valid_slices),
+        "slices": per,
+        "mean_area_rel": float(np.mean([s["area_rel"] for s in valid_slices]))
+        if valid_slices else 0.0,
+        "max_area_rel": float(np.max([s["area_rel"] for s in valid_slices]))
+        if valid_slices else 0.0,
+        "max_loop_delta": int(max(s["loop_delta"] for s in valid_slices))
+        if valid_slices else 0,
+        "max_hausdorff": float(max((s["hausdorff"] or 0.0) for s in per)),
+    }
+
+
+def sharp_edge_ratio(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
+                     angle_deg=V2_SHARP_ANGLE_DEG):
+    """Total sharp-edge length on the candidate relative to the reference."""
+    def _stats(v, t, normals):
+        if len(t) == 0:
+            return 0.0, 0, 0.0
+        e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]], axis=0)
+        fid = np.concatenate([np.arange(len(t)), np.arange(len(t)), np.arange(len(t))])
+        es = np.sort(e, axis=1)
+        key = es[:, 0].astype(np.int64) * max(1, len(v)) + es[:, 1]
+        order = np.argsort(key, kind="stable")
+        ks = key[order]
+        starts = np.r_[0, np.nonzero(np.diff(ks))[0] + 1]
+        counts = np.diff(np.r_[starts, len(ks)])
+        two = counts == 2
+        st = starts[two]
+        pair = np.stack([st, st + 1], axis=1).ravel()
+        faces = fid[order[pair]].reshape(-1, 2)
+        dot = np.clip(np.sum(normals[faces[:, 0]] * normals[faces[:, 1]], axis=1), -1.0, 1.0)
+        angle = np.degrees(np.arccos(dot))
+        sel = angle >= angle_deg
+        e_sel = es[order[st[sel]]]
+        length = np.linalg.norm(v[e_sel[:, 0]] - v[e_sel[:, 1]], axis=1)
+        total = float(length.sum())
+        return total, int(sel.sum()), float(np.percentile(angle, 95)) if len(angle) else 0.0
+
+    l_ref, n_ref_sharp, p_ref = _stats(v_ref, t_ref, n_ref)
+    l_cand, n_cand_sharp, p_cand = _stats(v_cand, t_cand, n_cand)
+    ratio = (l_cand / l_ref) if l_ref > 1e-12 else None
+    return {
+        "angle_threshold_deg": angle_deg,
+        "ref_sharp_length": l_ref,
+        "cand_sharp_length": l_cand,
+        "ref_sharp_edges": n_ref_sharp,
+        "cand_sharp_edges": n_cand_sharp,
+        "ratio": ratio,
+        "ref_dihedral_p95_deg": p_ref,
+        "cand_dihedral_p95_deg": p_cand,
+    }
+
+
+def surface_deviation(v_ref, t_ref, v_cand, t_cand, tol):
+    """Per-candidate-vertex point-to-surface distance to the reference mesh."""
+    method = None
+    dist = None
+    if HAS_SUTURA_GEOM and hasattr(sutura_geom, "closest_points"):
+        try:
+            _, dist, _ = sutura_geom.closest_points(
+                np.asarray(v_ref, dtype=np.float64),
+                np.asarray(t_ref, dtype=np.int32),
+                np.asarray(v_cand, dtype=np.float64))
+            dist = np.asarray(dist, dtype=np.float64)
+            method = "surface"
+        except Exception:  # noqa: BLE001
+            dist = None
+    if dist is None and HAS_SUTURA_GEOM and hasattr(sutura_geom, "KdTree"):
+        try:
+            tree = sutura_geom.KdTree(np.asarray(v_ref, dtype=np.float64))
+            d, _ = tree.query(np.asarray(v_cand, dtype=np.float64), k=1)
+            dist = np.asarray(d, dtype=np.float64)
+            method = "vertex"
+        except Exception:  # noqa: BLE001
+            dist = None
+    if dist is None:
+        return {"method": None, "max": None, "p95": None, "p99": None,
+                "mean": None, "over_tol_faces": 0, "over_tol_area_rel": 0.0,
+                "vertex_distance": None, "face_distance": None}
+    face_dev = dist[t_cand].max(axis=1)
+    tri = v_cand[t_cand]
+    areas = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    over = face_dev > tol
+    total_area = float(areas.sum())
+    return {
+        "method": method,
+        "max": float(dist.max()),
+        "p95": float(np.percentile(dist, 95)),
+        "p99": float(np.percentile(dist, 99)),
+        "mean": float(dist.mean()),
+        "over_tol_faces": int(np.count_nonzero(over)),
+        "over_tol_area_rel": float(areas[over].sum() / total_area) if total_area > 0 else 0.0,
+        "vertex_distance": dist,
+        "face_distance": face_dev,
+    }
+
+
+def deviation_colors(dist, tol):
+    """Blue (0) -> green (0.5 tol) -> yellow (tol) -> red (> tol)."""
+    d = np.maximum(np.asarray(dist, dtype=np.float64), 0.0)
+    t = d / max(tol, 1e-12)
+    blue = np.array([43, 92, 143], dtype=np.float64)
+    green = np.array([46, 204, 113], dtype=np.float64)
+    yellow = np.array([250, 220, 60], dtype=np.float64)
+    red = np.array([217, 56, 41], dtype=np.float64)
+    out = np.zeros((len(d), 3), dtype=np.float64)
+    m0 = t <= 0.5
+    a = np.clip(t[m0] / 0.5, 0.0, 1.0)[:, None]
+    out[m0] = blue[None, :] * (1.0 - a) + green[None, :] * a
+    m1 = (t > 0.5) & (t <= 1.0)
+    b = np.clip((t[m1] - 0.5) / 0.5, 0.0, 1.0)[:, None]
+    out[m1] = green[None, :] * (1.0 - b) + yellow[None, :] * b
+    out[t > 1.0] = red[None, :]
+    return out.astype(np.uint8)
+
+
+def deviation_clusters(v, t, face_dev, tol, top=V2_CLUSTER_TOP):
+    """Connected over-tolerance face clusters, ranked by max deviation x area."""
+    sel = np.nonzero(face_dev > tol)[0]
+    if len(sel) == 0:
+        return []
+    n_sel = len(sel)
+    e = np.concatenate([t[sel][:, [0, 1]], t[sel][:, [1, 2]], t[sel][:, [2, 0]]], axis=0)
+    fid = np.concatenate([np.arange(n_sel), np.arange(n_sel), np.arange(n_sel)])
+    es = np.sort(e, axis=1)
+    key = es[:, 0].astype(np.int64) * max(1, len(v)) + es[:, 1]
+    order = np.argsort(key, kind="stable")
+    ks = key[order]
+    starts = np.r_[0, np.nonzero(np.diff(ks))[0] + 1]
+    counts = np.diff(np.r_[starts, len(ks)])
+    parent = np.arange(n_sel)
+
+    def _find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def _union(a, b):
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    group_idx = np.nonzero(counts >= 2)[0]
+    for g in group_idx:
+        members = fid[order[starts[g]:starts[g] + counts[g]]]
+        base = int(members[0])
+        for m in members[1:]:
+            _union(base, int(m))
+    roots = np.array([_find(i) for i in range(n_sel)])
+    tri = v[t[sel]]
+    areas = 0.5 * np.linalg.norm(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    cents = tri.mean(axis=1)
+    clusters = []
+    for r in np.unique(roots):
+        members = np.nonzero(roots == r)[0]
+        f_idx = sel[members]
+        area = float(areas[members].sum())
+        max_dev = float(face_dev[f_idx].max())
+        w = areas[members]
+        if w.sum() > 0:
+            center = (cents[members] * w[:, None]).sum(axis=0) / w.sum()
+        else:
+            center = cents[members].mean(axis=0)
+        vidx = np.unique(t[f_idx].ravel())
+        radius = max(float(np.linalg.norm(v[vidx] - center, axis=1).max()), 1e-6)
+        clusters.append({
+            "faces": f_idx,
+            "face_count": int(len(f_idx)),
+            "area": area,
+            "max_dev": max_dev,
+            "mean_dev": float(face_dev[f_idx].mean()),
+            "center": center,
+            "radius": radius,
+            "score": max_dev * max(area, 1e-12),
+        })
+    clusters.sort(key=lambda c: (c["score"], c["max_dev"]), reverse=True)
+    return clusters[:top]
+
+
+def _global_up(normal):
+    z = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(normal, z))) > 0.9:
+        return np.array([0.0, 1.0, 0.0])
+    return z
+
+
+def render_cluster_zoom(v, t, face_colors, center, radius, normal, res=V2_CLUSTER_RES):
+    """512 px local close-up, normal-aligned with a 15 degree elevation + wireframe."""
+    n = np.asarray(normal, dtype=np.float64)
+    n = n / max(np.linalg.norm(n), 1e-12)
+    up = _global_up(n)
+    f = n + 0.268 * up
+    f = f / max(np.linalg.norm(f), 1e-12)
+    rot = _view_rot(f, up)
+    local_r = 1.8 * radius
+    vm = np.linalg.norm(v - center, axis=1) <= local_r
+    fm = vm[t].all(axis=1)
+    if not np.any(fm):
+        fm = np.ones(len(t), dtype=bool)
+    lv = v
+    lt = t[fm]
+    lc = face_colors[fm]
+    local_vidx = np.unique(lt.ravel())
+    cu, cv, scale, _ = tight_view_frame([lv[local_vidx]], rot, center, res, res, pad=24)
+    rgb, _, sil, _ = render_view(lv, lt, np.zeros((len(lv), 3)), rot, center,
+                                 scale, w=res, h=res, view_center=(cu, cv),
+                                 face_colors=lc, need_depth=False, wireframe=True)
+    return rgb, sil.sum()
+
+
+def assemble_v2_sheet(title_lines, rows, out_path):
+    """Assemble the V2 contact sheet (PCA deviation, X-ray, cluster zooms)."""
+    if not HAS_PYSIDE6:
+        raise RuntimeError("PySide6 is required to generate the V2 contact sheet")
+    ensure_qapp()
+    cell_w = cell_h = 256
+    pad = 12
+    hdr_h = 78
+    row_lbl_w = 118
+    n_cols = max(1, max(len(r["images"]) for r in rows))
+    total_w = row_lbl_w + n_cols * cell_w + (n_cols + 1) * pad
+    total_h = hdr_h + len(rows) * cell_h + (len(rows) + 1) * pad
+    canvas = QImage(total_w, total_h, QImage.Format_RGB32)
+    canvas.fill(QColor(25, 27, 31))
+    p = QPainter(canvas)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    p.setPen(QColor(240, 240, 245))
+    p.drawText(pad, 26, title_lines[0])
+    if len(title_lines) > 1:
+        p.setPen(QColor(160, 165, 175))
+        p.drawText(pad, 48, title_lines[1])
+    for r, row in enumerate(rows):
+        ry = hdr_h + pad + r * (cell_h + pad)
+        p.setPen(QColor(190, 195, 205))
+        p.drawText(8, ry + cell_h // 2 + 4, row["name"])
+        for c, img_arr in enumerate(row["images"]):
+            cx = row_lbl_w + pad + c * (cell_w + pad)
+            ih, iw, _ = img_arr.shape
+            img_c = np.ascontiguousarray(img_arr, dtype=np.uint8)
+            q_img = QImage(img_c.data, iw, ih, iw * 3, QImage.Format_RGB888)
+            if (iw, ih) != (cell_w, cell_h):
+                q_img = q_img.scaled(cell_w, cell_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            p.drawImage(cx, ry, q_img)
+            cap = row.get("captions", [])
+            if c < len(cap) and cap[c]:
+                p.fillRect(QRect(cx, ry + cell_h - 22, cell_w, 22), QColor(0, 0, 0, 180))
+                p.setPen(QColor(235, 235, 235))
+                p.drawText(cx + 6, ry + cell_h - 6, cap[c])
+    p.end()
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    canvas.save(out_path, "PNG")
+    return out_path
+
+
+def evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
+                tol, out_sheet=None, cluster_dir=None):
+    """Compute the V2 metrics and images for one reference/candidate pair."""
+    t0 = time.perf_counter()
+    all_v = np.concatenate([v_ref, v_cand], axis=0)
+    center = (all_v.min(axis=0) + all_v.max(axis=0)) * 0.5
+    diag = float(np.linalg.norm(all_v.max(axis=0) - all_v.min(axis=0)))
+    _, evecs = compute_pca_axes(all_v)
+    cameras = get_pca_cameras(evecs)
+    timings = {}
+    t_sil = t_xray = 0.0
+
+    sil_views = []
+    xray_views = []
+    xray_rows_ref = []
+    xray_rows_delta = []
+    grids = [_ray_grid_for_view([v_ref, v_cand], rot, center) for _, rot in cameras]
+    batched = None
+    if all(g is not None for g in grids):
+        ts = time.perf_counter()
+        try:
+            batched = (_raycast_many(v_ref, t_ref, grids),
+                       _raycast_many(v_cand, t_cand, grids))
+        except Exception:  # noqa: BLE001
+            batched = None
+        t_xray += time.perf_counter() - ts
+    for i, (name, rot) in enumerate(cameras):
+        ts = time.perf_counter()
+        s = silhouette_iou_v2(v_ref, t_ref, v_cand, t_cand, rot, center)
+        t_sil += time.perf_counter() - ts
+        s["view"] = name
+        sil_views.append(s)
+        ts = time.perf_counter()
+        if batched is not None:
+            x = _xray_compare_stats(batched[0][i], batched[1][i])
+        else:
+            try:
+                x = xray_compare(v_ref, t_ref, v_cand, t_cand, rot, center)
+            except Exception as ex:  # noqa: BLE001
+                x = {"error": str(ex)}
+        t_xray += time.perf_counter() - ts
+        if x is not None:
+            x["view"] = name
+        xray_views.append(x)
+        if x and "image_ref" in x:
+            xray_rows_ref.append(x.pop("image_ref"))
+            xray_rows_delta.append(x.pop("image_delta"))
+    timings["silhouette_s"] = t_sil
+    timings["xray_s"] = t_xray
+
+    # Reference / candidate normal renders and candidate deviation colours.
+    ref_imgs = []
+    dev_imgs = []
+    t_dev = time.perf_counter()
+    dev = surface_deviation(v_ref, t_ref, v_cand, t_cand, tol)
+    if dev.get("face_distance") is not None:
+        fcolors = deviation_colors(dev["face_distance"], tol)
+    else:
+        fcolors = None
+    timings["deviation_s"] = time.perf_counter() - t_dev
+    t_views = time.perf_counter()
+    for name, rot in cameras:
+        cu, cv, scale, _ = tight_view_frame([v_ref, v_cand], rot, center, 384, 384, pad=16)
+        rgb_ref, _, _, _ = render_view(v_ref, t_ref, n_ref, rot, center, scale,
+                                       w=384, h=384, view_center=(cu, cv))
+        ref_imgs.append(rgb_ref)
+        if fcolors is not None:
+            rgb_dev, _, _, _ = render_view(v_cand, t_cand, n_cand, rot, center, scale,
+                                           w=384, h=384, view_center=(cu, cv),
+                                           face_colors=fcolors, need_depth=False)
+        else:
+            rgb_dev = np.zeros_like(rgb_ref)
+        dev_imgs.append(rgb_dev)
+    timings["pca_views_s"] = time.perf_counter() - t_views
+
+    clusters = []
+    cluster_imgs = []
+    t_clu = time.perf_counter()
+    if dev.get("face_distance") is not None:
+        clusters = deviation_clusters(v_cand, t_cand, dev["face_distance"], tol)
+        for i, cl in enumerate(clusters):
+            normals_c = n_cand[cl["faces"]]
+            nmean = normals_c.mean(axis=0) if len(normals_c) else np.array([0.0, 0.0, 1.0])
+            nm = np.linalg.norm(nmean)
+            if nm < 1e-9:
+                nmean = np.array([0.0, 0.0, 1.0])
+            else:
+                nmean = nmean / nm
+            rgb, _ = render_cluster_zoom(v_cand, t_cand, fcolors, cl["center"],
+                                         cl["radius"], nmean)
+            cluster_imgs.append(rgb)
+            if cluster_dir:
+                os.makedirs(cluster_dir, exist_ok=True)
+                save_rgb_png(rgb, os.path.join(cluster_dir, "cluster_%d.png" % (i + 1)))
+    timings["clusters_s"] = time.perf_counter() - t_clu
+
+    t_sharp = time.perf_counter()
+    sharp = sharp_edge_ratio(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand)
+    timings["sharp_s"] = time.perf_counter() - t_sharp
+    t_slice = time.perf_counter()
+    slices = slice_compare(v_ref, t_ref, v_cand, t_cand)
+    timings["slices_s"] = time.perf_counter() - t_slice
+
+    ious = [s["iou"] for s in sil_views]
+    xr_ok = [x for x in xray_views if x and "error" not in x]
+    leak_cand = int(sum(x["leak_cand_px"] for x in xr_ok))
+    leak_ref = int(sum(x["leak_ref_px"] for x in xr_ok))
+    leak_delta = leak_cand - leak_ref
+    extra = int(sum(x["extra_layer_px"] for x in xr_ok))
+    missing = int(sum(x["missing_layer_px"] for x in xr_ok))
+    layer_delta = float(np.mean([x["mean_abs_layer_delta"] for x in xr_ok])) if xr_ok else 0.0
+
+    flags = []
+    reasons = []
+    if min(ious) < V2_THRESHOLDS["silhouette_iou"]:
+        flags.append("V2_SILHOUETTE")
+        reasons.append("silhouette IoU %.4f < %.3f" % (
+            min(ious), V2_THRESHOLDS["silhouette_iou"]))
+    if xr_ok and leak_delta > V2_THRESHOLDS["xray_leak_px"]:
+        flags.append("V2_XRAY_LEAK")
+        reasons.append("X-ray leak worse: %d odd-crossing rays (ref %d, +%d)" % (
+            leak_cand, leak_ref, leak_delta))
+    if xr_ok and layer_delta > V2_THRESHOLDS["xray_layer_delta"]:
+        flags.append("V2_XRAY_LAYERS")
+        reasons.append("X-ray layer delta %.3f > %.3f" % (
+            layer_delta, V2_THRESHOLDS["xray_layer_delta"]))
+    if slices["max_area_rel"] > V2_THRESHOLDS["slice_area_rel"]:
+        flags.append("V2_SLICE_AREA")
+        reasons.append("slice area delta %.2f%% > %.1f%%" % (
+            100.0 * slices["max_area_rel"], 100.0 * V2_THRESHOLDS["slice_area_rel"]))
+    if slices["max_loop_delta"] > V2_THRESHOLDS["slice_loop_delta"]:
+        flags.append("V2_SLICE_LOOPS")
+        reasons.append("slice loop delta %d" % slices["max_loop_delta"])
+    if sharp["ratio"] is not None and sharp["ratio"] < V2_THRESHOLDS["sharp_edge_ratio"]:
+        flags.append("V2_SHARP_EDGES")
+        reasons.append("sharp-edge ratio %.3f < %.2f" % (
+            sharp["ratio"], V2_THRESHOLDS["sharp_edge_ratio"]))
+    if dev.get("max") is not None and dev["max"] > (
+            V2_THRESHOLDS["deviation_max_tol_factor"] * tol):
+        flags.append("V2_DEVIATION")
+        reasons.append("max deviation %.4f mm > %.1f x tol" % (
+            dev["max"], V2_THRESHOLDS["deviation_max_tol_factor"]))
+
+    timings["sheet_s"] = 0.0
+    runtime_s = time.perf_counter() - t0
+    result = {
+        "runtime_s": runtime_s,
+        "timings": timings,
+        "bbox_diagonal": diag,
+        "tolerance": tol,
+        "pca_eigenvalues": [float(x) for x in compute_pca_axes(all_v)[0]],
+        "silhouette": {
+            "views": sil_views,
+            "mean_iou": float(np.mean(ious)) if ious else 1.0,
+            "min_iou": float(np.min(ious)) if ious else 1.0,
+        },
+        "xray": {
+            "views": xray_views,
+            "leak_ref_px": leak_ref,
+            "leak_cand_px": leak_cand,
+            "leak_delta_px": leak_delta,
+            "extra_layer_px": extra,
+            "missing_layer_px": missing,
+            "mean_layer_delta": layer_delta,
+            "ran": bool(xr_ok),
+        },
+        "slices": slices,
+        "sharp_edges": sharp,
+        "deviation": {k: v for k, v in dev.items()
+                      if k not in ("vertex_distance", "face_distance")},
+        "clusters": [{k: (c[k].tolist() if isinstance(c[k], np.ndarray) else c[k])
+                      for k in ("face_count", "area", "max_dev", "mean_dev",
+                                "center", "radius", "score")}
+                     for c in clusters],
+        "flags": flags,
+        "reason": "; ".join(reasons) if reasons else "V2 metrics within provisional thresholds",
+        "thresholds_provisional": V2_THRESHOLDS,
+    }
+
+    if out_sheet:
+        rows = [
+            {"name": "PCA / ref normals", "images": ref_imgs,
+             "captions": [c[0] for c in cameras]},
+            {"name": "PCA / candidate dev", "images": dev_imgs,
+             "captions": ["%s dev" % c[0].split()[-1] for c in cameras]},
+            {"name": "X-ray ref", "images": xray_rows_ref,
+             "captions": ["%s parity" % c[0].split()[-1] for c in cameras]},
+            {"name": "X-ray cand", "images": xray_rows_delta,
+             "captions": ["%s layers" % c[0].split()[-1] for c in cameras]},
+            {"name": "Top clusters", "images": cluster_imgs,
+             "captions": ["cluster %d (%.2f mm)" % (i + 1, c["max_dev"])
+                          for i, c in enumerate(clusters)]},
+        ]
+        mesh_tag = os.path.splitext(os.path.basename(out_sheet))[0]
+        title = [
+            "Visual QA v2: %s | flags: %s" % (
+                mesh_tag, ", ".join(flags) if flags else "NONE"),
+            "silhouette min %.4f | xray leak %d / layers %.3f | slice area %.2f%% | "
+            "sharp %.3f | dev max %.4f mm | %.1f s" % (
+                min(ious) if ious else 1.0, leak_cand, layer_delta,
+                100.0 * slices["max_area_rel"],
+                sharp["ratio"] if sharp["ratio"] is not None else float("nan"),
+                dev["max"] if dev.get("max") is not None else float("nan"),
+                runtime_s),
+        ]
+        t_sheet = time.perf_counter()
+        result["contact_sheet"] = assemble_v2_sheet(title, rows, out_sheet)
+        timings["sheet_s"] = time.perf_counter() - t_sheet
+        result["runtime_s"] = time.perf_counter() - t0
+        if cluster_dir:
+            result["cluster_dir"] = cluster_dir
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -632,18 +1751,32 @@ def evaluate_mesh_quality(ref_path, cand_path, cameras=None, w=256, h=256):
     """Evaluate candidate mesh against reference mesh across a camera rig."""
     if cameras is None:
         cameras = get_dodecahedron_cameras()
-
     v_ref, t_ref, n_ref, def_ref = load_mesh(ref_path)
     v_cand, t_cand, n_cand, _ = load_mesh(cand_path)
+    return _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
+                                    v_cand, t_cand, n_cand, cameras, w, h)
+
+
+def _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
+                             v_cand, t_cand, n_cand, cameras, w=256, h=256,
+                             ref_cache=None):
+    """V1 comparison for already-loaded arrays (shared by the three-way API)."""
     center, scale, extent = compute_shared_frame([v_ref, v_cand], w=w, h=h, pad=16)
 
     view_metrics = []
     view_renders = []
 
     for name, rot in cameras:
+        key = (id(v_ref), id(rot))
+        cached = ref_cache.get(key) if ref_cache is not None else None
         t0 = time.perf_counter()
-        norm_ref, depth_ref, sil_ref, def_mask_2d = render_view(
-            v_ref, t_ref, n_ref, rot, center, scale, w=w, h=h, defect_vidx=def_ref)
+        if cached is not None:
+            norm_ref, depth_ref, sil_ref, def_mask_2d = cached
+        else:
+            norm_ref, depth_ref, sil_ref, def_mask_2d = render_view(
+                v_ref, t_ref, n_ref, rot, center, scale, w=w, h=h, defect_vidx=def_ref)
+            if ref_cache is not None:
+                ref_cache[key] = (norm_ref, depth_ref, sil_ref, def_mask_2d)
         norm_cand, depth_cand, sil_cand, _ = render_view(
             v_cand, t_cand, n_cand, rot, center, scale, w=w, h=h)
         dt = time.perf_counter() - t0
@@ -693,16 +1826,38 @@ def evaluate_mesh_quality(ref_path, cand_path, cameras=None, w=256, h=256):
     return agg, view_renders
 
 
-def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_center=None, w=256, h=256):
+def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_center=None,
+                         w=256, h=256, tolerance=None, enable_v2=True):
     """Three-way comparison: Input vs Baseline vs Candidate.
 
     Returns dict with metrics, separate flags, masked/unmasked scores, and contact sheet.
+    ``v2`` adds the PCA/silhouette/X-ray/slice/sharp-edge/deviation metrics and
+    images; the V1 fields are unchanged.
     """
     ref_path = in_path if (in_path and os.path.exists(in_path)) else base_path
     dodec = get_dodecahedron_cameras()
 
-    base_eval, _ = evaluate_mesh_quality(ref_path, base_path, cameras=dodec, w=w, h=h)
-    cand_eval, _ = evaluate_mesh_quality(ref_path, cand_path, cameras=dodec, w=w, h=h)
+    t_stage = time.perf_counter()
+    v_ref, t_ref, n_ref, def_ref = load_mesh(ref_path)
+    same_base = os.path.abspath(base_path) == os.path.abspath(ref_path)
+    if not same_base:
+        try:
+            same_base = os.path.samefile(base_path, ref_path)
+        except OSError:
+            same_base = False
+    if same_base:
+        v_base, t_base, n_base = v_ref, t_ref, n_ref
+    else:
+        v_base, t_base, n_base, _ = load_mesh(base_path)
+    v_cand, t_cand, n_cand, _ = load_mesh(cand_path)
+    ref_cache = {}
+    base_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
+                                            v_base, t_base, n_base, dodec, w, h,
+                                            ref_cache=ref_cache)
+    cand_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
+                                            v_cand, t_cand, n_cand, dodec, w, h,
+                                            ref_cache=ref_cache)
+    timings = {"v1_dodeca_s": time.perf_counter() - t_stage}
 
     delta_vqa = cand_eval["vqa_score"] - base_eval["vqa_score"]
     delta_ssim = cand_eval["mean_ssim"] - base_eval["mean_ssim"]
@@ -747,11 +1902,8 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
     detail_row = None
     detail_png_saved = None
 
+    t_stage = time.perf_counter()
     if need_detail:
-        v_ref, t_ref, n_ref, _ = load_mesh(ref_path)
-        v_base, t_base, n_base, _ = load_mesh(base_path)
-        v_cand, t_cand, n_cand, _ = load_mesh(cand_path)
-
         f_center, f_radius = find_most_changed_region(v_base, v_cand, custom_center=defect_center)
 
         # 512px detail renders
@@ -777,12 +1929,20 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
                 ]
             }
 
+    timings["v1_detail_s"] = time.perf_counter() - t_stage
     # Assemble Contact Sheet if requested
     sheet_saved = None
     if out_sheet:
+        t_stage = time.perf_counter()
         canonical = get_canonical_cameras()
-        _, base_can_renders = evaluate_mesh_quality(ref_path, base_path, cameras=canonical, w=w, h=h)
-        _, cand_can_renders = evaluate_mesh_quality(ref_path, cand_path, cameras=canonical, w=w, h=h)
+        can_cache = {}
+        _, base_can_renders = _evaluate_quality_arrays(
+            v_ref, t_ref, n_ref, def_ref, v_base, t_base, n_base, canonical, w, h,
+            ref_cache=can_cache)
+        _, cand_can_renders = _evaluate_quality_arrays(
+            v_ref, t_ref, n_ref, def_ref, v_cand, t_cand, n_cand, canonical, w, h,
+            ref_cache=can_cache)
+        timings["v1_canonical_s"] = time.perf_counter() - t_stage
 
         views_data = []
         for i, (cam_name, _) in enumerate(canonical):
@@ -812,7 +1972,29 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
             f"Baseline: {base_eval['vqa_score']}/100 (healthy: {base_eval['vqa_score_healthy']}) | "
             f"Candidate: {cand_eval['vqa_score']}/100 (healthy: {cand_eval['vqa_score_healthy']}) | {reason_str}"
         ]
+        t_stage = time.perf_counter()
         sheet_saved = assemble_contact_sheet(title, views_data, col_names, out_sheet, detail_data=detail_row)
+        timings["v1_sheet_s"] = time.perf_counter() - t_stage
+
+    v2 = None
+    if enable_v2:
+        v2_sheet = None
+        cluster_dir = None
+        if out_sheet:
+            stem = out_sheet[:-4] if out_sheet.lower().endswith('.png') else out_sheet
+            v2_sheet = stem + "_v2.png"
+            cluster_dir = stem + "_v2_clusters"
+        try:
+            if tolerance is not None:
+                tol = float(tolerance)
+            else:
+                all_v = np.concatenate([v_ref, v_cand], axis=0)
+                diag = float(np.linalg.norm(all_v.max(axis=0) - all_v.min(axis=0)))
+                tol = min(0.05, max(0.0125, diag / 10000.0))
+            v2 = evaluate_v2(v_ref, t_ref, n_ref, v_cand, t_cand, n_cand,
+                             tol, out_sheet=v2_sheet, cluster_dir=cluster_dir)
+        except Exception as ex:  # noqa: BLE001 - V2 must never break the V1 report
+            v2 = {"error": str(ex)}
 
     return {
         "is_visual_worse": is_worse,
@@ -822,7 +2004,9 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
         "baseline": base_eval,
         "candidate": cand_eval,
         "contact_sheet": sheet_saved,
-        "detail_sheet_512": detail_png_saved
+        "detail_sheet_512": detail_png_saved,
+        "v2": v2,
+        "timings": timings
     }
 
 
@@ -838,6 +2022,10 @@ def main():
     ap.add_argument("--defect-center", default=None, help="Optional focal center X,Y,Z")
     ap.add_argument("--res", type=int, default=256, help="Render resolution (default 256)")
     ap.add_argument("--json", action="store_true", help="Print structured JSON")
+    ap.add_argument("--tolerance", type=float, default=None,
+                    help="Deviation tolerance in mesh units (default clamp(diag/10000, 0.0125, 0.05))")
+    ap.add_argument("--no-v2", dest="v2", action="store_false",
+                    help="Disable the V2 PCA/X-ray/slice/deviation metrics")
     args = ap.parse_args()
 
     if not HAS_PYSIDE6:
@@ -857,7 +2045,8 @@ def main():
 
     res = evaluate_visual_diff(args.input, args.baseline, args.candidate,
                                out_sheet=args.contact_sheet, defect_center=center,
-                               w=args.res, h=args.res)
+                               w=args.res, h=args.res, tolerance=args.tolerance,
+                               enable_v2=args.v2)
 
     if args.json:
         print(json.dumps(res, indent=2))
@@ -872,6 +2061,27 @@ def main():
             print(f"Contact sheet: {res['contact_sheet']}")
         if res.get("detail_sheet_512"):
             print(f"Detail sheet (512px): {res['detail_sheet_512']}")
+        v2 = res.get("v2")
+        if v2 and "error" in v2:
+            print(f"V2: ERROR ({v2['error']})")
+        elif v2:
+            print("V2 silhouette: mean %.4f min %.4f | X-ray: leak %d (ref %d) layers %.3f "
+                  "extra %d | slices: area %.2f%% loops %d | sharp %.3f | dev %.4f mm | %.2f s" % (
+                      v2["silhouette"]["mean_iou"], v2["silhouette"]["min_iou"],
+                      v2["xray"]["leak_cand_px"], v2["xray"]["leak_ref_px"],
+                      v2["xray"]["mean_layer_delta"], v2["xray"]["extra_layer_px"],
+                      100.0 * v2["slices"]["max_area_rel"],
+                      v2["slices"]["max_loop_delta"],
+                      v2["sharp_edges"]["ratio"] if v2["sharp_edges"]["ratio"] is not None
+                      else float("nan"),
+                      v2["deviation"]["max"] if v2["deviation"]["max"] is not None
+                      else float("nan"),
+                      v2["runtime_s"]))
+            print(f"V2 flags: {', '.join(v2['flags']) if v2['flags'] else 'NONE'} ({v2['reason']})")
+            if v2.get("contact_sheet"):
+                print(f"V2 contact sheet: {v2['contact_sheet']}")
+            if v2.get("cluster_dir"):
+                print(f"V2 cluster zooms: {v2['cluster_dir']}")
 
     return 1 if res["is_visual_worse"] else 0
 
