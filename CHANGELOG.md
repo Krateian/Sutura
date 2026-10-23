@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Diagnosis v2 (Rust) in the analysis report.** An additive `diagnosis_v2` block describes the input in more detail than before: orientation and flipped faces, non-manifold vertices, exact and reversed duplicates, degenerate faces, parts (closed / open / debris, overlaps, nested shells), self-intersections split into within-body, between-body and coplanar, boundary loops (planar, pinched, cap difficulty), interior faces and folds, thin walls and scan noise, with per-face masks for later visualisation. The result is deterministic (independent of the triangle order in the file) and stays within a one-second budget in fast mode on typical meshes; when a budget is exceeded the affected channel is marked as estimated instead of reporting a wrong number. Legacy report fields and repair output are unchanged.
+
+### Changed
+
+- **Documentation reorganised.** `README.md` and `README.tr.md` are now short landing pages (highlights, install, quick use, a short description of the pipeline and a documentation index); the full user documentation moved unchanged into topic pages under `docs/guide/` (English) and `docs/guide/tr/` (Turkish): how it works, methods, install, usage, troubleshooting, feature status, limitations, mesh classifier, architecture, privacy, testing and version history. The maintainer note now states that releases follow no fixed schedule.
+
 ## [0.9.4] - 2026-10-23
 
 **In short:** a new repair step, **Coaptation (#19)**, is on by default. It joins a

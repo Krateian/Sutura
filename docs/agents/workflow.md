@@ -114,19 +114,27 @@ Options window, never in the way of the plain repair.
 
 ## README upkeep
 
+- **Layout (since 23 Oct 2026):** `README.md` / `README.tr.md` are short landing
+  pages (badges, highlights, install, quick use, short pipeline, documentation
+  index, maintainer note, license). All detail lives in `docs/guide/*.md`
+  (English) and `docs/guide/tr/*.md` (Turkish), one page per topic with the same
+  file names in both languages. Edit the topic page, not the landing page;
+  touch the landing page only when its own content changes (method count,
+  highlights, install commands, page list).
 - If a user-visible behaviour is added or changed in this session (CLI flag,
-  GUI behaviour, install step, new feature), update `README.md` in the same
-  session — without the user asking.
-- `README.tr.md` is the Turkish translation of `README.md` and must be kept in
-  sync with it: any user-visible addition/change to `README.md` also updates
-  `README.tr.md` in the same session, without being asked.
+  GUI behaviour, install step, new feature), update the matching
+  `docs/guide/` page in the same session — without the user asking.
+- The Turkish pages are translations of the English ones and must be kept in
+  sync: any user-visible addition/change to a `docs/guide/` page also updates
+  its `docs/guide/tr/` twin (and `README.md` changes update `README.tr.md`) in
+  the same session, without being asked.
 - The README GUI screenshots (`assets/*.png`) are regenerated with
   `scripts/generate_screenshots.py` whenever a visible behaviour changes. The
   generator forces the English locale (`LANG=en_US.UTF-8`) regardless of the
   system locale — screenshots are always the English UI (standing rule).
 - Feature Status table audit: at every stable release (v0.1.x) AND every
-  minor-series transition (vX.Y.9 -> vX.(Y+1).0), compare the README.md /
-  README.tr.md Feature Status table and narrative sections against the
+  minor-series transition (vX.Y.9 -> vX.(Y+1).0), compare the
+  `docs/guide/feature-status.md` / `docs/guide/tr/feature-status.md` table and narrative sections against the
   actual codebase (git log between the previous and current tag) — not
   just for the version being released, but to catch any earlier version's
   documentation debt too (a release can ship without its README catching
@@ -155,11 +163,11 @@ following in order, without being asked separately for each step:
 3. Commit the version bump with a summary body.
 4. Tag the release (vX.Y.Z).
 5. **Version-history standing rule (FAZ15):** if this version ADDS a
-   user-facing feature/capability, add a short entry to the "Version history"
-   ("Sürüm geçmişi") section in README.md AND README.tr.md (one line, what
+   user-facing feature/capability, add a short entry to
+   `docs/guide/version-history.md` AND `docs/guide/tr/version-history.md` (one line, what
    came in, based on the CHANGELOG Added/Changed user-visible items). Fix-only
    versions do NOT touch that section.
-6. Feature Status table audit (README.md/tr.md) against the actual commits
+6. Feature Status table audit (`docs/guide/feature-status.md` + TR) against the actual commits
    since the previous tag — bump percentages only when the honest state
    changed; check the test-suite list in the 'Test coverage' row is current.
 7. Re-run scripts/generate_screenshots.py if the GUI's visible state changed
