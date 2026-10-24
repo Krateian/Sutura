@@ -53,6 +53,20 @@ pub struct ShellConfig {
     pub check_ray_escape: bool,
     /// Whether to attempt exact arrangement split on proper self-intersections (default true).
     pub split_intersections: bool,
+    /// Maximum triangles in one coplanar contact cluster before the exact CDT
+    /// is abandoned (default 512).  The whole coplanar pass returns the input
+    /// unchanged when any cluster exceeds this count.
+    pub max_coplanar_cluster_faces: usize,
+    /// Maximum unique constraint segments in one coplanar cluster before the
+    /// exact CDT is abandoned (default 1024).
+    pub max_coplanar_constraints: usize,
+    /// Maximum triangles in one coplanar plane group before the pairwise
+    /// adjacency stage is entered (default 1024).
+    pub max_plane_faces: usize,
+    /// Maximum summed triangle count over all processed coplanar clusters
+    /// (default 8192).  A safety ceiling; the per-cluster caps are the primary
+    /// work bound.
+    pub max_coplanar_total_faces: usize,
 }
 
 impl Default for ShellConfig {
@@ -63,6 +77,10 @@ impl Default for ShellConfig {
             keep_cavities: true,
             check_ray_escape: true,
             split_intersections: true,
+            max_coplanar_cluster_faces: 512,
+            max_coplanar_constraints: 1024,
+            max_plane_faces: 1024,
+            max_coplanar_total_faces: 8192,
         }
     }
 }
@@ -92,6 +110,9 @@ pub struct ShellAnalysisResult {
     pub unresolved_coincident_count: usize,
     /// Whether all shells are disjoint (Phase P-a qualified: no cross-part SI, volume overlap < 0.1%, no buried faces).
     pub is_disjoint: bool,
+    /// Set when the deterministic coplanar work budget was exceeded.  The
+    /// candidate is then the unchanged input and the caller must not adopt it.
+    pub budget_exceeded: bool,
     /// Diagnostic / status reason ("ok", "no_change", or abort reason).
     pub reason: String,
 }
@@ -1423,18 +1444,47 @@ fn project_tri_uv(
     ]
 }
 
+/// Count unique undirected edges of a coplanar cluster.
+///
+/// This is an upper bound on the exact CDT constraint count: `insert_vertex`
+/// deduplicates coincident 3D points, so the exact batch can only have fewer
+/// segments.  The bound is deliberately conservative for the work budget.
+fn cluster_constraint_count(
+    tris: &[[u32; 3]],
+    plane_tris: &[usize],
+    cluster_indices: &[usize],
+) -> usize {
+    let mut edges: HashSet<(u32, u32)> = HashSet::new();
+    for &ci in cluster_indices {
+        let t = tris[plane_tris[ci]];
+        for k in 0..3 {
+            let a = t[k];
+            let b = t[(k + 1) % 3];
+            if a != b {
+                edges.insert((a.min(b), a.max(b)));
+            }
+        }
+    }
+    edges.len()
+}
+
 /// Resolve coplanar contacts between different bodies/shells using exact 2D overlay.
+///
+/// Returns `(verts, tris, changed, budget_exceeded)`.  When the deterministic
+/// work budget is exceeded the ORIGINAL input is returned (`changed == false`,
+/// `budget_exceeded == true`); no plane or cluster is applied partially.
 pub fn resolve_coplanar_contacts(
     verts: &[[f64; 3]],
     tris: &[[u32; 3]],
-) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, bool) {
+    config: &ShellConfig,
+) -> (Vec<[f64; 3]>, Vec<[u32; 3]>, bool, bool) {
     if tris.is_empty() || verts.len() < 3 {
-        return (verts.to_vec(), tris.to_vec(), false);
+        return (verts.to_vec(), tris.to_vec(), false, false);
     }
 
     let (shell_map, num_shells) = compute_shell_components(tris);
     if num_shells <= 1 {
-        return (verts.to_vec(), tris.to_vec(), false);
+        return (verts.to_vec(), tris.to_vec(), false, false);
     }
 
     let h_med = median_edge_length(verts, tris);
@@ -1463,6 +1513,7 @@ pub fn resolve_coplanar_contacts(
     let mut replaced_tris: HashSet<usize> = HashSet::new();
     let mut new_verts: Vec<[f64; 3]> = Vec::new();
     let mut new_tris: Vec<[u32; 3]> = Vec::new();
+    let mut coplanar_total_faces = 0usize;
 
     for (_pkey, plane_tris) in plane_map {
         if plane_tris.len() <= 1 {
@@ -1471,6 +1522,9 @@ pub fn resolve_coplanar_contacts(
         let first_shell = shell_map[plane_tris[0]];
         if !plane_tris.iter().any(|&i| shell_map[i] != first_shell) {
             continue;
+        }
+        if plane_tris.len() > config.max_plane_faces {
+            return (verts.to_vec(), tris.to_vec(), false, true);
         }
 
         // Find best reference normal for this plane
@@ -1603,6 +1657,25 @@ pub fn resolve_coplanar_contacts(
             if !has_cross_shell_overlap {
                 continue; // no cross-shell contact in this cluster; keep verbatim!
             }
+
+            // Deterministic work budget.  The candidate is accumulated in the
+            // local new_verts/new_tris/replaced_tris vectors and applied only
+            // after this loop, so returning here discards every earlier plane
+            // and leaves the input byte-identical (no partial solution).
+            if cluster_indices.len() > config.max_coplanar_cluster_faces {
+                return (verts.to_vec(), tris.to_vec(), false, true);
+            }
+            let constraint_count =
+                cluster_constraint_count(tris, &plane_tris, &cluster_indices);
+            if constraint_count > config.max_coplanar_constraints {
+                return (verts.to_vec(), tris.to_vec(), false, true);
+            }
+            if coplanar_total_faces + cluster_indices.len()
+                > config.max_coplanar_total_faces
+            {
+                return (verts.to_vec(), tris.to_vec(), false, true);
+            }
+            coplanar_total_faces += cluster_indices.len();
 
             // Compute local bounding box of this cluster in (u, v)
             let mut umin = f64::INFINITY;
@@ -1809,7 +1882,7 @@ pub fn resolve_coplanar_contacts(
     }
 
     if !any_modified {
-        return (verts.to_vec(), tris.to_vec(), false);
+        return (verts.to_vec(), tris.to_vec(), false, false);
     }
 
     let mut all_verts = verts.to_vec();
@@ -1835,7 +1908,7 @@ pub fn resolve_coplanar_contacts(
     let conformed_tris = conforming_edge_split(&welded_verts, &welded_tris, &mut constraint_edges);
     let (final_verts, final_tris) = weld_points_f64(&welded_verts, &conformed_tris);
 
-    (final_verts, final_tris, true)
+    (final_verts, final_tris, true, false)
 }
 
 /// Relative area tolerance under which two coplanar clusters that share an
@@ -2126,7 +2199,17 @@ pub fn shell_analyze_and_filter(
     }
 
     // 2. Pure coplanar contact fallback (e.g. adjacent stacked boxes without transversal penetration)
-    let (cop_verts, cop_tris, cop_changed) = resolve_coplanar_contacts(verts, tris);
+    let (cop_verts, cop_tris, cop_changed, cop_budget) =
+        resolve_coplanar_contacts(verts, tris, config);
+    if cop_budget {
+        // Deterministic work budget: keep the input byte-identical and let the
+        // caller fall back to its normal stage-1 path.  No candidate is built
+        // and no partial coplanar resolution is applied.
+        let mut res = ShellAnalysisResult::default();
+        res.budget_exceeded = true;
+        res.reason = "budget_exceeded".to_string();
+        return (verts.to_vec(), tris.to_vec(), res);
+    }
     let cur_verts = if cop_changed { &cop_verts } else { verts };
     let cur_tris = if cop_changed { &cop_tris } else { tris };
 
@@ -3149,5 +3232,74 @@ mod tests {
             "same boundary, different area: nothing may be dropped"
         );
         assert_eq!(out, tris);
+    }
+
+    fn stacked_boxes_with_coplanar_contact() -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
+        let b1 = unit_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]);
+        let b2 = unit_box([0.0, 0.0, 1.0], [1.0, 1.0, 1.0]);
+        combine_meshes(b1, b2)
+    }
+
+    #[test]
+    fn coplanar_budget_default_applies_existing_resolution() {
+        let (verts, tris) = stacked_boxes_with_coplanar_contact();
+        let config = ShellConfig::default();
+        let (out_v, out_t, changed, budget) =
+            resolve_coplanar_contacts(&verts, &tris, &config);
+        assert!(!budget, "default caps must not trip on two boxes");
+        assert!(changed, "two coincident box faces must be resolved");
+        assert!(!out_v.is_empty());
+        assert!(!out_t.is_empty());
+    }
+
+    #[test]
+    fn coplanar_budget_caps_return_input_byte_identical() {
+        let (verts, tris) = stacked_boxes_with_coplanar_contact();
+        let cases = [
+            ("plane_faces", ShellConfig { max_plane_faces: 1, ..ShellConfig::default() }),
+            (
+                "cluster_faces",
+                ShellConfig {
+                    max_coplanar_cluster_faces: 1,
+                    ..ShellConfig::default()
+                },
+            ),
+            (
+                "constraints",
+                ShellConfig {
+                    max_coplanar_constraints: 1,
+                    ..ShellConfig::default()
+                },
+            ),
+            (
+                "total_faces",
+                ShellConfig {
+                    max_coplanar_total_faces: 1,
+                    ..ShellConfig::default()
+                },
+            ),
+        ];
+        for (name, config) in cases {
+            let (out_v, out_t, changed, budget) =
+                resolve_coplanar_contacts(&verts, &tris, &config);
+            assert!(budget, "{name} cap must trip");
+            assert!(!changed, "{name} cap must not report a change");
+            assert_eq!(out_v, verts, "{name} cap must return the input vertices");
+            assert_eq!(out_t, tris, "{name} cap must return the input triangles");
+        }
+    }
+
+    #[test]
+    fn shell_analyze_budget_flag_returns_input_unchanged() {
+        let (verts, tris) = stacked_boxes_with_coplanar_contact();
+        let config = ShellConfig {
+            max_plane_faces: 1,
+            ..ShellConfig::default()
+        };
+        let (out_v, out_t, res) = shell_analyze_and_filter(&verts, &tris, &config);
+        assert!(res.budget_exceeded, "budget flag must be true");
+        assert_eq!(res.reason, "budget_exceeded");
+        assert_eq!(out_v, verts);
+        assert_eq!(out_t, tris);
     }
 }

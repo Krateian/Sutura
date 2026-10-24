@@ -6,6 +6,16 @@
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../../CHANGELOG.md).
 
+- **v0.9.5 — 2026-10-25** — **Diagnosis v2**, onarımın kendisini değiştirmeden
+  ayrıntılı ve deterministik bir analiz raporu ekler (yönelim, parçalar,
+  kendisiyle-kesişimler, sınır halkaları, ince duvarlar ve daha fazlası).
+  Onarımlar artık tekrarlanabilir: Flap, Tamponad, Koaptasyon, Graft ve Splint
+  sınırları ile Full Mend self-intersection kesme geçişi geçen süre yerine iş
+  sayar; aynı dosya hızlı ya da yüklü makinede aynı sonucu verir (isteğe bağlı
+  fTetWild eklentisi bu garanti dışındadır). Otomatik yedek yöntemler, tespit
+  edilen hasarın anlamsız kıldığı yöntemleri atlar; Flap, Graft, Tamponad,
+  eş düzlemli temas ve iç boşluklar daha güvenlidir. Belgeler İngilizce ve
+  Türkçe konu sayfalarına taşındı.
 - **v0.9.4 — 2026-10-23** — Varsayılan olarak açık bir dikiş kaynağı
   birleştirmesi olan **Koaptasyon (#19)**: parçaların temas ettiği dikiş
   boyunca katlanmış ya da üst üste binmiş çok gövdeli bir modeli birleştirir ve

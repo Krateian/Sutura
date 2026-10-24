@@ -58,12 +58,13 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
               drop_lone_tris=True, weld_cracks=True, split_nm=True,
               separate_stl=True, bridge_open_chains=False, weld_max_frac=0.02,
               orient="reverse", avoid_coplanar=True, coplanar_frac=0.05,
-              coplanar_cos=0.99, sliver_cleanup=False, time_budget=None):
+              coplanar_cos=0.99, sliver_cleanup=False, work_budget=None):
     """Fill boundary loops with the Rust flap core.
 
-    ``time_budget`` (seconds) bounds the Rust per-loop candidate selector so the
-    alternative search stops at its preset budget and leaves the remaining loops
-    to Stage-1.
+    ``work_budget`` (deterministic work units) bounds the Rust caller: a loop's
+    DP cost is charged before it starts and each alternative candidate before it
+    is built, so a fixed input always produces the same mesh.  A step that does
+    not fit is skipped and left to Stage-1.
 
     The Rust binding is mandatory. When it is absent (extension not installed,
     or installed without the flap binding) this raises
@@ -87,6 +88,6 @@ def flap_fill(verts, tris, *, refine=True, fair=True, max_loop=1200,
         weld_max_frac=weld_max_frac, orient=orient,
         avoid_coplanar=avoid_coplanar, coplanar_frac=coplanar_frac,
         coplanar_cos=coplanar_cos, sliver_cleanup=sliver_cleanup,
-        time_budget=time_budget)
+        work_budget=work_budget)
     return (np.asarray(rv, dtype=np.float64),
             np.asarray(rt, dtype=np.int64), dict(rrep))

@@ -48,11 +48,26 @@ def _analysis_mod():
 # --- Execution policy constants ---------------------------------------------
 
 AUTO_MAX_ATTEMPTS = 3
+# The fallback ladder is COUNT-budgeted: at most AUTO_MAX_ATTEMPTS candidate
+# methods are tried, each with its own deterministic tier budget.  The former
+# elapsed-time budget (min/max seconds scaled by the baseline duration) decided
+# from machine load and could skip a later method on a busy machine; it is gone.
+# A very high wall-clock watchdog survives only as a batch safety net: when it
+# trips it is reported explicitly, never silently treated as a normal ladder
+# stop.  On an unloaded machine it is never reached.
+AUTO_FALLBACK_WATCHDOG_S = 3600.0
+# Backward-compatible aliases (older configs/tests imported these names); they
+# no longer influence method selection.
 AUTO_FALLBACK_BUDGET_FACTOR = 2.0
 AUTO_FALLBACK_MIN_S = 30.0
 AUTO_FALLBACK_MAX_S = 120.0
 AUTO_INVENT_MIN_SCORE = 0.8
 GENERATIVE_MAX_HAUSDORFF_REL = 0.01
+
+# Damage-channel pruning: skip fallback candidates that the J2 method
+# scorecard proves futile for the diagnosed damage. ON by default; opt out
+# with SUTURA_TRIAGE_PRUNE=0 (falsy). Direct diagnosis-v2 channels only.
+AUTO_PRUNE_ENV = 'SUTURA_TRIAGE_PRUNE'
 
 # --- Intensity Profiles -----------------------------------------------------
 
@@ -537,15 +552,85 @@ def _worst_geom_change(result):
     return max(vals) if vals else None
 
 
+def _adopt_guard_for_method(result, in_objs, out_objs, method,
+                             out_holes, out_nm):
+    """Central face/vertex + SI guard for one method attempt.
+
+    Runs for every method, including ``self_guarded`` tiers: their own gate is
+    still authoritative inside the tier, but the method output can add
+    geometry in stage 2 or through a tier that is only loosely checked.  The
+    policy is per method (see ``adopt_guard.policy_for``); Tamponade's plug
+    faces are its slack, fTetWild's SI increase is a flag when holes/nm fall.
+    """
+    from sutura_engine.pipeline import adopt_guard
+
+    policy = adopt_guard.policy_for(getattr(method, 'id', ''))
+    slack_units = 0
+    if getattr(method, 'id', '') == 'tamponade':
+        tamp = result.get('tamponade') if isinstance(result, dict) else None
+        if isinstance(tamp, dict):
+            slack_units = int(tamp.get('plug_faces') or 0)
+    improved = False
+    if getattr(method, 'id', '') in ('ftetwild', 'graft'):
+        in_holes, in_nm = _strict_holes_nm(in_objs, weld=True)
+        improved = (out_holes < in_holes or out_nm < in_nm)
+    in_faces = in_vertices = out_faces = out_vertices = 0
+    for (_in_name, iv, it), (_out_name, ov, ot) in zip(in_objs, out_objs):
+        in_faces += len(it)
+        in_vertices += len(iv)
+        out_faces += len(ot)
+        out_vertices += len(ov)
+        if len(in_objs) == len(out_objs):
+            reason = adopt_guard.blowup_reason(
+                len(it), len(iv), len(ot), len(ov), slack_units, policy)
+            if reason is not None:
+                fields = {'input_faces': len(it), 'input_vertices': len(iv),
+                          'candidate_faces': len(ot),
+                          'candidate_vertices': len(ov),
+                          'slack_units': slack_units,
+                          'guard_rejected': reason,
+                          'guard_reason': reason,
+                          'si_policy': policy.si_policy,
+                          'si_checked': False, 'si_flagged': False,
+                          'scope': 'object'}
+                return adopt_guard.GuardResult(False, reason, fields)
+    base_si = cand_si = None
+    try:
+        base_values = [adopt_guard.exact_si_count(iv, it)
+                       for _n, iv, it in in_objs]
+        cand_values = [adopt_guard.exact_si_count(ov, ot)
+                       for _n, ov, ot in out_objs]
+        if all(v is not None for v in base_values):
+            base_si = sum(int(v) for v in base_values)
+        if all(v is not None for v in cand_values):
+            cand_si = sum(int(v) for v in cand_values)
+    except Exception:
+        base_si = cand_si = None
+    return adopt_guard.check_candidate(
+        in_faces, in_vertices, out_faces, out_vertices,
+        slack_units=slack_units, base_si=base_si, candidate_si=cand_si,
+        measure_si=False, improved_topology=improved, policy=policy)
+
+
 def _evaluate(result, path, multi, in_objs, method):
     """Evaluate one attempt against strict-watertight + shape guard."""
     rec = {'watertight': False, 'holes': None, 'non_manifold': None,
-           'hausdorff_rel': None, 'geom_change_pct': None, 'reason': None}
+           'hausdorff_rel': None, 'geom_change_pct': None, 'reason': None,
+           'guard_rejected': None, 'guard_reason': None,
+           'si_flagged': False, 'adopt_guard': None}
     if not isinstance(result, dict) or 'error' in result:
         rec['reason'] = (result or {}).get('error', 'no result')
         return rec
     category, _issues, _key = classification.classify(result)
-    needs_objs = bool(method is not None and method.invents_geometry and in_objs
+    # Join (#4) moves whole components, so it can change the surface even though
+    # it is not flagged ``invents_geometry`` (marking it so would also change
+    # the fallback ranking and the "back surface was estimated" note).  Give it
+    # the same one-sided Hausdorff gate here only, using the existing
+    # GENERATIVE_MAX_HAUSDORFF_REL threshold.
+    is_join = bool(method is not None and getattr(method, 'id', '') == 'join')
+    shape_gated = bool(method is not None
+                       and (getattr(method, 'invents_geometry', False) or is_join))
+    needs_objs = bool(shape_gated and in_objs
                       and not getattr(method, 'self_guarded', False))
     out_objs = None
     if category == 'watertight':
@@ -567,6 +652,29 @@ def _evaluate(result, path, multi, in_objs, method):
                          '(%s)' % (_key or 'warning'))
         return rec
     rec['watertight'] = True
+    if method is not None and in_objs:
+        if out_objs is None:
+            try:
+                out_objs = _load_objects(path)
+            except Exception as e:
+                rec['watertight'] = False
+                rec['reason'] = 'cannot read output for adopt guard: %s' % e
+                return rec
+        if len(in_objs) == len(out_objs) and out_objs:
+            guard = _adopt_guard_for_method(result, in_objs, out_objs,
+                                            method, holes, nm)
+            rec['adopt_guard'] = guard.fields
+            rec['guard_rejected'] = guard.reason
+            rec['guard_reason'] = guard.fields.get('guard_reason')
+            rec['si_flagged'] = bool(guard.fields.get('si_flagged'))
+            if not guard.ok:
+                rec['watertight'] = False
+                rec['reason'] = 'adopt guard: %s' % guard.reason
+                return rec
+    if is_join:
+        # Preserve the non-gated reporting Join had before (the gate covers the
+        # shape change; geom_change_pct stays an informational metric).
+        rec['geom_change_pct'] = _worst_geom_change(result)
     if needs_objs:
         if out_objs is None:
             try:
@@ -580,12 +688,21 @@ def _evaluate(result, path, multi, in_objs, method):
             hd = _worst_hausdorff(in_objs, out_objs)
         rec['hausdorff_rel'] = hd
         gen_max_hd = getattr(sys.modules.get('methods'), 'GENERATIVE_MAX_HAUSDORFF_REL', GENERATIVE_MAX_HAUSDORFF_REL)
-        if hd is not None and hd > gen_max_hd:
+        if hd is None:
+            # C3: do not skip the gate silently.  The decision stays as before
+            # (accept on an unmeasurable deviation), but the report says so.
+            if is_join:
+                rec['hausdorff_unknown'] = True
+        elif hd > gen_max_hd:
             rec['watertight'] = False
             rec['reason'] = ('shape changed (one-sided Hausdorff %.3f > %.3f)'
                              % (hd, gen_max_hd))
             return rec
     else:
+        if is_join:
+            # No comparable input objects (e.g. an unreadable/multi-object
+            # input): the gate cannot run, so flag it instead of skipping.
+            rec['hausdorff_unknown'] = True
         rec['geom_change_pct'] = _worst_geom_change(result)
     rec['reason'] = 'strict-watertight'
     return rec
@@ -614,7 +731,7 @@ def _baseline_num(kwargs):
 
 
 def _record(method, evaluation, outcome, template=None, elapsed_ms=None):
-    return {
+    rec = {
         'num': method.num,
         'id': method.id,
         'name': method.name,
@@ -624,11 +741,18 @@ def _record(method, evaluation, outcome, template=None, elapsed_ms=None):
         'non_manifold': evaluation['non_manifold'],
         'hausdorff_rel': evaluation['hausdorff_rel'],
         'geom_change_pct': evaluation['geom_change_pct'],
+        'guard_rejected': evaluation.get('guard_rejected'),
+        'guard_reason': evaluation.get('guard_reason'),
+        'si_flagged': bool(evaluation.get('si_flagged')),
+        'adopt_guard': evaluation.get('adopt_guard'),
         'reason': evaluation['reason'],
         # Learning-triage inputs (anonymous: template + method slug only).
         'template': template,
         'elapsed_ms': int(elapsed_ms) if elapsed_ms is not None else None,
     }
+    if evaluation.get('hausdorff_unknown'):
+        rec['hausdorff_unknown'] = True
+    return rec
 
 
 def _analyze_objects(src, ctx):
@@ -896,6 +1020,45 @@ def _graft_fidelity(result):
     return g.get('fidelity_ok'), g.get('hausdorff_healthy')
 
 
+def _triage_prune_enabled(environ=None) -> bool:
+    """Damage-channel pruning is ON by default; ``SUTURA_TRIAGE_PRUNE=0``
+    (or false/no/off) restores the unpruned fallback order."""
+    raw = (os.environ if environ is None else environ).get(AUTO_PRUNE_ENV)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in ('0', 'false', 'no', 'off')
+
+
+def _prune_avoid_nums(analysis) -> set:
+    """Fallback method numbers the diagnosed damage makes futile.
+
+    Reads only the direct diagnosis-v2 channels: ``duplicate`` > 0 skips #4
+    Join; ``interior`` > 0 (or an interior region) skips #11 Transplant and
+    #15 Wall Thicken. #15 is already dropped by rank_methods
+    (needs_user_input) and is kept here for defence. The hole_porosity/loops
+    rule is deferred until the multi-defect calibration set exists.
+    """
+    d2 = getattr(analysis, 'diagnosis_v2', None)
+    if not isinstance(d2, dict):
+        return set()
+    channels = d2.get('channels') or {}
+
+    def _count(name):
+        entry = channels.get(name)
+        v = entry.get('count') if isinstance(entry, dict) else None
+        return v if isinstance(v, (int, float)) else 0
+
+    avoid = set()
+    if _count('duplicate') > 0:
+        avoid.add(4)
+    has_interior = _count('interior') > 0 or any(
+        isinstance(r, dict) and r.get('channel') == 'interior'
+        for r in (d2.get('regions') or []))
+    if has_interior:
+        avoid.update({11, 15})
+    return avoid
+
+
 def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
           allow_escalation: bool = True) -> dict:
     attempt_fn = _resolve_fn('_attempt', _attempt)
@@ -943,19 +1106,11 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                 }
         return result
 
-    auto_fallback_max_s = getattr(sys.modules.get('methods'), 'AUTO_FALLBACK_MAX_S', AUTO_FALLBACK_MAX_S)
-    auto_fallback_min_s = getattr(sys.modules.get('methods'), 'AUTO_FALLBACK_MIN_S', AUTO_FALLBACK_MIN_S)
-    auto_fallback_budget_factor = getattr(sys.modules.get('methods'), 'AUTO_FALLBACK_BUDGET_FACTOR', AUTO_FALLBACK_BUDGET_FACTOR)
+    auto_watchdog_s = getattr(sys.modules.get('methods'),
+                              'AUTO_FALLBACK_WATCHDOG_S',
+                              AUTO_FALLBACK_WATCHDOG_S)
     auto_max_attempts = getattr(sys.modules.get('methods'), 'AUTO_MAX_ATTEMPTS', AUTO_MAX_ATTEMPTS)
     auto_invent_min_score = getattr(sys.modules.get('methods'), 'AUTO_INVENT_MIN_SCORE', AUTO_INVENT_MIN_SCORE)
-
-    if baseline_s > auto_fallback_max_s:
-        _attach(result, base_method, tried, None, None,
-                note='fallback skipped: baseline too slow',
-                source='auto_baseline', reached=False)
-        result['method_used']['fallback_skipped'] = True
-        result['method_used']['baseline_s'] = round(baseline_s, 2)
-        return result
 
     if multi and isinstance(result, dict) and 'object_reports' in result:
         return _auto_multi(src, out, tmpdir, ctx, base_method, result, tried)
@@ -969,16 +1124,16 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     # fTetWild (#7); the templates already prefer it, this guarantees the order
     # even without a template match (the tier order lives in pipeline.order).
     recs = order_graft_before_ftetwild(recs)
+    avoid = _prune_avoid_nums(combined) if _triage_prune_enabled() else set()
     attempts = 0
     fallback_start = time.monotonic()
-    fallback_budget = min(max(auto_fallback_min_s,
-                              auto_fallback_budget_factor * baseline_s),
-                          auto_fallback_max_s)
-    budget_reached = False
+    watchdog_reached = False
     deferred_graft = None  # (healthy_dev, method, trial, trial_out, rec)
     for rec in recs:
         method = _methods_mod().get_method(rec.num)
         if method is None or method.num == base_method.num:
+            continue
+        if method.num in avoid:
             continue
         ok, _reason = method.available()
         if not ok:
@@ -987,8 +1142,11 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
             continue
         if attempts >= auto_max_attempts:
             break
-        if time.monotonic() - fallback_start >= fallback_budget:
-            budget_reached = True
+        # Very high out-of-band safety net only; the ladder itself is bounded
+        # by the candidate count above.  A trip is surfaced explicitly.
+        if (auto_watchdog_s and
+                time.monotonic() - fallback_start >= float(auto_watchdog_s)):
+            watchdog_reached = True
             break
         attempts += 1
         _t0 = time.monotonic()
@@ -1051,12 +1209,22 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                 source='auto_escalated', reached=True)
         return trial
 
-    note = ('fallback budget reached' if budget_reached else _multi_note(multi))
+    if watchdog_reached:
+        note = ('fallback watchdog exceeded (%.0fs); the ladder was stopped '
+                'explicitly' % float(auto_watchdog_s))
+    elif attempts >= auto_max_attempts:
+        note = ('fallback attempts exhausted (%d); no further method was tried'
+                % int(auto_max_attempts))
+    else:
+        note = _multi_note(multi)
     _attach(result, base_method, tried, analysis_objects, recs,
             note=note, source='auto_baseline', reached=False)
-    if budget_reached:
-        result['method_used']['budget_reached'] = True
-        result['method_used']['fallback_budget_s'] = round(fallback_budget, 2)
+    if watchdog_reached:
+        result['method_used']['fallback_watchdog'] = True
+        result['method_used']['fallback_watchdog_s'] = float(auto_watchdog_s)
+    elif attempts >= auto_max_attempts:
+        result['method_used']['fallback_attempts_exhausted'] = True
+        result['method_used']['fallback_attempts'] = int(attempts)
     return result
 
 
@@ -1098,6 +1266,7 @@ def _explicit(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                     note=note, source='tagged', reached=True)
             return trial
 
+    candidates = [c for c in candidates if not c[0].get('guard_rejected')]
     if candidates:
         def rank_key(cand):
             ev = cand[0]

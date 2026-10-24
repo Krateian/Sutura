@@ -38,7 +38,8 @@ from sutura_engine.pipeline.stage1 import (
 from sutura_engine.pipeline.stage2 import maybe_run_stage2
 from sutura_engine.pipeline.tiers.engines import run_after_stage2_engines
 from sutura_engine.pipeline.tiers.flap import (
-    _flap_final_needs_off, _flap_off_preferred, drop_flap_debris,
+    _flap_final_needs_off, _flap_off_preferred, _flap_si_rose,
+    drop_flap_debris,
 )
 from sutura_engine.pipeline.tiers.tamponade import (
     _tamponade_final_needs_off, _tamponade_off_preferred,
@@ -210,15 +211,23 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
     # HIGH-1 safety net: the Flap adoption gate is topological-only and decided
     # on the pre-chain mesh, so it cannot guarantee the FINAL result beats
     # flap-OFF. When Flap was adopted and the final mesh is not strict-
-    # watertight, or has more parts than the input, re-run this file ONCE with
-    # Flap OFF and keep the better result. Rare (never fires on the 41-sample
-    # regression, where Flap-ON is 41/41 watertight) and it reuses the same
-    # code path, so it cannot diverge from a plain flap-OFF repair.
+    # watertight, has more parts than the input, or the Flap candidate raised
+    # the exact SI count, re-run this file ONCE with Flap OFF and keep the
+    # better result.  A candidate SI rise alone is not a rejection: both final
+    # meshes are measured and compared (score: damage, parts, exact SI), so
+    # Stage-1/Stage-2 cleanup is seen. Raises reuse the same code path, so the
+    # fallback cannot diverge from a plain flap-OFF repair.
     if flap and (report.get('flap') or {}).get('adopted'):
         try:
+            # Option B: a candidate SI rise is only a signal to compare the two
+            # FINALS.  Both exact SI counts are measured in that case; normal
+            # (no rise) runs pay nothing extra and keep the historical net.
+            si_rise = _flap_si_rose(report.get('flap') or {})
             on_reason, on_metrics = _flap_final_needs_off(
-                verts, tris, new_v, new_t)
+                verts, tris, new_v, new_t, measure_si=si_rise,
+                si_flagged=si_rise)
         except Exception:  # noqa: BLE001 - the net never crashes a repair
+            si_rise = False
             on_reason, on_metrics = None, None
         if on_reason:
             on_flap = dict(report['flap'])
@@ -229,7 +238,7 @@ def repair_file(src, out, tmpdir, mode='auto', profile=None, engine='experimenta
                 trace.set_context(attempt='flap_off_safety_net')
                 off_report, off_v, off_t = _run(False, run_tamponade=False)
                 _, off_metrics = _flap_final_needs_off(
-                    verts, tris, off_v, off_t)
+                    verts, tris, off_v, off_t, measure_si=si_rise)
                 fallback['ran'] = True
                 fallback['off'] = off_metrics
                 fallback['tamponade_skipped'] = bool(tamponade)

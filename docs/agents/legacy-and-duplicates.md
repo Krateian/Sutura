@@ -73,19 +73,18 @@ Source: `origin/main:AGENTS.md` @ 5e28b78, ranges 310-378, 379-414.
   and 1038439 (221 -> 258); not a default recommendation. Measurement
   scripts were throwaway (/tmp).
 
-- **Visual QA absolute SSIM floor fails low-poly meshes — diagnosed, NOT fixed.**
-  `verify_visual_qa.py:727` raises `VOXEL_STEPPING` on
+- **Visual QA absolute SSIM floor fails low-poly meshes — FIXED.**
+  `verify_visual_qa.py` used to raise `VOXEL_STEPPING` on
   `cand_eval["mean_ssim"] <= 0.88`, an absolute floor independent of the delta.
-  A mesh whose render is inherently low-SSIM then fails on any changed output
-  even when baseline and candidate are visually identical: thingi10k_100827
+  A mesh whose render is inherently low-SSIM then failed on any changed output
+  even when baseline and candidate were visually identical: thingi10k_100827
   (47 vertices / 71 faces) measured `mean_ssim` 0.540 (baseline) vs 0.541
   (candidate), `delta_vqa 0.0`, identical geometry metrics, yet it was flagged
   `VISUAL-WORSE` in the T2 of PR #117. The non-determinism skip
-  (`.claude/skills/sutura-verify/SKILL.md`, quality mode) now masks this on
-  fTetWild-adopting meshes, but the floor itself is wrong. Fix by
-  making it relative to the baseline (fire on the delta, e.g. `delta_ssim <=
-  -0.06`, or a delta-relative band) as part of the core-oracle calibration. Do
-  not change the threshold now.
+  (`.claude/skills/sutura-verify/SKILL.md`, quality mode) had masked this on
+  fTetWild-adopting meshes. The flag now fires on the base-relative delta
+  (`delta_ssim <= -0.06`) only; the absolute floor is removed and the reason
+  text reports the drop, found during the core-oracle calibration.
 
 ## Backlog resolved
 

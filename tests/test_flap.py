@@ -313,6 +313,25 @@ def test_flap_step_never_raises_on_malformed_report():
     assert len(out_t) == len(t)
 
 
+def test_flap_work_budget_is_deterministic():
+    """The same input + work budget must produce byte-identical arrays, and the
+    report must carry the deterministic counter (never a time-based decision)."""
+    v, t = _holed_sphere(subdiv=4, radius=5.0, cut=3.5)
+    out1_v, out1_t, rep1 = flap.flap_fill(v, t, separate_stl=False,
+                                          work_budget=10**9)
+    out2_v, out2_t, rep2 = flap.flap_fill(v, t, separate_stl=False,
+                                          work_budget=10**9)
+    assert rep1.get('work_units') is not None, rep1
+    assert rep1['work_units'] == rep2['work_units'], (rep1, rep2)
+    assert np.array_equal(np.asarray(out1_v), np.asarray(out2_v))
+    assert np.array_equal(np.asarray(out1_t), np.asarray(out2_t))
+    # A zero budget charges nothing and leaves every loop to Stage-1.
+    out3_v, out3_t, rep3 = flap.flap_fill(v, t, separate_stl=False,
+                                          work_budget=0)
+    assert rep3.get('work_units') == 0, rep3
+    assert len(out3_t) == len(t), (len(out3_t), len(t))
+
+
 def test_flap_step_quick_budget_skips_and_caches_across_repeats():
     # MEDIUM-3: the quick preset disables Flap entirely.
     v, t = _holed_sphere(radius=7.0, cut=5.0)
@@ -362,6 +381,49 @@ def test_flap_final_safety_net_helpers():
     assert repair._flap_off_preferred(on, clean) is True
     assert repair._flap_off_preferred(on, (None, m)) is False
 
+    # Option B: a candidate SI rise compares the two FINAL SI counts; parts
+    # come before SI, and an SI win never buys a part-count change.
+    def _verdict(reason, si, parts=1, holes=0, nm=0):
+        return (reason, {'holes': holes, 'non_manifold': nm,
+                         'input_parts': 1, 'output_parts': parts,
+                         'watertight': holes == 0 and nm == 0, 'si': si})
+
+    # 1038439: ON final SI 350, OFF final SI 405 -> keep ON.
+    assert repair._flap_off_preferred(
+        _verdict('si_candidate_rise', 350), _verdict(None, 405)) is False
+    # 40886: ON 232, OFF 177 -> take OFF.
+    assert repair._flap_off_preferred(
+        _verdict('si_candidate_rise', 232), _verdict(None, 177)) is True
+    # A lower OFF SI with a different part count is not accepted.
+    assert repair._flap_off_preferred(
+        _verdict('si_candidate_rise', 232, parts=2),
+        _verdict(None, 177, parts=1)) is False
+    # Damage still dominates SI.
+    assert repair._flap_off_preferred(
+        _verdict('si_candidate_rise', 1, holes=1),
+        _verdict(None, 999, holes=0)) is True
+    # Unknown SI (above the exact cap) falls back to the pre-SI tie.
+    assert repair._flap_off_preferred(
+        _verdict('si_candidate_rise', None),
+        _verdict(None, 177)) is False
+
+
+def test_flap_si_rise_is_flagged_not_rejected():
+    from sutura_engine.pipeline.adopt_guard import (
+        check_candidate, policy_for,
+    )
+    guard = check_candidate(1000, 500, 1200, 600, base_si=383,
+                            candidate_si=479, measure_si=False,
+                            policy=policy_for('flap'))
+    assert guard.ok and guard.fields['si_flagged'] is True, guard
+    assert guard.fields['guard_rejected'] is None, guard
+    assert repair._flap_si_rose({'baseline_self_intersections': 383,
+                                 'candidate_self_intersections': 479}) is True
+    assert repair._flap_si_rose({'baseline_self_intersections': 405,
+                                 'candidate_self_intersections': 350}) is False
+    assert repair._flap_si_rose({'baseline_self_intersections': None,
+                                 'candidate_self_intersections': 479}) is False
+
 
 def test_flap_off_leaves_no_report_key():
     v, t = _cube((10.0, 10.0, 10.0))
@@ -406,6 +468,24 @@ def test_flap_safety_net_does_not_rerun_tamponade():
 
     assert seen and seen[0] is True, seen
     assert len(seen) == 2 and seen[1] is False, seen
+
+
+def test_flap_work_budget_calibrated_for_main_accepted_loops():
+    """The balanced budget must not skip a 216-vertex loop (m^3 ~ 10.1 M).
+
+    The earlier 1.6 M budget skipped that loop on 41937 while the old 15 s
+    wall clock completed it (234-face patch, main SI 193); the result was a
+    20-face stub and SI 454.  The calibration keeps the former 15/30/60 s
+    preset ratios and covers the largest main-accepted loop observed.
+    """
+    from sutura_engine.pipeline.tiers import flap as flap_tier
+    bal = flap_tier.FLAP_WORK_BY_INTENSITY['balanced']
+    assert bal >= 10_077_696, bal  # 216^3, the main-accepted 41937 loop
+    by = flap_tier.FLAP_WORK_BY_INTENSITY
+    assert by['thorough'] == 2 * bal, by
+    assert by['extreme'] == 4 * bal, by
+    assert by['quick'] == 0, by
+    assert flap_tier.FLAP_DEFAULT_WORK == bal, (flap_tier.FLAP_DEFAULT_WORK, bal)
 
 
 if __name__ == '__main__':

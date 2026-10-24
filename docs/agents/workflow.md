@@ -116,7 +116,10 @@ Options window, never in the way of the plain repair.
 
 Long tests, corpus runs, benchmarks and release builds go through the `sq`
 queue (one heavy job at a time, results in `~/.sq/`); workers do not wait on
-them. Full rules: `.claude/skills/sutura-dev/SKILL.md` (Heavy jobs).
+them. The runner surfaces each finished job to the worker as a `sq: ...` line,
+and a worker waiting on the lead's decision or review ends its last message
+with `@lead` on its own line. Full rules: `.claude/skills/sutura-dev/SKILL.md`
+(Heavy jobs).
 
 ## README upkeep
 

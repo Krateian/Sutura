@@ -125,7 +125,7 @@ def test_seam_weld_merges_only_close_boundary_vertices():
 
 class _Spec:
     coaptation_max_faces = 300000
-    coaptation_timeout = 180.0
+    coaptation_work = 1_000_000
 
 
 def test_tier_disabled_is_identity():
@@ -158,7 +158,7 @@ def test_tier_skips_over_cap():
 
     class _Tiny:
         coaptation_max_faces = 2
-        coaptation_timeout = 180.0
+        coaptation_work = 1_000_000
     stats = {}
     coaptation_tier(v, f, v, f, {}, stats, '/tmp', coaptation=True,
                     spec=_Tiny())

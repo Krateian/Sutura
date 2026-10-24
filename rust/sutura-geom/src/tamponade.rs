@@ -27,7 +27,7 @@ use faer::sparse::{SparseColMat, Triplet};
 use faer::Mat;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Boundary loops up to this size are triangulated by the exact O(n^3)
 /// minimum-area DP; larger loops use the O(n^2) ear-clipping fallback.
@@ -165,15 +165,11 @@ const TRIM_MAX_VERTICES: usize = 64;
 /// collar around one rim, so a large loop is still bounded.
 const PATCH_SI_MAX_TRIS: usize = 400;
 
-// --- per-loop wall-clock allowance ----------------------------------------
-/// When a budget is set, each boundary loop gets its own allowance (seconds):
-/// a flat base plus a term proportional to the rim vertex count, so a single
-/// genuine hole is not cut short by the mesh size. plate_a_dent's 29-vertex rim
-/// needs ~2.7 s and the removed mesh-scaled cap gave it only 0.44 s. The whole
-/// run is still capped by `TamponadeConfig::time_budget_s` (the intensity
-/// preset), so the loop allowance only ever loosens an under-sized preset.
-const LOOP_BUDGET_BASE_S: f64 = 0.30;
-const LOOP_BUDGET_PER_VERTEX_S: f64 = 0.10;
+// --- deterministic work budget --------------------------------------------
+/// The tier is bounded by counted cut-grid cells (`throat_cells`), not by a
+/// wall clock: a loop's cost is charged before its min-cut starts, so the same
+/// input and preset stop at the same loop on every machine.
+const LOOP_WORK_PLUG_VERTEX: u64 = 64;
 /// Deviation gate against the reference surface (allows the curved patch).
 const REF_DEV_FACTOR: f64 = 3.0;
 
@@ -200,7 +196,8 @@ pub struct TamponadeConfig {
     pub h_min: Option<f64>,
     pub melt_si: bool,
     pub max_nodes: Option<usize>,
-    pub time_budget_s: Option<f64>,
+    /// Deterministic work budget in cut-grid cells.  `None` = unlimited.
+    pub work_budget_cells: Option<u64>,
     pub openings_gate: Option<bool>,
     /// Use the fast generalized-winding approximation (Barill et al. 2018) for
     /// the min-cut's bulk winding queries, refining exactly near a decision
@@ -214,7 +211,7 @@ impl Default for TamponadeConfig {
             h_min: None,
             melt_si: true,
             max_nodes: None,
-            time_budget_s: None,
+            work_budget_cells: None,
             openings_gate: None,
             fwn: false,
         }
@@ -279,6 +276,8 @@ pub struct TamponadeInfo {
     /// Reload-welded closed-shell count of the tier output.
     pub closed_shells_after: usize,
     pub seconds: f64,
+    /// Deterministic cut-grid cells charged by the loop gate (diagnostic).
+    pub work_units: u64,
     pub reason: String,
     /// One entry per boundary loop: its vertex count and the decision taken
     /// (`sealed`, `tiny_sealed`, or a rejection reason). Diagnostic only.
@@ -4350,28 +4349,6 @@ pub fn stent_plug_enabled() -> bool {
 const STENT_PRESSURE: f64 = 6.0;
 /// Active-set iterations for one stent candidate.
 const STENT_MAX_ITERS: usize = 6;
-/// Per-loop wall-clock cap for the fallback pass, in milliseconds.
-const STENT_LOOP_BUDGET_MS: u64 = 500;
-/// Additional per-rim-vertex slice (ms): a large loop needs more active-set
-/// iterations than a 4-vertex crater, so the per-loop slice grows with the rim
-/// size. Clamped by the tier's global deadline and by `STENT_LOOP_MAX_BUDGET_MS`.
-const STENT_LOOP_BUDGET_PER_VERT_MS: f64 = 8.0;
-/// Absolute per-loop slice ceiling (ms).
-const STENT_LOOP_MAX_BUDGET_MS: u64 = 4000;
-
-/// Per-loop stent wall-clock slice, scaled by the rim size and clamped by the
-/// tier deadline when one is set.
-fn stent_loop_deadline(m: usize, global: Option<Instant>) -> Option<Instant> {
-    let ms = STENT_LOOP_BUDGET_MS
-        + (STENT_LOOP_BUDGET_PER_VERT_MS * m as f64) as u64;
-    let ms = ms.min(STENT_LOOP_MAX_BUDGET_MS);
-    let local = Instant::now() + Duration::from_millis(ms);
-    match global {
-        Some(g) => Some(if local < g { local } else { g }),
-        None => Some(local),
-    }
-}
-
 /// Prune back-and-forth antenna spur pairs where `dist(pts[i], pts[i+2]) < 1e-4`.
 /// Operates on a LOCAL rim copy only: the caller must never pass the rim that
 /// feeds the reference fit / other tiers.
@@ -5208,9 +5185,10 @@ fn stent_attempt(
     if rim_p.len() < 3 {
         return false;
     }
-    // One shared wall-clock slice for the whole (original) loop, per the
-    // multi-stent budget rule; sub-plugs share it.
-    let loop_deadline = stent_loop_deadline(rim_p.len(), deadline);
+    // The whole (original) loop is pre-charged against the tier's deterministic
+    // work budget in `tamponade_repair`; sub-plugs share that allowance rather
+    // than a per-loop wall-clock slice, so the prepass cannot depend on load.
+    let loop_deadline = deadline;
     let sub_loops = partition_loop(&rim_p, out_verts, bvh, h);
 
     // Build one candidate per sub-loop (no state mutated yet).
@@ -5776,9 +5754,10 @@ pub fn tamponade_repair(
     // edge). Pre-existing non-manifold edges of the input are preserved.
     let mut edge_count = edge_use_counts(&out_tris);
 
-    let deadline = config
-        .time_budget_s
-        .map(|b| t0 + Duration::from_secs_f64(b.max(0.0)));
+    // No wall-clock deadline participates in a decision (see the work budget
+    // below).  Inner helpers still accept an optional deadline; it stays None.
+    let deadline: Option<Instant> = None;
+    let mut work_used: u64 = 0;
     // Debug switch that restores the per-cell winding evaluation, for
     // byte-identical regression comparison against the per-component path.
     let percell = std::env::var("SUTURA_TAMP_PERCELL").is_ok();
@@ -5834,11 +5813,6 @@ pub fn tamponade_repair(
     let mut stent_group_counter = 0usize;
 
     while let Some((loop_v, group_hint, region_key)) = queue.pop_front() {
-        if deadline_passed(deadline) {
-            info.reason = "timeout exceeded".to_string();
-            break;
-        }
-
         let mut rim: Vec<u32> = loop_v.clone();
         rim.dedup();
         if rim.len() >= 2 && rim.first() == rim.last() {
@@ -5847,6 +5821,18 @@ pub fn tamponade_repair(
         if rim.len() < 3 {
             continue;
         }
+        // Deterministic work gate: charge the cut-grid cells (plus a small
+        // per-rim term for the plug solve) before the loop starts.  The stop
+        // point is a pure function of the input and the preset.
+        let loop_cost = throat_cells(&rim, verts, h) as u64
+            + rim.len() as u64 * LOOP_WORK_PLUG_VERTEX;
+        if let Some(limit) = config.work_budget_cells {
+            if work_used.saturating_add(loop_cost) > limit {
+                info.reason = "work budget exceeded".to_string();
+                break;
+            }
+        }
+        work_used = work_used.saturating_add(loop_cost);
 
         // The group's outer rim drives the reference fit so a fragment of a
         // pinched hole seals at the level of the whole hole. In the default
@@ -5933,18 +5919,9 @@ pub fn tamponade_repair(
         };
         let mincut_skipped = !tiny && single_shell && reference.is_some();
 
-        // Per-loop allowance, clamped by the global preset deadline. Only
-        // applied when a budget is set (`None` = unlimited, e.g. direct library
-        // calls) so the engine default is unchanged.
-        let loop_deadline = match deadline {
-            Some(global) => {
-                let allow =
-                    LOOP_BUDGET_BASE_S + LOOP_BUDGET_PER_VERTEX_S * rim.len() as f64;
-                let local = Instant::now() + Duration::from_secs_f64(allow);
-                Some(if local < global { local } else { global })
-            }
-            None => None,
-        };
+        // No per-loop wall clock: the cut runs to completion; the loop gate
+        // above already charged its deterministic cell cost.
+        let loop_deadline: Option<Instant> = None;
 
         if !tiny && !mincut_skipped {
             let tc0 = Instant::now();
@@ -6638,7 +6615,7 @@ pub fn tamponade_repair(
             &out_tris,
             h,
             model_diag,
-            config.time_budget_s,
+            None,
             &melt_params,
         );
         out_verts = m.verts;
@@ -6662,6 +6639,7 @@ pub fn tamponade_repair(
             "ok".to_string()
         };
     }
+    info.work_units = work_used;
     info.seconds = t0.elapsed().as_secs_f64();
     if profile {
         eprintln!(

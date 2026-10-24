@@ -137,6 +137,12 @@ actual numbers so you can see they stayed inside the budget. For multi-object
 budgets in its repair-options dialog and, after a batch, offers to re-run
 budget-declined files with `--force` after an explicit confirmation.
 
+**Automatic method fallback.** When the first repair is not watertight, Sutura
+may try a few ranked methods. Before it does, it can skip a method the detected
+damage makes pointless: duplicate faces skip Join, and interior faces or an
+interior region skip Transplant and Wall Thicken. The baseline repair is never
+changed by this; `SUTURA_TRIAGE_PRUNE=0` restores the previous fallback order.
+
 Every repair report also carries a **repair confidence score**: a single
 0–100 value (`repair_confidence` in JSON) with a High/Medium/Low label that
 combines the stage 2 outcome, remaining holes, classifier confidence, tuning

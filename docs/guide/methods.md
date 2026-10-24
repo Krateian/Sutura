@@ -5,9 +5,9 @@
 ## Triage Engine intensity presets and named profiles
 
 The effort spent *after* Stage 1 — the deep-repair ladder, the fTetWild
-tier's on/off state, its input-size cap and wall-clock budget, the Graft
-shell-wrap tier's own input-size cap and wall-clock budget, the dense
-boundary decimation ladder and the Hausdorff sample count — is grouped into
+tier's on/off state and its input-size cap, the Graft shell-wrap tier's own
+input-size cap, the dense boundary decimation ladder and the Hausdorff sample
+count — is grouped into
 four read-only presets plus any number of user-named profiles, selected with
 `--intensity <name>` (or `SUTURA_INTENSITY`, or the `intensity` key of
 `~/.config/sutura/config.json`; the flag wins, then the environment, then the
@@ -35,6 +35,28 @@ values and exits.
   every rung of a wastefully dense boundary fails, one more fTetWild run with
   the tetrahedron-quality optimisation on before falling back to the
   undecimated boundary.
+
+### Deterministic work budgets
+
+Repair tiers that change the output use **countable work budgets**, not wall
+clocks: Flap charges a loop's `m^3` dynamic-programme cost before it starts and
+each alternative patch before it is built (the Balanced/Thorough/Extreme
+budgets are calibrated to the former 15/30/60-second presets, so a large but
+fillable loop is not skipped for cost); Splint counts Delaunay tetrahedra;
+Coaptation counts total body faces; Tamponade charges each boundary loop against
+the tier work budget and no longer stops a stent search on a per-loop wall-clock
+slice; Graft's closing ladder counts grid cells.
+The same input and preset therefore produce the same mesh on a fast or a loaded
+machine. `seconds` fields remain in the reports as measurements only.
+
+Two documented exceptions remain. **fTetWild** is an external, itself
+non-deterministic solver: its `ftetwild_timeout` stays as a per-attempt
+watchdog, the deterministic bounds are the input-face cap and the fixed
+attempt plan, and an `aborted_time` result is reported explicitly rather than
+claimed to be deterministic. **Dressing**'s `within_time_budget` is report-only
+(a warning) and never gates adoption. Graft's outer wall-clock abort is likewise
+a documented watchdog; its output decision is the deterministic grid-cell work
+budget.
 
 The extra `threshold` rung targets the failure mode where a wastefully dense
 fTetWild boundary cannot be decimated watertight at the lower `1.5×`/`3×`
@@ -161,14 +183,22 @@ order. Without a flag the repair is **auto**: today's default pipeline runs
 first and, when its result is already strict-watertight, the output is
 byte-identical to before. Only when that baseline fails are ranked methods
 tried (at most three extras; a geometry-inventing method such as fTetWild only
-when its recommendation score is high enough), under a wall-clock budget of
-`min(max(30 s, 2 × baseline), 120 s)`: once the budget is exhausted no further
-method is started (a running attempt is not interrupted), the best candidate is
-kept and the result is marked with a "fallback budget reached" note. A baseline
-that already took longer than 120 s skips the ranked fallback entirely
-("fallback skipped: baseline too slow"). An explicit
+when its recommendation score is high enough). The fallback ladder is
+**count-budgeted**, not time-budgeted: at most three ranked candidate methods
+are tried, each with its own deterministic tier budget. When the count is
+exhausted the best candidate is kept and the result is marked with a
+"fallback attempts exhausted" note. A very high wall-clock watchdog (3600 s)
+exists only as a batch safety net; if it ever trips it is reported explicitly
+as `fallback_watchdog`, never silently treated as a normal ladder stop, and it
+is not expected to fire on an unloaded machine. An explicit
 `--deep-repair`/`--no-fallback-ftetwild` keeps today's exact behaviour instead
 of escalating, and explicitly tagged methods (`--methods`) are never budgeted.
+Before trying the ranked methods, the automatic path can skip a method that the
+detected damage makes pointless: duplicate faces skip Join (#4), and interior
+faces or an interior region skip Transplant (#11) and Wall Thicken (#15). This
+only affects the automatic fallback order; the baseline repair is untouched.
+`SUTURA_TRIAGE_PRUNE=0` restores the previous order.
+
 For multi-object 3MF files, auto escalation operates per object: objects that
 reload watertight after the baseline repair remain untouched, while failing
 objects escalate through ranked fallback methods independently (reporting
@@ -318,11 +348,24 @@ It is **on by default**. `--no-flap` (or `SUTURA_FLAP=0`) turns it off, `--flap`
 as the Options → Repair checkbox **Flap surface hole fill**. A candidate
 is adopted only when the reload-honest `holes + non-manifold` count does not
 worsen; a flatness-based cleanup then drops zero-thickness debris sheets and
-never a legitimate solid part. When the thin-plate patch is rejected (a coplanar
+never a legitimate solid part. A pre-chain exact-SI rise is **flagged, not
+rejected**: Stage-1/Stage-2 can lower it (or raise it further), so a final
+safety net measures both the Flap-ON and Flap-OFF finals and keeps the better
+one, scored damage → parts → exact SI. A lower SI never buys a part-count
+change. Above the exact classifier's 150k-face cap the SI is unknown and the
+comparison falls back to damage/parts; `--si-mode off` skips the report/deep-
+repair SI policy but the Flap guard still measures it internally for this
+decision. When the thin-plate patch is rejected (a coplanar
 fold), the loop tries the membrane, reference-fairing and unfaired refined
 candidates in turn and commits the first that passes the same guards within the
-Flap time budget; set `SUTURA_FLAP_SELECT=0` to disable this per-loop selection
-and keep the thin-plate-only behaviour.
+deterministic Flap work budget (`FLAP_WORK_BY_INTENSITY`; a loop's `m^3` DP cost
+is charged before it starts, then each alternative before it is built). The
+Balanced, Thorough and Extreme budgets match the former 15, 30 and 60-second
+presets, so a large but fillable loop is not skipped for cost. The
+wall clock is recorded for the report only and never decides adoption, so the
+same input and preset produce the same patch on any machine or load; set
+`SUTURA_FLAP_SELECT=0` to disable this per-loop selection and keep the
+thin-plate-only behaviour.
 
 The fill core is the Rust implementation (`sutura_geom.flap_fill`, part of the
 `sutura_geom` extension), which is a hard requirement of the runtime. The
@@ -395,8 +438,13 @@ Because the adoption gate is topological, a plug that is clean but changes the s
 Self-intersections are **report-only** (a slicer unions overlapping volumes), so
 they never block adoption. The Rust extension must provide
 `sutura_geom.tamponade` (there is no numpy fallback); otherwise the tier reports
-itself unavailable and is skipped. The wall-clock budget follows the intensity
-preset (`quick` disables the tier). The report carries a `tamponade` key with
+itself unavailable and is skipped. The deterministic work budget follows the
+intensity preset in cut-grid cells (`TAMPONADE_WORK_BY_INTENSITY`; `quick`
+disables the tier); a loop's `throat_cells` cost is charged before its min-cut,
+and the melt pass is bounded by its layer count, not a clock. The prepass
+override `SUTURA_TAMPONADE_PREPASS_BUDGET` is a count in the same units (the
+old seconds meaning is retired). The report carries
+a `tamponade` key with
 `ran`, `adopted`, `reason`, `plugs`, `plug_faces`,
 `melt_layers_tried`/`_accepted`/`_rolled_back`, `micro_welds_ok`/`_failed`,
 `healthy_faces_kept`, `input_faces`, `output_faces` and `seconds`.
@@ -416,9 +464,11 @@ library default keeps `deep_repair=None` byte-identical). A candidate is adopted
 only when it reloads strict-watertight; when the raw cut is closed but not
 two-manifold, it is first rebuilt through the Stage-2 Manifold bridge and the
 rebuild is kept only when it is no worse on holes and non-manifold edges. Its
-cost is bounded by a resolution cap (`SPLINT_RES=128`) and an input-face cap;
-the wall-clock budget is an outer all-or-nothing abort (the Rust cut itself is a
-single non-interruptible call). The report carries a `splint` key with `ran`,
+cost is bounded by a resolution cap (`SPLINT_RES=128`), an input-face cap and a
+deterministic work budget in Delaunay tetrahedra (`SPLINT_WORK_BY_INTENSITY`);
+the Rust cut itself is a single, non-interruptible call, so when the budget is
+exhausted the whole candidate is dropped. The
+report carries a `splint` key with `ran`,
 `adopted`, `reject_reason`, `input_faces`, `output_faces`, `output_parts`,
 `out_manifold`, `cut_shells`, `construct_status`, `manifold_postprocessed`,
 `res`, `adaptive*` and `seconds`.
@@ -446,8 +496,9 @@ watertight, exact self-intersections 0 and below the baseline's measurable
 count, and no worse on holes, non-manifold edges or component count. Otherwise
 the ladder result is returned byte-identical, so a mesh that cannot benefit is
 unchanged. Its cost is bounded by an input-face cap (`COAPTATION_MAX_FACES`,
-`skipped_budget`/`reject_reason='too_large'`) and an outer all-or-nothing
-wall-clock abort (`COAPTATION_TIMEOUT`). The report carries a `coaptation` key
+`skipped_budget`/`reject_reason='too_large'`) and a deterministic work budget
+in total body faces (`COAPTATION_WORK_BY_INTENSITY`) checked before the exact
+union. The report carries a `coaptation` key
 with `ran`, `adopted`, `gate`, `ulp_k`, `tol`, `bodies_in`, `bodies_after_weld`,
 `merged`, `baseline`, `candidate`, `input_faces`, `output_faces`,
 `skipped_budget`, `aborted`, `reject_reason`, `reason`, `warnings` and
@@ -487,12 +538,19 @@ contains severe damage or complex topological defects.
 6. **Deterministic closing ladder**: The closing-radius ladder stops on a deterministic
    work budget derived from the input grid and the preset, not on a wall clock, so the
    same input and preset give the same mesh on a fast or a loaded machine. The wall-clock
-   budget is only an outer safety abort: if it trips, Graft is abandoned, the stage-1
-   result is kept, and both the report and the GUI say so plainly.
+   budget is only a documented outer watchdog/safety abort: if it trips, Graft is
+   abandoned, the stage-1 result is kept, and both the report and the GUI say so
+   plainly. It is not a normal budget and does not participate in the deterministic
+   work decision.
 7. **Input-coverage guard**: an envelope is accepted only if it covers at least half of the
    input's real extent (`graft.GRAFT_MIN_INPUT_COVERAGE = 0.5`; the report carries
    `input_coverage` and `coverage_ok`), so a collapsed result that happens to be accurate
    where it remains is rejected and the stage-1 result is kept.
+8. **Self-intersection policy**: a Graft candidate that reduces holes or
+   non-manifold edges but raises the exact self-intersection count is accepted
+   and the rise is flagged (`si_flagged`) instead of rejecting the candidate,
+   matching fTetWild. Without that topology gain the strict non-rise rule
+   applies. The face/vertex blow-up ceiling is unchanged.
 
 ### Dressing (variable-viscosity volumetric skin, #16)
 

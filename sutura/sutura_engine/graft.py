@@ -114,7 +114,10 @@ GRAFT_WORK_BUDGET_BY_INTENSITY = {
     'thorough': GRAFT_WORK_MAX_ATTEMPTS * 10_000_000,
     'extreme': GRAFT_WORK_MAX_ATTEMPTS * 25_000_000,
 }
-# Outer wall-clock abort message (shared by the report and the human/GUI line).
+# Outer wall-clock WATCHDOG (documented exception, not a decision budget).  A
+# trip abandons the whole ladder and keeps the stage-1 result; on an unloaded
+# machine it is never reached.  The output decision is the deterministic
+# grid-cell work budget above, so the two are independent.
 GRAFT_ABORT_MESSAGE = (
     "Graft was stopped for time (%s budget, checked between attempts); "
     "the stage-1 result was kept")

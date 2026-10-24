@@ -6,6 +6,16 @@
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
 
+- **v0.9.5 — 2026-10-25** — **Diagnosis v2** adds a detailed, deterministic
+  analysis report (orientation, parts, self-intersections, boundary loops,
+  thin walls and more) without changing the repair itself. Repairs are now
+  repeatable: the Flap, Tamponade, Coaptation, Graft and Splint limits and the
+  Full Mend self-intersection excise count work instead of elapsed time, so the
+  same file gives the same result on a fast or a busy machine (the optional
+  fTetWild add-on stays outside this guarantee). The automatic fallback now
+  skips methods the detected damage makes pointless, and Flap, Graft, Tamponade,
+  coplanar contact and internal cavities are safer. The documentation moved
+  into topic pages in English and Turkish.
 - **v0.9.4 — 2026-10-23** — **Coaptation (#19)**, an on-by-default seam-weld
   union: it joins a folded or overlapping multi-body model along the seam where
   the parts touch and folds the closed parts into one clean solid, adopted only

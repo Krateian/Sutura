@@ -28,7 +28,6 @@ use std::collections::{HashMap, HashSet};
 
 /// Hard wall-clock ceiling for the whole melt pass, regardless of the tier
 /// budget.  The per-layer exact SI re-scan dominates on scattered-SI meshes.
-const MELT_MAX_SECONDS: f64 = 8.0;
 
 /// A self-intersection proper-face scan: the face mask, the proper crossing
 /// face pairs (used to cluster folds spatially) and the flagged-face count.
@@ -667,7 +666,7 @@ pub fn melt_si(
     tris: &[[u32; 3]],
     h: f64,
     model_diag: f64,
-    time_budget_s: Option<f64>,
+    _time_budget_s: Option<f64>,
     params: &MeltParams,
 ) -> MeltOutcome {
     let mut out = MeltOutcome {
@@ -701,28 +700,14 @@ pub fn melt_si(
     let eps = h_min;
     let ordered = order_sectors(&sectors, verts, tris, &df, eps);
 
-    let t0 = std::time::Instant::now();
     let mut cur_v = out.verts.clone();
     let mut cur_t = out.tris.clone();
     let mut bvh = bvh;
     let mut si_cur = scan.count;
-    // The melt pass gets a bounded slice of the tier budget: on a mesh with
-    // hundreds of small scattered sectors the per-layer exact SI re-scan is the
-    // dominant cost, and the local gains do not justify spending the whole
-    // Tamponade budget.
-    let budget = Some(
-        time_budget_s
-            .map(|b| b.min(MELT_MAX_SECONDS))
-            .unwrap_or(MELT_MAX_SECONDS),
-    );
-
+    // The melt pass is bounded by the deterministic layer count
+    // (`params.max_layers`) and per-sector face cap; a wall clock never stops
+    // it.  The former 8 s slice made the result depend on machine load.
     for (si, _depth) in ordered.iter().take(params.max_layers) {
-        if let Some(b) = budget {
-            if t0.elapsed().as_secs_f64() > b {
-                out.reason = "melt: timeout exceeded".to_string();
-                break;
-            }
-        }
         let sector = &sectors[*si];
         let sector_set: HashSet<usize> = sector.iter().copied().collect();
         // The whole buried lobe of the fold: the SI faces plus one vertex ring.
@@ -1186,18 +1171,18 @@ mod tests {
     }
 
     #[test]
-    fn melt_budget_stops_cleanly() {
+    fn melt_layer_cap_stops_cleanly() {
         let (verts, tris) = flap_through_wall();
         let params = MeltParams {
             max_face_fraction: 0.5,
+            max_layers: 0,
             ..MeltParams::default()
         };
-        // A negative budget expires before the first layer is attempted.
-        let out = melt_si(&verts, &tris, 0.05, 1.8, Some(-1.0), &params);
+        // The deterministic layer cap stops before any layer is attempted.
+        let out = melt_si(&verts, &tris, 0.05, 1.8, None, &params);
         assert_eq!(out.layers_tried, 0);
         assert_eq!(out.layers_accepted, 0);
         assert_eq!(out.verts, verts);
         assert_eq!(out.tris, tris);
-        assert!(out.reason.contains("timeout"), "reason: {}", out.reason);
     }
 }

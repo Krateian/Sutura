@@ -7,11 +7,9 @@ report; partial repairs are fine, hard errors/crashes are not). Also prints a
 compact result table so the expected outcomes stay visible.
 
 The untagged auto repair includes the ranked fallback, which is bounded by the
-wall-clock budget in ``methods._auto``
-(``min(max(AUTO_FALLBACK_MIN_S, AUTO_FALLBACK_BUDGET_FACTOR * baseline_s),
-AUTO_FALLBACK_MAX_S)``; a baseline slower than the ceiling skips the fallback
-entirely), so the suite stays within the CI budget while still exercising the
-real default path.
+deterministic candidate count in ``methods._auto`` (``AUTO_MAX_ATTEMPTS``), so
+the suite exercises the real default path without a wall-clock-dependent
+method selection.  A very high watchdog remains as a batch safety net only.
 
 The corpus is deliberately bounded (97 MB, 40 meshes): Artec scan decimations (CC BY 4.0,
 decimated with preservetopology so defect counts stay close to the originals)

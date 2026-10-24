@@ -262,6 +262,8 @@ STRINGS = {
         'method_note_back_surface': 'back surface estimated',
         'method_note_fallback_budget': 'fallback budget reached',
         'method_note_fallback_skipped': 'fallback skipped: baseline too slow',
+        'method_note_fallback_attempts': 'fallback attempts exhausted',
+        'method_note_fallback_watchdog': 'fallback watchdog exceeded',
         'issue_volume_warning': 'Volume change', 'issue_stage2_skipped': 'Stage 2 skipped',
         'issue_stage2_error': 'Stage 2 error', 'issue_partial': 'Partial repair (holes remaining)',
         'issue_reload_non_manifold_vertices': 'Saved mesh reloads with non-manifold vertices',
@@ -958,6 +960,8 @@ STRINGS = {
         'method_note_back_surface': 'arka yüzey tahmin edildi',
         'method_note_fallback_budget': 'yedek yöntem bütçesine ulaşıldı',
         'method_note_fallback_skipped': 'yedek yöntem atlandı: temel onarım çok yavaş',
+        'method_note_fallback_attempts': 'yedek yöntem deneme sayısı tükendi',
+        'method_note_fallback_watchdog': 'yedek yöntem güvenlik süresi aşıldı',
         'issue_volume_warning': 'Hacim değişimi', 'issue_stage2_skipped': 'Stage 2 atlandı',
         'issue_stage2_error': 'Stage 2 hatası', 'issue_partial': 'Kısmi onarım (delik kaldı)',
         'issue_reload_non_manifold_vertices': 'Kaydedilen mesh, manifold olmayan vertexlerle yeniden yükleniyor',
@@ -1552,6 +1556,11 @@ _METHOD_NOTE_KEYS = {'back surface was estimated': 'method_note_back_surface',
 def _method_note(note):
     """Localized method-adoption note (falls back to the report text)."""
     key = _METHOD_NOTE_KEYS.get(note)
+    if key is None and isinstance(note, str):
+        if note.startswith('fallback attempts exhausted'):
+            key = 'method_note_fallback_attempts'
+        elif note.startswith('fallback watchdog exceeded'):
+            key = 'method_note_fallback_watchdog'
     return _t(key) if key else note
 
 

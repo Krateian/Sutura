@@ -82,6 +82,12 @@ Single source of truth for Claude, OpenCode workers and other agents.
 - After queueing, the worker does not sleep-poll: it reports the job name and
   moves on to light work (plan, review, docs, small Python edits). The lead
   watches the queue and hands the result file back for analysis.
+- When a queued job finishes, the runner surfaces the outcome to the worker as
+  a `sq: ...` line (job name, exit code, wall time, load); read the result file
+  from there instead of re-running the job.
+- When a worker finishes a deliverable (plan, report, result) and is waiting
+  for the lead's decision or review, its last message ends with `@lead` on its
+  own line; the watcher only wakes the lead that way.
 - While a job runs: no second heavy job and no Rust build outside the queue.
 - Correctness results (gate, holes/nm/n2m, byte-identity, deviation) are
   valid under load. Timing results are not: jobs named `timing-*` run with

@@ -862,7 +862,7 @@ fn dressing_coat<'py>(
 /// with `info["reason"] == "no_holes"`.
 #[pyfunction]
 #[pyo3(name = "tamponade")]
-#[pyo3(signature = (verts, tris, h_min=None, melt_si=true, max_nodes=None, time_budget_s=None))]
+#[pyo3(signature = (verts, tris, h_min=None, melt_si=true, max_nodes=None, work_budget=None))]
 fn tamponade_py<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -870,7 +870,7 @@ fn tamponade_py<'py>(
     h_min: Option<f64>,
     melt_si: bool,
     max_nodes: Option<usize>,
-    time_budget_s: Option<f64>,
+    work_budget: Option<u64>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -885,7 +885,7 @@ fn tamponade_py<'py>(
         h_min,
         melt_si,
         max_nodes,
-        time_budget_s,
+        work_budget_cells: work_budget,
         openings_gate: None,
         fwn: std::env::var("SUTURA_TAMP_FWN")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -945,6 +945,7 @@ fn tamponade_py<'py>(
     d.set_item("closed_shells_before", info.closed_shells_before)?;
     d.set_item("closed_shells_after", info.closed_shells_after)?;
     d.set_item("seconds", info.seconds)?;
+    d.set_item("work_units", info.work_units)?;
     d.set_item("reason", info.reason.clone())?;
     d.set_item("loop_diag", info.loop_diag.clone())?;
     d.set_item("stent_diag", info.stent_diag.clone())?;
@@ -1010,6 +1011,11 @@ fn shell_analyze_py<'py>(
     d.set_item("unresolved_coincident_count", res.unresolved_coincident_count)?;
     d.set_item("has_internal_walls", res.has_internal_walls)?;
     d.set_item("is_disjoint", res.is_disjoint)?;
+    d.set_item("budget_exceeded", res.budget_exceeded)?;
+    d.set_item("max_coplanar_cluster_faces", config.max_coplanar_cluster_faces)?;
+    d.set_item("max_coplanar_constraints", config.max_coplanar_constraints)?;
+    d.set_item("max_plane_faces", config.max_plane_faces)?;
+    d.set_item("max_coplanar_total_faces", config.max_coplanar_total_faces)?;
     d.set_item("reason", res.reason.clone())?;
     Ok((verts_np, tris_np, d))
 }

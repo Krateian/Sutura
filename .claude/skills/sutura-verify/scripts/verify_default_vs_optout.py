@@ -518,7 +518,9 @@ def main():
                 if os.path.exists(b_stl) and os.path.exists(c_stl):
                     try:
                         sheet_path = os.path.join(out_dir, '%s_vqa_diff.png' % name)
-                        vqa_res = vvq.evaluate_visual_diff(in_path, b_stl, c_stl, out_sheet=sheet_path)
+                        vqa_res = vvq.evaluate_visual_diff(in_path, b_stl, c_stl,
+                                                           out_sheet=sheet_path,
+                                                           ref_is_input=True)
                         if vqa_res and vqa_res.get('is_visual_worse'):
                             verdict = 'VISUAL-WORSE'
                             reason = vqa_res['reason']

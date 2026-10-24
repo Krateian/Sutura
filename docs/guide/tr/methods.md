@@ -5,10 +5,10 @@
 ## Triage Engine yoğunluk presetleri ve adlandırılmış profiller
 
 Aşama 1'den *sonra* harcanan çaba — derin-onarım merdiveni, fTetWild
-katmanının açık/kapalı durumu, girdi boyut sınırı ve duvar-saati bütçesi,
-Graft shell-wrap katmanının kendi girdi boyut sınırı ve duvar-saati bütçesi,
-yoğun sınır sadeleştirme merdiveni ve Hausdorff örnek sayısı — dört salt-
-okunur preset ve istenildiği kadar kullanıcı profili ile toplanmıştır:
+katmanının açık/kapalı durumu ve girdi boyut sınırı, Graft shell-wrap
+katmanının kendi girdi boyut sınırı, yoğun sınır sadeleştirme merdiveni ve
+Hausdorff örnek sayısı — dört salt-okunur preset ve istenildiği kadar
+kullanıcı profili ile toplanmıştır:
 `--intensity <ad>` (veya `SUTURA_INTENSITY`, veya
 `~/.config/sutura/config.json` içindeki `intensity` anahtarı; bayrak, sonra
 ortam, sonra config kazanır). Aşama 1 bilinçli olarak **etkilenmez**: onarım
@@ -34,6 +34,26 @@ değerleriyle yazdırıp çıkar.
   ve savurgan yoğunlukta bir sınırın
   her basamağı başarısız olduğunda, sadeleştirilmemiş sınıra dönmeden önce
   tetrahedron kalite optimizasyonu açık bir fTetWild çalışması daha.
+
+### Deterministik iş bütçeleri
+
+Çıktıyı değiştiren onarım katmanları duvar saati yerine **sayılabilir iş
+bütçeleri** kullanır: Flap bir halkanın `m^3` dinamik-programlama maliyetini
+başlamadan, her alternatif yamayı da kurulmadan önce bütçeye yazar (Balanced/
+Thorough/Extreme bütçeleri eski 15/30/60 saniye ön ayarlarına kalibre edilmiştir,
+böylece büyük ama doldurulabilir bir halka maliyet yüzünden atlanmaz); Splint
+Delaunay tetrahedra sayısını; Coaptation toplam gövde yüzünü; Tamponad her sınır
+halkasını katman iş bütçesine yazar ve stent aramasını artık halka başına
+duvar-saati dilimiyle durdurmaz; Graft kapama merdiveni grid hücrelerini sayar.
+Böylece aynı girdi ve preset hızlı ya da yüklü makinede aynı mesh'i üretir. Raporlardaki `seconds` alanları yalnızca ölçümdür.
+
+İki belgelenmiş istisna kalır. **fTetWild** harici ve kendisi de deterministik
+olmayan bir çözücüdür: `ftetwild_timeout` deneme başına güvenlik ağı olarak
+kalır, deterministik sınırlar girdi-yüz tavanı ve sabit deneme planıdır;
+`aborted_time` açıkça raporlanır ve determinizm iddiasına dahil edilmez.
+**Dressing**'in `within_time_budget` alanı yalnızca rapordur (uyarı) ve
+adopsiyonu engellemez. Graft'ın dış duvar-saati iptali de belgelenmiş bir
+güvenlik ağıdır; çıktı kararı deterministik grid-hücresi iş bütçesidir.
 
 Fazladan `threshold` basamağı, savurgan yoğunlukta bir fTetWild sınırının
 alt `1.5×`/`3×` hedeflerinde su geçirmez sadeleştirilemediği durumu hedefler.
@@ -159,12 +179,13 @@ denenecek yöntemleri sırayla etiketler. Bayrak verilmezse onarım **otomatik**
 önce bugünkü varsayılan boru hattı çalışır ve sonucu zaten katı-su geçirmezse
 çıktı öncekiyle bayt-birebirdir. Yalnızca bu temel başarısız olursa sıralanmış
 yöntemler denenir (en fazla üç ek deneme; fTetWild gibi geometri uyduran bir
-yöntem yalnızca öneri puanı yeterince yüksekse), `min(max(30 sn, 2 × temel),
-120 sn)` duvar-saati bütçesi altında: bütçe tükenince başka yöntem başlatılmaz
-(çalışan bir deneme kesilmez), en iyi aday korunur ve sonuç "yedek yöntem
-bütçesine ulaşıldı" notuyla işaretlenir. Temel onarım tek başına 120 sn'yi
-aştıysa sıralanmış yedek yöntemler tamamen atlanır ("yedek yöntem atlandı:
-temel onarım çok yavaş"). Açık bir
+yöntem yalnızca öneri puanı yeterince yüksekse). Yedek merdiven **deneme
+sayısıyla** bütçelenir: en fazla üç sıralı aday yöntem ve her adayın kendi
+deterministik katman bütçesi. Deneme sayısı tükenince en iyi aday korunur ve
+sonuç "yedek yöntem deneme sayısı tükendi" notuyla işaretlenir. Çok yüksek bir
+duvar-saati güvenlik ağı (3600 sn) yalnızca toplu iş güvencesidir; tetiklenirse
+`fallback_watchdog` olarak açıkça raporlanır, normal bir merdiven duruşu gibi
+sessizce ele alınmaz ve yüksüz bir makinede beklenmez. Açık bir
 `--deep-repair`/`--no-fallback-ftetwild` bugünkü davranışı korur, ek denemeye
 geçmez; açıkça etiketlenen yöntemler (`--methods`) hiçbir zaman bütçelenmez.
 Çok nesneli 3MF dosyalarında otomatik kademelendirme nesne başına çalışır:
@@ -172,6 +193,12 @@ temel onarımda su geçirmez olan nesneler el değmeden korunur, başarısız ol
 bağımsız olarak önerilen yedek yöntemlerle onarılır (nesne başına `method_used`
 raporlanır). Rapor `method_used`, `methods_tried`, `method_reached_watertight` ve
 ek deneme çalıştıysa `analysis` ile `recommendations` alanlarını ekler.
+
+Sıralı yöntemler denenmeden önce otomatik yol, tespit edilen hasarın anlamsız
+kıldığı bir yöntemi atlayabilir: kopya yüzler Join (#4) yöntemini, iç yüzler
+veya bir iç bölge Transplant (#11) ve Wall Thicken (#15) yöntemlerini atlar.
+Bu yalnızca otomatik yedek sırasını etkiler; temel onarım değişmez.
+`SUTURA_TRIAGE_PRUNE=0` önceki sırayı geri getirir.
 
 **Öğrenen triyaj (yerel, sınırlı).** Anonim kullanım geçmişi etkinse her onarım
 aynı zamanda `(nesne tipi, yöntem)` başına sonucu (kabul/red) ve geçen süreyi
@@ -315,10 +342,21 @@ bırakılır, böylece her delik yine bir kapak alır.
 Onarım sekmesindeki **Flap yüzey delik doldurma** onay kutusuyla sunar. Bir
 aday yalnızca yeniden-yüklemede dürüst `delik + non-manifold` sayısı
 kötüleşmediğinde benimsenir; ardından düzlük-tabanlı bir temizlik sıfır
-kalınlıklı kalıntı tabakalarını atar, gerçek katı bir parçayı asla atmaz. İnce
+kalınlıklı kalıntı tabakalarını atar, gerçek katı bir parçayı asla atmaz.
+Zincir öncesi exact-SI artışı **reddedilmez, işaretlenir**: Stage-1/Stage-2
+onu düşürebilir (ya da daha da yükseltebilir), bu yüzden final güvenlik ağı
+Flap-ON ve Flap-OFF finallerini ölçüp daha iyisini tutar; skor hasar → parça →
+exact SI. Daha düşük SI, parça sayısı değişikliğini satın almaz. Exact
+sınıflandırıcının 150k yüz sınırı üstünde SI bilinmez ve karşılaştırma
+hasar/parçaya döner; `--si-mode off` rapor/derin-onarım SI politikasını atlar
+ama Flap guard bu karar için SI'yı yine de içeride ölçer. İnce
 plaka yaması reddedildiğinde (eş düzlemli katlanma) halka sırasıyla zar,
 referans-yumuşatma ve yumuşatılmamış inceltilmiş adayları dener ve aynı
-koruyucuları Flap zaman bütçesi içinde geçen ilkini uygular; bu halka-başına
+koruyucuları deterministik Flap iş bütçesi içinde geçen ilkini uygular (bir
+halka için `m^3` DP maliyeti başlamadan, her alternatif aday da kurulmadan önce
+bütçeye yazılır). Balanced, Thorough ve Extreme bütçeleri eski 15, 30 ve 60
+saniye ön ayarlarına karşılık gelir, böylece büyük ama doldurulabilir bir halka
+maliyet yüzünden atlanmaz. Bu halka-başına
 seçimi kapatıp yalnızca ince-plaka davranışını korumak için
 `SUTURA_FLAP_SELECT=0` ayarlayın.
 
@@ -394,8 +432,11 @@ Benimseme kapısı topolojik olduğundan, temiz ama biçimi değiştiren ya da p
 Kendini kesmeler **yalnızca raporlanır** (dilimleyici çakışan hacimleri
 birleştirir), bu yüzden benimsenmeyi hiçbir zaman engellemez. Rust eklentisinin
 `sutura_geom.tamponade` sunması gerekir (numpy için yedek yol yoktur); aksi halde
-katman kendini kullanılamaz olarak bildirir ve atlanır. Süre bütçesi yoğunluk ön
-ayarını izler (`quick` bu katmanı kapatır). Rapor `tamponade` anahtarını taşır:
+katman kendini kullanılamaz olarak bildirir ve atlanır. Deterministik iş bütçesi
+yoğunluk ön ayarını kesim-grid hücresi olarak izler
+(`TAMPONADE_WORK_BY_INTENSITY`; `quick` bu katmanı kapatır); prepass override'ı
+`SUTURA_TAMPONADE_PREPASS_BUDGET` aynı birimde bir sayıdır (eski saniye anlamı
+kaldırıldı). Rapor `tamponade` anahtarını taşır:
 `ran`, `adopted`, `reason`, `plugs`, `plug_faces`,
 `melt_layers_tried`/`_accepted`/`_rolled_back`, `micro_welds_ok`/`_failed`,
 `healthy_faces_kept`, `input_faces`, `output_faces` ve `seconds`.
@@ -416,8 +457,10 @@ yeniden yüklendiğinde kesin su geçirmez olduğunda benimsenir; ham kesim kapa
 ama iki-manifold değilse önce Stage-2 Manifold köprüsüyle yeniden inşa edilir ve
 bu yeniden inşa yalnızca delik ve non-manifold kenar sayısında daha kötü
 olmadığında tutulur. Maliyeti bir çözünürlük üst sınırıyla (`SPLINT_RES=128`) ve
-bir girdi-yüz tavanıyla sınırlıdır; duvar-saati bütçesi dışsal bir tümünü-ya-da-
-hiçbirini iptalidir (Rust kesimi tek, kesilemeyen bir çağrıdır). Rapor `splint`
+bir girdi-yüz tavanı ve Delaunay tetrahedra cinsinden deterministik bir iş
+bütçesiyle (`SPLINT_WORK_BY_INTENSITY`) sınırlıdır; Rust kesimi tek ve
+kesilemeyen bir çağrıdır, bu yüzden bütçe tükenirse adayın tamamı bırakılır.
+Rapor `splint`
 anahtarını taşır: `ran`, `adopted`, `reject_reason`, `input_faces`,
 `output_faces`, `output_parts`, `out_manifold`, `cut_shells`,
 `construct_status`, `manifold_postprocessed`, `res`, `adaptive*` ve `seconds`.
@@ -447,7 +490,8 @@ altında, ve delik/non-manifold kenar/bileşen sayısında daha kötü değil. A
 halde merdiven sonucu bayt düzeyinde aynı döndürülür, böylece fayda
 sağlayamayan bir mesh değişmez. Maliyeti bir girdi-yüz tavanıyla
 (`COAPTATION_MAX_FACES`, `skipped_budget`/`reject_reason='too_large'`) ve
-dışsal, ya-hep-ya-hiç duvar-saati iptaliyle (`COAPTATION_TIMEOUT`)
+toplam gövde yüzü cinsinden deterministik iş bütçesiyle
+(`COAPTATION_WORK_BY_INTENSITY`)
 sınırlandırılır. Rapor `coaptation` anahtarını `ran`, `adopted`, `gate`,
 `ulp_k`, `tol`, `bodies_in`, `bodies_after_weld`, `merged`, `baseline`,
 `candidate`, `input_faces`, `output_faces`, `skipped_budget`, `aborted`,
@@ -490,6 +534,11 @@ sadakatli bir morfoloji kabuk sarma katmanıdır.
    dış bir güvenlik kesintisidir: tetiklenirse Graft tümüyle bırakılır, Aşama 1 sonucu
    korunur ve hem rapor hem GUI bunu açıkça söyler.
 7. **Girdi kapsama koruması**: bir zarf, yalnızca girdinin gerçek boyutunun en az yarısını kapsıyorsa kabul edilir (`graft.GRAFT_MIN_INPUT_COVERAGE = 0.5`; rapor `input_coverage` ve `coverage_ok` taşır); böylece kalan yeri doğru olsa da çökmüş bir sonuç reddedilir ve Aşama 1 sonucu korunur.
+8. **Kendisiyle-kesişim politikası**: delikleri veya non-manifold kenarları
+   azaltan ama exact kendisiyle-kesişim sayısını artıran bir Graft adayı kabul
+   edilir ve artış işaretlenir (`si_flagged`); aday reddedilmez ve fTetWild ile
+   aynı kural uygulanır. Böyle bir topoloji kazancı yoksa katı artış-yasağı
+   kuralı geçerlidir. Yüz/köşe patlama tavanı değişmemiştir.
 
 ### Pansuman (değişken viskoziteli hacimsel kaplama, #16)
 

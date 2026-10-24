@@ -57,7 +57,9 @@ DISPLAY_NAME_FULL = "Dressing (viscosity coat)"
 # ``voxel_div`` is the preset's [min, max] diagonal divisor; the actual voxel is
 # feature-anchored and only clipped into this band.  ``r_preset`` caps the
 # bridging radius, ``max_hausdorff`` is the coat->input fidelity gate (relative
-# to the bbox diagonal) and ``time_budget`` the (soft) per-mesh budget.
+# to the bbox diagonal) and ``time_budget`` the (soft, report-only) per-mesh
+# budget: it produces the ``within_time_budget`` warning and never gates
+# adoption, so the coat decision stays deterministic.
 DRESSING_BY_INTENSITY = {
     'quick':    {'voxel_div': (120, 200), 'r_preset': 4.0,
                  'max_hausdorff': 0.0150, 'time_budget': 30.0,

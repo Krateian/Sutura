@@ -110,9 +110,9 @@ class _FakeGeom:
         self.calls = []
 
     def tamponade(self, verts, tris, h_min=None, melt_si=True, max_nodes=None,
-                  time_budget_s=None):
+                  work_budget=None):
         self.calls.append({'h_min': h_min, 'melt_si': melt_si,
-                           'time_budget_s': time_budget_s})
+                           'work_budget': work_budget})
         if self._raises is not None:
             raise self._raises
         return self._out_v, self._out_t, dict(self._info)
@@ -124,7 +124,7 @@ def _install_tier(out_v, out_t, info):
     rec = {'ran': True, 'adopted': False, 'reason': None}
     rec.update(info)
 
-    def fake(verts, tris, *, intensity=None, ml=None, time_budget_s=None):
+    def fake(verts, tris, *, intensity=None, ml=None, work_budget=None):
         return out_v, out_t, rec
     tamp.run_tamponade = fake
     return rec
@@ -150,7 +150,7 @@ def test_wrapper_maps_info():
             'micro_welds_ok': 4, 'micro_welds_failed': 0,
             'plugs_rejected': 1, 'plugs_inconclusive': 0,
             'plugs_rejected_size': 1, 'plugs_rejected_dev': 0,
-            'healthy_faces_kept': 11, 'seconds': 0.25,
+            'healthy_faces_kept': 11, 'seconds': 0.25, 'work_units': 123,
             'reference_used': 2, 'reference_fallback': 1,
             'trimmed_vertices': 3, 'patch_vertices': 1}
     geom = _FakeGeom(_CUBE_V.copy(), _CUBE_F.copy(), info)
@@ -167,12 +167,13 @@ def test_wrapper_maps_info():
     assert rep['reference_used'] == 2 and rep['reference_fallback'] == 1, rep
     assert rep['trimmed_vertices'] == 3 and rep['patch_vertices'] == 1, rep
     assert rep['seconds'] == 0.25, rep
+    assert rep['work_units'] == 123, rep
     assert rep['plugs_rejected_size'] == 1 and rep['plugs_rejected_dev'] == 0, rep
     # h_min defaults to the input median edge and the budget passed to the
-    # kernel is the intensity preset (the per-loop allowance lives in Rust).
+    # kernel is the deterministic intensity work preset.
     assert geom.calls[0]['h_min'] > 0, geom.calls
-    assert abs(geom.calls[0]['time_budget_s'] - 60.0) < 1e-9, geom.calls
-    print('ok  wrapper maps the Rust info keys and the preset budget')
+    assert geom.calls[0]['work_budget'] == 2_000_000, geom.calls
+    print('ok  wrapper maps the Rust info keys and the preset work budget')
 
 
 def test_wrapper_never_raises():
@@ -400,15 +401,15 @@ def test_resolve_melt_si():
 
 
 def test_resolve_prepass_budget():
-    assert tamp.resolve_tamponade_prepass_budget('quick') == 0.0
-    assert tamp.resolve_tamponade_prepass_budget('balanced') == 15.0
-    assert tamp.resolve_tamponade_prepass_budget('thorough') == 40.0
-    assert tamp.resolve_tamponade_prepass_budget('extreme') == 60.0
-    assert tamp.resolve_tamponade_prepass_budget(None) == 15.0
+    assert tamp.resolve_tamponade_prepass_budget('quick') == 0
+    assert tamp.resolve_tamponade_prepass_budget('balanced') == 2_000_000
+    assert tamp.resolve_tamponade_prepass_budget('thorough') == 8_000_000
+    assert tamp.resolve_tamponade_prepass_budget('extreme') == 25_000_000
+    assert tamp.resolve_tamponade_prepass_budget(None) == 2_000_000
     assert tamp.resolve_tamponade_prepass_budget(
-        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': '3.5'}) == 3.5
+        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': '3500000'}) == 3500000
     assert tamp.resolve_tamponade_prepass_budget(
-        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': 'x'}) == 15.0
+        'balanced', environ={'SUTURA_TAMPONADE_PREPASS_BUDGET': 'x'}) == 2_000_000
     print('ok  prepass budget resolution (preset + env override)')
 
 

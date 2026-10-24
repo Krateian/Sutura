@@ -106,6 +106,15 @@ sonucu denetleyen birkaç yardımcı vardır:
 Onarım katmanlarının kendisi — Flap, Tamponad, Graft, Pansuman (Dressing),
 Splint ve fTetWild — yukarıdaki adımlarda anlatılmıştır.
 
+## Tekrarlanabilir sonuçlar
+
+Çıktıyı değiştiren onarım kararları geçen süreyi değil sayılan işi kullanır.
+Aynı dosya ve aynı onarım ayarları hızlı, yavaş ya da yüklü bir makinede aynı
+sonucu verir; rapordaki süre yalnızca bir ölçümdür. Birkaç dışsal veya yalnızca
+rapor amaçlı sınır çok yüksek bir güvenlik süresi tutar (isteğe bağlı fTetWild
+çözücüsü, Graft'ın dış iptali) ya da uyarı üretir (Dressing'in yumuşak bütçesi);
+bunlar belgelenmiş istisnalardır ve önemli olduklarında raporda belirtilir.
+
 ## Neden aşamalı hat
 
 * **Aşama 1 - yerel motor (Rust `sutura_geom` + `sutura_engine`).** Yinelenen ve dejenere yüzleri kaldırır,
@@ -166,10 +175,10 @@ açıktır:
   turu yalnızca self-intersection sayısı kesin azalırken, non-manifold kenarlar
   artmazken ve ağ tamamen kapanırken (sınır kenarı yok) kabul eder; aksi hâlde
   tur-öncesi ağ bayt bayt geri yüklenir. Self-intersection tespiti exact Rust
-  sınıflandırıcısını kullanır. Hiçbir bağlı bileşen düşürülmez, yoğunluk ön
-  ayarının zaman bütçesiyle (Balanced 5 sn, Thorough 20 sn, Extreme 60 sn) en
-  fazla üç tur çalışır ve self-intersection içermeyen ağlarda no-op'tur.
-  `SUTURA_SI_EXCISE=0` ile kapatılır.
+  sınıflandırıcısını kullanır. Hiçbir bağlı bileşen düşürülmez, en fazla üç tur
+  çalışır (işi tur sayısı ve tur başına %30 yüz freni sınırlar; raporda
+  gösterilen süre yalnızca bir ölçümdür) ve self-intersection içermeyen ağlarda
+  no-op'tur. `SUTURA_SI_EXCISE=0` ile kapatılır.
 
 Stage 1'den sonraki bu katmanlar **derin onarım merdivenini** oluşturur ve
 `--deep-repair {off,local,full}` ile seçilir (ya da `SUTURA_DEEP_REPAIR` veya
@@ -193,6 +202,12 @@ refinement'ı kapalıdır, çünkü 90 bin yüzlü bir mesh'te ~9 sn sürüp hi�
 sonucu değiştirmedi. 40 gerçek örnekte 3 mesh'i daha kesin su geçirmez yaptı
 (31 → 34); 115 mesh'lik corpus'ta hiçbirini yapmadı, bu yüzden `full`'un
 parçası değildir.
+
+Sıralı yedek yöntemler denenmeden önce otomatik yol, tespit edilen hasarın
+anlamsız kıldığı bir yöntemi atlayabilir: kopya yüzler Join, iç yüzler veya bir
+iç bölge Transplant ve Wall Thicken yöntemlerini atlar. Bu yalnızca yedek
+sırasını değiştirir, temel onarımı asla; önceki sırayı geri getirmek için
+`SUTURA_TRIAGE_PRUNE=0` ayarlayın.
 
 **Self-intersection politikası** `--si-mode {repair,report,off}` ile seçilir
 (ya da `SUTURA_SI_MODE`, ya da GUI Seçenekler → Onarım açılır listesi *Kendisiyle-kesişim*

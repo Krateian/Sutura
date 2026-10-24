@@ -55,6 +55,16 @@ güvenilir şekilde algılayabilir.
   gerektirebilir.
 * **Küçük bağlantısız döküntüler.** 8 yüzden az olan bileşenler kaldırılır.
   Ana gövdeye bağlı olmayan küçük, meşru bir parça da kaldırılır.
+* **Yoğun eş düzlemli temaslar sınırlı bir exact geçişle analiz edilir.**
+  Tek bir temas yamasında çok sayıda çakışık yüz bulunan mekanik bir parçada
+  exact eş düzlemli kabuk analizi, temas kümesi başına 512 üçgen / 1.024
+  kısıt segmenti, düzlem başına 1.024 üçgen ve toplamda 8.192 işlenmiş yüz ile
+  sınırlandırılır. Bir sınıra ulaşıldığında exact geçiş atlanır, girdi
+  değişmeden korunur ve normal Aşama 1 onarımı devam eder; rapor
+  `tamponade_shell_prepass` altında `budget_exceeded` ve
+  `outer_shell_skipped: shell_budget_exceeded` gösterir. Bu, çok yoğun
+  temaslı bir mesin onarımı kilitlemesini önler; ancak böyle bir mesh
+  watertight yerine `warning` olarak bitebilir.
 * **Ters çevrilmiş tüm modeller.** Onarılan hacim negatif çıkarsa tüm mesh
   çevrilir; tutarlı şekilde "içi dışında" sarmalanmış bir model otomatik
   düzeltilir.
@@ -67,6 +77,20 @@ güvenilir şekilde algılayabilir.
   çakışması durumunu ayırır; çözemezse rapor dürüst kalır
   (`reload_watertight=false`, `reload_non_manifold_vertices`). Patolojik
   durumlarda kaydedilen dosyayı dilimleyicinizde kontrol edin.
+* **Kasıtlı iç boşluklar ve döküntü.** Aşama 2, gerçek bir iç boşluğu (bir CAD
+  cebi veya mıknatıs, ağırlık ya da insert için açılmış bir delik) doldurmak
+  yerine korur; ancak bu, birleşimin değiştireceği tek şeyin o boşluk olması ve
+  boşluğu korumanın yeni kendisiyle-kesişim eklememesi ve boşluğun gövdeden
+  belirgin biçimde küçük olması (sınırlayıcı kutu köşegeni gövdeninkinin
+  0,5'inin altında) durumunda geçerlidir. Gövdeyi veya başka bir kabuğu kesen
+  bir oyuk kabuğu reddedilir ve yerine olağan birleşim sonucu kullanılır;
+  gövdenin paralel bir kopyası olan aşırı büyük bir iç kabuk da cep sayılmaz ve
+  aynı şekilde doldurulur. Aşama 2'nin aynı zamanda döküntü de kaldırması
+  gereken bir modelde yer alan bir boşluk ise şimdilik hâlâ doldurulur, çünkü
+  mevcut düzeltme döküntüyü bırakıp boşluğu aynı anda koruyamaz. Boşluk
+  korunduğunda rapor `cavity_preserved` der; `cavity_si_whole` /
+  `cavity_si_union` / `cavity_rejected_si` kendisiyle-kesişim karşılaştırmasını,
+  `cavity_rejected_bbox` / `cavity_bbox_ratio` ise boyut kontrolünü açıklar.
 * **Katmanlı/yinelenen köşeli 3MF dışa aktarımları.** Bazı dilimleyiciler
   (Bambu Studio dahil) nesnelerinin her köşe konumunu ~15 kez ayrı köşe girişi
   olarak tekrarlayan ve yüzeyleri katlanmış (bir kenarda birkaç yüz çakışık)

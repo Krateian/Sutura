@@ -136,6 +136,12 @@ bütçeyi onarım seçenekleri iletişim kutusunda sunar ve batch'ten sonra,
 açık bir onayın ardından bütçe-reddedilen dosyaları `--force` ile yeniden
 çalıştırmayı önerir.
 
+**Otomatik yöntem yedeği.** İlk onarım su geçirmez değilse Sutura birkaç
+sıralı yöntem deneyebilir. Denemeden önce, tespit edilen hasarın anlamsız
+kıldığı bir yöntemi atlayabilir: kopya yüzler Join, iç yüzler veya bir iç bölge
+Transplant ve Wall Thicken yöntemlerini atlar. Bu temel onarımı asla değiştirmez;
+`SUTURA_TRIAGE_PRUNE=0` önceki yedek sırasını geri getirir.
+
 Her onarım raporu ayrıca bir **onarım güven skoru** taşır: aşama 2 sonucunu,
 kalan delikleri, sınıflandırıcı güvenini, eşik ayarını, onarım modunu,
 self-intersection'ları ve hacim değişimini birleştiren tek bir 0–100 değer

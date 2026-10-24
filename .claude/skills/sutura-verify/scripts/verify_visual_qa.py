@@ -1923,9 +1923,17 @@ def evaluate_mesh_quality(ref_path, cand_path, cameras=None, w=256, h=256):
 
 
 def _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
-                             v_cand, t_cand, n_cand, cameras, w=256, h=256):
-    """V1 comparison for already-loaded arrays (shared by the three-way API)."""
+                             v_cand, t_cand, n_cand, cameras, w=256, h=256,
+                             mask_src=None):
+    """V1 comparison for already-loaded arrays (shared by the three-way API).
+
+    When ``mask_src`` (v, t, n, defect_vidx) is given, the reference is rendered
+    clean and the healthy-region defect mask is projected from ``mask_src`` in the
+    same shared frame (score against the clean base while masking the damaged
+    input).
+    """
     center, scale, extent = compute_shared_frame([v_ref, v_cand], w=w, h=h, pad=16)
+    ref_def = np.array([], dtype=np.int64) if mask_src is not None else def_ref
 
     view_metrics = []
     view_renders = []
@@ -1933,9 +1941,13 @@ def _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
     for name, rot in cameras:
         t0 = time.perf_counter()
         norm_ref, depth_ref, sil_ref, def_mask_2d = render_view(
-            v_ref, t_ref, n_ref, rot, center, scale, w=w, h=h, defect_vidx=def_ref)
+            v_ref, t_ref, n_ref, rot, center, scale, w=w, h=h, defect_vidx=ref_def)
         norm_cand, depth_cand, sil_cand, _ = render_view(
             v_cand, t_cand, n_cand, rot, center, scale, w=w, h=h)
+        if mask_src is not None:
+            _, _, _, def_mask_2d = render_view(
+                mask_src[0], mask_src[1], mask_src[2], rot, center, scale,
+                w=w, h=h, defect_vidx=mask_src[3])
         dt = time.perf_counter() - t0
 
         m = compare_views(norm_ref, depth_ref, sil_ref, norm_cand, depth_cand, sil_cand,
@@ -2066,34 +2078,63 @@ def _resolve_tolerance(v_ref, v_cand, tolerance):
 
 def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_center=None,
                          w=256, h=256, tolerance=None, enable_v2=True,
-                         force_v2_sheet=False):
+                         force_v2_sheet=False, ref_is_input=False):
     """Three-way comparison: Input vs Baseline vs Candidate.
+
+    By default the scoring reference (ground truth) is ``base_path``; ``in_path``,
+    when given, is the damaged/original mesh and is used **only** to build the
+    healthy-region mask. This removes the positive-delta artefact where a bad
+    repair that stayed close to the damaged input used to score well.
+
+    ``ref_is_input=True`` restores the legacy behaviour for callers that compare
+    the default against the opt-out *relative to the input* (e.g.
+    ``verify_default_vs_optout.py``): the reference becomes ``in_path`` again
+    and the defect mask is derived from it; ``base_path`` is still rendered as
+    the separate baseline view.
 
     Returns dict with metrics, separate flags, masked/unmasked scores, and contact sheet.
     ``v2`` adds the PCA/silhouette/X-ray/slice/sharp-edge/deviation metrics and
     images; the V1 fields are unchanged.
     """
-    ref_path = in_path if (in_path and os.path.exists(in_path)) else base_path
     dodec = get_dodecahedron_cameras()
 
     t_stage = time.perf_counter()
-    v_ref, t_ref, n_ref, def_ref = load_mesh(ref_path)
-    same_base = os.path.abspath(base_path) == os.path.abspath(ref_path)
-    if not same_base:
-        try:
-            same_base = os.path.samefile(base_path, ref_path)
-        except OSError:
-            same_base = False
-    if same_base:
-        v_base, t_base, n_base = v_ref, t_ref, n_ref
+    mask_src = None
+    if ref_is_input and in_path and os.path.exists(in_path):
+        # Legacy consumer: reference is the (damaged) input.
+        v_ref, t_ref, n_ref, def_ref = load_mesh(in_path)
+        if os.path.abspath(base_path) == os.path.abspath(in_path):
+            v_base, t_base, n_base = v_ref, t_ref, n_ref
+        else:
+            try:
+                same = os.path.samefile(base_path, in_path)
+            except OSError:
+                same = False
+            if same:
+                v_base, t_base, n_base = v_ref, t_ref, n_ref
+            else:
+                v_base, t_base, n_base, _ = load_mesh(base_path)
     else:
-        v_base, t_base, n_base, _ = load_mesh(base_path)
+        v_ref, t_ref, n_ref, def_ref = load_mesh(base_path)
+        v_base, t_base, n_base = v_ref, t_ref, n_ref
+        if in_path and os.path.exists(in_path):
+            same_in = os.path.abspath(in_path) == os.path.abspath(base_path)
+            if not same_in:
+                try:
+                    same_in = os.path.samefile(in_path, base_path)
+                except OSError:
+                    same_in = False
+            if not same_in:
+                mv, mt, mn, mdef = load_mesh(in_path)
+                mask_src = (mv, mt, mn, mdef)
     v_cand, t_cand, n_cand, _ = load_mesh(cand_path)
     tol = _resolve_tolerance(v_ref, v_cand, tolerance)
     base_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
-                                            v_base, t_base, n_base, dodec, w, h)
+                                            v_base, t_base, n_base, dodec, w, h,
+                                            mask_src=mask_src)
     cand_eval, _ = _evaluate_quality_arrays(v_ref, t_ref, n_ref, def_ref,
-                                            v_cand, t_cand, n_cand, dodec, w, h)
+                                            v_cand, t_cand, n_cand, dodec, w, h,
+                                            mask_src=mask_src)
     timings = {"v1_dodeca_s": time.perf_counter() - t_stage}
 
     delta_vqa = cand_eval["vqa_score"] - base_eval["vqa_score"]
@@ -2115,10 +2156,13 @@ def evaluate_visual_diff(in_path, base_path, cand_path, out_sheet=None, defect_c
         flags.append("MISSING_FOREGROUND")
         reasons.append(f"MISSING_FOREGROUND: -{cand_eval['max_p_missing']*100:.1f}% missing pixels (vs {base_eval['max_p_missing']*100:.1f}%)")
 
-    # 3. Voxel Stepping / Wrinkling
-    if delta_ssim <= -0.06 or cand_eval["mean_ssim"] <= 0.88:
+    # 3. Voxel Stepping / Wrinkling (base-relative delta; no absolute SSIM floor,
+    #    which false-alarmed on inherently low-SSIM meshes)
+    #    NOTE: -0.06 is a TEMPORARY threshold (lead-accepted, revisit after
+    #    scorecard-calib-fix1).
+    if delta_ssim <= -0.06:
         flags.append("VOXEL_STEPPING")
-        reasons.append(f"VOXEL_STEPPING: normal SSIM dropped to {cand_eval['mean_ssim']:.3f} (vs {base_eval['mean_ssim']:.3f})")
+        reasons.append(f"VOXEL_STEPPING: normal SSIM dropped by {-delta_ssim:.3f} ({cand_eval['mean_ssim']:.3f} vs {base_eval['mean_ssim']:.3f})")
 
     # 4. Surface Distortion
     if cand_eval["min_ssim"] < base_eval["min_ssim"] - 0.12:
@@ -2307,7 +2351,10 @@ def main():
     ap = argparse.ArgumentParser(description="Independent visual QA for mesh repair")
     ap.add_argument("baseline", help="Baseline mesh STL/OBJ")
     ap.add_argument("candidate", help="Candidate mesh STL/OBJ")
-    ap.add_argument("--input", default=None, help="Optional original/clean input mesh")
+    ap.add_argument("--input", default=None,
+                    help="Optional damaged/original mesh; used only to build the "
+                         "healthy-region mask (the positional baseline stays the "
+                         "scoring reference)")
     ap.add_argument("--contact-sheet", default=None, help="Save contact sheet PNG")
     ap.add_argument("--defect-center", default=None, help="Optional focal center X,Y,Z")
     ap.add_argument("--res", type=int, default=256, help="Render resolution (default 256)")

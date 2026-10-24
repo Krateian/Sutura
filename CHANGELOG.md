@@ -2,19 +2,106 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.9.5] - 2026-10-25
 
 ### Added
 
 - **Diagnosis v2 (Rust) in the analysis report.** An additive `diagnosis_v2` block describes the input in more detail than before: orientation and flipped faces, non-manifold vertices, exact and reversed duplicates, degenerate faces, parts (closed / open / debris, overlaps, nested shells), self-intersections split into within-body, between-body and coplanar, boundary loops (planar, pinched, cap difficulty), interior faces and folds, thin walls and scan noise, with per-face masks for later visualisation. The result is deterministic (independent of the triangle order in the file) and stays within a one-second budget in fast mode on typical meshes; when a budget is exceeded the affected channel is marked as estimated instead of reporting a wrong number. Legacy report fields and repair output are unchanged.
+- **The same file now gives the same result regardless of machine load.** Some repair steps and the automatic fallback used to stop after a fixed number of seconds, so the result could differ between a fast, idle machine and a busy one. Those limits are now counted work instead of elapsed time: the same input and the same repair settings produce the same mesh every time, and the time shown in the report is only a measurement. A very high safety timeout remains for batch runs; if it is ever reached, the report says so explicitly instead of silently choosing a different repair path.
+
+- **Automatic fallback can skip methods the detected damage makes pointless.**
+  When the analysis sees duplicate faces, it skips Join (#4); when it sees
+  interior faces or an interior region, it skips Transplant (#11) and Wall
+  Thicken (#15). This changes only the automatic fallback order — the baseline
+  repair is untouched. Set `SUTURA_TRIAGE_PRUNE=0` to restore the previous
+  order.
 
 ### Changed
 
 - **Documentation reorganised.** `README.md` and `README.tr.md` are now short landing pages (highlights, install, quick use, a short description of the pipeline and a documentation index); the full user documentation moved unchanged into topic pages under `docs/guide/` (English) and `docs/guide/tr/` (Turkish): how it works, methods, install, usage, troubleshooting, feature status, limitations, mesh classifier, architecture, privacy, testing and version history. The maintainer note now states that releases follow no fixed schedule.
+- **Tamponade's prepass budget override changed units.** `SUTURA_TAMPONADE_PREPASS_BUDGET` is now a counted work limit, not seconds; values written for the old seconds behaviour are retired. The default presets already use the counted limit.
 
 ### Fixed
 
+- **The self-intersection excise no longer depends on elapsed time.** In Full
+  Mend, the guarded excise used to stop after a fixed number of seconds, so a
+  busy machine could run fewer cleanup rounds and return a different mesh. The
+  pass is now bounded by its round count (three) and the per-round 30 % face
+  brake; the time shown in the report is only a measurement. The Quick preset
+  still turns the pass off.
+- **Tamponade's stent search no longer uses a per-loop wall-clock slice.** A
+  large rim could spend a different amount of time in the search on a busy
+  machine, so the same file could repair differently. The search now uses the
+  tier's deterministic work budget only; the elapsed time in the report is a
+  measurement.
+- **Every geometry-inventing tier now shares one adoption guard.** A candidate
+  that invents more than 4x the input faces/vertices (plus a small slack: the
+  Flap boundary-loop vertex total, the Tamponade plug-face count, or 256 for
+  volumetric tiers) is rejected instead of being adopted on topology alone.
+  fTetWild is the exception: its tetrahedral boundary is naturally dense, so it
+  uses an absolute floor (`max(4x input, 50,000)` faces/vertices) and a
+  topology-improving growth above that floor is a flag, not a rejection.
+  The central `triage._evaluate` applies the same check to every registry
+  method, including Transplant and Wall Thicken, which previously skipped it.
+  Self-intersection policy is per tier: Splint/Transplant reject an
+  increase, Coaptation keeps its strict zero rule, Graft flags an increase when
+  the candidate also reduces holes or non-manifold edges, Flap flags an increase
+  and compares the Flap-on and Flap-off results at the end (see below),
+  Tamponade reports it after Stage 1, fTetWild reports an increase when
+  holes/non-manifold edges improve, and Dressing measures an unknown count.
+  Reported as `guard_rejected` /
+  `si_flagged` in the tier and `methods_tried` records. The bench scorecard now
+  records `n_faces_in`/`n_vertices_in` so face-ratio regressions are visible.
+  Regression: `tests/test_adopt_guard.py`, the existing tier suites and the
+  scorecard blow-up re-run.
+- **A Flap patch can no longer balloon the surface while it closes holes.**
+  Flap fills a hole by continuing the surrounding surface, but a candidate
+  could previously close the loops by inventing far more geometry than the
+  input had. A candidate whose face or vertex count grows past a loop-scaled
+  allowance (or past a 4x relative ceiling) is now rejected, and the repaired
+  file keeps the Stage-1 result. A candidate that only raises the
+  self-intersection count is not rejected on the spot: Stage 1 and Stage 2 can
+  lower that count, so the final result is compared against the same repair
+  with Flap turned off, and the better final topology is kept (holes first,
+  then parts, then self-intersections; a lower self-intersection count never
+  buys a lost part). Report keys `input_faces`, `candidate_faces` and
+  `guard_rejected` document the decision. Regression: `tests/test_flap_guard.py`.
+- **Flap's work budget is recalibrated for large holes.** Flap charges a
+  loop's estimated dynamic-programming cost before it starts. After the switch
+  from seconds to counted work, the Balanced/Thorough/Extreme budgets were too
+  low: a large but fillable hole could be skipped and left to the ordinary flat
+  lid. The budgets now match the former 15/30/60-second presets, so those holes
+  are filled again. The decision stays deterministic (same input and preset,
+  same patch) and the reported time is only a measurement.
+- **A Graft result that closes damage is kept even when its self-intersection
+  count rises.** Graft could previously be rejected after it had reduced holes
+  and non-manifold edges, because its exact self-intersection count went up. The
+  repair then fell back to a slower tier, or timed out, while the damage had
+  already been closed. Graft now follows fTetWild's rule: the rise is flagged in
+  the report instead of rejecting the candidate when holes or non-manifold edges
+  improved; without that topology gain the strict non-rise rule still applies.
+  The face/vertex blow-up ceiling is unchanged.
+- **Dense coplanar contacts no longer stall the shell analysis.** A mechanical
+  part with a very large coincident-face contact patch could spend minutes in
+  the exact coplanar triangulation. The coplanar pass now has deterministic
+  work caps (512 triangles and 1,024 constraint segments per contact cluster,
+  1,024 triangles per plane, 8,192 processed faces in total). When a cap is
+  reached, the exact pass is skipped without changing the input and the normal
+  Stage-1 repair continues; the outer-shell fallback is skipped for that input
+  to avoid a shape-changing union. The report shows `budget_exceeded` under
+  `tamponade_shell_prepass` and `outer_shell_skipped: shell_budget_exceeded`.
 - **STL reload with pinched vertices is detected and healed.** STL stores no vertex sharing, so a mesh that is two-manifold in memory can reload with a pinched (non-manifold) vertex where two distinct float32 positions weld into one. The P-WELD pass now measures `non_two_manifold_vertices` on the reload-equivalent mesh, separates the common float32-coincidence case (face count unchanged, sub-ULP geometry nudge), and the report no longer calls such a result watertight when the issue remains (`reload_watertight=false`, `reload_non_manifold_vertices`). OBJ and 3MF outputs are unchanged.
+- **An intentional internal cavity is no longer filled.** A model with a genuine internal void (a CAD pocket, or a hole meant for a magnet, weight or insert) arrives as an inner shell whose faces point inward. The Stage-2 solid rebuild unioned the parts as separate solids, which turned that void into material and changed what the part is for. Stage 2 now keeps the whole correctly-oriented solid whenever the union would grow the cavity-aware volume and no debris was removed, so the void survives; a solid blob buried inside material (no cavity) and the
+  debris cleanup are unchanged. The void is kept only when preserving it does
+  not add self-intersections and it is clearly smaller than the body (its
+  bounding-box diagonal is below 0.5 of the body's): a clean cavity and the
+  ordinary union report the same count, while a cavity shell that crosses the
+  body or another shell is rejected and the union result is used, and so is an
+  oversized inner shell that is effectively a parallel copy of the body. A
+  cavity that coexists with removed debris is still filled for now (see
+  `docs/guide/limitations.md`). Report keys `cavity_preserved`,
+  `cavity_si_whole`, `cavity_si_union`, `cavity_rejected_si`,
+  `cavity_rejected_bbox` and `cavity_bbox_ratio`.
 
 ## [0.9.4] - 2026-10-23
 

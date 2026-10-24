@@ -35,7 +35,8 @@ import topology
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.p_weld import reload_strict_holes_nm
 from sutura_engine.pipeline.presets import (
-    COAPTATION_MAX_FACES, COAPTATION_SEAM_ULP_K, COAPTATION_TIMEOUT,
+    COAPTATION_DEFAULT_WORK, COAPTATION_MAX_FACES, COAPTATION_SEAM_ULP_K,
+    COAPTATION_WORK_BY_INTENSITY,
 )
 
 
@@ -163,6 +164,9 @@ def _measure(v, t, sg):
     return int(holes), int(nm), parts, si, wt
 
 
+from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
+
+
 def coaptation_tier(v, t, input_v, input_t, after, stats, tmpdir,
                     coaptation=False, intensity=None, spec=None):
     """Tolerance seam-weld + per-body union tier (registry method #19).
@@ -180,14 +184,23 @@ def coaptation_tier(v, t, input_v, input_t, after, stats, tmpdir,
         return v, t, after
     cap = getattr(spec, 'coaptation_max_faces', COAPTATION_MAX_FACES) \
         if spec is not None else COAPTATION_MAX_FACES
-    timeout = getattr(spec, 'coaptation_timeout', COAPTATION_TIMEOUT) \
-        if spec is not None else COAPTATION_TIMEOUT
+    key = (intensity or getattr(spec, 'base', None)
+           or getattr(spec, 'name', None))
+    work_limit = int(getattr(
+        spec, 'coaptation_work',
+        COAPTATION_WORK_BY_INTENSITY.get(key, COAPTATION_DEFAULT_WORK))
+        if spec is not None else
+        COAPTATION_WORK_BY_INTENSITY.get(key, COAPTATION_DEFAULT_WORK))
     ulp_k = int(COAPTATION_SEAM_ULP_K)
     rec = {'tier': 'coaptation', 'ran': False, 'adopted': False,
            'gate': None, 'ulp_k': ulp_k, 'tol': None, 'bodies_in': None,
            'bodies_after_weld': None, 'merged': None,
            'baseline': None, 'candidate': None, 'output_faces': None,
+           'guard_rejected': None, 'guard_reason': None,
+           'si_policy': None, 'si_checked': False, 'si_flagged': False,
            'seconds': None, 'skipped_budget': False, 'aborted': False,
+           'work_units': None, 'work_budget': int(work_limit),
+           'budget_limited_by': None,
            'reject_reason': None, 'reason': None, 'warnings': []}
     with method_health.tier_guard('coaptation', 'tier') as _g:
         try:
@@ -256,6 +269,19 @@ def coaptation_tier(v, t, input_v, input_t, after, stats, tmpdir,
                 bt2 = bt2[:, ::-1]
             bodies.append((bv2, bt2))
         rec['bodies_after_weld'] = len(bodies)
+        work_units = int(sum(len(bt) for _bv, bt in bodies))
+        rec['work_units'] = work_units
+        if work_limit and work_units > int(work_limit):
+            # DETERMINISTIC work budget (total body faces): stop before the
+            # exact union, independent of CPU speed/load.
+            rec['aborted'] = True
+            rec['budget_limited_by'] = 'work'
+            rec['reject_reason'] = 'work'
+            rec['reason'] = ('Coaptation used %d work units > %d at intensity '
+                             '%r; the ladder result was kept'
+                             % (work_units, int(work_limit), key))
+            stats['coaptation'] = rec
+            return v, t, after
         if len(bodies) < 2:
             rec['gate'] = 'single_body_after_weld'
             rec['reject_reason'] = 'single_body_after_weld'
@@ -273,17 +299,9 @@ def coaptation_tier(v, t, input_v, input_t, after, stats, tmpdir,
             acc_v = np.asarray(acc_v, dtype=np.float64)
             acc_t = np.asarray(acc_t, dtype=np.int64)
         elapsed = time.perf_counter() - t0
-        rec['seconds'] = float(elapsed)
+        rec['seconds'] = float(elapsed)   # measurement only; never a decision
         rec['ran'] = True
         rec['source'] = src
-        if timeout and elapsed > float(timeout):
-            rec['aborted'] = True
-            rec['reject_reason'] = 'aborted_time'
-            rec['reason'] = ('Coaptation was stopped for time (%.1fs > %.1fs); '
-                             'the ladder result was kept'
-                             % (elapsed, float(timeout)))
-            stats['coaptation'] = rec
-            return v, t, after
         # --- strict adopt guard against the result the ladder currently holds.
         base_holes, base_nm, base_parts, base_si, _base_wt = _measure(v, t, _sg)
         cand_holes, cand_nm, cand_parts, cand_si, cand_wt = _measure(
@@ -294,8 +312,15 @@ def coaptation_tier(v, t, input_v, input_t, after, stats, tmpdir,
                             'parts': cand_parts, 'self_intersections': cand_si,
                             'watertight': cand_wt, 'faces': int(len(acc_t))}
         rec['output_faces'] = int(len(acc_t))
-        strictly_better = (
-            cand_wt and cand_holes == 0 and cand_nm == 0
+        guard = check_candidate(
+            len(input_t), len(input_v), len(acc_t), len(acc_v),
+            slack_units=0, measure_si=False,
+            policy=policy_for('coaptation'))
+        for key, value in guard.fields.items():
+            if key in rec:
+                rec[key] = value
+        strictly_better = (guard.ok
+            and cand_wt and cand_holes == 0 and cand_nm == 0
             and cand_si is not None and cand_si == 0
             and base_si is not None and cand_si < base_si
             and cand_holes <= base_holes and cand_nm <= base_nm

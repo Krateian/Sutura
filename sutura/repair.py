@@ -114,7 +114,8 @@ from sutura_engine.pipeline.tiers.local_remesh import (
 from sutura_engine.pipeline.tiers.flap import (
     FLAP_SKIP_KEYS, _flap_adopt, _flap_max_orig_move, _reload_component_count,
     _flap_final_verdict, _flap_final_needs_off, _flap_off_preferred,
-    FLAP_TIMEOUT_BY_INTENSITY, FLAP_DEFAULT_BUDGET, _FLAP_CACHE,
+    _flap_si_rose,
+    FLAP_WORK_BY_INTENSITY, FLAP_DEFAULT_WORK, _FLAP_CACHE,
     _FLAP_CACHE_MAX, _flap_cache_key, _flap_step, _flap_step_impl,
     FLAP_DEBRIS_VOLUME_EPS, FLAP_DEBRIS_VOLUME_REL, FLAP_DEBRIS_FLATNESS,
     drop_flap_debris,
@@ -158,7 +159,7 @@ from sutura_engine.pipeline.cli import (
 )
 
 
-VERSION = "0.9.4"
+VERSION = "0.9.5"
 
 
 def process_file(src, human, mode='auto', profile=None, no_history=False,

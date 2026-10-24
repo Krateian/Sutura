@@ -14,6 +14,9 @@ from sutura_engine.pipeline.p_weld import (
 from sutura_engine.pipeline.presets import GRAFT_MAX_FACES, GRAFT_TIMEOUT
 
 
+from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
+
+
 def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
                intensity=None, spec=None):
     """Morphology shell-wrap tier for registry method 13 (Graft).
@@ -61,7 +64,12 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
            'grid_fallback': None,
            'budget_limited_by': None, 'work_budget': None,
            'reject_reason': None,
-           'input_faces': None,
+           'input_faces': None, 'input_vertices': None,
+           'candidate_faces': None, 'candidate_vertices': None,
+           'guard_rejected': None, 'guard_reason': None,
+           'baseline_self_intersections': None,
+           'candidate_self_intersections': None,
+           'si_policy': None, 'si_checked': False, 'si_flagged': False,
            'max_faces': int(cap) if cap is not None else None,
            'time_budget': (float(timeout) if timeout else None)}
     with method_health.tier_guard('graft', 'tier') as _g:
@@ -143,11 +151,26 @@ def graft_tier(v, t, input_v, input_t, after, stats, tmpdir, graft=False,
             rec['non_manifold'] = cand_nm
             rec['faces'] = int(len(cand_t))
             if len(cand_t) and cand_holes == 0 and cand_nm == 0:
-                after = topology.mesh_topology(cand_v, cand_t)
-                rec['adopted'] = True
-                rec['watertight'] = False  # stage 2 confirms at the top level
-                rec['candidate_watertight'] = True
-                rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
+                in_det = detect_defects(v, t)
+                improved = bool(in_det['holes'] or in_det['non_manifold'])
+                guard = check_candidate(
+                    len(input_t), len(input_v), len(cand_t), len(cand_v),
+                    slack_units=0, base_arrays=(v, t),
+                    candidate_arrays=(cand_v, cand_t), measure_si=True,
+                    improved_topology=improved,
+                    policy=policy_for('graft'))
+                for key, value in guard.fields.items():
+                    if key in rec:
+                        rec[key] = value
+                if not guard.ok:
+                    rec['guard_rejected'] = guard.reason
+                    rec['reason'] = 'rejected: %s' % guard.reason
+                else:
+                    after = topology.mesh_topology(cand_v, cand_t)
+                    rec['adopted'] = True
+                    rec['watertight'] = False  # stage 2 confirms at the top level
+                    rec['candidate_watertight'] = True
+                    rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
             elif rec['reason'] is None:
                 rec['reason'] = ('candidate not strict-watertight '
                                  '(holes=%d non-manifold=%d)'

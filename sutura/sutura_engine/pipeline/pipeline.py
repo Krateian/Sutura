@@ -220,6 +220,7 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     # (dilation = 5e-4 * bbox_diagonal, ~0.05 mm for 100 mm object) and boolean union.
     if mode == 'auto' and should_extract_outer_shell(verts, tris, mesh_type=_cls['type']):
         _shell_adopted = False
+        _shell_budget_exceeded = False
         _shell_phase = None
         _shell_reason = None
         _sinfo = None
@@ -252,6 +253,8 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                         np.asarray(tris, dtype=np.int32),
                     )
                     _t_analyze_s = time.time() - _t0
+                    _shell_budget_exceeded = bool(
+                        _sinfo.get('budget_exceeded', False))
                     _t0 = time.time()
                     _in_holes = boundary_loop_stats(verts, tris)[0]
                     _in_nm = len(_defects.detect(verts, tris).get('non_manifold', []))
@@ -328,6 +331,14 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
                 'unresolved_coincident_count': (_sinfo or {}).get('unresolved_coincident_count', 0),
                 'has_internal_walls': (_sinfo or {}).get('has_internal_walls', False),
                 'is_disjoint': (_sinfo or {}).get('is_disjoint', False),
+                'budget_exceeded': _shell_budget_exceeded,
+                'max_coplanar_cluster_faces': (_sinfo or {}).get(
+                    'max_coplanar_cluster_faces'),
+                'max_coplanar_constraints': (_sinfo or {}).get(
+                    'max_coplanar_constraints'),
+                'max_plane_faces': (_sinfo or {}).get('max_plane_faces'),
+                'max_coplanar_total_faces': (_sinfo or {}).get(
+                    'max_coplanar_total_faces'),
             }
             stats['shell_adopted'] = _shell_adopted
             stats['shell_phase'] = _shell_phase
@@ -346,7 +357,12 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
             # guards the fallback, not the P-a/P-b/P-c prepass (which is safe and
             # load-bearing for other samples).
             _in_rholes, _in_rnm = reload_strict_holes_nm(verts, tris)
-            if _in_rholes == 0 and _in_rnm == 0:
+            if _shell_budget_exceeded:
+                # Shape safety: the exact shell analysis already declined this
+                # input, so do not run the geometry-changing outer-shell union
+                # on it.  Stage 1 continues with the input unchanged.
+                stats['outer_shell_skipped'] = 'shell_budget_exceeded'
+            elif _in_rholes == 0 and _in_rnm == 0:
                 stats['outer_shell_skipped'] = 'healthy_multipart_input'
             else:
                 with method_health.tier_guard('outer_shell', 'tier') as _go:

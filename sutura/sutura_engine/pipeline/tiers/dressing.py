@@ -99,6 +99,9 @@ def _dressing_suggestion_text(sug):
             % sug.get('flag'))
 
 
+from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
+
+
 def dressing_tier(v, t, input_v, input_t, after, stats, tmpdir, dressing=False,
                   intensity=None, drain=None, defects=None,
                   r_max_scale=None, sigma_scale=None, force_adopt=False):
@@ -144,6 +147,10 @@ def dressing_tier(v, t, input_v, input_t, after, stats, tmpdir, dressing=False,
            'holes': None, 'non_manifold': None,
            'within_time_budget': None, 'seconds': None,
            'forced': False,
+           'guard_rejected': None, 'guard_reason': None,
+           'baseline_self_intersections': None,
+           'candidate_self_intersections': None,
+           'si_policy': None, 'si_checked': False, 'si_flagged': False,
            'warnings': [], 'reason': None}
     try:
         from sutura_engine import dressing as _dressing
@@ -231,8 +238,16 @@ def dressing_tier(v, t, input_v, input_t, after, stats, tmpdir, dressing=False,
             shape_ok = (drec.get('fidelity_ok') is not False
                         and vol_ok and parts_ok and normal_ok)
             rec['shape_ok'] = bool(shape_ok)
-
-            if (cand_holes == 0 and cand_nm == 0 and si_ok
+            guard = check_candidate(
+                len(input_t), len(input_v), len(cand_t), len(cand_v),
+                slack_units=0, base_arrays=(v, t),
+                candidate_arrays=(cand_v, cand_t), candidate_si=si_after,
+                measure_si=True, policy=policy_for('dressing'))
+            for key, value in guard.fields.items():
+                if key in rec:
+                    rec[key] = value
+            guard_ok = guard.ok
+            if (guard_ok and cand_holes == 0 and cand_nm == 0 and si_ok
                     and (shape_ok or force_adopt)):
                 after = topology.mesh_topology(cand_v, cand_t)
                 rec['adopted'] = True

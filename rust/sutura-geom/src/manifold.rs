@@ -19,6 +19,20 @@ use pyo3::types::{PyDict, PyList, PyTuple};
 
 const DEBRIS_VOLUME_EPS: f64 = 1e-3;
 const DEBRIS_FLATNESS: f64 = 1e-4;
+/// Relative volume tolerance for the cavity-preserving fallback in
+/// `stage2_rebuild`: the decomposed `Add` union must grow the cavity-aware
+/// `volume_before` by more than this fraction of `|volume_before|` before keeping
+/// the whole oriented solid is considered.
+const CAVITY_VOLUME_REL_TOL: f64 = 1e-3;
+/// A protected cavity must be a *meaningful* pocket (a bore, a magnet slot, a
+/// rounded box), not a near-copy of the whole body.  The cavity's bounding-box
+/// diagonal therefore has to stay clearly below the body's.  Measured ratios
+/// (cavity diagonal / body diagonal): 43766 pocket 0.264, J2 cavity-pocket
+/// cases 0.251 and 0.231, 44041 debris shells 0.039-0.043; the false interior
+/// shell (39344 interior) is 0.724 because it is a parallel copy of the body.
+/// 0.5 sits in the clear 0.264-0.724 gap.  The 44041 shells are already
+/// rejected by the exact-SI guard; this is an independent second condition.
+const CAVITY_MAX_BBOX_RATIO: f64 = 0.5;
 /// Below this component count `Manifold::decompose()` is cheap and its exact
 /// part construction keeps the output bytes stable; above it the per-component
 /// scan dominates (thousands of components) and the array walker is used.
@@ -50,6 +64,76 @@ fn is_debris_part(p: &Manifold) -> bool {
         return true;
     }
     (2.0 * vol / area) <= DEBRIS_FLATNESS * diag
+}
+
+/// True when any edge-connected component of `verts`/`tris` has a negative
+/// signed volume, i.e. its faces are globally inverted and it is an inner
+/// cavity shell rather than a solid.
+///
+/// `Manifold::from_mesh` preserves such a shell as a void (the cavity-aware
+/// `volume_before`), but `stage2_components` rebuilds every part as a Solid with
+/// outward orientation, so the `Add` union fills the cavity. Only an inverted
+/// component can push the union's volume above `volume_before`; this predicate
+/// is the second half of that guard.
+fn has_inverted_component(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> bool {
+    let comps = edge_face_components(tris);
+    if comps.len() <= 1 {
+        return false;
+    }
+    comps.iter().any(|c| {
+        let mut six_vol = 0.0f64;
+        for &fi in &c.faces {
+            let t = tris[fi];
+            let p0 = verts[t[0]];
+            let p1 = verts[t[1]];
+            let p2 = verts[t[2]];
+            six_vol += p0[0] * (p1[1] * p2[2] - p1[2] * p2[1])
+                + p0[1] * (p1[2] * p2[0] - p1[0] * p2[2])
+                + p0[2] * (p1[0] * p2[1] - p1[1] * p2[0]);
+        }
+        six_vol < 0.0
+    })
+}
+
+/// Bounding-box diagonals for the cavity guard: the largest inverted-component
+/// (cavity) diagonal and the largest positive-component (body) diagonal.
+/// `None` when the input has no inverted component.
+fn cavity_bbox_ratio(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Option<(f64, f64)> {
+    let comps = edge_face_components(tris);
+    if comps.len() <= 1 {
+        return None;
+    }
+    let mut body = 0.0f64;
+    let mut cavity: Option<f64> = None;
+    for c in &comps {
+        let mut six_vol = 0.0f64;
+        for &fi in &c.faces {
+            let t = tris[fi];
+            let p0 = verts[t[0]];
+            let p1 = verts[t[1]];
+            let p2 = verts[t[2]];
+            six_vol += p0[0] * (p1[1] * p2[2] - p1[2] * p2[1])
+                + p0[1] * (p1[2] * p2[0] - p1[0] * p2[2])
+                + p0[2] * (p1[0] * p2[1] - p1[1] * p2[0]);
+        }
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for &vi in &c.verts {
+            let p = verts[vi];
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let diag =
+            ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+        if six_vol < 0.0 {
+            cavity = Some(cavity.map_or(diag, |d| d.max(diag)));
+        } else if six_vol > 0.0 {
+            body = body.max(diag);
+        }
+    }
+    cavity.map(|c| (c, body))
 }
 
 fn f32_mesh(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Result<Manifold, CsgError> {
@@ -542,6 +626,11 @@ pub fn stage2_rebuild<'py>(
         return Ok((ev, et, report));
     }
     report.set_item("volume_before", man.volume())?;
+    let volume_before = man.volume();
+    // `from_mesh` keeps an inner inverted shell as a cavity; the decomposed
+    // `Add` union below would fill it. `Manifold::clone` only copies the lazy
+    // CSG handle, so keeping the whole oriented solid is cheap.
+    let whole = man.clone();
 
     let mut cur = man;
     let (n_pre, parts) = stage2_components(&cur);
@@ -570,6 +659,56 @@ pub fn stage2_rebuild<'py>(
             Manifold::batch_boolean(&kept, OpType::Add)
         };
         report.set_item("volume_after_union", cur.volume())?;
+        // The `Add` union reorients every part outward, so it turns a genuine
+        // inner cavity into solid and the union volume grows past the
+        // cavity-aware `volume_before`. Keep the whole oriented solid instead,
+        // but only when nothing was dropped (a kept `whole` would resurrect
+        // debris the filter already removed) and the input really has an
+        // inverted component — a buried *positive* shell never grows the volume
+        // and is left to the union as before.
+        if dropped == 0
+            && cur.volume() - volume_before > CAVITY_VOLUME_REL_TOL * volume_before.abs()
+            && has_inverted_component(&v, &t)
+        {
+            // Keep the cavity only when it does not add self-intersections:
+            // a clean void does not cross its host shell, so the whole and the
+            // union report the same exact SI count.  A higher whole count means
+            // the "cavity" shells cross the body or each other (44041), and the
+            // union is the better result.  Part count is deliberately NOT a
+            // criterion: a clean cavity legitimately adds one shell (43766).
+            // A cavity must be a meaningful pocket, not a near-copy of the
+            // body: reject when the largest inverted shell is not clearly
+            // smaller than the body's bounding box (39344 interior).
+            let (cav_diag, body_diag) = cavity_bbox_ratio(&v, &t).unwrap_or((0.0, 0.0));
+            let bbox_ratio = if body_diag > 0.0 {
+                cav_diag / body_diag
+            } else {
+                1.0
+            };
+            report.set_item("cavity_bbox_ratio", bbox_ratio)?;
+            if body_diag <= 0.0 || cav_diag >= CAVITY_MAX_BBOX_RATIO * body_diag {
+                report.set_item("cavity_preserved", false)?;
+                report.set_item("cavity_rejected_bbox", true)?;
+            } else {
+                // Keep the cavity only when it does not add self-intersections:
+                // a clean void does not cross its host shell, so the whole and
+                // the union report the same exact SI count.  A higher whole
+                // count means the "cavity" shells cross the body or each other
+                // (44041), and the union is the better result.
+                let (uv, ut) = mesh_to_f64(&cur);
+                let (_, si_union, skipped_union) = crate::self_intersections_core(&uv, &ut);
+                let (_, si_whole, skipped_whole) = crate::self_intersections_core(&v, &t);
+                report.set_item("cavity_si_union", si_union)?;
+                report.set_item("cavity_si_whole", si_whole)?;
+                if !skipped_union && !skipped_whole && si_whole > si_union {
+                    report.set_item("cavity_preserved", false)?;
+                    report.set_item("cavity_rejected_si", true)?;
+                } else {
+                    report.set_item("cavity_preserved", true)?;
+                    cur = whole;
+                }
+            }
+        }
     }
 
     if n_pre > 1 && cur.status().is_ok() {
@@ -937,6 +1076,36 @@ mod tests {
         let (cv, ct) = component_arrays(&verts, &tris, &comps[0]);
         assert_eq!(cv, vec![verts[1], verts[2], verts[3]]);
         assert_eq!(ct, vec![[2, 0, 1]]);
+    }
+
+    fn offset_faces(t: &[[usize; 3]], off: usize) -> Vec<[usize; 3]> {
+        t.iter().map(|x| [x[0] + off, x[1] + off, x[2] + off]).collect()
+    }
+
+    #[test]
+    fn cavity_shell_is_detected_as_inverted() {
+        let (av, at) = cube(0.0, 0.0, 0.0, 10.0);
+        let (bv, bt) = cube(0.0, 0.0, 0.0, 2.0);
+        let mut v = av.clone();
+        v.extend(bv.clone());
+        let off = av.len();
+        // A positively-oriented buried shell is not a cavity.
+        let mut t = at.clone();
+        t.extend(offset_faces(&bt, off));
+        assert!(!has_inverted_component(&v, &t));
+        // A reversed (inward) inner shell is a cavity.
+        let bt_rev: Vec<[usize; 3]> = bt.iter().map(|x| [x[2], x[1], x[0]]).collect();
+        let mut t_rev = at;
+        t_rev.extend(offset_faces(&bt_rev, off));
+        assert!(has_inverted_component(&v, &t_rev));
+    }
+
+    #[test]
+    fn single_component_is_never_inverted() {
+        let (v, t) = cube(0.0, 0.0, 0.0, 10.0);
+        assert!(!has_inverted_component(&v, &t));
+        let t_rev: Vec<[usize; 3]> = t.iter().map(|x| [x[2], x[1], x[0]]).collect();
+        assert!(!has_inverted_component(&v, &t_rev));
     }
 
     fn cube(cx: f64, cy: f64, cz: f64, side: f64) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {

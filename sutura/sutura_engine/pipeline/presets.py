@@ -312,15 +312,19 @@ GRAFT_TIMEOUT = _BALANCED_INTENSITY.graft_timeout
 # arrays.  Like Graft it has no interruptible solver: SPLINT_MAX_FACES is the
 # hard input cap (above it the tier refuses rather than start), SPLINT_RES caps
 # the sampling resolution (the main runtime bound; ``adaptive='retry'`` only
-# reruns after the hardened pass), and SPLINT_TIMEOUT is the outer wall-clock
-# budget that abandons the candidate all-or-nothing, consistent with the
-# fTetWild timeout.  SPLINT_DEFAULT_ENABLED is the single switch and stays OFF
-# until the 40-mesh corpus decision proves Splint no worse on every mesh.
+# reruns after the hardened pass), and SPLINT_WORK_BY_INTENSITY is a
+# DETERMINISTIC work budget in Delaunay tetrahedra.  The former wall-clock
+# timeout was a post-hoc rejection; the mesh now depends only on the input,
+# preset and tet count.  SPLINT_DEFAULT_ENABLED is the single switch and stays
+# OFF until the 40-mesh corpus decision proves Splint no worse on every mesh.
 SPLINT_RES = 128
 
 SPLINT_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
 
-SPLINT_TIMEOUT = _BALANCED_INTENSITY.ftetwild_timeout
+SPLINT_WORK_BY_INTENSITY = {'quick': 0, 'balanced': 4_000_000,
+                            'thorough': 8_000_000, 'extreme': 16_000_000}
+
+SPLINT_DEFAULT_WORK = 4_000_000
 
 SPLINT_DEFAULT_ENABLED = False
 
@@ -334,13 +338,16 @@ SPLINT_ENV = 'SUTURA_SPLINT'
 # union.  It sits after Splint and before fTetWild and is ON by default because
 # its result is adopted only when it is STRICTLY better than the result the
 # ladder currently holds (so a mesh that does not benefit is byte-identical).
-# COAPTATION_MAX_FACES is a hard input cap; COAPTATION_TIMEOUT is the outer
-# wall-clock abort (all-or-nothing), consistent with the fTetWild timeout.
+# COAPTATION_MAX_FACES is a hard input cap; COAPTATION_WORK_BY_INTENSITY is a
+# DETERMINISTIC work budget in total body faces closed/merged by the tier.
 COAPTATION_SEAM_ULP_K = 1
 
 COAPTATION_MAX_FACES = _BALANCED_INTENSITY.ftetwild_max_faces
 
-COAPTATION_TIMEOUT = _BALANCED_INTENSITY.ftetwild_timeout
+COAPTATION_WORK_BY_INTENSITY = {'quick': 0, 'balanced': 1_000_000,
+                                'thorough': 2_000_000, 'extreme': 4_000_000}
+
+COAPTATION_DEFAULT_WORK = 1_000_000
 
 COAPTATION_DEFAULT_ENABLED = True
 

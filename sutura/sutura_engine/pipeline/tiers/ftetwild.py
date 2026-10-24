@@ -68,9 +68,13 @@ def ftetwild_available():
 
 def run_ftetwild(inter, out_obj, params=None, timeout=None):
     """Run the fTetWild fallback bridge. Returns (report, ok); reports a skip,
-    never silence. Time-boxed: a per-mesh wall-clock budget (FTETWILD_TIMEOUT)
-    bounds the call so a dense scan cannot stall the batch; on timeout the
-    report carries error='timeout'.
+    never silence.  ``timeout`` is a documented EXCEPTION to the deterministic
+    work-budget rule: fTetWild is an external, itself non-deterministic solver,
+    so the timeout remains a per-attempt watchdog while the deterministic
+    bounds are the input-face cap and the fixed attempt plan.  It is a
+    per-mesh wall-clock budget (FTETWILD_TIMEOUT) that bounds the call so a
+    dense scan cannot stall the batch; on timeout the report carries
+    error='timeout'.
 
     Dispatch: the fixed Linux two-venv layout (python3.11 + pytetwild) first,
     then a killable `sys.executable` subprocess for single-environment installs
@@ -407,6 +411,9 @@ def _ftetwild_attempt(tmpdir, inter, tag, params, timeout, v=None, t=None,
     return att, cand
 
 
+from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
+
+
 def _ftetwild_tier(v, t, input_v, input_t, after, stats, tmpdir, ftetwild,
                    spec=None):
     """fTetWild basamak of the deep-repair ladder. Returns ``(v, t, after)``.
@@ -514,8 +521,25 @@ def _ftetwild_tier(v, t, input_v, input_t, after, stats, tmpdir, ftetwild,
                         if spec.ftetwild_timeout else 'time')
                 if chosen:
                     att, (cand_v, cand_t, cand_after, _h, _n) = chosen
-                    ft_rep['adopted_attempt'] = att['attempt']
-                    ft_rep.pop('reject_reason', None)
+                    guard = check_candidate(
+                        len(input_t), len(input_v), len(cand_t), len(cand_v),
+                        slack_units=0, base_arrays=(v, t),
+                        candidate_arrays=(cand_v, cand_t), measure_si=True,
+                        improved_topology=(int(_h) < int(cur_holes)
+                                           or int(_n) < int(cur_nm)),
+                        policy=policy_for('ftetwild'))
+                    ft_rep.update(guard.fields)
+                    if not guard.ok:
+                        ft_rep['adopted'] = False
+                        ft_rep['reject_reason'] = 'guard'
+                        ft_rep['reason'] = ('fTetWild candidate rejected: %s'
+                                            % guard.reason)
+                        chosen = None
+                    else:
+                        ft_rep['adopted_attempt'] = att['attempt']
+                        ft_rep.pop('reject_reason', None)
+                if chosen:
+                    att, (cand_v, cand_t, cand_after, _h, _n) = chosen
                     # shape flag: fTetWild can close openings and cavities,
                     # adding surface far from the input. A decimated candidate
                     # already carries the distance measured during its ladder,

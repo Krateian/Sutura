@@ -359,9 +359,10 @@ def si_excise_recap(verts, tris, *, maxholesize=1000,
     current_si = report['initial_si']
     total_faces = len(t)
     for round_idx in range(max_rounds):
-        if time_budget is not None and (time.perf_counter() - t0) > time_budget:
-            report['reason'] = 'budget'
-            break
+        # Deterministic bound: the round count (max_rounds) and the per-round
+        # face-fraction brake limit the work; elapsed time is only reported, so
+        # the result does not depend on machine load. A non-positive budget
+        # (quick preset) still disables the pass above.
         topo_before = topology.mesh_topology(v, t)
         holes_before = int(topo_before.get('boundary_edges', 0) or 0)
         nm_before = (int(topo_before.get('non_two_manifold_edges', 0) or 0)

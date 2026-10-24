@@ -104,6 +104,16 @@ decide what to do and check the result:
 The repair tiers themselves — Flap, Tamponade, Graft, Dressing, Splint and
 fTetWild — are described in the steps above.
 
+## Repeatable results
+
+Repair decisions that change the output use counted work, not elapsed time. The
+same file with the same repair settings therefore produces the same result on a
+fast machine, a slow machine or a busy one; the time in the report is only a
+measurement. A few external or report-only limits keep a very high safety
+timeout (the optional fTetWild solver, Graft's outer abort) or a warning
+(Dressing's soft budget); those are documented exceptions and are called out in
+the report when they matter.
+
 ## Why a staged pipeline
 
 * **Stage 1 - native engine (Rust `sutura_geom` + `sutura_engine`).** Removes
@@ -164,10 +174,10 @@ whenever its optional extra is installed:
   non-manifold edges do not increase, and the mesh closes completely (no
   boundary edges); otherwise the pre-round mesh is restored byte-for-byte.
   Self-intersection detection uses the exact Rust classifier. No connected
-  component is ever dropped, at most three rounds run under the intensity
-  preset's time budget (Balanced 5 s, Thorough 20 s, Extreme 60 s), and the
-  step is a no-op on meshes without self-intersections. Disable it with
-  `SUTURA_SI_EXCISE=0`.
+  component is ever dropped, at most three rounds run (the round count and a
+  30 % face-fraction brake bound the work; the time shown in the report is only
+  a measurement), and the step is a no-op on meshes without self-intersections.
+  Disable it with `SUTURA_SI_EXCISE=0`.
 
 These after-stage-1 tiers form the **deep-repair ladder**, selected with
 `--deep-repair {off,local,full}` (or `SUTURA_DEEP_REPAIR`, or the
@@ -191,6 +201,12 @@ refinement is off because it cost ~9 s per 90k-face mesh without changing a
 result. Measured on the 40 real-world samples it made 3 more meshes strictly
 watertight (31 → 34); on the 115-mesh corpus it gained none, which is why it
 is not part of `full`.
+
+Before the ranked fallback methods are tried, the automatic path can skip a
+method that the detected damage makes pointless: duplicate faces skip Join,
+and interior faces or an interior region skip Transplant and Wall Thicken. It
+only changes the fallback order, never the baseline repair; set
+`SUTURA_TRIAGE_PRUNE=0` to restore the previous order.
 
 The **self-intersection policy** is selected with `--si-mode
 {repair,report,off}` (or `SUTURA_SI_MODE`, or the GUI Options → Repair combo

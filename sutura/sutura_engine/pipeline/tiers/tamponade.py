@@ -5,7 +5,6 @@
 Moved verbatim from sutura/repair.py; no logic change.
 """
 import os
-import time
 
 import numpy as np
 
@@ -200,6 +199,9 @@ def _dump_tamp_mesh(dump_dir, name, verts, tris):
         pass
 
 
+from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
+
+
 def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
                    tmpdir=None, tamponade=False, intensity=None, spec=None,
                    si_mode='report', prepass=False):
@@ -228,7 +230,8 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
     rec = {'tier': 'tamponade', 'ran': False, 'adopted': False,
            'placement': 'prepass' if prepass else 'post_stage1',
            'watertight': False, 'reload_watertight': False, 'reason': None,
-           'reject_reason': None, 'intensity': intensity, 'budget_s': None,
+           'reject_reason': None, 'intensity': intensity,
+           'work_budget': None, 'work_units': None,
            'h_min': None, 'input_faces': None, 'output_faces': None,
            'seconds': None, 'input_holes': None, 'input_non_manifold': None,
            'input_parts': None, 'candidate_holes': None,
@@ -248,7 +251,11 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
            'candidate_self_intersections': None, 'si_fall': None,
            'si_ok': None, 'melt_enabled': None, 'si_method': None,
            'input_internal_walls': None, 'candidate_internal_walls': None,
-           'prepass_seconds': None}
+           'prepass_seconds': None,
+           'guard_rejected': None, 'guard_reason': None,
+           'baseline_self_intersections': None,
+           'candidate_self_intersections': None,
+           'si_policy': None, 'si_checked': False, 'si_flagged': False}
     if 'tamponade_shell_prepass' in stats:
         rec['shell_prepass'] = stats['tamponade_shell_prepass']
     with method_health.tier_guard('tamponade', 'tier') as _g:
@@ -284,15 +291,14 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
         melt_on = bool(_tamp.resolve_melt_si(intensity_val))
         rec['melt_enabled'] = melt_on
 
-        # Prepass budget: the whole prepass block (seal + local SI guard) is
-        # capped so a large scan cannot stall the pipeline on a candidate that is
-        # likely rejected anyway. A cap <= 0 skips the prepass outright.
-        _tier_start = time.perf_counter()
+        # Prepass budget: the seal is capped by a deterministic cut-grid-cell
+        # work budget (no wall clock, no elapsed subtraction). A cap <= 0 skips
+        # the prepass outright; the local SI guard runs after the seal.
         prepass_budget = None
         if prepass:
             prepass_budget = _tamp.resolve_tamponade_prepass_budget(intensity_val)
             if prepass_budget is not None and prepass_budget <= 0:
-                rec['reason'] = ('prepass budget 0 s at intensity %r; tier '
+                rec['reason'] = ('prepass work budget 0 at intensity %r; tier '
                                  'skipped' % (intensity_val,))
                 stats['tamponade'] = rec
                 return v, t, after
@@ -328,18 +334,12 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
 
         seal_budget = None
         if prepass and prepass_budget is not None:
-            remaining = (prepass_budget - _tamp.TAMPONADE_PREPASS_SI_RESERVE_S
-                         - (time.perf_counter() - _tier_start))
-            if remaining < _tamp.TAMPONADE_PREPASS_MIN_S:
-                rec['reason'] = ('prepass budget exhausted before the seal '
-                                 '(%.2f s left)' % max(remaining, 0.0))
-                stats['tamponade'] = rec
-                return v, t, after
-            seal_budget = remaining
+            seal_budget = int(prepass_budget)
         out_v, out_t, trec = _tamp.run_tamponade(
             cur_v, cur_t, intensity=intensity_val,
-            time_budget_s=seal_budget)
-        for key in ('budget_s', 'h_min', 'seconds', 'plugs', 'plug_faces',
+            work_budget=seal_budget)
+        for key in ('work_budget', 'work_units', 'h_min', 'seconds',
+                    'plugs', 'plug_faces',
                     'plugs_rejected', 'plugs_inconclusive',
                     'plugs_rejected_size', 'plugs_rejected_dev',
                     'melt_layers_tried', 'melt_layers_accepted',
@@ -436,6 +436,18 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
                      or cand_si_exact <= base_si_exact)
         rec['si_fall'] = si_fall
         rec['si_ok'] = si_ok
+        guard = check_candidate(
+            len(cur_t), len(cur_v), len(cand_t), len(cand_v),
+            slack_units=int(rec.get('plug_faces') or 0),
+            base_si=(base_si_exact if not prepass else None),
+            candidate_si=(cand_si_exact if not prepass else None),
+            base_arrays=(wb_v, wb_t), candidate_arrays=(wv, wt),
+            measure_si=(not prepass and cand_si_exact is None),
+            policy=policy_for('tamponade'))
+        for key, value in guard.fields.items():
+            if key in rec:
+                rec[key] = value
+        guard_ok = guard.ok
         # Prepass placement: the Stage-1 chain still runs after the seal and
         # repairs the non-manifold edge the reference plug can leave behind
         # (and re-caps any small loop its repair opens), so the gate only
@@ -451,12 +463,11 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
             # fully reconcile (measured: ornate-frame 66584 -> 66749, 1038441
             # 2350 -> 2436), so `si_ok` is kept as the strict non-rise guard
             # computed above rather than forced True.
-            if prepass_budget is not None:
-                _elapsed = time.perf_counter() - _tier_start
-                if _elapsed > prepass_budget:
-                    si_ok = False
-                    rec['reject_reason'] = 'prepass budget exceeded'
-                    rec['prepass_seconds'] = _elapsed
+            if (prepass_budget is not None
+                    and int(rec.get('work_units') or 0) > int(prepass_budget)):
+                si_ok = False
+                rec['reject_reason'] = 'prepass work budget exceeded'
+                rec['budget_limited_by'] = 'work'
         else:
             geometry_fall = strict_fall or si_fall
         # Plug leak guard: any plug added by Tamponade whose added vertices
@@ -477,7 +488,7 @@ def tamponade_tier(v, t, input_v=None, input_t=None, after=None, stats=None,
         # its strict SI non-rise guard (`si_guard`) because Stage 1 does not
         # fully reconcile the SI a reference plug can add.
         si_guard = si_ok if prepass else True
-        if (no_rise and geometry_fall and parts_ok and healthy_ok and si_guard
+        if (guard_ok and no_rise and geometry_fall and parts_ok and healthy_ok and si_guard
                 and leak_ok and len(cand_t)):
             after = topology.mesh_topology(cand_v, cand_t)
             rec['adopted'] = True

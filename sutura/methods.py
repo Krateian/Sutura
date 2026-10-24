@@ -41,6 +41,7 @@ from sutura_engine.methods import (
 )
 from sutura_engine.triage import (
     AUTO_MAX_ATTEMPTS,
+    AUTO_FALLBACK_WATCHDOG_S,
     AUTO_FALLBACK_BUDGET_FACTOR,
     AUTO_FALLBACK_MIN_S,
     AUTO_FALLBACK_MAX_S,
@@ -103,6 +104,7 @@ __all__ = [
     'format_analyze_human',
     'discover_builtin_methods',
     'AUTO_MAX_ATTEMPTS',
+    'AUTO_FALLBACK_WATCHDOG_S',
     'AUTO_FALLBACK_BUDGET_FACTOR',
     'AUTO_FALLBACK_MIN_S',
     'AUTO_FALLBACK_MAX_S',

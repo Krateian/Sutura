@@ -187,8 +187,9 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   excise re-cap likewise no longer requests refinement (it changed no corpus outcome).
 - **Flap per-loop candidate selection (unreleased):** on by default, the selector tries the
   membrane / reference-fairing / unfaired refined alternatives only when a loop's thin-plate
-  patch is rejected (coplanar fold), charged against the Flap wall-clock budget, so both the
-  CLI and the GUI get it and parity is automatic. It is disabled with the env-only
+  patch is rejected (coplanar fold), charged against the deterministic Flap work budget
+  (`FLAP_WORK_BY_INTENSITY`, no wall clock), so both the CLI and the GUI get it and parity
+  is automatic. It is disabled with the env-only
   `SUTURA_FLAP_SELECT=0` (like the ray-stab vote, no CLI flag or GUI control).
 - **Localized exact self-union (`sutura/local_exact.py`, unreleased):** the tier that
   replaces a residual Stage-2 self-intersecting cluster with the exact outer-hull
@@ -206,6 +207,10 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   (EN/TR), and the repair-log panel renders the adopted / not-adopted verdict.
   The library default (`TAMPONADE_DEFAULT_ENABLED = True`) runs the tier on every
   path; `--no-tamponade` / `SUTURA_TAMPONADE=0` / the GUI checkbox disable it.
+  Its prepass/seal budget is deterministic cut-grid-cell work
+  (`TAMPONADE_PREPASS_WORK_BY_INTENSITY`); the env override
+  `SUTURA_TAMPONADE_PREPASS_BUDGET` is now interpreted in work units (the former
+  seconds meaning is retired).
 - **Stent (Tamponade's inflate-from-inside plug, v0.9.0):** a per-loop plug
   candidate inside Tamponade that runs when the reference plug is rejected for
   that loop. It rides INSIDE the Tamponade tier (it only runs when Tamponade runs

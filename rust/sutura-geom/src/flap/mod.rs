@@ -17,7 +17,6 @@ pub mod topology;
 pub use binding::flap_fill_py;
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
 
 /// A 3-D point.
 pub type V3 = [f64; 3];
@@ -539,12 +538,12 @@ pub struct FlapParams {
     pub coplanar_frac: f64,
     pub coplanar_cos: f64,
     pub sliver_cleanup: bool,
-    /// Wall-clock budget for the whole call, in seconds. When set (and > 0),
-    /// the per-loop candidate selector stops trying alternatives once the
-    /// deadline passes and leaves the remaining loops to Stage-1, so an
-    /// expensive selection cannot push the run past its preset budget.
-    /// `None` = unlimited.
-    pub time_budget: Option<f64>,
+    /// Deterministic work budget for the whole call, in work units.  The
+    /// per-loop DP cost is charged before it starts and each alternative
+    /// candidate is charged before it is built; a step that would exceed the
+    /// budget is skipped, so the produced mesh depends only on the input and
+    /// the preset (never on CPU speed or load).  `None` = unlimited.
+    pub work_budget: Option<u64>,
 }
 
 impl Default for FlapParams {
@@ -566,7 +565,7 @@ impl Default for FlapParams {
             coplanar_frac: 0.05,
             coplanar_cos: 0.99,
             sliver_cleanup: false,
-            time_budget: None,
+            work_budget: None,
         }
     }
 }
@@ -613,9 +612,11 @@ pub struct Report {
     pub split_splits: usize,
     pub split_nm_edges_in: usize,
     pub loops_skipped_coplanar: usize,
+    pub loops_skipped_work: usize,
     pub loops_skipped_flat: usize,
     pub loops_skipped_sliver: usize,
     pub loops_skipped_safety: usize,
+    pub work_units: u64,
     pub safety_rejections: Vec<(usize, String)>,
     pub non_simple_reported: usize,
     pub orient_reversed: usize,
@@ -639,20 +640,18 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         ..Default::default()
     };
 
-    // Wall-clock budget for the whole call (see ``FlapParams::time_budget``).
-    // ``None`` (the default) leaves selection unbounded; the Python caller
-    // passes its preset budget so the per-loop candidate selector can bail out
-    // of the alternative search instead of overshooting.  ``alt_reserve`` is
-    // the time held back for the largest *single* alternative still to start:
-    // it grows to the largest alternative duration seen so far (seeded at 25 %
-    // of the budget) and gates the start of every alternative, so the whole
-    // call stays within budget while never preempting an alternative mid-solve.
-    let budget_dur = prm
-        .time_budget
-        .filter(|b| *b > 0.0)
-        .map(Duration::from_secs_f64);
-    let deadline = budget_dur.map(|b| Instant::now() + b);
-    let mut alt_reserve = budget_dur.map(|b| b.mul_f64(0.25)).unwrap_or(Duration::ZERO);
+    // Deterministic work budget for the whole call (see
+    // ``FlapParams::work_budget``).  A loop's DP cost is charged before the
+    // dynamic programme starts, and each alternative candidate before it is
+    // built; a step that does not fit is skipped.  No clock is read, so the
+    // output is independent of CPU speed and machine load.
+    let mut work_used: u64 = 0;
+    fn work_fits(used: u64, cost: u64, limit: Option<u64>) -> bool {
+        match limit {
+            Some(b) => used.saturating_add(cost) <= b,
+            None => true,
+        }
+    }
 
     // ---- boundary normalisation / non-manifold split --------------------
     let (mut v2, mut t2): (Vec<V3>, Vec<T3>);
@@ -805,6 +804,32 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         if m > prm.max_loop {
             report.large_loops_fan += 1;
         }
+        // Charge the DP before starting it: O(m^3) table work dominates a
+        // large loop and must be rejected before it runs, never after.
+        let loop_cost: u64 = if m > prm.max_loop {
+            m as u64
+        } else {
+            (m as u64).saturating_pow(3)
+        };
+        // A single loop's DP may not exceed the whole preset budget (C6:
+        // reject a pathological `m^3` before it starts).  The total work is
+        // NOT gated loop-by-loop: the primary patch always completes so the
+        // caller can apply the same deterministic budget to adoption, exactly
+        // like the former wall-clock gate.  Only the alternative search stops
+        // at the budget.
+        if let Some(limit) = prm.work_budget {
+            if loop_cost > limit {
+                report.loops_skipped_work += 1;
+                report.loop_log.push(LoopLog {
+                    m,
+                    fan: m > prm.max_loop,
+                    large: m > prm.max_loop,
+                    action: Some("work".to_string()),
+                });
+                continue;
+            }
+        }
+        work_used = work_used.saturating_add(loop_cost);
         let pts: Vec<V3> = loop_arr.iter().map(|&i| v2[i as usize]).collect();
 
         // forbidden local chords: an edge that already has >= 2 faces
@@ -937,6 +962,12 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
             );
         }
         let was_seeded = p_pts.len() > n_before_refine;
+        // Charge the primary patch work after refinement (the cost is
+        // proportional to the patch face count; measured against wall time on
+        // 37384 s2 and 49544 s1).  This is unconditional: it is the work the
+        // caller's adoption gate sees, not a reason to drop a completed loop.
+        work_used = work_used
+            .saturating_add(5u64.saturating_mul(faces.len() as u64));
 
         // orientation
         if prm.orient == "reverse" {
@@ -1132,16 +1163,18 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                 }
                 true
             };
-            // An alternative may start only when the reserve (the largest one
-            // yet seen) still fits before the deadline.
-            let fits =
-                |reserve: Duration| deadline.is_none_or(|d| Instant::now() + reserve < d);
+            // An alternative may start only when its deterministic cost still
+            // fits in the work budget.  The estimate is a pure function of the
+            // patch size, so the same input always makes the same choice.
+            let alt_cost: u64 = 5u64
+                .saturating_mul(faces.len() as u64)
+                .saturating_add(1);
             // Primary: no alternative is built unless this is rejected.
             let mut chosen = cand_ok(&p_pts, &faces, &gfaces, true);
-            if !chosen && fits(alt_reserve) {
+            if !chosen && work_fits(work_used, alt_cost, prm.work_budget) {
                 let base = p_prefair.as_ref().unwrap();
                 // 1) Membrane (order-1) fairing of the refined patch.
-                let a0 = Instant::now();
+                work_used = work_used.saturating_add(alt_cost);
                 {
                     let mut c = base.clone();
                     fair::fair_patch_energy(&mut c, &faces, m, &ghost, 1, None, 0.0);
@@ -1150,10 +1183,10 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                         chosen = true;
                     }
                 }
-                alt_reserve = alt_reserve.max(Instant::now() - a0);
                 // 2) Reference fairing (opt-in via SUTURA_FLAP_REF).
-                if !chosen && ref_on && fits(alt_reserve) {
-                    let a0 = Instant::now();
+                if !chosen && ref_on
+                    && work_fits(work_used, alt_cost, prm.work_budget) {
+                    work_used = work_used.saturating_add(alt_cost);
                     if let Some(adj) = adj_ref.as_ref() {
                         if let Some(refs) =
                             crate::tamponade::build_reference(&v2, &t2, loop_arr, target, adj)
@@ -1172,20 +1205,18 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                             }
                         }
                     }
-                    alt_reserve = alt_reserve.max(Instant::now() - a0);
                 }
                 // 3) Unfaired refined patch.
-                if !chosen && fits(alt_reserve) {
-                    let a0 = Instant::now();
+                if !chosen && work_fits(work_used, alt_cost, prm.work_budget) {
+                    work_used = work_used.saturating_add(alt_cost);
                     if cand_ok(base, &faces, &gfaces, false) {
                         p_pts = base.clone();
                         chosen = true;
                     }
-                    alt_reserve = alt_reserve.max(Instant::now() - a0);
                 }
                 // 4) Projected SI-free patch (independent ear-clipped faces).
-                if !chosen && fits(alt_reserve) {
-                    let a0 = Instant::now();
+                if !chosen && work_fits(work_used, alt_cost, prm.work_budget) {
+                    work_used = work_used.saturating_add(alt_cost);
                     if let Some((pp, pf)) =
                         projected_patch(&v2, &t2, loop_arr, target, adj_ref.as_ref(), &forb)
                     {
@@ -1210,7 +1241,6 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
                             chosen = true;
                         }
                     }
-                    alt_reserve = alt_reserve.max(Instant::now() - a0);
                 }
             }
             if !chosen {
@@ -1397,6 +1427,7 @@ pub fn flap_fill(verts: &[V3], tris: &[T3], prm: &FlapParams) -> (Vec<V3>, Vec<T
         });
     }
 
+    report.work_units = work_used;
     (out_v, out_t, report)
 }
 

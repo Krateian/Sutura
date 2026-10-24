@@ -493,25 +493,19 @@ def test_auto_skips_generative_below_min_score(tmp):
         methods._attempt, methods._evaluate, methods.rank_methods = real
 
 
-def test_auto_fallback_budget_stops_further_methods(tmp):
-    """The untagged auto ranked fallback is wall-clock bounded: once
-    min(max(AUTO_FALLBACK_MIN_S, AUTO_FALLBACK_BUDGET_FACTOR * baseline_s),
-    AUTO_FALLBACK_MAX_S) is exceeded it starts no further method, keeps the best
-    candidate (the baseline, the only one auto can adopt) and reports the budget
-    note plus the tried methods. Explicit tags are never budgeted (see the
-    explicit test)."""
+def test_auto_fallback_stops_after_attempt_count(tmp):
+    """The untagged auto fallback is COUNT-budgeted: at most AUTO_MAX_ATTEMPTS
+    ranked methods are tried, independent of how long each takes.  When the
+    count is exhausted the baseline is kept and the report says so explicitly."""
     import methods
     real = (methods._attempt, methods._evaluate, methods.rank_methods,
-            methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
-            methods.AUTO_FALLBACK_MAX_S)
+            methods.AUTO_MAX_ATTEMPTS)
     calls = []
 
     def fake_attempt(src, out, tmpdir, kwargs, multi):
         calls.append(kwargs)
         with open(out, 'w') as f:
             f.write('ok')
-        if len(calls) > 1:
-            time.sleep(0.2)   # the first fallback method overruns the budget
         return {'stage1': {}, 'simulated': True}
 
     def fake_evaluate(result, path, multi, in_objs, method):
@@ -527,8 +521,7 @@ def test_auto_fallback_budget_stops_further_methods(tmp):
 
     methods._attempt, methods._evaluate, methods.rank_methods = \
         fake_attempt, fake_evaluate, fake_rank
-    methods.AUTO_FALLBACK_MIN_S = 0.05
-    methods.AUTO_FALLBACK_BUDGET_FACTOR = 0.0
+    methods.AUTO_MAX_ATTEMPTS = 1
     try:
         with tempfile.TemporaryDirectory() as td:
             src = os.path.join(td, 'in.stl')
@@ -538,31 +531,28 @@ def test_auto_fallback_budget_stops_further_methods(tmp):
             res = methods.repair_with_methods(
                 src, out, td, None, mode='auto', deep_repair='full',
                 ftetwild='auto')
-            # baseline + exactly the first ranked method (the second is past
-            # the budget and must never start)
+            # baseline + exactly one ranked method; the second is past the
+            # candidate-count budget and must never start.
             assert len(calls) == 2, calls
             assert res['method_used']['source'] == 'auto_baseline', res
-            assert res['method_used'].get('budget_reached') is True, res
-            assert res['method_used'].get('note') == 'fallback budget reached', \
-                res
+            assert res['method_used'].get('fallback_attempts_exhausted') is True, res
+            assert res['method_used'].get('fallback_attempts') == 1, res
+            assert res['method_used'].get('note', '').startswith(
+                'fallback attempts exhausted'), res
             assert res['method_reached_watertight'] is False, res
             nums = [t.get('num') for t in res['methods_tried']]
             assert 4 not in nums, nums
     finally:
         (methods._attempt, methods._evaluate, methods.rank_methods,
-         methods.AUTO_FALLBACK_MIN_S,
-         methods.AUTO_FALLBACK_BUDGET_FACTOR,
-         methods.AUTO_FALLBACK_MAX_S) = real
+         methods.AUTO_MAX_ATTEMPTS) = real
 
 
-def test_auto_fallback_budget_capped_by_max(tmp):
-    """AUTO_FALLBACK_MAX_S caps the budget even when the baseline was slow: the
-    resolved budget is min(..., MAX), so a huge MIN does not grant an unbounded
-    fallback window."""
+def test_auto_fallback_watchdog_is_explicit(tmp):
+    """The very high wall-clock watchdog is a safety net, not a normal stop:
+    when it trips the report carries an explicit watchdog field and note."""
     import methods
     real = (methods._attempt, methods._evaluate, methods.rank_methods,
-            methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
-            methods.AUTO_FALLBACK_MAX_S)
+            methods.AUTO_FALLBACK_WATCHDOG_S)
     calls = []
 
     def fake_attempt(src, out, tmpdir, kwargs, multi):
@@ -570,7 +560,7 @@ def test_auto_fallback_budget_capped_by_max(tmp):
         with open(out, 'w') as f:
             f.write('ok')
         if len(calls) > 1:
-            time.sleep(0.2)   # the first fallback overruns the (capped) budget
+            time.sleep(0.05)
         return {'stage1': {}, 'simulated': True}
 
     def fake_evaluate(result, path, multi, in_objs, method):
@@ -586,9 +576,7 @@ def test_auto_fallback_budget_capped_by_max(tmp):
 
     methods._attempt, methods._evaluate, methods.rank_methods = \
         fake_attempt, fake_evaluate, fake_rank
-    methods.AUTO_FALLBACK_MIN_S = 1000.0   # would grant a huge window ...
-    methods.AUTO_FALLBACK_BUDGET_FACTOR = 1000.0
-    methods.AUTO_FALLBACK_MAX_S = 0.05     # ... but MAX caps it
+    methods.AUTO_FALLBACK_WATCHDOG_S = 0.01
     try:
         with tempfile.TemporaryDirectory() as td:
             src = os.path.join(td, 'in.stl')
@@ -599,27 +587,28 @@ def test_auto_fallback_budget_capped_by_max(tmp):
                 src, out, td, None, mode='auto', deep_repair='full',
                 ftetwild='auto')
             assert len(calls) == 2, calls
-            assert res['method_used'].get('budget_reached') is True, res
-            assert res['method_used'].get('fallback_budget_s') == 0.05, res
+            assert res['method_used'].get('fallback_watchdog') is True, res
+            assert res['method_used'].get('fallback_watchdog_s') == 0.01, res
+            assert res['method_used'].get('note', '').startswith(
+                'fallback watchdog exceeded'), res
     finally:
         (methods._attempt, methods._evaluate, methods.rank_methods,
-         methods.AUTO_FALLBACK_MIN_S, methods.AUTO_FALLBACK_BUDGET_FACTOR,
-         methods.AUTO_FALLBACK_MAX_S) = real
+         methods.AUTO_FALLBACK_WATCHDOG_S) = real
 
 
-def test_auto_fallback_skipped_when_baseline_too_slow(tmp):
-    """A baseline that already ran past AUTO_FALLBACK_MAX_S on its own skips the
-    ranked fallback entirely (no ranked method is started) and reports why."""
+def test_auto_fallback_has_no_baseline_time_gate(tmp):
+    """A slow baseline no longer skips the ranked fallback: the ladder is
+    bounded by the candidate count, not by the baseline's wall-clock time."""
     import methods
     real = (methods._attempt, methods._evaluate, methods.rank_methods,
-            methods.AUTO_FALLBACK_MAX_S)
+            methods.AUTO_MAX_ATTEMPTS, methods.AUTO_FALLBACK_WATCHDOG_S)
     calls = []
 
     def fake_attempt(src, out, tmpdir, kwargs, multi):
         calls.append(kwargs)
         with open(out, 'w') as f:
             f.write('ok')
-        time.sleep(0.1)   # the baseline alone overruns the hard ceiling
+        time.sleep(0.1)   # the baseline alone is slow
         return {'stage1': {}, 'simulated': True}
 
     def fake_evaluate(result, path, multi, in_objs, method):
@@ -629,11 +618,14 @@ def test_auto_fallback_skipped_when_baseline_too_slow(tmp):
 
     def fake_rank(analysis, top_n=6):
         return [methods.Recommendation(2, 'deep_local', 'Local deep repair',
-                                       0.9, 'x', 'mechanical')]
+                                       0.9, 'x', 'mechanical'),
+                methods.Recommendation(4, 'join_components', 'Join components',
+                                       0.8, 'x', 'mechanical')]
 
     methods._attempt, methods._evaluate, methods.rank_methods = \
         fake_attempt, fake_evaluate, fake_rank
-    methods.AUTO_FALLBACK_MAX_S = 0.05
+    methods.AUTO_MAX_ATTEMPTS = 2
+    methods.AUTO_FALLBACK_WATCHDOG_S = 3600.0
     try:
         with tempfile.TemporaryDirectory() as td:
             src = os.path.join(td, 'in.stl')
@@ -643,16 +635,13 @@ def test_auto_fallback_skipped_when_baseline_too_slow(tmp):
             res = methods.repair_with_methods(
                 src, out, td, None, mode='auto', deep_repair='full',
                 ftetwild='auto')
-            assert len(calls) == 1, calls   # baseline only, no ranked method
-            assert res['method_used']['source'] == 'auto_baseline', res
-            assert res['method_used'].get('fallback_skipped') is True, res
-            assert res['method_used'].get('note') == \
-                'fallback skipped: baseline too slow', res
-            nums = [t.get('num') for t in res['methods_tried']]
-            assert 2 not in nums, nums
+            assert len(calls) == 3, calls   # baseline + both ranked methods
+            assert res['method_used'].get('fallback_skipped') is None, res
+            assert res['method_used'].get('note', '').startswith(
+                'fallback attempts exhausted'), res
     finally:
         (methods._attempt, methods._evaluate, methods.rank_methods,
-         methods.AUTO_FALLBACK_MAX_S) = real
+         methods.AUTO_MAX_ATTEMPTS, methods.AUTO_FALLBACK_WATCHDOG_S) = real
 
 
 def test_engine_only_tag_disables_auto_escalation(tmp):

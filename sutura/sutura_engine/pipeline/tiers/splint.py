@@ -30,7 +30,8 @@ from defects import detect as detect_defects
 from sutura_engine import health as method_health
 from sutura_engine.pipeline.p_weld import weld_reload_equivalent
 from sutura_engine.pipeline.presets import (
-    SPLINT_MAX_FACES, SPLINT_RES, SPLINT_TIMEOUT,
+    SPLINT_DEFAULT_WORK, SPLINT_MAX_FACES, SPLINT_RES,
+    SPLINT_WORK_BY_INTENSITY,
 )
 from sutura_engine.pipeline.stage2 import run_stage2_arrays
 
@@ -41,6 +42,9 @@ def _count_defects(verts, tris):
     t32 = np.asarray(tris, dtype=np.int32)
     det = detect_defects(v32, t32)
     return len(det['holes']), len(det['non_manifold'])
+
+
+from sutura_engine.pipeline.adopt_guard import check_candidate, policy_for
 
 
 def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
@@ -54,11 +58,11 @@ def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
     records the core report fields (``out_parts``/``out_manifold``/``seconds``
     and the per-phase split) plus the adopt verdict and the EN/TR reason the
     CLI/GUI surface.  The tier is bounded by ``spec.splint_max_faces`` (a hard
-    input cap: a single ``splint_cut`` call is not interruptible) and
-    ``spec.splint_timeout`` (an OUTER wall-clock check that abandons the
-    candidate all-or-nothing, keeping the ladder's current result).  Inputs
-    above the cap and a wall-clock overrun are reported honestly and keep the
-    current result.  Never raises.
+    input cap: a single ``splint_cut`` call is not interruptible) and a
+    DETERMINISTIC work budget in Delaunay tetrahedra
+    (``SPLINT_WORK_BY_INTENSITY``); the former wall-clock rejection was a
+    post-hoc, load-dependent decision.  Inputs above the cap and a work-budget
+    overrun are reported honestly and keep the current result.  Never raises.
     """
     v = np.asarray(v, dtype=np.float64)
     t = np.asarray(t, dtype=np.int64)
@@ -68,8 +72,13 @@ def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
         return v, t, after
     cap = getattr(spec, 'splint_max_faces', SPLINT_MAX_FACES) if spec is not None \
         else SPLINT_MAX_FACES
-    timeout = getattr(spec, 'splint_timeout', SPLINT_TIMEOUT) if spec is not None \
-        else SPLINT_TIMEOUT
+    key = (intensity or getattr(spec, 'base', None)
+           or getattr(spec, 'name', None))
+    work_limit = int(getattr(
+        spec, 'splint_work',
+        SPLINT_WORK_BY_INTENSITY.get(key, SPLINT_DEFAULT_WORK))
+        if spec is not None else
+        SPLINT_WORK_BY_INTENSITY.get(key, SPLINT_DEFAULT_WORK))
     res = int(getattr(spec, 'splint_res', SPLINT_RES) if spec is not None
               else SPLINT_RES)
     mode = adaptive or 'retry'
@@ -81,8 +90,13 @@ def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
            'construct_status': None, 'manifold_postprocessed': False,
            'seconds': None, 'skipped_budget': False, 'aborted': False,
            'reject_reason': None, 'reason': None, 'warnings': [],
+           'guard_rejected': None, 'guard_reason': None,
+           'baseline_self_intersections': None,
+           'candidate_self_intersections': None,
+           'si_policy': None, 'si_checked': False, 'si_flagged': False,
            'max_faces': int(cap) if cap is not None else None,
-           'time_budget': (float(timeout) if timeout else None)}
+           'work_units': None, 'work_budget': int(work_limit),
+           'budget_limited_by': None}
     with method_health.tier_guard('splint', 'tier') as _g:
         try:
             import sutura_geom as _sg
@@ -121,15 +135,18 @@ def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
         rec['output_parts'] = srec.get('output_parts')
         rec['out_manifold'] = srec.get('out_manifold')
         rec['core'] = dict(srec)
-        if timeout and elapsed > float(timeout):
-            # Outer wall-clock abort (consistent with the fTetWild timeout): the
-            # candidate is abandoned all-or-nothing and the ladder's current
-            # result is kept (never a partially-verified mesh).
+        work_units = int(srec.get('tets') or 0)
+        rec['work_units'] = work_units
+        if work_limit and work_units > int(work_limit):
+            # DETERMINISTIC work budget (Delaunay tetrahedra): the candidate is
+            # abandoned all-or-nothing and the ladder result is kept.  This is
+            # independent of CPU speed/load, unlike the former elapsed check.
             rec['aborted'] = True
-            rec['reject_reason'] = 'aborted_time'
-            rec['reason'] = ('Splint was stopped for time (%.1fs > %.1fs); '
+            rec['budget_limited_by'] = 'work'
+            rec['reject_reason'] = 'work'
+            rec['reason'] = ('Splint used %d work units > %d at intensity %r; '
                              'the ladder result was kept'
-                             % (elapsed, float(timeout)))
+                             % (work_units, int(work_limit), key))
             rec['holes'] = (stats.get('stage1') or {}).get('holes_remaining')
             rec['non_manifold'] = (stats.get('stage1') or {}).get(
                 'non_manifold_edges_remaining')
@@ -163,13 +180,25 @@ def splint_tier(v, t, input_v, input_t, after, stats, tmpdir, splint=False,
             rec['non_manifold'] = cand_nm
             rec['faces'] = int(len(cand_t))
             if len(cand_t) and cand_holes == 0 and cand_nm == 0:
-                after = topology.mesh_topology(
-                    np.asarray(cand_v, dtype=np.float32),
-                    np.asarray(cand_t, dtype=np.int32))
-                rec['adopted'] = True
-                rec['watertight'] = False  # stage 2 confirms at the top level
-                rec['candidate_watertight'] = True
-                rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
+                guard = check_candidate(
+                    len(input_t), len(input_v), len(cand_t), len(cand_v),
+                    slack_units=0, base_arrays=(v, t),
+                    candidate_arrays=(cand_v, cand_t), measure_si=True,
+                    policy=policy_for('splint'))
+                for key, value in guard.fields.items():
+                    if key in rec:
+                        rec[key] = value
+                if not guard.ok:
+                    rec['guard_rejected'] = guard.reason
+                    rec['reason'] = 'rejected: %s' % guard.reason
+                else:
+                    after = topology.mesh_topology(
+                        np.asarray(cand_v, dtype=np.float32),
+                        np.asarray(cand_t, dtype=np.int32))
+                    rec['adopted'] = True
+                    rec['watertight'] = False  # stage 2 confirms at the top level
+                    rec['candidate_watertight'] = True
+                    rec['reason'] = 'strict-watertight candidate (stage 2 pending)'
             else:
                 rec['reason'] = ('candidate not strict-watertight '
                                  '(holes=%d non-manifold=%d)'

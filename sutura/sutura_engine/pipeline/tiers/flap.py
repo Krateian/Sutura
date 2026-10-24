@@ -16,12 +16,42 @@ from sutura_engine import health as method_health
 from sutura_engine.pipeline.p_weld import (
     reload_strict_holes_nm, weld_reload_equivalent,
 )
+from sutura_engine.pipeline.utils import _exact_si_face_count
 
 
 FLAP_SKIP_KEYS = ('loops_skipped_nm', 'loops_skipped_flat',
                   'loops_skipped_sheet', 'loops_skipped_coplanar',
                   'loops_skipped_sliver', 'loops_skipped_safety',
-                  'loops_fan_fallback')
+                  'loops_skipped_work', 'loops_fan_fallback')
+
+
+from sutura_engine.pipeline.adopt_guard import (
+    GuardPolicy, blowup_reason, check_candidate, policy_for,
+)
+
+
+def _flap_loop_vertex_total(frep):
+    """Total boundary-loop vertices the Rust Flap report saw (``loop_log``)."""
+    total = 0
+    for entry in frep.get('loop_log') or ():
+        try:
+            total += int(entry.get('m') or 0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    if total <= 0:
+        try:
+            total = 3 * int(frep.get('loops_found') or 0)
+        except (TypeError, ValueError):
+            total = 0
+    return total
+
+
+def _flap_blowup_reason(input_faces, input_vertices, candidate_faces,
+                        candidate_vertices, loop_vertices):
+    """Backward-compatible face/vertex helper (shared guard, SI disabled)."""
+    return blowup_reason(
+        input_faces, input_vertices, candidate_faces, candidate_vertices,
+        slack_units=loop_vertices, policy=GuardPolicy(si_policy='off'))
 
 
 def _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):
@@ -65,56 +95,105 @@ def _reload_component_count(verts, tris):
     return int(topology.connected_components((n, edges), return_labels=False))
 
 
-def _flap_final_verdict(in_verts, in_tris, out_verts, out_tris):
-    """(holes, non-manifold, input_parts, output_parts) for the safety net."""
+def _flap_final_verdict(in_verts, in_tris, out_verts, out_tris,
+                        measure_si=False):
+    """Measures for the Flap final safety net.
+
+    Returns ``(holes, non-manifold, input_parts, output_parts, metrics)``.
+    ``metrics['si']`` is the exact Rust proper-crossing count only when
+    ``measure_si`` is true (and None above the classifier's face cap).
+    """
     holes, nm = reload_strict_holes_nm(out_verts, out_tris)
     parts_in = _reload_component_count(in_verts, in_tris)
     parts_out = _reload_component_count(out_verts, out_tris)
-    return int(holes), int(nm), int(parts_in), int(parts_out)
+    si = _exact_si_face_count(out_verts, out_tris) if measure_si else None
+    metrics = {'holes': int(holes), 'non_manifold': int(nm),
+               'input_parts': int(parts_in), 'output_parts': int(parts_out),
+               'si': (int(si) if si is not None else None),
+               'watertight': int(holes) == 0 and int(nm) == 0}
+    return int(holes), int(nm), int(parts_in), int(parts_out), metrics
 
 
-def _flap_final_needs_off(in_verts, in_tris, out_verts, out_tris):
+def _flap_si_rose(flap_rec):
+    """Whether the Flap candidate raised the exact SI count (None = unknown)."""
+    base = (flap_rec or {}).get('baseline_self_intersections')
+    cand = (flap_rec or {}).get('candidate_self_intersections')
+    if base is None or cand is None:
+        return False
+    try:
+        return int(cand) > int(base)
+    except (TypeError, ValueError):
+        return False
+
+
+def _flap_final_needs_off(in_verts, in_tris, out_verts, out_tris,
+                          measure_si=False, si_flagged=False):
     """Whether a flap-adopted FINAL mesh warrants a flap-OFF re-run (HIGH-1).
 
     The flap adoption gate is topological-only and decided on the pre-chain
     mesh, so it cannot guarantee the final result is no worse than flap-OFF.
-    This cheap check flags the two observable regressions: the final mesh is
-    not strict-watertight, or it has more connected parts than the input had.
+    The cheap triggers are a final mesh that is not strict-watertight or has
+    more connected parts than the input.  When the Flap candidate raised the
+    exact SI count (``si_flagged``), both finals are measured and compared:
+    the pre-chain rise alone is not a regression, because Stage-1/Stage-2 can
+    lower it (1038439: 383 -> 479 candidate -> 350 final).
     Returns ``(reason, metrics)`` with ``reason`` None when no re-run is needed.
     """
-    holes, nm, parts_in, parts_out = _flap_final_verdict(
-        in_verts, in_tris, out_verts, out_tris)
-    metrics = {'holes': holes, 'non_manifold': nm, 'input_parts': parts_in,
-               'output_parts': parts_out,
-               'watertight': holes == 0 and nm == 0}
+    holes, nm, parts_in, parts_out, metrics = _flap_final_verdict(
+        in_verts, in_tris, out_verts, out_tris, measure_si=measure_si)
     if holes or nm:
         return 'not_watertight', metrics
     if parts_out > parts_in:
         return 'more_parts', metrics
+    if si_flagged:
+        return 'si_candidate_rise', metrics
     return None, metrics
 
 
 def _flap_off_preferred(on_verdict, off_verdict):
     """Whether the flap-OFF result should replace the flap-ON one.
 
-    OFF wins only when it is lexicographically better on (damage, part-count);
-    a tie keeps ON, so Flap is discarded only when it is actually worse.
+    OFF wins only when it is lexicographically better on
+    (damage, part-count, exact SI).  Parts come before SI: a lower SI never
+    buys losing a part.  A tie keeps ON, so Flap is discarded only when it is
+    actually worse.  When either side's SI is unknown (above the exact
+    classifier's face cap), SI is not used as a tie-breaker.
     """
-    def _score(verdict):
-        m = verdict[1]
-        return m['holes'] + m['non_manifold'], m['output_parts']
-    return _score(off_verdict) < _score(on_verdict)
+    reason = on_verdict[0]
+    on_m, off_m = on_verdict[1], off_verdict[1]
+    on_damage = on_m['holes'] + on_m['non_manifold']
+    off_damage = off_m['holes'] + off_m['non_manifold']
+    if off_damage != on_damage:
+        return off_damage < on_damage
+    if off_m['output_parts'] != on_m['output_parts']:
+        # A part-count change is never traded for a lower SI count.  For the
+        # other triggers keep the historical rule (OFF wins when it has fewer
+        # debris parts).
+        if reason == 'si_candidate_rise':
+            return False
+        return off_m['output_parts'] < on_m['output_parts']
+    on_si = on_m.get('si')
+    off_si = off_m.get('si')
+    if on_si is None or off_si is None:
+        return False
+    return int(off_si) < int(on_si)
 
 
-# Flap time budget by intensity preset (seconds). ``quick`` disables Flap
-# entirely; a run that exceeds its preset budget is measured (and cached for a
-# repeat attempt) but never adopted, so a slow Flap can stall neither the
-# repair nor the triage escalation. Mirrors ``SI_EXCISE_BUDGET_BY_INTENSITY``.
-FLAP_TIMEOUT_BY_INTENSITY = {'quick': 0.0, 'balanced': 15.0,
-                             'thorough': 30.0, 'extreme': 60.0}
+# Flap work budget by intensity preset, in deterministic work units
+# (loop DP m^3 + patch/alternative work).  ``quick`` disables Flap entirely.
+# The values are the 15/30/60 s equivalents from the former wall-clock presets
+# (about 5 M units/s on an unloaded machine), so the produced mesh does not
+# depend on CPU speed or load.  The earlier 1.6/3.2/6.4 M values skipped a
+# main-accepted 216-vertex loop (m^3 ~ 10.1 M) that actually completes in well
+# under a second; the m^3 unit overestimates large loops, so these values are a
+# deliberately conservative cap that covers every main-accepted loop observed
+# in the 40/36 reports.  A run that exceeds its preset budget is measured (and
+# cached for a repeat attempt) but never adopted.
+FLAP_WORK_BY_INTENSITY = {'quick': 0, 'balanced': 75_000_000,
+                          'thorough': 150_000_000, 'extreme': 300_000_000}
 
 
-FLAP_DEFAULT_BUDGET = 15.0
+FLAP_DEFAULT_WORK = 75_000_000
 
 
 # Per-process cache so the Flap pre-pass runs once per unique input mesh, even
@@ -127,10 +206,13 @@ _FLAP_CACHE = OrderedDict()
 _FLAP_CACHE_MAX = 2
 
 
-def _flap_cache_key(base_v, base_t):
+def _flap_cache_key(base_v, base_t, work_budget=None):
     h = hashlib.sha256()
     h.update(np.ascontiguousarray(base_v, dtype=np.float64).tobytes())
     h.update(np.ascontiguousarray(base_t, dtype=np.int64).tobytes())
+    # The candidate depends on the work budget (the Rust loop/alternative gate),
+    # so a cached result from another preset must not be reused.
+    h.update(('work:%s' % work_budget).encode('ascii'))
     return h.digest()
 
 
@@ -151,8 +233,8 @@ def _flap_step(v, t, input_v=None, input_t=None, after=None, stats=None,
     or has more parts than the input had (see ``_flap_final_needs_off``). The
     Flap pre-pass runs at most once per unique input mesh (bounded
     ``_FLAP_CACHE``) and is skipped when the intensity preset sets a zero
-    budget; a run slower than its budget is not adopted. Records
-    ``stats['flap']``; never raises.
+    budget; a run that spent more work units than its preset budget is not
+    adopted. Records ``stats['flap']``; never raises.
 
     ``_p`` (the resolved Stage-1 params) is accepted for call-site symmetry and
     ignored: Flap has no threshold that maps onto them.
@@ -170,7 +252,16 @@ def _flap_step(v, t, input_v=None, input_t=None, after=None, stats=None,
            'loops_found': None, 'loops_filled': None, 'loops_skipped': None,
            'loops_skipped_by_reason': None, 'patch_faces': None,
            'new_vertices': None, 'time_s': None, 'cache_hit': False,
-           'budget_s': None, 'max_orig_vertex_move_mm': None}
+           'work_units': None, 'work_budget': None,
+           'max_orig_vertex_move_mm': None,
+           'input_faces': None, 'input_vertices': None,
+           'candidate_faces': None, 'candidate_vertices': None,
+           'loop_vertex_total': None,
+           'slack_units': None,
+           'baseline_self_intersections': None,
+           'candidate_self_intersections': None,
+           'si_flagged': False, 'si_checked': False, 'si_policy': None,
+           'guard_rejected': None, 'guard_reason': None}
     stats['flap'] = rec
     with method_health.tier_guard('flap', 'tier') as _g:
         return _flap_step_impl(v, t, after, stats, rec)
@@ -194,13 +285,13 @@ def _flap_step_impl(v, t, after, stats, rec):
         return v, t, after
 
     intensity = stats.get('triage_intensity') or 'balanced'
-    budget = FLAP_TIMEOUT_BY_INTENSITY.get(intensity, FLAP_DEFAULT_BUDGET)
-    rec['budget_s'] = budget
-    if budget <= 0.0:
+    budget = FLAP_WORK_BY_INTENSITY.get(intensity, FLAP_DEFAULT_WORK)
+    rec['work_budget'] = int(budget)
+    if budget <= 0:
         rec['reason'] = ('budget: disabled by intensity preset %r' % intensity)
         return v, t, after
 
-    cache_key = _flap_cache_key(base_v, base_t)
+    cache_key = _flap_cache_key(base_v, base_t, budget)
     cached = _FLAP_CACHE.get(cache_key)
     if cached is not None:
         cand_v, cand_t, frep, prev_time = cached
@@ -208,18 +299,20 @@ def _flap_step_impl(v, t, after, stats, rec):
         rec['ran'] = True
         rec['cache_hit'] = True
         rec['time_s'] = prev_time
+        rec['work_units'] = frep.get('work_units')
     else:
         t0 = time.perf_counter()
         with method_health.tier_guard('flap', 'tier') as _gf:
             from sutura_engine import flap as _flap
             cand_v, cand_t, frep = _flap.flap_fill(base_v, base_t,
                                                    separate_stl=False,
-                                                   time_budget=budget)
+                                                   work_budget=budget)
         if _gf.error is not None:
             rec['reason'] = 'flap error: %s' % _gf.error
             return v, t, after
         rec['ran'] = True
         rec['time_s'] = round(time.perf_counter() - t0, 3)
+        rec['work_units'] = frep.get('work_units')
         _FLAP_CACHE[cache_key] = (cand_v, cand_t, frep, rec['time_s'])
         while len(_FLAP_CACHE) > _FLAP_CACHE_MAX:
             _FLAP_CACHE.popitem(last=False)
@@ -248,23 +341,43 @@ def _flap_step_impl(v, t, after, stats, rec):
     rec['baseline_damage'] = base_damage
     rec['candidate_damage'] = cand_damage
 
-    # Budget: a run slower than the preset budget is never adopted, so a heavy
-    # mesh cannot slow a repair through Flap. The candidate is cached above so
-    # a repeat attempt pays the measure, not the run again.
-    if rec['time_s'] is not None and rec['time_s'] > budget:
-        rec['reason'] = ('budget: flap took %ss > %ss at intensity %r; '
-                         'candidate not adopted'
-                         % (rec['time_s'], budget, intensity))
+    # The work budget is the only adoption limit: the Rust core already
+    # charges each loop/alternative before it runs, so ``work_units`` is a
+    # pure function of the input and preset.  The wall-clock ``time_s`` is
+    # recorded for the report but never read by a decision.
+    if rec['work_units'] is not None and int(rec['work_units']) > int(budget):
+        rec['reason'] = ('budget: flap used %d work units > %d at intensity '
+                         '%r; candidate not adopted'
+                         % (int(rec['work_units']), int(budget), intensity))
         return v, t, after
 
-    if _flap_adopt(base_holes, base_nm, cand_holes, cand_nm):
+    would_adopt = _flap_adopt(base_holes, base_nm, cand_holes, cand_nm)
+    if would_adopt:
+        # Topology alone is not enough: a candidate that closes the holes by
+        # inventing orders of magnitude more geometry, or by adding
+        # self-intersections, is a regression, not a repair.
+        loop_vertices = _flap_loop_vertex_total(frep)
+        rec['loop_vertex_total'] = int(loop_vertices)
+        guard = check_candidate(
+            len(base_t), len(base_v), len(cand_t), len(cand_v),
+            slack_units=loop_vertices,
+            base_arrays=(base_v, base_t), candidate_arrays=(cand_v, cand_t),
+            measure_si=True, policy=policy_for('flap'))
+        for key, value in guard.fields.items():
+            if key in rec:
+                rec[key] = value
+        if not guard.ok:
+            rec['guard_rejected'] = guard.reason
+            rec['reason'] = 'rejected: %s' % guard.reason
+            would_adopt = False
+    if would_adopt:
         after = topology.mesh_topology(cand_v, cand_t)
         rec['adopted'] = True
         rec['reason'] = ('adopted (holes %d->%d, non-manifold %d->%d; '
                          'damage %d->%d)' % (
                              base_holes, cand_holes, base_nm, cand_nm,
                              base_damage, cand_damage))
-    else:
+    elif rec['guard_rejected'] is None:
         rec['reason'] = ('rejected: reload damage %d->%d would worsen '
                          '(holes %d->%d, non-manifold %d->%d)' % (
                              base_damage, cand_damage, base_holes, cand_holes,

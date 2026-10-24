@@ -131,7 +131,7 @@ def _install_fake_core(out_v, out_t, report=None, b2=None):
     mod = types.ModuleType('sutura_geom')
     rep = {'seconds': 0.01, 'output_faces': int(len(out_t)),
            'output_vertices': int(len(out_v)), 'output_parts': 1,
-           'out_manifold': True}
+           'out_manifold': True, 'tets': 12}
     rep.update(report or {})
 
     def splint_cut(verts, tris, res, adaptive=None):
@@ -162,7 +162,7 @@ def _run_tier(cand_v, cand_t, spec=None, stats=None, b2=None):
 
     class _Spec:
         splint_max_faces = 300000
-        splint_timeout = 180.0
+        splint_work = 4_000_000
         splint_res = 128
     v, f = _cube()
     out_v, out_t, after = splint_tier(
@@ -212,7 +212,7 @@ def test_tier_skips_over_cap():
 
     class _Tiny:
         splint_max_faces = 2
-        splint_timeout = 180.0
+        splint_work = 4_000_000
         splint_res = 128
     ms, after, rec = _run_tier(v, f, spec=_Tiny())
     assert rec['skipped_budget'] is True and rec['ran'] is False, rec
@@ -220,17 +220,18 @@ def test_tier_skips_over_cap():
     print('ok test_tier_skips_over_cap')
 
 
-def test_tier_aborts_on_timeout():
+def test_tier_aborts_on_work_budget():
     v, f = _cube()
 
     class _Zero:
         splint_max_faces = 300000
-        splint_timeout = 1e-9    # any positive elapsed aborts
+        splint_work = 1        # the fake core reports 12 tets
         splint_res = 128
     _ms, _after, rec = _run_tier(v, f, spec=_Zero())
     assert rec['aborted'] is True and rec['adopted'] is False, rec
-    assert rec['reject_reason'] == 'aborted_time'
-    print('ok test_tier_aborts_on_timeout')
+    assert rec['reject_reason'] == 'work'
+    assert rec['budget_limited_by'] == 'work'
+    print('ok test_tier_aborts_on_work_budget')
 
 
 if __name__ == '__main__':
@@ -247,5 +248,5 @@ if __name__ == '__main__':
     test_tier_rejects_holed_candidate()
     test_tier_manifold_postprocess_adopts_closed_rebuild()
     test_tier_skips_over_cap()
-    test_tier_aborts_on_timeout()
+    test_tier_aborts_on_work_budget()
     print('ALL OK')
