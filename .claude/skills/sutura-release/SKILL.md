@@ -17,8 +17,11 @@ Claude, OpenCode workers and any other agent read this same file.
   components / closed shells, slicer (Orca) part count + manifold, two-sided
   distance to the input within tol = clamp(bbox_diag/10000, 0.0125, 0.05) mm,
   outside leak. File size and byte identity do not matter.
-- Never worse on any mesh. thingi10k_100827 (71-face low-poly with flipped
-  faces) is the canary: always include it.
+- No measured mesh is worse. A deliberate trade is recorded with its numbers
+  and approved by the lead; it is never hidden as a metric exception.
+  thingi10k_100827 (71-face low-poly with flipped faces) is the canary: always
+  include it. When fTetWild is adopted on both sides, measure the canary with
+  the fTetWild tier off and record that.
 - Verification is done by a worker that did not write the code.
 - FDM focus; resin is out of scope.
 - Code navigation goes through graphify (`graphify query "<question>"`,
@@ -45,37 +48,129 @@ Claude, OpenCode workers and any other agent read this same file.
   launch, --version.
 - Real-mesh default vs opt-out comparison on the smoke set (shape verdict,
   runtime delta).
+- The release-level test is the final gate in §4; the unit suite is not a
+  substitute.
 
 ## 3. Docs and visuals
-- Version bumped everywhere (sutura/repair.py VERSION, engine __init__,
-  diagnosis, OrcaSlicer plugin).
+- Version bumped everywhere: sutura/repair.py VERSION, engine __init__,
+  diagnosis and the OrcaSlicer plugin header.
 - CHANGELOG [x.y.z] with date, written in plain language for ordinary users.
+  Every new behaviour AND its limitations are documented in the changelog and
+  the limitations page; a new rule is never left only in the code.
 - User docs in sync, EN `docs/guide/` and TR `docs/guide/tr/`: feature-status,
   version-history, how-it-works pipeline order; README landing pages
   (`README.md`, `README.tr.md`): method count, highlights, install commands.
-- Screenshots regenerated (LANG=en_US.UTF-8, offscreen) and every PNG looked
-  at: the defect must be visible in before/after, the options dialog shows
-  the current defaults.
-- Release body: plain language, correct pipeline order, known limitations,
-  screenshots.
+  EN and TR must state the same facts, not two different explanations.
+- No speed or latency claims unless the release measured them; describe
+  behaviour ("skips methods…"), not time saved.
+- `python3 .claude/skills/sutura-docs/scripts/check_docs.py .` reports zero
+  problems.
+- Screenshots: regenerate only when the visible GUI changed
+  (`git diff --stat origin/main..release -- sutura/gui.py assets`), with
+  LANG=en_US.UTF-8 and offscreen; look at every PNG (defect visible in
+  before/after, options dialog shows the current defaults).
 
-## 4. Git and GitHub
-- main is protected (required_linear_history, no force push). Never push a
-  branch with merge commits to main. Push release/vX.Y.Z, open a PR, wait
-  for ALL checks green, squash-merge.
-- Tag the squash commit on main (annotated, "Sutura vX.Y.Z"); push over
-  HTTPS with the gh token, never SSH.
+## 4. Final gate (release-level, independent)
+Run this on the release candidate against `origin/main` before the release.
+Each side uses its own isolated `sutura_geom` build; never compare with a
+shared installed extension. The harness is
+`.claude/skills/sutura-verify/scripts/verify_default_vs_optout.py`
+(`--quality --no-visual --exclude-nondeterministic`; see the sutura-verify
+skill for the exact invocation and cache).
+
+- **Sets**: the 40 tracked real-world samples + the 36-mesh oracle set
+  (quality); the 32-mesh J2 set; the 26 clean anchors (`--byte
+  --deterministic`).
+- **Determinism**: 37402, 39344 and 41937 twice each with
+  `--no-fallback-ftetwild`; byte-identical output is required. fTetWild is an
+  external stochastic solver and is outside the guarantee; a mesh that adopts
+  it on both sides is SKIPPED-NONDET, not a silent pass.
+- **Visual**: the 5-mesh main-vs-candidate set (the worst-5 and the release
+  set), comparing input, baseline and candidate outputs; identical output
+  bytes count as identical. A fTetWild-adopted mesh is the documented
+  exception.
+- **T0**: the full CI list, `cargo test --release` and `--features cdt-check`,
+  `check_docs.py`, `--version`, `--self-check`, `--list-methods` and the
+  offscreen GUI import.
+- **Acceptance**: no measured mesh is worse; an intended trade is recorded
+  with its measured numbers and approved by the lead. A baseline timeout with
+  a candidate result is UNBLOCKED, not worse. The summary must say PASS.
+- Keep the run directory (`final-gate.md`, `determinism.md`, the VQA sheet
+  and the SI-excise comparison). Read `final-gate.md`, not a gate job's stdout:
+  a job log can still show a pre-fix FAIL; re-run the summary after any fix so
+  the recorded board is the final PASS.
+
+### Qt offscreen under the queue runner
+The `sq` runner only sources `~/.sq/env`, so a Python that creates a
+`QApplication` cannot find PySide6's platform plugins. Set the paths
+explicitly (the same block the VQA runner uses):
+
+```bash
+QT_PLUGINS="$("$PY" -c 'import PySide6, os; print(os.path.join(os.path.dirname(PySide6.__file__), "Qt", "plugins"))')"
+export QT_QPA_PLATFORM=offscreen
+export QT_QPA_PLATFORM_PLUGIN_PATH="$QT_PLUGINS/platforms"
+export QT_PLUGIN_PATH="$QT_PLUGINS"
+```
+
+The symptom is `qt.qpa.plugin: Could not find the Qt platform plugin
+"offscreen"` (often rc=134). The measurement harness itself should run in the
+measurement venv (no Qt) or with the same variables; never run it in the conda
+environment without them.
+
+## 5. Git and GitHub
+- **main is not protected** (`gh api repos/Krateian/Sutura/branches/main/protection`
+  returns 404 "Branch not protected"). The release does not open a PR.
+- Prepare the release branch/worktree from `origin/main`; run the final gate
+  on it; bump the version and docs on it.
+- Save the history bundle before squashing:
+  `git bundle create <repo>/release-<x.y.z>-history.bundle <release-branch>`
+  and verify it.
+- **One squash commit on `origin/main`**:
+  `git switch -c release/vX.Y.Z-squash origin/main`, `git merge --squash
+  release/vX.Y.Z`, commit `release: x.y.z`, then confirm
+  `git diff --stat release/vX.Y.Z` is empty (the tree must match).
+- **One push.** The token never appears in the URL or the output: use the
+  oauth2 credential helper.
+
+  ```bash
+  git -c credential.helper='!f() { echo username=oauth2; echo password=$(gh auth token); }; f' \
+      push https://github.com/Krateian/Sutura.git HEAD:main
+  ```
+
+  The output must show the plain URL only. Never force-push and never push a
+  branch with merge commits to main.
 - Pre-push scan: tokens, personal paths, hostnames, the private sample name,
-  AI attribution. Commits by Krateian only; no AI attribution in commits,
-  PR bodies or releases.
-- gh release create --title "Sutura vX.Y.Z" -F body; after the release
-  workflows (AppImage, dmg, wheels, OrcaCloud) finish, re-check that the body
-  is intact and the assets are attached.
+  AI attribution. Commits by Krateian only; no AI attribution in commits, tags
+  or releases.
+- Tag the squash commit (annotated, "Sutura vX.Y.Z") and push the tag with the
+  same credential helper; confirm `git rev-parse vX.Y.Z^{}` is the squash
+  commit.
+- `gh release create vX.Y.Z --title "Sutura vX.Y.Z" --notes-file <file>`; read
+  the body back (`gh release view vX.Y.Z --json body`) and check it against §6.
 
-## 5. After the release
+## 6. Release notes
+- Plain language; the reader is a user, not a maintainer.
+- **No unmeasured claims.** The "how it was verified" paragraph stays a
+  placeholder until the final gate; fill it with the measured counts and the
+  accepted trades (with numbers). Never publish "no mesh was worse" before
+  the gate reports it.
+- **No private sample name, path, user or IP.** Public corpus IDs only.
+- **No AI signature or attribution** in the notes, commits, tags or release.
+- State the known limitations and the fTetWild exception explicitly.
+- Read the published body back with `gh release view --json body`; a create
+  command exiting 0 is not proof that the text is correct.
+
+## 7. After the release
+- Wait for the release workflows: AppImage, macOS .app/.dmg, wheels +
+  `sutura_geom-SHA256SUMS`, manifest. Check every asset with
+  `gh release view vX.Y.Z --json assets`.
+- OrcaCloud: the `Publish release to OrcaCloud` workflow step must not be
+  skipped. Read the log for `HTTP 201`, `"version":"x.y.z"` and
+  `"public":true`; the listing description is the only manual field.
 - Repo About description and topics are current (method count, core).
-- Orca Cloud listing shows the new version.
-- Open Dependabot PRs: merge after the release once green.
+- Open Dependabot PRs: merge only after the release, when green; none is a
+  valid outcome.
 - Cleanup: list worktrees, merged branches and temp output, and ask the
-  maintainer before deleting anything.
+  maintainer before deleting anything; never bulk-delete. Keep the gate
+  evidence and the history bundle.
 - Write the handoff note for the next session.
