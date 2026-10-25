@@ -16,6 +16,10 @@ pub(crate) struct CutResult {
     pub(crate) dropped_inside_vol: f64,
     pub(crate) filled_outside_comps: usize,
     pub(crate) filled_outside_vol: f64,
+    /// Diagnostic: number of vertex-connected components of the hard source set
+    /// `{!out_tet && phi < 0}` (the pre-cut "confident interior"), and its size.
+    pub(crate) hard_inside_comps: usize,
+    pub(crate) hard_inside_tets: usize,
 }
 
 fn component_volume(comp: &[usize], tet_vol: &[f64]) -> f64 {
@@ -184,12 +188,37 @@ pub(crate) fn cut_and_cleanup(
     let (dropped_inside_comps, dropped_inside_vol, filled_outside_comps, filled_outside_vol) =
         cleanup_islands(&mut is_inside, phi, &adj, out_tet, tau, &tet_vol);
 
+    // Diagnostic only: count components of the pre-cut hard source set.
+    let hard = |ti: usize| !out_tet[ti] && phi[ti] < 0.0;
+    let mut hard_seen = vec![false; n_tets];
+    let mut hard_inside_comps = 0usize;
+    let mut hard_inside_tets = 0usize;
+    for ti in 0..n_tets {
+        if hard(ti) && !hard_seen[ti] {
+            hard_inside_comps += 1;
+            hard_seen[ti] = true;
+            let mut q = VecDeque::new();
+            q.push_back(ti);
+            while let Some(curr) = q.pop_front() {
+                hard_inside_tets += 1;
+                for &next in &adj[curr] {
+                    if hard(next) && !hard_seen[next] {
+                        hard_seen[next] = true;
+                        q.push_back(next);
+                    }
+                }
+            }
+        }
+    }
+
     CutResult {
         is_inside,
         dropped_inside_comps,
         dropped_inside_vol,
         filled_outside_comps,
         filled_outside_vol,
+        hard_inside_comps,
+        hard_inside_tets,
     }
 }
 

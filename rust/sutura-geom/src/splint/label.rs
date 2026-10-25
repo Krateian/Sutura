@@ -15,6 +15,9 @@ pub(crate) struct Labels {
     pub(crate) phi: Vec<f64>,
     pub(crate) init_label: Vec<u8>,
     pub(crate) interior_anchors: usize,
+    /// Diagnostic: 10-bin histogram of the winding number at each tet centroid
+    /// (bin `i` = `w` in `[i/10, (i+1)/10)`), clamped to `0..=9`.
+    pub(crate) winding_hist: [usize; 10],
 }
 
 pub(crate) fn label_tets(
@@ -23,17 +26,18 @@ pub(crate) fn label_tets(
     out_tet: &[bool],
     parallel: bool,
 ) -> Labels {
-    let one = |ti: usize| -> (f64, u8) {
+    let one = |ti: usize| -> (f64, u8, usize) {
         let c = centroids[ti];
         let u = bvh.unsigned_distance_at(c);
         let w = bvh.winding_at(c);
         // Negative inside the solid.
         let s = if w > 0.5 { -u } else { u };
         let label = if !out_tet[ti] && s < 0.0 { 0 } else { 1 };
-        (s, label)
+        let bin = ((w * 10.0).floor() as i64).clamp(0, 9) as usize;
+        (s, label, bin)
     };
 
-    let pairs: Vec<(f64, u8)> = if parallel {
+    let pairs: Vec<(f64, u8, usize)> = if parallel {
         centroids
             .par_iter()
             .enumerate()
@@ -45,15 +49,18 @@ pub(crate) fn label_tets(
 
     let mut phi = Vec::with_capacity(pairs.len());
     let mut init_label = Vec::with_capacity(pairs.len());
-    for (s, l) in pairs {
+    let mut winding_hist = [0usize; 10];
+    for (s, l, bin) in pairs {
         phi.push(s);
         init_label.push(l);
+        winding_hist[bin] += 1;
     }
     let interior_anchors = init_label.iter().filter(|&&l| l == 0).count();
     Labels {
         phi,
         init_label,
         interior_anchors,
+        winding_hist,
     }
 }
 

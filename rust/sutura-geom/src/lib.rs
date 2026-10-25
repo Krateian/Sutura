@@ -1963,6 +1963,9 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("dropped_inside_vol", r.dropped_inside_vol)?;
     d.set_item("filled_outside_comps", r.filled_outside_comps)?;
     d.set_item("filled_outside_vol", r.filled_outside_vol)?;
+    d.set_item("hard_inside_comps", r.hard_inside_comps)?;
+    d.set_item("hard_inside_tets", r.hard_inside_tets)?;
+    d.set_item("winding_hist", r.winding_hist.to_vec())?;
     d.set_item("adaptive", r.adaptive)?;
     d.set_item("cut_shells", r.cut_shells)?;
     d.set_item("first_cut_shells", r.first_cut_shells)?;

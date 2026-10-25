@@ -48,6 +48,8 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
         (a.output_parts, b.output_parts),
         (a.dropped_inside_comps, b.dropped_inside_comps),
         (a.filled_outside_comps, b.filled_outside_comps),
+        (a.hard_inside_comps, b.hard_inside_comps),
+        (a.hard_inside_tets, b.hard_inside_tets),
         (a.cut_shells, b.cut_shells),
         (a.first_cut_shells, b.first_cut_shells),
         (a.retry_threshold, b.retry_threshold),
@@ -58,6 +60,7 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     for (x, y) in fields {
         assert_eq!(x, y);
     }
+    assert_eq!(a.winding_hist, b.winding_hist);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     assert_eq!(a.out_manifold, b.out_manifold);
     assert_eq!(a.adaptive, b.adaptive);
