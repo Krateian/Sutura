@@ -101,3 +101,39 @@ delete legitimate parts), a rough scan-style mesh with many micro-cracks
 (residual-holes expectation), and two interpenetrating spheres run in `--mode
 extreme`, where the extra self-intersection passes must remove every crossing
 face and report `extreme_passes_applied=True`.
+
+### Visual check
+
+`verify_visual_qa.py` compares a repaired mesh with a reference render on a
+12-camera rig. The header gives the baseline and candidate VQA score (0–100;
+silhouette overlap, normal-map shading similarity and depth agreement) and the
+healthy-region score; the verdict is **delta-based**, not an absolute image
+score. The contact sheet shows three canonical views (Isometric, Front, Top)
+in five columns — Input / Reference, Baseline Output, Diff (Ref vs Base),
+Candidate Output, Diff (Ref vs Cand) — plus a deviation row and a 512 px detail
+row. The deviation row is plain grey Lambert shading with the output deviation
+in blue (within tolerance) and red (above tolerance); magenta marks reference
+material missing from that output. The footer records the tolerance.
+
+`--input original.stl` builds the healthy-region mask from the damaged original;
+the positional `baseline` mesh remains the scoring reference. The check catches
+visible damage such as debris, swelling, a visibly closed opening, wrinkling or
+a clear score drop. It does not replace the topology and shape gates: a pinhole
+or a topology change below the rendered resolution is caught by those checks,
+not by the image.
+
+From the repository root:
+
+```sh
+~/.local/share/sutura/venv/bin/python \
+  .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
+  original.stl repaired.stl --input original.stl \
+  --contact-sheet /tmp/visual-qa.png --no-v2
+```
+
+`--no-v2` writes the V1 contact sheet shown here; omit it to also get the
+optional V2 PCA/X-ray sheet. The command exits non-zero when it flags the
+candidate as visually worse. The example below is the public Thingi10K
+`thingi10k_100281` model.
+
+![V1 visual-check sheet for the public thingi10k_100281 model: five-column comparison, grey Lambert deviation row with blue/red deviation, and a 512 px detail row](../../assets/visual-qa-100281.png)

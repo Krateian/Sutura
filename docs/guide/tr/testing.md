@@ -101,3 +101,40 @@ parçaları silmemelidir), çok sayıda mikro çatlak içeren kaba bir tarama-ta
 mesh (kalan delik beklentisi) ve `--mode extreme` ile çalıştırılan iç içe
 geçmiş iki küre — ek self-intersection geçişleri kesişen her yüzü kaldırmalı
 ve `extreme_passes_applied=True` bildirmelidir.
+
+### Görsel kontrol
+
+`verify_visual_qa.py`, onarılmış bir mesh'i 12 kameralı bir düzenekte referans
+çizimle karşılaştırır. Başlıkta baseline ve candidate VQA puanı (0–100; siluet
+örtüşmesi, normal haritası gölge benzerliği ve derinlik uyumu) ile sağlıklı
+bölge puanı verilir; karar **delta tabanlıdır**, mutlak bir görüntü puanı
+değildir. Temas sayfası üç kanonik görünümü (Isometric, Front, Top) beş
+sütunda gösterir — Input / Reference, Baseline Output, Diff (Ref vs Base),
+Candidate Output, Diff (Ref vs Cand) — ayrıca bir sapma satırı ve 512 px
+detay satırı ekler. Sapma satırı düz gri Lambert gölgelemesidir; çıktı sapması
+mavi (tolerans içinde) ve kırmızı (tolerans üstü) olarak işaretlenir; magenta,
+o çıktıda eksik olan referans malzemesini gösterir. Tolerans alt bilgide
+yazılır.
+
+`--input original.stl`, sağlıklı bölge maskesini hasarlı orijinalden üretir;
+konumsal `baseline` mesh'i puanlama referansı olarak kalır. Kontrol; döküntü,
+şişme, gözle görülür biçimde kapanmış bir açıklık, kırışma veya belirgin puan
+düşüşü gibi görünür hasarları yakalar. Topoloji ve şekil kapılarının yerini
+almaz: çizim çözünürlüğünün altındaki bir kılcal delik veya topoloji
+değişikliğini görüntü değil, o kapılar yakalar.
+
+Depo kökünden:
+
+```sh
+~/.local/share/sutura/venv/bin/python \
+  .claude/skills/sutura-verify/scripts/verify_visual_qa.py \
+  original.stl repaired.stl --input original.stl \
+  --contact-sheet /tmp/visual-qa.png --no-v2
+```
+
+`--no-v2`, burada gösterilen V1 temas sayfasını yazar; isteğe bağlı V2
+PCA/X-ray sayfasını da almak için bu bayrağı kaldırın. Komut, adayı görsel
+olarak daha kötü işaretlerse sıfırdan farklı çıkar. Aşağıdaki örnek public
+Thingi10K `thingi10k_100281` modelidir.
+
+![Public thingi10k_100281 modeli için V1 görsel kontrol sayfası: beş sütunlu karşılaştırma, mavi/kırmızı sapmalı gri Lambert satırı ve 512 px detay satırı](../../../assets/visual-qa-100281.png)
