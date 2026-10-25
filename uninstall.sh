@@ -52,6 +52,14 @@ fi
 echo "Removing $BIN_DIR/sutura"
 rm -f "$BIN_DIR/sutura"
 
+# Remove the PATH line the installer may have added (nothing else is touched).
+for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+    [ -f "$rc" ] && grep -qF "# added by Sutura installer" "$rc" || continue
+    grep -vF "# added by Sutura installer" "$rc" > "$rc.sutura-tmp" && cat "$rc.sutura-tmp" > "$rc"
+    rm -f "$rc.sutura-tmp"
+    echo "Removed the Sutura PATH line from $rc"
+done
+
 echo "Removing $SERVICE_DIR/sutura.desktop"
 rm -f "$SERVICE_DIR/sutura.desktop"
 

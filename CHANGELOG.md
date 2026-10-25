@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **`sutura` is found right after installing on Linux and macOS.** Some desktops (some Fedora/Ubuntu setups, macOS) do not put `~/.local/bin` on PATH, so a fresh install answered "command not found". The installers now add one marked line to your shell startup file when it is missing (and `uninstall.sh` removes exactly that line); the Dolphin right-click repair also works on Plasma 6 systems that only ship `qdbus6`.
+
 ## [0.9.5] - 2026-10-25
 
 ### Added

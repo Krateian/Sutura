@@ -250,8 +250,38 @@ if command -v kbuildsycoca6 >/dev/null 2>&1; then
     kbuildsycoca6 >/dev/null 2>&1 || true
 fi
 
+# --- make sure ~/.local/bin is on PATH -------------------------------------
+# Many desktops (some Fedora/Ubuntu setups, macOS) do not put
+# ~/.local/bin on PATH, so a fresh `sutura` would be "command not found".
+PATH_NOTE=""
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"  # added by Sutura installer'
+        added=""
+        for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+            [ -f "$rc" ] || continue
+            if ! grep -qF "# added by Sutura installer" "$rc"; then
+                [ -n "$(tail -c1 "$rc")" ] && echo >> "$rc"
+                printf '%s\n' "$PATH_LINE" >> "$rc"
+            fi
+            added="$added $rc"
+        done
+        if [ -z "$added" ]; then
+            printf '%s\n' "$PATH_LINE" >> "$HOME/.profile"
+            added=" $HOME/.profile"
+        fi
+        if command -v fish >/dev/null 2>&1; then
+            fish -c 'fish_add_path -U $HOME/.local/bin' >/dev/null 2>&1 || true
+        fi
+        PATH_NOTE="Added ~/.local/bin to PATH in:$added - open a new terminal to use 'sutura'."
+        ;;
+esac
+
 echo
 echo "Installed."
 echo "  CLI:       $BIN_DIR/sutura <file.stl|file.obj|file.3mf>"
 echo "  GUI:       $APP_DIR/gui.py"
 echo "  Dolphin:   right-click an STL/OBJ/3MF -> Repair with Sutura"
+
+if [ -n "$PATH_NOTE" ]; then echo; echo "$PATH_NOTE"; fi
