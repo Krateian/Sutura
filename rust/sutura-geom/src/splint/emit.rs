@@ -85,12 +85,46 @@ fn output_parts(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> usize {
     roots.len()
 }
 
+/// H2 (O4): canonicalize world-space output vertices through `f32` and dedup on
+/// the `f32` grid, so the emitted mesh already equals its reload-equivalent
+/// `f32` weld (`p_weld`). Deterministic: the map is filled in first-seen vertex
+/// order and faces keep their order; faces that collapse to a sliver (two
+/// identical `f32` vertices) are dropped.
+pub(crate) fn snap_and_dedup_f32(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    let mut map: HashMap<[u32; 3], usize> = HashMap::new();
+    let mut new_v: Vec<[f64; 3]> = Vec::new();
+    let mut remap: Vec<usize> = Vec::with_capacity(verts.len());
+    for p in verts {
+        let snapped = [p[0] as f32, p[1] as f32, p[2] as f32];
+        let key = [snapped[0].to_bits(), snapped[1].to_bits(), snapped[2].to_bits()];
+        let id = *map.entry(key).or_insert_with(|| {
+            new_v.push([snapped[0] as f64, snapped[1] as f64, snapped[2] as f64]);
+            new_v.len() - 1
+        });
+        remap.push(id);
+    }
+    let mut new_t: Vec<[usize; 3]> = Vec::with_capacity(tris.len());
+    for t in tris {
+        let a = remap[t[0]];
+        let b = remap[t[1]];
+        let c = remap[t[2]];
+        if a != b && b != c && a != c {
+            new_t.push([a, b, c]);
+        }
+    }
+    (new_v, new_t)
+}
+
 pub(crate) fn emit_boundary(
     coords: &[[f64; 3]],
     centroids: &[[f64; 3]],
     internal: &[([usize; 3], usize, usize)],
     is_inside: &[bool],
     normalizer: &Normalizer,
+    snap_f32: bool,
 ) -> Emitted {
     let mut faces: Vec<[[f64; 3]; 3]> = Vec::new();
     for (key, a, b) in internal {
@@ -112,16 +146,22 @@ pub(crate) fn emit_boundary(
         }
     }
     let (gc_v, gc_t) = emit_faces(&faces);
-    let out_v: Vec<[f64; 3]> = gc_v.iter().map(|q| normalizer.de_norm(*q)).collect();
-    let u32_tris: Vec<[u32; 3]> = gc_t
+    let mut out_v: Vec<[f64; 3]> = gc_v.iter().map(|q| normalizer.de_norm(*q)).collect();
+    let mut out_t = gc_t;
+    if snap_f32 {
+        let (sv, st) = snap_and_dedup_f32(&out_v, &out_t);
+        out_v = sv;
+        out_t = st;
+    }
+    let u32_tris: Vec<[u32; 3]> = out_t
         .iter()
         .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
         .collect();
     let out_manifold = mesh_is_manifold(&out_v, &u32_tris);
-    let parts = output_parts(&out_v, &gc_t);
+    let parts = output_parts(&out_v, &out_t);
     Emitted {
         verts: out_v,
-        tris: gc_t,
+        tris: out_t,
         out_manifold,
         output_parts: parts,
     }

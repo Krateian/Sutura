@@ -1896,13 +1896,14 @@ impl PyMeshBvh {
 /// inside/outside boundary; fix-A island cleanup is on, the soft band is off.
 #[pyfunction]
 #[pyo3(name = "splint_cut")]
-#[pyo3(signature = (verts, tris, res, adaptive=None))]
+#[pyo3(signature = (verts, tris, res, adaptive=None, opts=None))]
 fn splint_cut_py<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
     tris: PyArrayLike2<'py, i32, AllowTypeChange>,
     res: usize,
     adaptive: Option<&str>,
+    opts: Option<Bound<'py, PyDict>>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -1918,9 +1919,15 @@ fn splint_cut_py<'py>(
             )))
         }
     };
+    let mut s_opts = splint::SplintOpts::default();
+    if let Some(d) = opts.as_ref() {
+        if let Some(v) = d.get_item("snap_f32")? {
+            s_opts.snap_f32 = v.extract::<bool>()?;
+        }
+    }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        splint::splint_cut_core(&rv, &rt, res, mode, true)
+        splint::splint_cut_core_opts(&rv, &rt, res, mode, true, s_opts)
     }));
     match result {
         Ok(Ok(out)) => {
@@ -1976,6 +1983,7 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("adaptive_samples", r.adaptive_samples)?;
     d.set_item("adaptive_thin", r.adaptive_thin)?;
     d.set_item("adaptive_capped", r.adaptive_capped)?;
+    d.set_item("snap_f32", r.snap_f32)?;
     d.set_item("secs_adaptive", r.secs_adaptive)?;
     d.set_item("secs_udf", r.secs_udf)?;
     d.set_item("secs_proxy", r.secs_proxy)?;

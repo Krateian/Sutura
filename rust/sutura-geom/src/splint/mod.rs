@@ -43,6 +43,16 @@ pub(crate) enum SplintAdaptive {
     Retry,
 }
 
+/// Opt-in, per-hypothesis switches for the v2 spike. Every field defaults to
+/// `false`, so `SplintOpts::default()` reproduces the historical core output
+/// bit-for-bit.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SplintOpts {
+    /// H2: canonicalize emitted world-space vertices through `f32` and dedup on
+    /// the `f32` grid (post `de_norm`), so the output equals its reload weld.
+    pub snap_f32: bool,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SplintReport {
     pub ok: bool,
@@ -79,6 +89,7 @@ pub(crate) struct SplintReport {
     pub adaptive_samples: usize,
     pub adaptive_thin: usize,
     pub adaptive_capped: bool,
+    pub snap_f32: bool,
     pub secs_adaptive: f64,
     pub secs_udf: f64,
     pub secs_proxy: f64,
@@ -100,6 +111,7 @@ fn run_pass(
     adaptive_on: bool,
     broad: bool,
     parallel: bool,
+    opts: SplintOpts,
 ) -> Result<(SplintOutput, usize), String> {
     let t0 = Instant::now();
     let normalizer = Normalizer::new(verts, res);
@@ -143,6 +155,7 @@ fn run_pass(
         &topo.internal,
         &cut.is_inside,
         &normalizer,
+        opts.snap_f32,
     );
     let cut_shells = components::cut_shells(&emitted.tris);
 
@@ -181,6 +194,7 @@ fn run_pass(
         adaptive_samples: proxy.adaptive.samples,
         adaptive_thin: proxy.adaptive.thin,
         adaptive_capped: proxy.adaptive.capped,
+        snap_f32: opts.snap_f32,
         secs_adaptive: proxy.adaptive.secs,
         secs_udf: proxy.secs_udf,
         secs_proxy: proxy.secs_proxy,
@@ -205,6 +219,17 @@ pub(crate) fn splint_cut_core(
     adaptive: SplintAdaptive,
     parallel: bool,
 ) -> Result<SplintOutput, String> {
+    splint_cut_core_opts(verts, tris, res, adaptive, parallel, SplintOpts::default())
+}
+
+pub(crate) fn splint_cut_core_opts(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    res: usize,
+    adaptive: SplintAdaptive,
+    parallel: bool,
+    opts: SplintOpts,
+) -> Result<SplintOutput, String> {
     if verts.is_empty() || tris.is_empty() {
         return Err("empty input".into());
     }
@@ -214,9 +239,9 @@ pub(crate) fn splint_cut_core(
         ));
     }
     let (mut first, first_shells) = match adaptive {
-        SplintAdaptive::None => run_pass(verts, tris, res, false, false, parallel)?,
-        SplintAdaptive::Hardened => run_pass(verts, tris, res, true, false, parallel)?,
-        SplintAdaptive::Retry => run_pass(verts, tris, res, true, false, parallel)?,
+        SplintAdaptive::None => run_pass(verts, tris, res, false, false, parallel, opts)?,
+        SplintAdaptive::Hardened => run_pass(verts, tris, res, true, false, parallel, opts)?,
+        SplintAdaptive::Retry => run_pass(verts, tris, res, true, false, parallel, opts)?,
     };
     first.report.adaptive = match adaptive {
         SplintAdaptive::None => None,
@@ -227,7 +252,7 @@ pub(crate) fn splint_cut_core(
     first.report.cut_shells = first_shells;
 
     if adaptive == SplintAdaptive::Retry && first_shells > RETRY_COMPS {
-        let (mut broad, broad_shells) = run_pass(verts, tris, res, true, true, parallel)?;
+        let (mut broad, broad_shells) = run_pass(verts, tris, res, true, true, parallel, opts)?;
         broad.report.adaptive = Some("retry");
         broad.report.first_cut_shells = first_shells;
         broad.report.cut_shells = broad_shells;

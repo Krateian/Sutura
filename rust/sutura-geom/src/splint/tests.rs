@@ -61,6 +61,7 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
         assert_eq!(x, y);
     }
     assert_eq!(a.winding_hist, b.winding_hist);
+    assert_eq!(a.snap_f32, b.snap_f32);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     assert_eq!(a.out_manifold, b.out_manifold);
     assert_eq!(a.adaptive, b.adaptive);
@@ -224,5 +225,25 @@ fn adaptive_rayon_thread_counts_are_byte_identical() {
             }
         }
         same_report(&baseline.report, &out.report);
+    }
+}
+
+#[test]
+fn snap_f32_is_deterministic_and_world_exact() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.snap_f32 = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.snap_f32);
+    assert_eq!(a.report.hard_inside_comps, b.report.hard_inside_comps);
+    assert_eq!(a.tris, b.tris);
+    assert_eq!(a.verts.len(), b.verts.len());
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+            // Every emitted world coordinate is exactly representable in f32.
+            assert_eq!(p[k] as f32 as f64, p[k]);
+        }
     }
 }
