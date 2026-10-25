@@ -127,6 +127,90 @@ pub(crate) fn cleanup_islands(
     )
 }
 
+/// H6: one connected inside region by a multi-source flood fill inside the
+/// closed proxy pillow. `allowed[ti]` marks tets geometrically inside the pillow
+/// (the pillow's own winding number > 0.5); seeds are the strong-interior tets
+/// (`phi < -tau`) that are also allowed. The fill grows across internal faces
+/// into allowed, non-hull tets only, so the pillow surface is the barrier and
+/// the opening is capped by connectivity. Deterministic: the BFS visits tets
+/// and neighbours in index order.
+pub(crate) struct GeodesicResult {
+    pub(crate) is_inside: Vec<bool>,
+    pub(crate) seeds: usize,
+    pub(crate) filled: usize,
+}
+
+fn tet_volumes(tets: &[[usize; 4]], coords: &[[f64; 3]], scale: f64) -> Vec<f64> {
+    tets.iter()
+        .map(|t| {
+            let p0 = coords[t[0]];
+            let p1 = coords[t[1]];
+            let p2 = coords[t[2]];
+            let p3 = coords[t[3]];
+            let v01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            let v02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+            let v03 = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
+            let cross = [
+                v02[1] * v03[2] - v02[2] * v03[1],
+                v02[2] * v03[0] - v02[0] * v03[2],
+                v02[0] * v03[1] - v02[1] * v03[0],
+            ];
+            let v_norm =
+                (v01[0] * cross[0] + v01[1] * cross[1] + v01[2] * cross[2]).abs() / 6.0;
+            v_norm / (scale * scale * scale)
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn geodesic_flood(
+    tets: &[[usize; 4]],
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    allowed: &[bool],
+    phi: &[f64],
+    tau: f64,
+    scale: f64,
+) -> GeodesicResult {
+    let n_tets = tets.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::with_capacity(4); n_tets];
+    for &(_, a, b) in internal {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let mut is_inside = vec![false; n_tets];
+    let mut q = VecDeque::new();
+    let mut seeds = 0usize;
+    for ti in 0..n_tets {
+        if !out_tet[ti] && allowed[ti] && phi[ti] < -tau {
+            seeds += 1;
+            if !is_inside[ti] {
+                is_inside[ti] = true;
+                q.push_back(ti);
+            }
+        }
+    }
+    while let Some(curr) = q.pop_front() {
+        for &next in &adj[curr] {
+            if !is_inside[next] && !out_tet[next] && allowed[next] {
+                is_inside[next] = true;
+                q.push_back(next);
+            }
+        }
+    }
+    // Reuse the fix-A island cleanup: it fills enclosed outside pockets (no hull
+    // contact, no deep exterior) and drops inside specks with no deep interior.
+    let tet_vol = tet_volumes(tets, coords, scale);
+    cleanup_islands(&mut is_inside, phi, &adj, out_tet, tau, &tet_vol);
+    let filled = is_inside.iter().filter(|&&b| b).count();
+    GeodesicResult {
+        is_inside,
+        seeds,
+        filled,
+    }
+}
+
 pub(crate) fn cut_and_cleanup(
     tets: &[[usize; 4]],
     coords: &[[f64; 3]],
@@ -165,25 +249,7 @@ pub(crate) fn cut_and_cleanup(
         adj[b].push(a);
     }
 
-    let tet_vol: Vec<f64> = (0..n_tets)
-        .map(|ti| {
-            let t = tets[ti];
-            let p0 = coords[t[0]];
-            let p1 = coords[t[1]];
-            let p2 = coords[t[2]];
-            let p3 = coords[t[3]];
-            let v01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-            let v02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-            let v03 = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
-            let cross = [
-                v02[1] * v03[2] - v02[2] * v03[1],
-                v02[2] * v03[0] - v02[0] * v03[2],
-                v02[0] * v03[1] - v02[1] * v03[0],
-            ];
-            let v_norm = (v01[0] * cross[0] + v01[1] * cross[1] + v01[2] * cross[2]).abs() / 6.0;
-            v_norm / (scale * scale * scale)
-        })
-        .collect();
+    let tet_vol = tet_volumes(tets, coords, scale);
 
     let (dropped_inside_comps, dropped_inside_vol, filled_outside_comps, filled_outside_vol) =
         cleanup_islands(&mut is_inside, phi, &adj, out_tet, tau, &tet_vol);

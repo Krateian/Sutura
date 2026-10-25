@@ -66,6 +66,9 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     assert_eq!(a.relabel_first_nm_edges, b.relabel_first_nm_edges);
     assert_eq!(a.relabel_final_nm_edges, b.relabel_final_nm_edges);
     assert_eq!(a.relabel_flips, b.relabel_flips);
+    assert_eq!(a.geodesic, b.geodesic);
+    assert_eq!(a.geodesic_seeds, b.geodesic_seeds);
+    assert_eq!(a.geodesic_filled, b.geodesic_filled);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
     // init labels and the final cut labels. Deterministic only once the tet
@@ -277,6 +280,25 @@ fn greedy_relabel_is_deterministic_and_non_increasing() {
     assert_eq!(a.report.relabel_first_nm_edges, b.report.relabel_first_nm_edges);
     assert_eq!(a.report.relabel_final_nm_edges, b.report.relabel_final_nm_edges);
     assert!(a.report.relabel_final_nm_edges <= a.report.relabel_first_nm_edges);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+}
+
+#[test]
+fn geodesic_flood_is_deterministic_and_single_part() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.geodesic = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("b");
+    assert!(a.report.geodesic);
+    assert!(a.report.geodesic_filled > 0);
+    same_report(&a.report, &b.report);
+    assert_eq!(a.report.output_parts, 1);
     assert_eq!(a.tris, b.tris);
     for (p, q) in a.verts.iter().zip(b.verts.iter()) {
         for k in 0..3 {

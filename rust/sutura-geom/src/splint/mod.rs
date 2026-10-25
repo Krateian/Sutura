@@ -56,6 +56,9 @@ pub(crate) struct SplintOpts {
     pub snap_f32: bool,
     /// Greedy relabel of tet in/out flags to remove non-manifold boundary edges.
     pub greedy_relabel: bool,
+    /// H6: replace the min-cut classification with a connected flood fill inside
+    /// the closed proxy pillow, seeded by strong-interior tets.
+    pub geodesic: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +102,9 @@ pub(crate) struct SplintReport {
     pub relabel_first_nm_edges: usize,
     pub relabel_final_nm_edges: usize,
     pub relabel_flips: usize,
+    pub geodesic: bool,
+    pub geodesic_seeds: usize,
+    pub geodesic_filled: usize,
     pub cut_inside_hash: u64,
     pub phi_hash: u64,
     pub init_hash: u64,
@@ -167,6 +173,38 @@ fn run_pass(
         (cut, t.elapsed().as_secs_f64())
     };
     let (mut cut, secs_cut) = cut;
+    let geodesic_outcome = if opts.geodesic {
+        // The pillow is the dual-contour offset shell (leading proxy vertices);
+        // a tet is inside it when the pillow's own winding number exceeds 0.5.
+        let pillow =
+            MeshBvh::from_arrays(&proxy.verts[..proxy.shell_len], &proxy.shell_tris);
+        let allowed: Vec<bool> = if parallel {
+            use rayon::prelude::*;
+            topo.centroids
+                .par_iter()
+                .map(|c| pillow.winding_at(*c) > 0.5)
+                .collect()
+        } else {
+            topo.centroids
+                .iter()
+                .map(|c| pillow.winding_at(*c) > 0.5)
+                .collect()
+        };
+        let g = cut::geodesic_flood(
+            &tets,
+            &proxy.verts,
+            &topo.internal,
+            &topo.out_tet,
+            &allowed,
+            &labels.phi,
+            0.25 * proxy.voxel,
+            normalizer.scale(),
+        );
+        cut.is_inside = g.is_inside;
+        Some((g.seeds, g.filled))
+    } else {
+        None
+    };
     let mut proxy_hash: u64 = 0xcbf29ce484222325;
     for p in &proxy.verts {
         for &x in p {
@@ -205,6 +243,8 @@ fn run_pass(
             &topo.internal,
             &topo.out_tet,
             &mut cut.is_inside,
+            &labels.phi,
+            0.25 * proxy.voxel,
             GREEDY_MAX_FLIPS,
         )
     });
@@ -258,6 +298,9 @@ fn run_pass(
         relabel_first_nm_edges: relabel_outcome.as_ref().map_or(0, |r| r.first_nm_edges),
         relabel_final_nm_edges: relabel_outcome.as_ref().map_or(0, |r| r.final_nm_edges),
         relabel_flips: relabel_outcome.as_ref().map_or(0, |r| r.flips),
+        geodesic: geodesic_outcome.is_some(),
+        geodesic_seeds: geodesic_outcome.map_or(0, |(s, _)| s),
+        geodesic_filled: geodesic_outcome.map_or(0, |(_, f)| f),
         cut_inside_hash,
         phi_hash,
         init_hash,
