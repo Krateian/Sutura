@@ -97,8 +97,8 @@ def ftetwild_supersedes_graft(ft_dev, graft_dev, coverage_failed=False):
     The single tie-break rule (ladder semantics): an input-coverage failure
     always lets fTetWild win; otherwise fTetWild wins only when BOTH healthy
     deviations are known and ``ft_dev < graft_dev``. When either deviation is
-    ``None``, Graft is kept. The auto paths (``triage._auto``) pass no coverage
-    flag -- they have no coverage concept -- so only the ladder uses it.
+    ``None``, Graft is kept. Both the ladder and ``triage._auto`` pass the
+    coverage flag, so the rule is shared.
     """
     if coverage_failed:
         return True

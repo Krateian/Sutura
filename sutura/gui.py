@@ -489,7 +489,7 @@ STRINGS = {
         'status_caution': 'Caution advised', 'status_failed': 'Failed / inspect',
         'status_unavailable': 'Scoring unavailable',
         'health_risk_line': 'Health: %s/100 · Risk: %s/100 · %s',
-        'diff_line': 'Volume: %s%% \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
+        'diff_line': 'Volume: %s \u00b7 Surface: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Show heatmap',
         'heatmap_rendering': 'Rendering heatmap…',
         'heatmap_failed': 'Could not render heatmap',
@@ -1195,7 +1195,7 @@ STRINGS = {
         'status_caution': 'Dikkatli olunmalı', 'status_failed': 'Başarısız / incele',
         'status_unavailable': 'Skorlama kullanılamıyor',
         'health_risk_line': 'Sağlık: %s/100 · Risk: %s/100 · %s',
-        'diff_line': 'Hacim: %s%% \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
+        'diff_line': 'Hacim: %s \u00b7 Y\u00fczey: %s%% \u00b7 Vertex: %s\u2192%s',
         'show_heatmap': 'Isı haritası göster',
         'heatmap_rendering': 'Isı haritası çiziliyor…',
         'heatmap_failed': 'Isı haritası çizilemedi',
@@ -5214,9 +5214,11 @@ class MainWindow(QMainWindow):
         if diff and ('vertices_before' in diff or 'surface_area_change_percent' in diff):
             def _signed(pct):
                 return '%+.2f' % (pct or 0.0)
+            _vcp = diff.get('volume_change_percent')
+            _vcp_txt = 'n/a' if _vcp is None else ('%+.2f%%' % _vcp)
             lines.append(_t(
                 'diff_line',
-                _signed(diff.get('volume_change_percent')),
+                _vcp_txt,
                 _signed(diff.get('surface_area_change_percent')),
                 diff.get('vertices_before', 0), diff.get('vertices_after', 0)))
         if d:

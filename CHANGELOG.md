@@ -8,6 +8,7 @@ All notable changes to this project are documented here.
 
 - **`sutura` is found right after installing on Linux and macOS.** Some desktops (some Fedora/Ubuntu setups, macOS) do not put `~/.local/bin` on PATH, so a fresh install answered "command not found". The installers now add one marked line to your shell startup file when it is missing (and `uninstall.sh` removes exactly that line); the Dolphin right-click repair also works on Plasma 6 systems that only ship `qdbus6`.
 - **AppImage: `--self-check`, `--diagnostics` and self-repair work again.** Several modules were missing from the 0.9.5 AppImage, so these commands crashed. The AppImage now bundles every module and checks itself while it is being built.
+- **A Graft fallback that does not cover your surface is no longer kept, and an unmeasurable volume reads `n/a`.** During automatic fallback, a Graft shell-wrap that reproduced only a small part of the input surface (for example a thin fragment) could still be used as the final mesh; it is now rejected with a clear message and the stage-1 output is kept, after fTetWild has had its chance. The report and the interface also show "volume change: n/a (input volume not measurable)" for open meshes instead of `0.0%`.
 
 ## [0.9.5] - 2026-10-25
 

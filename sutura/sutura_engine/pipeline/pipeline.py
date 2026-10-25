@@ -895,19 +895,21 @@ def repair_mesh_from_arrays(verts, tris, tmpdir, mode='auto', profile=None,
     after_verts = fin.get('vertices_number', 0)
     after_faces = fin.get('faces_number', 0)
 
-    volume_change_pct = 0.0
     if before_volume and after_volume:
         volume_change_pct = (after_volume - before_volume) / abs(before_volume) * 100
+    else:
+        volume_change_pct = None
     surface_change_pct = 0.0
     if before_area and after_area:
         surface_change_pct = (after_area - before_area) / abs(before_area) * 100
     stats['stage1']['volume_before'] = float(before_volume)
     stats['stage1']['volume_after'] = float(after_volume)
-    stats['stage1']['volume_change_percent'] = round(volume_change_pct, 2)
+    stats['stage1']['volume_change_percent'] = (
+        None if volume_change_pct is None else round(volume_change_pct, 2))
     stats['stage1']['surface_area_before'] = round(before_area, 3)
     stats['stage1']['surface_area_after'] = round(after_area, 3)
     stats['stage1']['surface_area_change_percent'] = round(surface_change_pct, 2)
-    if abs(volume_change_pct) > 15:
+    if volume_change_pct is not None and abs(volume_change_pct) > 15:
         stats['stage1']['volume_warning'] = (
             'Volume changed by %.1f%% - verify in slicer before printing.'
             % abs(volume_change_pct))

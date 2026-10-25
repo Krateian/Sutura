@@ -214,6 +214,8 @@ def build_print_report(report, in_arrays=None, out_arrays=None):
         issues.append(vi)
 
     not_assessed = []
+    if not isinstance(vol, (int, float)) or isinstance(vol, bool):
+        not_assessed.append('volume')
     dev = _deviation_pct(report, in_arrays, out_arrays)
     if dev is None:
         not_assessed.append('deviation')
@@ -637,7 +639,9 @@ def human_report(r, show_defects=False, show_diff=False):
                 else ' (LOW FIDELITY: %s)' % (gr.get('warnings') or [{}])[0].get(
                     'message_en', 'detail loss'))
         else:
-            state = ' NOT adopted (kept stage-1 output)'
+            _gz = gr.get('reason')
+            state = (' NOT adopted (%s)' % _gz if _gz
+                     else ' NOT adopted (kept stage-1 output)')
         lines.append('  Graft (shell wrap)      : %s faces in %.2fs, r=%s, %s%s'
                      % (gr.get('faces', 0), gr.get('seconds', 0),
                         gr.get('r_used'), gr.get('mode'), state))
@@ -794,8 +798,12 @@ def human_report(r, show_defects=False, show_diff=False):
             s1.get('faces_before', 0), s1.get('faces_after', 0)))
         if s1.get('surface_area_change_percent') is not None:
             lines.append('  Surface area change     : %s%%' % s1.get('surface_area_change_percent'))
-    if s1.get('volume_change_percent') is not None:
-        lines.append('  Volume change          : %s%%' % s1.get('volume_change_percent'))
+    _vol = s1.get('volume_change_percent')
+    if _vol is not None:
+        lines.append('  Volume change          : %s%%' % _vol)
+    elif s1.get('volume_before') is not None:
+        lines.append('  Volume change          : n/a '
+                     '(input volume not measurable)')
     if s1.get('volume_warning'):
         lines.append('')
         lines.append('  WARNING: %s' % s1['volume_warning'])

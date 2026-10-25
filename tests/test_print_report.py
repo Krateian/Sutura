@@ -74,6 +74,20 @@ def test_severities_and_codes():
     assert fixed.get('shells_removed') == 2
 
 
+def test_volume_not_measurable():
+    """C2: an open input has no measurable volume, so volume_change_percent is
+    None. The print report lists 'volume' as not assessed and the human report
+    states it plainly instead of printing 0.0 or a blank."""
+    from sutura_engine.pipeline.report import human_report
+    r = _report(volume_change_percent=None, volume_before=0.0,
+                volume_after=0.0)
+    pr = build_print_report(r, in_arrays=None, out_arrays=None)
+    assert 'volume' in pr['not_assessed']
+    text = human_report(r)
+    assert 'Volume change          : n/a' in text
+    assert 'input volume not measurable' in text
+
+
 def test_orientation_corrected():
     pr = build_print_report(
         _report(volume_before=-10.0, volume_after=10.0),
