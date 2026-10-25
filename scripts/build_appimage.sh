@@ -2,7 +2,8 @@
 # Build the Sutura AppImage.
 #
 # Bundles one relocatable python-build-standalone runtime:
-#   * Python 3.14 -> usr/lib/sutura/venv     (numpy + PySide6 + sutura_geom)
+#   * Python 3.14 -> usr/lib/sutura/venv     (numpy + PySide6 + sutura_geom
+#                                             + pytetwild)
 # plus the application modules, an AppRun GUI/CLI dispatch entry point, and a
 # .desktop + icon, then packages the whole AppDir with appimagetool.
 #
@@ -69,6 +70,12 @@ echo "==> pip install: stage 1 (numpy + PySide6)"
 "$LIB/venv/bin/python" -m pip install --quiet \
     -r "$REPO_ROOT/requirements.txt" -r "$REPO_ROOT/requirements-gui.txt"
 
+echo "==> pip install: fTetWild fallback tier (pytetwild, ~3 MB)"
+# pytetwild ships a cp312-abi3 wheel, so it runs on the bundled Python 3.14.
+# Only pytetwild is installed: the bridge stubs out its PyVista accessor, so
+# VTK is never pulled in. Verified available below; the build fails if not.
+"$LIB/venv/bin/python" -m pip install --quiet -r "$REPO_ROOT/requirements-ftetwild.txt"
+
 echo "==> installing sutura_geom (Rust extension, includes Manifold)"
 # Graft (#13), Exact Refine (#6), the indirect tier and Stage 2 need the
 # extension in the bundled runtime. SUTURA_GEOM_REQUIRED=1 makes a failure
@@ -87,7 +94,7 @@ for f in "$REPO_ROOT"/sutura/*.py "$REPO_ROOT/sutura/open.sh"; do
 done
 install -m 0644 "$REPO_ROOT/sutura/repair_score_config.json" "$LIB/repair_score_config.json"
 install -m 0644 "$REPO_ROOT/requirements.txt" \
-    "$REPO_ROOT/requirements-gui.txt" "$LIB/"
+    "$REPO_ROOT/requirements-gui.txt" "$REPO_ROOT/requirements-ftetwild.txt" "$LIB/"
 install -m 0644 "$REPO_ROOT/LICENSE" "$LIB/LICENSE"
 cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura_engine"
 mkdir -p "$LIB/sutura"
@@ -107,6 +114,17 @@ if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
     exit 1
 fi
 echo "    Graft (#13) available in the bundled stage-1 runtime"
+echo "==> smoke check: fTetWild (#7) available in the bundled runtime"
+# The fTetWild extra ships by default, so the bundle must report method #7 as
+# available (pytetwild importable + the bridge module present). Fail the build
+# otherwise instead of silently shipping without the tier.
+if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
+        | awk '$1==7 && $4=="yes" {ok=1} END {exit !ok}'; then
+    echo "error: fTetWild (#7) is not reported available in the AppImage runtime:" >&2
+    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null >&2 || true
+    exit 1
+fi
+echo "    fTetWild (#7) available in the bundled runtime"
 # Tamponade (#17) is on by default and ships inside the copied sutura_engine package
 # (no flat module entry needed, like Dressing); report its availability for
 # diagnostics but never fail the build on an older wheel without it.

@@ -108,8 +108,9 @@ their terms):
 - **fTetWild / pytetwild** — MPL-2.0. `sutura/ftetwild_bridge.py` calls the
   `pytetwild` wrapper around fTetWild (https://github.com/wildmeshing/fTetWild,
   wrapper https://github.com/pyvista/pytetwild). Since v0.5.0 the fallback is
-  active by default when the optional extra is installed; the CLI opt-out is
-  `--no-fallback-ftetwild`, while `--experimental-fallback-ftetwild` additionally
+  installed and active by default; the CLI opt-out is
+  `--no-fallback-ftetwild` (or `SUTURA_WITH_FTETWILD=0` at install time), while
+  `--experimental-fallback-ftetwild` additionally
   runs it on closed-but-self-intersecting results (GUI checkbox, FAZ17). Used only as
   an unmodified dependency: no Sutura source is converted to MPL (MPL-2.0 is
   file-level copyleft), and the MPL-2.0 license text + upstream URLs are the
@@ -127,7 +128,10 @@ their terms):
   outer-shell union, the repeated-element CSG transplant and the Graft local
   stitch. The build uses no TBB (sequential, deterministic).
 - **PySide6 / Qt** — LGPL-3.0; the GUI toolkit.
-- **pyvista / VTK** — BSD-3-Clause; required by `pytetwild` at import time.
+
+`pytetwild`'s optional PyVista accessor is imported at load time upstream, but
+Sutura does not use it: `sutura/ftetwild_bridge.py` stubs that accessor, so
+PyVista and VTK are neither bundled nor installed.
 
 **Test-only oracle (not a runtime dependency):** **PyMeshLab** — GPL-3.0 /
 Commercial (VCG library). Since the native engine migration, stage-1 topology,

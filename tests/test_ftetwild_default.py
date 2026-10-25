@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Regression test for the fTetWild fallback tier defaults (FAZ17).
 
-The tier is ON by default when the optional extra (pytetwild + pyvista,
-requirements-ftetwild.txt) is installed, and then runs only when stage 1
+The tier is ON by default and installed by default (requirements-ftetwild.txt
+installs only pytetwild; PyVista/VTK are not used). It runs only when stage 1
 still leaves holes or non-manifold edges. `--no-fallback-ftetwild` turns it
 off; `--experimental-fallback-ftetwild` also runs it on a closed result that
 still self-intersects. Without the extra the default changes nothing.
 
-The checks that need fTetWild itself run only when the extra is installed
-(it is ~1.1 GB, so CI does not install it); everything else always runs.
+The checks that need fTetWild itself run only when the extra is installed;
+everything else always runs.
 
 Needs only numpy + the Rust ``sutura_geom`` extension (no pymeshlab). Usage:
     ~/.local/share/sutura/venv/bin/python tests/test_ftetwild_default.py
@@ -331,6 +331,35 @@ def test_bowtie_with_real_stage2():
     _v, _t, topo, holes, nm, done = _postprocess(_BOWTIE_V, _BOWTIE_T, None)
     assert done, 'Manifold post-process not adopted'
     assert holes == 0 and nm == 0 and topo.get('is_mesh_two_manifold')
+
+
+def test_bridge_imports_pytetwild_without_pyvista():
+    """The tier must not need PyVista/VTK: pytetwild's optional PyVista accessor
+    is stubbed, so importing the tier still works when both are absent."""
+    import builtins
+    import ftetwild_bridge
+
+    real_import = builtins.__import__
+
+    def blocked_import(name, *args, **kwargs):
+        if (name == 'pyvista' or name.startswith('pyvista.')
+                or name == 'vtk' or name.startswith('vtk.')):
+            raise ModuleNotFoundError("No module named 'pyvista'", name='pyvista')
+        return real_import(name, *args, **kwargs)
+
+    saved = {m: sys.modules.pop(m, None)
+             for m in ('pytetwild', 'pytetwild._accessor', 'pytetwild.pytetwild')}
+    builtins.__import__ = blocked_import
+    try:
+        mod = ftetwild_bridge._import_pytetwild()
+        assert mod is not None and hasattr(mod, 'tetrahedralize')
+    finally:
+        builtins.__import__ = real_import
+        for m in ('pytetwild', 'pytetwild._accessor', 'pytetwild.pytetwild'):
+            sys.modules.pop(m, None)
+        for m, v in saved.items():
+            if v is not None:
+                sys.modules[m] = v
 
 
 def test_bridge_default_params_and_override():

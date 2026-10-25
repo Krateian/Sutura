@@ -3,13 +3,16 @@
 [← README'ye dön](../../../README.tr.md) · [English](../troubleshooting.md)
 
 
-* **`python3.11` bulunamadı (yalnızca isteğe bağlı fTetWild).** Normal kurulum
-  Python 3.11 gerektirmez. `SUTURA_WITH_FTETWILD=1` verirseniz `install.sh`
+* **`python3.11` bulunamadı (yalnızca fTetWild yedek çalışma zamanı).**
+  Aralık içinde bir `python3` ile normal kurulum Python 3.11 gerektirmez. Ana
+  yorumlayıcı 3.10–3.14 aralığının dışındaysa `install.sh`, fTetWild katmanı
+  için bir yedek çalışma zamanına ihtiyaç duyar ve
   `~/.local/share/sutura/python311` dizinine bağımsız bir CPython 3.11 indirir
   (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir) veya sistem
   paketini kullanır:
   * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
   * Fedora: `sudo dnf install python3.11`
+  Hiç çalışma zamanı yoksa katmanı tamamen atlamak için `SUTURA_WITH_FTETWILD=0` verin.
 * **`sutura_geom` kaynak derlemesi başarısız.** Manifold çekirdeği C++ ile
   derlenir: `cmake`, C++20 derleyicisi (g++/clang++) ve Rust >= 1.89 kurun.
   Sürüm kurulumları normalde hazır wheel kullanır.

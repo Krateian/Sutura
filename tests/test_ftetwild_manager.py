@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Regression and unit tests for the fTetWild manager backend.
 
-Tests all status checks, layout detection (Linux venv311, macOS conda sutura-env,
-AppImage / frozen / read-only), platform size estimates, safe dependency
-pruning, streaming execution, dry runs, and cancellation cleanup.
+Tests all status checks, layout detection (Linux main venv / legacy venv311,
+macOS conda sutura-env, AppImage / frozen / read-only), platform size
+estimates, safe dependency pruning, streaming execution, dry runs, and
+cancellation cleanup.
 
 Uses fake pip scripts and temporary mock directories; NEVER touches or modifies
 the real fTetWild installation or system Python.
@@ -91,28 +92,30 @@ def test_format_bytes():
     assert mgr.format_bytes(512) == '512 B'
     assert mgr.format_bytes(1024) == '1.0 KB'
     assert mgr.format_bytes(105 * 1024 * 1024) == '105.0 MB'
-    assert mgr.format_bytes(1_181_116_006) == '1.10 GB'
+    assert mgr.format_bytes(2 * 1024 ** 3) == '2.00 GB'
 
 
 def test_estimate():
-    # macOS Apple Silicon calibration
+    # macOS Apple Silicon: pytetwild wheel only (no VTK)
     est_mac = mgr.estimate('darwin')
     assert est_mac['download_bytes'] == mgr.MAC_ARM64_DOWNLOAD_BYTES
-    assert '105' in est_mac['download_human']
     assert est_mac['installed_bytes'] == mgr.MAC_ARM64_INSTALLED_BYTES
-    assert '538' in est_mac['installed_human']
+    assert 'MB' in est_mac['installed_human']
 
-    # Linux x86_64 measurement
-    est_lin = mgr.estimate('linux')
+    # Linux x86_64
+    est_lin = mgr.estimate('linux', 'x86_64')
     assert est_lin['download_bytes'] == mgr.LINUX_X86_64_DOWNLOAD_BYTES
-    assert '139' in est_lin['download_human']
     assert est_lin['installed_bytes'] == mgr.LINUX_X86_64_INSTALLED_BYTES
-    assert '580' in est_lin['installed_human']
+
+    # Linux aarch64
+    est_arm = mgr.estimate('linux', 'aarch64')
+    assert est_arm['download_bytes'] == mgr.LINUX_AARCH64_DOWNLOAD_BYTES
+    assert est_arm['installed_bytes'] == mgr.LINUX_AARCH64_INSTALLED_BYTES
 
     # Generic fallback
     est_gen = mgr.estimate('other')
     assert est_gen['download_bytes'] == mgr.DEFAULT_DOWNLOAD_BYTES
-    assert '1.10 GB' in est_gen['installed_human']
+    assert est_gen['installed_bytes'] == mgr.DEFAULT_INSTALLED_BYTES
 
 
 def test_unsupported_appimage():
@@ -141,7 +144,7 @@ def test_unsupported_frozen():
 
 def test_unsupported_unknown_layout():
     with tempfile.TemporaryDirectory() as td:
-        # Linux with no venv311
+        # Linux with neither venv nor venv311
         res = mgr.resolve_environment(app_dir=td, platform='linux')
         assert not res['supported']
         assert res['reason'] == mgr.UNSUPPORTED_MSG
@@ -152,7 +155,29 @@ def test_unsupported_unknown_layout():
         assert res_mac['reason'] == mgr.UNSUPPORTED_MACOS_MSG
 
 
-def test_supported_linux_venv311():
+def test_supported_linux_main_venv():
+    with tempfile.TemporaryDirectory() as td:
+        venv = os.path.join(td, 'venv')
+        bin_dir = os.path.join(venv, 'bin')
+        sp_dir = os.path.join(venv, 'lib', 'python3.11', 'site-packages')
+        os.makedirs(bin_dir)
+        os.makedirs(sp_dir)
+
+        # Create dummy python and pip
+        py_path = os.path.join(bin_dir, 'python')
+        with open(py_path, 'w') as f:
+            f.write('#!/bin/sh\n')
+        _create_fake_pip_script(bin_dir)
+
+        res = mgr.resolve_environment(app_dir=td, platform='linux')
+        assert res['supported']
+        assert res['layout'] == 'linux-venv'
+        assert res['python_path'] == py_path
+        assert res['site_packages'] == sp_dir
+        assert res['writable']
+
+
+def test_supported_linux_venv311_fallback():
     with tempfile.TemporaryDirectory() as td:
         venv311 = os.path.join(td, 'venv311')
         bin_dir = os.path.join(venv311, 'bin')
@@ -160,7 +185,6 @@ def test_supported_linux_venv311():
         os.makedirs(bin_dir)
         os.makedirs(sp_dir)
 
-        # Create dummy python and pip
         py_path = os.path.join(bin_dir, 'python')
         with open(py_path, 'w') as f:
             f.write('#!/bin/sh\n')
@@ -226,16 +250,14 @@ def test_status_installed():
             'pip_path': os.path.join(td, 'pip'),
         }
 
-        # Install pytetwild, pyvista, vtk
+        # pytetwild alone is enough: PyVista/VTK are no longer required.
         _create_mock_dist_info(sp_dir, 'pytetwild', '0.4.2', files={'pytetwild/foo.py': 'x' * 5000})
-        _create_mock_dist_info(sp_dir, 'pyvista', '0.49.0', requires=['vtk'], files={'pyvista/bar.py': 'y' * 10000})
-        _create_mock_dist_info(sp_dir, 'vtk', '9.7.0', files={'vtkmodules/vtk.so': 'z' * 50000})
 
         st = mgr.status(env_info)
         assert st['installed']
         assert st['supported']
         assert st['version'] == '0.4.2'
-        assert st['size_bytes'] >= 65000
+        assert st['size_bytes'] >= 5000
         assert 'KB' in st['size_human'] or 'MB' in st['size_human']
 
 

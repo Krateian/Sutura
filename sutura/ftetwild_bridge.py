@@ -8,15 +8,17 @@ fTetWild (MPL-2.0, via the pytetwild wrapper) tetrahedralizes within an
 epsilon-envelope using floating-point construction, then the boundary surface
 of the tet mesh is extracted here as the repaired output.
 
-Runs under the optional python3.11 fTetWild virtualenv or in-process
-in a single-env install. Reads an input surface mesh (STL/OBJ), calls
+Runs under the main Sutura virtualenv / conda environment, or a legacy
+python3.11 fTetWild virtualenv. Reads an input surface mesh (STL/OBJ), calls
 pytetwild.tetrahedralize(), keeps the triangle faces incident to exactly ONE
 tetrahedron (the boundary), orients them outward/consistently, writes an OBJ
 for the caller and prints a JSON report.
 
-Both pytetwild and pyvista are required (pytetwild imports pyvista at import
-time despite declaring it optional); when either is missing the bridge reports
-an explicit skip, never a crash.
+Only pytetwild is required. pytetwild imports its optional PyVista accessor at
+import time; that accessor's ``import pyvista`` is stubbed out here so the extra
+carries no VTK dependency (the API used below, raw numpy arrays, never touches
+PyVista). When pytetwild is missing the bridge reports an explicit skip, never
+a crash.
 """
 import json
 import os
@@ -75,6 +77,30 @@ def extract_boundary(verts, tets):
     return out
 
 
+def _import_pytetwild():
+    """Import pytetwild, neutralising its optional PyVista accessor.
+
+    pytetwild's ``__init__`` unconditionally imports ``pytetwild._accessor``,
+    which does ``import pyvista as pv`` at module top; PyVista is declared
+    optional but that import is never guarded, so a plain ``import pytetwild``
+    drags in VTK (~520 MB) even though the API used here works on raw numpy
+    arrays and never touches PyVista. Seed ``sys.modules`` with an empty stub
+    *only* after the real import fails specifically because ``pyvista`` is
+    missing; any other ``ImportError`` is re-raised unchanged.
+    """
+    try:
+        import pytetwild  # noqa: F401
+        return pytetwild
+    except ModuleNotFoundError as e:
+        if (e.name or '') != 'pyvista':
+            raise
+        import types
+        sys.modules['pytetwild._accessor'] = types.ModuleType(
+            'pytetwild._accessor')
+        import pytetwild  # noqa: F401
+        return pytetwild
+
+
 def run_bridge(src, dst, params=None):
     """Tetrahedralize the surface mesh at src and write the boundary surface
     to dst. ``params`` overrides DEFAULT_PARAMS (pytetwild.tetrahedralize
@@ -83,12 +109,12 @@ def run_bridge(src, dst, params=None):
     instead)."""
     report = {}
     try:
-        import pytetwild  # noqa: F401  (imports pyvista internally)
+        pytetwild = _import_pytetwild()
     except ImportError as e:
-        report['error'] = ('fTetWild fallback skipped: pytetwild/pyvista not '
-                           'available in this environment (%s); it is an '
-                           'optional ~1.1 GB extra - reinstall with '
-                           'SUTURA_WITH_FTETWILD=1 (see '
+        report['error'] = ('fTetWild fallback skipped: pytetwild not '
+                           'available in this environment (%s); it is '
+                           'installed by default with Sutura and can be added '
+                           'or repaired with `sutura ftetwild install` (see '
                            'requirements-ftetwild.txt)' % e)
         return report
 

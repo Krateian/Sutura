@@ -75,7 +75,7 @@ def main():
     assert not d.btn_ftetwild_remove.isEnabled()
     # The AppImage reason is the shared unsupported message; assert the status
     # shows the unsupported form rather than comparing to the previous text
-    # (which is already the unsupported form on an environment without venv311).
+    # (which is already the unsupported form on an environment without venv).
     assert d.lbl_ftetwild_status.text().startswith(
         gui._t('engines_status_unsupported', '')), d.lbl_ftetwild_status.text()
     os.environ.pop('APPIMAGE', None)

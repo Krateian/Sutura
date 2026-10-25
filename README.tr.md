@@ -88,7 +88,7 @@ chmod +x Sutura-x86_64.AppImage && ./Sutura-x86_64.AppImage
 git clone https://github.com/Krateian/Sutura.git && cd Sutura && ./install-macos.sh
 ```
 
-Gereksinimler, isteğe bağlı fTetWild eklentisi, güncelleme ve kaldırma
+Gereksinimler, fTetWild katmanı, güncelleme ve kaldırma
 [Kurulum ve gereksinimler](docs/guide/tr/install.md) sayfasında anlatılır.
 
 ## Kullanım
@@ -121,7 +121,7 @@ sağlam deriye dokunmaz. Kısaca:
    delikleri kapatır.
 3. **Daha derin adımlar yalnızca gerektiğinde çalışır:** *Graft* sadece hasarlı
    bölgeyi yeniden kurar, *Coaptation* katlanmış ya da üst üste binmiş gövdeleri
-   kaynaklayıp birleştirir, isteğe bağlı katmanlar (*Splint*, *Dressing*,
+   kaynaklayıp birleştirir, yedek katmanlar (*Splint*, *Dressing*,
    fTetWild) en zor durumları üstlenir.
 4. **Aşama 2** tek, kapalı ve basılabilir bir katı üretir; sonuç raporlanmadan
    önce yeniden yüklenip kontrol edilir.

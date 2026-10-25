@@ -36,11 +36,12 @@ _FTETWILD_AVAILABLE = None
 
 
 def ftetwild_available():
-    """True when the optional fTetWild extra (pytetwild + pyvista,
-    requirements-ftetwild.txt) is installed where run_ftetwild will look:
-    the venv311 stage-2 environment, or the current interpreter for
-    single-environment installs. Checked on disk / via find_spec, without
-    importing the (heavy) packages; cached per process. Also requires the
+    """True when the fTetWild extra (pytetwild, requirements-ftetwild.txt) is
+    installed where run_ftetwild will look: the main interpreter (single-env
+    install, the default), or a legacy venv311 fTetWild environment. Only
+    pytetwild is required; the bridge stubs out its optional PyVista accessor,
+    so VTK need not be present. Checked on disk / via find_spec, without
+    importing the (heavy) package; cached per process. Also requires the
     bridge module itself (FTETWILD_BRIDGE)."""
     global _FTETWILD_AVAILABLE
     if _FTETWILD_AVAILABLE is None:
@@ -54,12 +55,10 @@ def ftetwild_available():
             import glob
             root = os.path.dirname(os.path.dirname(VENV311))
             site = glob.glob(os.path.join(root, 'lib', 'python3*', 'site-packages'))
-            ok = any(os.path.isdir(os.path.join(sp, 'pytetwild')) and
-                     os.path.isdir(os.path.join(sp, 'pyvista')) for sp in site)
+            ok = any(os.path.isdir(os.path.join(sp, 'pytetwild')) for sp in site)
         if not ok:
             try:
-                ok = (importlib.util.find_spec('pytetwild') is not None and
-                      importlib.util.find_spec('pyvista') is not None)
+                ok = importlib.util.find_spec('pytetwild') is not None
             except (ImportError, ValueError):
                 ok = False
         _FTETWILD_AVAILABLE = ok
@@ -76,11 +75,12 @@ def run_ftetwild(inter, out_obj, params=None, timeout=None):
     dense scan cannot stall the batch; on timeout the report carries
     error='timeout'.
 
-    Dispatch: the fixed Linux two-venv layout (python3.11 + pytetwild) first,
-    then a killable `sys.executable` subprocess for single-environment installs
-    (macOS/conda and frozen bundles), then an in-process attempt wrapped in a
+    Dispatch: a legacy Linux venv311 fTetWild environment first when one
+    exists, then a killable `sys.executable` subprocess (the default
+    single-environment install: main venv / macOS conda / frozen bundles),
+    then an in-process attempt wrapped in a
     timed thread as a last resort. The bridge itself reports an explicit skip
-    when pytetwild/pyvista are absent. ``params`` (dict) overrides the
+    when pytetwild is absent. ``params`` (dict) overrides the
     bridge's DEFAULT_PARAMS for pytetwild.tetrahedralize; ``timeout``
     (seconds) replaces FTETWILD_TIMEOUT for this call."""
     extra = [json.dumps(params)] if params is not None else []

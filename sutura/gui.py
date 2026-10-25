@@ -453,9 +453,9 @@ STRINGS = {
                         'edges, tetrahedralize the original input and extract '
                         'a watertight, SI-free boundary surface (fTetWild via '
                         'pytetwild, MPL-2.0). Adopted only when no worse than '
-                        'the stage-1 result. Needs the optional extra '
-                        '(SUTURA_WITH_FTETWILD=1); without it this has no '
-                        'effect. Uncheck to disable (--no-fallback-ftetwild).',
+                        'the stage-1 result. The extra is installed by default '
+                        '(SUTURA_WITH_FTETWILD=0 opts out); without it this has '
+                        'no effect. Uncheck to disable (--no-fallback-ftetwild).',
         'ftetwild_si_label': '+ self-intersections (slow)',
         'ftetwild_opt_label': 'Optimise tetrahedra (not recommended)',
         'ftetwild_opt_tip': 'Let fTetWild also optimise the quality of its '
@@ -617,7 +617,7 @@ STRINGS = {
         'engines_status_missing': 'Not installed (download ~%s, on disk ~%s)',
         'engines_status_unsupported': 'Unavailable here: %s',
         'engines_install': 'Install…',
-        'engines_install_tip': 'Download and install the optional fTetWild extra '
+        'engines_install_tip': 'Download and install the fTetWild extra '
                                'into this Sutura environment.',
         'engines_remove': 'Remove…',
         'engines_remove_tip': 'Uninstall the fTetWild extra and free its disk '
@@ -1159,8 +1159,8 @@ STRINGS = {
                         'bırakırsa orijinal girdiyi tetrahedralize edip su '
                         'geçirmez, SI-free bir yüzey çıkarır (fTetWild via '
                         'pytetwild, MPL-2.0). Yalnızca stage-1 sonucundan daha '
-                        'kötü değilse uygulanır. İsteğe bağlı ek paket gerekir '
-                        '(SUTURA_WITH_FTETWILD=1); yoksa etkisi yoktur. '
+                        'kötü değilse uygulanır. Ek paket varsayılan olarak kurulur '
+                        '(SUTURA_WITH_FTETWILD=0 kapatır); yoksa etkisi yoktur. '
                         'Kapatmak için işareti kaldırın (--no-fallback-ftetwild).',
         'ftetwild_si_label': '+ self-intersection (yavaş)',
         'ftetwild_opt_label': 'Tetrahedra optimizasyonu (önerilmez)',
@@ -1324,7 +1324,7 @@ STRINGS = {
         'engines_status_missing': 'Kurulu değil (indirme ~%s, diskte ~%s)',
         'engines_status_unsupported': 'Burada kullanılamaz: %s',
         'engines_install': 'Kur…',
-        'engines_install_tip': 'İsteğe bağlı fTetWild ekini bu Sutura ortamına '
+        'engines_install_tip': 'fTetWild ekini bu Sutura ortamına '
                                'indirip kurar.',
         'engines_remove': 'Kaldır…',
         'engines_remove_tip': 'fTetWild ekini kaldırır ve disk alanını boşaltır.',

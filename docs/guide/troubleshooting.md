@@ -3,13 +3,15 @@
 [← Back to README](../../README.md) · [Türkçe](tr/troubleshooting.md)
 
 
-* **`python3.11` not found (optional fTetWild only).** A normal install does
-  not need Python 3.11. If you pass `SUTURA_WITH_FTETWILD=1`, `install.sh`
-  downloads a standalone CPython 3.11 build into
+* **`python3.11` not found (fTetWild fallback runtime only).** A normal install
+  with an in-range `python3` does not need Python 3.11. When the main
+  interpreter is outside 3.10–3.14, `install.sh` needs a fallback runtime for
+  the fTetWild tier and downloads a standalone CPython 3.11 build into
   `~/.local/share/sutura/python311` (disable with
   `SUTURA_NO_PYTHON_DOWNLOAD=1`) or uses the system package:
   * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
   * Fedora: `sudo dnf install python3.11`
+  Set `SUTURA_WITH_FTETWILD=0` to skip the tier entirely if no runtime is available.
 * **`sutura_geom` source build fails.** The Manifold kernel is compiled from
   C++: install `cmake` and a C++20 compiler (g++/clang++), and Rust >= 1.89.
   Release installs normally use the prebuilt wheel and need none of these.

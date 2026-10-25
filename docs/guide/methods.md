@@ -696,8 +696,8 @@ meshes are left untouched (`p_weld` absent).
 ## External repair engines and the fTetWild manager
 
 Sutura can call user-installed third-party repair **engines** and manage the
-optional fTetWild fallback extra from the same interface (CLI and GUI). Both
-parts of this Triage Engine layer are opt-in and inert until configured.
+fTetWild fallback tier from the same interface (CLI and GUI). The engines are
+opt-in and inert until configured.
 
 **External engines.** An engine is a small TOML file in
 `${XDG_CONFIG_HOME:-~/.config}/sutura/engines/*.toml` naming an executable and
@@ -722,10 +722,10 @@ check` additionally exits non-zero when a configured binary is missing (it
 never runs an engine).
 
 **fTetWild manager.** `sutura ftetwild status|install|uninstall` inspects,
-installs or cleanly removes the fTetWild extra (`pytetwild` + `pyvista` +
-`vtk`) in the Sutura environment only (Linux `venv311` or the macOS conda
-`sutura-env`), showing the download and on-disk sizes first and requiring
-`--yes` (or an interactive confirmation) for install/uninstall;
+installs or cleanly removes the fTetWild tier (`pytetwild` only) in the Sutura
+environment only (the Linux main `venv`, or its `venv311` fallback, or the
+macOS conda `sutura-env`), showing the download and on-disk sizes first and
+requiring `--yes` (or an interactive confirmation) for install/uninstall;
 `--dry-run` prints the plan and never touches the environment. It refuses
 unsupported layouts (AppImage, frozen `.app`/`.dmg`, system Python,
 read-only environments) with an explicit reason, and uninstall prunes only

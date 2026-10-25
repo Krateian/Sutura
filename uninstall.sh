@@ -42,6 +42,9 @@ else
         done
         shopt -u dotglob nullglob
     fi
+    # Explicitly clear the legacy fTetWild runtime dirs (covered by the loop
+    # above; kept named so their removal is intentional, not incidental).
+    rm -rf "$APP_DIR/venv311" "$APP_DIR/python311"
     if [ -d "$APP_DIR/data" ]; then
         echo "User data kept at $APP_DIR/data (re-run with --purge to remove it)"
     else

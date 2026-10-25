@@ -1,30 +1,30 @@
 # fTetWild Installation & Removal Manager Backend
 
-The `sutura.ftetwild_manager` module provides a standard-library-only backend for inspecting, installing, estimating, and cleanly removing the optional fTetWild fallback tier (`pytetwild`, `pyvista`, `vtk`) without ever touching the system Python.
+The `sutura.ftetwild_manager` module provides a standard-library-only backend for inspecting, installing, estimating, and cleanly removing the fTetWild fallback tier (`pytetwild` only — PyVista and VTK are not used) without ever touching the system Python.
 
 ## Supported Environments
 
-To maintain strict stability and isolate heavy dependencies, the manager operates **only** on Sutura's two designated environments:
-1. **Linux**: `$APP_DIR/venv311/bin/pip` (where `$APP_DIR` is `$SUTURA_DIR` or `~/.local/share/sutura`), as created by `install.sh` with `SUTURA_WITH_FTETWILD=1`. Stage 2 no longer uses this environment: Manifold runs in-process in the mandatory `sutura_geom` Rust extension, so `venv311` exists only for the fTetWild extra.
+To maintain strict stability and isolate heavy dependencies, the manager operates **only** on Sutura's own environments:
+1. **Linux**: `$APP_DIR/venv/bin/pip` (where `$APP_DIR` is `$SUTURA_DIR` or `~/.local/share/sutura`), as created by `install.sh`. When the main interpreter is outside 3.10–3.14 the tier uses the `venv311` fallback instead. Stage 2 no longer uses these environments: Manifold runs in-process in the mandatory `sutura_geom` Rust extension, so `venv311` exists only as the fTetWild fallback interpreter.
 2. **macOS**: The conda `sutura-env` environment (`sutura-env/bin/pip`), as created by `install-macos.sh`.
 
 ### Unsupported Environments
 Any other execution context is detected and rejected with a clear instruction:
-- **AppImage**: Read-only squashfs runtime. Returns `unsupported here, use install.sh SUTURA_WITH_FTETWILD=1`.
-- **macOS .app / .dmg bundle**: Frozen PyInstaller / LaunchServices bundle. Returns `unsupported here, use install-macos.sh SUTURA_WITH_FTETWILD=1`.
+- **AppImage**: Read-only squashfs runtime, bundled with the tier. Returns `unsupported here, use install.sh SUTURA_WITH_FTETWILD=0`.
+- **macOS .app / .dmg bundle**: Frozen PyInstaller / LaunchServices bundle, bundled with the tier. Returns `unsupported here, use install-macos.sh SUTURA_WITH_FTETWILD=0`.
 - **Unmanaged virtualenv / system Python**: Refused to prevent polluting ambient environments.
 - **Read-only file systems**: Returns an explicit read-only environment error.
 
 ## Measured Platform Sizes
 
-Size estimates are hardcoded based on real measurements:
+Size estimates are hardcoded based on real measurements (pytetwild wheel only):
 
-| Metric | macOS (Apple Silicon arm64) | Linux (x86_64) |
-|---|---|---|
-| **Download Size** | **~105 MB** (`vtk` 98.2M, `pyvista` 2.6M, `pytetwild` 2.3M, deps ~2M) | **~139 MB** (`vtk` 133M, `pytetwild` 3.0M, `pyvista` 2.6M, deps ~2M) |
-| **Installed Disk Size** | **~538 MB** (`vtkmodules` 517.1M, `pyvista` 13.5M, `pytetwild` 5.9M) | **~580 MB** (wheel content; up to **~1.1 GB** with caches/distro deps) |
+| Metric | macOS (Apple Silicon arm64) | Linux (x86_64) | Linux (aarch64) |
+|---|---|---|---|
+| **Download Size** | **~2.3 MB** (`pytetwild` 2.3M) | **~3.0 MB** (`pytetwild` 3.0M) | **~2.7 MB** (`pytetwild` 2.7M) |
+| **Installed Disk Size** | **~6.0 MB** | **~6.0 MB** | **~6.0 MB** |
 
-- **Download measurement**: Linux sizes were measured using `pip download --no-deps --platform manylinux2014_x86_64`.
+- **Download measurement**: Linux sizes were measured using `pip download --no-deps --platform manylinux2014_x86_64` (and `manylinux2014_aarch64`).
 - **Installed measurement**: macOS sizes were measured directly in `sutura-env` on disk via `importlib.metadata` and file stats.
 
 ## Dependency Pruning & Safe Uninstall
@@ -32,7 +32,7 @@ Size estimates are hardcoded based on real measurements:
 The manager dynamically resolves package dependencies from `requirements-ftetwild.txt` and base requirement files (`requirements.txt`, `requirements-gui.txt`):
 
 1. **Base Protection**: Packages required by base Sutura (e.g. `numpy`, `PySide6-Essentials`, `pip`, `setuptools`, `wheel`) are strictly protected and never removed. Manifold is not a Python package: it is statically linked into `sutura_geom` through `manifold-csg`, so it does not appear in the base package set; `trimesh` and `pymeshlab` are development/test-only dependencies, so they are not protected either.
-2. **Heavy Dependency Cleanup**: Packages pulled in solely for fTetWild (notably `vtk`, `pyvista`, and `pyvista-validation`) are tracked and uninstalled, reclaiming ~517 MB from VTK alone.
+2. **Legacy Cleanup**: Packages from older installs that pulled in the former PyVista/VTK stack (`pyvista`, `vtk`, `pyvista-validation`) are still tracked and removed on uninstall.
 3. **Cancellation & Half-Install Cleanup**: Pip runs in a detached process group (`start_new_session=True`). When cancelled via `cancel_event`, the entire process tree is terminated (`SIGTERM` -> `SIGKILL`), and any partially extracted fTetWild packages are cleaned up automatically.
 
 ## Python API
@@ -47,15 +47,15 @@ st = mgr.status()
 #     'supported': True,
 #     'version': '0.4.2',
 #     'location': '/.../site-packages',
-#     'size_bytes': 564133888,
-#     'size_human': '538.0 MB',
+#     'size_bytes': 6291456,
+#     'size_human': '6.0 MB',
 #     'layout': 'macos-conda',
 #     'reason': None,
 # }
 
 # 2. Get download and disk estimates
 est = mgr.estimate()
-# {'download_human': '105.0 MB', 'installed_human': '538.0 MB', ...}
+# {'download_human': '2.3 MB', 'installed_human': '6.0 MB', ...}
 
 # 3. Dry-run install / uninstall
 plan_install = mgr.install(dry_run=True)

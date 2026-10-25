@@ -61,9 +61,13 @@ fi
 # 5) install dependencies ---------------------------------------------------
 echo "==> installing packages into $ENV_NAME"
 conda run -n "$ENV_NAME" pip install PySide6-Essentials==6.11.2
-if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
-    echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
-    conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"
+if [ "${SUTURA_WITH_FTETWILD:-1}" = "1" ]; then
+    echo "==> fTetWild fallback tier (pytetwild, ~2.3 MB; opt out with SUTURA_WITH_FTETWILD=0)"
+    # Older releases installed pyvista/VTK for this tier; drop them if present.
+    conda run -n "$ENV_NAME" pip uninstall -y pyvista vtk pyvista-validation >/dev/null 2>&1 || true
+    if ! conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"; then
+        echo "warning: fTetWild tier install failed; the rest of Sutura is fine." >&2
+    fi
 fi
 
 # 5b) required: sutura_geom Rust extension (Graft #13, ~0.7 MB) ------------

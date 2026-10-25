@@ -354,7 +354,7 @@ def main():
             '  clear-learning         reset learning-triage history (triage_learning.json)\n'
             '  export-history         view or export anonymous technical usage history\n'
             '  engines list|check     inspect configured third-party repair engines\n'
-            '  ftetwild status|install|uninstall  manage optional fTetWild fallback extra\n'
+            '  ftetwild status|install|uninstall  manage the fTetWild fallback tier\n'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('files', nargs='*', metavar='FILE',
@@ -499,11 +499,11 @@ def main():
                              'the default behaviour, evaluation only')
     parser.add_argument('--no-fallback-ftetwild', action='store_true',
                         help='disable the fTetWild fallback tier. By default, '
-                             'when the optional fTetWild extra is installed '
-                             '(SUTURA_WITH_FTETWILD=1) and the stage-1 chain '
-                             'still leaves holes or non-manifold edges, the '
-                             'ORIGINAL input is tetrahedralized and its '
-                             'boundary extracted as a watertight, SI-free '
+                             'when the fTetWild extra is installed (it is, by '
+                             'default; SUTURA_WITH_FTETWILD=0 opts out) and the '
+                             'stage-1 chain still leaves holes or non-manifold '
+                             'edges, the ORIGINAL input is tetrahedralized and '
+                             'its boundary extracted as a watertight, SI-free '
                              'surface (fTetWild via pytetwild, MPL-2.0); it is '
                              'adopted only when no worse on holes+non-manifold '
                              'than the stage-1 result. Without the extra this '

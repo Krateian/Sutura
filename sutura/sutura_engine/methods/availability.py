@@ -22,7 +22,7 @@ OPTIONAL_IMPORT_MODULES = (
     'sutura_engine.methods.closing', 'closing',
     'sutura_engine.methods.proxy', 'proxy_repair',
     'sutura_engine.methods.repeat', 'repeat_repair',
-    'pytetwild', 'pyvista', 'vtk',   # the fTetWild addon
+    'pytetwild',              # the fTetWild addon (PyVista accessor is stubbed)
 )
 
 
@@ -48,7 +48,7 @@ def ftetwild_available() -> Tuple[bool, Optional[str]]:
         from sutura_engine.methods.protocol import _repair_mod
         if _repair_mod().ftetwild_available():
             return True, None
-        return False, 'fTetWild (pytetwild + pyvista) is not installed'
+        return False, 'fTetWild (pytetwild) is not installed'
     except Exception as e:
         return False, 'fTetWild unavailable: %s' % e
 

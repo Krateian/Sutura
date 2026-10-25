@@ -20,10 +20,11 @@ macOS (Apple Silicon / Intel):
   (`install-macos.sh`); Linux'un yalnızca pip kullanan akışı yerine.
 * Python 3.11'i conda ile kurun (`install-macos.sh` bunu otomatik yapar).
 
-Python 3.11 yalnızca isteğe bağlı fTetWild eki için gerekir
-(`SUTURA_WITH_FTETWILD=1`); normal kurulum kullanmaz.
+Python 3.11, fTetWild katmanı için yalnızca ana yorumlayıcı 3.10–3.14
+aralığının dışındayken yedek çalışma zamanı olarak kullanılır; güncel bir
+`python3` ile normal kurulum buna ihtiyaç duymaz.
 
-* Arch: Python 3.11 resmi depolarda bulunmaz; `install.sh` eksik olduğunda otomatik olarak taşınabilir bir çalışma zamanı indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir)
+* Arch: Python 3.11 resmi depolarda bulunmaz; gerektiğinde `install.sh` otomatik olarak taşınabilir bir yedek çalışma zamanı indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir)
 * Debian / Ubuntu 22.04+: `sudo apt install python3.11 python3.11-venv`
 * Fedora: `sudo dnf install python3.11`
 
@@ -45,10 +46,10 @@ cd Sutura
 ./install.sh
 ```
 
-Bu, `~/.local/share/sutura` altında ana sanal ortamı oluşturur (isteğe bağlı
-fTetWild eki istendiğinde ayrıca bir `venv311`), CLI sarmalayıcıyı
-`~/.local/bin/sutura`'ya kurar, hicolor uygulama ikonlarını kurar ve Dolphin
-servis menüsünü kaydeder. Yeniden çalıştırmak güvenlidir.
+Bu, `~/.local/share/sutura` altında ana sanal ortamı oluşturur (ana
+yorumlayıcı 3.10–3.14 aralığının dışındayken ayrıca bir `venv311` yedeği),
+CLI sarmalayıcıyı `~/.local/bin/sutura`'ya kurar, hicolor uygulama ikonlarını
+kurar ve Dolphin servis menüsünü kaydeder. Yeniden çalıştırmak güvenlidir.
 
 **AppImage (isteğe bağlı).** Aşama 1, Aşama 2 ve GUI için tek bir Python 3.14
 çalışma zamanının paketlendiği tek dosyalık AppImage — sanal ortam yok,
@@ -71,7 +72,7 @@ sağ tık servis menüsü hâlâ `install.sh` ile kurulur.
 Kurulum izole sanal ortamların içinde pip kullanır — AUR yok, yay/paru gerekmez,
 sistem paket yöneticinize hiçbir şey dokunmaz. GUI, PySide6 (~79 MB indirme,
 `venv`'in parçası) gerektirir; ana sanal ortamın toplam kurulu boyutu yaklaşık
-800 MB'dır (isteğe bağlı fTetWild eki kendi `venv311`'ini ekler).
+800 MB'dır (fTetWild katmanı yaklaşık 6 MB ekler, aşağıya bakın).
 
 **Rust eklentisi (`sutura_geom`).** `sutura_geom` Rust eklentisi (~1 MB),
 `install.sh` ve `install-macos.sh` tarafından otomatik olarak kurulur (GitHub
@@ -89,29 +90,29 @@ eksik eklentiyi adıyla bildirerek hata verir. Kaynaktan derlemeye zorlamak içi
 (`kiddo` 6.3 MSRV) gerektirir. Eski `SUTURA_NO_GEOM=1` çıkış seçeneği
 kaldırılmıştır.
 
-**İsteğe bağlı ek — fTetWild yedek katmanı.** fTetWild yedek katmanı
-`pytetwild` + `pyvista` ister ve pyvista VTK'yı da çeker: kurulu halde
-yaklaşık **1,1 GB** (yalnızca VTK ~520 MB). Bu yüzden varsayılan olarak
-kurulmaz (AppImage / .dmg'de de yoktur). Kurulduğunda katman, stage 1'in
-kapatamadığı mesh'ler için varsayılan olarak açıktır (yukarıdaki *İsteğe
-bağlı katmanlar* bölümüne bakın). Kurmak için:
+**fTetWild yedek katmanı (varsayılan olarak kurulur).** fTetWild yedek
+katmanı yalnızca `pytetwild` ister — PyVista veya VTK yok — bu yüzden kurulu
+halde yaklaşık **6 MB**'dır. `install.sh` bunu varsayılan olarak ana sanal
+ortama kurar (AppImage ve macOS `.dmg` içinde de gelir). Kurulduğunda katman,
+stage 1'in kapatamadığı mesh'ler için varsayılan olarak açıktır (yukarıdaki
+*İsteğe bağlı katmanlar* bölümüne bakın). Atlamak için:
 
 ```sh
-SUTURA_WITH_FTETWILD=1 ./install.sh
+SUTURA_WITH_FTETWILD=0 ./install.sh
 ```
 
 Kurulmadığında varsayılan hiçbir şeyi değiştirmez (GUI kutusunun da etkisi
 olmaz); yalnızca `--experimental-fallback-ftetwild` açık bir "atlandı"
 raporu verir.
 
-Ek, kurulumdan sonra installer yeniden çalıştırılmadan da yönetilebilir:
+Katman, kurulumdan sonra installer yeniden çalıştırılmadan da yönetilebilir:
 `sutura ftetwild install` / `sutura ftetwild uninstall` (`--dry-run`,
-`--yes` ile) veya GUI'nin Seçenekler → **Motorlar** sekmesi, eki yalnızca
+`--yes` ile) veya GUI'nin Seçenekler → **Motorlar** sekmesi, katmanı yalnızca
 Sutura ortamına kurar/kaldırır ve önce indirme ve disk boyutlarını gösterir.
-Her ikisi de desteklenmeyen düzenleri (AppImage, `.dmg`, sistem Python'u)
-gerekçeyle reddeder.
+Her ikisi de paketlenmiş veya sistem düzenlerini (AppImage, `.dmg`, sistem
+Python'u) değiştirmeyi reddeder ve gerekçesini bildirir.
 
-Arch'ta sistemde `python3.11` yoksa `install.sh` bağımsız bir Python 3.11 çalışma zamanını yalnızca isteğe bağlı fTetWild eki (`SUTURA_WITH_FTETWILD=1`) için otomatik olarak indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir).
+Arch'ta `install.sh`, aralık içinde bir `python3` yoksa bağımsız bir Python 3.11 çalışma zamanını yalnızca fTetWild yedek yorumlayıcısı olarak otomatik indirir (`SUTURA_NO_PYTHON_DOWNLOAD=1` ile devre dışı bırakılabilir).
 
 ### macOS
 
@@ -130,8 +131,8 @@ ve `~/.local/bin/sutura` (CLI) ile `~/.local/bin/sutura-gui` başlatıcıların�
 oluşturur. Ayrıca yerel bir **`~/Applications/Sutura.app`** oluşturur — GUI'yi
 doğrudan **Spotlight**'tan açabilirsiniz (`Cmd+Space`, *Sutura* yazın, Enter)
 — terminal gerekmez. Yalnızca macOS içindir ve yeniden çalıştırılabilir.
-İsteğe bağlı fTetWild yedek eki (~1,1 GB, Linux bölümüne bakın)
-`SUTURA_WITH_FTETWILD=1 ./install-macos.sh` ile kurulur.
+fTetWild yedek katmanı (kurulu halde ~6 MB, Linux bölümüne bakın) varsayılan
+olarak kurulur; `SUTURA_WITH_FTETWILD=0 ./install-macos.sh` onu atlar.
 
 Kurulumcu ayrıca Finder'a bir **Quick Action** ("Sutura — Repair") ekler:
 Finder'da bir veya daha fazla STL/3MF dosyası seçin, sağ tık → *Quick Actions*

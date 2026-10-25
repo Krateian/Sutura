@@ -89,7 +89,7 @@ open it with right-click → *Open* the first time), or install from source:
 git clone https://github.com/Krateian/Sutura.git && cd Sutura && ./install-macos.sh
 ```
 
-Requirements, the optional fTetWild extra, updates and uninstalling are covered
+Requirements, the fTetWild tier, updates and uninstalling are covered
 in [Install and requirements](docs/guide/install.md).
 
 ## Use
@@ -120,8 +120,8 @@ leaves healthy skin alone. In short:
    degenerate triangles, wrongly joined edges, flipped faces — and closes what
    is left.
 3. **Deeper steps run only when needed:** *Graft* rebuilds just the damaged
-   region, *Coaptation* welds and joins folded or overlapping bodies, and
-   optional tiers (*Splint*, *Dressing*, fTetWild) handle the hardest cases.
+   region, *Coaptation* welds and joins folded or overlapping bodies, and the
+   fallback tiers (*Splint*, *Dressing*, fTetWild) handle the hardest cases.
 4. **Stage 2** produces one closed, printable solid, and the result is reloaded
    and checked before it is reported.
 
