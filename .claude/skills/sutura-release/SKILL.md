@@ -117,6 +117,96 @@ The symptom is `qt.qpa.plugin: Could not find the Qt platform plugin
 measurement venv (no Qt) or with the same variables; never run it in the conda
 environment without them.
 
+## 4b. Security check (mandatory before release)
+
+Run this after §4 and before the release commit/push. Use the repository's
+existing tools; do not install a new scanner for a release.
+
+- **Pre-push secret scan (release range).** Run the tracked hook against the
+  exact range that will be pushed:
+
+  ```sh
+  printf 'refs/heads/release %s refs/heads/main %s\n' \
+    "$(git rev-parse HEAD)" "$(git rev-parse origin/main)" \
+    | scripts/pre-push-security-check.sh
+  ```
+
+  It must print `pre-push security scan: clean`. It scans the diff for token
+  formats, `/home/` absolute paths outside `tests/`, and public IPv4
+  addresses. The installed `.git/hooks/pre-push` runs the same check on every
+  push and is the last line of defence, not a substitute for this run.
+- **Repository-wide path scan.** The hook is diff-only. From the release
+  worktree, scan tracked files for host-specific and local-development paths:
+
+  ```sh
+  git grep -nE '/Users/|/home/|/tmp/(scorecard|release-|bigrun|vqa-real)|Desktop/|Downloads/' \
+    -- ':!tests/' ':!scripts/pre-push-security-check.sh' \
+       ':!.claude/skills/sutura-release/SKILL.md' ':!docs/security-audit-2026-09.md'
+  ```
+
+  It must return no matches. A legitimate hit is recorded with its path and
+  reason in the release note; an unexplained hit blocks the release.
+- **Personal information.** The personal names and the place/workplace terms
+  are deliberately not written in this file. Set the local pattern from the
+  maintainer's notes and scan tracked files; the `LICENSE` copyright line is
+  the only allowed name mention:
+
+  ```sh
+  : "${PERSONAL_PATTERN:?set PERSONAL_PATTERN to the local name/place/workplace terms}"
+  git grep -n -I -i -E "$PERSONAL_PATTERN" -- . ':!LICENSE'
+  ```
+
+  Check e-mail addresses separately and allow only `users.noreply.github.com`:
+
+  ```sh
+  git grep -n -I -E '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- . \
+    | grep -v 'users\.noreply\.github\.com' || true
+  ```
+
+  The historical `krateian@<hostname>.local` placeholder in
+  `docs/agents/workflow.md` is not a real address; record it as a false
+  positive or remove it only with the maintainer's approval. Every other hit
+  is either fixed in a separate comment-only commit or recorded with a reason.
+- **Private sample name.** The name is deliberately not written in this file.
+  Set it from the maintainer's local notes and scan tracked files:
+
+  ```sh
+  : "${PRIVATE_SAMPLE:?set PRIVATE_SAMPLE to the local private sample name}"
+  git grep -nF -- "$PRIVATE_SAMPLE" -- ':!tests/' ':!docs/security-audit-2026-09.md'
+  ```
+
+  It must return no matches. If the name is unavailable, record that the
+  check could not run and do not report the release as clean.
+- **CodeQL.** No open code-scanning alerts:
+
+  ```sh
+  gh api 'repos/Krateian/Sutura/code-scanning/alerts?state=open&per_page=100'
+  gh run list --workflow=codeql.yml --branch main --limit 1
+  ```
+
+  The alert list must be `[]`; the latest completed `main` run must be
+  `success`. If the API is unavailable (missing scope or 403/404), record the
+  exact error and do not treat an unqueried list as clean. An alert with a
+  written reason and a decision (fix, justified dismissal, accepted risk) is
+  allowed; an unexplained alert blocks the release.
+- **Dependabot.** No open dependency alerts or Dependabot PRs that affect the
+  release:
+
+  ```sh
+  gh api 'repos/Krateian/Sutura/dependabot/alerts?state=open&per_page=100'
+  gh pr list --state open --author 'app/dependabot'
+  ```
+
+  The alert list must be `[]`. An open Dependabot PR is merged after the
+  release when green; if it is left open, write the reason. A dependency alert
+  with a written reason and decision is allowed; an unexplained alert blocks
+  the release.
+- **Attribution.** The release commits are authored by Krateian only; no AI
+  attribution in commits, tags or release notes.
+- **Record one line** in the release note:
+  `Security: pre-push clean; repo path/name scan clean; CodeQL 0 open; Dependabot 0 open.`
+  If any item is not clean, write the exception and the lead's decision.
+
 ## 5. Git and GitHub
 - **main is not protected** (`gh api repos/Krateian/Sutura/branches/main/protection`
   returns 404 "Branch not protected"). The release does not open a PR.
@@ -139,9 +229,9 @@ environment without them.
 
   The output must show the plain URL only. Never force-push and never push a
   branch with merge commits to main.
-- Pre-push scan: tokens, personal paths, hostnames, the private sample name,
-  AI attribution. Commits by Krateian only; no AI attribution in commits, tags
-  or releases.
+- The §4b security check is complete; the pre-push hook repeats the
+  secret/path scan. Commits by Krateian only; no AI attribution in commits,
+  tags or releases.
 - Tag the squash commit (annotated, "Sutura vX.Y.Z") and push the tag with the
   same credential helper; confirm `git rev-parse vX.Y.Z^{}` is the squash
   commit.
