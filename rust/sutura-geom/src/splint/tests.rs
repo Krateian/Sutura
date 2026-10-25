@@ -62,6 +62,10 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     }
     assert_eq!(a.winding_hist, b.winding_hist);
     assert_eq!(a.snap_f32, b.snap_f32);
+    assert_eq!(a.relabel, b.relabel);
+    assert_eq!(a.relabel_first_nm_edges, b.relabel_first_nm_edges);
+    assert_eq!(a.relabel_final_nm_edges, b.relabel_final_nm_edges);
+    assert_eq!(a.relabel_flips, b.relabel_flips);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     assert_eq!(a.out_manifold, b.out_manifold);
     assert_eq!(a.adaptive, b.adaptive);
@@ -244,6 +248,33 @@ fn snap_f32_is_deterministic_and_world_exact() {
             assert_eq!(p[k].to_bits(), q[k].to_bits());
             // Every emitted world coordinate is exactly representable in f32.
             assert_eq!(p[k] as f32 as f64, p[k]);
+        }
+    }
+}
+
+// Root-caused blocker (spike notes 2026-10-26): `delaunay::delaunay3` returns
+// the Geogram BDEL cells in a nondeterministic ORDER (same set: `delaunay_hash`
+// is order-independent and matches, but `centroids`/`phi`/`is_inside` are
+// permuted run to run). The emitted surface is permutation-invariant, so the
+// base output is stable, but the greedy relabel tie-breaks on tet index and is
+// therefore not. Canonicalise the tet order first, then re-enable this.
+#[test]
+#[ignore = "blocked on nondeterministic delaunay3 tet order"]
+fn greedy_relabel_is_deterministic_and_non_increasing() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.greedy_relabel = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("b");
+    assert!(a.report.relabel);
+    assert_eq!(a.report.relabel_flips, b.report.relabel_flips);
+    assert_eq!(a.report.relabel_first_nm_edges, b.report.relabel_first_nm_edges);
+    assert_eq!(a.report.relabel_final_nm_edges, b.report.relabel_final_nm_edges);
+    assert!(a.report.relabel_final_nm_edges <= a.report.relabel_first_nm_edges);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
         }
     }
 }

@@ -1924,6 +1924,9 @@ fn splint_cut_py<'py>(
         if let Some(v) = d.get_item("snap_f32")? {
             s_opts.snap_f32 = v.extract::<bool>()?;
         }
+        if let Some(v) = d.get_item("greedy_relabel")? {
+            s_opts.greedy_relabel = v.extract::<bool>()?;
+        }
     }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1984,6 +1987,15 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("adaptive_thin", r.adaptive_thin)?;
     d.set_item("adaptive_capped", r.adaptive_capped)?;
     d.set_item("snap_f32", r.snap_f32)?;
+    d.set_item("relabel", r.relabel)?;
+    d.set_item("relabel_first_nm_edges", r.relabel_first_nm_edges)?;
+    d.set_item("relabel_final_nm_edges", r.relabel_final_nm_edges)?;
+    d.set_item("relabel_flips", r.relabel_flips)?;
+    d.set_item("cut_inside_hash", r.cut_inside_hash)?;
+    d.set_item("phi_hash", r.phi_hash)?;
+    d.set_item("init_hash", r.init_hash)?;
+    d.set_item("proxy_hash", r.proxy_hash)?;
+    d.set_item("centroid_hash", r.centroid_hash)?;
     d.set_item("secs_adaptive", r.secs_adaptive)?;
     d.set_item("secs_udf", r.secs_udf)?;
     d.set_item("secs_proxy", r.secs_proxy)?;

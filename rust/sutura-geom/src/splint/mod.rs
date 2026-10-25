@@ -23,6 +23,7 @@ mod emit;
 mod label;
 mod normalize;
 mod proxy;
+mod relabel;
 mod tetra;
 
 use std::time::Instant;
@@ -35,6 +36,8 @@ use normalize::Normalizer;
 
 pub(crate) const MIN_RES: usize = 16;
 pub(crate) const MAX_RES: usize = 512;
+/// Upper bound on greedy relabel flips (safety valve; the search is monotone).
+const GREEDY_MAX_FLIPS: usize = 1_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SplintAdaptive {
@@ -51,6 +54,8 @@ pub(crate) struct SplintOpts {
     /// H2: canonicalize emitted world-space vertices through `f32` and dedup on
     /// the `f32` grid (post `de_norm`), so the output equals its reload weld.
     pub snap_f32: bool,
+    /// Greedy relabel of tet in/out flags to remove non-manifold boundary edges.
+    pub greedy_relabel: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +95,15 @@ pub(crate) struct SplintReport {
     pub adaptive_thin: usize,
     pub adaptive_capped: bool,
     pub snap_f32: bool,
+    pub relabel: bool,
+    pub relabel_first_nm_edges: usize,
+    pub relabel_final_nm_edges: usize,
+    pub relabel_flips: usize,
+    pub cut_inside_hash: u64,
+    pub phi_hash: u64,
+    pub init_hash: u64,
+    pub proxy_hash: u64,
+    pub centroid_hash: u64,
     pub secs_adaptive: f64,
     pub secs_udf: f64,
     pub secs_proxy: f64,
@@ -148,7 +162,48 @@ fn run_pass(
         );
         (cut, t.elapsed().as_secs_f64())
     };
-    let (cut, secs_cut) = cut;
+    let (mut cut, secs_cut) = cut;
+    let mut proxy_hash: u64 = 0xcbf29ce484222325;
+    for p in &proxy.verts {
+        for &x in p {
+            proxy_hash ^= x.to_bits();
+            proxy_hash = proxy_hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    let mut phi_hash: u64 = 0xcbf29ce484222325;
+    for &p in &labels.phi {
+        phi_hash ^= p.to_bits();
+        phi_hash = phi_hash.wrapping_mul(0x100000001b3);
+    }
+    let mut centroid_hash: u64 = 0xcbf29ce484222325;
+    for p in &topo.centroids {
+        for &x in p {
+            centroid_hash ^= x.to_bits();
+            centroid_hash = centroid_hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    let mut init_hash: u64 = 0xcbf29ce484222325;
+    for &b in &labels.init_label {
+        init_hash ^= u64::from(b);
+        init_hash = init_hash.wrapping_mul(0x100000001b3);
+    }
+    let cut_inside_hash = {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in &cut.is_inside {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    };
+    let relabel_outcome = opts.greedy_relabel.then(|| {
+        relabel::greedy_relabel(
+            &tets,
+            &topo.internal,
+            &topo.out_tet,
+            &mut cut.is_inside,
+            GREEDY_MAX_FLIPS,
+        )
+    });
     let emitted = emit::emit_boundary(
         &proxy.verts,
         &topo.centroids,
@@ -195,6 +250,15 @@ fn run_pass(
         adaptive_thin: proxy.adaptive.thin,
         adaptive_capped: proxy.adaptive.capped,
         snap_f32: opts.snap_f32,
+        relabel: relabel_outcome.is_some(),
+        relabel_first_nm_edges: relabel_outcome.as_ref().map_or(0, |r| r.first_nm_edges),
+        relabel_final_nm_edges: relabel_outcome.as_ref().map_or(0, |r| r.final_nm_edges),
+        relabel_flips: relabel_outcome.as_ref().map_or(0, |r| r.flips),
+        cut_inside_hash,
+        phi_hash,
+        init_hash,
+        proxy_hash,
+        centroid_hash,
         secs_adaptive: proxy.adaptive.secs,
         secs_udf: proxy.secs_udf,
         secs_proxy: proxy.secs_proxy,
