@@ -1858,7 +1858,7 @@ enum RefModel {
 }
 
 /// A fitted smooth "laser" reference surface over a hole, used to seal at the
-/// level of the intact surrounding tissue (Arif's "line 2") instead of the rim
+/// level of the intact surrounding tissue ("line 2") instead of the rim
 /// point closest to the centre ("line 1").
 #[derive(Clone, Debug)]
 #[allow(dead_code)]

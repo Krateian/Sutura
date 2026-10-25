@@ -584,7 +584,7 @@ TAMPONADE_ENV = 'SUTURA_TAMPONADE'
 
 
 # Single default switch for the Tamponade tier (method #17).  ON by default
-# (Arif's standing rule: improvements ship enabled, opt-out): the module
+# (standing rule: improvements ship enabled, opt-out): the module
 # constant below, overridable by the ``SUTURA_TAMPONADE_DEFAULT`` env var.
 # ``--no-tamponade`` / ``SUTURA_TAMPONADE=0`` opt out; the legacy
 # ``--tamponade`` flag is still accepted (it just re-affirms the default).  The

@@ -3,7 +3,7 @@
 
 Tamponade closes open boundaries from the inside: the Rust core
 (``sutura_geom.tamponade``) walks each boundary loop, fits a smooth reference
-surface (Arif's "line 2") through the intact ring around it, trims any
+surface ("line 2") through the intact ring around it, trims any
 rim/tail vertex that overshoots past that level, and builds a plug that follows
 the reference -- a concave dent and a convex bump alike (a saddle / noisy ring
 has no reference and falls back to the rim-only bridge). It optionally melts
