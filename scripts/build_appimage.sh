@@ -79,11 +79,11 @@ SUTURA_GEOM_REQUIRED=1 "$SCRIPT_DIR/install_sutura_geom.sh" "$LIB/venv/bin/pytho
 "$LIB/venv/bin/python" -c "import sutura_geom; print('sutura_geom OK (venv 3.14)')"
 
 echo "==> copying application modules"
-for f in repair.py gui.py classification.py defects.py topology.py mesh_classifier.py \
-         mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \
-         before_after_render.py viewer_common.py viewer_data_render.py \
-         confidence.py history.py repair_score.py open.sh __init__.py; do
-    install -m 0755 "$REPO_ROOT/sutura/$f" "$LIB/"
+# Copy every flat module instead of a hand-kept list: the list drifted and
+# 0.9.5 shipped without self_check/diagnostics/manifest/self_repair and the
+# csg/manifold bridges (--self-check crashed inside the AppImage).
+for f in "$REPO_ROOT"/sutura/*.py "$REPO_ROOT/sutura/open.sh"; do
+    install -m 0755 "$f" "$LIB/"
 done
 install -m 0644 "$REPO_ROOT/sutura/repair_score_config.json" "$LIB/repair_score_config.json"
 install -m 0644 "$REPO_ROOT/requirements.txt" \
@@ -115,6 +115,13 @@ if "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
     echo "    Tamponade (#17) available in the bundled stage-1 runtime"
 else
     echo "    Tamponade (#17) not available in the bundled runtime" >&2
+fi
+echo "==> smoke check: --self-check in the bundled runtime"
+# Exercises every method's imports, so a module missing from the bundle
+# fails the build here instead of at the user's first --self-check.
+if ! "$LIB/venv/bin/python" "$LIB/repair.py" --self-check >&2; then
+    echo "error: --self-check failed in the AppImage runtime" >&2
+    exit 1
 fi
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'
