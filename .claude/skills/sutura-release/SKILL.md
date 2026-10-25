@@ -132,20 +132,24 @@ existing tools; do not install a new scanner for a release.
   ```
 
   It must print `pre-push security scan: clean`. It scans the diff for token
-  formats, `/home/` absolute paths outside `tests/`, and public IPv4
+  formats, absolute user-home paths outside `tests/`, and public IPv4
   addresses. The installed `.git/hooks/pre-push` runs the same check on every
   push and is the last line of defence, not a substitute for this run.
 - **Repository-wide path scan.** The hook is diff-only. From the release
   worktree, scan tracked files for host-specific and local-development paths:
 
   ```sh
-  git grep -nE '/Users/|/home/|/tmp/(scorecard|release-|bigrun|vqa-real)|Desktop/|Downloads/' \
-    -- ':!tests/' ':!scripts/pre-push-security-check.sh' \
-       ':!.claude/skills/sutura-release/SKILL.md' ':!docs/security-audit-2026-09.md'
+  : "${HOST_PATH_PATTERN:?set HOST_PATH_PATTERN to the local host-path pattern}"
+  git grep -nE "$HOST_PATH_PATTERN" -- ':!tests/' \
+    ':!scripts/pre-push-security-check.sh' \
+    ':!.claude/skills/sutura-release/SKILL.md' ':!docs/security-audit-2026-09.md'
   ```
 
-  It must return no matches. A legitimate hit is recorded with its path and
-  reason in the release note; an unexplained hit blocks the release.
+  The pattern is kept in the environment on purpose: put the macOS/Linux
+  user-home prefixes and local release-work paths in `HOST_PATH_PATTERN`,
+  never in this tracked file. It must return no matches. A legitimate hit is
+  recorded with its path and reason in the release note; an unexplained hit
+  blocks the release.
 - **Personal information.** The personal names and the place/workplace terms
   are deliberately not written in this file. Set the local pattern from the
   maintainer's notes and scan tracked files; the `LICENSE` copyright line is
@@ -153,7 +157,7 @@ existing tools; do not install a new scanner for a release.
 
   ```sh
   : "${PERSONAL_PATTERN:?set PERSONAL_PATTERN to the local name/place/workplace terms}"
-  git grep -n -I -i -E "$PERSONAL_PATTERN" -- . ':!LICENSE'
+  git grep -n -I -i -w -E "$PERSONAL_PATTERN" -- . ':!LICENSE'
   ```
 
   Check e-mail addresses separately and allow only `users.noreply.github.com`:
@@ -163,16 +167,16 @@ existing tools; do not install a new scanner for a release.
     | grep -v 'users\.noreply\.github\.com' || true
   ```
 
-  The historical `krateian@<hostname>.local` placeholder in
-  `docs/agents/workflow.md` is not a real address; record it as a false
-  positive or remove it only with the maintainer's approval. Every other hit
+  The historical local-identity placeholder in `docs/agents/workflow.md` is
+  not a real address; record it as a false positive or remove it only with the
+  maintainer's approval. Every other hit
   is either fixed in a separate comment-only commit or recorded with a reason.
 - **Private sample name.** The name is deliberately not written in this file.
   Set it from the maintainer's local notes and scan tracked files:
 
   ```sh
   : "${PRIVATE_SAMPLE:?set PRIVATE_SAMPLE to the local private sample name}"
-  git grep -nF -- "$PRIVATE_SAMPLE" -- ':!tests/' ':!docs/security-audit-2026-09.md'
+  git grep -n -I -F -- "$PRIVATE_SAMPLE" -- ':!tests/' ':!docs/security-audit-2026-09.md'
   ```
 
   It must return no matches. If the name is unavailable, record that the
