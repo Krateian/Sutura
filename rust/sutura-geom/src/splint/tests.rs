@@ -67,6 +67,14 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     assert_eq!(a.relabel_final_nm_edges, b.relabel_final_nm_edges);
     assert_eq!(a.relabel_flips, b.relabel_flips);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
+    // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
+    // init labels and the final cut labels. Deterministic only once the tet
+    // order is canonicalised after `delaunay3`.
+    assert_eq!(a.proxy_hash, b.proxy_hash);
+    assert_eq!(a.centroid_hash, b.centroid_hash);
+    assert_eq!(a.phi_hash, b.phi_hash);
+    assert_eq!(a.init_hash, b.init_hash);
+    assert_eq!(a.cut_inside_hash, b.cut_inside_hash);
     assert_eq!(a.out_manifold, b.out_manifold);
     assert_eq!(a.adaptive, b.adaptive);
     assert_eq!(a.adaptive_broad, b.adaptive_broad);
@@ -252,14 +260,12 @@ fn snap_f32_is_deterministic_and_world_exact() {
     }
 }
 
-// Root-caused blocker (spike notes 2026-10-26): `delaunay::delaunay3` returns
-// the Geogram BDEL cells in a nondeterministic ORDER (same set: `delaunay_hash`
-// is order-independent and matches, but `centroids`/`phi`/`is_inside` are
-// permuted run to run). The emitted surface is permutation-invariant, so the
-// base output is stable, but the greedy relabel tie-breaks on tet index and is
-// therefore not. Canonicalise the tet order first, then re-enable this.
+// `delaunay::delaunay3` returns the Geogram BDEL cells in a nondeterministic
+// ORDER (same set: `delaunay_hash` is order-independent and matches, but
+// `centroids`/`phi`/`is_inside` were permuted run to run). `run_pass` now
+// canonicalises the tet order right after `delaunay3`, so the index-tie-broken
+// greedy relabel is deterministic again.
 #[test]
-#[ignore = "blocked on nondeterministic delaunay3 tet order"]
 fn greedy_relabel_is_deterministic_and_non_increasing() {
     let (v, t) = cube();
     let mut o = SplintOpts::default();

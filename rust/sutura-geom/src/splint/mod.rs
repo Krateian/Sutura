@@ -144,7 +144,11 @@ fn run_pass(
     };
     let proxy = proxy::build(&bvh, res, normalizer.eps(), shell_map.as_deref(), broad)?;
     let t_delaunay = Instant::now();
-    let tets = delaunay::delaunay3(&proxy.verts)?;
+    // The Geogram engine emits the same cells in a nondeterministic order;
+    // canonicalise once here so every index-ordered downstream pass (min-cut
+    // tie-breaks, island BFS, greedy relabel) is a pure function of the input.
+    let mut tets = delaunay::delaunay3(&proxy.verts)?;
+    delaunay::canonicalize_tets(&mut tets);
     let secs_delaunay = t_delaunay.elapsed().as_secs_f64();
     let topo = tetra::build(&tets, &proxy.verts);
     let labels = label::label_tets(&bvh, &topo.centroids, &topo.out_tet, parallel);
