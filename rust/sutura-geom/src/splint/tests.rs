@@ -306,3 +306,47 @@ fn geodesic_flood_is_deterministic_and_single_part() {
         }
     }
 }
+
+#[test]
+fn bridge_is_deterministic_and_joins_the_two_basins() {
+    // A chain of four tets: tet 0 and tet 3 are the two inside basins, tets 1
+    // and 2 are the outside gap. The bridge must relabel the gap (path + ring)
+    // and leave every tet inside, deterministically.
+    let coords: Vec<[f64; 3]> = (0..16)
+        .map(|i| [i as f64, (i % 3) as f64, (i % 5) as f64])
+        .collect();
+    let internal: Vec<([usize; 3], usize, usize)> =
+        vec![([1, 2, 3], 0, 1), ([4, 5, 6], 1, 2), ([8, 9, 10], 2, 3)];
+    let out_tet = vec![false; 4];
+    let phi = vec![0.0, 0.5, 0.5, 0.0];
+
+    let mut a = vec![true, false, false, true];
+    let mut b = a.clone();
+    let add_a = super::cut::bridge_inside_basins(&coords, &internal, &out_tet, &phi, &mut a);
+    let add_b = super::cut::bridge_inside_basins(&coords, &internal, &out_tet, &phi, &mut b);
+    assert_eq!(add_a, add_b);
+    assert_eq!(a, b);
+    assert_eq!(add_a, 2);
+    assert_eq!(a, vec![true, true, true, true]);
+
+    // A single basin is a no-op.
+    let mut c = vec![true, true, true, true];
+    assert_eq!(
+        super::cut::bridge_inside_basins(&coords, &internal, &out_tet, &phi, &mut c),
+        0
+    );
+    assert_eq!(c, vec![true, true, true, true]);
+}
+
+#[test]
+fn geodesic_bridge_flag_follows_input_component_count() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.geodesic = true;
+    o.greedy_relabel = true;
+    o.geodesic_bridge = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    assert_eq!(a.report.input_comps, 1);
+    assert!(a.report.geodesic_bridge);
+    assert_eq!(a.report.output_parts, 1);
+}

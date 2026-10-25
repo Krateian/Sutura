@@ -1930,6 +1930,9 @@ fn splint_cut_py<'py>(
         if let Some(v) = d.get_item("geodesic")? {
             s_opts.geodesic = v.extract::<bool>()?;
         }
+        if let Some(v) = d.get_item("geodesic_bridge")? {
+            s_opts.geodesic_bridge = v.extract::<bool>()?;
+        }
     }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1997,6 +2000,11 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("geodesic", r.geodesic)?;
     d.set_item("geodesic_seeds", r.geodesic_seeds)?;
     d.set_item("geodesic_filled", r.geodesic_filled)?;
+    d.set_item("geodesic_bridge", r.geodesic_bridge)?;
+    d.set_item("bridge_added", r.bridge_added)?;
+    d.set_item("input_comps", r.input_comps)?;
+    d.set_item("geodesic_comps", r.geodesic_comps)?;
+    d.set_item("inside_comps", r.inside_comps)?;
     d.set_item("cut_inside_hash", r.cut_inside_hash)?;
     d.set_item("phi_hash", r.phi_hash)?;
     d.set_item("init_hash", r.init_hash)?;

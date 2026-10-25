@@ -59,6 +59,10 @@ pub(crate) struct SplintOpts {
     /// H6: replace the min-cut classification with a connected flood fill inside
     /// the closed proxy pillow, seeded by strong-interior tets.
     pub geodesic: bool,
+    /// H6b: after the geodesic flood, join the two largest inside basins with a
+    /// min-cost tet bridge. Only applied when the input is a single connected
+    /// component, so a genuinely separate input body is never merged.
+    pub geodesic_bridge: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +109,11 @@ pub(crate) struct SplintReport {
     pub geodesic: bool,
     pub geodesic_seeds: usize,
     pub geodesic_filled: usize,
+    pub geodesic_bridge: bool,
+    pub bridge_added: usize,
+    pub input_comps: usize,
+    pub geodesic_comps: usize,
+    pub inside_comps: usize,
     pub cut_inside_hash: u64,
     pub phi_hash: u64,
     pub init_hash: u64,
@@ -122,6 +131,39 @@ pub(crate) struct SplintOutput {
     pub verts: Vec<[f64; 3]>,
     pub tris: Vec<[usize; 3]>,
     pub report: SplintReport,
+}
+
+/// Number of edge-connected components of the input triangle soup (vertices are
+/// unioned through the triangles that reference them). Used to decide whether a
+/// multi-part output is a spurious split (input is one body) or a faithful copy
+/// of a genuinely separate input body. Deterministic: index order only.
+fn input_components(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> usize {
+    let n = verts.len();
+    if n == 0 {
+        return 0;
+    }
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..n).collect();
+    for t in tris {
+        let ra = find(&mut parent, t[0]);
+        for &v in &t[1..] {
+            let rv = find(&mut parent, v);
+            if ra != rv {
+                parent[rv] = ra;
+            }
+        }
+    }
+    let mut roots = std::collections::BTreeSet::new();
+    for t in tris {
+        roots.insert(find(&mut parent, t[0]));
+    }
+    roots.len()
 }
 
 fn run_pass(
@@ -201,10 +243,34 @@ fn run_pass(
             normalizer.scale(),
         );
         cut.is_inside = g.is_inside;
-        Some((g.seeds, g.filled))
+        Some((g.seeds, g.filled, g.comps))
     } else {
         None
     };
+    let input_comps = input_components(verts, tris);
+    let bridge_added = if geodesic_outcome.is_some() && opts.geodesic_bridge && input_comps == 1 {
+        // Accept the bridge only if it actually drops the number of emitted
+        // boundary components; otherwise keep the flood result.
+        let before = cut::boundary_part_count(&topo.internal, &cut.is_inside, proxy.verts.len());
+        let snapshot = cut.is_inside.clone();
+        let added = cut::bridge_inside_basins(
+            &proxy.verts,
+            &topo.internal,
+            &topo.out_tet,
+            &labels.phi,
+            &mut cut.is_inside,
+        );
+        let after = cut::boundary_part_count(&topo.internal, &cut.is_inside, proxy.verts.len());
+        if added > 0 && after < before {
+            added
+        } else {
+            cut.is_inside = snapshot;
+            0
+        }
+    } else {
+        0
+    };
+    let inside_comps = cut::inside_components(&topo.internal, &topo.out_tet, &cut.is_inside);
     let mut proxy_hash: u64 = 0xcbf29ce484222325;
     for p in &proxy.verts {
         for &x in p {
@@ -299,8 +365,13 @@ fn run_pass(
         relabel_final_nm_edges: relabel_outcome.as_ref().map_or(0, |r| r.final_nm_edges),
         relabel_flips: relabel_outcome.as_ref().map_or(0, |r| r.flips),
         geodesic: geodesic_outcome.is_some(),
-        geodesic_seeds: geodesic_outcome.map_or(0, |(s, _)| s),
-        geodesic_filled: geodesic_outcome.map_or(0, |(_, f)| f),
+        geodesic_seeds: geodesic_outcome.map_or(0, |(s, _, _)| s),
+        geodesic_filled: geodesic_outcome.map_or(0, |(_, f, _)| f),
+        geodesic_bridge: geodesic_outcome.is_some() && opts.geodesic_bridge && input_comps == 1,
+        bridge_added,
+        input_comps,
+        geodesic_comps: geodesic_outcome.map_or(0, |(_, _, c)| c),
+        inside_comps,
         cut_inside_hash,
         phi_hash,
         init_hash,

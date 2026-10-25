@@ -3,7 +3,8 @@
 
 //! Min s-t cut and the fix-A signed-field island cleanup.
 
-use std::collections::VecDeque;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, VecDeque};
 
 use crate::mincut::BkGraph;
 
@@ -138,6 +139,81 @@ pub(crate) struct GeodesicResult {
     pub(crate) is_inside: Vec<bool>,
     pub(crate) seeds: usize,
     pub(crate) filled: usize,
+    pub(crate) comps: usize,
+}
+
+/// Number of vertex-connected components of the emitted boundary facets (the
+/// tet-domain equivalent of `output_parts`, without materialising the mesh).
+/// `n_verts` is the proxy vertex count. Deterministic index order.
+pub(crate) fn boundary_part_count(
+    internal: &[([usize; 3], usize, usize)],
+    is_inside: &[bool],
+    n_verts: usize,
+) -> usize {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..n_verts).collect();
+    let mut touched: Vec<usize> = Vec::new();
+    for (key, a, b) in internal {
+        if is_inside[*a] == is_inside[*b] {
+            continue;
+        }
+        let r0 = find(&mut parent, key[0]);
+        for &v in &key[1..] {
+            let rv = find(&mut parent, v);
+            if r0 != rv {
+                parent[rv] = r0;
+            }
+        }
+        touched.extend_from_slice(key);
+    }
+    let mut roots = std::collections::BTreeSet::new();
+    for v in touched {
+        roots.insert(find(&mut parent, v));
+    }
+    roots.len()
+}
+
+/// Number of connected components of the inside set over shared internal facets
+/// (diagnostic; deterministic index order).
+pub(crate) fn inside_components(
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    is_inside: &[bool],
+) -> usize {
+    let n = is_inside.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (_, a, b) in internal {
+        if out_tet[*a] || out_tet[*b] {
+            continue;
+        }
+        adj[*a].push(*b);
+        adj[*b].push(*a);
+    }
+    let mut seen = vec![false; n];
+    let mut comps = 0usize;
+    let mut stack: Vec<usize> = Vec::new();
+    for s in 0..n {
+        if is_inside[s] && !seen[s] {
+            comps += 1;
+            seen[s] = true;
+            stack.push(s);
+            while let Some(c) = stack.pop() {
+                for &nb in &adj[c] {
+                    if is_inside[nb] && !seen[nb] {
+                        seen[nb] = true;
+                        stack.push(nb);
+                    }
+                }
+            }
+        }
+    }
+    comps
 }
 
 fn tet_volumes(tets: &[[usize; 4]], coords: &[[f64; 3]], scale: f64) -> Vec<f64> {
@@ -204,11 +280,161 @@ pub(crate) fn geodesic_flood(
     let tet_vol = tet_volumes(tets, coords, scale);
     cleanup_islands(&mut is_inside, phi, &adj, out_tet, tau, &tet_vol);
     let filled = is_inside.iter().filter(|&&b| b).count();
+    let comps = inside_components(internal, out_tet, &is_inside);
     GeodesicResult {
         is_inside,
         seeds,
         filled,
+        comps,
     }
+}
+
+/// Min-heap key: (cost, tet index), with the tet index breaking every tie so the
+/// search order — and hence the reconstructed path — is a pure function of the
+/// input mesh and `res`.
+struct HeapItem {
+    cost: f64,
+    node: usize,
+}
+
+impl PartialEq for HeapItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost == other.cost && self.node == other.node
+    }
+}
+impl Eq for HeapItem {}
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reversed so `BinaryHeap` (a max-heap) pops the smallest cost first.
+        other
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| other.node.cmp(&self.node))
+    }
+}
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// H6 bridge: when the pillow flood leaves the interior split into two basins
+/// (e.g. the two walls of a thin shell), join the two largest basins with a
+/// minimum-cost path of tets, so the emitted surface is one solid.
+///
+/// Deterministic Dijkstra over tet face adjacency (non-hull tets only), source =
+/// every tet of the smaller basin, target = any tet of the larger basin, entering
+/// tet `j` across a shared facet of area `A` costing `|phi[j]| + A`. The path
+/// plus its face 1-ring (for thickness) is relabelled inside. Returns the number
+/// of tets newly labelled inside. `allowed` is unused for the path (the pillow is
+/// the geometric barrier) but kept for symmetry with the flood.
+pub(crate) fn bridge_inside_basins(
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    phi: &[f64],
+    is_inside: &mut [bool],
+) -> usize {
+    let n = is_inside.len();
+    let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for (key, a, b) in internal {
+        if out_tet[*a] || out_tet[*b] {
+            continue;
+        }
+        let area = tri_area(coords[key[0]], coords[key[1]], coords[key[2]]);
+        adj[*a].push((*b, area));
+        adj[*b].push((*a, area));
+    }
+
+    // Same-label connected components of the current inside set.
+    let mut comp = vec![usize::MAX; n];
+    let mut comps: Vec<Vec<usize>> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for s in 0..n {
+        if is_inside[s] && comp[s] == usize::MAX {
+            let id = comps.len();
+            let mut members = Vec::new();
+            comp[s] = id;
+            stack.push(s);
+            while let Some(c) = stack.pop() {
+                members.push(c);
+                for &(nb, _) in &adj[c] {
+                    if is_inside[nb] && comp[nb] == usize::MAX {
+                        comp[nb] = id;
+                        stack.push(nb);
+                    }
+                }
+            }
+            members.sort_unstable();
+            comps.push(members);
+        }
+    }
+    if comps.len() < 2 {
+        return 0;
+    }
+    // Two largest basins; ties broken by smallest member index.
+    comps.sort_by(|a, b| (b.len(), a[0]).cmp(&(a.len(), b[0])));
+    let big = &comps[0];
+    let small = &comps[1];
+    let big_id = comp[big[0]];
+
+    let mut dist = vec![f64::INFINITY; n];
+    let mut par = vec![usize::MAX; n];
+    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+    for &s in small {
+        dist[s] = 0.0;
+        heap.push(HeapItem { cost: 0.0, node: s });
+    }
+    let mut target: Option<usize> = None;
+    while let Some(HeapItem { cost, node }) = heap.pop() {
+        if cost > dist[node] {
+            continue;
+        }
+        if comp[node] == big_id {
+            target = Some(node);
+            break;
+        }
+        for &(nb, area) in &adj[node] {
+            let step = cost + phi[nb].abs() + area;
+            if step < dist[nb] {
+                dist[nb] = step;
+                par[nb] = node;
+                heap.push(HeapItem { cost: step, node: nb });
+            }
+        }
+    }
+    let Some(mut node) = target else {
+        return 0;
+    };
+
+    // Reconstruct the path (target back to the small basin).
+    let mut path: Vec<usize> = Vec::new();
+    loop {
+        path.push(node);
+        if par[node] == usize::MAX {
+            break;
+        }
+        node = par[node];
+    }
+    path.sort_unstable();
+
+    // Path plus its face 1-ring (thickness).
+    let mut add = path.clone();
+    for &p in &path {
+        for &(nb, _) in &adj[p] {
+            add.push(nb);
+        }
+    }
+    add.sort_unstable();
+    add.dedup();
+    let mut added = 0usize;
+    for &ti in &add {
+        if !is_inside[ti] {
+            is_inside[ti] = true;
+            added += 1;
+        }
+    }
+    added
 }
 
 pub(crate) fn cut_and_cleanup(
