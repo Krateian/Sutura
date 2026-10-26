@@ -1173,3 +1173,78 @@ area but lie on the proxy-offset boundary, and 49 of 198 PLC pieces are not on
 the cut.  This is a labelling/offset gap, not a CDT or B5 failure.  Per the
 lead decision, B stays parked and is reopened only on a new decision; no
 threshold/dent tuning was done.
+
+## 2026-10-26 — fTetWild baseline and fixed 2*eps unary band
+
+Baseline method: shipped `pytetwild==0.4.2` bridge (`ftetwild_bridge.run_bridge`,
+default `optimize=False`) run on the same 8 inputs; outputs f32-welded and
+measured with the same Rust metrics (`snap_compact`, `output_parts`,
+`boundary_topology`, `mesh_is_manifold`, `aabb`, `hausdorff`).  fTetWild has no
+cap class, so its shape metrics use the full boundary; CDT shape metrics use
+the PLC faces only (caps excluded).  Local outputs are in
+`/tmp/opencode/ftw-baseline/`; the ignored `ftetwild_baseline_diagnostic`
+reads them via `CDT3D_FTETWILD_DIR`.
+
+fTetWild baseline:
+
+| mesh | parts | holes | NM | bbox_ok | bbox_err | o2i | i2o | h |
+|---|---:|---:|---:|---|---:|---:|---:|---:|
+| 100827 | 1 | 0 | 0 | true | 0 | 0.000001 | 0.000001 | 0.000001 |
+| case1_open_cup | 1 | 6 | 1 | true | 0 | 1.368152 | 0 | 1.368152 |
+| case2_pipe | 1 | 0 | 0 | true | 0 | 10.935481 | 0 | 10.935481 |
+| case3_broken_cup | 1 | 7 | 1 | true | 0.206400 | 2.892546 | 0 | 2.892546 |
+| case4_cracked_sphere | 1 | 0 | 0 | true | 0 | 4.189919 | 0.015625 | 4.189919 |
+| case5_box_missing_face | 1 | 0 | 0 | false | 1.732050 | 10.148891 | 0 | 10.148891 |
+| case6_thin_cup | 1 | 0 | 0 | false | 2.598076 | 15.152173 | 0.000001 | 15.152173 |
+| plate_a_dent | 1 | 11 | 1 | true | 0 | 1.000000 | 1.274534 | 1.274534 |
+
+Fixed band: in `h7_proxy_phi`, the H7 signed UDF `phi` is zeroed when
+`|phi| < 2 * normalizer.eps()`; outside the band the unary is unchanged.  One
+deterministic deepest-raw-inside anchor is used only if the band leaves no
+negative unary at all.  No sweep; factor fixed at 2.
+
+100827 after the band: **1/198 PLC pieces on the cut**, 3 free caps, output 4
+faces, cap area 8.461, parts 1, holes 0, NM 0, **bbox false** (error
+`[11.75, 11.5, 21.67]`), o2i 0, i2o **16.724898**, h **16.724898**,
+valid false, hash `f1bf99c592d7c77f`.  Target 198/198 is not met.
+
+All eight after the band:
+
+| mesh | PLC pieces | caps | parts | holes | NM | bbox_ok | h |
+|---|---:|---:|---:|---:|---:|---|---:|
+| 100827 | 1 | 3 | 1 | 0 | 0 | false | 16.724898 |
+| case1 | 1 | 3 | 1 | 0 | 0 | false | 34.588723 |
+| case2 | 1 | 2 | 1 | 0 | 0 | false | 34.595515 |
+| case3 | 1 | 2 | 1 | 0 | 0 | false | 35.188963 |
+| case4 | 1 | 2 | 1 | 0 | 0 | false | 39.670180 |
+| case5 | — | — | — | — | — | — | typed error: trivial labelling |
+| case6 | 1 | 2 | 1 | 0 | 0 | false | 33.444209 |
+| plate | 1 | 4 | 1 | 0 | 0 | false | inf |
+
+Why the band failed here: the H7 signed distance to the offset proxy shell is
+within `2*eps` for **every** negative (inside) tet on these meshes.  Zeroing the
+band therefore removes all confident inside unary, not just the near-surface
+band.  The single deterministic anchor has no unary gradient to expand against,
+so the min-cut stays at the anchor and emits 1 PLC piece.  This is a factual
+result of the fixed factor 2; no tuning was attempted.  For reference, the
+pre-band run had 149/198 PLC pieces and 0.269582 mm on 100827 (still above the
+0.0125 bar).
+
+Gate comparison ("CDT no worse than fTetWild on every metric"): **FAIL**.
+100827 is decisive: fTetWild 1/0/0, bbox OK, h≈1e-6, while the banded CDT is
+1 PLC piece, bbox false, h=16.72.  Plate is also worse on h (inf vs 1.2745);
+case5 is a typed error vs fTetWild 1/0/0 (bbox false, h=10.15); case3 is
+1/0/0 but h=35.19 and bbox false vs fTetWild 1/7/1, bbox OK, h=2.89.  The
+strict "no worse" gate cannot pass with the band as specified.
+
+Determinism after the band: 5 in-process runs pass; two cargo processes print
+identical hash `f1bf99c592d7c77f` (only `secs` differs).  `cargo test
+--release`: **395 passed, 0 failed, 9 ignored**.  Corpus diagnostic time after
+the band: 219.95 s; the earlier path's measured max RSS was 1.42 GB.
+
+No case5/case3 root-cause work was started: the 100827 baseline already fails
+the no-worse gate by 7 orders of magnitude, so per the lead instruction they
+are not the next bottleneck.  A decision is needed on the band definition
+(e.g. band in raw offset units vs normalized grid eps) or on the proxy/label
+strategy; the current fixed `2*eps` rule is implemented and recorded as
+failing.

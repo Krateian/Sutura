@@ -79,6 +79,9 @@ pub struct SolidReport {
     pub hausdorff_output_to_input: f64,
     pub hausdorff_input_to_output: f64,
     pub hausdorff: f64,
+    pub hausdorff_output_to_input_full: f64,
+    pub hausdorff_input_to_output_full: f64,
+    pub hausdorff_full: f64,
     pub valid: bool,
     pub hash: u64,
 }
@@ -196,7 +199,8 @@ fn hausdorff(
     output_bvh: &MeshBvh,
     output_verts: &[[f64; 3]],
     output_tris: &[[usize; 3]],
-    plc: &Plc,
+    input_verts: &[[f64; 3]],
+    input_tris: &[[usize; 3]],
 ) -> (f64, f64) {
     let mut o2i = 0.0f64;
     for p in output_verts {
@@ -211,14 +215,14 @@ fn hausdorff(
         o2i = o2i.max(input_bvh.unsigned_distance_at(c));
     }
     let mut i2o = 0.0f64;
-    for v in &plc.verts {
+    for v in input_verts {
         i2o = i2o.max(output_bvh.unsigned_distance_at(*v));
     }
-    for t in &plc.tris {
+    for t in input_tris {
         let c = [
-            (plc.verts[t[0]][0] + plc.verts[t[1]][0] + plc.verts[t[2]][0]) / 3.0,
-            (plc.verts[t[0]][1] + plc.verts[t[1]][1] + plc.verts[t[2]][1]) / 3.0,
-            (plc.verts[t[0]][2] + plc.verts[t[1]][2] + plc.verts[t[2]][2]) / 3.0,
+            (input_verts[t[0]][0] + input_verts[t[1]][0] + input_verts[t[2]][0]) / 3.0,
+            (input_verts[t[0]][1] + input_verts[t[1]][1] + input_verts[t[2]][1]) / 3.0,
+            (input_verts[t[0]][2] + input_verts[t[1]][2] + input_verts[t[2]][2]) / 3.0,
         ];
         i2o = i2o.max(output_bvh.unsigned_distance_at(c));
     }
@@ -241,10 +245,28 @@ fn h7_proxy_phi(
     }
     let shell_bvh = MeshBvh::from_arrays(&proxy.verts[..proxy.shell_len], &proxy.shell_tris);
     let ncentroids: Vec<[f64; 3]> = centroids.iter().map(|p| normalizer.norm(*p)).collect();
-    let labels = label_tets(&shell_bvh, &ncentroids, out, false);
+    let raw_phi = label_tets(&shell_bvh, &ncentroids, out, false).phi;
+    let band = 2.0 * normalizer.eps();
+    let mut phi = raw_phi.clone();
+    for p in &mut phi {
+        if p.abs() < band {
+            *p = 0.0;
+        }
+    }
+    if !phi.iter().any(|&p| p < 0.0) {
+        if let Some(i) = raw_phi
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| **p < 0.0)
+            .min_by(|(ia, a), (ib, b)| a.partial_cmp(b).unwrap().then(ia.cmp(ib)))
+            .map(|(i, _)| i)
+        {
+            phi[i] = -1.0;
+        }
+    }
     let h5_tol = 4.0 * proxy.voxel / normalizer.scale();
     Ok((
-        labels.phi,
+        phi,
         proxy.shell_len,
         proxy.shell_tris.len(),
         h5_tol,
@@ -550,6 +572,29 @@ struct SolidMeta {
     contracted: bool,
 }
 
+fn snap_compact(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    let (raw, snapped) = snap_and_dedup_f32(verts, tris);
+    let mut remap = vec![usize::MAX; raw.len()];
+    let mut out_v: Vec<[f64; 3]> = Vec::new();
+    let mut out_t: Vec<[usize; 3]> = Vec::with_capacity(snapped.len());
+    for t in &snapped {
+        let mut nt = [0usize; 3];
+        for k in 0..3 {
+            let v = t[k];
+            if remap[v] == usize::MAX {
+                remap[v] = out_v.len();
+                out_v.push(raw[v]);
+            }
+            nt[k] = remap[v];
+        }
+        out_t.push(nt);
+    }
+    (out_v, out_t)
+}
+
 fn finish_solid(
     points: &[Point3],
     plc: &Plc,
@@ -604,22 +649,7 @@ fn finish_solid(
     };
     let (em, _h5_moved) =
         crate::splint::emit::project_emitted(em, unary_verts, unary_tris, h5_tol);
-    let (raw_verts, snapped) = snap_and_dedup_f32(&em.verts, &em.tris);
-    let mut remap = vec![usize::MAX; raw_verts.len()];
-    let mut out_verts: Vec<[f64; 3]> = Vec::new();
-    let mut tris: Vec<[usize; 3]> = Vec::with_capacity(snapped.len());
-    for t in &snapped {
-        let mut nt = [0usize; 3];
-        for k in 0..3 {
-            let v = t[k];
-            if remap[v] == usize::MAX {
-                remap[v] = out_verts.len();
-                out_verts.push(raw_verts[v]);
-            }
-            nt[k] = remap[v];
-        }
-        tris.push(nt);
-    }
+    let (out_verts, tris) = snap_compact(&em.verts, &em.tris);
     let snapped_u32: Vec<[u32; 3]> = tris
         .iter()
         .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
@@ -637,7 +667,7 @@ fn finish_solid(
             .map(|b| b.loops.len())
             .unwrap_or(0)
     };
-    let (ilo, ihi) = aabb(&plc.verts);
+    let (ilo, ihi) = aabb(unary_verts);
     let (olo, ohi) = aabb(&out_verts);
     let mut bbox_error = [0.0f64; 3];
     let mut bbox_ok = true;
@@ -651,16 +681,27 @@ fn finish_solid(
         }
     }
 
-    let input_bvh = MeshBvh::from_arrays(&plc.verts, &plc.tris);
-    let output_bvh = MeshBvh::from_arrays(&out_verts, &tris);
+    let input_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
+    let (shape_v, shape_t) = snap_compact(&all_verts, &plc_faces);
+    let shape_bvh = MeshBvh::from_arrays(&shape_v, &shape_t);
     let (o2i, i2o) = hausdorff(
         &input_bvh,
-        &output_bvh,
-        &out_verts,
-        &tris,
-        plc,
+        &shape_bvh,
+        &shape_v,
+        &shape_t,
+        unary_verts,
+        unary_tris,
     );
     let haus = o2i.max(i2o);
+    let full_bvh = MeshBvh::from_arrays(&out_verts, &tris);
+    let (fo2i, fi2o) = hausdorff(
+        &input_bvh,
+        &full_bvh,
+        &out_verts,
+        &tris,
+        unary_verts,
+        unary_tris,
+    );
 
     let mut report = SolidReport {
         cells: meta.cells,
@@ -688,6 +729,9 @@ fn finish_solid(
         hausdorff_output_to_input: o2i,
         hausdorff_input_to_output: i2o,
         hausdorff: haus,
+        hausdorff_output_to_input_full: fo2i,
+        hausdorff_input_to_output_full: fi2o,
+        hausdorff_full: fo2i.max(fi2o),
         valid: false,
         hash: hash_output(&out_verts, &tris),
     };
@@ -938,6 +982,111 @@ mod tests {
             let again = build_solid(&face, &plc, &uv, &ut, &SolidOptions::default()).unwrap();
             assert_eq!(again.report.hash, first.report.hash);
             assert_eq!(again.tris, first.tris);
+        }
+    }
+
+    fn read_obj(path: &str) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+        let data = std::fs::read_to_string(path).expect("read OBJ");
+        let mut verts = Vec::new();
+        let mut tris = Vec::new();
+        for line in data.lines() {
+            let mut it = line.split_whitespace();
+            match it.next() {
+                Some("v") => {
+                    let x: f64 = it.next().unwrap().parse().unwrap();
+                    let y: f64 = it.next().unwrap().parse().unwrap();
+                    let z: f64 = it.next().unwrap().parse().unwrap();
+                    verts.push([x, y, z]);
+                }
+                Some("f") => {
+                    let mut idx = [0usize; 3];
+                    for k in 0..3 {
+                        let tok = it.next().unwrap();
+                        idx[k] = tok.split('/').next().unwrap().parse::<usize>().unwrap() - 1;
+                    }
+                    tris.push(idx);
+                }
+                _ => {}
+            }
+        }
+        (verts, tris)
+    }
+
+    fn ftw_metrics(
+        name: &str,
+        input_v: &[[f64; 3]],
+        input_t: &[[usize; 3]],
+        out_v: &[[f64; 3]],
+        out_t: &[[usize; 3]],
+    ) -> (usize, usize, usize, [f64; 3], bool, f64, f64, f64) {
+        let (v, t) = snap_compact(out_v, out_t);
+        let u32t: Vec<[u32; 3]> = t
+            .iter()
+            .map(|x| [x[0] as u32, x[1] as u32, x[2] as u32])
+            .collect();
+        let nm = if mesh_is_manifold(&v, &u32t) { 0 } else { 1 };
+        let parts = output_parts(&v, &t);
+        let holes = if t.is_empty() {
+            0
+        } else {
+            let si: Vec<[i64; 3]> = t
+                .iter()
+                .map(|x| [x[0] as i64, x[1] as i64, x[2] as i64])
+                .collect();
+            boundary_topology(&si, false)
+                .map(|b| b.loops.len())
+                .unwrap_or(0)
+        };
+        let (ilo, ihi) = aabb(input_v);
+        let (olo, ohi) = aabb(&v);
+        let mut berr = [0.0f64; 3];
+        let mut bok = true;
+        for a in 0..3 {
+            let ie = ihi[a] - ilo[a];
+            let oe = ohi[a] - olo[a];
+            berr[a] = (oe - ie).abs();
+            if berr[a] > 0.01 * ie.abs().max(1e-12) + 1e-9 {
+                bok = false;
+            }
+        }
+        let ib = MeshBvh::from_arrays(input_v, input_t);
+        let ob = MeshBvh::from_arrays(&v, &t);
+        let (o2i, i2o) = hausdorff(&ib, &ob, &v, &t, input_v, input_t);
+        let h = o2i.max(i2o);
+        println!(
+            "FTW {name}: parts={parts} holes={holes} nm={nm} bbox_ok={bok} bbox={berr:?} o2i={o2i:.6} i2o={i2o:.6} h={h:.6}"
+        );
+        (parts, holes, nm, berr, bok, o2i, i2o, h)
+    }
+
+    #[test]
+    #[ignore = "fTetWild baseline; requires /tmp/opencode/ftw-baseline or CDT3D_FTETWILD_DIR"]
+    fn ftetwild_baseline_diagnostic() {
+        let dir = std::env::var("CDT3D_FTETWILD_DIR")
+            .unwrap_or_else(|_| "/tmp/opencode/ftw-baseline".into());
+        let samples = [
+            ("real", "thingi10k_100827.stl", "thingi10k_100827.stl.obj"),
+            ("fixture", "case1_open_cup.stl", "case1_open_cup.stl.obj"),
+            ("fixture", "case2_pipe.stl", "case2_pipe.stl.obj"),
+            ("fixture", "case3_broken_cup.stl", "case3_broken_cup.stl.obj"),
+            ("fixture", "case4_cracked_sphere.stl", "case4_cracked_sphere.stl.obj"),
+            ("fixture", "case5_box_missing_face.stl", "case5_box_missing_face.stl.obj"),
+            ("fixture", "case6_thin_cup.stl", "case6_thin_cup.stl.obj"),
+            ("fixture", "plate_a_dent.stl", "plate_a_dent.stl.obj"),
+        ];
+        for (kind, name, obj) in samples {
+            let (iv, it) = if kind == "real" {
+                real_sample(name)
+            } else {
+                fixture(name)
+            };
+            let path = format!("{dir}/{obj}");
+            if !std::path::Path::new(&path).exists() {
+                println!("FTW {name}: missing {path}");
+                continue;
+            }
+            let (ov, ot) = read_obj(&path);
+            let _ = ftw_metrics(name, &iv, &it, &ov, &ot);
         }
     }
 
