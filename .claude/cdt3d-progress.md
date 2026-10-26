@@ -492,3 +492,92 @@ Decisions on F4–F8:
 
 `cargo test --release` after F1–F3: see the next full run.  The P3 corpus
 hashes and counts are unchanged.
+
+## 2026-10-26 — P4.2/P4.3 investigation: face-recovery gate not yet met
+
+This entry records a negative result and a clean handoff.  The P4.1 commit
+(`9f78429`) remains the last working face-recovery state: it detects missing
+faces exactly, replaces a cavity when a local Delaunay of the two half-vertex
+sets verifies, and otherwise leaves the face missing.  The full P4 gate
+(`missing_constraints = 0`) is **not met**.  No experimental code from this
+investigation is committed.
+
+Starting point (P4.1, release): 100827 11 missing before -> 9 after (2 cavities
+recovered); the other six small fixtures 0 recovered each; `plate_a_dent` 8
+missing before -> 8 after.  Structural checks remain zero and the P3 hash is
+unchanged.
+
+What was tried, in order, with the observed reason each failed:
+
+1. **Local Delaunay with the crate's own exact symbolic-perturbation
+   Bowyer--Watson insertion** (instead of Geogram for the local point set),
+   with a far synthetic seed box.  Result: the same two cavities only.  The
+   two half-Delaunays are not guaranteed to contain the cavity boundary
+   triangles, and they can disagree on the plane; SoS alone does not fix it.
+2. **Cavity expansion** when a half-cavity boundary triangle is absent from its
+   local Delaunay, adding the opposite original tet.  Result: for 100827 the
+   cavity grows layer by layer to the synthetic box; the hull boundary faces of
+   the half then cannot be represented because the half vertex set excludes the
+   other side of the face.  This is the paper's crossing-plane expansion gap
+   (Fig. 4), not a numerical failure.  `expansions` never produced a verified
+   replacement.
+3. **Boundary-star cavity** (add tets incident to the face's recovered edge
+   chains).  This ensures the face vertices are in the cavity (without it the
+   local sets can miss a face corner entirely, e.g. cavity 3 tets with only two
+   of the three face vertices).  Result: cavities grow from 3-14 tets to 28-64
+   and the same expansion-to-hull failure appears; `case3_broken_cup` becomes
+   noticeably slower.
+4. **Exact face centroid** (`Point3::Centroid3`, equal weights 1/3) added to
+   both half vertex sets.  This proves the face plane can be triangulated
+   consistently, but the two sides still produce different boundary faces at
+   the face boundary, and the centroid is ignored by the local Delaunay unless
+   the face corners are already cavity vertices.  The kernel change was
+   reverted; it is not committed.
+5. **Line-plane intersection (LPI) points** where cavity boundary edges cross
+   the face plane, inserted into the global mesh through the exact P3
+   insertion path.  This makes the half split geometrically valid in principle
+   but is fragile: inserting the points one by one on existing edges produced
+   `non-manifold face ... incident to 3 tetrahedra` and the 100827 test took
+   166-235 s before aborting.  It was reverted.
+6. **Membrane star fill** with a 2D CDT of the face as a fixed interface and one
+   interior apex per side (apex = centroid of a side tet).  This is the closest
+   approach: for many 100827 faces the star covers all boundary and interface
+   triangles, but verification fails on a small "collar" around the face
+   boundary.  Faces such as `[0,1,apex]` or `[1,3,apex]` end up with either one
+   or three incidences: the upper boundary star, the upper interface fan and a
+   naive bridge tet all meet on the same boundary edge.  A correct collar needs
+   real tets joining the two apexes to the boundary-chain vertices, not a single
+   bridge per edge.  `membrane_fills = 0`; reverted.
+
+Root cause (for the next attempt): the cavity boundary contains triangles that
+cross the plane of the missing face **outside** the PLC triangle.  A half split
+by the infinite plane therefore cuts those triangles; the paper handles this
+with the modified gift-wrapping and a coherent shared triangulation, not with
+the plain local Delaunay/expansion.  The membrane experiment shows the fixed
+2D-CDT interface is the right shared surface; what is missing is the collar
+tetrahedralization around the face boundary and the exact visibility/validity
+checks of the paper's Section 4.4 / Appendix B.
+
+Concrete next step (P4.2): keep the 2D-CDT interface, build the two half-cavity
+fronts as `boundary faces + interface triangles`, and implement the paper's
+modified gift-wrapping (conditions i-iii, exact `orient3d`/`insphere` and the
+global-index SoS) for each half, including the collar.  If that still fails,
+fall back to the geometric plane cut with LPI points inserted as a **batch**
+into the cavity only (not one-by-one into the global mesh) and re-validate the
+whole mesh after the batch.
+
+Review round 2 (`/Users/krateian/Sutura/.claude/cdt3d-review-2.md`) closed F1,
+F2 and F3 and agreed with the F4-F8 decisions.  Two cheap hardening items were
+folded in as `10ae897` ("cdt3d: harden coplanar and collinear split tests
+(review 2)"):
+- the coplanar test now drives a full `insert_point` and asserts positive tets,
+  reciprocal neighbours, an empty-sphere local Delaunay result, and that the
+  inserted point is used;
+- a synthetic collinear-vertex test confirms the missing-subsegment path
+  terminates and reports `reused_points >= 1`.
+
+`cargo test --release` after `10ae897`: **384 passed, 0 failed, 6 ignored**.
+
+Status: P0-P3 and the P4.0/P4.1 face stages are on `spike/cdt3d`; P4.2/P4.3
+(gift-wrapping and the collar) are open and the P4 gate is not claimed.  The
+working tree is clean; no push, no merge, no version bump.
