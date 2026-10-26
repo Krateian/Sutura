@@ -121,7 +121,10 @@ echo "==> smoke check: fTetWild (#7) available in the bundled runtime"
 if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
         | awk '$1==7 && $4=="yes" {ok=1} END {exit !ok}'; then
     echo "error: fTetWild (#7) is not reported available in the AppImage runtime:" >&2
-    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null >&2 || true
+    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods >&2 2>&1 || true
+    echo "--- pytetwild import diagnostics:" >&2
+    (cd "$LIB" && "$LIB/venv/bin/python" -c "import ftetwild_bridge as b; print(b._import_pytetwild())") >&2 2>&1 || true
+    "$LIB/venv/bin/python" -m pip show pytetwild >&2 2>&1 || true
     exit 1
 fi
 echo "    fTetWild (#7) available in the bundled runtime"

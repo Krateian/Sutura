@@ -337,6 +337,10 @@ def test_bridge_imports_pytetwild_without_pyvista():
     """The tier must not need PyVista/VTK: pytetwild's optional PyVista accessor
     is stubbed, so importing the tier still works when both are absent."""
     import builtins
+    import importlib.util
+    if importlib.util.find_spec('pytetwild') is None:
+        print('    (pytetwild not installed in this environment: import check skipped)')
+        return
     import ftetwild_bridge
 
     real_import = builtins.__import__
