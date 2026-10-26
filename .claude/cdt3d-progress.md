@@ -94,3 +94,42 @@ Status: P0 complete and gated. P1 (exact LNC point, implicit
 `orient3d`/`inSphere`, rational fallback, symbolic perturbation) is next.
 Handoff point: any fresh session can resume from this file and commit
 `2ed5fbd`.
+
+## 2026-10-26 — P1 exact kernel implemented and gated
+
+What was done:
+- `point.rs`: added `Point3::Lnc { a, b, t }` (`t*a + (1-t)*b`) with exact
+  `to_rational`, rational reference, homogeneous `(lambda,d)=(p,1)`, interval
+  enclosure, and approximate `to_f64`.  The exact path uses the rational
+  `1-t`, so the point is exactly on the segment.
+- `triangle_intersection.rs`: canonical LNC key (tag 3; endpoint order is
+  normalised by swapping `a/b` and replacing `t` with `1-t`).
+- `interval.rs`: added rigorous `det5` (cofactor expansion via `det4`).
+- `predicates3d.rs`: added `insphere_sign`:
+  - all-explicit -> `robust::insphere`, normalised to +/-1/0;
+  - implicit -> homogeneous 5x5 interval filter, then exact rational 5x5
+    determinant by deterministic exact Gaussian elimination;
+  - added `insphere_exact_sign` (test/reference) and
+    `insphere_sign_perturbed` implementing the published index-sort +
+    orient3d symbolic-perturbation rule.
+- Calibrated the homogeneous determinant against `robust` on 500 random
+  explicit 5-tuples: signs agree exactly.  The 5x5 row form
+  `[d*lambda, |lambda|^2, d^2]` is positive-inside for a positively oriented
+  tet (verified on the regular tetrahedron).
+- Differential tests:
+  - 800 random mixed explicit/LNC in-sphere tuples: filter never contradicts
+    the exact rational sign; the full predicate matches the exact sign.
+  - 3000 random mixed explicit/LPI/PPI/LNC orient3d tuples: the existing
+    filter/exact test now includes LNC and passes.
+  - near-degenerate cospherical five-tuple: unperturbed exact/robust zero,
+    one-ulp inward move classified identically by filter/exact/robust.
+  - symbolic perturbation: deterministic, even permutation of the first four
+    points preserves sign, odd permutation flips it.
+  - `det5` interval test against an exact rational determinant (100 random
+    5x5 matrices).
+- `cargo test --release`: **364 passed, 0 failed, 2 ignored**.
+- Default path unchanged: the new enum variant, predicates and `det5` are not
+  called by the existing arrangement/Splint paths.
+
+Next step: P2 (initial Delaunay + tet/neighbour structure + canonicalisation,
+box/ghost handling, exact validity checks).  Handoff point: P0 + P1 complete.

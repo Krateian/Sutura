@@ -133,6 +133,21 @@ impl Point3 {
                 }
                 out
             }
+            Point3::Lnc { a, b, t } => {
+                let ka = key3(a);
+                let kb = key3(b);
+                let mut out = vec![3]; // tag for LNC
+                if ka == kb {
+                    out.extend_from_slice(&ka);
+                    out.push(0);
+                    return out;
+                }
+                let (lo, hi, t2) = if ka <= kb { (ka, kb, t) } else { (kb, ka, 1.0 - t) };
+                out.extend_from_slice(&lo);
+                out.extend_from_slice(&hi);
+                out.push(if t2 == 0.0 { 0 } else { t2.to_bits() });
+                out
+            }
         }
     }
 

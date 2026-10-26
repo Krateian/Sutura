@@ -39,6 +39,10 @@ pub enum Point3 {
         s3: [f64; 3],
         t3: [f64; 3],
     },
+    /// Linear combination `t * a + (1 - t) * b`, where `t` is an exact
+    /// `f64`.  This is the Steiner point type used by the CDT segment
+    /// recovery: the point is exactly on the segment `a--b` by construction.
+    Lnc { a: [f64; 3], b: [f64; 3], t: f64 },
 }
 
 impl Point3 {
@@ -83,6 +87,14 @@ impl Point3 {
                 }
                 let n = add(add(scale(n2xn3, d1), scale(n3xn1, d2)), scale(n1xn2, d3));
                 Some([n[0] / d, n[1] / d, n[2] / d])
+            }
+            Point3::Lnc { a, b, t } => {
+                let s = 1.0 - t;
+                Some([
+                    t * a[0] + s * b[0],
+                    t * a[1] + s * b[1],
+                    t * a[2] + s * b[2],
+                ])
             }
         }
     }
@@ -153,6 +165,13 @@ impl Point3 {
                         }))
                     }
                 }
+                Point3::Lnc { a, b, t } => {
+                    let t = f64_to_rat(t);
+                    let s = BigRational::one() - &t;
+                    let a = a.map(f64_to_rat);
+                    let b = b.map(f64_to_rat);
+                    Some(std::array::from_fn(|k| &t * &a[k] + &s * &b[k]))
+                }
             };
             result
         })
@@ -215,6 +234,13 @@ impl Point3 {
                     );
                     Some([&num[0] / &d, &num[1] / &d, &num[2] / &d])
                 }
+            }
+            Point3::Lnc { a, b, t } => {
+                let t = f64_to_rat(t);
+                let s = BigRational::one() - &t;
+                let a = a.map(f64_to_rat);
+                let b = b.map(f64_to_rat);
+                Some(std::array::from_fn(|k| &t * &a[k] + &s * &b[k]))
             }
         }
     }
@@ -279,6 +305,14 @@ impl Point3 {
                 );
                 Some((lambda, d))
             }
+            Point3::Lnc { a, b, t } => {
+                let t = f64_to_rat(t);
+                let s = BigRational::one() - &t;
+                let a = a.map(f64_to_rat);
+                let b = b.map(f64_to_rat);
+                let lambda = std::array::from_fn(|k| &t * &a[k] + &s * &b[k]);
+                Some((lambda, BigRational::one()))
+            }
         }
     }
 }
@@ -319,6 +353,14 @@ impl Point3 {
                     &scale3(&n1xn2, d3),
                 );
                 (lambda, d)
+            }
+            Point3::Lnc { a, b, t } => {
+                let tv = Iv::from_rational(&f64_to_rat(t));
+                let sv = Iv::exact(1.0).sub(tv);
+                let a3 = exact3(a);
+                let b3 = exact3(b);
+                let lambda = std::array::from_fn(|k| a3[k].mul(tv).add(b3[k].mul(sv)));
+                (lambda, Iv::exact(1.0))
             }
         }
     }

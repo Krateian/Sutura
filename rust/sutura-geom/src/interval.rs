@@ -159,6 +159,30 @@ pub fn det4(m: &[[Iv; 4]; 4]) -> Iv {
     t0.sub(t1).add(t2).sub(t3)
 }
 
+/// det of a 5x5 matrix given by rows, via cofactor expansion on row 0.
+pub fn det5(m: &[[Iv; 5]; 5]) -> Iv {
+    let minor = |skip_col: usize| -> [[Iv; 4]; 4] {
+        let mut out = [[Iv::exact(0.0); 4]; 4];
+        for r in 1..5 {
+            let mut k = 0usize;
+            for c in 0..5 {
+                if c == skip_col {
+                    continue;
+                }
+                out[r - 1][k] = m[r][c];
+                k += 1;
+            }
+        }
+        out
+    };
+    let t0 = m[0][0].mul(det4(&minor(0)));
+    let t1 = m[0][1].mul(det4(&minor(1)));
+    let t2 = m[0][2].mul(det4(&minor(2)));
+    let t3 = m[0][3].mul(det4(&minor(3)));
+    let t4 = m[0][4].mul(det4(&minor(4)));
+    t0.sub(t1).add(t2).sub(t3).add(t4)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
