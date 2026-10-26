@@ -977,3 +977,45 @@ Review-3 follow-ups:
 Next: P5 — cell contraction, winding unary, constrained min-cut with PLC faces
 as cut constraints, extraction of PLC pieces plus reported caps, cell-level
 repair; 100827 shape gate first.
+
+## 2026-10-26 — P5 plan
+
+Plan:
+
+1. Persist the exact constraint-face set from the B5 certificate in
+   `CoverageReport` / `FaceMesh` (the unique tet faces covering PLC triangles).
+2. New `cdt3d/solid.rs`: union-find cell contraction across every tet face that
+   is not a PLC constraint; cell volume/centroid; box/hull cells marked as hard
+   exterior.
+3. Winding unary at the cell centroid (existing `winding::MeshBvh`), capped
+   `phi = clamp(w-0.5, +/-cap)`; constrained min-cut with `splint::mincut::BkGraph`
+   over cells, capacity `area * lambda` on PLC constraint faces, hard sink for
+   box cells.  Constraint faces whose two tets fall in the same cell are
+   self-loops and cannot be cut.
+4. Extraction: emit each constraint face whose two cells have different labels,
+   oriented from the inside cell to the outside; cap remaining boundary loops
+   with `hole::close_holes_core` and report `cap_faces`/`cap_area` separately;
+   snap/weld to `f32`; report parts, holes, non-manifold edges, bbox and
+   two-sided distance to the input.
+5. Gate on 100827 first: 1 part, 0 holes, 0 NM after f32 weld, bbox within 1%,
+   two-sided Hausdorff <= 0.0125 mm, deterministic (5 runs + 2 processes).
+   Then the fixtures.
+
+Objections:
+
+- Cell contraction is exact in the sense that it forbids cutting a
+  non-constraint face, but it also forbids cutting inside a cell.  On an open
+  PLC some PLC faces can be self-loops (the two sides connect around the
+  boundary); those faces cannot be selected by any cell labelling.  The gate
+  may therefore need caps or a cell-level split, and the report must say so
+  rather than pretend the selected surface is all input pieces.
+- The winding unary is a soft heuristic; thin features and near-open bands can
+  be misclassified.  The min-cut is deterministic but not shape-optimal.
+- The first P5 version will not implement cell-level repair.  If 100827 comes
+  out with >1 part, holes or NM, the result will be recorded as a diagnosed
+  failure with the exact counts, not claimed as a gate pass.  Cell-level repair
+  is the next step only after the base extraction is measured.
+- Caps are not input pieces.  The report separates cap faces/area; the
+  two-sided distance is reported both with and without caps where practical.
+- This session may run out of context before the full shape gate.  The handoff
+  will record the exact P5 state and the first failing metric.
