@@ -6,6 +6,19 @@
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../../CHANGELOG.md).
 
+- **v0.9.7 — 2026-10-26** — Deneysel bir **son çare katı motoru** seçeneği.
+  Varsayılan **fTetWild** olarak kalır; isteğe bağlı kesin bir yeniden inşa
+  (**CDT**, kısıtlı dörtyüzlüleme) `--solid-engine cdt`, Seçenekler → Onarım →
+  **Katı motoru** veya `solid_engine` ayar anahtarıyla kullanılabilir. CDT,
+  Coaptation sonrası ve fTetWild öncesi çalışır; sonucu denetimlerini geçemezse
+  (su geçirmez, tek kapalı ve dışa dönük katı) ya da zaman aşımına uğrarsa
+  fTetWild'a geçer (o da kendi zaman sınırıyla çalışır, bu yüzden en kötü durum
+  yaklaşık iki kat sürer). Bilinen
+  sınırlama: CDT şimdilik yavaştır — birçok modelde, birkaç bin yüzlü olanlarda
+  bile zaman sınırı içinde bitmez ve Sutura o zaman otomatik olarak fTetWild'a
+  döner. Küçük ya da basit modellerde veya orijinal yüzeyin birebir korunmasını
+  istediğinizde kullanın. OrcaSlicer eklentisi de OrcaSlicer 2.5 izin desteği
+  kazanır.
 - **v0.9.6 — 2026-10-26** — Son çare **fTetWild** katmanı artık varsayılan
   olarak gelir ve çok daha küçüktür (katmanın hiç kullanmadığı PyVista/VTK
   bağımlılığından gelen ~1,1 GB yerine yaklaşık 6 MB); `SUTURA_WITH_FTETWILD=0`

@@ -3,9 +3,11 @@
 
 //! Min s-t cut and the fix-A signed-field island cleanup.
 
-use std::collections::VecDeque;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, VecDeque};
 
 use crate::mincut::BkGraph;
+use crate::winding::MeshBvh;
 
 const INF: f64 = 1e18;
 const LAMBDA: f64 = 20.0;
@@ -16,6 +18,10 @@ pub(crate) struct CutResult {
     pub(crate) dropped_inside_vol: f64,
     pub(crate) filled_outside_comps: usize,
     pub(crate) filled_outside_vol: f64,
+    /// Diagnostic: number of vertex-connected components of the hard source set
+    /// `{!out_tet && phi < 0}` (the pre-cut "confident interior"), and its size.
+    pub(crate) hard_inside_comps: usize,
+    pub(crate) hard_inside_tets: usize,
 }
 
 fn component_volume(comp: &[usize], tet_vol: &[f64]) -> f64 {
@@ -123,6 +129,630 @@ pub(crate) fn cleanup_islands(
     )
 }
 
+/// H6: one connected inside region by a multi-source flood fill inside the
+/// closed proxy pillow. `allowed[ti]` marks tets geometrically inside the pillow
+/// (the pillow's own winding number > 0.5); seeds are the strong-interior tets
+/// (`phi < -tau`) that are also allowed. The fill grows across internal faces
+/// into allowed, non-hull tets only, so the pillow surface is the barrier and
+/// the opening is capped by connectivity. Deterministic: the BFS visits tets
+/// and neighbours in index order.
+pub(crate) struct GeodesicResult {
+    pub(crate) is_inside: Vec<bool>,
+    pub(crate) seeds: usize,
+    pub(crate) filled: usize,
+    pub(crate) comps: usize,
+}
+
+/// Number of vertex-connected components of the emitted boundary facets (the
+/// tet-domain equivalent of `output_parts`, without materialising the mesh).
+/// `n_verts` is the proxy vertex count. Deterministic index order.
+pub(crate) fn boundary_part_count(
+    internal: &[([usize; 3], usize, usize)],
+    is_inside: &[bool],
+    n_verts: usize,
+) -> usize {
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..n_verts).collect();
+    let mut touched: Vec<usize> = Vec::new();
+    for (key, a, b) in internal {
+        if is_inside[*a] == is_inside[*b] {
+            continue;
+        }
+        let r0 = find(&mut parent, key[0]);
+        for &v in &key[1..] {
+            let rv = find(&mut parent, v);
+            if r0 != rv {
+                parent[rv] = r0;
+            }
+        }
+        touched.extend_from_slice(key);
+    }
+    let mut roots = std::collections::BTreeSet::new();
+    for v in touched {
+        roots.insert(find(&mut parent, v));
+    }
+    roots.len()
+}
+
+/// Number of connected components of the inside set over shared internal facets
+/// (diagnostic; deterministic index order).
+pub(crate) fn inside_components(
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    is_inside: &[bool],
+) -> usize {
+    let n = is_inside.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (_, a, b) in internal {
+        if out_tet[*a] || out_tet[*b] {
+            continue;
+        }
+        adj[*a].push(*b);
+        adj[*b].push(*a);
+    }
+    let mut seen = vec![false; n];
+    let mut comps = 0usize;
+    let mut stack: Vec<usize> = Vec::new();
+    for s in 0..n {
+        if is_inside[s] && !seen[s] {
+            comps += 1;
+            seen[s] = true;
+            stack.push(s);
+            while let Some(c) = stack.pop() {
+                for &nb in &adj[c] {
+                    if is_inside[nb] && !seen[nb] {
+                        seen[nb] = true;
+                        stack.push(nb);
+                    }
+                }
+            }
+        }
+    }
+    comps
+}
+
+/// H4: result of the volume-fraction prune.
+pub(crate) struct PruneResult {
+    /// Inside components kept.
+    pub(crate) kept: usize,
+    /// Inside components dropped.
+    pub(crate) dropped: usize,
+    /// Volume (mm^3) of the largest dropped component (0 if none was dropped).
+    pub(crate) speck_vol: f64,
+    /// Emitted boundary facet count of the largest dropped component.
+    pub(crate) speck_faces: usize,
+    /// Volume (mm^3) of every inside component, in deterministic index order.
+    pub(crate) comp_vols: Vec<f64>,
+    /// Emitted boundary facet count of every inside component, parallel to
+    /// `comp_vols`.
+    pub(crate) comp_faces: Vec<usize>,
+}
+
+/// H4: among the inside components, drop every component whose volume is below
+/// `frac` of the largest component's volume. Applied by the caller only when the
+/// input is a single connected body (`input_comps == 1`), so a genuinely
+/// separate input part is never removed. With `frac == 0.0` nothing is dropped
+/// and the call is a pure measurement of the component volumes/facet counts.
+/// Deterministic: components, volumes and facet counts all run in index order.
+pub(crate) fn prune_inside_by_volume(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    internal: &[([usize; 3], usize, usize)],
+    is_inside: &mut [bool],
+    frac: f64,
+    scale: f64,
+    keep: Option<&[bool]>,
+) -> PruneResult {
+    let n = is_inside.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::with_capacity(4); n];
+    for &(_, a, b) in internal {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let tet_vol = tet_volumes(tets, coords, scale);
+
+    // Same-label inside components, in index order.
+    let mut comp_id = vec![usize::MAX; n];
+    let mut comps: Vec<Vec<usize>> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for s in 0..n {
+        if is_inside[s] && comp_id[s] == usize::MAX {
+            let id = comps.len();
+            let mut members = Vec::new();
+            comp_id[s] = id;
+            stack.push(s);
+            while let Some(c) = stack.pop() {
+                members.push(c);
+                for &nb in &adj[c] {
+                    if is_inside[nb] && comp_id[nb] == usize::MAX {
+                        comp_id[nb] = id;
+                        stack.push(nb);
+                    }
+                }
+            }
+            members.sort_unstable();
+            comps.push(members);
+        }
+    }
+
+    // Emitted boundary facets per component: an internal facet separating an
+    // inside tet of the component from an outside tet.
+    let mut comp_faces = vec![0usize; comps.len()];
+    for (_, a, b) in internal {
+        if is_inside[*a] == is_inside[*b] {
+            continue;
+        }
+        let inside_tet = if is_inside[*a] { *a } else { *b };
+        comp_faces[comp_id[inside_tet]] += 1;
+    }
+
+    let comp_vols: Vec<f64> = comps
+        .iter()
+        .map(|c| component_volume(c, &tet_vol))
+        .collect();
+    let max_vol = comp_vols.iter().cloned().fold(0.0f64, f64::max);
+    let thr = frac * max_vol;
+
+    let mut kept = 0usize;
+    let mut dropped = 0usize;
+    let mut speck_vol = 0.0f64;
+    let mut speck_faces = 0usize;
+    for (ci, comp) in comps.iter().enumerate() {
+        let protected = keep.is_some_and(|k| comp.iter().any(|&ti| k[ti]));
+        if !protected && max_vol > 0.0 && comp_vols[ci] < thr {
+            dropped += 1;
+            if comp_vols[ci] > speck_vol {
+                speck_vol = comp_vols[ci];
+                speck_faces = comp_faces[ci];
+            }
+            for &ti in comp {
+                is_inside[ti] = false;
+            }
+        } else {
+            kept += 1;
+        }
+    }
+
+    PruneResult {
+        kept,
+        dropped,
+        speck_vol,
+        speck_faces,
+        comp_vols,
+        comp_faces,
+    }
+}
+
+fn tet_volumes(tets: &[[usize; 4]], coords: &[[f64; 3]], scale: f64) -> Vec<f64> {
+    tets.iter()
+        .map(|t| {
+            let p0 = coords[t[0]];
+            let p1 = coords[t[1]];
+            let p2 = coords[t[2]];
+            let p3 = coords[t[3]];
+            let v01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            let v02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+            let v03 = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
+            let cross = [
+                v02[1] * v03[2] - v02[2] * v03[1],
+                v02[2] * v03[0] - v02[0] * v03[2],
+                v02[0] * v03[1] - v02[1] * v03[0],
+            ];
+            let v_norm =
+                (v01[0] * cross[0] + v01[1] * cross[1] + v01[2] * cross[2]).abs() / 6.0;
+            v_norm / (scale * scale * scale)
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn geodesic_flood(
+    tets: &[[usize; 4]],
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    allowed: &[bool],
+    phi: &[f64],
+    tau: f64,
+    scale: f64,
+) -> GeodesicResult {
+    let n_tets = tets.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::with_capacity(4); n_tets];
+    for &(_, a, b) in internal {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let mut is_inside = vec![false; n_tets];
+    let mut q = VecDeque::new();
+    let mut seeds = 0usize;
+    for ti in 0..n_tets {
+        if !out_tet[ti] && allowed[ti] && phi[ti] < -tau {
+            seeds += 1;
+            if !is_inside[ti] {
+                is_inside[ti] = true;
+                q.push_back(ti);
+            }
+        }
+    }
+    while let Some(curr) = q.pop_front() {
+        for &next in &adj[curr] {
+            if !is_inside[next] && !out_tet[next] && allowed[next] {
+                is_inside[next] = true;
+                q.push_back(next);
+            }
+        }
+    }
+    // Reuse the fix-A island cleanup: it fills enclosed outside pockets (no hull
+    // contact, no deep exterior) and drops inside specks with no deep interior.
+    let tet_vol = tet_volumes(tets, coords, scale);
+    cleanup_islands(&mut is_inside, phi, &adj, out_tet, tau, &tet_vol);
+    let filled = is_inside.iter().filter(|&&b| b).count();
+    let comps = inside_components(internal, out_tet, &is_inside);
+    GeodesicResult {
+        is_inside,
+        seeds,
+        filled,
+        comps,
+    }
+}
+
+/// H6c: result of the enclosed-cavity fill.
+pub(crate) struct CavityResult {
+    /// Outside components that touch no hull tet (geometrically enclosed
+    /// pockets), before the winding test.
+    pub(crate) candidates: usize,
+    /// Candidates whose ORIGINAL-INPUT winding number at the sample exceeds 0.5
+    /// and were therefore relabelled inside.
+    pub(crate) filled: usize,
+    /// Input winding number at each candidate's interior sample, in component
+    /// order (deterministic). A genuine hollow cavity reads ~0.
+    pub(crate) windings: Vec<f64>,
+    /// Tet count of each candidate, parallel to `windings`.
+    pub(crate) tet_counts: Vec<usize>,
+    /// Maximum input winding over each candidate's tets, parallel to `windings`
+    /// (diagnostic: tests whether a better interior sample could exceed 0.5).
+    pub(crate) max_windings: Vec<f64>,
+    /// Volume (normalised cube units) of each candidate, parallel to `windings`.
+    pub(crate) vols: Vec<f64>,
+}
+
+/// H6c: fill every enclosed outside cavity (an outside component that touches no
+/// hull tet) whose ORIGINAL-INPUT generalized winding number exceeds 0.5 anywhere
+/// in the cavity. After the H6 flood the inside set can be a single thin-wall
+/// basin, leaving the volume enclosed by the *inner* offset sheet labelled
+/// outside; on the open-scan class that volume is real material (fTetWild fills
+/// it). A genuine hollow cavity in a closed model has input winding ~0
+/// throughout and is correctly left hollow, so the test is safe.
+///
+/// The decision uses the *maximum* winding over the cavity's tets, not a single
+/// sample: the largest tet can sit at the opening where the winding dips
+/// negative, while the cavity interior still reads `> 0.5`. The reported
+/// `windings` is the largest-tet sample (for reference) and `max_windings` is the
+/// value the decision uses; both are index-order deterministic.
+pub(crate) fn fill_enclosed_cavities(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    centroids: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    is_inside: &mut [bool],
+    bvh: &MeshBvh,
+    scale: f64,
+) -> CavityResult {
+    let n = is_inside.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(_, a, b) in internal {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let tet_vol = tet_volumes(tets, coords, scale);
+    let mut seen = vec![false; n];
+    let mut candidates = 0usize;
+    let mut filled = 0usize;
+    let mut windings = Vec::new();
+    let mut tet_counts = Vec::new();
+    let mut max_windings = Vec::new();
+    let mut vols = Vec::new();
+    for s in 0..n {
+        if is_inside[s] || seen[s] {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut q = VecDeque::new();
+        seen[s] = true;
+        q.push_back(s);
+        let mut touches_hull = false;
+        while let Some(c) = q.pop_front() {
+            comp.push(c);
+            if out_tet[c] {
+                touches_hull = true;
+            }
+            for &nb in &adj[c] {
+                if !is_inside[nb] && !seen[nb] {
+                    seen[nb] = true;
+                    q.push_back(nb);
+                }
+            }
+        }
+        if touches_hull {
+            continue;
+        }
+        comp.sort_unstable();
+        candidates += 1;
+        // Largest tet by volume; strict `>` keeps the lowest index on ties.
+        let mut best = comp[0];
+        let mut best_v = tet_vol[best];
+        for &ti in &comp[1..] {
+            if tet_vol[ti] > best_v {
+                best_v = tet_vol[ti];
+                best = ti;
+            }
+        }
+        let w = bvh.winding_at(centroids[best]);
+        windings.push(w);
+        tet_counts.push(comp.len());
+        let mut max_w = f64::NEG_INFINITY;
+        for &ti in &comp {
+            max_w = max_w.max(bvh.winding_at(centroids[ti]));
+        }
+        max_windings.push(max_w);
+        vols.push(component_volume(&comp, &tet_vol));
+        if max_w > 0.5 {
+            filled += 1;
+            for &ti in &comp {
+                is_inside[ti] = true;
+            }
+        }
+    }
+    CavityResult {
+        candidates,
+        filled,
+        windings,
+        tet_counts,
+        vols,
+        max_windings,
+    }
+}
+
+/// Min-heap key: (cost, tet index), with the tet index breaking every tie so the
+/// search order — and hence the reconstructed path — is a pure function of the
+/// input mesh and `res`.
+struct HeapItem {
+    cost: f64,
+    node: usize,
+}
+
+impl PartialEq for HeapItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.cost == other.cost && self.node == other.node
+    }
+}
+impl Eq for HeapItem {}
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reversed so `BinaryHeap` (a max-heap) pops the smallest cost first.
+        other
+            .cost
+            .total_cmp(&self.cost)
+            .then_with(|| other.node.cmp(&self.node))
+    }
+}
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Face-adjacency of the non-hull tets weighted by shared-facet area.
+fn tet_face_adj(
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    n: usize,
+) -> Vec<Vec<(usize, f64)>> {
+    let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for (key, a, b) in internal {
+        if out_tet[*a] || out_tet[*b] {
+            continue;
+        }
+        let area = tri_area(coords[key[0]], coords[key[1]], coords[key[2]]);
+        adj[*a].push((*b, area));
+        adj[*b].push((*a, area));
+    }
+    adj
+}
+
+/// Same-label connected components of the inside set over the weighted
+/// adjacency. Returns the per-tet component id and the member lists (sorted
+/// ascending), both in deterministic index order.
+fn inside_components_weighted(
+    adj: &[Vec<(usize, f64)>],
+    is_inside: &[bool],
+) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let n = is_inside.len();
+    let mut comp = vec![usize::MAX; n];
+    let mut comps: Vec<Vec<usize>> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
+    for s in 0..n {
+        if is_inside[s] && comp[s] == usize::MAX {
+            let id = comps.len();
+            let mut members = Vec::new();
+            comp[s] = id;
+            stack.push(s);
+            while let Some(c) = stack.pop() {
+                members.push(c);
+                for &(nb, _) in &adj[c] {
+                    if is_inside[nb] && comp[nb] == usize::MAX {
+                        comp[nb] = id;
+                        stack.push(nb);
+                    }
+                }
+            }
+            members.sort_unstable();
+            comps.push(members);
+        }
+    }
+    (comp, comps)
+}
+
+/// Component ids ordered largest first; ties broken by smallest member index.
+fn comps_largest_first(comps: &[Vec<usize>]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..comps.len()).collect();
+    order.sort_by(|&a, &b| {
+        comps[b]
+            .len()
+            .cmp(&comps[a].len())
+            .then(comps[a][0].cmp(&comps[b][0]))
+    });
+    order
+}
+
+/// Minimum-cost tet path from `source` (all its tets seeded at cost 0) to any tet
+/// whose component id is `target_id`; entering tet `j` across a shared facet of
+/// area `A` costs `|phi[j]| + A`. Returns the path as a sorted tet list, or None.
+fn min_cost_path(
+    adj: &[Vec<(usize, f64)>],
+    phi: &[f64],
+    comp: &[usize],
+    source: &[usize],
+    target_id: usize,
+) -> Option<Vec<usize>> {
+    let n = adj.len();
+    let mut dist = vec![f64::INFINITY; n];
+    let mut par = vec![usize::MAX; n];
+    let mut heap: BinaryHeap<HeapItem> = BinaryHeap::new();
+    for &s in source {
+        dist[s] = 0.0;
+        heap.push(HeapItem { cost: 0.0, node: s });
+    }
+    let mut target: Option<usize> = None;
+    while let Some(HeapItem { cost, node }) = heap.pop() {
+        if cost > dist[node] {
+            continue;
+        }
+        if comp[node] == target_id {
+            target = Some(node);
+            break;
+        }
+        for &(nb, area) in &adj[node] {
+            let step = cost + phi[nb].abs() + area;
+            if step < dist[nb] {
+                dist[nb] = step;
+                par[nb] = node;
+                heap.push(HeapItem { cost: step, node: nb });
+            }
+        }
+    }
+    let mut node = target?;
+    let mut path: Vec<usize> = Vec::new();
+    loop {
+        path.push(node);
+        if par[node] == usize::MAX {
+            break;
+        }
+        node = par[node];
+    }
+    path.sort_unstable();
+    Some(path)
+}
+
+/// Relabel `path` plus its face 1-ring (for thickness) as inside; returns the
+/// number of tets newly labelled inside.
+fn fill_path_ring(adj: &[Vec<(usize, f64)>], path: &[usize], is_inside: &mut [bool]) -> usize {
+    let mut add = path.to_vec();
+    for &p in path {
+        for &(nb, _) in &adj[p] {
+            add.push(nb);
+        }
+    }
+    add.sort_unstable();
+    add.dedup();
+    let mut added = 0usize;
+    for &ti in &add {
+        if !is_inside[ti] {
+            is_inside[ti] = true;
+            added += 1;
+        }
+    }
+    added
+}
+
+/// H6 bridge: when the pillow flood leaves the interior split into two basins
+/// (e.g. the two walls of a thin shell), join the two largest basins with a
+/// minimum-cost path of tets, so the emitted surface is one solid.
+///
+/// Deterministic Dijkstra over tet face adjacency (non-hull tets only), source =
+/// every tet of the smaller basin, target = any tet of the larger basin, entering
+/// tet `j` across a shared facet of area `A` costing `|phi[j]| + A`. The path
+/// plus its face 1-ring (for thickness) is relabelled inside. Returns the number
+/// of tets newly labelled inside.
+pub(crate) fn bridge_inside_basins(
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    phi: &[f64],
+    is_inside: &mut [bool],
+) -> usize {
+    let n = is_inside.len();
+    let adj = tet_face_adj(coords, internal, out_tet, n);
+    let (comp, comps) = inside_components_weighted(&adj, is_inside);
+    if comps.len() < 2 {
+        return 0;
+    }
+    let order = comps_largest_first(&comps);
+    let big_id = order[0];
+    let small_id = order[1];
+    let Some(path) = min_cost_path(&adj, phi, &comp, &comps[small_id], big_id) else {
+        return 0;
+    };
+    fill_path_ring(&adj, &path, is_inside)
+}
+
+/// H7c: join every residual inside basin to the largest one with min-cost tet
+/// paths, one basin at a time (largest remainder first), keeping only the merges
+/// that reduce the emitted boundary-component count. Deterministic index order.
+/// Under the input-tets basis there is no pillow, so the min-cost path itself is
+/// the geometric barrier and no separate `allowed` mask is needed.
+pub(crate) fn bridge_basins_to_largest(
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    phi: &[f64],
+    is_inside: &mut [bool],
+    n_verts: usize,
+) -> usize {
+    let n = is_inside.len();
+    let adj = tet_face_adj(coords, internal, out_tet, n);
+    let (comp, comps) = inside_components_weighted(&adj, is_inside);
+    if comps.len() < 2 {
+        return 0;
+    }
+    let order = comps_largest_first(&comps);
+    let big_id = order[0];
+    let mut total = 0usize;
+    for &cid in &order[1..] {
+        let before = boundary_part_count(internal, is_inside, n_verts);
+        let snapshot = is_inside.to_vec();
+        let Some(path) = min_cost_path(&adj, phi, &comp, &comps[cid], big_id) else {
+            continue;
+        };
+        let added = fill_path_ring(&adj, &path, is_inside);
+        let after = boundary_part_count(internal, is_inside, n_verts);
+        if added > 0 && after < before {
+            total += added;
+        } else {
+            is_inside.copy_from_slice(&snapshot);
+        }
+    }
+    total
+}
+
 pub(crate) fn cut_and_cleanup(
     tets: &[[usize; 4]],
     coords: &[[f64; 3]],
@@ -161,28 +791,33 @@ pub(crate) fn cut_and_cleanup(
         adj[b].push(a);
     }
 
-    let tet_vol: Vec<f64> = (0..n_tets)
-        .map(|ti| {
-            let t = tets[ti];
-            let p0 = coords[t[0]];
-            let p1 = coords[t[1]];
-            let p2 = coords[t[2]];
-            let p3 = coords[t[3]];
-            let v01 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-            let v02 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
-            let v03 = [p3[0] - p0[0], p3[1] - p0[1], p3[2] - p0[2]];
-            let cross = [
-                v02[1] * v03[2] - v02[2] * v03[1],
-                v02[2] * v03[0] - v02[0] * v03[2],
-                v02[0] * v03[1] - v02[1] * v03[0],
-            ];
-            let v_norm = (v01[0] * cross[0] + v01[1] * cross[1] + v01[2] * cross[2]).abs() / 6.0;
-            v_norm / (scale * scale * scale)
-        })
-        .collect();
+    let tet_vol = tet_volumes(tets, coords, scale);
 
     let (dropped_inside_comps, dropped_inside_vol, filled_outside_comps, filled_outside_vol) =
         cleanup_islands(&mut is_inside, phi, &adj, out_tet, tau, &tet_vol);
+
+    // Diagnostic only: count components of the pre-cut hard source set.
+    let hard = |ti: usize| !out_tet[ti] && phi[ti] < 0.0;
+    let mut hard_seen = vec![false; n_tets];
+    let mut hard_inside_comps = 0usize;
+    let mut hard_inside_tets = 0usize;
+    for ti in 0..n_tets {
+        if hard(ti) && !hard_seen[ti] {
+            hard_inside_comps += 1;
+            hard_seen[ti] = true;
+            let mut q = VecDeque::new();
+            q.push_back(ti);
+            while let Some(curr) = q.pop_front() {
+                hard_inside_tets += 1;
+                for &next in &adj[curr] {
+                    if hard(next) && !hard_seen[next] {
+                        hard_seen[next] = true;
+                        q.push_back(next);
+                    }
+                }
+            }
+        }
+    }
 
     CutResult {
         is_inside,
@@ -190,6 +825,121 @@ pub(crate) fn cut_and_cleanup(
         dropped_inside_vol,
         filled_outside_comps,
         filled_outside_vol,
+        hard_inside_comps,
+        hard_inside_tets,
+    }
+}
+
+/// H7: min s-t cut on the input-based tet basis. Source = inside. The unary is
+/// the soft, capped winding offset `phi = clamp(GWN - 0.5, ±cap)` scaled by the
+/// mean internal-facet area (`a_ref`), so a tet whose centroid reads strongly
+/// inside prefers the source. Hull tets and tets touching a padded-box corner
+/// are hard sinks (outside), which anchors the far field. Every internal facet
+/// gets a symmetric `area * lambda` smoothness capacity, so the cut minimises
+/// boundary area: capping the opening is cheaper than wrapping the pillow.
+/// Deterministic: terminal and edge capacities are added in index order.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn cut_winding_smooth(
+    tets: &[[usize; 4]],
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    corner_tet: &[bool],
+    phi: &[f64],
+    lambda: f64,
+    tau: f64,
+    scale: f64,
+    anchor: Option<&[bool]>,
+    sink: Option<&[bool]>,
+) -> CutResult {
+    let n_tets = phi.len();
+    let mut area_sum = 0.0f64;
+    for (key, _, _) in internal {
+        area_sum += tri_area(coords[key[0]], coords[key[1]], coords[key[2]]);
+    }
+    let a_ref = if internal.is_empty() {
+        1.0
+    } else {
+        area_sum / internal.len() as f64
+    };
+    let mut g = BkGraph::new(n_tets);
+    for ti in 0..n_tets {
+        if out_tet[ti] || corner_tet[ti] {
+            g.add_tweights(ti, 0.0, INF);
+        } else if anchor.is_some_and(|a| a[ti]) {
+            // H5: hard-inside seed. Forcing this tet into the source set makes
+            // the emitted boundary pass through its shared faces, so an input
+            // vertex the soft winding unary would leave outside is still
+            // covered by the output surface (shape preservation).
+            g.add_tweights(ti, INF, 0.0);
+        } else if sink.is_some_and(|s| s[ti]) {
+            // H5b: hard-outside seed, the exterior partner of an anchor face.
+            // Pinning both sides of an input face forces the min-cut to run
+            // along that face, so the emitted boundary follows the input.
+            g.add_tweights(ti, 0.0, INF);
+        } else if phi[ti] > 0.0 {
+            g.add_tweights(ti, phi[ti] * a_ref, 0.0);
+        } else if phi[ti] < 0.0 {
+            g.add_tweights(ti, 0.0, -phi[ti] * a_ref);
+        }
+    }
+    for (key, a, b) in internal {
+        let area = tri_area(coords[key[0]], coords[key[1]], coords[key[2]]);
+        let cap = area * lambda;
+        g.add_edge(*a, *b, cap, cap);
+    }
+    let _flow = g.maxflow();
+    let mut is_inside: Vec<bool> = (0..n_tets).map(|ti| g.is_in_source(ti)).collect();
+
+    let mut adj: Vec<Vec<usize>> = vec![Vec::with_capacity(4); n_tets];
+    for &(_, a, b) in internal {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let tet_vol = tet_volumes(tets, coords, scale);
+    // H7 analogue of the base island cleanup: in H7's sign convention `phi > 0`
+    // is interior, so an inside component is a keeper only if it contains a
+    // confident interior tet (`phi > +tau`); the rest are shallow specks that
+    // the soft unary leaves behind and are dropped. Deterministic: BFS and the
+    // volume sum run in index order.
+    let mut visited = vec![false; n_tets];
+    let mut dropped_inside_comps = 0usize;
+    let mut dropped_inside_vol = 0.0f64;
+    for ti in 0..n_tets {
+        if is_inside[ti] && !visited[ti] {
+            let mut comp = Vec::new();
+            let mut q = VecDeque::new();
+            visited[ti] = true;
+            q.push_back(ti);
+            while let Some(curr) = q.pop_front() {
+                comp.push(curr);
+                for &next in &adj[curr] {
+                    if is_inside[next] && !visited[next] {
+                        visited[next] = true;
+                        q.push_back(next);
+                    }
+                }
+            }
+            comp.sort_unstable();
+            let has_anchor = anchor.is_some_and(|a| comp.iter().any(|&idx| a[idx]));
+            if !comp.iter().any(|&idx| phi[idx] > tau) && !has_anchor {
+                dropped_inside_comps += 1;
+                dropped_inside_vol += component_volume(&comp, &tet_vol);
+                for &idx in &comp {
+                    is_inside[idx] = false;
+                }
+            }
+        }
+    }
+
+    CutResult {
+        is_inside,
+        dropped_inside_comps,
+        dropped_inside_vol,
+        filled_outside_comps: 0,
+        filled_outside_vol: 0.0,
+        hard_inside_comps: 0,
+        hard_inside_tets: 0,
     }
 }
 
@@ -228,5 +978,106 @@ mod tests {
         assert_eq!(dropped, 0);
         assert_eq!(filled, 0);
         assert_eq!(is_inside, vec![true, true, true, true, false, false]);
+    }
+
+    #[test]
+    fn prune_drops_small_inside_component_deterministically() {
+        // Two disconnected inside components: tet 0 is a large tetra, tet 1 a
+        // tiny one. Tets 2 and 3 are outside neighbours (giving each inside
+        // component one emitted facet). A 1% volume fraction must drop the tiny
+        // speck and keep the large body; a 0% fraction is a pure no-op measure.
+        let coords: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [0.0, 0.0, 10.0],
+            [100.0, 100.0, 100.0],
+            [100.1, 100.0, 100.0],
+            [100.0, 100.1, 100.0],
+            [100.0, 100.0, 100.1],
+        ];
+        let tets: Vec<[usize; 4]> = vec![[0, 1, 2, 3], [4, 5, 6, 7], [1, 2, 3, 0], [5, 6, 7, 4]];
+        // Facets 0-2 and 1-3 separate the two inside fractions from outside;
+        // (key, a, b) with `a`/`b` the tet indices.
+        let internal: Vec<([usize; 3], usize, usize)> =
+            vec![([0, 1, 2], 0, 2), ([0, 1, 3], 1, 3)];
+
+        let mut measure = vec![true, true, false, false];
+        let m = prune_inside_by_volume(&coords, &tets, &internal, &mut measure, 0.0, 1.0, None);
+        assert_eq!(m.kept, 2);
+        assert_eq!(m.dropped, 0);
+        assert_eq!(m.comp_vols.len(), 2);
+        assert!(m.comp_vols[0] > m.comp_vols[1]);
+        assert_eq!(m.comp_faces, vec![1, 1]);
+        assert_eq!(measure, vec![true, true, false, false]);
+
+        let mut a = vec![true, true, false, false];
+        let pr = prune_inside_by_volume(&coords, &tets, &internal, &mut a, 0.01, 1.0, None);
+        assert_eq!(pr.kept, 1);
+        assert_eq!(pr.dropped, 1);
+        assert!(pr.speck_vol > 0.0);
+        assert_eq!(pr.speck_faces, 1);
+        assert_eq!(a, vec![true, false, false, false]);
+
+        // Deterministic: same call, same result.
+        let mut b = vec![true, true, false, false];
+        let pr2 = prune_inside_by_volume(&coords, &tets, &internal, &mut b, 0.01, 1.0, None);
+        assert_eq!(pr.kept, pr2.kept);
+        assert_eq!(pr.dropped, pr2.dropped);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn bridge_basins_to_largest_is_deterministic_and_monotone() {
+        // Chain of six non-hull tets 0..5 (0-1-2-3-4-5) plus two hull tets 6,7;
+        // tets 0 and 5 are the two inside basins, 1..4 the corridor between them.
+        let mut coords: Vec<[f64; 3]> = Vec::new();
+        for i in 0..40 {
+            let f = i as f64;
+            coords.push([f, f * 0.5 + 1.0, (f % 3.0) + 0.5]);
+        }
+        let internal: Vec<([usize; 3], usize, usize)> = vec![
+            ([0, 1, 2], 0, 6),
+            ([3, 4, 5], 0, 1),
+            ([6, 7, 8], 1, 2),
+            ([9, 10, 11], 2, 3),
+            ([12, 13, 14], 3, 4),
+            ([15, 16, 17], 4, 5),
+            ([18, 19, 20], 5, 7),
+            ([21, 22, 23], 6, 1),
+        ];
+        let out_tet = vec![false, false, false, false, false, false, true, true];
+        let phi = vec![-0.4, 0.1, 0.1, 0.1, 0.1, -0.4, 0.2, 0.2];
+        let base = vec![true, false, false, false, false, true, false, false];
+        let before = boundary_part_count(&internal, &base, coords.len());
+
+        let mut a = base.clone();
+        let added_a =
+            bridge_basins_to_largest(&coords, &internal, &out_tet, &phi, &mut a, coords.len());
+        let mut b = base.clone();
+        let added_b =
+            bridge_basins_to_largest(&coords, &internal, &out_tet, &phi, &mut b, coords.len());
+        assert_eq!(added_a, added_b);
+        assert_eq!(a, b);
+        assert!(added_a > 0);
+        assert!(boundary_part_count(&internal, &a, coords.len()) <= before);
+    }
+
+    #[test]
+    fn bridge_basins_to_largest_noop_on_single_basin() {
+        let coords = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let internal: Vec<([usize; 3], usize, usize)> = vec![([0, 1, 2], 0, 1)];
+        let out_tet = vec![false, true];
+        let phi = vec![0.1, 0.1];
+        let mut is_inside = vec![true, true];
+        let added =
+            bridge_basins_to_largest(&coords, &internal, &out_tet, &phi, &mut is_inside, 4);
+        assert_eq!(added, 0);
+        assert_eq!(is_inside, vec![true, true]);
     }
 }

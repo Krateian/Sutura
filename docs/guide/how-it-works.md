@@ -63,7 +63,9 @@ your file ─► Tamponade ─► Flap ─► Stage 1 clean-up ─► (still ope
    detail, so Sutura only *suggests* it when everything else failed and you
    decide; **Splint** is the opt-in exact solid rebuild. **fTetWild** is a
    last-resort rebuild for badly broken files and runs automatically (installed
-   by default) when stage 1 still leaves holes.
+   by default) when stage 1 still leaves holes; an experimental exact rebuild
+   (CDT, `--solid-engine cdt`) can take its place, with fTetWild still used if
+   CDT fails or runs out of time.
 
 After every step Sutura counts holes and bad edges again, as if the file had
 been re-opened from disk; a step that makes things worse is thrown away. Your
@@ -165,7 +167,10 @@ fTetWild fallback is installed and on by default:
   self-intersects. fTetWild's own tetrahedron-quality optimisation is off
   (only the boundary is used, and it mostly costs time);
   `--ftetwild-optimize` (GUI: *Optimise tetrahedra*, not recommended)
-  turns it on.
+  turns it on. Alternatively, the experimental exact rebuild **CDT**
+  (`--solid-engine cdt`; GUI: *Options* → *Repair* → *Solid engine*) takes the
+  place of this last resort and falls back to fTetWild when it fails or runs
+  out of time.
 * *In Full Mend, after stage 1:* a **guarded self-intersection excise + re-cap**
   removes residual self-intersecting faces (the faces plus a one-ring band;
   if that round reduces but cannot close the pre-existing boundary, the same

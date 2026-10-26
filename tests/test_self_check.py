@@ -112,3 +112,8 @@ def test_gui_health_banner_behavior():
         assert 'Some repair capabilities failed availability checks' in win.health_banner_label.text()
 
 
+if __name__ == '__main__':
+    import pytest
+    sys.exit(pytest.main([__file__, '-q']))
+
+

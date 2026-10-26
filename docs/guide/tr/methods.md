@@ -723,3 +723,19 @@ Kur/Kaldır ve akışlı, iptal edilebilir bir ilerleme penceresi, ayrıca
 yapılandırılmış motor listesi ile Yenile, *Motor klasörünü aç* ve
 `docs/external-engines.md` bağlantısı. İş parçacıkları kesilebilir ve pencere
 kapanırken beklenir.
+
+**Son çare katı motoru (deneysel).** fTetWild katmanının yanı sıra **Katı
+motoru** ayarı son çareyi neyin yeniden inşa edeceğini seçer: `ftetwild`
+(varsayılan) mevcut fTetWild katmanını korur; `cdt` ise orijinal yüzeyi mümkün
+olduğunca birebir koruyan deneysel bir kesin kısıtlı dörtyüzlüleme çalıştırıp
+ondan su geçirmez bir katı çıkarır. Coaptation sonrası ve fTetWild öncesi
+çalışır; sonucu denetimlerini geçemezse (su geçirmez, tek kapalı ve dışa dönük
+katı) ya da zaman aşımına uğrarsa merdiven fTetWild'a geçer; fTetWild kendi zaman
+sınırıyla çalışır, bu yüzden en kötü durum yaklaşık iki kat sürer. `--solid-engine cdt|ftetwild`, `SUTURA_SOLID_ENGINE`,
+Seçenekler → Onarım denetimi veya Sutura ayar dosyasındaki `solid_engine`
+anahtarıyla ayarlanır (GUI değeri oraya kaydedilir ve CLI, Hızlı İşlem, Dolphin
+ile OrcaSlicer eklentisince devralınır). Seçim `report['solid_engine']` altında
+kaydedilir (`selected` / `produced` / `reason`). Bilinen sınırlama: CDT şimdilik
+yavaştır — birçok modelde, birkaç bin yüzlü olanlarda bile zaman sınırı içinde
+bitmez ve Sutura o zaman otomatik olarak fTetWild'a döner. Küçük ya da basit
+modellerde veya orijinal yüzeyin birebir korunmasını istediğinizde kullanın.

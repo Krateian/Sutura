@@ -106,6 +106,14 @@ sutura a.stl b.stl c.3mf         # batch
   (or drag and drop) and press **Repair**.
 - **KDE Dolphin:** right-click a model → **Repair with Sutura**.
 - **macOS Finder:** right-click → *Quick Actions* → **Sutura — Repair**.
+- **Last-resort solid engine (experimental):** `--solid-engine cdt|ftetwild`
+  chooses the rebuild used when everything else failed (also under Options →
+  Repair and inherited by the integrations). The default stays **fTetWild**;
+  `cdt` is an experimental exact rebuild that runs after Coaptation and before
+  fTetWild, and falls back to fTetWild on failure or timeout. For now it is slow:
+  on many models, even ones with a few thousand faces, it does not finish within
+  its time limit, and Sutura falls back to fTetWild automatically. Use it on small
+  or simple models, or when you want the original surface kept exactly.
 
 Every option, report field and integration is described in [Usage](docs/guide/usage.md).
 

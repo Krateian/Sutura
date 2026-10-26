@@ -68,6 +68,15 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 * **Manifold kernel.** It rejects any input with open edges; if stage 1
   cannot close a hole, stage 2 is skipped and the stage 1 result is used as-is
   (the report says so).
+* **Experimental solid engine (CDT).** The opt-in exact `--solid-engine cdt`
+  rebuild is slow for now: on many models, even ones with a few thousand faces,
+  it does not finish within its time limit, and Sutura then falls back to fTetWild
+  automatically. Use it on small or simple models, or when the original surface
+  must be kept exactly. When
+  CDT's result fails its checks (watertight, one closed outward-facing solid) or
+  runs out of time, the ladder falls back to fTetWild (which then runs with its
+  own time limit, so the worst case takes about twice as long), so a result is
+  still produced; the report records which engine ran under `solid_engine`.
 * **STL reload and pinched vertices.** STL stores no vertex sharing; a mesh
   that is two-manifold in memory can reload with pinched vertices where two
   distinct float32 positions weld into one. P-WELD separates the common

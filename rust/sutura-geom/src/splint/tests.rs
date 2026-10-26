@@ -32,8 +32,14 @@ fn cube() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     (v, t)
 }
 
-fn same_report(a: &SplintReport, b: &SplintReport) {
-    let fields = [
+fn open_cube() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    // The cube with its +z face removed: one planar 4-edge boundary loop.
+    let (v, mut t) = cube();
+    t.retain(|f| *f != [4, 5, 6] && *f != [4, 6, 7]);
+    (v, t)
+}
+
+fn same_report(a: &SplintReport, b: &SplintReport) {    let fields = [
         (a.res, b.res),
         (a.input_vertices, b.input_vertices),
         (a.input_faces, b.input_faces),
@@ -48,6 +54,8 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
         (a.output_parts, b.output_parts),
         (a.dropped_inside_comps, b.dropped_inside_comps),
         (a.filled_outside_comps, b.filled_outside_comps),
+        (a.hard_inside_comps, b.hard_inside_comps),
+        (a.hard_inside_tets, b.hard_inside_tets),
         (a.cut_shells, b.cut_shells),
         (a.first_cut_shells, b.first_cut_shells),
         (a.retry_threshold, b.retry_threshold),
@@ -58,7 +66,51 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     for (x, y) in fields {
         assert_eq!(x, y);
     }
+    assert_eq!(a.winding_hist, b.winding_hist);
+    assert_eq!(a.snap_f32, b.snap_f32);
+    assert_eq!(a.relabel, b.relabel);
+    assert_eq!(a.relabel_first_nm_edges, b.relabel_first_nm_edges);
+    assert_eq!(a.relabel_final_nm_edges, b.relabel_final_nm_edges);
+    assert_eq!(a.relabel_flips, b.relabel_flips);
+    assert_eq!(a.geodesic, b.geodesic);
+    assert_eq!(a.geodesic_seeds, b.geodesic_seeds);
+    assert_eq!(a.geodesic_filled, b.geodesic_filled);
+    assert_eq!(a.cavity_fill, b.cavity_fill);
+    assert_eq!(a.cavity_candidates, b.cavity_candidates);
+    assert_eq!(a.cavity_filled, b.cavity_filled);
+    assert_eq!(a.cavity_windings, b.cavity_windings);
+    assert_eq!(a.cavity_tet_counts, b.cavity_tet_counts);
+    assert_eq!(a.cavity_vols, b.cavity_vols);
+    assert_eq!(a.cavity_max_windings, b.cavity_max_windings);
+    assert_eq!(a.input_tets, b.input_tets);
+    assert_eq!(a.input_tets_points, b.input_tets_points);
+    assert_eq!(a.input_tets_corner_tets, b.input_tets_corner_tets);
+    assert_eq!(a.input_tets_cap, b.input_tets_cap);
+    assert_eq!(a.cap_loops, b.cap_loops);
+    assert_eq!(a.cap_planar, b.cap_planar);
+    assert_eq!(a.cap_fanned, b.cap_fanned);
+    assert_eq!(a.cap_tris, b.cap_tris);
+    assert_eq!(a.input_tets_prune, b.input_tets_prune);
+    assert_eq!(a.prune_frac, b.prune_frac);
+    assert_eq!(a.prune_kept, b.prune_kept);
+    assert_eq!(a.prune_dropped, b.prune_dropped);
+    assert_eq!(a.prune_speck_faces, b.prune_speck_faces);
+    assert_eq!(a.prune_comp_faces, b.prune_comp_faces);
+    assert_eq!(a.input_tets_bridge_added, b.input_tets_bridge_added);
+    assert_eq!(a.input_tets_anchor, b.input_tets_anchor);
+    assert_eq!(a.anchor_tets, b.anchor_tets);
+    assert_eq!(a.sink_tets, b.sink_tets);
+    assert_eq!(a.h5_projected_verts, b.h5_projected_verts);
+    assert_eq!(a.input_comps, b.input_comps);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
+    // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
+    // init labels and the final cut labels. Deterministic only once the tet
+    // order is canonicalised after `delaunay3`.
+    assert_eq!(a.proxy_hash, b.proxy_hash);
+    assert_eq!(a.centroid_hash, b.centroid_hash);
+    assert_eq!(a.phi_hash, b.phi_hash);
+    assert_eq!(a.init_hash, b.init_hash);
+    assert_eq!(a.cut_inside_hash, b.cut_inside_hash);
     assert_eq!(a.out_manifold, b.out_manifold);
     assert_eq!(a.adaptive, b.adaptive);
     assert_eq!(a.adaptive_broad, b.adaptive_broad);
@@ -70,6 +122,11 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     // feed the emitted geometry.
     assert!((a.dropped_inside_vol - b.dropped_inside_vol).abs() <= 1e-12);
     assert!((a.filled_outside_vol - b.filled_outside_vol).abs() <= 1e-12);
+    assert!((a.prune_speck_vol - b.prune_speck_vol).abs() <= 1e-12);
+    assert_eq!(a.prune_comp_vols.len(), b.prune_comp_vols.len());
+    for (x, y) in a.prune_comp_vols.iter().zip(b.prune_comp_vols.iter()) {
+        assert!((x - y).abs() <= 1e-12);
+    }
 }
 
 #[test]
@@ -221,5 +278,310 @@ fn adaptive_rayon_thread_counts_are_byte_identical() {
             }
         }
         same_report(&baseline.report, &out.report);
+    }
+}
+
+#[test]
+fn snap_f32_is_deterministic_and_world_exact() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.snap_f32 = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.snap_f32);
+    assert_eq!(a.report.hard_inside_comps, b.report.hard_inside_comps);
+    assert_eq!(a.tris, b.tris);
+    assert_eq!(a.verts.len(), b.verts.len());
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+            // Every emitted world coordinate is exactly representable in f32.
+            assert_eq!(p[k] as f32 as f64, p[k]);
+        }
+    }
+}
+
+// `delaunay::delaunay3` returns the Geogram BDEL cells in a nondeterministic
+// ORDER (same set: `delaunay_hash` is order-independent and matches, but
+// `centroids`/`phi`/`is_inside` were permuted run to run). `run_pass` now
+// canonicalises the tet order right after `delaunay3`, so the index-tie-broken
+// greedy relabel is deterministic again.
+#[test]
+fn greedy_relabel_is_deterministic_and_non_increasing() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.greedy_relabel = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("b");
+    assert!(a.report.relabel);
+    assert_eq!(a.report.relabel_flips, b.report.relabel_flips);
+    assert_eq!(a.report.relabel_first_nm_edges, b.report.relabel_first_nm_edges);
+    assert_eq!(a.report.relabel_final_nm_edges, b.report.relabel_final_nm_edges);
+    assert!(a.report.relabel_final_nm_edges <= a.report.relabel_first_nm_edges);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+}
+
+#[test]
+fn geodesic_flood_is_deterministic_and_single_part() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.geodesic = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("b");
+    assert!(a.report.geodesic);
+    assert!(a.report.geodesic_filled > 0);
+    same_report(&a.report, &b.report);
+    assert_eq!(a.report.output_parts, 1);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+}
+
+#[test]
+fn bridge_is_deterministic_and_joins_the_two_basins() {
+    // A chain of four tets: tet 0 and tet 3 are the two inside basins, tets 1
+    // and 2 are the outside gap. The bridge must relabel the gap (path + ring)
+    // and leave every tet inside, deterministically.
+    let coords: Vec<[f64; 3]> = (0..16)
+        .map(|i| [i as f64, (i % 3) as f64, (i % 5) as f64])
+        .collect();
+    let internal: Vec<([usize; 3], usize, usize)> =
+        vec![([1, 2, 3], 0, 1), ([4, 5, 6], 1, 2), ([8, 9, 10], 2, 3)];
+    let out_tet = vec![false; 4];
+    let phi = vec![0.0, 0.5, 0.5, 0.0];
+
+    let mut a = vec![true, false, false, true];
+    let mut b = a.clone();
+    let add_a = super::cut::bridge_inside_basins(&coords, &internal, &out_tet, &phi, &mut a);
+    let add_b = super::cut::bridge_inside_basins(&coords, &internal, &out_tet, &phi, &mut b);
+    assert_eq!(add_a, add_b);
+    assert_eq!(a, b);
+    assert_eq!(add_a, 2);
+    assert_eq!(a, vec![true, true, true, true]);
+
+    // A single basin is a no-op.
+    let mut c = vec![true, true, true, true];
+    assert_eq!(
+        super::cut::bridge_inside_basins(&coords, &internal, &out_tet, &phi, &mut c),
+        0
+    );
+    assert_eq!(c, vec![true, true, true, true]);
+}
+
+#[test]
+fn geodesic_bridge_flag_follows_input_component_count() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.geodesic = true;
+    o.greedy_relabel = true;
+    o.geodesic_bridge = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    assert_eq!(a.report.input_comps, 1);
+    assert!(a.report.geodesic_bridge);
+    assert_eq!(a.report.output_parts, 1);
+}
+
+#[test]
+fn cavity_fill_is_deterministic() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.geodesic = true;
+    o.greedy_relabel = true;
+    o.cavity_fill = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("b");
+    assert!(a.report.cavity_fill);
+    assert_eq!(a.report.cavity_candidates, b.report.cavity_candidates);
+    assert_eq!(a.report.cavity_filled, b.report.cavity_filled);
+    assert_eq!(a.report.cavity_windings, b.report.cavity_windings);
+    same_report(&a.report, &b.report);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+}
+
+#[test]
+fn input_tets_is_deterministic_and_default_off_is_unchanged() {
+    let (v, t) = cube();
+    // Default OFF must reproduce the 5-arg core byte-for-byte.
+    let base = splint_cut_core(&v, &t, 32, SplintAdaptive::None, true).expect("base");
+    let off = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, SplintOpts::default())
+        .expect("off");
+    assert_eq!(base.tris, off.tris);
+    for (p, q) in base.verts.iter().zip(off.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+
+    let mut o = SplintOpts::default();
+    o.input_tets = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.input_tets);
+    assert!(a.report.input_tets_points >= 8);
+    assert!(a.report.input_tets_corner_tets >= 1);
+    assert!(!a.tris.is_empty());
+    assert_eq!(a.report.output_parts, 1);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+    same_report(&a.report, &b.report);
+}
+
+#[test]
+fn input_tets_cap_is_deterministic_and_fires_on_open_input() {
+    let (v, t) = open_cube();
+    let mut on = SplintOpts::default();
+    on.input_tets = true;
+    on.input_tets_cap = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, on).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, on).expect("b");
+    assert!(a.report.input_tets_cap);
+    assert!(a.report.cap_loops >= 1, "open cube must expose a boundary loop");
+    assert!(a.report.cap_tris >= 2, "the planar loop must be capped");
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+    same_report(&a.report, &b.report);
+
+    // Flag OFF stays the H7-only output: no cap evaluated.
+    let mut off = on;
+    off.input_tets_cap = false;
+    let base = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, off).expect("base");
+    assert!(!base.report.input_tets_cap);
+    assert_eq!(base.report.cap_tris, 0);
+    assert_eq!(base.report.cap_loops, 0);
+}
+
+#[test]
+fn input_tets_prune_is_deterministic() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.input_tets = true;
+    o.input_tets_prune = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.input_tets_prune);
+    assert_eq!(a.report.prune_frac, 0.01);
+    assert!(!a.report.prune_comp_vols.is_empty());
+    same_report(&a.report, &b.report);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+}
+
+#[test]
+fn input_tets_bridge_is_deterministic() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.input_tets = true;
+    o.input_tets_bridge = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.input_tets);
+    assert_eq!(a.report.input_tets_bridge_added, b.report.input_tets_bridge_added);
+    same_report(&a.report, &b.report);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+}
+
+#[test]
+fn input_tets_anchor_is_deterministic() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.input_tets = true;
+    o.input_tets_anchor = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.input_tets_anchor);
+    assert!(a.report.anchor_tets > 0);
+    assert!(a.report.sink_tets > 0);
+    assert_eq!(a.report.anchor_tets, b.report.anchor_tets);
+    assert_eq!(a.report.sink_tets, b.report.sink_tets);
+    same_report(&a.report, &b.report);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+
+    // Flag OFF leaves the H7-only output untouched.
+    let mut off = o;
+    off.input_tets_anchor = false;
+    let base = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, off).expect("base");
+    assert!(!base.report.input_tets_anchor);
+    assert_eq!(base.report.anchor_tets, 0);
+    assert_eq!(base.report.sink_tets, 0);
+}
+
+#[test]
+fn anchor_nearest_matches_brute_force_with_tet_index_tie_break() {
+    // The H5b anchor picks the nearest non-out, non-corner tet centroid. The
+    // batched kd-tree query must reproduce the historical brute force exactly,
+    // including the lowest-tet-index tie-break, which is why the eligible list
+    // is built in ascending tet-index order.
+    let mut centroids: Vec<[f64; 3]> = Vec::new();
+    for x in 0..4 {
+        for y in 0..4 {
+            for z in 0..3 {
+                centroids.push([x as f64, y as f64, z as f64 * 0.5]);
+            }
+        }
+    }
+    let n = centroids.len();
+    let mut out = vec![false; n];
+    let mut corner = vec![false; n];
+    out[3] = true;
+    corner[7] = true;
+    let elig: Vec<usize> = (0..n).filter(|&ti| !out[ti] && !corner[ti]).collect();
+    let elig_pts: Vec<[f64; 3]> = elig.iter().map(|&ti| centroids[ti]).collect();
+    let probes = vec![
+        [0.0, 0.0, 0.0],
+        [1.5, 2.5, 0.75],
+        [3.0, 3.0, 1.0],
+        [-2.0, 0.0, 0.0],
+        [2.0, 2.0, 1.0],
+    ];
+    let tree = crate::pointcloud::build_tree(&elig_pts).expect("tree");
+    let (_, got, _) = crate::pointcloud::query_neighbours(&tree, elig_pts.len(), &probes, 1);
+    for (qi, q) in probes.iter().enumerate() {
+        let mut best = usize::MAX;
+        let mut bd = f64::INFINITY;
+        for &ti in &elig {
+            let c = centroids[ti];
+            let d =
+                (c[0] - q[0]).powi(2) + (c[1] - q[1]).powi(2) + (c[2] - q[2]).powi(2);
+            if d < bd {
+                bd = d;
+                best = ti;
+            }
+        }
+        assert_eq!(elig[got[qi] as usize], best, "probe {qi}");
     }
 }

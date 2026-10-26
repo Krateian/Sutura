@@ -325,6 +325,7 @@ STRINGS = {
         'repair_log_splint_not': 'Splint (exact rebuild): %d parts (not adopted: %s)',
         'repair_log_splint_aborted': 'Splint: stopped for time; previous stage kept',
         'repair_log_splint_budget': 'Splint: input over the face cap; skipped',
+        'repair_log_solid_engine': 'Solid engine: %s (produced by %s)',
         'repair_log_coaptation': 'Coaptation (seam union): %s bodies -> %s faces, SI %s->%s, parts %s->%s',
         'repair_log_coaptation_not': 'Coaptation (seam union): not adopted (%s)',
         'repair_log_tamponade': 'Tamponade (interior plug): %s plugs, %s faces, holes %s->%s',
@@ -427,6 +428,21 @@ STRINGS = {
         'dressing_defects_preset': 'Preset default',
         'dressing_defects_all': 'Holes + NM + SI',
         'dressing_defects_holes_nm': 'Holes + NM only',
+        'solid_engine_label': 'Last-resort solid engine:',
+        'solid_engine_tip': 'Last-resort rebuild when everything else fails. '
+                            'fTetWild is the default; CDT (exact constrained '
+                            'tetrahedralization, experimental) runs after '
+                            'Coaptation and before fTetWild and falls back to '
+                            'fTetWild if it fails or times out. For now it is '
+                            'slow: on many models, even ones with a few thousand '
+                            'faces, it does not finish within its time limit, and '
+                            'Sutura falls back to fTetWild automatically. Use it on '
+                            'small or simple models, or when you want the original '
+                            'surface kept exactly. Saved in the Sutura settings file and '
+                            'inherited by the CLI, Quick Action, Dolphin and '
+                            'Orca.',
+        'solid_engine_cdt': 'CDT (exact, experimental)',
+        'solid_engine_ftetwild': 'fTetWild',
         'si_mode_label': 'Self-intersections:',
         'si_mode_tip': 'Self-intersection policy. "Report" (default) measures '
                        'and reports self-intersections without escalating the '
@@ -1023,6 +1039,7 @@ STRINGS = {
         'repair_log_splint_not': 'Splint (kesin yeniden inşa): %d parça (benimsenmedi: %s)',
         'repair_log_splint_aborted': 'Splint: süre nedeniyle durduruldu; önceki aşama korundu',
         'repair_log_splint_budget': 'Splint: girdi yüz üst sınırını aşıyor; atlandı',
+        'repair_log_solid_engine': 'Katı motoru: %s (üreten: %s)',
         'repair_log_coaptation': 'Coaptation (dikiş birleştirme): %s gövde -> %s yüz, SI %s->%s, parça %s->%s',
         'repair_log_coaptation_not': 'Coaptation (dikiş birleştirme): benimsenmedi (%s)',
         'repair_log_tamponade': 'Tampon (içeriden tıkaç): %s tıkaç, %s yüz, delik %s->%s',
@@ -1133,6 +1150,21 @@ STRINGS = {
         'dressing_defects_preset': 'Ön ayar varsayılanı',
         'dressing_defects_all': 'Delik + NM + SI',
         'dressing_defects_holes_nm': 'Yalnızca delik + NM',
+        'solid_engine_label': 'Son çare katı motoru:',
+        'solid_engine_tip': 'Her şey başarısız olduğunda kullanılan son çare '
+                            'yeniden inşa. Varsayılan fTetWild; CDT (kesin '
+                            'kısıtlı dörtyüzlüleme, deneysel) Coaptation sonrası '
+                            've fTetWild öncesi çalışır, başarısız olursa ya da '
+                            'zaman aşımına uğrarsa fTetWild’a geçer. Şimdilik '
+                            'yavaştır: birçok modelde, birkaç bin yüzlü olanlarda bile '
+                            'zaman sınırı içinde bitmez ve Sutura otomatik olarak '
+                            'fTetWild’a döner. Küçük ya da basit modellerde veya '
+                            'orijinal yüzeyin birebir korunmasını istediğinizde '
+                            'kullanın. Sutura ayar dosyasına kaydedilir '
+                            've CLI, Hızlı İşlem, Dolphin ile Orca tarafından '
+                            'devralınır.',
+        'solid_engine_cdt': 'CDT (kesin, deneysel)',
+        'solid_engine_ftetwild': 'fTetWild',
         'si_mode_label': 'Kendisiyle-kesişim:',
         'si_mode_tip': 'Kendisiyle-kesişim politikası. "Yalnızca bildir" '
                        '(varsayılan) kendisiyle-kesişimleri ölçüp bildirir '
@@ -1909,7 +1941,7 @@ class RepairWorker(QThread):
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
                  dressing_sigma_scale=None, dressing_force_adopt=False,
-                 splint=False, coaptation=False,
+                 splint=False, solid_engine='ftetwild', coaptation=False,
                  intensity='balanced',
                  si_mode='report',
                  methods_by_path=None,
@@ -1937,6 +1969,7 @@ class RepairWorker(QThread):
         self._dressing_sigma_scale = dressing_sigma_scale
         self._dressing_force_adopt = dressing_force_adopt
         self._splint = splint
+        self._solid_engine = solid_engine
         self._coaptation = coaptation
         self._si_mode = si_mode
         # P3 per-file tags: path -> ordered method numbers / engine names.
@@ -2032,6 +2065,7 @@ class RepairWorker(QThread):
                 args.append('--dressing-force-adopt')
             if self._splint:
                 args.append('--experimental-splint')
+            args += ['--solid-engine', self._solid_engine]
             if self._coaptation:
                 args.append('--coaptation')
             else:
@@ -3364,6 +3398,12 @@ class OptionsDialog(QDialog):
         repair = QWidget()
         r = QVBoxLayout(repair)
         r.addWidget(main.chk_fallback_ftetwild)
+        se_row = QHBoxLayout()
+        se_row.setContentsMargins(22, 0, 0, 0)
+        se_row.addWidget(QLabel(_t('solid_engine_label')))
+        se_row.addWidget(main.cmb_solid_engine)
+        se_row.addStretch(1)
+        r.addLayout(se_row)
         si_row = QHBoxLayout()
         si_row.setContentsMargins(22, 0, 0, 0)
         si_row.addWidget(main.chk_ftetwild_si)
@@ -3905,6 +3945,8 @@ class MainWindow(QMainWindow):
         self._flap = True             # batch-wide Flap surface hole fill (Stage 1, on by default)
         self._dressing = False        # batch-wide opt-in Dressing viscosity coat (#16)
         self._splint = False          # batch-wide opt-in Splint exact solid rebuild (#18)
+        _se = updater.load_config().get('solid_engine', 'ftetwild')
+        self._solid_engine = _se if _se in ('cdt', 'ftetwild') else 'ftetwild'
         # Batch-wide Coaptation (#19, seam union): ON by default. A missing or
         # legacy config key is treated as ON so an old config cannot silently
         # keep it off (matches the CLI default).
@@ -4143,6 +4185,15 @@ class MainWindow(QMainWindow):
                          ('si_mode_off', 'off')):
             self.cmb_si_mode.addItem(_t(key), val)
         self.cmb_si_mode.currentIndexChanged.connect(self._on_si_mode_changed)
+        # Last-resort solid engine (batch-wide, saved setting).
+        self.cmb_solid_engine = QComboBox()
+        self.cmb_solid_engine.setToolTip(_t('solid_engine_tip'))
+        self.cmb_solid_engine.addItem(_t('solid_engine_cdt'), 'cdt')
+        self.cmb_solid_engine.addItem(_t('solid_engine_ftetwild'), 'ftetwild')
+        _se_idx = self.cmb_solid_engine.findData(self._solid_engine)
+        self.cmb_solid_engine.setCurrentIndex(max(0, _se_idx))
+        self.cmb_solid_engine.currentIndexChanged.connect(
+            self._on_solid_engine_changed)
         # The batch-wide options above live in a separate, non-modal Options
         # window (OptionsDialog) instead of a row of checkboxes: each QCheckBox
         # is re-parented there unchanged, so every chk_* attribute keeps its
@@ -4400,6 +4451,19 @@ class MainWindow(QMainWindow):
     def _on_si_mode_changed(self, index):
         """Store the batch-wide self-intersection policy."""
         self._si_mode = self.cmb_si_mode.itemData(index) or 'report'
+
+    def _on_solid_engine_changed(self, index):
+        """Store and persist the last-resort solid engine setting."""
+        val = self.cmb_solid_engine.itemData(index)
+        if val not in ('cdt', 'ftetwild'):
+            val = 'ftetwild'
+        self._solid_engine = val
+        try:
+            cfg = updater.load_config()
+            cfg['solid_engine'] = val
+            updater.save_config(cfg)
+        except Exception:  # noqa: BLE001 - persisting never blocks the combo
+            pass
 
     def _on_tamponade_toggled(self, on):
         """Store and persist the batch-wide Tamponade switch (ON by default)."""
@@ -4826,6 +4890,7 @@ class MainWindow(QMainWindow):
                                    dressing_sigma_scale=self._dressing_sigma_scale,
                                    dressing_force_adopt=self._dressing_force_adopt,
                                    splint=self._splint,
+                                   solid_engine=self._solid_engine,
                                    coaptation=self._coaptation,
                                    si_mode=self._si_mode,
                                    intensity=self._intensity,
@@ -5309,6 +5374,11 @@ class MainWindow(QMainWindow):
                 _dmsg = _dwarns[0].get('message_tr' if _is_tr else 'message_en') \
                     or _dwarns[0].get('message_en', '')
                 lines.append(_t('repair_log_dressing_warn', _dmsg))
+        se_r = data.get('solid_engine') or {}
+        if se_r:
+            lines.append(_t('repair_log_solid_engine',
+                            se_r.get('selected', 'ftetwild'),
+                            se_r.get('produced', 'stage1')))
         sp_r = data.get('splint')
         if sp_r and sp_r.get('ran'):
             if sp_r.get('aborted'):

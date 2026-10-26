@@ -105,6 +105,15 @@ sutura a.stl b.stl c.3mf         # toplu onarım
   ekleyin (veya sürükleyip bırakın) ve **Onar**'a basın.
 - **KDE Dolphin:** modele sağ tık → **Repair with Sutura**.
 - **macOS Finder:** sağ tık → *Hızlı Eylemler* → **Sutura — Repair**.
+- **Son çare katı motoru (deneysel):** `--solid-engine cdt|ftetwild` her şey
+  başarısız olduğunda kullanılacak yeniden inşayı seçer (Seçenekler → Onarım
+  altında da; entegrasyonlarca devralınır). Varsayılan **fTetWild** olarak
+  kalır; `cdt` Coaptation sonrası ve fTetWild öncesi çalışan deneysel bir kesin
+  yeniden inşadır ve başarısız olursa ya da zaman aşımına uğrarsa fTetWild'a
+  geçer. Şimdilik yavaştır: birçok modelde, birkaç bin yüzlü olanlarda bile zaman
+  sınırı içinde bitmez ve Sutura otomatik olarak fTetWild'a döner. Küçük ya da
+  basit modellerde veya orijinal yüzeyin birebir korunmasını istediğinizde
+  kullanın.
 
 Tüm seçenekler, rapor alanları ve entegrasyonlar [Kullanım](docs/guide/tr/usage.md)
 sayfasındadır.

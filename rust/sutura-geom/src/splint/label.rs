@@ -15,6 +15,9 @@ pub(crate) struct Labels {
     pub(crate) phi: Vec<f64>,
     pub(crate) init_label: Vec<u8>,
     pub(crate) interior_anchors: usize,
+    /// Diagnostic: 10-bin histogram of the winding number at each tet centroid
+    /// (bin `i` = `w` in `[i/10, (i+1)/10)`), clamped to `0..=9`.
+    pub(crate) winding_hist: [usize; 10],
 }
 
 pub(crate) fn label_tets(
@@ -23,17 +26,18 @@ pub(crate) fn label_tets(
     out_tet: &[bool],
     parallel: bool,
 ) -> Labels {
-    let one = |ti: usize| -> (f64, u8) {
+    let one = |ti: usize| -> (f64, u8, usize) {
         let c = centroids[ti];
         let u = bvh.unsigned_distance_at(c);
         let w = bvh.winding_at(c);
         // Negative inside the solid.
         let s = if w > 0.5 { -u } else { u };
         let label = if !out_tet[ti] && s < 0.0 { 0 } else { 1 };
-        (s, label)
+        let bin = ((w * 10.0).floor() as i64).clamp(0, 9) as usize;
+        (s, label, bin)
     };
 
-    let pairs: Vec<(f64, u8)> = if parallel {
+    let pairs: Vec<(f64, u8, usize)> = if parallel {
         centroids
             .par_iter()
             .enumerate()
@@ -45,16 +49,71 @@ pub(crate) fn label_tets(
 
     let mut phi = Vec::with_capacity(pairs.len());
     let mut init_label = Vec::with_capacity(pairs.len());
-    for (s, l) in pairs {
+    let mut winding_hist = [0usize; 10];
+    for (s, l, bin) in pairs {
         phi.push(s);
         init_label.push(l);
+        winding_hist[bin] += 1;
     }
     let interior_anchors = init_label.iter().filter(|&&l| l == 0).count();
     Labels {
         phi,
         init_label,
         interior_anchors,
+        winding_hist,
     }
+}
+
+/// H7: per-tet `phi` is the capped generalized-winding-number offset
+/// `clamp(w - 0.5, ±cap)` of the ORIGINAL input sampled at the tet centroid,
+/// instead of a signed unsigned-distance. `init_label` marks the confident
+/// interior (`!out_tet && w > 0.5`); the min-cut, not this threshold, decides
+/// the final boundary on the fractional near-opening band.
+pub(crate) fn label_tets_winding(
+    bvh: &MeshBvh,
+    centroids: &[[f64; 3]],
+    out_tet: &[bool],
+    parallel: bool,
+    cap: f64,
+) -> Result<Labels, String> {
+    let one = |ti: usize| -> (f64, u8, usize) {
+        let w = bvh.winding_at(centroids[ti]);
+        let d = (w - 0.5).clamp(-cap, cap);
+        let label = if !out_tet[ti] && w > 0.5 { 0 } else { 1 };
+        let bin = ((w * 10.0).floor() as i64).clamp(0, 9) as usize;
+        (d, label, bin)
+    };
+
+    let pairs: Vec<(f64, u8, usize)> = if parallel {
+        centroids
+            .par_iter()
+            .enumerate()
+            .map(|(ti, _)| one(ti))
+            .collect()
+    } else {
+        let mut out = Vec::with_capacity(centroids.len());
+        for ti in 0..centroids.len() {
+            crate::budget::tick(ti, "GWN labelling")?;
+            out.push(one(ti));
+        }
+        out
+    };
+
+    let mut phi = Vec::with_capacity(pairs.len());
+    let mut init_label = Vec::with_capacity(pairs.len());
+    let mut winding_hist = [0usize; 10];
+    for (s, l, bin) in pairs {
+        phi.push(s);
+        init_label.push(l);
+        winding_hist[bin] += 1;
+    }
+    let interior_anchors = init_label.iter().filter(|&&l| l == 0).count();
+    Ok(Labels {
+        phi,
+        init_label,
+        interior_anchors,
+        winding_hist,
+    })
 }
 
 #[cfg(test)]

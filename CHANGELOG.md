@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented here.
 
+## [0.9.7] - 2026-10-26
+
+### Added
+
+- **Experimental: an exact solid rebuild as a last resort (`--solid-engine cdt`).**
+  Alongside the fTetWild tier, Sutura can rebuild a broken model with an exact
+  constrained tetrahedralization (CDT) that keeps the original surface exactly
+  where it can and then extracts a watertight solid from it. It is experimental
+  and off unless you choose it: turn it on with `--solid-engine cdt` on the
+  command line, **Options → Repair → Solid engine** in the graphical interface,
+  or the `solid_engine` key in the settings file. fTetWild stays the default;
+  if CDT's result fails its checks (watertight, one closed outward-facing
+  solid) or runs out of time, Sutura falls back to fTetWild automatically. When
+  CDT runs out of time, fTetWild then runs with its own time limit, so the worst
+  case takes about twice as long. Known limitation: for now CDT is slow — on
+  many models, even ones with a few thousand faces, it does not finish within its
+  time limit, and Sutura then falls back to fTetWild automatically. Use it on
+  small or simple models, or when you want the original surface kept exactly.
+
+### Changed
+
+- **OrcaSlicer plugin is ready for OrcaSlicer 2.5.** The plugin now asks for the permissions OrcaSlicer 2.5 requires (reading the model file, running repair in the background, opening the output folder). On the 2.5 alpha, OrcaSlicer asks once the first time a repair runs; after that, repair, analysis and "Show file" work without further prompts. If you deny a permission, the panel says which operation needs it instead of failing silently. Older OrcaSlicer versions keep working as before.
+
 ## [0.9.6] - 2026-10-26
 
 ### Fixed

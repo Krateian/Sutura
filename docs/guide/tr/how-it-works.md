@@ -67,6 +67,9 @@ dosyan ─► Tamponad ─► Flap ─► Aşama 1 temizlik ─► (hâlâ açı
    olduğunda *önerir*, karar senindir; **Splint** isteğe bağlı tam katı yeniden
    inşadır. **fTetWild** çok bozuk dosyalar için son çare yeniden kurulumdur ve
    varsayılan olarak kuruludur; stage 1 hâlâ delik bıraktığında otomatik çalışır.
+   Deneysel bir kesin yeniden inşa (CDT, `--solid-engine cdt`) onun yerini
+   alabilir; CDT başarısız olur ya da zaman aşımına uğrarsa yine fTetWild
+   kullanılır.
 
 Sutura her adımdan sonra delikleri ve hatalı kenarları, dosya diskten yeniden
 açılmış gibi tekrar sayar; işleri kötüleştiren adım çöpe atılır. Orijinal
@@ -168,7 +171,10 @@ açıktır:
   sonuçlarda da çalıştırır. fTetWild'ın kendi tetrahedra kalite
   optimizasyonu kapalıdır (yalnızca dış yüzey kullanılır, çoğunlukla süre
   kaybıdır); `--ftetwild-optimize` (GUI: *Tetrahedra optimizasyonu*,
-  önerilmez) açar.
+  önerilmez) açar. Alternatif olarak, deneysel kesin yeniden inşa **CDT**
+  (`--solid-engine cdt`; GUI: *Seçenekler* → *Onarım* → *Katı motoru*) bu son
+  çarenin yerini alır ve başarısız olursa ya da zaman aşımına uğrarsa
+  fTetWild'a geçer.
 * *Full Mend içinde, Stage 1'den sonra:* **guard'lı self-intersection kesme +
   yeniden kapatma** artakalan self-intersection yüzlerini (yüzler ve bir
   halkalık kuşak; bu tur mevcut sınırı azaltıp yine de kapatamazsa aynı tur bir

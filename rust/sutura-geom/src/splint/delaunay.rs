@@ -82,18 +82,24 @@ pub(crate) fn delaunay3(proxy: &[[f64; 3]]) -> Result<Vec<[usize; 4]>, String> {
     }
 }
 
+/// Canonical, order-independent form of a tetrahedron set: each tet's vertex
+/// ids sorted ascending, then the whole tet list sorted ascending. This is the
+/// `tets_hash` comparator, factored out so it can also be applied to the live
+/// tet array immediately after `delaunay3` (the Geogram engine emits the same
+/// cells in a nondeterministic ORDER, which would otherwise leak into every
+/// index-ordered downstream pass).
+pub(crate) fn canonicalize_tets(tets: &mut [[usize; 4]]) {
+    for t in tets.iter_mut() {
+        t.sort_unstable();
+    }
+    tets.sort_unstable();
+}
+
 /// Order-independent digest of a tetrahedron set (canonical per-tet vertex
 /// order + sorted tet list), for determinism and reference comparison.
 pub(crate) fn tets_hash(tets: &[[usize; 4]]) -> u64 {
-    let mut canon: Vec<[usize; 4]> = tets
-        .iter()
-        .map(|t| {
-            let mut c = *t;
-            c.sort_unstable();
-            c
-        })
-        .collect();
-    canon.sort_unstable();
+    let mut canon: Vec<[usize; 4]> = tets.to_vec();
+    canonicalize_tets(&mut canon);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
     for t in &canon {
         for &v in t {
@@ -123,5 +129,15 @@ mod tests {
         let b = delaunay3(&pts).expect("second delaunay");
         assert_eq!(a.len(), b.len());
         assert_eq!(tets_hash(&a), tets_hash(&b));
+    }
+
+    #[test]
+    fn canonicalize_tets_is_a_function_of_the_cell_set() {
+        let mut a: Vec<[usize; 4]> = vec![[3, 1, 2, 0], [5, 4, 7, 6]];
+        let mut b: Vec<[usize; 4]> = vec![[6, 7, 5, 4], [0, 2, 3, 1]];
+        canonicalize_tets(&mut a);
+        canonicalize_tets(&mut b);
+        assert_eq!(a, b);
+        assert_eq!(a, vec![[0, 1, 2, 3], [4, 5, 6, 7]]);
     }
 }

@@ -834,6 +834,41 @@ def resolve_deep_repair_flags(deep_repair=None, no_fallback=False,
 # reports what is available, 'local' runs the local tier, 'full' runs the
 # fTetWild tier exactly as before the ladder existed (the local tier is not
 # part of 'full' until it has been measured on the corpora).
+
+SOLID_ENGINE_MODES = ('cdt', 'ftetwild')
+SOLID_ENGINE_ENV = 'SUTURA_SOLID_ENGINE'
+SOLID_ENGINE_DEFAULT = 'ftetwild'
+CDT_MAX_TETS = 250_000
+
+
+def resolve_solid_engine(cli_value=None, environ=None, config_path=None):
+    """Last-resort solid engine: CLI > SUTURA_SOLID_ENGINE > existing
+    Sutura settings file (updater.load_config) > 'ftetwild'.  No new config
+    path is created; the loader is the same one the GUI uses."""
+    if cli_value in SOLID_ENGINE_MODES:
+        return cli_value
+    env = (os.environ if environ is None else environ).get(SOLID_ENGINE_ENV)
+    if env in SOLID_ENGINE_MODES:
+        return env
+    cfg = None
+    if config_path is None:
+        try:
+            import updater  # existing Sutura settings loader
+            cfg = updater.load_config()
+        except Exception:
+            cfg = None
+    if cfg is None:
+        path = DEEP_REPAIR_CONFIG if config_path is None else config_path
+        try:
+            with open(path) as f:
+                cfg = json.load(f)
+        except (OSError, ValueError, AttributeError):
+            cfg = {}
+    val = (cfg or {}).get('solid_engine')
+    if val in SOLID_ENGINE_MODES:
+        return val
+    return SOLID_ENGINE_DEFAULT
+
 DEEP_REPAIR_MODES = ('off', 'local', 'full')
 
 
