@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **OrcaSlicer plugin is ready for OrcaSlicer 2.5.** The plugin now asks for the permissions OrcaSlicer 2.5 requires (reading the model file, running repair in the background, opening the output folder). On the 2.5 alpha, OrcaSlicer asks once the first time a repair runs; after that, repair, analysis and "Show file" work without further prompts. If you deny a permission, the panel says which operation needs it instead of failing silently. Older OrcaSlicer versions keep working as before.
+
 ## [0.9.6] - 2026-10-26
 
 ### Fixed
