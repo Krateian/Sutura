@@ -75,7 +75,7 @@ pub(crate) fn label_tets_winding(
     out_tet: &[bool],
     parallel: bool,
     cap: f64,
-) -> Labels {
+) -> Result<Labels, String> {
     let one = |ti: usize| -> (f64, u8, usize) {
         let w = bvh.winding_at(centroids[ti]);
         let d = (w - 0.5).clamp(-cap, cap);
@@ -91,7 +91,12 @@ pub(crate) fn label_tets_winding(
             .map(|(ti, _)| one(ti))
             .collect()
     } else {
-        (0..centroids.len()).map(one).collect()
+        let mut out = Vec::with_capacity(centroids.len());
+        for ti in 0..centroids.len() {
+            crate::budget::tick(ti, "GWN labelling")?;
+            out.push(one(ti));
+        }
+        out
     };
 
     let mut phi = Vec::with_capacity(pairs.len());
@@ -103,12 +108,12 @@ pub(crate) fn label_tets_winding(
         winding_hist[bin] += 1;
     }
     let interior_anchors = init_label.iter().filter(|&&l| l == 0).count();
-    Labels {
+    Ok(Labels {
         phi,
         init_label,
         interior_anchors,
         winding_hist,
-    }
+    })
 }
 
 #[cfg(test)]

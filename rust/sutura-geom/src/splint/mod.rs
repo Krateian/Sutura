@@ -338,7 +338,13 @@ fn run_pass(
     let secs_delaunay = t_delaunay.elapsed().as_secs_f64();
     let topo = tetra::build(&tets, &proxy.verts);
     let labels = if opts.input_tets {
-        label::label_tets_winding(wind_bvh, &topo.centroids, &topo.out_tet, parallel, WIND_CAP)
+        label::label_tets_winding(
+            wind_bvh,
+            &topo.centroids,
+            &topo.out_tet,
+            parallel,
+            WIND_CAP,
+        )?
     } else {
         label::label_tets(&bvh, &topo.centroids, &topo.out_tet, parallel)
     };

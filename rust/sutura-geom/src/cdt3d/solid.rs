@@ -960,16 +960,17 @@ fn gwn_labels(
     bvh: &MeshBvh,
     cen: &[[f64; 3]],
     out: &[bool],
-) -> (Vec<bool>, [usize; 10]) {
-    let labels = label_tets_winding(bvh, cen, out, false, 1.0);
+) -> Result<(Vec<bool>, [usize; 10]), String> {
+    let labels = label_tets_winding(bvh, cen, out, false, 1.0)?;
     let inside: Vec<bool> = labels.init_label.iter().map(|&l| l == 0).collect();
     let mut w_hist = [0usize; 10];
     for ti in 0..cen.len() {
+        crate::budget::tick(ti, "GWN labelling")?;
         let w = bvh.winding_at(cen[ti]);
         let bin = ((w * 10.0).floor() as i64).clamp(0, 9) as usize;
         w_hist[bin] += 1;
     }
-    (inside, w_hist)
+    Ok((inside, w_hist))
 }
 
 fn face_on_surface(
@@ -998,10 +999,11 @@ fn gwn_plc_count(
     constraints: &BTreeSet<[usize; 3]>,
     inside: &[bool],
     surface: Option<(&MeshBvh, f64)>,
-) -> usize {
+) -> Result<usize, String> {
     let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut count = 0usize;
     for ti in 0..tets.len() {
+        crate::budget::tick(ti, "GWN count")?;
         for lv in 0..4 {
             let n = neighbours[ti][lv];
             if n < 0 {
@@ -1017,7 +1019,7 @@ fn gwn_plc_count(
             }
         }
     }
-    count
+    Ok(count)
 }
 
 fn extract_gwn_faces(
@@ -1027,12 +1029,13 @@ fn extract_gwn_faces(
     constraints: &BTreeSet<[usize; 3]>,
     inside: &[bool],
     surface: Option<(&MeshBvh, f64)>,
-) -> (Vec<[usize; 3]>, Vec<[usize; 3]>, f64) {
+) -> Result<(Vec<[usize; 3]>, Vec<[usize; 3]>, f64), String> {
     let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut plc_faces: Vec<[usize; 3]> = Vec::new();
     let mut free_faces: Vec<[usize; 3]> = Vec::new();
     let mut free_area = 0.0f64;
     for ti in 0..tets.len() {
+        crate::budget::tick(ti, "GWN extraction")?;
         for lv in 0..4 {
             let n = neighbours[ti][lv];
             if n < 0 {
@@ -1068,7 +1071,7 @@ fn extract_gwn_faces(
             }
         }
     }
-    (plc_faces, free_faces, free_area)
+    Ok((plc_faces, free_faces, free_area))
 }
 
 fn build_solid_gwn(
@@ -1112,20 +1115,20 @@ fn build_solid_gwn(
 
     let raw_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
     let label_start = std::time::Instant::now();
-    let (raw_inside, raw_hist) = gwn_labels(&raw_bvh, &cen, &out);
+    let (raw_inside, raw_hist) = gwn_labels(&raw_bvh, &cen, &out)?;
     let mut gwn_label_ms = label_start.elapsed().as_secs_f64() * 1000.0;
     let count_start = std::time::Instant::now();
-    let raw_plc = gwn_plc_count(points, tets, neighbours, &constraints, &raw_inside, surface);
+    let raw_plc = gwn_plc_count(points, tets, neighbours, &constraints, &raw_inside, surface)?;
     let mut gwn_count_ms = count_start.elapsed().as_secs_f64() * 1000.0;
     let raw_ok = raw_inside.iter().any(|&x| x) && raw_inside.iter().any(|&x| !x);
 
     let (oriented_tris, orientation) = orient_for_winding(unary_verts, unary_tris);
     let oriented_bvh = MeshBvh::from_arrays(unary_verts, &oriented_tris);
     let label_start = std::time::Instant::now();
-    let (oriented_inside, oriented_hist) = gwn_labels(&oriented_bvh, &cen, &out);
+    let (oriented_inside, oriented_hist) = gwn_labels(&oriented_bvh, &cen, &out)?;
     gwn_label_ms += label_start.elapsed().as_secs_f64() * 1000.0;
     let count_start = std::time::Instant::now();
-    let oriented_plc = gwn_plc_count(points, tets, neighbours, &constraints, &oriented_inside, surface);
+    let oriented_plc = gwn_plc_count(points, tets, neighbours, &constraints, &oriented_inside, surface)?;
     gwn_count_ms += count_start.elapsed().as_secs_f64() * 1000.0;
     let oriented_ok = oriented_inside.iter().any(|&x| x) && oriented_inside.iter().any(|&x| !x);
     if std::env::var_os("CDT3D_STAGE_TIMES").is_some() {
@@ -1151,7 +1154,7 @@ fn build_solid_gwn(
     let inside_count = inside.iter().filter(|&&x| x).count();
     let extract_start = std::time::Instant::now();
     let (plc_faces, free_faces, free_area) =
-        extract_gwn_faces(points, tets, neighbours, &constraints, &inside, surface);
+        extract_gwn_faces(points, tets, neighbours, &constraints, &inside, surface)?;
     let extract_ms = extract_start.elapsed().as_secs_f64() * 1000.0;
     if std::env::var_os("CDT3D_STAGE_TIMES").is_some() {
         eprintln!("cdt3d stage extract={:.1}ms", extract_ms);

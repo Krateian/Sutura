@@ -18,6 +18,7 @@ pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
 pub mod cdt3d;
+mod budget;
 pub mod cluster;
 pub mod decimate;
 pub mod diagnosis;
@@ -276,6 +277,7 @@ fn run_cdt3d(
     o: &Cdt3dOpts,
 ) -> Result<(cdt3d::SolidMesh, cdt3d::FaceReport, cdt3d::PlcReport, f64), String> {
     let t0 = std::time::Instant::now();
+    let _budget = crate::budget::BudgetGuard::install(t0, o.wall_timeout_ms);
     let check = |what: &str| -> Result<(), String> {
         if o.wall_timeout_ms > 0 {
             let ms = t0.elapsed().as_millis() as u64;

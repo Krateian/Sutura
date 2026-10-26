@@ -109,6 +109,7 @@ pub fn recover_faces(
     let max_rounds = plc.tris.len().saturating_mul(8).max(64);
 
     for _ in 0..max_rounds {
+        crate::budget::check("face recovery")?;
         let missing = detect_missing_faces(&points, &tets, plc)?;
         let targets: Vec<usize> = missing
             .iter()
@@ -120,7 +121,8 @@ pub fn recover_faces(
             break;
         }
         let mut progress = false;
-        for fi in targets {
+        for (fi_i, fi) in targets.iter().copied().enumerate() {
+            crate::budget::tick(fi_i, "face recovery")?;
             let face = plc.tris[fi];
             let comps = collect_cavities(&points, &tets, &neighbours, face)?;
             if comps.is_empty() {
@@ -128,7 +130,8 @@ pub fn recover_faces(
                 continue;
             }
             let mut fixed = false;
-            for comp in &comps {
+            for (ci, comp) in comps.iter().enumerate() {
+                crate::budget::tick(ci, "face recovery")?;
                 cavities += 1;
                 match retetra_cavity(&points, &tets, &neighbours, comp, face, opts) {
                     Ok((new_tets, used_gift)) => {
@@ -176,7 +179,7 @@ pub fn recover_faces(
     let missing_after_vec = detect_missing_faces(&points, &tets, plc)?;
     let missing_after = missing_after_vec.iter().filter(|m| **m).count();
     let mut report =
-        validate_face_mesh(&points, &tets, &neighbours, plc, seg.box3, missing_after);
+        validate_face_mesh(&points, &tets, &neighbours, plc, seg.box3, missing_after)?;
     report.input_plc_triangles = plc.tris.len();
     report.recovered_triangles = plc.tris.len() - missing_after;
     report.missing_before = missing_before;
@@ -231,6 +234,7 @@ fn collect_cavities(
     let f = [&points[face[0]], &points[face[1]], &points[face[2]]];
     let mut in_tf = vec![false; tets.len()];
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "face recovery")?;
         'edges: for i in 0..4 {
             for j in (i + 1)..4 {
                 if edge_pierces_triangle(&points[t[i]], &points[t[j]], f[0], f[1], f[2]) {
@@ -244,13 +248,17 @@ fn collect_cavities(
     let mut seen = vec![false; tets.len()];
     let mut comps = Vec::new();
     for start in 0..tets.len() {
+        crate::budget::tick(start, "face recovery")?;
         if !in_tf[start] || seen[start] {
             continue;
         }
         let mut stack = vec![start];
         seen[start] = true;
         let mut comp = Vec::new();
+        let mut pops = 0usize;
         while let Some(ti) = stack.pop() {
+            crate::budget::tick(pops, "face recovery")?;
+            pops += 1;
             comp.push(ti);
             for &n in &neighbours[ti] {
                 if n >= 0 {
@@ -276,6 +284,7 @@ fn retetra_cavity(
     face: [usize; 3],
     opts: &FaceOptions,
 ) -> Result<(Vec<[usize; 4]>, bool), String> {
+    crate::budget::check("face recovery")?;
     let in_cavity: BTreeSet<usize> = cavity.iter().copied().collect();
     let mut boundary: BTreeMap<[usize; 3], BoundaryFace> = BTreeMap::new();
     let mut verts = BTreeSet::new();
@@ -693,20 +702,22 @@ fn validate_face_mesh(
     plc: &Plc,
     box3: crate::cdt3d::dt::BoundingBox3,
     missing_after: usize,
-) -> FaceReport {
+) -> Result<FaceReport, String> {
     let plc_vertices = plc.verts.len();
     let mut r = FaceReport {
         tets: tets.len(),
         missing_after,
         ..FaceReport::default()
     };
-    for w in tets.windows(2) {
+    for (i, w) in tets.windows(2).enumerate() {
+        crate::budget::tick(i, "face validation")?;
         if w[0] == w[1] {
             r.duplicate_tets += 1;
         }
     }
     let mut used = vec![false; points.len()];
-    for t in tets {
+    for (i, t) in tets.iter().enumerate() {
+        crate::budget::tick(i, "face validation")?;
         for &v in t {
             used[v] = true;
         }
@@ -719,6 +730,7 @@ fn validate_face_mesh(
 
     let mut occurrences: BTreeMap<[usize; 3], Vec<(usize, usize)>> = BTreeMap::new();
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "face validation")?;
         for lv in 0..4 {
             occurrences
                 .entry(crate::cdt3d::dt::sorted_face(t, lv))
@@ -738,6 +750,7 @@ fn validate_face_mesh(
         }
     }
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "face validation")?;
         for lv in 0..4 {
             let face = crate::cdt3d::dt::sorted_face(t, lv);
             let n = neighbours[ti][lv];
@@ -789,7 +802,7 @@ fn validate_face_mesh(
         && r.empty_sphere_violations == 0
         && r.hull_faces_off_box == 0
         && r.unused_vertices == 0;
-    r
+    Ok(r)
 }
 
 #[derive(Clone, Copy)]
@@ -886,6 +899,7 @@ pub fn detect_missing_faces(
     let grid = Grid::new(lo, hi, nf);
     let mut buckets: BTreeMap<[i64; 3], Vec<usize>> = BTreeMap::new();
     for (fi, f) in plc.tris.iter().enumerate() {
+        crate::budget::tick(fi, "face detection")?;
         let (flo, fhi) = aabb(&approx, f);
         for c in grid.cells(flo, fhi) {
             buckets.entry(c).or_default().push(fi);
@@ -893,7 +907,8 @@ pub fn detect_missing_faces(
     }
 
     let mut edges: BTreeSet<[usize; 2]> = BTreeSet::new();
-    for t in tets {
+    for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "face detection")?;
         for i in 0..4 {
             for j in (i + 1)..4 {
                 edges.insert(if t[i] < t[j] {
@@ -908,7 +923,9 @@ pub fn detect_missing_faces(
     let mut stamp = vec![0u32; nf];
     let mut epoch = 0u32;
     let mut candidates = Vec::new();
-    for e in edges {
+    let mut work = 0usize;
+    for (ei, e) in edges.into_iter().enumerate() {
+        crate::budget::tick(ei, "face detection")?;
         let (elo, ehi) = aabb(&approx, &e);
         epoch = epoch.wrapping_add(1);
         candidates.clear();
@@ -924,6 +941,8 @@ pub fn detect_missing_faces(
         }
         candidates.sort_unstable();
         for &fi in &candidates {
+            crate::budget::tick(work, "face detection")?;
+            work += 1;
             if missing[fi] {
                 continue;
             }
