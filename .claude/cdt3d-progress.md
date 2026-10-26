@@ -446,3 +446,49 @@ loop is costly (172 cavity attempts, 8.1 s) before hard-failing.
 Next step: P4.2 — expand a cavity when a boundary triangle is missing or when
 its boundary crosses the face plane; add the opposite tet, recompute, and
 record expansions.  Then P4.3 gift-wrapping for the remaining cases.
+
+## 2026-10-26 — independent review round 1: F1–F3 fixed, F4–F8 triaged
+
+Source: `/Users/krateian/Sutura/.claude/cdt3d-review-1.md` (scope P0–P3).
+
+Fixed, one commit each:
+- **F1** `a64d0d4` — `recover_segments` now fails closed when
+  `build_dt(...).report.dt_valid` is false, before any Steiner insertion;
+  `build_dt` documents the contract.  P2/P3 gate hashes are unchanged because
+  every gate mesh already had a valid initial DT.
+- **F2** `34edd9e` — `insert_point` now calls `expand_coplanar_cavity`: a
+  cavity boundary face exactly coplanar with the new point is removed by
+  adding the opposite tet (only boundary faces are examined), the cavity is
+  recomputed, and the insertion proceeds.  A synthetic two-tet test pins the
+  shared-face expansion.  The eight-mesh P3 hash is unchanged
+  (`de6e07edac20fa5c` on 100827), so the corpus did not hit the branch.
+  A boundary face that is not strictly visible after that expansion still
+  returns a typed error rather than creating a flat tet.
+- **F3** `1fe9816` — added the last-four-coplanar cospherical regression
+  (north pole with the smallest id + four equatorial points) and the full
+  120-permutation antisymmetry sweep.  This exercises the previously dead
+  `r2` branch; no predicate change was needed.
+
+Decisions on F4–F8:
+- **F4 (initial DT is f64, exactness is validation-only) — fix now, as
+  contract.**  F1 adds the fail-closed guard and `build_dt` documents that
+  callers must check `dt_valid`.  Replacing Geogram with an own exact
+  incremental Delaunay is rejected for this phase: the design explicitly
+  keeps Geogram for P2 and the gate has shown `dt_valid=true` on all eight
+  meshes.
+- **F5 (one-ulp coplanar-overlap perturbation) — reject for now.**  This is
+  the owner-approved O7 policy, deterministic and reported; the design's
+  P0 self-review already records the unproven thin-shell shape safety.  No
+  change until the shape gate (M2) can measure it.
+- **F6 (O(n²)-per-pass PLC conformance scan) — later (performance).**
+  Correctness is unaffected; `plate_a_dent` Phase A is ~8–9 s.  Tracked for
+  P4.4/P6 profiling after constraint recovery is complete, not a P4 blocker.
+- **F7 (category-3 midpoint does not first reuse a collinear vertex) —
+  later.**  The corpus reports `reused=0`; the generic chain path is covered.
+  A focused reuse test is queued with the P6 hardening, not now.
+- **F8 (f64 split-candidate / acute-angle heuristics) — reject.**  These
+  choose only the split location; the split point remains exactly on the PLC
+  edge and every validity decision uses the exact predicates.  No change.
+
+`cargo test --release` after F1–F3: see the next full run.  The P3 corpus
+hashes and counts are unchanged.
