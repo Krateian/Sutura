@@ -400,3 +400,49 @@ new P4 detection gate, and the pre-existing ignored test).
 Next step: P4.1 cavity construction, plane split, local Delaunay, and exact
 boundary/face verification.  If local Delaunay cannot represent a boundary
 triangle, expand the cavity; log each failure.
+
+## 2026-10-26 — P4.1 cavity split and local Delaunay (partial)
+
+What was done:
+- `recover_faces` now iterates missing faces, collects the tets incident to
+  piercing edges, splits each face-connected cavity by the face plane into
+  `V1` (on/above) and `V2` (on/below), computes a local Geogram Delaunay of
+  each vertex set, keeps only tets whose exact point-in-tet test places the
+  centroid inside the removed cavity, and replaces the cavity.
+- Replacement is verified exactly: every original cavity boundary triangle must
+  appear once with the same orientation, no extra new boundary face is allowed,
+  no new tet edge may still pierce the face, and cavity volume must be
+  preserved.  Failures are logged behind `CDT3D_DEBUG_FACE` and skipped.
+- No expansion or gift-wrapping yet; those are P4.2/P4.3.  No Steiner points are
+  added (the P3 count is unchanged).
+
+P4.1 numbers (release; five runs not yet asserted for P4):
+
+| mesh | missing before | missing after | cavities tried | retetra | tets | structural valid |
+|---|---:|---:|---:|---:|---:|---|
+| thingi10k_100827 | 11 | 9 | 14 | 2 | 632 | true |
+| case1_open_cup | 12 | 12 | 12 | 0 | 1377 | true |
+| case2_pipe | 6 | 6 | 6 | 0 | 606 | true |
+| case3_broken_cup | 79 | 79 | 172 | 0 | 6214 | true |
+| case4_cracked_sphere | 7 | 7 | 7 | 0 | 3895 | true |
+| case5_box_missing_face | 0 | 0 | 0 | 0 | 58 | true |
+| case6_thin_cup | 6 | 6 | 6 | 0 | 613 | true |
+| plate_a_dent | 8 | 8 | 10 | 0 | 122595 | true |
+
+Wall time of the face stage alone: 100827 0.051 s; case3 8.1 s; plate 23.1 s
+(on top of P3).  Structural checks (`orientation`, `duplicate`, `non-manifold`,
+`neighbour`, `off-box hull`, `unused`) are zero everywhere.
+
+Why so few cavities succeed (recorded for P4.2): the local Delaunay of `V1` and
+`V2` frequently (a) leaves a cavity boundary triangle unrecovered, (b) has a
+cavity boundary triangle whose vertices straddle the face plane, or (c) still
+leaves a piercing edge because the two half-triangulations do not agree on the
+face.  These are exactly the cases the Si–Gärtner expansion and the
+gift-wrapping fallback must handle.  `case3_broken_cup` also shows the retry
+loop is costly (172 cavity attempts, 8.1 s) before hard-failing.
+
+`cargo test --release`: **381 passed, 0 failed, 6 ignored**.
+
+Next step: P4.2 — expand a cavity when a boundary triangle is missing or when
+its boundary crosses the face plane; add the opposite tet, recompute, and
+record expansions.  Then P4.3 gift-wrapping for the remaining cases.

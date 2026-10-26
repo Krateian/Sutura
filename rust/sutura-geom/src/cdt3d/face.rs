@@ -73,31 +73,511 @@ pub struct FaceMesh {
 pub fn recover_faces(
     seg: &SegmentMesh,
     plc: &Plc,
-    _opts: &FaceOptions,
+    opts: &FaceOptions,
 ) -> Result<FaceMesh, String> {
     if plc.tris.is_empty() {
         return Err("face recovery needs a non-empty PLC".into());
     }
-    let missing = detect_missing_faces(&seg.points, &seg.tets, plc)?;
+    let points = seg.points.clone();
+    let mut tets = seg.tets.clone();
+    let mut neighbours = seg.neighbours.clone();
+    let missing = detect_missing_faces(&points, &tets, plc)?;
     let missing_before = missing.iter().filter(|m| **m).count();
-    let mut report = FaceReport {
-        input_plc_triangles: plc.tris.len(),
-        recovered_triangles: plc.tris.len() - missing_before,
-        missing_before,
-        missing_after: missing_before,
-        tets: seg.tets.len(),
-        steiner_points: seg.points.len().saturating_sub(seg.plc_vertices + 8),
-        ..FaceReport::default()
-    };
-    report.hash = face_hash(&seg.points, &seg.tets);
+
+    let mut cavities = 0usize;
+    let mut retetrahedralized = 0usize;
+    let mut expansions = 0usize;
+    let mut gift_wraps = 0usize;
+    let mut passes = 0usize;
+    let mut hard_failed = BTreeSet::new();
+    let max_rounds = plc.tris.len().saturating_mul(8).max(64);
+
+    for _ in 0..max_rounds {
+        let missing = detect_missing_faces(&points, &tets, plc)?;
+        let targets: Vec<usize> = missing
+            .iter()
+            .enumerate()
+            .filter(|(i, m)| **m && !hard_failed.contains(i))
+            .map(|(i, _)| i)
+            .collect();
+        if targets.is_empty() {
+            break;
+        }
+        let mut progress = false;
+        for fi in targets {
+            let face = plc.tris[fi];
+            let comps = collect_cavities(&points, &tets, &neighbours, face)?;
+            if comps.is_empty() {
+                hard_failed.insert(fi);
+                continue;
+            }
+            let mut fixed = false;
+            for comp in &comps {
+                cavities += 1;
+                match retetra_cavity(&points, &tets, &neighbours, comp, face, opts) {
+                    Ok(new_tets) => {
+                        let mut merged = Vec::with_capacity(tets.len());
+                        let in_comp: BTreeSet<usize> = comp.iter().copied().collect();
+                        for (ti, t) in tets.iter().enumerate() {
+                            if !in_comp.contains(&ti) {
+                                merged.push(*t);
+                            }
+                        }
+                        merged.extend(new_tets);
+                        let canon = crate::cdt3d::segment::canonicalize_mesh(&points, merged)?;
+                        let nb = crate::cdt3d::segment::build_neighbours_fast(&canon)?;
+                        tets = canon;
+                        neighbours = nb;
+                        retetrahedralized += 1;
+                        passes += 1;
+                        progress = true;
+                        fixed = true;
+                        break;
+                    }
+                    Err(e) => {
+                        if std::env::var_os("CDT3D_DEBUG_FACE").is_some() {
+                            eprintln!("face {fi} cavity fail: {e}");
+                        }
+                        continue;
+                    }
+                }
+            }
+            if !fixed {
+                hard_failed.insert(fi);
+            }
+            if progress {
+                break;
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+
+    let missing_after_vec = detect_missing_faces(&points, &tets, plc)?;
+    let missing_after = missing_after_vec.iter().filter(|m| **m).count();
+    let mut report =
+        validate_face_mesh(&points, &tets, &neighbours, plc, seg.box3, missing_after);
+    report.input_plc_triangles = plc.tris.len();
+    report.recovered_triangles = plc.tris.len() - missing_after;
+    report.missing_before = missing_before;
+    report.cavities = cavities;
+    report.retetrahedralized = retetrahedralized;
+    report.expansions = expansions;
+    report.gift_wraps = gift_wraps;
+    report.passes = passes;
+    report.steiner_points = points.len().saturating_sub(seg.plc_vertices + 8);
+    report.hash = face_hash(&points, &tets);
     Ok(FaceMesh {
-        points: seg.points.clone(),
+        points,
         plc_vertices: seg.plc_vertices,
         box3: seg.box3,
-        tets: seg.tets.clone(),
-        neighbours: seg.neighbours.clone(),
+        tets,
+        neighbours,
         report,
     })
+}
+
+struct BoundaryFace {
+    oriented: [usize; 3],
+    opp_tet: usize,
+}
+
+/// Face-connected cavities among the tetrahedra incident to piercing edges.
+fn collect_cavities(
+    points: &[Point3],
+    tets: &[[usize; 4]],
+    neighbours: &[[i32; 4]],
+    face: [usize; 3],
+) -> Result<Vec<Vec<usize>>, String> {
+    let approx: Vec<[f64; 3]> = points
+        .iter()
+        .map(|p| p.to_f64().ok_or_else(|| "point has no approximate coordinates".to_string()))
+        .collect::<Result<_, _>>()?;
+    let f = [
+        Point3::Explicit(approx[face[0]]),
+        Point3::Explicit(approx[face[1]]),
+        Point3::Explicit(approx[face[2]]),
+    ];
+    let mut in_tf = vec![false; tets.len()];
+    for (ti, t) in tets.iter().enumerate() {
+        'edges: for i in 0..4 {
+            for j in (i + 1)..4 {
+                let a = Point3::Explicit(approx[t[i]]);
+                let b = Point3::Explicit(approx[t[j]]);
+                if edge_pierces_triangle(&a, &b, &f[0], &f[1], &f[2]) {
+                    in_tf[ti] = true;
+                    break 'edges;
+                }
+            }
+        }
+    }
+
+    let mut seen = vec![false; tets.len()];
+    let mut comps = Vec::new();
+    for start in 0..tets.len() {
+        if !in_tf[start] || seen[start] {
+            continue;
+        }
+        let mut stack = vec![start];
+        seen[start] = true;
+        let mut comp = Vec::new();
+        while let Some(ti) = stack.pop() {
+            comp.push(ti);
+            for &n in &neighbours[ti] {
+                if n >= 0 {
+                    let n = n as usize;
+                    if in_tf[n] && !seen[n] {
+                        seen[n] = true;
+                        stack.push(n);
+                    }
+                }
+            }
+        }
+        comp.sort_unstable();
+        comps.push(comp);
+    }
+    Ok(comps)
+}
+
+fn retetra_cavity(
+    points: &[Point3],
+    tets: &[[usize; 4]],
+    neighbours: &[[i32; 4]],
+    cavity: &[usize],
+    face: [usize; 3],
+    _opts: &FaceOptions,
+) -> Result<Vec<[usize; 4]>, String> {
+    let in_cavity: BTreeSet<usize> = cavity.iter().copied().collect();
+    let mut boundary: BTreeMap<[usize; 3], BoundaryFace> = BTreeMap::new();
+    let mut verts = BTreeSet::new();
+    for &ti in cavity {
+        let t = tets[ti];
+        for &v in &t {
+            verts.insert(v);
+        }
+        for lv in 0..4 {
+            let n = neighbours[ti][lv];
+            if n < 0 {
+                return Err("cavity touches the synthetic box".into());
+            }
+            if in_cavity.contains(&(n as usize)) {
+                continue;
+            }
+            let key = crate::cdt3d::dt::sorted_face(&t, lv);
+            let (a, b, c, _) = crate::cdt3d::segment::oriented_face_apex(points, &t, lv);
+            if boundary
+                .insert(
+                    key,
+                    BoundaryFace {
+                        oriented: [a, b, c],
+                        opp_tet: n as usize,
+                    },
+                )
+                .is_some()
+            {
+                return Err("duplicate cavity boundary face".into());
+            }
+        }
+    }
+
+    let p = [
+        Point3::Explicit(points[face[0]].to_f64().unwrap()),
+        Point3::Explicit(points[face[1]].to_f64().unwrap()),
+        Point3::Explicit(points[face[2]].to_f64().unwrap()),
+    ];
+    let mut sign: BTreeMap<usize, f64> = BTreeMap::new();
+    for &v in &verts {
+        sign.insert(v, orient3d_sign(&p[0], &p[1], &p[2], &points[v]));
+    }
+
+    for bf in boundary.values() {
+        let s = [
+            sign[&bf.oriented[0]],
+            sign[&bf.oriented[1]],
+            sign[&bf.oriented[2]],
+        ];
+        let any_above = s.iter().any(|x| *x > 0.0);
+        let any_below = s.iter().any(|x| *x < 0.0);
+        if any_above && any_below {
+            if std::env::var_os("CDT3D_DEBUG_FACE").is_some() {
+                eprintln!(
+                    "crossing boundary face {:?} signs {:?} face {:?}",
+                    bf.oriented, s, face
+                );
+            }
+            return Err("cavity boundary crosses the face plane".into());
+        }
+    }
+
+    let v1: Vec<usize> = verts.iter().copied().filter(|v| sign[v] >= 0.0).collect();
+    let v2: Vec<usize> = verts.iter().copied().filter(|v| sign[v] <= 0.0).collect();
+    let d1 = half_delaunay(points, tets, &in_cavity, &v1)?;
+    let d2 = half_delaunay(points, tets, &in_cavity, &v2)?;
+    let mut new_tets = d1;
+    new_tets.extend(d2);
+    if new_tets.is_empty() {
+        return Err("local Delaunay produced no cavity tetrahedra".into());
+    }
+
+    verify_replacement(points, tets, cavity, &boundary, &new_tets, face)?;
+    Ok(new_tets)
+}
+
+fn half_delaunay(
+    points: &[Point3],
+    removed: &[[usize; 4]],
+    in_cavity: &BTreeSet<usize>,
+    vids: &[usize],
+) -> Result<Vec<[usize; 4]>, String> {
+    if vids.len() < 4 {
+        return Ok(Vec::new());
+    }
+    let approx: Vec<[f64; 3]> = vids
+        .iter()
+        .map(|&v| {
+            points[v]
+                .to_f64()
+                .ok_or_else(|| "point has no approximate coordinates".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+    let raw = match crate::splint::delaunay::delaunay3(&approx) {
+        Ok(r) => r,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let removed_list: Vec<usize> = in_cavity.iter().copied().collect();
+    let mut out = Vec::new();
+    for t in raw {
+        let g = [vids[t[0]], vids[t[1]], vids[t[2]], vids[t[3]]];
+        let s = orient3d_sign(&points[g[0]], &points[g[1]], &points[g[2]], &points[g[3]]);
+        if s == 0.0 {
+            continue;
+        }
+        let mut g = g;
+        if s < 0.0 {
+            g.swap(2, 3);
+        }
+        let c = [
+            (approx[t[0]][0] + approx[t[1]][0] + approx[t[2]][0] + approx[t[3]][0]) * 0.25,
+            (approx[t[0]][1] + approx[t[1]][1] + approx[t[2]][1] + approx[t[3]][1]) * 0.25,
+            (approx[t[0]][2] + approx[t[1]][2] + approx[t[2]][2] + approx[t[3]][2]) * 0.25,
+        ];
+        if removed_list
+            .iter()
+            .any(|&ti| point_in_tet(points, &removed[ti], c))
+        {
+            out.push(g);
+        }
+    }
+    Ok(out)
+}
+
+fn point_in_tet(points: &[Point3], t: &[usize; 4], c: [f64; 3]) -> bool {
+    let q = Point3::Explicit(c);
+    for lv in 0..4 {
+        let (a, b, d, _) = crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+        if orient3d_sign(&points[a], &points[b], &points[d], &q) < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn cyclic_eq(x: [usize; 3], y: [usize; 3]) -> bool {
+    (x[0] == y[0] && x[1] == y[1] && x[2] == y[2])
+        || (x[0] == y[1] && x[1] == y[2] && x[2] == y[0])
+        || (x[0] == y[2] && x[1] == y[0] && x[2] == y[1])
+}
+
+fn verify_replacement(
+    points: &[Point3],
+    tets: &[[usize; 4]],
+    cavity: &[usize],
+    boundary: &BTreeMap<[usize; 3], BoundaryFace>,
+    new_tets: &[[usize; 4]],
+    face: [usize; 3],
+) -> Result<(), String> {
+    let mut occ: BTreeMap<[usize; 3], Vec<(usize, usize)>> = BTreeMap::new();
+    for (ti, t) in new_tets.iter().enumerate() {
+        for lv in 0..4 {
+            occ.entry(crate::cdt3d::dt::sorted_face(t, lv))
+                .or_default()
+                .push((ti, lv));
+        }
+    }
+    for (key, list) in &occ {
+        match list.len() {
+            1 => {
+                let bf = boundary
+                    .get(key)
+                    .ok_or_else(|| format!("new cavity has extra boundary face {key:?}"))?;
+                let (ti, lv) = list[0];
+                let (a, b, c, _) =
+                    crate::cdt3d::segment::oriented_face_apex(points, &new_tets[ti], lv);
+                if !cyclic_eq([a, b, c], bf.oriented) {
+                    return Err("new boundary face has the wrong orientation".into());
+                }
+                let _ = bf.opp_tet;
+            }
+            2 => {}
+            n => return Err(format!("new cavity face {key:?} has {n} incidences")),
+        }
+    }
+    for key in boundary.keys() {
+        if !occ.contains_key(key) {
+            return Err(format!("cavity boundary face {key:?} was not recovered"));
+        }
+    }
+
+    let f = [
+        Point3::Explicit(points[face[0]].to_f64().unwrap()),
+        Point3::Explicit(points[face[1]].to_f64().unwrap()),
+        Point3::Explicit(points[face[2]].to_f64().unwrap()),
+    ];
+    for t in new_tets {
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                let a = Point3::Explicit(points[t[i]].to_f64().unwrap());
+                let b = Point3::Explicit(points[t[j]].to_f64().unwrap());
+                if edge_pierces_triangle(&a, &b, &f[0], &f[1], &f[2]) {
+                    return Err("recovered cavity still pierces the face".into());
+                }
+            }
+        }
+    }
+
+    let old_vol: f64 = cavity
+        .iter()
+        .map(|&ti| tet_volume6(points, &tets[ti]).abs())
+        .sum();
+    let new_vol: f64 = new_tets
+        .iter()
+        .map(|t| tet_volume6(points, t).abs())
+        .sum();
+    let scale = old_vol.abs().max(1.0);
+    if (old_vol - new_vol).abs() > 1e-6 * scale {
+        return Err(format!(
+            "cavity volume changed ({old_vol} -> {new_vol})"
+        ));
+    }
+    Ok(())
+}
+
+fn tet_volume6(points: &[Point3], t: &[usize; 4]) -> f64 {
+    let a = points[t[0]].to_f64().unwrap();
+    let b = points[t[1]].to_f64().unwrap();
+    let c = points[t[2]].to_f64().unwrap();
+    let d = points[t[3]].to_f64().unwrap();
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let ad = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+    let cross = [
+        ac[1] * ad[2] - ac[2] * ad[1],
+        ac[2] * ad[0] - ac[0] * ad[2],
+        ac[0] * ad[1] - ac[1] * ad[0],
+    ];
+    ab[0] * cross[0] + ab[1] * cross[1] + ab[2] * cross[2]
+}
+
+fn validate_face_mesh(
+    points: &[Point3],
+    tets: &[[usize; 4]],
+    neighbours: &[[i32; 4]],
+    plc: &Plc,
+    box3: crate::cdt3d::dt::BoundingBox3,
+    missing_after: usize,
+) -> FaceReport {
+    let plc_vertices = plc.verts.len();
+    let mut r = FaceReport {
+        tets: tets.len(),
+        missing_after,
+        ..FaceReport::default()
+    };
+    for w in tets.windows(2) {
+        if w[0] == w[1] {
+            r.duplicate_tets += 1;
+        }
+    }
+    let mut used = vec![false; points.len()];
+    for t in tets {
+        for &v in t {
+            used[v] = true;
+        }
+        let s = orient3d_sign(&points[t[0]], &points[t[1]], &points[t[2]], &points[t[3]]);
+        if s <= 0.0 {
+            r.orientation_violations += 1;
+        }
+    }
+    r.unused_vertices = used.iter().filter(|u| !**u).count();
+
+    let mut occurrences: BTreeMap<[usize; 3], Vec<(usize, usize)>> = BTreeMap::new();
+    for (ti, t) in tets.iter().enumerate() {
+        for lv in 0..4 {
+            occurrences
+                .entry(crate::cdt3d::dt::sorted_face(t, lv))
+                .or_default()
+                .push((ti, lv));
+        }
+    }
+    for (face, list) in &occurrences {
+        match list.len() {
+            1 => {
+                if !crate::cdt3d::segment::face_on_box(points, plc_vertices, &box3, *face) {
+                    r.hull_faces_off_box += 1;
+                }
+            }
+            2 => {}
+            _ => r.nonmanifold_faces += 1,
+        }
+    }
+    for (ti, t) in tets.iter().enumerate() {
+        for lv in 0..4 {
+            let face = crate::cdt3d::dt::sorted_face(t, lv);
+            let n = neighbours[ti][lv];
+            if n < 0 {
+                if occurrences.get(&face).map(|v| v.len()) != Some(1) {
+                    r.inconsistent_neighbours += 1;
+                }
+                continue;
+            }
+            let n = n as usize;
+            if n >= tets.len() || n == ti {
+                r.inconsistent_neighbours += 1;
+                continue;
+            }
+            let Some(lv2) = (0..4).find(|&j| crate::cdt3d::dt::sorted_face(&tets[n], j) == face)
+            else {
+                r.inconsistent_neighbours += 1;
+                continue;
+            };
+            if neighbours[n][lv2] != ti as i32 || tets[n][lv2] == t[lv] {
+                r.inconsistent_neighbours += 1;
+            }
+            let (a, b, c, d) = crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+            let e = tets[n][lv2];
+            let s = crate::predicates3d::insphere_sign(
+                &points[a],
+                &points[b],
+                &points[c],
+                &points[d],
+                &points[e],
+            );
+            if s > 0.0 {
+                r.empty_sphere_violations += 1;
+            } else if s == 0.0 {
+                r.cospherical_faces += 1;
+            }
+        }
+    }
+    r.valid = r.tets > 0
+        && r.missing_after == 0
+        && r.duplicate_tets == 0
+        && r.orientation_violations == 0
+        && r.nonmanifold_faces == 0
+        && r.inconsistent_neighbours == 0
+        && r.hull_faces_off_box == 0
+        && r.unused_vertices == 0;
+    r
 }
 
 #[derive(Clone, Copy)]
@@ -360,6 +840,59 @@ mod tests {
             assert_eq!(again, first);
         }
         println!("100827: faces={} missing={count}", plc.tris.len());
+    }
+
+    #[test]
+    fn thingi10k_100827_face_recovery_is_structurally_valid() {
+        let plc = plc_for("real", "thingi10k_100827.stl");
+        let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+        let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+        assert_eq!(face.report.orientation_violations, 0, "{:?}", face.report);
+        assert_eq!(face.report.duplicate_tets, 0, "{:?}", face.report);
+        assert_eq!(face.report.inconsistent_neighbours, 0, "{:?}", face.report);
+        assert_eq!(face.report.hull_faces_off_box, 0, "{:?}", face.report);
+        assert_eq!(face.report.unused_vertices, 0, "{:?}", face.report);
+        println!("100827: {:?}", face.report);
+    }
+
+    #[test]
+    #[ignore = "P4 public-corpus gate; run with --release -- --ignored"]
+    fn face_recovery_public_corpus_gate() {
+        let samples = [
+            ("real", "thingi10k_100827.stl"),
+            ("fixture", "case1_open_cup.stl"),
+            ("fixture", "case2_pipe.stl"),
+            ("fixture", "case3_broken_cup.stl"),
+            ("fixture", "case4_cracked_sphere.stl"),
+            ("fixture", "case5_box_missing_face.stl"),
+            ("fixture", "case6_thin_cup.stl"),
+            ("fixture", "plate_a_dent.stl"),
+        ];
+        for (kind, name) in samples {
+            let plc = plc_for(kind, name);
+            let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+            let start = Instant::now();
+            let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+            let secs = start.elapsed().as_secs_f64();
+            println!(
+                "{name}: faces={} miss_before={} miss_after={} cav={} retet={} exp={} gift={} tets={} ori={} dup={} nm={} ngb={} unused={} empty={} secs={:.3}",
+                face.report.input_plc_triangles,
+                face.report.missing_before,
+                face.report.missing_after,
+                face.report.cavities,
+                face.report.retetrahedralized,
+                face.report.expansions,
+                face.report.gift_wraps,
+                face.report.tets,
+                face.report.orientation_violations,
+                face.report.duplicate_tets,
+                face.report.nonmanifold_faces,
+                face.report.inconsistent_neighbours,
+                face.report.unused_vertices,
+                face.report.empty_sphere_violations,
+                secs
+            );
+        }
     }
 
     #[test]
