@@ -403,7 +403,7 @@ fn weld_and_clean(
 /// propagating orientation across shared edges (breadth-first).  The gradient
 /// heuristic in `marching_tets` is ambiguous where the field is flat, which
 /// left a few arbitrarily oriented faces on boxy shapes.
-fn orient_consistently(tris: &mut [[u32; 3]]) {
+pub(crate) fn orient_consistently(tris: &mut [[u32; 3]]) {
     let n = tris.len();
     if n == 0 {
         return;

@@ -12,6 +12,7 @@
 use crate::cdt3d::dt::sorted_face;
 use crate::cdt3d::face::FaceMesh;
 use crate::cdt3d::plc::Plc;
+use crate::dressing::orient_consistently;
 use crate::dual_contour::mesh_is_manifold;
 use crate::hole::{boundary_topology, close_holes_core};
 use crate::mincut::BkGraph;
@@ -19,7 +20,9 @@ use crate::point::Point3;
 use crate::splint::emit::snap_and_dedup_f32;
 use crate::splint::label::{label_tets, label_tets_winding};
 use crate::splint::normalize::Normalizer;
+use crate::shell::compute_shell_components;
 use crate::splint::proxy;
+use crate::topology::re_orient_faces_coherently_core;
 use crate::winding::MeshBvh;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,12 +70,26 @@ impl Default for SolidOptions {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct ComponentOrientation {
+    pub faces: usize,
+    pub signed_volume: f64,
+    pub closed: bool,
+    pub flipped: bool,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct SolidReport {
     pub cells: usize,
     pub tet_count: usize,
     pub constraint_faces: usize,
     pub open_input: bool,
     pub gwn_threshold: bool,
+    pub orientation_used: bool,
+    pub orientation_components: usize,
+    pub orientation_flipped: usize,
+    pub orientation_fallback: bool,
+    pub orientation: Vec<ComponentOrientation>,
+    pub w_hist: [usize; 10],
     pub proxy_shell_vertices: usize,
     pub proxy_shell_faces: usize,
     pub constraint_cut_faces: usize,
@@ -737,6 +754,7 @@ fn finish_solid(
         hausdorff_full: fo2i.max(fi2o),
         valid: false,
         hash: hash_output(&out_verts, &tris),
+        ..SolidReport::default()
     };
     report.valid = report.parts == 1
         && report.holes == 0
@@ -752,48 +770,156 @@ fn finish_solid(
 }
 
 
-fn build_solid_gwn(
-    face: &FaceMesh,
-    plc: &Plc,
-    unary_verts: &[[f64; 3]],
-    unary_tris: &[[usize; 3]],
-    _opts: &SolidOptions,
-) -> Result<SolidMesh, String> {
-    let points = &face.points;
-    let tets = &face.tets;
-    let neighbours = &face.neighbours;
-    let n_tets = tets.len();
-    let constraints: BTreeSet<[usize; 3]> = face.constraint_faces.iter().copied().collect();
-    let bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
-    let mut cen = vec![[0.0f64; 3]; n_tets];
-    let mut out = vec![false; n_tets];
-    for ti in 0..n_tets {
-        for &p in &tets[ti] {
-            let q = points[p].to_f64().unwrap_or([0.0; 3]);
-            for a in 0..3 {
-                cen[ti][a] += q[a] * 0.25;
-            }
-        }
-        for lv in 0..4 {
-            if neighbours[ti][lv] < 0 {
-                out[ti] = true;
-            }
-        }
-    }
-    let labels = label_tets_winding(&bvh, &cen, &out, false, 1.0);
-    let inside: Vec<bool> = labels.init_label.iter().map(|&l| l == 0).collect();
-    let inside_count = inside.iter().filter(|&&x| x).count();
-    if inside_count == 0 || inside_count == n_tets {
-        return Err(format!(
-            "gwn_threshold produced a trivial labelling: {inside_count}/{n_tets} inside"
-        ));
-    }
+struct OrientationStats {
+    components: usize,
+    flipped: usize,
+    fallback: bool,
+    details: Vec<ComponentOrientation>,
+}
 
+fn orient_for_winding(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+) -> (Vec<[usize; 3]>, OrientationStats) {
+    let i64tris: Vec<[i64; 3]> = tris
+        .iter()
+        .map(|t| [t[0] as i64, t[1] as i64, t[2] as i64])
+        .collect();
+    let (mut out, fallback) = match re_orient_faces_coherently_core(&i64tris) {
+        Ok(v) => (
+            v.iter()
+                .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+                .collect::<Vec<_>>(),
+            false,
+        ),
+        Err(_) => {
+            let mut u: Vec<[u32; 3]> = tris
+                .iter()
+                .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+                .collect();
+            orient_consistently(&mut u);
+            (
+                u.into_iter()
+                    .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+                    .collect(),
+                true,
+            )
+        }
+    };
+    let u: Vec<[u32; 3]> = out
+        .iter()
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let (map, components) = compute_shell_components(&u);
+    let mut vols = vec![0.0f64; components];
+    let mut counts = vec![0usize; components];
+    for (i, t) in out.iter().enumerate() {
+        let a = verts[t[0]];
+        let b = verts[t[1]];
+        let c = verts[t[2]];
+        vols[map[i]] += (a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]))
+            / 6.0;
+        counts[map[i]] += 1;
+    }
+    let mut edge_counts: Vec<BTreeMap<(usize, usize), usize>> =
+        vec![BTreeMap::new(); components];
+    for (i, t) in out.iter().enumerate() {
+        let c = map[i];
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *edge_counts[c].entry(key).or_insert(0) += 1;
+        }
+    }
+    let closed: Vec<bool> = edge_counts
+        .iter()
+        .map(|m| !m.is_empty() && m.values().all(|&n| n == 2))
+        .collect();
+    let mut flipped = 0usize;
+    let mut details = Vec::with_capacity(components);
+    for c in 0..components {
+        let flip = vols[c] < 0.0;
+        if flip {
+            flipped += 1;
+            for (i, t) in out.iter_mut().enumerate() {
+                if map[i] == c {
+                    t.swap(1, 2);
+                }
+            }
+        }
+        details.push(ComponentOrientation {
+            faces: counts[c],
+            signed_volume: vols[c],
+            closed: closed[c],
+            flipped: flip,
+        });
+    }
+    (
+        out,
+        OrientationStats {
+            components,
+            flipped,
+            fallback,
+            details,
+        },
+    )
+}
+
+fn gwn_labels(
+    bvh: &MeshBvh,
+    cen: &[[f64; 3]],
+    out: &[bool],
+) -> (Vec<bool>, [usize; 10]) {
+    let labels = label_tets_winding(bvh, cen, out, false, 1.0);
+    let inside: Vec<bool> = labels.init_label.iter().map(|&l| l == 0).collect();
+    let mut w_hist = [0usize; 10];
+    for ti in 0..cen.len() {
+        let w = bvh.winding_at(cen[ti]);
+        let bin = ((w * 10.0).floor() as i64).clamp(0, 9) as usize;
+        w_hist[bin] += 1;
+    }
+    (inside, w_hist)
+}
+
+fn gwn_plc_count(
+    tets: &[[usize; 4]],
+    neighbours: &[[i32; 4]],
+    constraints: &BTreeSet<[usize; 3]>,
+    inside: &[bool],
+) -> usize {
+    let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
+    let mut count = 0usize;
+    for ti in 0..tets.len() {
+        for lv in 0..4 {
+            let n = neighbours[ti][lv];
+            if n < 0 {
+                continue;
+            }
+            let key = sorted_face(&tets[ti], lv);
+            if constraints.contains(&key)
+                && inside[ti] != inside[n as usize]
+                && seen.insert(key)
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn extract_gwn_faces(
+    points: &[Point3],
+    tets: &[[usize; 4]],
+    neighbours: &[[i32; 4]],
+    constraints: &BTreeSet<[usize; 3]>,
+    inside: &[bool],
+) -> (Vec<[usize; 3]>, Vec<[usize; 3]>, f64) {
     let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut plc_faces: Vec<[usize; 3]> = Vec::new();
     let mut free_faces: Vec<[usize; 3]> = Vec::new();
-    let mut free_cut_area = 0.0f64;
-    for ti in 0..n_tets {
+    let mut free_area = 0.0f64;
+    for ti in 0..tets.len() {
         for lv in 0..4 {
             let n = neighbours[ti][lv];
             if n < 0 {
@@ -809,19 +935,80 @@ fn build_solid_gwn(
                 let nj = n as usize;
                 let lv2 = (0..4)
                     .find(|&k| sorted_face(&tets[nj], k) == key)
-                    .ok_or_else(|| "neighbour face mismatch".to_string())?;
-                (nj, lv2)
+                    .ok_or_else(|| "neighbour face mismatch".to_string());
+                match lv2 {
+                    Ok(lv2) => (nj, lv2),
+                    Err(_) => continue,
+                }
             };
             let (a, b, c, _) =
                 crate::cdt3d::segment::oriented_face_apex(points, &tets[t_in], lv_in);
             if constraints.contains(&key) {
                 plc_faces.push([a, b, c]);
             } else {
-                free_cut_area += tri_area(points, key);
+                free_area += tri_area(points, key);
                 free_faces.push([a, b, c]);
             }
         }
     }
+    (plc_faces, free_faces, free_area)
+}
+
+fn build_solid_gwn(
+    face: &FaceMesh,
+    plc: &Plc,
+    unary_verts: &[[f64; 3]],
+    unary_tris: &[[usize; 3]],
+    _opts: &SolidOptions,
+) -> Result<SolidMesh, String> {
+    let points = &face.points;
+    let tets = &face.tets;
+    let neighbours = &face.neighbours;
+    let n_tets = tets.len();
+    let constraints: BTreeSet<[usize; 3]> = face.constraint_faces.iter().copied().collect();
+    let mut cen = vec![[0.0f64; 3]; n_tets];
+    let mut out = vec![false; n_tets];
+    for ti in 0..n_tets {
+        for &p in &tets[ti] {
+            let q = points[p].to_f64().unwrap_or([0.0; 3]);
+            for a in 0..3 {
+                cen[ti][a] += q[a] * 0.25;
+            }
+        }
+        for lv in 0..4 {
+            if neighbours[ti][lv] < 0 {
+                out[ti] = true;
+            }
+        }
+    }
+
+    let raw_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
+    let (raw_inside, raw_hist) = gwn_labels(&raw_bvh, &cen, &out);
+    let raw_plc = gwn_plc_count(tets, neighbours, &constraints, &raw_inside);
+    let raw_ok = raw_inside.iter().any(|&x| x) && raw_inside.iter().any(|&x| !x);
+
+    let (oriented_tris, orientation) = orient_for_winding(unary_verts, unary_tris);
+    let oriented_bvh = MeshBvh::from_arrays(unary_verts, &oriented_tris);
+    let (oriented_inside, oriented_hist) = gwn_labels(&oriented_bvh, &cen, &out);
+    let oriented_plc = gwn_plc_count(tets, neighbours, &constraints, &oriented_inside);
+    let oriented_ok = oriented_inside.iter().any(|&x| x) && oriented_inside.iter().any(|&x| !x);
+
+    let use_oriented = match (raw_ok, oriented_ok) {
+        (false, false) => {
+            return Err("gwn_threshold produced a trivial labelling on both raw and oriented input".into())
+        }
+        (true, false) => false,
+        (false, true) => true,
+        (true, true) => oriented_plc > raw_plc,
+    };
+    let (inside, w_hist) = if use_oriented {
+        (oriented_inside, oriented_hist)
+    } else {
+        (raw_inside, raw_hist)
+    };
+    let inside_count = inside.iter().filter(|&&x| x).count();
+    let (plc_faces, free_faces, free_area) =
+        extract_gwn_faces(points, tets, neighbours, &constraints, &inside);
     let meta = SolidMeta {
         cells: n_tets,
         tet_count: n_tets,
@@ -831,13 +1018,13 @@ fn build_solid_gwn(
         proxy_shell_vertices: 0,
         proxy_shell_faces: 0,
         free_cut_faces: free_faces.len(),
-        free_cut_area,
+        free_cut_area: free_area,
         self_loop_faces: 0,
         boundary_constraint_faces: 0,
         inside_cells: inside_count,
         contracted: false,
     };
-    finish_solid(
+    let mut solid = finish_solid(
         points,
         plc,
         plc_faces,
@@ -847,7 +1034,14 @@ fn build_solid_gwn(
         0.0,
         _opts,
         meta,
-    )
+    )?;
+    solid.report.orientation_used = use_oriented;
+    solid.report.orientation_components = orientation.components;
+    solid.report.orientation_flipped = orientation.flipped;
+    solid.report.orientation_fallback = orientation.fallback;
+    solid.report.orientation = orientation.details;
+    solid.report.w_hist = w_hist;
+    Ok(solid)
 }
 
 fn build_solid_tets(
@@ -1033,6 +1227,24 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn thingi10k_100827_gwn_gate() {
+        let plc = plc_for("real", "thingi10k_100827.stl");
+        let (uv, ut) = real_sample("thingi10k_100827.stl");
+        let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+        let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+        let solid = build_solid(&face, &plc, &uv, &ut, &SolidOptions::default()).unwrap();
+        assert!(solid.report.gwn_threshold);
+        assert!(solid.report.orientation_used);
+        assert_eq!(solid.report.constraint_cut_faces, 198);
+        assert_eq!(solid.report.parts, 1);
+        assert_eq!(solid.report.holes, 0);
+        assert_eq!(solid.report.nonmanifold, 0);
+        assert!(solid.report.bbox_ok);
+        assert!(solid.report.hausdorff <= 0.0125);
+        assert!(solid.report.valid);
+    }
+
+    #[test]
     fn thingi10k_100827_solid_diagnostic() {
         let plc = plc_for("real", "thingi10k_100827.stl");
         let (uv, ut) = real_sample("thingi10k_100827.stl");
@@ -1043,11 +1255,16 @@ mod tests {
         let solid = build_solid(&face, &plc, &uv, &ut, &opts).unwrap();
         let secs = start.elapsed().as_secs_f64();
         println!(
-            "100827 solid: cells={} cfaces={} open={} gwn={} pv={} pf={} selfloop={} bc={} inside={} outF={} capF={} capA={:.6} ccut={} ccutA={:.3} fcut={} fcutA={:.3} parts={} holes={} nm={} bbox_ok={} bbox={:?} h_o2i={:.6} h_i2o={:.6} h={:.6} valid={} hash={:016x} secs={:.3}",
+            "100827 solid: cells={} cfaces={} open={} gwn={} ouse={} oc={} ofl={} ofb={} wh={:?} pv={} pf={} selfloop={} bc={} inside={} outF={} capF={} capA={:.6} ccut={} ccutA={:.3} fcut={} fcutA={:.3} parts={} holes={} nm={} bbox_ok={} bbox={:?} h_o2i={:.6} h_i2o={:.6} h={:.6} valid={} hash={:016x} secs={:.3}",
             solid.report.cells,
             solid.report.constraint_faces,
             solid.report.open_input,
             solid.report.gwn_threshold,
+            solid.report.orientation_used,
+            solid.report.orientation_components,
+            solid.report.orientation_flipped,
+            solid.report.orientation_fallback,
+            solid.report.w_hist,
             solid.report.proxy_shell_vertices,
             solid.report.proxy_shell_faces,
             solid.report.self_loop_faces,
@@ -1252,10 +1469,13 @@ mod tests {
                 }
             };
             println!(
-                "{name}: cells={} cfaces={} gwn={} ccut={} fcut={} selfloop={} inside={} outF={} capF={} parts={} holes={} nm={} bbox_ok={} h={:.6} valid={} hash={:016x}",
+                "{name}: cells={} cfaces={} gwn={} ouse={} oc={} ofl={} ccut={} fcut={} selfloop={} inside={} outF={} capF={} parts={} holes={} nm={} bbox_ok={} h={:.6} valid={} hash={:016x}",
                 solid.report.cells,
                 solid.report.constraint_faces,
                 solid.report.gwn_threshold,
+                solid.report.orientation_used,
+                solid.report.orientation_components,
+                solid.report.orientation_flipped,
                 solid.report.constraint_cut_faces,
                 solid.report.free_cut_faces,
                 solid.report.self_loop_faces,

@@ -1308,3 +1308,51 @@ Determinism: 5 in-process runs pass; two cargo processes print the identical
 100827 hash `17be8c425a831ace`.  `cargo test --release`: **396 passed, 0
 failed, 9 ignored**.  Corpus diagnostic (P3+P4+GWN) took 194.5 s; no
 proxy/BkGraph in this mode, so the previous 1.42 GB upper bound is not repeated.
+
+## 2026-10-26 — orientation repair for the GWN input; 100827 and fixtures pass, plate h is 0.011 mm worse than fTetWild
+
+Orientation repair (only the GWN input changes; CDT/PLC/output are untouched):
+
+- Manifold soup: `topology::re_orient_faces_coherently_core` (existing BFS across
+  manifold edges per component).  Non-manifold soups fall back to
+  `dressing::orient_consistently` (existing Dressing BFS; made `pub(crate)`).
+- Components: `shell::compute_shell_components` (existing).  Each component's
+  signed volume is computed with the same divergence formula as `shell.rs`;
+  negative-volume components are flipped.
+- Unconditional positive-volume flipping regressed case1_open_cup and
+  case3_broken_cup (both open components; signed volume is origin-dependent).
+  To keep the repair without a threshold sweep, the GWN mode evaluates **two
+  candidates**: raw-orientation GWN and fully repaired-orientation GWN, and
+  selects the one with more PLC pieces on the cut (tie → raw).  This is a
+  deterministic structural choice, not a tuned threshold.
+- Report: `orientation_used`, component count, flipped count, per-component
+  `{faces, signed_volume, closed, flipped}`, and a 10-bin tet-w histogram for
+  the selected candidate.
+
+100827 (orientation selected: true; 3 components, 2 flipped; no BFS fallback):
+w histogram `[308, 0, 0, 0, 1, 1, 0, 0, 0, 321]`.  **198/198 PLC pieces**,
+28 caps (area 0.000004), 214 output faces, 1 part, 0 holes, 0 NM, bbox OK,
+o2i 0, i2o 0, **h 0.000000**, valid true, hash `67765ff40fd0a929`.
+The 0.0125 mm bar and the fTetWild no-worse comparison both pass.
+
+Fixtures: selection stays on raw (`orientation_used=false`) for all six; no
+regression.  The non-ignored `cdt3d_fixtures_gwn_gate` passes with the same
+counts as before (case1 448/448, case2 192/192, case3 1821/1822, case4
+1435/1436, case5 14/14, case6 224/224; all 1/0/0, bbox OK, h≈0).
+
+Plate: orientation selected (1 component, 0 flipped; BFS consistency only).
+**47,257/47,268 PLC pieces**, 23 caps, 47,280 output faces, 1 part, 0 holes,
+0 NM, bbox OK, **h 1.285662**, valid false.  fTetWild baseline is 1/11/1,
+bbox OK, **h 1.274534**.  CDT is structurally better (0 holes / 0 NM vs
+11 holes / 1 NM) but strictly worse on h by **0.011128 mm**, so the strict
+“no worse on every metric” gate fails for plate; the absolute 0.0125 bar also
+does not apply to this defective plate baseline.  No tuning.
+
+Determinism: 5 in-process runs pass; two cargo processes print identical hash
+`67765ff40fd0a929`.  `cargo test --release`: **397 passed, 0 failed, 9
+ignored**.  Corpus diagnostic (P3+P4+raw+oriented GWN) 220.99 s; max RSS not
+re-measured (previous upper bound 1.42 GB).
+
+Net: orientation repair fixes 100827 exactly and preserves all six fixtures;
+plate remains the only failing gate, by 0.011 mm on shape while being better on
+holes, NM and parts.  No case5/case3 work is needed; both pass.
