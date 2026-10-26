@@ -247,6 +247,7 @@ pub(crate) fn prune_inside_by_volume(
     is_inside: &mut [bool],
     frac: f64,
     scale: f64,
+    keep: Option<&[bool]>,
 ) -> PruneResult {
     let n = is_inside.len();
     let mut adj: Vec<Vec<usize>> = vec![Vec::with_capacity(4); n];
@@ -303,7 +304,8 @@ pub(crate) fn prune_inside_by_volume(
     let mut speck_vol = 0.0f64;
     let mut speck_faces = 0usize;
     for (ci, comp) in comps.iter().enumerate() {
-        if max_vol > 0.0 && comp_vols[ci] < thr {
+        let protected = keep.is_some_and(|k| comp.iter().any(|&ti| k[ti]));
+        if !protected && max_vol > 0.0 && comp_vols[ci] < thr {
             dropped += 1;
             if comp_vols[ci] > speck_vol {
                 speck_vol = comp_vols[ci];
@@ -836,6 +838,7 @@ pub(crate) fn cut_and_cleanup(
 /// gets a symmetric `area * lambda` smoothness capacity, so the cut minimises
 /// boundary area: capping the opening is cheaper than wrapping the pillow.
 /// Deterministic: terminal and edge capacities are added in index order.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cut_winding_smooth(
     tets: &[[usize; 4]],
     coords: &[[f64; 3]],
@@ -846,6 +849,7 @@ pub(crate) fn cut_winding_smooth(
     lambda: f64,
     tau: f64,
     scale: f64,
+    anchor: Option<&[bool]>,
 ) -> CutResult {
     let n_tets = phi.len();
     let mut area_sum = 0.0f64;
@@ -861,6 +865,12 @@ pub(crate) fn cut_winding_smooth(
     for ti in 0..n_tets {
         if out_tet[ti] || corner_tet[ti] {
             g.add_tweights(ti, 0.0, INF);
+        } else if anchor.is_some_and(|a| a[ti]) {
+            // H5: hard-inside seed. Forcing this tet into the source set makes
+            // the emitted boundary pass through its shared faces, so an input
+            // vertex the soft winding unary would leave outside is still
+            // covered by the output surface (shape preservation).
+            g.add_tweights(ti, INF, 0.0);
         } else if phi[ti] > 0.0 {
             g.add_tweights(ti, phi[ti] * a_ref, 0.0);
         } else if phi[ti] < 0.0 {
@@ -905,7 +915,8 @@ pub(crate) fn cut_winding_smooth(
                 }
             }
             comp.sort_unstable();
-            if !comp.iter().any(|&idx| phi[idx] > tau) {
+            let has_anchor = anchor.is_some_and(|a| comp.iter().any(|&idx| a[idx]));
+            if !comp.iter().any(|&idx| phi[idx] > tau) && !has_anchor {
                 dropped_inside_comps += 1;
                 dropped_inside_vol += component_volume(&comp, &tet_vol);
                 for &idx in &comp {
@@ -986,7 +997,7 @@ mod tests {
             vec![([0, 1, 2], 0, 2), ([0, 1, 3], 1, 3)];
 
         let mut measure = vec![true, true, false, false];
-        let m = prune_inside_by_volume(&coords, &tets, &internal, &mut measure, 0.0, 1.0);
+        let m = prune_inside_by_volume(&coords, &tets, &internal, &mut measure, 0.0, 1.0, None);
         assert_eq!(m.kept, 2);
         assert_eq!(m.dropped, 0);
         assert_eq!(m.comp_vols.len(), 2);
@@ -995,7 +1006,7 @@ mod tests {
         assert_eq!(measure, vec![true, true, false, false]);
 
         let mut a = vec![true, true, false, false];
-        let pr = prune_inside_by_volume(&coords, &tets, &internal, &mut a, 0.01, 1.0);
+        let pr = prune_inside_by_volume(&coords, &tets, &internal, &mut a, 0.01, 1.0, None);
         assert_eq!(pr.kept, 1);
         assert_eq!(pr.dropped, 1);
         assert!(pr.speck_vol > 0.0);
@@ -1004,7 +1015,7 @@ mod tests {
 
         // Deterministic: same call, same result.
         let mut b = vec![true, true, false, false];
-        let pr2 = prune_inside_by_volume(&coords, &tets, &internal, &mut b, 0.01, 1.0);
+        let pr2 = prune_inside_by_volume(&coords, &tets, &internal, &mut b, 0.01, 1.0, None);
         assert_eq!(pr.kept, pr2.kept);
         assert_eq!(pr.dropped, pr2.dropped);
         assert_eq!(a, b);

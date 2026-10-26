@@ -35,6 +35,23 @@ fn f32_key(p: [f64; 3]) -> [u32; 3] {
     ]
 }
 
+/// Map each input vertex to the basis point that carries it (same `f32` grid
+/// key), or `None` if the vertex was absorbed by a duplicate. Deterministic:
+/// first occurrence in `points` (canonical order) wins.
+pub(crate) fn map_input_vertices(
+    points: &[[f64; 3]],
+    nverts: &[[f64; 3]],
+) -> Vec<Option<usize>> {
+    let mut idx: HashMap<[u32; 3], usize> = HashMap::with_capacity(points.len());
+    for (i, p) in points.iter().enumerate() {
+        idx.entry(f32_key(*p)).or_insert(i);
+    }
+    nverts
+        .iter()
+        .map(|p| idx.get(&f32_key(*p)).copied())
+        .collect()
+}
+
 /// Build the H7 point basis in normalized coordinates. `steiner_frac` is the
 /// Steiner spacing as a fraction of the bbox diagonal; `lattice_div` is the
 /// number of cells per axis of the coarse interior lattice.

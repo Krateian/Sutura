@@ -99,6 +99,11 @@ pub(crate) struct SplintOpts {
     /// merges that reduce the emitted boundary-component count. Only applied when
     /// the input is a single connected body.
     pub input_tets_bridge: bool,
+    /// H5: hard-inside seeds. For each input vertex, force the incident tet with
+    /// the highest (least exterior) winding offset into the cut's source set, so
+    /// the emitted boundary is constrained to pass through that vertex. Only
+    /// applied when the input is a single connected body.
+    pub input_tets_anchor: bool,
 }
 
 impl Default for SplintOpts {
@@ -118,6 +123,7 @@ impl Default for SplintOpts {
             input_tets_prune: false,
             input_tets_prune_frac: 0.01,
             input_tets_bridge: false,
+            input_tets_anchor: false,
         }
     }
 }
@@ -192,6 +198,8 @@ pub(crate) struct SplintReport {
     pub prune_comp_vols: Vec<f64>,
     pub prune_comp_faces: Vec<usize>,
     pub input_tets_bridge_added: usize,
+    pub input_tets_anchor: bool,
+    pub anchor_tets: usize,
     pub input_comps: usize,
     pub geodesic_comps: usize,
     pub inside_comps: usize,
@@ -332,6 +340,79 @@ fn run_pass(
             .map(|t| t.iter().any(|&v| cp[v]))
             .collect()
     });
+    let input_comps = input_components(verts, tris);
+    // H5: per-input-vertex hard-inside seed. The soft winding unary labels an
+    // open scan's folded flap exterior, so the cut would leave those input
+    // vertices uncovered (large input->output distance). For every input vertex
+    // pick the incident, non-corner tet with the largest (least exterior) phi
+    // and force it into the source set, so the emitted boundary must pass
+    // through that vertex. Deterministic: index order, strict `>` keeps the
+    // first (lowest) tet on ties.
+    let anchor: Option<Vec<bool>> = if opts.input_tets && opts.input_tets_anchor && input_comps == 1
+    {
+        let maps = input_tets::map_input_vertices(&proxy.verts, &nverts);
+        let ct = corner_tet.as_ref().expect("H7 corner flags");
+        let step = 0.5 * proxy.voxel;
+        let nearest = |q: [f64; 3]| -> usize {
+            let mut best = usize::MAX;
+            let mut bd = f64::INFINITY;
+            for (ti, c) in topo.centroids.iter().enumerate() {
+                if topo.out_tet[ti] || ct[ti] {
+                    continue;
+                }
+                let d = (c[0] - q[0]).powi(2) + (c[1] - q[1]).powi(2) + (c[2] - q[2]).powi(2);
+                if d < bd {
+                    bd = d;
+                    best = ti;
+                }
+            }
+            best
+        };
+        let mut a = vec![false; tets.len()];
+        for f in tris {
+            let (Some(_i0), Some(_i1), Some(_i2)) = (maps[f[0]], maps[f[1]], maps[f[2]]) else {
+                continue;
+            };
+            let p0 = nverts[f[0]];
+            let p1 = nverts[f[1]];
+            let p2 = nverts[f[2]];
+            let c = [
+                (p0[0] + p1[0] + p2[0]) / 3.0,
+                (p0[1] + p1[1] + p2[1]) / 3.0,
+                (p0[2] + p1[2] + p2[2]) / 3.0,
+            ];
+            let e1 = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            let e2 = [p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]];
+            let mut n = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if nl <= 1e-30 {
+                continue;
+            }
+            for k in 0..3 {
+                n[k] /= nl;
+            }
+            let plus = [c[0] + n[0] * step, c[1] + n[1] * step, c[2] + n[2] * step];
+            let minus = [c[0] - n[0] * step, c[1] - n[1] * step, c[2] - n[2] * step];
+            // The interior side is the probe with the higher capped winding; the
+            // sign of the face normal is irrelevant because both sides are
+            // sampled and compared.
+            let t_in = if wind_bvh.winding_at(plus) >= wind_bvh.winding_at(minus) {
+                nearest(plus)
+            } else {
+                nearest(minus)
+            };
+            if t_in != usize::MAX {
+                a[t_in] = true;
+            }
+        }
+        Some(a)
+    } else {
+        None
+    };
     let cut = {
         let t = Instant::now();
         let cut = if opts.input_tets {
@@ -345,6 +426,7 @@ fn run_pass(
                 opts.input_tets_lambda,
                 opts.input_tets_deep,
                 normalizer.scale(),
+                anchor.as_deref(),
             )
         } else {
             cut::cut_and_cleanup(
@@ -393,7 +475,6 @@ fn run_pass(
     } else {
         None
     };
-    let input_comps = input_components(verts, tris);
     let bridge_added = if geodesic_outcome.is_some() && opts.geodesic_bridge && input_comps == 1 {
         // Accept the bridge only if it actually drops the number of emitted
         // boundary components; otherwise keep the flood result.
@@ -447,6 +528,7 @@ fn run_pass(
             &mut cut.is_inside,
             frac,
             normalizer.scale(),
+            anchor.as_deref(),
         ))
     } else {
         None
@@ -610,6 +692,8 @@ fn run_pass(
             .as_ref()
             .map_or_else(Vec::new, |p| p.comp_faces.clone()),
         input_tets_bridge_added: bridge_h7c_added,
+        input_tets_anchor: opts.input_tets && opts.input_tets_anchor && input_comps == 1,
+        anchor_tets: anchor.as_ref().map_or(0, |a| a.iter().filter(|&&b| b).count()),
         input_comps,
         geodesic_comps: geodesic_outcome.map_or(0, |(_, _, c)| c),
         inside_comps,

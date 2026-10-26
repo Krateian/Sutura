@@ -1963,6 +1963,9 @@ fn splint_cut_py<'py>(
         if let Some(v) = d.get_item("input_tets_bridge")? {
             s_opts.input_tets_bridge = v.extract::<bool>()?;
         }
+        if let Some(v) = d.get_item("input_tets_anchor")? {
+            s_opts.input_tets_anchor = v.extract::<bool>()?;
+        }
     }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2056,6 +2059,8 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("prune_comp_vols", r.prune_comp_vols.clone())?;
     d.set_item("prune_comp_faces", r.prune_comp_faces.clone())?;
     d.set_item("input_tets_bridge_added", r.input_tets_bridge_added)?;
+    d.set_item("input_tets_anchor", r.input_tets_anchor)?;
+    d.set_item("anchor_tets", r.anchor_tets)?;
     d.set_item("input_comps", r.input_comps)?;
     d.set_item("geodesic_comps", r.geodesic_comps)?;
     d.set_item("inside_comps", r.inside_comps)?;
