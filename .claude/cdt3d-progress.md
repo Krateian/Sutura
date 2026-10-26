@@ -854,3 +854,72 @@ locally fillable cavities.
 
 `cargo test --release`: **390 passed, 0 failed, 6 ignored**.  Tree clean after
 the test commit; `graphify update .` re-run after it.
+
+## 2026-10-26 — B5 certificate and review-3 follow-up: plan
+
+Plan (B5 and P5 preparation):
+
+1. B5 certificate: exact rational coverage per PLC triangle.  Seed from the
+   triangle's three corner vertices, flood-fill the edge-connected coplanar tet
+   faces, require every candidate face to lie inside the PLC triangle, check
+   exact pairwise interior disjointness and exact area sum.  No spatial plane
+   search; vertex/edge incidence is built once.
+2. Review-3 (a): list every remaining float heuristic in the face path in
+   `.claude/cdt3d-design.md`; correctness must not depend on any of them.
+3. Review-3 (b): add `FaceOptions.force_gift` (default false) and a regression
+   test that forces the gift path on the real 100827 cavities; assert
+   `gift_wraps == cavities`, `missing_after == 0`, coverage certified.
+4. Review-3 (c): stop hard-failing a mixed-sign cavity boundary before the gift
+   attempt.  Route the cavity to gift-wrapping; if the gift cannot close it,
+   return a typed error (no blind expansion).
+5. Re-run the eight-mesh gate, the P3 gate hashes, `cargo test --release`, then
+   implement P5 (cell contraction, winding unary, constrained min-cut over PLC
+   faces, extraction, cell-level repair) with the 100827 shape gate first.
+
+Objections:
+
+- B5 correctness: the certificate is only exact if the candidate set is the
+  *complete* covering complex.  The corner-seeded flood-fill reaches a
+  covering component that is edge-connected to a corner, which any valid tiling
+  of a triangle must be.  A disconnected island that did not touch a corner
+  would leave the exact area sum short; an equal-area overlap that hides it is
+  rejected by the pairwise interior-overlap test.  So a false pass requires
+  both a missed island and an overlap that the exact test misses; the latter is
+  the only remaining theoretical hole.
+- Pairwise interior-disjointness uses exact `BigRational` orientation,
+  centroid containment and proper edge crossing.  It catches containment with
+  boundary vertices, edge crossings and shared-edge cases; fully collinear
+  zero-area contact is allowed.  A pair with identical positive area but a
+  different vertex set is only caught through centroid containment; this is
+  noted as a residual case (not observed on the corpus).
+- The certificate is expensive: plate is ~62 s for 13,734 PLC triangles after
+  the incidence traversal, down from 1,581 s.  This is acceptable for a gate
+  but not for the normal pipeline; P6 profiling should keep it out of the hot
+  default path or make it debug/verification-only.
+- Mixed-sign routing does not magically make gift-wrapping able to cut a
+  mixed-sign boundary face (that needs a new point or a cavity re-split).  The
+  change only removes the preemptive hard failure and lets the gift attempt
+  produce a typed, diagnosable result.  This is what review-3 asks for; a true
+  fix is a separate algorithmic item.
+- `force_gift` is a test hook on a public options struct.  It defaults to
+  false and must never be exposed through CLI/GUI; it only proves the
+  integration branch is exercised.
+- P5 shape gate is a much larger step than B5; if this session's context runs
+  out, the handoff will record the exact P5 state rather than claim the gate.
+
+### P6 owner requirement (recorded now; not acted on)
+
+Once CDT is accepted it becomes the default last-resort solid engine, but the
+user must be able to switch back to fTetWild with ONE setting, minimal build
+effort:
+
+- single option `solid_engine = cdt | ftetwild`;
+- CLI `--solid-engine`;
+- one GUI dropdown under the existing engine/fallback options, saved in the
+  existing settings file;
+- Dolphin/Quick Action/Orca plugin inherit it from the settings, no extra UI;
+- reuse the existing ladder slots/flags (fTetWild #7, Splint #18,
+  `--no-fallback-ftetwild` / `--experimental-splint`) instead of new plumbing;
+- fTetWild stays installed by default, so switching back needs no download;
+- if CDT fails or times out, the ladder may fall through to fTetWild
+  automatically, and the report must say which engine produced the result.
