@@ -30,6 +30,7 @@ mod tetra;
 
 use std::time::Instant;
 
+use crate::pointcloud;
 use crate::shell::compute_shell_components;
 use crate::winding::MeshBvh;
 
@@ -362,24 +363,21 @@ fn run_pass(
         let maps = input_tets::map_input_vertices(&proxy.verts, &nverts);
         let ct = corner_tet.as_ref().expect("H7 corner flags");
         let step = 0.5 * proxy.voxel;
-        let nearest = |q: [f64; 3]| -> usize {
-            let mut best = usize::MAX;
-            let mut bd = f64::INFINITY;
-            for (ti, c) in topo.centroids.iter().enumerate() {
-                if topo.out_tet[ti] || ct[ti] {
-                    continue;
-                }
-                let d = (c[0] - q[0]).powi(2) + (c[1] - q[1]).powi(2) + (c[2] - q[2]).powi(2);
-                if d < bd {
-                    bd = d;
-                    best = ti;
-                }
-            }
-            best
-        };
-        let mut a = vec![false; tets.len()];
-        let mut s = vec![false; tets.len()];
-        for f in tris {
+        // Nearest tet: an exact batched nearest-neighbour query over the eligible
+        // tet centroids (non-out, non-corner), not an O(faces * tets) brute
+        // force. The eligible centroids are listed in ascending tet-index order,
+        // so the kd-tree's smallest-source-index tie-break coincides with the
+        // historical lowest-tet-index tie-break. Deterministic: face index order,
+        // canonical winding tie-break (plus side wins), and the query is a pure
+        // function of the centroid set.
+        let elig: Vec<usize> = (0..tets.len())
+            .filter(|&ti| !topo.out_tet[ti] && !ct[ti])
+            .collect();
+        let elig_pts: Vec<[f64; 3]> = elig.iter().map(|&ti| topo.centroids[ti]).collect();
+        // Pass 1: build the two probe points of every valid face, in face order.
+        let mut probes: Vec<[f64; 3]> = Vec::new();
+        let mut slots: Vec<Option<(usize, usize)>> = vec![None; tris.len()];
+        for (fi, f) in tris.iter().enumerate() {
             let (Some(_i0), Some(_i1), Some(_i2)) = (maps[f[0]], maps[f[1]], maps[f[2]]) else {
                 continue;
             };
@@ -409,15 +407,35 @@ fn run_pass(
             let minus = [c[0] - n[0] * step, c[1] - n[1] * step, c[2] - n[2] * step];
             // The interior side is the probe with the higher capped winding; the
             // sign of the face normal is irrelevant because both sides are
-            // sampled and compared. `nearest` breaks ties on the lowest tet
-            // index, so the result is canonical.
+            // sampled and compared.
             let (p_in, p_out) = if wind_bvh.winding_at(plus) >= wind_bvh.winding_at(minus) {
                 (plus, minus)
             } else {
                 (minus, plus)
             };
-            let t_in = nearest(p_in);
-            let t_out = nearest(p_out);
+            slots[fi] = Some((probes.len(), probes.len() + 1));
+            probes.push(p_in);
+            probes.push(p_out);
+        }
+        // Pass 2: one batched exact nearest query for every probe.
+        let nearest_tet: Vec<usize> = match pointcloud::build_tree(&elig_pts) {
+            Some(tree) if !probes.is_empty() => {
+                let (_, idx, _) = pointcloud::query_neighbours(&tree, elig_pts.len(), &probes, 1);
+                idx.iter()
+                    .map(|&i| if i < 0 { usize::MAX } else { elig[i as usize] })
+                    .collect()
+            }
+            _ => vec![usize::MAX; probes.len()],
+        };
+        // Pass 3: sequential source/sink filling in face order.
+        let mut a = vec![false; tets.len()];
+        let mut s = vec![false; tets.len()];
+        for slot in slots.iter() {
+            let Some((si, so)) = *slot else {
+                continue;
+            };
+            let t_in = nearest_tet[si];
+            let t_out = nearest_tet[so];
             if t_in == usize::MAX || t_out == usize::MAX || t_in == t_out {
                 continue;
             }

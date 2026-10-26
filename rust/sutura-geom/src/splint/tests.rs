@@ -539,3 +539,49 @@ fn input_tets_anchor_is_deterministic() {
     assert_eq!(base.report.anchor_tets, 0);
     assert_eq!(base.report.sink_tets, 0);
 }
+
+#[test]
+fn anchor_nearest_matches_brute_force_with_tet_index_tie_break() {
+    // The H5b anchor picks the nearest non-out, non-corner tet centroid. The
+    // batched kd-tree query must reproduce the historical brute force exactly,
+    // including the lowest-tet-index tie-break, which is why the eligible list
+    // is built in ascending tet-index order.
+    let mut centroids: Vec<[f64; 3]> = Vec::new();
+    for x in 0..4 {
+        for y in 0..4 {
+            for z in 0..3 {
+                centroids.push([x as f64, y as f64, z as f64 * 0.5]);
+            }
+        }
+    }
+    let n = centroids.len();
+    let mut out = vec![false; n];
+    let mut corner = vec![false; n];
+    out[3] = true;
+    corner[7] = true;
+    let elig: Vec<usize> = (0..n).filter(|&ti| !out[ti] && !corner[ti]).collect();
+    let elig_pts: Vec<[f64; 3]> = elig.iter().map(|&ti| centroids[ti]).collect();
+    let probes = vec![
+        [0.0, 0.0, 0.0],
+        [1.5, 2.5, 0.75],
+        [3.0, 3.0, 1.0],
+        [-2.0, 0.0, 0.0],
+        [2.0, 2.0, 1.0],
+    ];
+    let tree = crate::pointcloud::build_tree(&elig_pts).expect("tree");
+    let (_, got, _) = crate::pointcloud::query_neighbours(&tree, elig_pts.len(), &probes, 1);
+    for (qi, q) in probes.iter().enumerate() {
+        let mut best = usize::MAX;
+        let mut bd = f64::INFINITY;
+        for &ti in &elig {
+            let c = centroids[ti];
+            let d =
+                (c[0] - q[0]).powi(2) + (c[1] - q[1]).powi(2) + (c[2] - q[2]).powi(2);
+            if d < bd {
+                bd = d;
+                best = ti;
+            }
+        }
+        assert_eq!(elig[got[qi] as usize], best, "probe {qi}");
+    }
+}
