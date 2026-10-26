@@ -222,7 +222,7 @@ jobs:
       - name: "Test: update-check shutdown"
         run: ./venv/bin/python tests/test_update_check_shutdown.py
 
-      # The fTetWild extra (~1.1 GB) is not installed here: the suite checks
+      # The fTetWild extra (~6 MB) is not installed here: the suite checks
       # flag resolution, the no-op default without it and the GUI wiring.
       - name: "Test: fTetWild fallback defaults"
         run: ./venv/bin/python tests/test_ftetwild_default.py

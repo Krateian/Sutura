@@ -221,7 +221,7 @@ jobs:
         run: |
           su - archuser -c "cd '$GITHUB_WORKSPACE' && SUTURA_GEOM_FROM_SOURCE=1 ./install.sh"
           # A default install no longer needs Python 3.11: Stage 2 runs in
-          # sutura_geom. venv311 is created only for the optional fTetWild extra.
+          # sutura_geom. venv311 is created only for the fTetWild extra.
           su - archuser -c "test ! -e ~/.local/share/sutura/python311"
           su - archuser -c "test ! -e ~/.local/share/sutura/venv311"
           su - archuser -c "~/.local/share/sutura/venv/bin/python -c \"import sutura_geom; assert hasattr(sutura_geom, 'stage2_rebuild')\""

@@ -6,6 +6,15 @@
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../../CHANGELOG.md).
 
+- **v0.9.6 — 2026-10-26** — Son çare **fTetWild** katmanı artık varsayılan
+  olarak gelir ve çok daha küçüktür (katmanın hiç kullanmadığı PyVista/VTK
+  bağımlılığından gelen ~1,1 GB yerine yaklaşık 6 MB); `SUTURA_WITH_FTETWILD=0`
+  yine de atlar. AppImage yeniden tüm modülleri paketler; böylece `--self-check`,
+  `--diagnostics` ve kendini onarma çalışır ve derleme kendini denetler.
+  Kurucular `sutura`'yı PATH'e ekler (ve `uninstall.sh` tam olarak o satırı
+  kaldırır); Dolphin sağ tık onarımı yalnızca `qdbus6` içeren Plasma 6
+  sistemlerinde de çalışır. Girdi yüzeyinin yalnızca küçük bir bölümünü kapsayan
+  bir Graft yedeği artık benimsenmez ve ölçülemeyen hacim `n/a` gösterir.
 - **v0.9.5 — 2026-10-25** — **Diagnosis v2**, onarımın kendisini değiştirmeden
   ayrıntılı ve deterministik bir analiz raporu ekler (yönelim, parçalar,
   kendisiyle-kesişimler, sınır halkaları, ince duvarlar ve daha fazlası).
