@@ -911,6 +911,58 @@ fn collect_containing(
     Ok(out)
 }
 
+/// Extend a Bowyer--Watson cavity across boundary faces that are exactly
+/// coplanar with the new point.  The resulting cavity is the closure of the
+/// point's containing star in the coplanar directions, so every remaining
+/// boundary face is strictly visible from `p`.  This is the deterministic
+/// (symbolic-perturbation) tie rule for a point inserted on an existing mesh
+/// face or edge.
+fn expand_coplanar_cavity(
+    points: &[Point3],
+    tets: &[[usize; 4]],
+    neighbours: &[[i32; 4]],
+    conflict: &mut [bool],
+    p: usize,
+) -> Result<(), String> {
+    let mut queue: VecDeque<usize> = conflict
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| **c)
+        .map(|(i, _)| i)
+        .collect();
+    let mut steps = 0usize;
+    let limit = tets.len().saturating_mul(8).saturating_add(16);
+    while let Some(t) = queue.pop_front() {
+        steps += 1;
+        if steps > limit {
+            return Err(format!("coplanar insertion cavity for point {p} did not converge"));
+        }
+        for lv in 0..4 {
+            let n = neighbours[t][lv];
+            if n >= 0 && conflict[n as usize] {
+                continue;
+            }
+            let (a, b, c, _) = oriented_face_apex(points, &tets[t], lv);
+            let s = orient3d_sign(&points[a], &points[b], &points[c], &points[p]);
+            if s < 0.0 {
+                return Err(format!(
+                    "insertion cavity for point {p} is not star-shaped"
+                ));
+            }
+            if s == 0.0 {
+                if n < 0 {
+                    return Err(format!(
+                        "Steiner point {p} lies on the synthetic box boundary"
+                    ));
+                }
+                conflict[n as usize] = true;
+                queue.push_back(n as usize);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn insert_point(
     points: &[Point3],
     tets: &mut Vec<[usize; 4]>,
@@ -955,6 +1007,8 @@ fn insert_point(
             }
         }
     }
+
+    expand_coplanar_cavity(points, tets, neighbours, &mut conflict, p)?;
 
     let mut faces: Vec<([usize; 3], [usize; 3], usize, usize)> = Vec::new();
     for (ti, t) in tets.iter().enumerate() {
@@ -1438,6 +1492,26 @@ mod tests {
         let right_chains = build_chains(&right).unwrap();
         let right_acute = acute_vertices(&right, &right_chains);
         assert!(!right_acute[0], "right angle is not acute");
+    }
+
+    #[test]
+    fn coplanar_insertion_cavity_expands_across_the_shared_face() {
+        let points = vec![
+            explicit([0.0, 0.0, 0.0]),
+            explicit([1.0, 0.0, 0.0]),
+            explicit([0.0, 1.0, 0.0]),
+            explicit([0.0, 0.0, -1.0]),
+            explicit([0.0, 0.0, 1.0]),
+            explicit([0.25, 0.25, 0.0]),
+        ];
+        let tets = canonicalize_mesh(&points[..5], vec![[0, 1, 2, 3], [0, 1, 2, 4]])
+            .expect("fixture tets");
+        let neighbours = build_neighbours_fast(&tets).expect("neighbours");
+        let mut conflict = vec![false; tets.len()];
+        conflict[0] = true;
+        expand_coplanar_cavity(&points, &tets, &neighbours, &mut conflict, 5)
+            .expect("coplanar cavity must expand");
+        assert!(conflict[1], "the tet across the coplanar face must join the cavity");
     }
 
     #[test]
