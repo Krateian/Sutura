@@ -50,6 +50,24 @@ load-back; pruned after seven days). The repaired copy keeps the exported world
 coordinates and is added as a NEW object, so it lands on top of the original;
 press A (Arrange) to separate it, and Ctrl/Cmd+Z removes it (OrcaSlicer records
 a "Load File" undo snapshot). The original object is never modified.
+
+Permissions (OrcaSlicer 2.5): ``register_capabilities()`` declares the existing
+``fs_read`` paths plus ``threading`` and the two stable process targets it can
+name ahead of time (the OrcaSlicer process-count probe and the fixed-folder
+reveal command). A build whose ``request_permissions`` accepts those keywords
+prompts once at load. A build that accepts only ``fs_read`` -- the shipped
+2.5.0-alpha -- falls back to the ``fs_read``-only declaration (preserving the
+existing read grant), so it prompts for file reads at load and then raises ONE
+reactive "create a thread" prompt on the first thread start; approving it
+persists the grant, and no further prompt appears for Repair, Analyze or Show
+file. The CLI repair/analyze spawns happen inside plugin-created worker threads,
+whose audit context is empty, so on 2.5 they are not audited; a denial on a
+thread start or a spawn is reported as a panel message that names the operation
+that actually failed -- a red banner only when the repair or Analyze job itself
+could not start, and a quiet notice for a denied background status refresh or
+broken-mesh scan. Revealing a
+finished job opens the fixed ``out/`` folder (not a per-file select), so its
+command is identical on every click and can be declared once.
 """
 
 import json
@@ -79,6 +97,31 @@ _DEFAULT_CLI = os.path.expanduser('~/.local/bin/sutura')
 # bundle-id `open -b com.orcaslicer.OrcaSlicer` instead. Overridable via ORCA_BIN.
 _ORCA_BIN = os.environ.get('ORCA_BIN', 'orca-slicer')
 
+# The OrcaSlicer process-count probe (see _running_orca_processes). It is one of
+# the two process targets declared up front in register_capabilities(); the
+# audit hook keys a process grant on the exact ``str(argv_list)``, so the same
+# list is used here and at the call site.
+_PGREP_CMD = ['pgrep', '-f', 'OrcaSlicer']
+
+# Clear denial messages (the audit hook denies rather than prompts when the
+# grant is raised off the UI thread; these surface it instead of failing
+# silently). Each names the operation that actually failed: the repair job and
+# the Analyze job are red banner messages ("approve it to ..."); a denied
+# background status refresh or broken-mesh scan is a quieter informational
+# notice, so a secondary denial is never mistaken for a repair failure.
+_DENIED_CLI_MSG = ('OrcaSlicer denied the Sutura CLI permission \u2014 approve '
+                   'it to repair')
+_DENIED_THREAD_MSG = ('OrcaSlicer denied the Sutura threading permission '
+                      '\u2014 approve it to repair')
+_DENIED_ANALYZE_MSG = ('OrcaSlicer denied the Sutura threading permission '
+                       '\u2014 approve it to analyze')
+_DENIED_STATUS_MSG = ('OrcaSlicer denied the Sutura threading permission '
+                      '\u2014 the panel cannot refresh background status; '
+                      'approve it in OrcaSlicer to keep the panel in sync')
+_DENIED_SCAN_MSG = ('OrcaSlicer denied the Sutura threading permission '
+                    '\u2014 the broken-mesh scan is disabled; approve it in '
+                    'OrcaSlicer to be warned about broken meshes')
+
 _REPAIR_TIMEOUT = 600
 _ANALYZE_TIMEOUT = 300
 _SCAN_DEBOUNCE = 1.0
@@ -96,7 +139,7 @@ _PANEL_CREATE_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
 _MESH_EXTENSIONS = ('.stl', '.obj', '.3mf')
 
 # The dock page, embedded verbatim from orcaslicer-plugin/panel/panel.html
-# (sha256 8eb797ee925f1258dead8d90b63131d89b0f650d0175c933db0d747173620271).
+# (sha256 d08739648fd12000c2fc5aeeb5f56a3f0c4432154c258f317a42a874092ae8f3).
 # It is embedded so the published single-file plugin is self-contained; whenever
 # panel/panel.html changes, copy its full contents back into this raw string and
 # update the digest.
@@ -158,6 +201,17 @@ button, input { font-family: inherit; font-size: inherit; }
 
 /* Content Area */
 .content-area { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; width: 100%; }
+
+/* Notice banner (repair/analyze failures are red; secondary denials are quiet) */
+.notice {
+  margin: 8px 12px 0; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid rgba(239,68,68,0.35); background: rgba(239,68,68,0.12);
+  color: #ef4444; font-size: 11px; line-height: 1.35;
+}
+.notice-info {
+  border-color: rgba(148,163,184,0.35); background: rgba(148,163,184,0.12);
+  color: var(--orca-muted);
+}
 
 /* CLI Missing */
 .cli-missing { padding: 24px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
@@ -282,6 +336,8 @@ button, input { font-family: inherit; font-size: inherit; }
 
   <!-- Main Scrollable Area -->
   <div class="content-area">
+    <div id="notice-view" class="notice hidden" role="alert"></div>
+
     <div id="cli-missing-view" class="cli-missing hidden" role="alert">
       <div class="cli-missing-badge">⚠️</div>
       <div class="cli-missing-title">Sutura is not installed</div>
@@ -341,6 +397,19 @@ button, input { font-family: inherit; font-size: inherit; }
   const send = msg => { if (window.orca?.postMessage) window.orca.postMessage(msg); };
   const announce = txt => { const el = $('aria-status'); if (el) el.textContent = txt; };
   const esc = s => !s ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  let noticeTimer = null;
+  function showNotice(text, level) {
+    const el = $('notice-view');
+    if (!el) return;
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    el.classList.toggle('notice-info', level === 'info');
+    if (!text) { el.classList.add('hidden'); el.textContent = ''; return; }
+    el.textContent = text;
+    el.classList.remove('hidden');
+    announce(text);
+    noticeTimer = setTimeout(() => { el.classList.add('hidden'); el.textContent = ''; }, 8000);
+  }
 
   const formatTris = n => typeof n !== 'number' ? '0 tris' : n >= 1e6 ? (n/1e6).toFixed(1)+'M tris' : n >= 1e3 ? (n/1e3).toFixed(1)+'k tris' : n+' tris';
   const renderMetaLine = o => `${o.parts > 1 ? o.parts + ' parts' : '1 part'} · ${formatTris(o.triangles)}${o.modifiers > 0 ? ' · ' + o.modifiers + ' mod' : ''}`;
@@ -630,6 +699,9 @@ button, input { font-family: inherit; font-size: inherit; }
             ? `Analysis failed for object ${id}: ${msg.error}`
             : `Analysis ready for object ${id}`);
         }
+        break;
+      case 'notice':
+        showNotice(msg.message, msg.level);
         break;
     }
   }
@@ -1066,6 +1138,8 @@ def _run_cli(cmd, cancel_event, timeout, on_proc=None):
                                 stderr=subprocess.PIPE, text=True)
     except FileNotFoundError:
         return 'failed', None, 'Sutura CLI not found at %s' % cmd[0]
+    except PermissionError:
+        return 'failed', None, _DENIED_CLI_MSG
     if on_proc is not None:
         try:
             on_proc(proc)
@@ -1097,7 +1171,11 @@ def _run_cli(cmd, cancel_event, timeout, on_proc=None):
         threading.Thread(target=_drain, args=(proc.stderr, err_chunks), daemon=True),
     ]
     for reader in readers:
-        reader.start()
+        try:
+            reader.start()
+        except PermissionError:
+            _terminate(proc)
+            return 'failed', None, _DENIED_THREAD_MSG
 
     start = time.time()
     try:
@@ -1250,8 +1328,7 @@ def _running_orca_processes():
     """Number of distinct OrcaSlicer processes running (pgrep -f). Returns
     None when the check itself fails (treated as 'cannot verify')."""
     try:
-        r = subprocess.run(['pgrep', '-f', 'OrcaSlicer'],
-                           capture_output=True, text=True)
+        r = subprocess.run(list(_PGREP_CMD), capture_output=True, text=True)
         pids = [l.strip() for l in (r.stdout or '').splitlines() if l.strip()]
         return len(pids)
     except Exception:  # noqa: BLE001
@@ -1308,15 +1385,34 @@ def _load_back(out_path):
     return proc.returncode == 0
 
 
+def _reveal_command():
+    """The fixed-folder reveal argv for this platform, or None.
+
+    The repaired file always lands in the persistent ``_out_dir()``; revealing
+    that fixed folder (instead of a per-file ``open -R`` / ``explorer /select,``
+    target) makes the command identical on every click, so it can be declared
+    once in ``register_capabilities()`` and never raises a per-run prompt."""
+    out_dir = _out_dir()
+    if not out_dir:
+        return None
+    if sys.platform == 'darwin':
+        return ['open', out_dir]
+    if sys.platform.startswith('win'):
+        return ['explorer', out_dir]
+    return ['xdg-open', out_dir]
+
+
 def _reveal(path):
-    """Best-effort: reveal a repaired file in the platform file browser."""
+    """Best-effort: reveal the repaired file's folder in the platform browser.
+
+    Opens the fixed ``_out_dir()`` on every platform and on every click (the
+    command is pre-declared in ``register_capabilities()``), so no per-run
+    permission prompt is raised. ``path`` is accepted for call-site
+    compatibility and its existence is checked by the caller."""
     try:
-        if sys.platform == 'darwin':
-            subprocess.Popen(['open', '-R', path])
-        elif sys.platform.startswith('win'):
-            subprocess.Popen(['explorer', '/select,', path])
-        else:
-            subprocess.Popen(['xdg-open', os.path.dirname(path) or '.'])
+        cmd = _reveal_command()
+        if cmd:
+            subprocess.Popen(cmd)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1422,8 +1518,43 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         except Exception:  # noqa: BLE001
             pass
 
+    def _permission_denied(self, text=None, level='error'):
+        """Report a denied thread/timer start as a clear panel message (and a
+        stderr line) instead of letting the start fail silently. ``level`` is
+        ``'error'`` for a red banner (a failed repair/Analyze job) or ``'info'``
+        for a quiet notice (a denied background refresh or scan)."""
+        text = text or _DENIED_THREAD_MSG
+        self._log(text)
+        self._post({'command': 'notice', 'message': text, 'level': level})
+
+    def _start_thread(self, target, args=(), on_denied=None, on_denied_level='error'):
+        """Start a daemon worker thread, turning a PermissionError denial into a
+        clear panel message. ``on_denied`` is an optional message string (the
+        default is the generic threading denial) and ``on_denied_level`` its
+        banner level. Returns True when started."""
+        try:
+            threading.Thread(target=target, args=args, daemon=True).start()
+            return True
+        except PermissionError:
+            self._permission_denied(on_denied, on_denied_level)
+            return False
+
+    def _start_timer(self, delay, target, on_denied=None, on_denied_level='error'):
+        """Start a daemon timer, with the same denial handling as
+        ``_start_thread``. Returns the timer, or None when the start was
+        denied."""
+        try:
+            timer = threading.Timer(delay, target)
+            timer.daemon = True
+            timer.start()
+            return timer
+        except PermissionError:
+            self._permission_denied(on_denied, on_denied_level)
+            return None
+
     def _post_state_async(self):
-        threading.Thread(target=self._post_state, daemon=True).start()
+        self._start_thread(self._post_state, on_denied=_DENIED_STATUS_MSG,
+                           on_denied_level='info')
 
     def _iter_objects(self):
         try:
@@ -1568,10 +1699,10 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                     timer.cancel()
                 except Exception:  # noqa: BLE001
                     pass
-            timer = threading.Timer(_SCAN_DEBOUNCE, self._debounced_scan)
-            timer.daemon = True
-            st['scan_timer'] = timer
-            timer.start()
+            st['scan_timer'] = self._start_timer(_SCAN_DEBOUNCE,
+                                                 self._debounced_scan,
+                                                 on_denied=_DENIED_SCAN_MSG,
+                                                 on_denied_level='info')
 
     def _debounced_scan(self):
         self._post_state()
@@ -1664,8 +1795,10 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             st['jobs'][oid] = {'cancel': cancel, 'proc': None, 'running': True,
                                'phase': 'queued', 'output_path': None, 'preset': preset}
             self._emit_job(oid, 'queued', 0.0, 'Queued')
-            threading.Thread(target=self._job_worker, args=(oid, preset, cancel),
-                             daemon=True).start()
+            if not self._start_thread(self._job_worker,
+                                      args=(oid, preset, cancel),
+                                      on_denied=_DENIED_THREAD_MSG):
+                self._emit_job(oid, 'failed', 0.0, _DENIED_THREAD_MSG)
 
     def _job_worker(self, oid, preset, cancel):
         st = self._st()
@@ -1739,7 +1872,10 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
 
     def _handle_analyze(self, message):
         oid = str(message.get('id'))
-        threading.Thread(target=self._analyze_worker, args=(oid,), daemon=True).start()
+        if not self._start_thread(self._analyze_worker, args=(oid,),
+                                  on_denied=_DENIED_ANALYZE_MSG):
+            self._post({'command': 'analysis', 'id': oid,
+                        'error': _DENIED_ANALYZE_MSG})
 
     def _analyze_worker(self, oid):
         dest = None
@@ -1798,13 +1934,34 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
 @orca.plugin
 class SuturaRepairPlugin(orca.base):
     def register_capabilities(self):
-        # Declare ONLY the filesystem READ paths that actually exist: a
-        # request for a non-existent path is rejected. The subprocess
-        # (ProcessCreate) spawn is audited reactively and its persisted grant
-        # is keyed to the exact command line (which contains unique staging
-        # paths), so this does NOT remove the per-run subprocess prompt.
+        # Declare up front: the filesystem READ paths that actually exist (a
+        # request for a non-existent path is rejected), Threading, and the two
+        # stable process targets the plugin can name ahead of time -- the
+        # OrcaSlicer process-count probe and the fixed-folder reveal command
+        # (one per platform). The audit hook keys a process grant on the exact
+        # ``str(argv_list)``, so each target is built here the same way it is at
+        # the call site. CLI repair/analyze spawns are NOT declared: they happen
+        # inside plugin-created worker threads (empty audit context, unaudited)
+        # and carry unique staging paths that cannot be a stable target.
         candidates = [os.environ.get('SUTURA_CLI'), _DEFAULT_CLI, shutil.which('sutura')]
         fs_read = [p for p in dict.fromkeys(candidates) if p and os.path.exists(p)]
+        process = [str(_PGREP_CMD)]
+        reveal = _reveal_command()
+        if reveal is not None:
+            process.append(str(reveal))
+        try:
+            orca.request_permissions(fs_read=fs_read, threading=True,
+                                     process=process)
+            orca.register_capability(SuturaRepair)
+            return
+        except (TypeError, ValueError):
+            # Older nightly without the threading=/process= keywords (or an
+            # implementation that rejects them): fall back to the fs_read-only
+            # declaration so it is never lost on the fallback.
+            pass
+        except Exception:  # noqa: BLE001
+            orca.register_capability(SuturaRepair)
+            return
         if fs_read:
             try:
                 orca.request_permissions(fs_read=fs_read)
