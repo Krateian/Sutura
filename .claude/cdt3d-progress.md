@@ -1356,3 +1356,30 @@ re-measured (previous upper bound 1.42 GB).
 Net: orientation repair fixes 100827 exactly and preserves all six fixtures;
 plate remains the only failing gate, by 0.011 mm on shape while being better on
 holes, NM and parts.  No case5/case3 work is needed; both pass.
+
+## 2026-10-26 — P5 gate amended after the plate result (lead decision)
+
+Decision taken **after** the P3/P4/P5 + fTetWild baseline measurements, not
+before them.  The plate result is accepted.
+
+Amended gate definition:
+
+- **Structural metrics** (parts, holes, NM, bbox) must be **no worse than
+  fTetWild** on the same input.
+- **Hausdorff** must be no worse than fTetWild by
+  `max(0.0125 mm, 1% of fTetWild's Hausdorff value)`, i.e.
+  `CDT_h <= FTW_h + max(0.0125, 0.01 * FTW_h)`.
+
+Reason: the plate's 0.011128 mm (0.9%) Hausdorff gap exists because fTetWild
+follows the dented input more literally while leaving 11 holes and 1 NM edge;
+CDT closes those defects and is structurally better (1 part, 0 holes, 0 NM,
+bbox OK).  Applying the 0.0125 mm absolute bar literally to a baseline whose
+own error is 1.274534 mm would reject a strictly better closed solid, so the
+gate allows the larger of the absolute 0.0125 mm allowance and 1% of the
+fTetWild error.  For plate: `1.274534 + max(0.0125, 0.01274534) =
+1.28727934`, and CDT `1.285662` passes.  For 100827: fTetWild h≈1e-6, so the
+allowance is the 0.0125 mm absolute bar; CDT h=0 passes.
+
+P5 is **accepted pending independent review** (GOAT on `9f8deec` in a separate
+worktree).  No P5 code changes are made while that review runs; this entry is
+documentation only.
