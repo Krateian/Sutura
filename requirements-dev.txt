@@ -18,3 +18,10 @@ trimesh==5.1.1
 # Silicon there is no PyPI wheel, so macOS developers must install it from
 # conda-forge (conda install -c conda-forge pymeshlab).
 pymeshlab==2025.7.post1
+
+# pytest is NOT a Sutura runtime dependency.  The CI test job runs every suite
+# as a plain script; two of them (tests/test_self_check.py and
+# tests/test_solid_engine.py) delegate their __main__ block to pytest.main and
+# use pytest fixtures (tmp_path, monkeypatch), so pytest must be installed for
+# that job.  Every other suite is a dependency-free plain script.
+pytest==9.1.1
