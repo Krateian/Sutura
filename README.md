@@ -106,6 +106,10 @@ sutura a.stl b.stl c.3mf         # batch
   (or drag and drop) and press **Repair**.
 - **KDE Dolphin:** right-click a model → **Repair with Sutura**.
 - **macOS Finder:** right-click → *Quick Actions* → **Sutura — Repair**.
+- **Last-resort solid engine:** `--solid-engine cdt|ftetwild` (default
+  `ftetwild` in this release; also under Options → Repair and inherited by the
+  integrations). CDT runs after Coaptation and before fTetWild; a failure falls
+  through to fTetWild.
 
 Every option, report field and integration is described in [Usage](docs/guide/usage.md).
 

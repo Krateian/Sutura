@@ -1383,3 +1383,57 @@ allowance is the 0.0125 mm absolute bar; CDT h=0 passes.
 P5 is **accepted pending independent review** (GOAT on `9f8deec` in a separate
 worktree).  No P5 code changes are made while that review runs; this entry is
 documentation only.
+
+## 2026-10-26 — P6 implemented: solid_engine switch (default ftetwild)
+
+Defaults and slot (lead decision): `solid_engine='ftetwild'` in this change.
+With `cdt`, the order is Graft → Dressing → Splint (unchanged opt-in) →
+Coaptation → **CDT** → fTetWild as automatic fall-through.  No CDT before
+Coaptation.  With `ftetwild`, the ladder is byte-identical to today; no CDT
+tier is imported into the run path unless selected.
+
+Rust production API (`4c6db46`):
+
+- `cdt3d_solid(verts, tris, opts)` PyO3 binding; opts:
+  `verify_coverage` (default **false**), `max_tets` (default 250 000),
+  `wall_timeout_ms`, `label_mode='gwn_threshold'`, lambda/fraction/res.
+- B5 certificate is skipped by default; `FaceOptions.verify_coverage` and
+  `SolidOptions.require_certificate` are additive and default true so the
+  P4/P5 gates are unchanged.  When the certificate is off, PLC faces are
+  classified geometrically against the input surface for the GWN cap/shape
+  split; the CDT/PLC/output geometry is unchanged.
+- Stage-boundary wall budget plus the existing tet budget; either returns a
+  typed error.  `Rust cdt3d_binding_tests` verifies B5 off (`coverage_checked=0`)
+  and the wall-time failure.  Full Rust suite: **398 passed, 0 failed, 9
+  ignored**.
+- Real binding on 100827: **0.21 s**, 1 part, 0 holes, 0 NM, bbox OK,
+  h≈4.6e-7, `coverage_certified=false`.
+
+Python/settings:
+
+- `resolve_solid_engine`: `--solid-engine` > `SUTURA_SOLID_ENGINE` > the
+  existing `updater.load_config()` settings file > `ftetwild`.  No new path.
+- CLI `--solid-engine {cdt,ftetwild}`; passed through `process_file` →
+  `repair_mesh_from_arrays` → `deep_repair_ladder`.
+- `sutura_engine/pipeline/tiers/cdt.py` runs the binding with B5 off, the
+  existing face cap, `CDT_MAX_TETS`, and the intensity fTetWild timeout as the
+  wall budget.  It adopts only a f32-reloaded strict-watertight one-part
+  candidate that passes the existing adoption guard; failures/timeouts are
+  recorded in `stats['cdt']` and fTetWild can fall through.
+- Ladder reports `stats['solid_engine'] = {selected, produced, reason}` and
+  `deep_repair.solid_engine`; `stats['splint']` is untouched.  `cdt` was added
+  to `FINAL_TIER_PRECEDENCE` (reporting only); `DEEP_TIER_ORDER` unchanged.
+- GUI: one **Solid engine** combo under Options → Repair, loaded from and saved
+  to the existing settings file; batch CLI builder passes `--solid-engine`.
+  Dolphin/Quick Action/Orca pass no flag and inherit the setting.  English and
+  Turkish labels and the GUI report line are added.
+- Docs: README.md/README.tr.md and docs/guide/usage.md + tr/usage.md describe
+  the one setting and the CDT-after-Coaptation slot.
+- Tests: `tests/test_solid_engine.py` (resolver precedence incl. the existing
+  loader, ladder order/fall-through, ftetwild byte-identical no-CDT path, real
+  cdt_tier adoption on 100827); `test_pipeline_order` updated for the new
+  reporting precedence.  Python targeted suite: **48 passed**.
+
+No push.  P5 code/algorithm is frozen for GOAT on `9f8deec`; the only P5-file
+changes in P6 are the additive coverage/require flags and the no-certificate
+PLC surface classifier.

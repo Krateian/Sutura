@@ -395,8 +395,9 @@ def test_order_table_contents():
     import sutura_engine.pipeline.order as order
     assert order.DEEP_TIER_ORDER == ('local', 'graft', 'dressing', 'splint',
                                      'coaptation', 'ftetwild')
-    assert order.FINAL_TIER_PRECEDENCE == ('ftetwild', 'graft', 'dressing',
-                                           'splint', 'coaptation', 'local')
+    assert order.FINAL_TIER_PRECEDENCE == ('ftetwild', 'cdt', 'graft',
+                                           'dressing', 'splint',
+                                           'coaptation', 'local')
     assert order.method_num('local') == 2
     assert order.method_num('graft') == 13
     assert order.method_num('ftetwild') == 7
