@@ -238,3 +238,106 @@ Status: P0, P1 and P2 complete and gated.  P3 (segment recovery) is next.
 Handoff point: any fresh session can resume from commit `8339fce` and this
 file.  P2 is opt-in and absent from the default path; no CLI/GUI flag or
 Python binding exists yet (expected at P6, or earlier if P5 needs it).
+
+## 2026-10-26 — P3 segment recovery implemented and gated
+
+What was done:
+- New `rust/sutura-geom/src/cdt3d/segment.rs`:
+  - exact PLC edge extraction and deterministic per-edge split chains;
+  - Si's acute-vertex classification (two incident PLC segments forming an
+    angle strictly below 90 degrees), computed exactly with an interval filter
+    and rational fallback;
+  - the three split cases: both endpoints acute -> midpoint; one acute endpoint
+    -> sphere centred at the remembered acute vertex plus the
+    close-to-reference/shift/midpoint rule; no acute endpoint -> maximum
+    circumradius reference and the smallest touching-sphere intersection;
+  - LNC Steiner points parameterised on the *original* PLC edge (the P1 `Lnc`
+    type only carries explicit endpoints), with the split parameter rounded to
+    `f64`;
+  - exact Bowyer--Watson insertion: whole-star seeding on faces/edges, exact
+    `insphere_sign_perturbed` conflict tests, positive new tets, local
+    neighbour stitching, and an incremental PLC edge-count index;
+  - exact final validity: positive tets, duplicate/degenerate tets, neighbour
+    reciprocity, empty sphere with `insphere_sign`, box/ghost hull check,
+    unused vertices, and `missing_after = 0`.
+- `cdt3d/mod.rs` exports `recover_segments`/`SegmentMesh`/`SegmentOptions`/
+  `SegmentReport` and shares the corpus test loader between P2 and P3.
+- `cdt3d/dt.rs` only exposes `sorted_face` and `build_neighbours` to the crate
+  and reuses the shared test loader; no P2 behaviour change.
+- Tests: category-1 midpoint and smallest-sphere rules, category-3 midpoint,
+  exact acute classification, positive face apex, a 5-run 100827 test and the
+  ignored 8-mesh gate.
+
+Key finding during gating: using only the first-category reference rule on all
+segments (no acute classification) ballooned `plate_a_dent` past 16k splits and
+was still not converged.  The correct acute classification is mandatory: that
+fixture contains a 320-edge high-valence dent vertex (`3436`), so almost all of
+its incident PLC edges are category 2/3.  Applying the paper's acute-vertex
+rules reduced the final count to 16,771 Steiner points and made the run finish.
+
+Performance work (needed for the plate gate):
+- incremental edge-incidence counts instead of rebuilding an edge set per split;
+- local Bowyer--Watson neighbour stitching instead of rebuilding all neighbours
+  (the dominant cost before: 10 ms/split at 45k tets);
+- `f64` prefilter for the reference/circumradius scan, with exact rational
+  fallback for collinearity; exact squared comparisons for the category-1
+  branch and exact predicates for insertion/validation;
+- a deterministic seed hint (first new tet) for point location, which cut the
+  `plate_a_dent` gate from 163 s to ~68 s per run.
+
+Gate (`cargo test --release cdt3d::segment::tests::segment_public_corpus_gate
+-- --ignored`), 5 runs per mesh in one process; the gate was also run in a
+second process and all eight hashes matched.  Every row has `empty = off_box =
+ngb = unused = 0`, `missing_after = 0`, and `valid = true`.
+
+| mesh | PLC E | missing before | Steiner | splits | cat1/2/3 | acute V | subseg | tets | secs/run | hash |
+|---|---|---|---|---|---|---|---|---|---|---|
+| thingi10k_100827 | 132 | 26 | 68 | 68 | 0/0/132 | 47 | 200 | 634 | 0.052 | de6e07edac20fa5c |
+| case1_open_cup | 320 | 52 | 128 | 128 | 0/0/320 | 130 | 448 | 1377 | 0.100 | e4069fe7322c4664 |
+| case2_pipe | 128 | 16 | 64 | 64 | 0/0/128 | 64 | 192 | 606 | 0.071 | fc14028427e2aed3 |
+| case3_broken_cup | 509 | 110 | 753 | 753 | 0/0/509 | 194 | 1262 | 6214 | 1.141 | 5f86082e79ae7123 |
+| case4_cracked_sphere | 1687 | 42 | 158 | 158 | 0/0/1687 | 568 | 1845 | 3895 | 0.137 | 708bcd9b13ff8a2e |
+| case5_box_missing_face | 17 | 2 | 2 | 2 | 0/0/17 | 8 | 19 | 58 | 0.004 | d265d998222d34bb |
+| case6_thin_cup | 160 | 16 | 64 | 64 | 0/0/160 | 65 | 224 | 613 | 0.064 | f51a2e5042170b77 |
+| plate_a_dent | 20610 | 454 | 16771 | 16771 | 0/0/20610 | 6876 | 37381 | 122595 | 67.7 | 8ce442e77e5af205 |
+
+All initial PLC vertices are classified acute on these eight meshes, so every
+initial segment starts in category 3 and is midpoint-split; the halves then
+remember one acute endpoint and use the category-2 rule.  Category 1 is
+therefore covered by the synthetic tests, not by the corpus.
+
+`cargo test --release`: **377 passed, 0 failed, 4 ignored** (the P0 gate, the P2
+gate, the P3 gate and the pre-existing ignored test).
+
+Default path: P3 is not called from `arrangement`, `Splint`, the CLI or the
+GUI; the only edits outside the new module are test sharing and crate-internal
+visibility in `dt.rs`.  The full default test suite is green.
+
+Next step: commit P3 locally, run `graphify update .`, then start P4 (face
+recovery: missing-face detection, cavity split, local Delaunay, expansion,
+gift-wrapping fallback, SOS).
+
+### Self-review — P3 caveats and uncertainties
+
+- The reference/circumradius scan and the category-2 acute rule use `f64` for
+  candidate selection and the sphere/point comparisons.  The chosen split
+  parameter is rounded anyway, and every insertion/validation predicate is
+  exact, but the split *heuristic* is not a fully exact decision like P1's
+  predicates.  The category-1 branch decision uses exact squared distances.
+- Category 3 always takes the midpoint and does not first reuse an existing
+  vertex lying exactly on the subsegment.  The corpus never exercised the
+  collinear-reuse path (`reused = 0` everywhere); it is covered only by the
+  generic chain logic.
+- `plate_a_dent` is a pathological gate input: a single 320-edge acute dent
+  vertex produces 16,771 Steiner points and dominates the gate at ~68 s/run.
+  The five-run gate is ~6 minutes; further runtime work would be needed before
+  P6 if this fixture is in the normal test loop.
+- All eight test PLCs classify every vertex as acute.  The category-1 path and
+  the no-acute reference selection are tested synthetically but not by a real
+  corpus mesh.
+- The incremental edge index and local neighbour stitching are checked only by
+  the final exact validity report (orientation, reciprocity, empty sphere); no
+  separate debug build cross-checks the incremental structures against a full
+  rebuild after every insertion.
+- P3 still has no Python binding or CLI/GUI flag; that remains P6 work, or
+  earlier only if P5 needs it.

@@ -210,7 +210,7 @@ fn box_corners(b: &BoundingBox3) -> [[f64; 3]; BOX_CORNERS] {
     })
 }
 
-fn sorted_face(t: &[usize; 4], lv: usize) -> [usize; 3] {
+pub(crate) fn sorted_face(t: &[usize; 4], lv: usize) -> [usize; 3] {
     let mut f = [0usize; 3];
     let mut k = 0;
     for i in 0..4 {
@@ -266,7 +266,7 @@ fn canonicalize_oriented(
     Ok(out)
 }
 
-fn build_neighbours(tets: &[[usize; 4]]) -> Result<Vec<[i32; 4]>, String> {
+pub(crate) fn build_neighbours(tets: &[[usize; 4]]) -> Result<Vec<[i32; 4]>, String> {
     let mut occurrences: BTreeMap<[usize; 3], Vec<(usize, usize)>> = BTreeMap::new();
     for (ti, t) in tets.iter().enumerate() {
         for lv in 0..4 {
@@ -472,56 +472,8 @@ fn dt_hash(points: &[[f64; 3]], tets: &[[usize; 4]]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cdt3d::plc::{build_plc, Plc, PlcOptions};
-    use std::collections::HashMap;
+    use crate::cdt3d::testutil::plc_for;
     use std::time::Instant;
-
-    fn real_sample(name: &str) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
-        let path = format!(
-            "{}/../../tests/real-world-samples/{}",
-            env!("CARGO_MANIFEST_DIR"),
-            name
-        );
-        read_stl_welded(&path)
-    }
-
-    fn fixture(name: &str) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
-        let path = format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name);
-        read_stl_welded(&path)
-    }
-
-    fn read_stl_welded(path: &str) -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
-        let data = std::fs::read(path).expect("read STL");
-        let n = u32::from_le_bytes(data[80..84].try_into().unwrap()) as usize;
-        let mut index: HashMap<[u32; 3], usize> = HashMap::new();
-        let mut verts = Vec::new();
-        let mut tris = Vec::new();
-        for f in 0..n {
-            let base = 84 + 50 * f + 12;
-            let mut tri = [0usize; 3];
-            for (k, slot) in tri.iter_mut().enumerate() {
-                let o = base + 12 * k;
-                let c: [u32; 3] = std::array::from_fn(|j| {
-                    u32::from_le_bytes(data[o + 4 * j..o + 4 * j + 4].try_into().unwrap())
-                });
-                *slot = *index.entry(c).or_insert_with(|| {
-                    verts.push(c.map(|b| f32::from_bits(b) as f64));
-                    verts.len() - 1
-                });
-            }
-            tris.push(tri);
-        }
-        (verts, tris)
-    }
-
-    fn plc_for(kind: &str, name: &str) -> Plc {
-        let (v, t) = if kind == "real" {
-            real_sample(name)
-        } else {
-            fixture(name)
-        };
-        build_plc(&v, &t, &PlcOptions::default()).expect("build PLC")
-    }
 
     fn opts() -> DtOptions {
         DtOptions::default()
