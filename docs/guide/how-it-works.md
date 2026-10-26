@@ -62,8 +62,8 @@ your file ─► Tamponade ─► Flap ─► Stage 1 clean-up ─► (still ope
    in a virtual coat that always comes out closed, but it can soften fine
    detail, so Sutura only *suggests* it when everything else failed and you
    decide; **Splint** is the opt-in exact solid rebuild. **fTetWild** is a
-   last-resort rebuild for badly broken files and runs automatically when its
-   optional extra is installed and stage 1 still leaves holes.
+   last-resort rebuild for badly broken files and runs automatically (installed
+   by default) when stage 1 still leaves holes.
 
 After every step Sutura counts holes and bad edges again, as if the file had
 been re-opened from disk; a step that makes things worse is thrown away. Your
@@ -110,9 +110,11 @@ Repair decisions that change the output use counted work, not elapsed time. The
 same file with the same repair settings therefore produces the same result on a
 fast machine, a slow machine or a busy one; the time in the report is only a
 measurement. A few external or report-only limits keep a very high safety
-timeout (the optional fTetWild solver, Graft's outer abort) or a warning
+timeout (the fTetWild solver, Graft's outer abort) or a warning
 (Dressing's soft budget); those are documented exceptions and are called out in
-the report when they matter.
+the report when they matter. The fTetWild tier (used only for meshes stage 1
+cannot close) is one more exception: on two runs it can split the surface into
+slightly different triangles, but the shape and printability stay the same.
 
 ## Why a staged pipeline
 
@@ -140,8 +142,8 @@ reported explicitly, never silently omitted.
 
 **Optional tiers.** Around the two core stages sit tiers for self-intersecting
 and badly broken meshes. The experimental ones are off by default and enabled
-by their own CLI flag or a checkbox in the GUI's **Options** window; the fTetWild fallback is on by default
-whenever its optional extra is installed:
+by their own CLI flag or a checkbox in the GUI's **Options** window; the
+fTetWild fallback is installed and on by default:
 
 * *Before stage 1:* `--experimental-autorefine` (splits intersecting
   triangles along their intersection segments, never deletes a face) and
@@ -155,8 +157,8 @@ whenever its optional extra is installed:
   self-intersections before repair passes.
 * *After stage 1, as a last resort:* the fTetWild fallback (tetrahedralizes
   the original input with fTetWild and extracts a watertight boundary;
-  optional ~1.1 GB extra, see Install). When the extra is installed it runs by
-  default, but only when stage 1 still leaves holes or non-manifold edges;
+  installed by default, ~6 MB, see Install). It runs by default, but only when
+  stage 1 still leaves holes or non-manifold edges;
   `--no-fallback-ftetwild` (GUI: *Options* → *Repair* tab → uncheck *fTetWild fallback*) turns it off,
   `--experimental-fallback-ftetwild` (GUI: *Options* → *Repair* tab → *+ self-intersections
   (slow)*, below it) also runs it on a closed result that still
@@ -244,8 +246,8 @@ Inputs above 300,000 faces skip the fTetWild tier (`reject_reason:
 too_large`): the slowest completed run on the 40 samples took ~55 s at
 90,000 faces, so larger scans cannot finish within the budget, and the
 dense Artec scans of the 115-mesh corpus timed out on every run.
-Without the fTetWild extra and with no flag set, the
-behaviour is exactly the Stage-1 + Stage-2 core above.
+With the fTetWild tier skipped (`SUTURA_WITH_FTETWILD=0`) and with no flag set,
+the behaviour is exactly the Stage-1 + Stage-2 core above.
 
 Measured on the 40 real-world samples (`scripts/benchmark_repair_corpus.py`,
 2-vCPU x86_64 VM): strict watertight 31/40 without the fallback, **39/40**

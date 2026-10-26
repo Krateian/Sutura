@@ -61,9 +61,13 @@ fi
 # 5) install dependencies ---------------------------------------------------
 echo "==> installing packages into $ENV_NAME"
 conda run -n "$ENV_NAME" pip install PySide6-Essentials==6.11.2
-if [ "${SUTURA_WITH_FTETWILD:-0}" = "1" ]; then
-    echo "==> optional: fTetWild fallback tier (pytetwild + pyvista/VTK, ~1.1 GB installed)"
-    conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"
+if [ "${SUTURA_WITH_FTETWILD:-1}" = "1" ]; then
+    echo "==> fTetWild fallback tier (pytetwild, ~2.3 MB; opt out with SUTURA_WITH_FTETWILD=0)"
+    # Older releases installed pyvista/VTK for this tier; drop them if present.
+    conda run -n "$ENV_NAME" pip uninstall -y pyvista vtk pyvista-validation >/dev/null 2>&1 || true
+    if ! conda run -n "$ENV_NAME" pip install -r "$REPO_DIR/requirements-ftetwild.txt"; then
+        echo "warning: fTetWild tier install failed; the rest of Sutura is fine." >&2
+    fi
 fi
 
 # 5b) required: sutura_geom Rust extension (Graft #13, ~0.7 MB) ------------
@@ -190,6 +194,34 @@ cp -R "$REPO_DIR/share/Sutura Quick Action.workflow" "$SERVICES_DIR/"
 /System/Library/CoreServices/pbs -update 2>/dev/null || true
 
 # 10) summary ---------------------------------------------------------------
+# --- make sure ~/.local/bin is on PATH -------------------------------------
+# Many desktops (some Fedora/Ubuntu setups, macOS) do not put
+# ~/.local/bin on PATH, so a fresh `sutura` would be "command not found".
+PATH_NOTE=""
+case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *)
+        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"  # added by Sutura installer'
+        added=""
+        for rc in "$HOME/.zshrc" "$HOME/.bash_profile"; do
+            [ -f "$rc" ] || continue
+            if ! grep -qF "# added by Sutura installer" "$rc"; then
+                [ -n "$(tail -c1 "$rc")" ] && echo >> "$rc"
+                printf '%s\n' "$PATH_LINE" >> "$rc"
+            fi
+            added="$added $rc"
+        done
+        if [ -z "$added" ]; then
+            printf '%s\n' "$PATH_LINE" >> "$HOME/.zshrc"
+            added=" $HOME/.zshrc"
+        fi
+        if command -v fish >/dev/null 2>&1; then
+            fish -c 'fish_add_path -U $HOME/.local/bin' >/dev/null 2>&1 || true
+        fi
+        PATH_NOTE="Added ~/.local/bin to PATH in:$added - open a new terminal to use 'sutura'."
+        ;;
+esac
+
 echo
 echo "Installed."
 echo "  conda env : $ENV_NAME (python $PY_VERSION)"
@@ -202,3 +234,5 @@ echo
 echo "Usage:"
 echo "  sutura model.stl --human"
 echo "  sutura-gui"
+
+if [ -n "$PATH_NOTE" ]; then echo; echo "$PATH_NOTE"; fi

@@ -55,7 +55,7 @@ jobs:
       - name: Install pip dependencies
         run: |
           pip install --quiet \
-            PySide6-Essentials==6.11.2 pyinstaller numpy
+            PySide6-Essentials==6.11.2 pyinstaller numpy pytetwild==0.4.2
           python -c \
             "import PySide6; print('deps OK')"
 
@@ -118,6 +118,11 @@ jobs:
             "--hidden-import" "repeat_repair"
             "--hidden-import" "mirror_repair" "--hidden-import" "wall_thickness"
             "--hidden-import" "shell_wrap"
+            "--hidden-import" "pytetwild"
+            "--collect-submodules" "pytetwild"
+            "--collect-binaries" "pytetwild"
+            "--collect-data" "pytetwild"
+            "--exclude-module" "pyvista" "--exclude-module" "vtk"
             "--hidden-import" "sutura_geom" "--collect-all" "sutura_geom"
                         "--hidden-import" "sutura_engine"
             "--collect-submodules" "sutura_engine"
@@ -160,6 +165,11 @@ jobs:
             --hidden-import repeat_repair \
             --hidden-import mirror_repair --hidden-import wall_thickness \
             --hidden-import shell_wrap \
+            --hidden-import pytetwild \
+            --collect-submodules pytetwild \
+            --collect-binaries pytetwild \
+            --collect-data pytetwild \
+            --exclude-module pyvista --exclude-module vtk \
             --hidden-import sutura_geom --collect-all sutura_geom \
             --hidden-import sutura_engine \
             --collect-submodules sutura_engine \
@@ -201,6 +211,19 @@ jobs:
           set -e
           dist/sutura-cli/sutura-cli --list-methods | awk '$1==13 && $4=="yes" {ok=1} END {exit !ok}'
           echo "Graft (#13) available in dist/sutura-cli"
+
+      - name: Check fTetWild (#7) is available in the CLI bundle
+        # pytetwild must be bundled (no pyvista/VTK): assert both that it was
+        # collected and that the bundled repair.py reports the tier available.
+        run: |
+          set -e
+          find dist/sutura-cli -path '*pytetwild*' | grep -q .
+          if find dist/sutura-cli -path '*pyvista*' -o -path '*vtkmodules*' | grep -q .; then
+            echo "error: PyVista/VTK leaked into the bundle" >&2
+            exit 1
+          fi
+          dist/sutura-cli/sutura-cli --list-methods | awk '$1==7 && $4=="yes" {ok=1} END {exit !ok}'
+          echo "fTetWild (#7) available in dist/sutura-cli (no pyvista/VTK)"
 
       - name: Smoke repair a broken cube via the frozen CLI
         # The frozen CLI must actually repair, not just list methods: run it on

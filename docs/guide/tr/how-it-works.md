@@ -66,7 +66,7 @@ dosyan ─► Tamponad ─► Flap ─► Aşama 1 temizlik ─► (hâlâ açı
    ayrıntıyı yumuşatabilir; bu yüzden Sutura onu yalnızca her şey başarısız
    olduğunda *önerir*, karar senindir; **Splint** isteğe bağlı tam katı yeniden
    inşadır. **fTetWild** çok bozuk dosyalar için son çare yeniden kurulumdur ve
-   isteğe bağlı eki kuruluysa, stage 1 hâlâ delik bıraktığında otomatik çalışır.
+   varsayılan olarak kuruludur; stage 1 hâlâ delik bıraktığında otomatik çalışır.
 
 Sutura her adımdan sonra delikleri ve hatalı kenarları, dosya diskten yeniden
 açılmış gibi tekrar sayar; işleri kötüleştiren adım çöpe atılır. Orijinal
@@ -111,9 +111,12 @@ Splint ve fTetWild — yukarıdaki adımlarda anlatılmıştır.
 Çıktıyı değiştiren onarım kararları geçen süreyi değil sayılan işi kullanır.
 Aynı dosya ve aynı onarım ayarları hızlı, yavaş ya da yüklü bir makinede aynı
 sonucu verir; rapordaki süre yalnızca bir ölçümdür. Birkaç dışsal veya yalnızca
-rapor amaçlı sınır çok yüksek bir güvenlik süresi tutar (isteğe bağlı fTetWild
+rapor amaçlı sınır çok yüksek bir güvenlik süresi tutar (fTetWild
 çözücüsü, Graft'ın dış iptali) ya da uyarı üretir (Dressing'in yumuşak bütçesi);
 bunlar belgelenmiş istisnalardır ve önemli olduklarında raporda belirtilir.
+fTetWild katmanı (yalnızca stage 1'in kapatamadığı mesh'lerde kullanılır) bir
+istisna daha ekler: iki çalıştırmada yüzeyi biraz farklı üçgenlere bölebilir,
+ancak şekil ve baskıya uygunluk aynı kalır.
 
 ## Neden aşamalı hat
 
@@ -142,7 +145,7 @@ kurma raporda açıkça belirtilir, asla sessizce atlanmaz.
 **İsteğe bağlı katmanlar.** İki çekirdek aşamanın etrafında, self-intersection
 içeren ve ağır bozuk mesh'ler için katmanlar bulunur. Deneysel olanlar
 varsayılan olarak kapalıdır ve kendi CLI bayrağı ya da GUI'deki **Seçenekler** penceresindeki bir kutuyla açılır;
-fTetWild yedek katmanı ise isteğe bağlı eki kuruluysa varsayılan olarak
+fTetWild yedek katmanı ise varsayılan olarak kurulu ve
 açıktır:
 
 * *Stage 1'den önce:* `--experimental-autorefine` (kesişen üçgenleri kesişim
@@ -157,7 +160,7 @@ açıktır:
   ana onarım geçişlerinden önce yok eder.
 * *Stage 1'den sonra, son çare olarak:* fTetWild yedek katmanı (orijinal
   girdiyi fTetWild ile tetrahedralize edip su geçirmez bir yüzey çıkarır;
-  isteğe bağlı ~1,1 GB'lık ek, bkz. Kurulum). Ek kuruluysa varsayılan olarak
+  varsayılan olarak kurulur, ~6 MB, bkz. Kurulum). Varsayılan olarak
   çalışır, ama yalnızca stage 1 hâlâ delik veya non-manifold kenar
   bırakıyorsa; `--no-fallback-ftetwild` (GUI: *Seçenekler* → *Onarım* sekmesi → *fTetWild fallback* işaretini
   kaldırın) kapatır, `--experimental-fallback-ftetwild` (GUI: *Seçenekler* → *Onarım* sekmesi → altındaki *+ self-intersection

@@ -18,7 +18,10 @@ It covers:
        - a faithful Graft is adopted immediately and fTetWild is never tried;
        - a fidelity-failing Graft is deferred and the lower healthy deviation
          wins (the in-loop fTetWild attempt and the after-loop deferred block);
-       - the None-deviation edge semantics of the deferred comparison.
+       - the None-deviation edge semantics of the deferred comparison;
+       - a Graft that failed the input-coverage gate is never adopted as a last
+         resort (fTetWild unavailable or not superseding keeps stage-1), and a
+         fidelity-ok but coverage-failed Graft is not adopted immediately.
   2. ``deep_repair_ladder`` (with a fake ``graft_tier`` / ``_ftetwild_tier``):
        - Graft faithful -> adopted, fTetWild skipped;
        - Graft fidelity-fail -> fTetWild tried, lower deviation wins;
@@ -56,23 +59,25 @@ CUBE_T = [(0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5), (0, 5, 1),
 class _FakeMethod:
     """Minimal RepairMethodProtocol stand-in for the auto policy."""
 
-    def __init__(self, num, mid, name, marker, invents=False):
+    def __init__(self, num, mid, name, marker, invents=False, available=True):
         self.num = num
         self.id = mid
         self.name = name
         self.kwargs = {'marker': marker}
         self.invents_geometry = invents
+        self._available = available
 
     def available(self):
-        return True, None
+        return self._available, None
 
 
-def _fake_registry():
+def _fake_registry(ft_available=True):
     reg = {
         3: _FakeMethod(3, 'full_mend', 'Full Mend', 'baseline'),
         2: _FakeMethod(2, 'local_mend', 'Local Mend', 'local'),
         13: _FakeMethod(13, 'graft', 'Graft', 'graft'),
-        7: _FakeMethod(7, 'ftetwild', 'fTetWild', 'ftetwild'),
+        7: _FakeMethod(7, 'ftetwild', 'fTetWild', 'ftetwild',
+                       available=ft_available),
     }
     return lambda num: reg.get(num)
 
@@ -86,12 +91,15 @@ class _AutoHarness:
     """Drives ``_auto`` with faked registry, attempt, evaluate and rank."""
 
     def __init__(self, rank_nums, graft_fidelity_ok, graft_hdev,
-                 ft_watertight, ft_hdev):
+                 ft_watertight, ft_hdev, graft_coverage_ok=None,
+                 ft_available=True):
         self.rank_nums = list(rank_nums)
         self.graft_fidelity_ok = graft_fidelity_ok
         self.graft_hdev = graft_hdev
         self.ft_watertight = ft_watertight
         self.ft_hdev = ft_hdev
+        self.graft_coverage_ok = graft_coverage_ok
+        self.ft_available = ft_available
         self.calls = []
 
     def _attempt(self, src, out, tmpdir, kwargs, multi):
@@ -100,9 +108,11 @@ class _AutoHarness:
         with open(out, 'w') as f:
             f.write('ok')
         if marker == 'graft':
-            return {'stage1': {},
-                    'graft': {'fidelity_ok': self.graft_fidelity_ok,
-                              'hausdorff_healthy': self.graft_hdev}}
+            g = {'fidelity_ok': self.graft_fidelity_ok,
+                 'hausdorff_healthy': self.graft_hdev}
+            if self.graft_coverage_ok is not None:
+                g['coverage_ok'] = self.graft_coverage_ok
+            return {'stage1': {}, 'graft': g}
         return {'stage1': {}}
 
     def _evaluate(self, result, path, multi, in_objs, method):
@@ -129,7 +139,7 @@ class _AutoHarness:
         methods._attempt = self._attempt
         methods._evaluate = self._evaluate
         methods.rank_methods = self._rank
-        methods.get_method = _fake_registry()
+        methods.get_method = _fake_registry(self.ft_available)
         try:
             with tempfile.TemporaryDirectory(prefix='sutura-order-') as td:
                 src = os.path.join(td, 'in.stl')
@@ -197,6 +207,49 @@ def test_auto_deferred_graft_none_deviation_edges():
     h = _AutoHarness(rank_nums=[13], graft_fidelity_ok=False,
                      graft_hdev=0.05, ft_watertight=True, ft_hdev=None)
     assert h.run()['method_used']['num'] == 13
+
+
+def test_auto_coverage_failed_graft_never_adopted_without_ftetwild():
+    """C1(a): a Graft that failed the input-coverage gate is never a last
+    resort. With fTetWild unavailable the stage-1 output is kept and the
+    rejection is stated on the report instead of silently dropping Graft."""
+    h = _AutoHarness(rank_nums=[13], graft_fidelity_ok=False,
+                     graft_coverage_ok=False, graft_hdev=0.05,
+                     ft_watertight=True, ft_hdev=0.02, ft_available=False)
+    res = h.run()
+    assert h.calls == ['baseline', 'graft'], h.calls
+    assert res['method_used']['num'] == 3, res['method_used']
+    assert res['method_reached_watertight'] is False
+    assert 'Graft rejected' in res['method_used']['note']
+    assert res['graft']['adopted'] is False
+    assert res['graft']['reject_reason'] == 'coverage'
+    assert 'input coverage' in res['graft']['reason']
+
+
+def test_auto_coverage_failed_graft_rejected_when_ftetwild_no_help():
+    """C1(a): fTetWild was tried but is not watertight, so it cannot supersede;
+    the coverage-failed Graft is still rejected and stage-1 kept."""
+    h = _AutoHarness(rank_nums=[13], graft_fidelity_ok=False,
+                     graft_coverage_ok=False, graft_hdev=0.05,
+                     ft_watertight=False, ft_hdev=None)
+    res = h.run()
+    assert h.calls == ['baseline', 'graft', 'ftetwild'], h.calls
+    assert res['method_used']['num'] == 3, res['method_used']
+    assert res['method_reached_watertight'] is False
+    assert res['graft']['reject_reason'] == 'coverage'
+
+
+def test_auto_faithful_graft_coverage_fail_not_adopted_immediately():
+    """C1(b): a fidelity-ok Graft with an explicit coverage failure is NOT
+    adopted at once; an available watertight fTetWild supersedes it even with a
+    higher deviation (a coverage failure always lets fTetWild win)."""
+    h = _AutoHarness(rank_nums=[13], graft_fidelity_ok=True,
+                     graft_coverage_ok=False, graft_hdev=0.01,
+                     ft_watertight=True, ft_hdev=0.5)
+    res = h.run()
+    assert h.calls == ['baseline', 'graft', 'ftetwild'], h.calls
+    assert res['method_used']['num'] == 7, res['method_used']
+    assert res['method_reached_watertight'] is True
 
 
 # --------------------------------------------------------------------------- #

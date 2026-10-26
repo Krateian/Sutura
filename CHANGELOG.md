@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## [0.9.6] - 2026-10-26
+
+### Fixed
+
+- **`sutura` is found right after installing on Linux and macOS.** Some desktops (some Fedora/Ubuntu setups, macOS) do not put `~/.local/bin` on PATH, so a fresh install answered "command not found". The installers now add one marked line to your shell startup file when it is missing (and `uninstall.sh` removes exactly that line); the Dolphin right-click repair also works on Plasma 6 systems that only ship `qdbus6`.
+- **AppImage: `--self-check`, `--diagnostics` and self-repair work again.** Several modules were missing from the 0.9.5 AppImage, so these commands crashed. The AppImage now bundles every module and checks itself while it is being built.
+- **A Graft fallback that does not cover your surface is no longer kept, and an unmeasurable volume reads `n/a`.** During automatic fallback, a Graft shell-wrap that reproduced only a small part of the input surface (for example a thin fragment) could still be used as the final mesh; it is now rejected with a clear message and the stage-1 output is kept, after fTetWild has had its chance. The report and the interface also show "volume change: n/a (input volume not measurable)" for open meshes instead of `0.0%`.
+
+### Changed
+
+- **The fTetWild fallback tier now ships by default and is much smaller.** The last-resort tier that closes the hardest files (already on by default when present) is now installed by `install.sh`, `install-macos.sh`, the AppImage and the macOS `.dmg`, each needing only `pytetwild` — about 6 MB instead of the previous ~1.1 GB, which came from PyVista/VTK that the tier never used. Set `SUTURA_WITH_FTETWILD=0` to skip it; `sutura ftetwild` and the Options → **Engines** tab still install or remove it. The tier can split the surface into slightly different triangles on two runs, but the shape and printability are unchanged.
+
 ## [0.9.5] - 2026-10-25
 
 ### Added

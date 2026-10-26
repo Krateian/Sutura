@@ -1010,14 +1010,15 @@ def _auto_escalation_allowed(ctx: dict) -> bool:
 
 
 def _graft_fidelity(result):
-    """``(fidelity_ok, healthy_deviation)`` from a Graft trial report, or
-    ``(None, None)`` for a non-Graft / older report."""
+    """``(fidelity_ok, healthy_deviation, coverage_ok)`` from a Graft trial
+    report, or ``(None, None, None)`` for a non-Graft / older report."""
     if not isinstance(result, dict):
-        return None, None
+        return None, None, None
     g = result.get('graft')
     if not isinstance(g, dict):
-        return None, None
-    return g.get('fidelity_ok'), g.get('hausdorff_healthy')
+        return None, None, None
+    return (g.get('fidelity_ok'), g.get('hausdorff_healthy'),
+            g.get('coverage_ok'))
 
 
 def _triage_prune_enabled(environ=None) -> bool:
@@ -1128,7 +1129,7 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
     attempts = 0
     fallback_start = time.monotonic()
     watchdog_reached = False
-    deferred_graft = None  # (healthy_dev, method, trial, trial_out, rec)
+    deferred_graft = None  # (healthy_dev, method, trial, trial_out, rec, cov_failed)
     for rec in recs:
         method = _methods_mod().get_method(rec.num)
         if method is None or method.num == base_method.num:
@@ -1159,16 +1160,19 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                              template=rec.template,
                              elapsed_ms=(time.monotonic() - _t0) * 1000))
         if evaluation['watertight']:
-            fav, hdev = _graft_fidelity(trial)
-            if method.num == GRAFT_METHOD_NUM and fav is False:
-                # Watertight but the healthy surface moved beyond tolerance:
-                # keep it as a candidate and let fTetWild be tried; the lower
-                # healthy deviation wins.
+            fav, hdev, cov = _graft_fidelity(trial)
+            cov_failed = cov is False
+            if method.num == GRAFT_METHOD_NUM and (fav is False or cov_failed):
+                # Watertight but the healthy surface moved beyond tolerance or
+                # the result no longer reproduces enough of the input surface
+                # (coverage below threshold): keep it as a candidate and let
+                # fTetWild be tried; the lower healthy deviation wins.
                 if (deferred_graft is None
                         or (hdev is not None
                             and (deferred_graft[0] is None
                                  or hdev < deferred_graft[0]))):
-                    deferred_graft = (hdev, method, trial, trial_out, rec)
+                    deferred_graft = (hdev, method, trial, trial_out, rec,
+                                      cov_failed)
                 continue
             shutil.copyfile(trial_out, out)
             note = ('back surface was estimated'
@@ -1178,7 +1182,7 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
             return trial
 
     if deferred_graft is not None:
-        hdev, method, trial, trial_out, rec = deferred_graft
+        hdev, method, trial, trial_out, rec, cov_failed = deferred_graft
         ft = _methods_mod().get_method(FTETWILD_METHOD_NUM)
         ft_tried = any(t.get('num') == FTETWILD_METHOD_NUM for t in tried)
         if ft is not None and not ft_tried and ft.available()[0]:
@@ -1194,15 +1198,40 @@ def _auto(src: str, out: str, tmpdir: str, ctx: dict, multi: bool, ext: str,
                 fdev = ft_eval.get('hausdorff_rel')
                 # One shared tie-break (order.ftetwild_supersedes_graft): a
                 # present fTetWild deviation no longer beats a None Graft
-                # deviation (the ladder keeps Graft when either is None). The
-                # auto paths carry no coverage concept, so coverage_failed is
-                # left at its default.
-                if ftetwild_supersedes_graft(fdev, hdev):
+                # deviation (the ladder keeps Graft when either is None).
+                if ftetwild_supersedes_graft(fdev, hdev, cov_failed):
                     shutil.copyfile(ft_out, out)
                     _attach(ft_trial, ft, tried, analysis_objects, recs,
                             note='lower healthy deviation than Graft',
                             source='auto_escalated', reached=True)
                     return ft_trial
+        if cov_failed:
+            # A Graft that failed the input-coverage gate no longer reproduces
+            # the input surface: never adopt it as a last resort. Keep the
+            # stage-1 result and state the rejection plainly.
+            from sutura_engine.graft import GRAFT_MIN_INPUT_COVERAGE
+            tg = trial.get('graft') if isinstance(trial, dict) else None
+            cov = tg.get('input_coverage') if isinstance(tg, dict) else None
+            reason = ('input coverage %s < %.2f, kept stage-1 output'
+                      % ('n/a' if cov is None else ('%.4g' % cov),
+                         GRAFT_MIN_INPUT_COVERAGE))
+            # Surface the rejected Graft on the kept stage-1 report so both the
+            # JSON and the --human output state the rejection plainly instead
+            # of silently dropping it.
+            surf = dict(tg) if isinstance(tg, dict) else {}
+            surf['ran'] = True
+            surf['adopted'] = False
+            surf['reject_reason'] = 'coverage'
+            surf['reason'] = reason
+            result['graft'] = surf
+            for record in tried:
+                if record.get('num') == method.num:
+                    record['outcome'] = 'rejected'
+                    record['reason'] = reason
+            _attach(result, base_method, tried, analysis_objects, recs,
+                    note='Graft rejected: %s' % reason,
+                    source='auto_baseline', reached=False)
+            return result
         shutil.copyfile(trial_out, out)
         _attach(trial, method, tried, analysis_objects, recs,
                 note='back surface was estimated',

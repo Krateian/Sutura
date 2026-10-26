@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """fTetWild installation and removal manager backend for Sutura.
 
-Manages the optional fTetWild fallback tier (pytetwild + pyvista + vtk)
-for Sutura without touching the system Python. Strictly supports only the two
+Manages the fTetWild fallback tier (pytetwild; PyVista/VTK are not used) for
+Sutura without touching the system Python. Strictly supports only the two
 canonical Sutura environments:
-  1. Linux: $APP_DIR/venv311/bin/pip (created by install.sh)
+  1. Linux: $APP_DIR/venv/bin/pip (install.sh; the main environment)
+     or the legacy $APP_DIR/venv311/bin/pip
   2. macOS: conda 'sutura-env' bin/pip (created by install-macos.sh)
 
 All other layouts (AppImage, frozen .app/.dmg bundles, system Python,
@@ -22,12 +23,17 @@ import signal
 import subprocess
 import sys
 
-UNSUPPORTED_MSG = 'unsupported here, use install.sh SUTURA_WITH_FTETWILD=1'
-UNSUPPORTED_MACOS_MSG = 'unsupported here, use install-macos.sh SUTURA_WITH_FTETWILD=1'
+UNSUPPORTED_MSG = 'unsupported here, use install.sh (SUTURA_WITH_FTETWILD=0 to opt out)'
+UNSUPPORTED_MACOS_MSG = 'unsupported here, use install-macos.sh (SUTURA_WITH_FTETWILD=0 to opt out)'
 
-# Baseline package specifications for the fTetWild extra
-DEFAULT_FTETWILD_PACKAGES = ['pytetwild==0.4.2', 'pyvista>=0.44']
-FTETWILD_ROOT_NAMES = {'pytetwild', 'pyvista'}
+# Baseline package specifications for the fTetWild extra. Only pytetwild is
+# needed: the bridge stubs out pytetwild's optional PyVista accessor, so VTK is
+# never installed.
+DEFAULT_FTETWILD_PACKAGES = ['pytetwild==0.4.2']
+FTETWILD_ROOT_NAMES = {'pytetwild'}
+# Packages earlier releases installed for the tier; an upgrade must clean them
+# up on uninstall even though they are no longer requested.
+LEGACY_FTETWILD_PACKAGES = {'pyvista', 'vtk', 'pyvista-validation'}
 
 # Known base packages that must never be removed on uninstall
 CANONICAL_BASE_PACKAGES = {
@@ -40,18 +46,22 @@ CANONICAL_BASE_PACKAGES = {
     'wheel',
 }
 
-# Real measured size constants
-# macOS arm64: measured directly on Apple Silicon conda sutura-env
-MAC_ARM64_DOWNLOAD_BYTES = 110_100_480   # ~105 MB (vtk 98.2M, pyvista 2.6M, pytetwild 2.3M, deps ~2M)
-MAC_ARM64_INSTALLED_BYTES = 564_133_888  # ~538 MB (vtkmodules 517.1M, pyvista 13.5M, pytetwild 5.9M, deps ~1.5M)
+# Real measured size constants, pytetwild only (PyVista/VTK are not installed).
+# macOS arm64: pytetwild wheel measured on Apple Silicon conda sutura-env.
+MAC_ARM64_DOWNLOAD_BYTES = 2_411_724     # ~2.3 MB (pytetwild wheel)
+MAC_ARM64_INSTALLED_BYTES = 6_291_456    # ~6.0 MB (pytetwild + its small deps)
 
-# Linux x86_64: measured with 'pip download --no-deps' for manylinux2014_x86_64
-LINUX_X86_64_DOWNLOAD_BYTES = 145_752_064   # ~139 MB (vtk 133M, pytetwild 3.0M, pyvista 2.6M, deps ~2M)
-LINUX_X86_64_INSTALLED_BYTES = 608_174_080  # ~580 MB uncompressed wheel payload (up to ~1.1 GB historically)
+# Linux x86_64: pytetwild manylinux wheel (pip download --no-deps).
+LINUX_X86_64_DOWNLOAD_BYTES = 3_145_728  # ~3.0 MB
+LINUX_X86_64_INSTALLED_BYTES = 6_291_456 # ~6.0 MB
+
+# Linux aarch64: pytetwild manylinux_aarch64 wheel.
+LINUX_AARCH64_DOWNLOAD_BYTES = 2_831_155  # ~2.7 MB
+LINUX_AARCH64_INSTALLED_BYTES = 6_291_456 # ~6.0 MB
 
 # Fallback default estimate for generic environments
-DEFAULT_DOWNLOAD_BYTES = 146_800_640        # ~140 MB
-DEFAULT_INSTALLED_BYTES = 1_181_116_006     # ~1.1 GB (VTK uncompressed + caches)
+DEFAULT_DOWNLOAD_BYTES = 3_145_728      # ~3.0 MB
+DEFAULT_INSTALLED_BYTES = 6_291_456     # ~6.0 MB
 
 
 def format_bytes(num_bytes):
@@ -177,13 +187,14 @@ def resolve_environment(app_dir=None, platform=None, conda_env_dir=None,
                         is_frozen=None):
     """Resolve and validate the target Sutura environment.
 
-    Only two environments are supported:
-      - Linux: $APP_DIR/venv311/bin/pip (install.sh)
+    Only these environments are supported:
+      - Linux: $APP_DIR/venv/bin/pip (the main environment, install.sh), or
+        the legacy $APP_DIR/venv311/bin/pip
       - macOS: conda 'sutura-env' (install-macos.sh)
 
     Returns a dict with:
       - supported: bool
-      - layout: 'linux-venv311' | 'macos-conda' | 'unsupported'
+      - layout: 'linux-venv' | 'linux-venv311' | 'macos-conda' | 'unsupported'
       - reason: None or error message
       - python_path: path to python executable
       - pip_path: path to pip executable
@@ -278,14 +289,20 @@ def resolve_environment(app_dir=None, platform=None, conda_env_dir=None,
             'writable': True,
         }
 
-    # Linux layout: $APP_DIR/venv311
+    # Linux layout: $APP_DIR/venv (main environment), legacy $APP_DIR/venv311
     if plat.startswith('linux'):
         target_app_dir = app_dir or env.get('SUTURA_DIR', os.path.expanduser('~/.local/share/sutura'))
-        venv311 = os.path.join(target_app_dir, 'venv311')
-        py_path = os.path.join(venv311, 'bin', 'python')
-        pip_path = os.path.join(venv311, 'bin', 'pip')
+        venv_root = None
+        layout = None
+        for name, lay in (('venv', 'linux-venv'), ('venv311', 'linux-venv311')):
+            cand = os.path.join(target_app_dir, name)
+            if (os.path.isfile(os.path.join(cand, 'bin', 'python')) and
+                    os.path.isfile(os.path.join(cand, 'bin', 'pip'))):
+                venv_root = cand
+                layout = lay
+                break
 
-        if not os.path.isfile(py_path) or not os.path.isfile(pip_path):
+        if venv_root is None:
             return {
                 'supported': False,
                 'layout': 'unsupported',
@@ -296,8 +313,11 @@ def resolve_environment(app_dir=None, platform=None, conda_env_dir=None,
                 'writable': False,
             }
 
+        py_path = os.path.join(venv_root, 'bin', 'python')
+        pip_path = os.path.join(venv_root, 'bin', 'pip')
+
         site_packages = None
-        lib_dir = os.path.join(venv311, 'lib')
+        lib_dir = os.path.join(venv_root, 'lib')
         if os.path.isdir(lib_dir):
             for entry in os.listdir(lib_dir):
                 if entry.startswith('python3'):
@@ -306,7 +326,7 @@ def resolve_environment(app_dir=None, platform=None, conda_env_dir=None,
                         site_packages = sp
                         break
 
-        writable = os.access(site_packages or venv311, os.W_OK)
+        writable = os.access(site_packages or venv_root, os.W_OK)
         if not writable:
             return {
                 'supported': False,
@@ -320,7 +340,7 @@ def resolve_environment(app_dir=None, platform=None, conda_env_dir=None,
 
         return {
             'supported': True,
-            'layout': 'linux-venv311',
+            'layout': layout,
             'reason': None,
             'python_path': py_path,
             'pip_path': pip_path,
@@ -411,7 +431,10 @@ def compute_ftetwild_removal_set(env_info=None):
 
     # 2. Collect packages reachable from fTetWild roots
     ftetwild_req_file = _find_requirements_file('requirements-ftetwild.txt')
-    ft_roots = _parse_requirements_file(ftetwild_req_file) or FTETWILD_ROOT_NAMES
+    ft_roots = _parse_requirements_file(ftetwild_req_file) or set()
+    # Always include the canonical roots and the legacy PyVista/VTK packages so
+    # an upgrade from an older release cleans them up too.
+    ft_roots |= FTETWILD_ROOT_NAMES | LEGACY_FTETWILD_PACKAGES
 
     ftetwild_candidates = set()
     queue = [p for p in ft_roots if p in dist_map]
@@ -496,9 +519,8 @@ def status(env_info=None):
             dist_map[_normalize_name(raw_name)] = d
 
     pytetwild_dist = dist_map.get('pytetwild')
-    pyvista_dist = dist_map.get('pyvista')
 
-    if not pytetwild_dist or not pyvista_dist:
+    if not pytetwild_dist:
         return {
             'installed': False,
             'supported': True,
@@ -510,11 +532,12 @@ def status(env_info=None):
             'reason': None,
         }
 
-    # Both pytetwild and pyvista are installed
+    # pytetwild is installed
     version = pytetwild_dist.version
     removal_set, total_bytes = compute_ftetwild_removal_set(env_info)
 
-    # Fallback to pytetwild + pyvista + vtk size if removal_set calculation yielded 0
+    # Fallback to the pytetwild (+ legacy PyVista/VTK) size if removal_set
+    # calculation yielded 0
     if total_bytes == 0:
         for pkg_name in ('pytetwild', 'pyvista', 'vtk', 'pyvista-validation'):
             d = dist_map.get(pkg_name)
@@ -536,26 +559,32 @@ def status(env_info=None):
 def estimate(platform=None, arch=None):
     """Return download and installed size estimates for fTetWild.
 
-    Estimates are calibrated against real measurements:
-      - macOS arm64: measured directly on Apple Silicon (~105 MB dl / ~538 MB disk)
-      - Linux x86_64: measured with pip download --no-deps (~139 MB dl / ~580 MB disk, up to ~1.1 GB)
+    Only pytetwild is installed (PyVista/VTK are stubbed out), so the extra is
+    a few megabytes:
+      - macOS arm64: pytetwild wheel measured on Apple Silicon
+      - Linux x86_64 / aarch64: pytetwild manylinux wheel
 
     Returns dict with byte counts and formatted strings.
     """
     plat = platform if platform is not None else sys.platform
+    machine = arch if arch is not None else (os.uname().machine if hasattr(os, 'uname') else '')
 
     if plat == 'darwin':
         dl = MAC_ARM64_DOWNLOAD_BYTES
         disk = MAC_ARM64_INSTALLED_BYTES
-        note = 'Calibrated on macOS Apple Silicon (VTK 517 MB, pyvista 13.5 MB, pytetwild 5.9 MB)'
+        note = 'pytetwild wheel only (PyVista/VTK not installed)'
     elif plat.startswith('linux'):
-        dl = LINUX_X86_64_DOWNLOAD_BYTES
-        disk = LINUX_X86_64_INSTALLED_BYTES
-        note = 'Measured on Linux x86_64 manylinux wheels (~580 MB uncompressed, up to 1.1 GB with caches)'
+        if machine in ('aarch64', 'arm64'):
+            dl = LINUX_AARCH64_DOWNLOAD_BYTES
+            disk = LINUX_AARCH64_INSTALLED_BYTES
+        else:
+            dl = LINUX_X86_64_DOWNLOAD_BYTES
+            disk = LINUX_X86_64_INSTALLED_BYTES
+        note = 'pytetwild manylinux wheel only (PyVista/VTK not installed)'
     else:
         dl = DEFAULT_DOWNLOAD_BYTES
         disk = DEFAULT_INSTALLED_BYTES
-        note = 'Generic estimate (~1.1 GB installed)'
+        note = 'pytetwild only, generic estimate'
 
     return {
         'download_bytes': dl,

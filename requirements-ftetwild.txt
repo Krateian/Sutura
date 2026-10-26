@@ -1,15 +1,16 @@
-# OPTIONAL - experimental fTetWild fallback tier (--experimental-fallback-ftetwild).
-# Not installed by default: pyvista pulls in VTK, roughly 1.1 GB installed
-# (VTK alone ~520 MB). Install into the Python 3.11 stage-2 environment:
-#   Linux (install.sh):        SUTURA_WITH_FTETWILD=1 ./install.sh
-#   macOS (install-macos.sh):  SUTURA_WITH_FTETWILD=1 ./install-macos.sh
-# Without it the flag/checkbox reports an explicit skip; nothing else changes.
+# fTetWild fallback tier (--experimental-fallback-ftetwild).
+# Installed by DEFAULT on Linux (install.sh), macOS (install-macos.sh) and in
+# the AppImage, into the main Sutura environment. Opt out with
+# SUTURA_WITH_FTETWILD=0; if the install fails the tier is disabled with a
+# warning and the rest of Sutura is unaffected.
 #
-# (FAZ17) pytetwild is the
-# pybind11/nanobind wrapper for fTetWild (MPL-2.0, compatible with our
-# PolyForm-Noncommercial license). It is invoked as a venv311 subprocess bridge
-# (sutura/ftetwild_bridge.py) by repair.py behind --experimental-fallback-ftetwild.
-# pyvista is required at pytetwild import time despite being declared "optional"
-# by its pyproject.toml, so both are pinned here.
+# (FAZ17) pytetwild is the pybind11/nanobind wrapper for fTetWild (MPL-2.0,
+# compatible with our PolyForm-Noncommercial license). It is invoked as a
+# subprocess bridge (sutura/ftetwild_bridge.py) by repair.py behind
+# --experimental-fallback-ftetwild.
+#
+# Only pytetwild is listed. pytetwild's __init__ imports its PyVista accessor
+# unconditionally, but the bridge stubs that accessor out before importing (the
+# API used, pytetwild.tetrahedralize on numpy arrays, never touches PyVista), so
+# PyVista/VTK (~520 MB) are deliberately NOT pulled in.
 pytetwild==0.4.2
-pyvista>=0.49.1

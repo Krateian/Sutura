@@ -6,6 +6,15 @@
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
 
+- **v0.9.6 — 2026-10-26** — The last-resort **fTetWild** tier now ships by
+  default and is far smaller (about 6 MB instead of ~1.1 GB, which came from a
+  PyVista/VTK dependency the tier never used); `SUTURA_WITH_FTETWILD=0` still
+  skips it. The AppImage bundles every module again, so `--self-check`,
+  `--diagnostics` and self-repair work, and the build now checks itself. The
+  installers add `sutura` to the PATH (and `uninstall.sh` removes exactly that
+  line), and the Dolphin right-click repair works on Plasma 6 systems that only
+  ship `qdbus6`. A Graft fallback that covers only a small part of the input
+  surface is no longer adopted, and an unmeasurable volume reads `n/a`.
 - **v0.9.5 — 2026-10-25** — **Diagnosis v2** adds a detailed, deterministic
   analysis report (orientation, parts, self-intersections, boundary loops,
   thin walls and more) without changing the repair itself. Repairs are now

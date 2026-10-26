@@ -2,7 +2,8 @@
 # Build the Sutura AppImage.
 #
 # Bundles one relocatable python-build-standalone runtime:
-#   * Python 3.14 -> usr/lib/sutura/venv     (numpy + PySide6 + sutura_geom)
+#   * Python 3.14 -> usr/lib/sutura/venv     (numpy + PySide6 + sutura_geom
+#                                             + pytetwild)
 # plus the application modules, an AppRun GUI/CLI dispatch entry point, and a
 # .desktop + icon, then packages the whole AppDir with appimagetool.
 #
@@ -69,6 +70,12 @@ echo "==> pip install: stage 1 (numpy + PySide6)"
 "$LIB/venv/bin/python" -m pip install --quiet \
     -r "$REPO_ROOT/requirements.txt" -r "$REPO_ROOT/requirements-gui.txt"
 
+echo "==> pip install: fTetWild fallback tier (pytetwild, ~3 MB)"
+# pytetwild ships a cp312-abi3 wheel, so it runs on the bundled Python 3.14.
+# Only pytetwild is installed: the bridge stubs out its PyVista accessor, so
+# VTK is never pulled in. Verified available below; the build fails if not.
+"$LIB/venv/bin/python" -m pip install --quiet -r "$REPO_ROOT/requirements-ftetwild.txt"
+
 echo "==> installing sutura_geom (Rust extension, includes Manifold)"
 # Graft (#13), Exact Refine (#6), the indirect tier and Stage 2 need the
 # extension in the bundled runtime. SUTURA_GEOM_REQUIRED=1 makes a failure
@@ -79,15 +86,15 @@ SUTURA_GEOM_REQUIRED=1 "$SCRIPT_DIR/install_sutura_geom.sh" "$LIB/venv/bin/pytho
 "$LIB/venv/bin/python" -c "import sutura_geom; print('sutura_geom OK (venv 3.14)')"
 
 echo "==> copying application modules"
-for f in repair.py gui.py classification.py defects.py topology.py mesh_classifier.py \
-         mesh_classifier_v2.py autorefine.py local_exact.py triage.py engines.py ftetwild_manager.py methods.py object_analysis.py templates.py closing.py proxy_repair.py repeat_repair.py repeat_picker_render.py mirror_repair.py wall_thickness.py shell_wrap.py ftetwild_bridge.py indirect_bridge.py updater.py heatmap.py heatmap_render.py \
-         before_after_render.py viewer_common.py viewer_data_render.py \
-         confidence.py history.py repair_score.py open.sh __init__.py; do
-    install -m 0755 "$REPO_ROOT/sutura/$f" "$LIB/"
+# Copy every flat module instead of a hand-kept list: the list drifted and
+# 0.9.5 shipped without self_check/diagnostics/manifest/self_repair and the
+# csg/manifold bridges (--self-check crashed inside the AppImage).
+for f in "$REPO_ROOT"/sutura/*.py "$REPO_ROOT/sutura/open.sh"; do
+    install -m 0755 "$f" "$LIB/"
 done
 install -m 0644 "$REPO_ROOT/sutura/repair_score_config.json" "$LIB/repair_score_config.json"
 install -m 0644 "$REPO_ROOT/requirements.txt" \
-    "$REPO_ROOT/requirements-gui.txt" "$LIB/"
+    "$REPO_ROOT/requirements-gui.txt" "$REPO_ROOT/requirements-ftetwild.txt" "$LIB/"
 install -m 0644 "$REPO_ROOT/LICENSE" "$LIB/LICENSE"
 cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura_engine"
 mkdir -p "$LIB/sutura"
@@ -96,6 +103,10 @@ cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura/sutura_engine"
 [ -f "$LIB/sutura_engine/__init__.py" ] || \
     install -m 0644 "$REPO_ROOT/sutura_engine/__init__.py" "$LIB/sutura_engine/__init__.py"
 
+# Run every smoke check exactly as AppRun runs the app (AppRun exports
+# SUTURA_DIR=$SUTURA_LIB); without it the tiers are looked up in a user
+# install that does not exist on a clean build machine.
+export SUTURA_DIR="$LIB"
 echo "==> smoke check: Graft (#13) available in the bundled runtime"
 # The .so being present is not enough; the bundled repair.py must actually
 # report the Graft method as available (which exercises graft_available() ->
@@ -103,10 +114,24 @@ echo "==> smoke check: Graft (#13) available in the bundled runtime"
 if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
         | awk '$1==13 && $4=="yes" {ok=1} END {exit !ok}'; then
     echo "error: Graft (#13) is not reported available in the AppImage runtime:" >&2
-    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null >&2 || true
+    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods >&2 2>&1 || true
     exit 1
 fi
 echo "    Graft (#13) available in the bundled stage-1 runtime"
+echo "==> smoke check: fTetWild (#7) available in the bundled runtime"
+# The fTetWild extra ships by default, so the bundle must report method #7 as
+# available (pytetwild importable + the bridge module present). Fail the build
+# otherwise instead of silently shipping without the tier.
+if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
+        | awk '$1==7 && $4=="yes" {ok=1} END {exit !ok}'; then
+    echo "error: fTetWild (#7) is not reported available in the AppImage runtime:" >&2
+    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods >&2 2>&1 || true
+    echo "--- pytetwild import diagnostics:" >&2
+    (cd "$LIB" && "$LIB/venv/bin/python" -c "import ftetwild_bridge as b; print(b._import_pytetwild())") >&2 2>&1 || true
+    "$LIB/venv/bin/python" -m pip show pytetwild >&2 2>&1 || true
+    exit 1
+fi
+echo "    fTetWild (#7) available in the bundled runtime"
 # Tamponade (#17) is on by default and ships inside the copied sutura_engine package
 # (no flat module entry needed, like Dressing); report its availability for
 # diagnostics but never fail the build on an older wheel without it.
@@ -115,6 +140,13 @@ if "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
     echo "    Tamponade (#17) available in the bundled stage-1 runtime"
 else
     echo "    Tamponade (#17) not available in the bundled runtime" >&2
+fi
+echo "==> smoke check: --self-check in the bundled runtime"
+# Exercises every method's imports, so a module missing from the bundle
+# fails the build here instead of at the user's first --self-check.
+if ! "$LIB/venv/bin/python" "$LIB/repair.py" --self-check >&2; then
+    echo "error: --self-check failed in the AppImage runtime" >&2
+    exit 1
 fi
 echo "==> writing AppRun + CLI wrapper"
 cat > "$APP_DIR/AppRun" <<'EOF'

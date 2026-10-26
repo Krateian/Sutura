@@ -682,9 +682,8 @@ dokunulmadan bırakılır (`p_weld` yok).
 ## Harici onarım motorları ve fTetWild yöneticisi
 
 Sutura, kullanıcının kurduğu üçüncü taraf onarım **motorlarını**
-çağırabilir ve isteğe bağlı fTetWild yedek ekini aynı arayüzden (CLI ve GUI)
-yönetebilir. Bu Triage Engine katmanının iki parçası da isteğe bağlıdır ve
-yapılandırılana kadar etkisizdir.
+çağırabilir ve fTetWild yedek katmanını aynı arayüzden (CLI ve GUI)
+yönetebilir. Motorlar isteğe bağlıdır ve yapılandırılana kadar etkisizdir.
 
 **Harici motorlar.** Bir motor,
 `${XDG_CONFIG_HOME:-~/.config}/sutura/engines/*.toml` altındaki küçük bir TOML
@@ -710,13 +709,14 @@ gösterir; `sutura engines check` ayrıca yapılandırılmış bir ikili eksikse
 sıfırdan farklı çıkış verir (motoru asla çalıştırmaz).
 
 **fTetWild yöneticisi.** `sutura ftetwild status|install|uninstall`, fTetWild
-ekini (`pytetwild` + `pyvista` + `vtk`) yalnızca Sutura ortamında (Linux
-`venv311` veya macOS conda `sutura-env`) inceler, kurar veya temiz biçimde
-kaldırır; önce indirme ve disk boyutlarını gösterir ve kurulum/kaldırma için
-`--yes` (veya etkileşimli onay) gerektirir; `--dry-run` planı yazdırır ve
-ortama asla dokunmaz. Desteklenmeyen düzenleri (AppImage, donmuş `.app`/`.dmg`,
-sistem Python'u, salt-okunur ortamlar) açık bir gerekçeyle reddeder ve
-kaldırma yalnızca ekin eklediği paketleri budayıp temel ortamı korur. GUI'de
+katmanını (`yalnızca pytetwild`) yalnızca Sutura ortamında (Linux ana `venv`,
+onun `venv311` yedeği veya macOS conda `sutura-env`) inceler, kurar veya temiz
+biçimde kaldırır; önce indirme ve disk boyutlarını gösterir ve kurulum/kaldırma
+için `--yes` (veya etkileşimli onay) gerektirir; `--dry-run` planı yazdırır ve
+ortama asla dokunmaz. Paketlenmiş veya sistem düzenlerini (AppImage, donmuş
+`.app`/`.dmg`, sistem Python'u, salt-okunur ortamlar) açık bir gerekçeyle
+reddeder ve kaldırma yalnızca katmanın eklediği paketleri budayıp temel ortamı
+korur. GUI'de
 bu, Seçenekler penceresinin **Motorlar** sekmesidir: durum satırı
 (kurulu/sürüm/boyut veya desteklenmeyen gerekçesi), onayda boyutu gösteren
 Kur/Kaldır ve akışlı, iptal edilebilir bir ilerleme penceresi, ayrıca
