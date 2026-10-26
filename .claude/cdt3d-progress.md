@@ -808,3 +808,37 @@ separate processes and compare hashes (the in-process five-run test is now
 green), then start P5 (Phase C: cell contraction, winding, min-cut,
 extraction) or the B5 coverage certificate if the owner wants P4 signed off
 first.
+
+## 2026-10-26 — P4 gate and handoff
+
+P4 gate (under the paper/P4.0 definition: a PLC face is missing when a tet edge
+pierces its interior):
+
+- `missing_after = 0` on `thingi10k_100827`, the six closed/open fixtures and
+  `plate_a_dent`; `valid = true` on all eight (orientation, duplicate,
+  non-manifold, neighbour, hull, unused and non-constraint empty-sphere checks
+  all zero).
+- Determinism: the new in-process test
+  `thingi10k_100827_face_recovery_is_deterministic` rebuilds P3+P4 five times
+  and compares the canonical tets and face hash.  The full eight-mesh face gate
+  was run in two separate processes; every per-mesh hash was identical:
+  `7b9acab0edee2bf2`, `272c944e16cb5606`, `3b14e71be39fb763`,
+  `01c5516d26d77998`, `f7c46ad8a27321a4`, `0a844a100704c3db`,
+  `67daa2925f298fa9`, `de72d0f6be7f4315`.
+- `cargo test --release`: **389 passed, 0 failed, 6 ignored**.
+- P3 gate hashes unchanged; the only shared-kernel change is the exact
+  `lnc_explicit_plane_sign` fast path, covered by a differential test.
+  The default (non-cdt3d) path is not called by the new face code; its full
+  test suite is green.
+- Gate wall time ~118 s including P3 (`plate_a_dent` ~67 s P3 + ~39 s face).
+
+Remaining gap before the design's B5 certificate is fully claimed: the
+detection definition proves "no tet edge pierces a PLC face", not the stronger
+"each PLC face is exactly a union of tet faces" area-coverage certificate.
+That certificate, and the cell-contraction/min-cut Phase C (P5), are the next
+items.  No default-on flag, CLI/GUI wiring or version bump has been done.
+
+Handoff: commit `ee0858c` plus this progress entry on `spike/cdt3d`.  The
+working tree is clean after the follow-up commit; `graphify update .` has been
+run.  Any fresh session can resume from `ee0858c` (or the progress commit that
+follows it) and this file.
