@@ -1951,6 +1951,9 @@ fn splint_cut_py<'py>(
         if let Some(v) = d.get_item("input_tets_deep")? {
             s_opts.input_tets_deep = v.extract::<f64>()?;
         }
+        if let Some(v) = d.get_item("input_tets_cap")? {
+            s_opts.input_tets_cap = v.extract::<bool>()?;
+        }
     }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2030,6 +2033,11 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("input_tets", r.input_tets)?;
     d.set_item("input_tets_points", r.input_tets_points)?;
     d.set_item("input_tets_corner_tets", r.input_tets_corner_tets)?;
+    d.set_item("input_tets_cap", r.input_tets_cap)?;
+    d.set_item("cap_loops", r.cap_loops)?;
+    d.set_item("cap_planar", r.cap_planar)?;
+    d.set_item("cap_fanned", r.cap_fanned)?;
+    d.set_item("cap_tris", r.cap_tris)?;
     d.set_item("input_comps", r.input_comps)?;
     d.set_item("geodesic_comps", r.geodesic_comps)?;
     d.set_item("inside_comps", r.inside_comps)?;

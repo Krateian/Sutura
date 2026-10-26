@@ -32,8 +32,14 @@ fn cube() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
     (v, t)
 }
 
-fn same_report(a: &SplintReport, b: &SplintReport) {
-    let fields = [
+fn open_cube() -> (Vec<[f64; 3]>, Vec<[usize; 3]>) {
+    // The cube with its +z face removed: one planar 4-edge boundary loop.
+    let (v, mut t) = cube();
+    t.retain(|f| *f != [4, 5, 6] && *f != [4, 6, 7]);
+    (v, t)
+}
+
+fn same_report(a: &SplintReport, b: &SplintReport) {    let fields = [
         (a.res, b.res),
         (a.input_vertices, b.input_vertices),
         (a.input_faces, b.input_faces),
@@ -79,6 +85,11 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     assert_eq!(a.input_tets, b.input_tets);
     assert_eq!(a.input_tets_points, b.input_tets_points);
     assert_eq!(a.input_tets_corner_tets, b.input_tets_corner_tets);
+    assert_eq!(a.input_tets_cap, b.input_tets_cap);
+    assert_eq!(a.cap_loops, b.cap_loops);
+    assert_eq!(a.cap_planar, b.cap_planar);
+    assert_eq!(a.cap_fanned, b.cap_fanned);
+    assert_eq!(a.cap_tris, b.cap_tris);
     assert_eq!(a.input_comps, b.input_comps);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
@@ -414,4 +425,32 @@ fn input_tets_is_deterministic_and_default_off_is_unchanged() {
         }
     }
     same_report(&a.report, &b.report);
+}
+
+#[test]
+fn input_tets_cap_is_deterministic_and_fires_on_open_input() {
+    let (v, t) = open_cube();
+    let mut on = SplintOpts::default();
+    on.input_tets = true;
+    on.input_tets_cap = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, on).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, on).expect("b");
+    assert!(a.report.input_tets_cap);
+    assert!(a.report.cap_loops >= 1, "open cube must expose a boundary loop");
+    assert!(a.report.cap_tris >= 2, "the planar loop must be capped");
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+    same_report(&a.report, &b.report);
+
+    // Flag OFF stays the H7-only output: no cap evaluated.
+    let mut off = on;
+    off.input_tets_cap = false;
+    let base = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, off).expect("base");
+    assert!(!base.report.input_tets_cap);
+    assert_eq!(base.report.cap_tris, 0);
+    assert_eq!(base.report.cap_loops, 0);
 }

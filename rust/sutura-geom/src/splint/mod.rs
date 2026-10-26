@@ -16,6 +16,7 @@
 //! `RETRY_COMPS`.
 
 mod adaptive;
+mod cap;
 mod components;
 mod cut;
 mod delaunay;
@@ -83,6 +84,9 @@ pub(crate) struct SplintOpts {
     /// H7: keep an inside component only if it holds a tet whose winding offset
     /// `GWN - 0.5` exceeds this (`WIND_TAU` by default); shallower specks dropped.
     pub input_tets_deep: f64,
+    /// H7b: evaluate the winding unary on a TEMPORARY cap of the input's open
+    /// boundary loops (never emitted), so the opening reads as interior.
+    pub input_tets_cap: bool,
 }
 
 impl Default for SplintOpts {
@@ -98,6 +102,7 @@ impl Default for SplintOpts {
             input_tets_lambda: 0.5,
             input_tets_lattice: 7,
             input_tets_deep: WIND_TAU,
+            input_tets_cap: false,
         }
     }
 }
@@ -158,6 +163,11 @@ pub(crate) struct SplintReport {
     pub input_tets: bool,
     pub input_tets_points: usize,
     pub input_tets_corner_tets: usize,
+    pub input_tets_cap: bool,
+    pub cap_loops: usize,
+    pub cap_planar: usize,
+    pub cap_fanned: usize,
+    pub cap_tris: usize,
     pub input_comps: usize,
     pub geodesic_comps: usize,
     pub inside_comps: usize,
@@ -227,6 +237,22 @@ fn run_pass(
     let nverts: Vec<[f64; 3]> = verts.iter().map(|p| normalizer.norm(*p)).collect();
     let bvh = MeshBvh::from_arrays(&nverts, tris);
 
+    // H7b: a temporary cap of the input's open boundary loops, used ONLY to
+    // evaluate the winding unary (never emitted, never part of the basis).
+    let cap = if opts.input_tets && opts.input_tets_cap {
+        Some(cap::temporary_cap(&nverts, tris))
+    } else {
+        None
+    };
+    let capped_bvh = cap.as_ref().map(|c| {
+        let mut cv = nverts.clone();
+        cv.extend_from_slice(&c.extra_verts);
+        let mut ct: Vec<[usize; 3]> = tris.to_vec();
+        ct.extend_from_slice(&c.tris);
+        MeshBvh::from_arrays(&cv, &ct)
+    });
+    let wind_bvh: &MeshBvh = capped_bvh.as_ref().unwrap_or(&bvh);
+
     let shell_map = if adaptive_on {
         let tris_u32: Vec<[u32; 3]> = tris
             .iter()
@@ -273,7 +299,7 @@ fn run_pass(
     let secs_delaunay = t_delaunay.elapsed().as_secs_f64();
     let topo = tetra::build(&tets, &proxy.verts);
     let labels = if opts.input_tets {
-        label::label_tets_winding(&bvh, &topo.centroids, &topo.out_tet, parallel, WIND_CAP)
+        label::label_tets_winding(wind_bvh, &topo.centroids, &topo.out_tet, parallel, WIND_CAP)
     } else {
         label::label_tets(&bvh, &topo.centroids, &topo.out_tet, parallel)
     };
@@ -502,6 +528,11 @@ fn run_pass(
         input_tets_corner_tets: corner_tet
             .as_ref()
             .map_or(0, |c| c.iter().filter(|&&b| b).count()),
+        input_tets_cap: opts.input_tets && opts.input_tets_cap,
+        cap_loops: cap.as_ref().map_or(0, |c| c.loops),
+        cap_planar: cap.as_ref().map_or(0, |c| c.planar),
+        cap_fanned: cap.as_ref().map_or(0, |c| c.fanned),
+        cap_tris: cap.as_ref().map_or(0, |c| c.tris.len()),
         input_comps,
         geodesic_comps: geodesic_outcome.map_or(0, |(_, _, c)| c),
         inside_comps,
