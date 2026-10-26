@@ -1,6 +1,13 @@
 """P6: solid_engine resolver and ladder slot."""
 import json
 import os
+import sys
+
+# Self-sufficient import path so the file runs as a script and under pytest.
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _path in (REPO_DIR, os.path.join(REPO_DIR, 'sutura')):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 import numpy as np
 
@@ -114,3 +121,8 @@ def test_cdt_tier_real_100827():
     assert rec['coverage_certified'] is False
     assert rec['wall_seconds'] is not None
     assert len(ot) > 0
+
+
+if __name__ == '__main__':
+    import pytest
+    sys.exit(pytest.main([__file__, '-q']))
