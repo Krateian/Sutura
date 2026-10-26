@@ -22,6 +22,8 @@
 //! literature; no GPL/AGPL/LGPL source is copied.  See
 //! `.claude/cdt3d-design.md` for the licensing and algorithmic rationale.
 
+pub mod dt;
 pub mod plc;
 
+pub use dt::{build_dt, BoundingBox3, Dt, DtOptions, DtReport};
 pub use plc::{build_plc, Plc, PlcOptions, PlcReport};

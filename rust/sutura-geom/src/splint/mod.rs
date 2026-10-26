@@ -19,7 +19,7 @@ mod adaptive;
 mod cap;
 mod components;
 mod cut;
-mod delaunay;
+pub(crate) mod delaunay;
 mod emit;
 mod input_tets;
 mod label;

@@ -133,3 +133,94 @@ What was done:
 
 Next step: P2 (initial Delaunay + tet/neighbour structure + canonicalisation,
 box/ghost handling, exact validity checks).  Handoff point: P0 + P1 complete.
+
+## 2026-10-26 — P2 initial Delaunay implemented and gated
+
+What was done:
+- New `rust/sutura-geom/src/cdt3d/dt.rs`:
+  - padded box around the PLC bounding box (pad = 5% of the diagonal, advanced
+    by `next_down`/`next_up` until strictly outside), with the eight corners
+    appended after the PLC vertices as hard sink terminals;
+  - sequential Geogram `BDEL` on the PLC vertices plus the eight box corners,
+    reusing the existing crate-internal `splint::delaunay` wrapper (no new
+    FFI and no default-path change);
+  - oriented canonicalisation: sort each tet's ids, use the exact `orient3d`
+    to force positive orientation, then sort the tet list; rebuild
+    `neighbours[t][lv]` from face incidences and verify reciprocity; deterministic
+    FNV digest of canonical vertices + tets;
+  - exact validity report: positive orientation, duplicate/degenerate tets,
+    non-manifold face incidence, neighbour reciprocity, unused vertices, hull
+    faces on the box (ghost/sink boundary), and a local empty-sphere test on
+    every interior face with the P1 `insphere_sign`.
+- `cdt3d/mod.rs` exports `build_dt`, `Dt`, `DtOptions`, `DtReport`,
+  `BoundingBox3`; `splint/mod.rs` makes the existing `delaunay` module
+  `pub(crate)` (visibility only, no behaviour change).
+- Tests: box strictness, tetrahedron + box, duplicate input rejection, flat-tet
+  rejection, a deliberately non-Delaunay pair (proves the empty-sphere check
+  fires), a 5-run 100827 test, and the ignored 8-mesh gate.
+- No Python binding yet: P2 is internal opt-in code, not on the default path.
+
+Gate (`cargo test --release cdt3d::dt::tests::dt_public_corpus_gate -- --ignored`),
+5 runs per mesh in one process; the whole gate was run in three separate
+processes.  All eight hashes were identical in every process.  Every row has
+`nonpositive = degenerate = duplicate = non-manifold = inconsistent = off-box
+= unused = empty-sphere = 0` and `plc_valid = dt_valid = true`.
+
+| mesh | plcV | totalV | tets | hull/ghost | interior | off-box | ngb | empty | cosph | unused | secs/run | hash |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| thingi10k_100827 | 47 | 55 | 252 | 12/12 | 498 | 0 | 0 | 0 | 16 | 0 | 0.001 | afa089cef908b956 |
+| case1_open_cup | 130 | 138 | 691 | 12/12 | 1376 | 0 | 0 | 0 | 244 | 0 | 0.003 | 848159b61c6e7b24 |
+| case2_pipe | 64 | 72 | 274 | 12/12 | 542 | 0 | 0 | 0 | 236 | 0 | 0.003 | f63676a58f9cefbb |
+| case3_broken_cup | 194 | 202 | 977 | 12/12 | 1948 | 0 | 0 | 0 | 520 | 0 | 0.004 | d8cf4252c0f46c1e |
+| case4_cracked_sphere | 568 | 576 | 3176 | 12/12 | 6346 | 0 | 0 | 0 | 532 | 0 | 0.009 | 0bd91e3ae2bc37d9 |
+| case5_box_missing_face | 8 | 16 | 42 | 12/12 | 78 | 0 | 0 | 0 | 36 | 0 | 0.001 | 658066f7f57d28b5 |
+| case6_thin_cup | 65 | 73 | 279 | 12/12 | 552 | 0 | 0 | 0 | 252 | 0 | 0.002 | 6b594616c5c0b145 |
+| plate_a_dent | 6876 | 6884 | 34838 | 12/12 | 69670 | 0 | 0 | 0 | 35544 | 0 | 0.142 | 9910b986e28e356d |
+
+`cosph` is the number of directed interior-face tests whose exact in-sphere
+value is zero (cospherical, accepted; not a violation).  `ngb` is the number
+of inconsistent neighbour links.  The local face test is equivalent to a
+global empty-sphere test on the convex box and avoids the O(V*T) sweep.
+
+`cargo test --release`: **370 passed, 0 failed, 3 ignored** (the P0 gate, the
+new P2 gate and the pre-existing ignored test).
+
+Default path: the only non-additive change is `mod delaunay` ->
+`pub(crate) mod delaunay`; the new module is not called from `arrangement`,
+`Splint`, the CLI or the GUI.  The full default test suite is green.
+
+Next step: commit P2 locally, run `graphify update .`, then start P3 (segment
+recovery: missing-edge detection, encroaching reference, acute classification,
+LNC split, insertion, exact tests).
+
+### Self-review — P0/P1 items that remain uncertain
+
+P0:
+- The positive-area coplanar policy moves one non-shared vertex by one ulp.
+  It is reported and preserves area on the gate meshes, but its shape safety
+  for very thin stacked coplanar shells is not independently proven.
+- `build_plc` conformance is O(n^2) per pass; `plate_a_dent` costs ~8-9 s per
+  run in release.  That is acceptable for a gate but may be too slow for the
+  final pipeline.
+- `area_ratio` is computed from projected `f64` triangle areas, not an exact
+  rational sum; it is a diagnostic, not a certificate.
+- `plc_valid` deliberately accepts open boundaries (15 boundary edges on
+  100827).  P2/P3 must keep treating an open PLC as a valid input.
+
+P1:
+- `insphere_sign_perturbed` implements the published index-sort/orient3d
+  parity rule and passes even/odd permutation tests, but it has not been
+  compared against an independent SoS oracle on general five-point cospherical
+  configurations.
+- The homogeneous 5x5 in-sphere convention is calibrated against `robust` on
+  random explicit tuples and the regular tetrahedron.  Negative homogeneous
+  denominators and implicit-point edge cases rely on the interval filter and
+  the exact rational fallback; coverage is differential, not a proof.
+- The exact 5x5 rational solve uses deterministic Gaussian elimination without
+  an explicit pivot strategy proof; randomized tests pass, but adversarial
+  zero-pivot inputs are not exhaustively characterised.
+- `Lnc::to_f64` is the approximate construction; exact predicates use
+  `to_rational`.  Endpoint aliasing (`t = 0/1`) and the canonical key are tested
+  indirectly, not as a dedicated property.
+- The rational fallback is correctness-first.  Near-cospherical/near-coplanar
+  inputs can be slow until the paper's indirect polynomial filters land.
