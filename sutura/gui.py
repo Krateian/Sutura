@@ -1926,7 +1926,7 @@ class RepairWorker(QThread):
                  dressing=False, dressing_drain=None,
                  dressing_defects=None, dressing_rmax_scale=None,
                  dressing_sigma_scale=None, dressing_force_adopt=False,
-                 splint=False, coaptation=False,
+                 splint=False, solid_engine='ftetwild', coaptation=False,
                  intensity='balanced',
                  si_mode='report',
                  methods_by_path=None,
@@ -1954,6 +1954,7 @@ class RepairWorker(QThread):
         self._dressing_sigma_scale = dressing_sigma_scale
         self._dressing_force_adopt = dressing_force_adopt
         self._splint = splint
+        self._solid_engine = solid_engine
         self._coaptation = coaptation
         self._si_mode = si_mode
         # P3 per-file tags: path -> ordered method numbers / engine names.
@@ -4874,6 +4875,7 @@ class MainWindow(QMainWindow):
                                    dressing_sigma_scale=self._dressing_sigma_scale,
                                    dressing_force_adopt=self._dressing_force_adopt,
                                    splint=self._splint,
+                                   solid_engine=self._solid_engine,
                                    coaptation=self._coaptation,
                                    si_mode=self._si_mode,
                                    intensity=self._intensity,
