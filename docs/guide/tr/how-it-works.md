@@ -111,7 +111,7 @@ Splint ve fTetWild — yukarıdaki adımlarda anlatılmıştır.
 Çıktıyı değiştiren onarım kararları geçen süreyi değil sayılan işi kullanır.
 Aynı dosya ve aynı onarım ayarları hızlı, yavaş ya da yüklü bir makinede aynı
 sonucu verir; rapordaki süre yalnızca bir ölçümdür. Birkaç dışsal veya yalnızca
-rapor amaçlı sınır çok yüksek bir güvenlik süresi tutar (isteğe bağlı fTetWild
+rapor amaçlı sınır çok yüksek bir güvenlik süresi tutar (fTetWild
 çözücüsü, Graft'ın dış iptali) ya da uyarı üretir (Dressing'in yumuşak bütçesi);
 bunlar belgelenmiş istisnalardır ve önemli olduklarında raporda belirtilir.
 fTetWild katmanı (yalnızca stage 1'in kapatamadığı mesh'lerde kullanılır) bir

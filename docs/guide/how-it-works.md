@@ -62,8 +62,8 @@ your file ─► Tamponade ─► Flap ─► Stage 1 clean-up ─► (still ope
    in a virtual coat that always comes out closed, but it can soften fine
    detail, so Sutura only *suggests* it when everything else failed and you
    decide; **Splint** is the opt-in exact solid rebuild. **fTetWild** is a
-   last-resort rebuild for badly broken files and runs automatically when its
-   optional extra is installed and stage 1 still leaves holes.
+   last-resort rebuild for badly broken files and runs automatically (installed
+   by default) when stage 1 still leaves holes.
 
 After every step Sutura counts holes and bad edges again, as if the file had
 been re-opened from disk; a step that makes things worse is thrown away. Your
@@ -110,7 +110,7 @@ Repair decisions that change the output use counted work, not elapsed time. The
 same file with the same repair settings therefore produces the same result on a
 fast machine, a slow machine or a busy one; the time in the report is only a
 measurement. A few external or report-only limits keep a very high safety
-timeout (the optional fTetWild solver, Graft's outer abort) or a warning
+timeout (the fTetWild solver, Graft's outer abort) or a warning
 (Dressing's soft budget); those are documented exceptions and are called out in
 the report when they matter. The fTetWild tier (used only for meshes stage 1
 cannot close) is one more exception: on two runs it can split the surface into
@@ -142,8 +142,8 @@ reported explicitly, never silently omitted.
 
 **Optional tiers.** Around the two core stages sit tiers for self-intersecting
 and badly broken meshes. The experimental ones are off by default and enabled
-by their own CLI flag or a checkbox in the GUI's **Options** window; the fTetWild fallback is on by default
-whenever its optional extra is installed:
+by their own CLI flag or a checkbox in the GUI's **Options** window; the
+fTetWild fallback is installed and on by default:
 
 * *Before stage 1:* `--experimental-autorefine` (splits intersecting
   triangles along their intersection segments, never deletes a face) and

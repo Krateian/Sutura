@@ -682,9 +682,8 @@ dokunulmadan bırakılır (`p_weld` yok).
 ## Harici onarım motorları ve fTetWild yöneticisi
 
 Sutura, kullanıcının kurduğu üçüncü taraf onarım **motorlarını**
-çağırabilir ve isteğe bağlı fTetWild yedek ekini aynı arayüzden (CLI ve GUI)
-yönetebilir. Bu Triage Engine katmanının iki parçası da isteğe bağlıdır ve
-yapılandırılana kadar etkisizdir.
+çağırabilir ve fTetWild yedek katmanını aynı arayüzden (CLI ve GUI)
+yönetebilir. Motorlar isteğe bağlıdır ve yapılandırılana kadar etkisizdir.
 
 **Harici motorlar.** Bir motor,
 `${XDG_CONFIG_HOME:-~/.config}/sutura/engines/*.toml` altındaki küçük bir TOML
