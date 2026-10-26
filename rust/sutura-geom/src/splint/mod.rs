@@ -16,15 +16,15 @@
 //! `RETRY_COMPS`.
 
 mod adaptive;
-mod cap;
+pub(crate) mod cap;
 mod components;
 mod cut;
 pub(crate) mod delaunay;
 pub(crate) mod emit;
 mod input_tets;
-mod label;
-mod normalize;
-mod proxy;
+pub(crate) mod label;
+pub(crate) mod normalize;
+pub(crate) mod proxy;
 mod relabel;
 mod tetra;
 

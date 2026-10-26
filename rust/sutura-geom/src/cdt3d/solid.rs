@@ -17,6 +17,9 @@ use crate::hole::{boundary_topology, close_holes_core};
 use crate::mincut::BkGraph;
 use crate::point::Point3;
 use crate::splint::emit::snap_and_dedup_f32;
+use crate::splint::label::label_tets;
+use crate::splint::normalize::Normalizer;
+use crate::splint::proxy;
 use crate::winding::MeshBvh;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,7 +31,9 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 pub struct SolidOptions {
     pub lambda: f64,
     pub winding_cap: f64,
-    pub nonconstraint_lambda: f64,
+    pub proxy_res: usize,
+    pub constraint_fraction: f64,
+    pub max_tets: usize,
     pub cap_max_loop: i64,
     pub min_component_volume_frac: f64,
 }
@@ -37,8 +42,10 @@ impl Default for SolidOptions {
     fn default() -> Self {
         Self {
             lambda: 0.5,
-            winding_cap: 1.0,
-            nonconstraint_lambda: 1.0,
+            winding_cap: 0.5,
+            proxy_res: 128,
+            constraint_fraction: 0.05,
+            max_tets: 250_000,
             cap_max_loop: 200,
             min_component_volume_frac: 0.01,
         }
@@ -50,6 +57,13 @@ pub struct SolidReport {
     pub cells: usize,
     pub tet_count: usize,
     pub constraint_faces: usize,
+    pub open_input: bool,
+    pub proxy_shell_vertices: usize,
+    pub proxy_shell_faces: usize,
+    pub constraint_cut_faces: usize,
+    pub constraint_cut_area: f64,
+    pub free_cut_faces: usize,
+    pub free_cut_area: f64,
     pub self_loop_faces: usize,
     pub boundary_constraint_faces: usize,
     pub inside_cells: usize,
@@ -211,10 +225,38 @@ fn hausdorff(
     (o2i, i2o)
 }
 
+fn h7_proxy_phi(
+    unary_verts: &[[f64; 3]],
+    unary_tris: &[[usize; 3]],
+    centroids: &[[f64; 3]],
+    out: &[bool],
+    opts: &SolidOptions,
+) -> Result<(Vec<f64>, usize, usize, f64), String> {
+    let normalizer = Normalizer::new(unary_verts, opts.proxy_res);
+    let nverts: Vec<[f64; 3]> = unary_verts.iter().map(|p| normalizer.norm(*p)).collect();
+    let bvh = MeshBvh::from_arrays(&nverts, unary_tris);
+    let proxy = proxy::build(&bvh, opts.proxy_res, normalizer.eps(), None, false)?;
+    if proxy.shell_len == 0 || proxy.shell_tris.is_empty() {
+        return Err("H7 proxy shell is empty".into());
+    }
+    let shell_bvh = MeshBvh::from_arrays(&proxy.verts[..proxy.shell_len], &proxy.shell_tris);
+    let ncentroids: Vec<[f64; 3]> = centroids.iter().map(|p| normalizer.norm(*p)).collect();
+    let labels = label_tets(&shell_bvh, &ncentroids, out, false);
+    let h5_tol = 4.0 * proxy.voxel / normalizer.scale();
+    Ok((
+        labels.phi,
+        proxy.shell_len,
+        proxy.shell_tris.len(),
+        h5_tol,
+    ))
+}
+
 /// Build the cut surface from the recovered CDT.
 pub fn build_solid(
     face: &FaceMesh,
     plc: &Plc,
+    unary_verts: &[[f64; 3]],
+    unary_tris: &[[usize; 3]],
     opts: &SolidOptions,
 ) -> Result<SolidMesh, String> {
     if !face.report.valid || !face.report.coverage_certified {
@@ -224,6 +266,15 @@ pub fn build_solid(
     let tets = &face.tets;
     let neighbours = &face.neighbours;
     let n_tets = tets.len();
+    if n_tets > opts.max_tets {
+        return Err(format!(
+            "P5 tet budget exceeded: {} > {}",
+            n_tets, opts.max_tets
+        ));
+    }
+    if plc.report.boundary_edges > 0 {
+        return build_solid_tets(face, plc, unary_verts, unary_tris, opts);
+    }
     let constraints: BTreeSet<[usize; 3]> = face.constraint_faces.iter().copied().collect();
 
     let mut parent: Vec<usize> = (0..n_tets).collect();
@@ -360,15 +411,11 @@ pub fn build_solid(
     }
 
     if edges.is_empty() {
-        return build_solid_tets(face, plc, opts);
+        return build_solid_tets(face, plc, unary_verts, unary_tris, opts);
     }
 
-    let bvh = MeshBvh::from_arrays(&plc.verts, &plc.tris);
-    let mut phi = vec![0.0f64; n_cells];
-    for c in 0..n_cells {
-        let w = bvh.winding_at(cell_cen[c]);
-        phi[c] = (w - 0.5).clamp(-opts.winding_cap, opts.winding_cap);
-    }
+    let (phi, proxy_shell_vertices, proxy_shell_faces, h5_tol) =
+        h7_proxy_phi(unary_verts, unary_tris, &cell_cen, &sink_cell, opts)?;
     if std::env::var_os("CDT3D_DEBUG_SOLID").is_some() {
         let pmin = phi.iter().copied().fold(f64::INFINITY, f64::min);
         let pmax = phi.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -380,20 +427,12 @@ pub fn build_solid(
             sink_cell.iter().filter(|&&s| s).count()
         );
     }
-    let a_ref = if edges.is_empty() {
-        1.0
-    } else {
-        edges.iter().map(|e| e.area).sum::<f64>() / edges.len() as f64
-    };
-
     let mut g = BkGraph::new(n_cells);
     for c in 0..n_cells {
         if sink_cell[c] {
             g.add_tweights(c, 0.0, INF);
-        } else if phi[c] > 0.0 {
-            g.add_tweights(c, phi[c] * a_ref, 0.0);
         } else if phi[c] < 0.0 {
-            g.add_tweights(c, 0.0, -phi[c] * a_ref);
+            g.add_tweights(c, INF, 0.0);
         }
     }
     for e in &edges {
@@ -433,7 +472,7 @@ pub fn build_solid(
         }
         comp.sort_unstable();
         let vol: f64 = comp.iter().map(|&c| cell_vol[c]).sum();
-        let confident = comp.iter().any(|&c| phi[c] > 0.25);
+        let confident = comp.iter().any(|&c| phi[c] < 0.0);
         if !confident || vol < opts.min_component_volume_frac * total_vol {
             for &c in &comp {
                 inside[c] = false;
@@ -473,18 +512,38 @@ pub fn build_solid(
         cells: n_cells,
         tet_count: n_tets,
         constraint_faces: constraints.len(),
+        open_input: false,
+        proxy_shell_vertices,
+        proxy_shell_faces,
+        free_cut_faces: 0,
+        free_cut_area: 0.0,
         self_loop_faces: self_loops,
         boundary_constraint_faces: boundary_edges.len(),
         inside_cells,
         contracted: true,
     };
-    finish_solid(points, plc, faces, opts, meta)
+    finish_solid(
+        points,
+        plc,
+        faces,
+        Vec::new(),
+        unary_verts,
+        unary_tris,
+        h5_tol,
+        opts,
+        meta,
+    )
 }
 
 struct SolidMeta {
     cells: usize,
     tet_count: usize,
     constraint_faces: usize,
+    open_input: bool,
+    proxy_shell_vertices: usize,
+    proxy_shell_faces: usize,
+    free_cut_faces: usize,
+    free_cut_area: f64,
     self_loop_faces: usize,
     boundary_constraint_faces: usize,
     inside_cells: usize,
@@ -494,7 +553,11 @@ struct SolidMeta {
 fn finish_solid(
     points: &[Point3],
     plc: &Plc,
-    faces: Vec<[usize; 3]>,
+    plc_faces: Vec<[usize; 3]>,
+    pre_caps: Vec<[usize; 3]>,
+    unary_verts: &[[f64; 3]],
+    unary_tris: &[[usize; 3]],
+    h5_tol: f64,
     opts: &SolidOptions,
     meta: SolidMeta,
 ) -> Result<SolidMesh, String> {
@@ -502,15 +565,25 @@ fn finish_solid(
         .iter()
         .map(|p| p.to_f64().unwrap_or([0.0; 3]))
         .collect();
-    let plc_face_count = faces.len();
-    let tris_i64: Vec<[i64; 3]> = faces
+    let plc_face_count = plc_faces.len();
+    let constraint_cut_area: f64 = plc_faces
+        .iter()
+        .map(|&f| tri_area(points, f))
+        .sum();
+    let tris_i64: Vec<[i64; 3]> = plc_faces
         .iter()
         .map(|f| [f[0] as i64, f[1] as i64, f[2] as i64])
         .collect();
-    let mut out_tris: Vec<[usize; 3]> = faces.clone();
+    let mut out_tris: Vec<[usize; 3]> = plc_faces.clone();
     let mut cap_faces = 0usize;
     let mut cap_area = 0.0f64;
-    if !faces.is_empty() {
+    if !pre_caps.is_empty() {
+        cap_faces = pre_caps.len();
+        for &f in &pre_caps {
+            cap_area += tri_area(points, f);
+            out_tris.push(f);
+        }
+    } else if !plc_faces.is_empty() {
         if let Ok(closed) = close_holes_core(&all_verts, &tris_i64, opts.cap_max_loop, false) {
             if closed.tris.len() > tris_i64.len() {
                 cap_faces = closed.tris.len() - tris_i64.len();
@@ -523,17 +596,40 @@ fn finish_solid(
         }
     }
 
-    let (out_verts, snapped) = snap_and_dedup_f32(&all_verts, &out_tris);
-    let snapped_u32: Vec<[u32; 3]> = snapped
+    let em = crate::splint::emit::Emitted {
+        verts: all_verts.clone(),
+        tris: out_tris.clone(),
+        out_manifold: false,
+        output_parts: 0,
+    };
+    let (em, _h5_moved) =
+        crate::splint::emit::project_emitted(em, unary_verts, unary_tris, h5_tol);
+    let (raw_verts, snapped) = snap_and_dedup_f32(&em.verts, &em.tris);
+    let mut remap = vec![usize::MAX; raw_verts.len()];
+    let mut out_verts: Vec<[f64; 3]> = Vec::new();
+    let mut tris: Vec<[usize; 3]> = Vec::with_capacity(snapped.len());
+    for t in &snapped {
+        let mut nt = [0usize; 3];
+        for k in 0..3 {
+            let v = t[k];
+            if remap[v] == usize::MAX {
+                remap[v] = out_verts.len();
+                out_verts.push(raw_verts[v]);
+            }
+            nt[k] = remap[v];
+        }
+        tris.push(nt);
+    }
+    let snapped_u32: Vec<[u32; 3]> = tris
         .iter()
         .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
         .collect();
     let manifold = mesh_is_manifold(&out_verts, &snapped_u32);
-    let parts = output_parts(&out_verts, &snapped);
-    let holes = if snapped.is_empty() {
+    let parts = output_parts(&out_verts, &tris);
+    let holes = if tris.is_empty() {
         0
     } else {
-        let si: Vec<[i64; 3]> = snapped
+        let si: Vec<[i64; 3]> = tris
             .iter()
             .map(|t| [t[0] as i64, t[1] as i64, t[2] as i64])
             .collect();
@@ -556,12 +652,12 @@ fn finish_solid(
     }
 
     let input_bvh = MeshBvh::from_arrays(&plc.verts, &plc.tris);
-    let output_bvh = MeshBvh::from_arrays(&out_verts, &snapped);
+    let output_bvh = MeshBvh::from_arrays(&out_verts, &tris);
     let (o2i, i2o) = hausdorff(
         &input_bvh,
         &output_bvh,
         &out_verts,
-        &snapped,
+        &tris,
         plc,
     );
     let haus = o2i.max(i2o);
@@ -570,11 +666,18 @@ fn finish_solid(
         cells: meta.cells,
         tet_count: meta.tet_count,
         constraint_faces: meta.constraint_faces,
+        open_input: meta.open_input,
+        proxy_shell_vertices: meta.proxy_shell_vertices,
+        proxy_shell_faces: meta.proxy_shell_faces,
+        constraint_cut_faces: plc_face_count,
+        constraint_cut_area,
+        free_cut_faces: meta.free_cut_faces,
+        free_cut_area: meta.free_cut_area,
         self_loop_faces: meta.self_loop_faces,
         boundary_constraint_faces: meta.boundary_constraint_faces,
         inside_cells: meta.inside_cells,
         contracted: meta.contracted,
-        output_faces: snapped.len(),
+        output_faces: tris.len(),
         cap_faces,
         cap_area,
         parts,
@@ -586,7 +689,7 @@ fn finish_solid(
         hausdorff_input_to_output: i2o,
         hausdorff: haus,
         valid: false,
-        hash: hash_output(&out_verts, &snapped),
+        hash: hash_output(&out_verts, &tris),
     };
     report.valid = report.parts == 1
         && report.holes == 0
@@ -595,7 +698,7 @@ fn finish_solid(
         && report.hausdorff <= 0.0125;
     Ok(SolidMesh {
         verts: out_verts,
-        tris: snapped,
+        tris,
         plc_face_count,
         report,
     })
@@ -605,6 +708,8 @@ fn finish_solid(
 fn build_solid_tets(
     face: &FaceMesh,
     plc: &Plc,
+    unary_verts: &[[f64; 3]],
+    unary_tris: &[[usize; 3]],
     opts: &SolidOptions,
 ) -> Result<SolidMesh, String> {
     let points = &face.points;
@@ -613,8 +718,6 @@ fn build_solid_tets(
     let n_tets = tets.len();
     let constraints: BTreeSet<[usize; 3]> = face.constraint_faces.iter().copied().collect();
 
-    let bvh = MeshBvh::from_arrays(&plc.verts, &plc.tris);
-    let mut phi = vec![0.0f64; n_tets];
     let mut cen = vec![[0.0f64; 3]; n_tets];
     let mut sink = vec![false; n_tets];
     for ti in 0..n_tets {
@@ -624,51 +727,21 @@ fn build_solid_tets(
                 cen[ti][a] += q[a] * 0.25;
             }
         }
-        let w = bvh.winding_at(cen[ti]);
-        phi[ti] = (w - 0.5).clamp(-opts.winding_cap, opts.winding_cap);
         for lv in 0..4 {
             if neighbours[ti][lv] < 0 {
                 sink[ti] = true;
             }
         }
     }
-
-    let mut areas = Vec::new();
-    for ti in 0..n_tets {
-        for lv in 0..4 {
-            let n = neighbours[ti][lv];
-            if n >= 0 {
-                let key = sorted_face(&tets[ti], lv);
-                if constraints.contains(&key) {
-                    areas.push(tri_area(points, key));
-                }
-            }
-        }
-    }
-    let a_ref = if areas.is_empty() {
-        1.0
-    } else {
-        areas.iter().sum::<f64>() / areas.len() as f64
-    };
+    let (phi, proxy_shell_vertices, proxy_shell_faces, h5_tol) =
+        h7_proxy_phi(unary_verts, unary_tris, &cen, &sink, opts)?;
 
     let mut g = BkGraph::new(n_tets);
-    let any_anchor = (0..n_tets).any(|ti| !sink[ti] && phi[ti] > 0.2);
-    let fallback = if any_anchor {
-        None
-    } else {
-        (0..n_tets)
-            .filter(|&ti| !sink[ti] && phi[ti] > 0.0)
-            .max_by(|&a, &b| phi[a].partial_cmp(&phi[b]).unwrap().then(b.cmp(&a)))
-    };
     for ti in 0..n_tets {
         if sink[ti] {
             g.add_tweights(ti, 0.0, INF);
-        } else if phi[ti] > 0.2 || Some(ti) == fallback {
-            g.add_tweights(ti, INF, 0.0);
-        } else if phi[ti] > 0.0 {
-            g.add_tweights(ti, phi[ti] * a_ref, 0.0);
         } else if phi[ti] < 0.0 {
-            g.add_tweights(ti, 0.0, -phi[ti] * a_ref);
+            g.add_tweights(ti, INF, 0.0);
         }
     }
     for ti in 0..n_tets {
@@ -679,9 +752,9 @@ fn build_solid_tets(
             }
             let key = sorted_face(&tets[ti], lv);
             let cap = if constraints.contains(&key) {
-                tri_area(points, key) * opts.lambda
+                tri_area(points, key) * opts.lambda * opts.constraint_fraction
             } else {
-                tri_area(points, key) * opts.nonconstraint_lambda
+                tri_area(points, key) * opts.lambda
             };
             g.add_edge(ti, n as usize, cap, cap);
         }
@@ -705,22 +778,56 @@ fn build_solid_tets(
         return Err("tet-level constrained cut produced a trivial labelling".into());
     }
 
-    let mut faces: Vec<[usize; 3]> = Vec::new();
+    let mut occ: BTreeMap<[usize; 3], Vec<(usize, usize)>> = BTreeMap::new();
+    for ti in 0..n_tets {
+        for lv in 0..4 {
+            let key = sorted_face(&tets[ti], lv);
+            if constraints.contains(&key) {
+                occ.entry(key).or_default().push((ti, lv));
+            }
+        }
+    }
+    let mut plc_faces: Vec<[usize; 3]> = Vec::new();
     let mut boundary_constraints = 0usize;
+    for (key, list) in &occ {
+        if list.len() == 1 {
+            boundary_constraints += 1;
+            let (ti, lv) = list[0];
+            if inside[ti] {
+                let (a, b, c, _) =
+                    crate::cdt3d::segment::oriented_face_apex(points, &tets[ti], lv);
+                plc_faces.push([a, b, c]);
+            }
+            continue;
+        }
+        if list.len() != 2 {
+            return Err(format!(
+                "constraint face {key:?} has {} incident tets",
+                list.len()
+            ));
+        }
+        let (tia, lva) = list[0];
+        let (tib, lvb) = list[1];
+        if inside[tia] == inside[tib] {
+            continue;
+        }
+        let (ti, lv) = if inside[tia] { (tia, lva) } else { (tib, lvb) };
+        let (a, b, c, _) =
+            crate::cdt3d::segment::oriented_face_apex(points, &tets[ti], lv);
+        plc_faces.push([a, b, c]);
+    }
+
+    let mut free_seen: BTreeSet<[usize; 3]> = BTreeSet::new();
+    let mut free_faces: Vec<[usize; 3]> = Vec::new();
+    let mut free_cut_area = 0.0f64;
     for ti in 0..n_tets {
         for lv in 0..4 {
             let n = neighbours[ti][lv];
-            let key = sorted_face(&tets[ti], lv);
-            if !constraints.contains(&key) {
+            if n < 0 {
                 continue;
             }
-            if n < 0 {
-                boundary_constraints += 1;
-                if inside[ti] {
-                    let (a, b, c, _) =
-                        crate::cdt3d::segment::oriented_face_apex(points, &tets[ti], lv);
-                    faces.push([a, b, c]);
-                }
+            let key = sorted_face(&tets[ti], lv);
+            if constraints.contains(&key) || !free_seen.insert(key) {
                 continue;
             }
             let nj = n as usize;
@@ -737,20 +844,37 @@ fn build_solid_tets(
             };
             let (a, b, c, _) =
                 crate::cdt3d::segment::oriented_face_apex(points, &tets[t_in], lv_in);
-            faces.push([a, b, c]);
+            free_faces.push([a, b, c]);
+            free_cut_area += tri_area(points, key);
         }
     }
+    let free_cut_faces = free_faces.len();
 
     let meta = SolidMeta {
         cells: n_tets,
         tet_count: n_tets,
         constraint_faces: constraints.len(),
+        open_input: true,
+        proxy_shell_vertices,
+        proxy_shell_faces,
+        free_cut_faces,
+        free_cut_area,
         self_loop_faces: 0,
         boundary_constraint_faces: boundary_constraints,
         inside_cells: inside_count,
         contracted: false,
     };
-    finish_solid(points, plc, faces, opts, meta)
+    finish_solid(
+        points,
+        plc,
+        plc_faces,
+        free_faces,
+        unary_verts,
+        unary_tris,
+        h5_tol,
+        opts,
+        meta,
+    )
 }
 
 #[cfg(test)]
@@ -765,21 +889,30 @@ mod tests {
     #[test]
     fn thingi10k_100827_solid_diagnostic() {
         let plc = plc_for("real", "thingi10k_100827.stl");
+        let (uv, ut) = real_sample("thingi10k_100827.stl");
         let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
         let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+        let opts = SolidOptions::default();
         let start = Instant::now();
-        let solid = build_solid(&face, &plc, &SolidOptions::default()).unwrap();
+        let solid = build_solid(&face, &plc, &uv, &ut, &opts).unwrap();
         let secs = start.elapsed().as_secs_f64();
         println!(
-            "100827 solid: cells={} cfaces={} selfloop={} bc={} inside={} outF={} capF={} capA={:.6} parts={} holes={} nm={} bbox_ok={} bbox={:?} h_o2i={:.6} h_i2o={:.6} h={:.6} valid={} hash={:016x} secs={:.3}",
+            "100827 solid: cells={} cfaces={} open={} pv={} pf={} selfloop={} bc={} inside={} outF={} capF={} capA={:.6} ccut={} ccutA={:.3} fcut={} fcutA={:.3} parts={} holes={} nm={} bbox_ok={} bbox={:?} h_o2i={:.6} h_i2o={:.6} h={:.6} valid={} hash={:016x} secs={:.3}",
             solid.report.cells,
             solid.report.constraint_faces,
+            solid.report.open_input,
+            solid.report.proxy_shell_vertices,
+            solid.report.proxy_shell_faces,
             solid.report.self_loop_faces,
             solid.report.boundary_constraint_faces,
             solid.report.inside_cells,
             solid.report.output_faces,
             solid.report.cap_faces,
             solid.report.cap_area,
+            solid.report.constraint_cut_faces,
+            solid.report.constraint_cut_area,
+            solid.report.free_cut_faces,
+            solid.report.free_cut_area,
             solid.report.parts,
             solid.report.holes,
             solid.report.nonmanifold,
@@ -792,6 +925,20 @@ mod tests {
             solid.report.hash,
             secs
         );
+    }
+
+    #[test]
+    fn thingi10k_100827_solid_is_deterministic() {
+        let plc = plc_for("real", "thingi10k_100827.stl");
+        let (uv, ut) = real_sample("thingi10k_100827.stl");
+        let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+        let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+        let first = build_solid(&face, &plc, &uv, &ut, &SolidOptions::default()).unwrap();
+        for _ in 0..4 {
+            let again = build_solid(&face, &plc, &uv, &ut, &SolidOptions::default()).unwrap();
+            assert_eq!(again.report.hash, first.report.hash);
+            assert_eq!(again.tris, first.tris);
+        }
     }
 
     #[test]
@@ -809,9 +956,20 @@ mod tests {
         ];
         for (kind, name) in samples {
             let plc = plc_for(kind, name);
+            let (uv, ut) = if kind == "real" {
+                real_sample(name)
+            } else {
+                fixture(name)
+            };
             let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
             let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
-            let solid = build_solid(&face, &plc, &SolidOptions::default()).unwrap();
+            let solid = match build_solid(&face, &plc, &uv, &ut, &SolidOptions::default()) {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("{name}: P5 ERR {e}");
+                    continue;
+                }
+            };
             println!(
                 "{name}: cells={} cfaces={} selfloop={} inside={} outF={} capF={} parts={} holes={} nm={} bbox_ok={} h={:.6} valid={} hash={:016x}",
                 solid.report.cells,

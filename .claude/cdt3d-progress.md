@@ -1101,3 +1101,75 @@ Recommended order: A first (smallest change, reuses H7 machinery), then B for
 the pure exact path.  No default-path code was changed; `cargo test --release`
 is **394 passed, 0 failed, 8 ignored**.  The P5 module and diagnostic test are
 committed so a fresh session can resume from the failing numbers above.
+
+## 2026-10-26 — P5 option A implemented; gate result: FAIL on shape
+
+Implementation (lead decision A):
+
+- Unary reuses the H7/Splint path with no copy: `Normalizer`, the closed
+  `proxy::build` offset shell (`shell_len`/`shell_tris`) and the signed-UDF
+  `label::label_tets`; hard source on `phi < 0`, hard sink on box/hull tets.
+  The exact CDT tets and PLC faces remain the output basis.  The original input
+  arrays are passed as the unary mesh (not the canonical PLC).
+- Open PLC (`boundary_edges > 0`): **no cell contraction**.  The min-cut is on
+  the tet adjacency graph.  Constraint edge = `area * lambda * 0.05` (cheap),
+  free edge = `area * lambda` (finite).  Free faces crossing the cut are the
+  minimal-area caps; they are emitted as `cap_faces`/`cap_area`, not discarded.
+  PLC faces are deduplicated and emitted once from the inside tet.
+- Closed PLC: contraction retained as the speed-up.
+- Fixed default `lambda = 0.5`, `constraint_fraction = 0.05`.  Sweep at
+  `0.25 / 0.5 / 1.0` with `constraint_fraction` 0, 0.05, 0.5: on 100827 the
+  three lambda values tie at `constraint_fraction` 0 or 0.05 (same output,
+  same hash); 0.5 was worse.  No further tuning.
+- H7 H5 emitted-vertex projection is reused (`project_emitted`) with the H7
+  tolerance (`4 * voxel / scale`).  It did not change the 100827 metrics: the
+  remaining error is cap-interior distance, not vertex distance.
+- `max_tets = 250_000` returns a typed `P5 tet budget exceeded` failure for the
+  ladder.  Open plate has 122,594 tets and passes the budget.
+
+100827 result (default):
+
+| metric | value | gate |
+|---|---|---|
+| parts | 1 | pass |
+| holes | 0 | pass |
+| non-manifold | 0 | pass |
+| bbox error | 0, 0, 0 | pass |
+| PLC cut faces / free cap faces | 149 / 39 | — |
+| cap area | 89.130 | — |
+| output faces | 186 | — |
+| output→input | 0.243857 mm | — |
+| input→output | 0.269582 mm | — |
+| two-sided Hausdorff | **0.269582 mm** | **FAIL (0.0125)** |
+| valid | false | fail |
+
+Fixtures (default, diagnostic):
+
+| mesh | parts | holes | NM | bbox_ok | Hausdorff | result |
+|---|---:|---:|---:|---|---:|---|
+| case1_open_cup | 1 | 0 | 0 | false | 8.624934 | fail |
+| case2_pipe | 1 | 0 | 0 | true | 7.961478 | fail |
+| case3_broken_cup | 3 | 0 | 0 | false | 8.624934 | fail |
+| case4_cracked_sphere | 1 | 0 | 0 | true | 3.112500 | fail |
+| case5_box_missing_face | — | — | — | — | — | typed error: trivial labelling |
+| case6_thin_cup | 1 | 0 | 0 | true | 9.951847 | fail |
+| plate_a_dent | 1 | 0 | 0 | true | 2.328091 | fail |
+
+Plate (open) budget/time/memory: 122,594 tets, 47,268 constraint faces,
+77,837 inside tets, 43,864 output faces, 202 cap faces, 1 part, 0 holes, 0 NM,
+bbox_ok, Hausdorff 2.328091.  Full 8-mesh P3+P4+P5 diagnostic: 223.6 s test
+time, **1,418,674,176 bytes max RSS** (1.42 GB).  The plate solid stage alone is
+roughly the 224 s total minus the known ~167 s P3+face, i.e. tens of seconds;
+the hard budget is the deterministic tet cap, not a wall-clock timer.
+
+Determinism: the in-process 5-run test passes; two separate cargo processes
+print the identical 100827 hash `b34248a66ff0febf` (only `secs` differs).
+`cargo test --release`: **395 passed, 0 failed, 8 ignored**.
+
+Conclusion: option A produces a valid closed mesh (1 part / 0 holes / 0 NM /
+bbox OK) but misses the fTetWild shape bar by ~21x on 100827 (0.2696 vs
+0.0125 mm) and by 3-10 mm on the open fixtures.  The free caps are the minimal
+area but lie on the proxy-offset boundary, and 49 of 198 PLC pieces are not on
+the cut.  This is a labelling/offset gap, not a CDT or B5 failure.  Per the
+lead decision, B stays parked and is reopened only on a new decision; no
+threshold/dent tuning was done.
