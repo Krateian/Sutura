@@ -76,6 +76,7 @@ pub struct FaceMesh {
     pub box3: crate::cdt3d::dt::BoundingBox3,
     pub tets: Vec<[usize; 4]>,
     pub neighbours: Vec<[i32; 4]>,
+    pub constraint_faces: Vec<[usize; 3]>,
     pub report: FaceReport,
 }
 
@@ -194,6 +195,7 @@ pub fn recover_faces(
         box3: seg.box3,
         tets,
         neighbours,
+        constraint_faces: coverage.constraint_faces.clone(),
         report,
     })
 }

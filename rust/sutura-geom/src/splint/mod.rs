@@ -20,7 +20,7 @@ mod cap;
 mod components;
 mod cut;
 pub(crate) mod delaunay;
-mod emit;
+pub(crate) mod emit;
 mod input_tets;
 mod label;
 mod normalize;

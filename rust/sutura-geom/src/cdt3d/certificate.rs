@@ -22,6 +22,7 @@ type P2 = [BigRational; 2];
 type Tri2 = [P2; 3];
 
 struct Cand {
+    key: [usize; 3],
     tri: Tri2,
     lo: [f64; 3],
     hi: [f64; 3],
@@ -95,6 +96,7 @@ pub struct CoverageReport {
     pub partial: usize,
     pub certified: bool,
     pub failures: Vec<usize>,
+    pub constraint_faces: Vec<[usize; 3]>,
 }
 
 fn orient2(a: &P2, b: &P2, c: &P2) -> BigRational {
@@ -273,6 +275,7 @@ pub fn certify_face_coverage(
     let mut stamp = vec![0u32; faces.len()];
     let mut epoch = 0u32;
     let mut candidates: Vec<Cand> = Vec::new();
+    let mut constraint_set: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut queue: Vec<usize> = Vec::new();
     for (fi, f) in plc.tris.iter().enumerate() {
         let fv = [
@@ -356,6 +359,7 @@ pub fn certify_face_coverage(
             let (clo, chi) = aabb2(&approx, &face);
             if triangle_inside(&t2, &f2) {
                 candidates.push(Cand {
+                    key: face,
                     area2: area2(&t2),
                     tri: t2,
                     lo: clo,
@@ -389,6 +393,9 @@ pub fn certify_face_coverage(
             }
         }
 
+        for c in &candidates {
+            constraint_set.insert(c.key);
+        }
         let mut bad = false;
         if partial {
             report.partial += 1;
@@ -447,6 +454,7 @@ pub fn certify_face_coverage(
     }
 
     report.certified = report.failed_triangles == 0;
+    report.constraint_faces = constraint_set.into_iter().collect();
     Ok(report)
 }
 

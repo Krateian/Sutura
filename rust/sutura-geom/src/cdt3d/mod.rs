@@ -27,6 +27,7 @@ pub mod dt;
 pub mod face;
 pub mod plc;
 pub mod segment;
+pub mod solid;
 
 pub use certificate::{certify_face_coverage, CoverageReport};
 pub use dt::{build_dt, BoundingBox3, Dt, DtOptions, DtReport};
@@ -35,6 +36,7 @@ pub use face::{
 };
 pub use plc::{build_plc, Plc, PlcOptions, PlcReport};
 pub use segment::{recover_segments, SegmentMesh, SegmentOptions, SegmentReport};
+pub use solid::{build_solid, SolidMesh, SolidOptions, SolidReport};
 
 #[cfg(test)]
 pub(crate) mod testutil {

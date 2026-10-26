@@ -1019,3 +1019,85 @@ Objections:
   two-sided distance is reported both with and without caps where practical.
 - This session may run out of context before the full shape gate.  The handoff
   will record the exact P5 state and the first failing metric.
+
+## 2026-10-26 — P5 first attempt: diagnostic scaffold, gate not met
+
+What was built (`rust/sutura-geom/src/cdt3d/solid.rs`, opt-in, not wired to the
+default path):
+
+- exact constraint-face set persisted from B5 in `CoverageReport` /
+  `FaceMesh`;
+- union-find cell contraction across non-constraint faces, cell volume/centroid,
+  box/hull cells as hard exterior;
+- winding unary from `winding::MeshBvh`, capped min-cut over cells with PLC
+  faces as cut edges (`lambda = 0.5`), self-loops ignored;
+- extraction of PLC faces whose incident cells differ, `close_holes_core` caps,
+  `f32` snap/weld, parts/holes/NM/bbox/two-sided-distance diagnostics, hash;
+- an open-PLC fallback at tet level: PLC edges cuttable, non-constraint faces
+  given a finite penalty (`nonconstraint_lambda = 1.0`) and confident interior
+  tets hard-anchored, then the same PLC-face extraction and capping.
+
+Diagnostic on `thingi10k_100827` (not a gate pass):
+
+| metric | value |
+|---|---|
+| contracted cells | 1 (all 198 constraint faces are self-loops) |
+| tet-fallback inside tets | 21 |
+| PLC faces emitted | 28 |
+| caps | 0 |
+| parts / holes / NM | 1 / 16 / non-manifold |
+| bbox error | 3.734 mm per axis |
+| two-sided Hausdorff | 24.33 mm |
+| valid | false |
+
+Root causes found, in order:
+
+1. **Cell contraction cannot work on an open PLC.** Removing the PLC faces from
+   the dual graph leaves it connected around the open boundary, so every
+   constraint face is a self-loop and the whole box is one cell.  This is a
+   property of the input, not a bug in the contraction.
+2. **Closing the input PLC is not accepted by the exact face stage.** The
+   existing `close_holes_core` adds 11 cap faces to 100827, but `build_plc` on
+   the capped soup fails with an LPI point outside its host triangle.  Directly
+   appending the 11 caps and re-running P3/P4 leaves 6 cap faces unrecovered,
+   so the B5 certificate is false (`cfail=6`).  The caps are non-planar
+   openings; they are not valid PLC facets for the exact CDT.
+3. **The winding unary is too weak on the raw 100827 soup.** The input is open
+   and orientation-inconsistent (the P0 notes: 51 odd-use edges).  On the raw
+   surface `phi = w-0.5` has min -1, max +0.389 and only 65/631 tets are
+   positive; using a temporary cap for the winding BVH made it worse
+   (`max +0.22`).  Thresholding gives 92 PLC faces; the min-cut with finite
+   non-constraint penalties gives 28.  Neither covers the object; both leave
+   many boundary loops and a non-manifold result.  The 3.73 mm bbox error is
+   the selected surface being a small patch, not a rounding issue.
+4. Capping the *output* cannot fix this: the cut surface is already the wrong
+   patch, and `close_holes_core` only closes its boundary loops.
+
+This is the design's O4 labelling problem, not the CDT embedding: P3/P4/B5 are
+exact and complete.  The P5 gate on 100827 is **not met**; the module is a
+diagnostic scaffold behind an opt-in API, not a claim.
+
+Options (need an owner decision):
+
+A. **Use the existing Splint normalizer/proxy for the unary only.**  Build the
+   same closed, consistently oriented proxy that H7 uses, evaluate the winding
+   on it, and keep the exact CDT only as the output basis.  This matches the
+   design's "winding of the (capped) input, as in H7" and does not change the
+   exact tetrahedralization.  The temporary cap alone is not enough; the
+   orientation repair is the missing part.
+B. **Make Phase A produce a valid closed cap PLC.**  Cap the 15-edge boundary
+   loop with a PLC-valid triangulation (possibly new planar Steiner points) and
+   re-run P3/P4 on that PLC.  This preserves the exact path but requires a cap
+   insertion/face-recovery extension; non-planar ear-clip caps are not usable.
+C. **Change the P5 gate scope to closed, consistently oriented inputs first.**
+   Run the gate on the closed fixtures (or a repaired 100827), record the open
+   inputs as a separate cap class, and do not claim 1 part/0 holes on raw open
+   soups until B or A lands.
+D. **Use a different unary** (signed distance to a closed proxy, orientation
+   vote, or the existing H7 unary) instead of raw GWN.  This is a labelling
+   change, not a CDT change; it needs a shape gate to compare against fTetWild.
+
+Recommended order: A first (smallest change, reuses H7 machinery), then B for
+the pure exact path.  No default-path code was changed; `cargo test --release`
+is **394 passed, 0 failed, 8 ignored**.  The P5 module and diagnostic test are
+committed so a fresh session can resume from the failing numbers above.
