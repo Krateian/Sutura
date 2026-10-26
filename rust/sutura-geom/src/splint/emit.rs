@@ -140,6 +140,21 @@ fn project_verts(
             inc[vi].push(fi);
         }
     }
+    // Uniform grid over the input vertices with cell = tol, so any input vertex
+    // within tol of a query lies in its 3x3x3 neighbourhood. This keeps the snap
+    // linear in the output size instead of O(V_out * V_in).
+    let inv = 1.0 / tol.max(1e-12);
+    let cell_of = |p: [f64; 3]| -> (i64, i64, i64) {
+        (
+            (p[0] * inv).floor() as i64,
+            (p[1] * inv).floor() as i64,
+            (p[2] * inv).floor() as i64,
+        )
+    };
+    let mut grid: HashMap<(i64, i64, i64), Vec<usize>> = HashMap::new();
+    for (k, iv) in in_verts.iter().enumerate() {
+        grid.entry(cell_of(*iv)).or_default().push(k);
+    }
     // One output vertex per input vertex: snapping two output vertices onto the
     // same input corner would create coincident faces and non-manifold edges.
     let mut used = vec![false; in_verts.len()];
@@ -149,19 +164,30 @@ fn project_verts(
         // point): the emitted boundary may already touch the surface elsewhere,
         // which would leave an uncovered input corner. Targeting the corners
         // drives the input->output distance at those corners to zero.
+        let (ci, cj, ck) = cell_of(verts[vi]);
         let mut best = usize::MAX;
         let mut bd = f64::INFINITY;
-        for (k, iv) in in_verts.iter().enumerate() {
-            if used[k] {
-                continue;
-            }
-            let dx = iv[0] - verts[vi][0];
-            let dy = iv[1] - verts[vi][1];
-            let dz = iv[2] - verts[vi][2];
-            let dd = dx * dx + dy * dy + dz * dz;
-            if dd < bd {
-                bd = dd;
-                best = k;
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                for dz in -1..=1 {
+                    let Some(bucket) = grid.get(&(ci + dx, cj + dy, ck + dz)) else {
+                        continue;
+                    };
+                    for &k in bucket {
+                        if used[k] {
+                            continue;
+                        }
+                        let iv = in_verts[k];
+                        let ex = iv[0] - verts[vi][0];
+                        let ey = iv[1] - verts[vi][1];
+                        let ez = iv[2] - verts[vi][2];
+                        let dd = ex * ex + ey * ey + ez * ez;
+                        if dd < bd {
+                            bd = dd;
+                            best = k;
+                        }
+                    }
+                }
             }
         }
         if best == usize::MAX {
