@@ -85,6 +85,10 @@ pub struct SegmentChain {
 /// Validity report for one segment recovery run.
 #[derive(Clone, Debug, Default)]
 pub struct SegmentReport {
+    /// Wall time of the initial Delaunay tetrahedralization, in milliseconds.
+    pub dt_ms: f64,
+    /// Wall time of segment recovery after the initial DT, in milliseconds.
+    pub recovery_ms: f64,
     pub input_segments: usize,
     pub subsegments: usize,
     pub missing_before: usize,
@@ -133,10 +137,13 @@ pub fn recover_segments(plc: &Plc, opts: &SegmentOptions) -> Result<SegmentMesh,
     if plc.tris.is_empty() {
         return Err("segment recovery needs a non-empty PLC".into());
     }
+    let dt_start = std::time::Instant::now();
     let dt = build_dt(&plc.verts, &opts.dt)?;
+    let dt_ms = dt_start.elapsed().as_secs_f64() * 1000.0;
     if !dt.report.dt_valid {
         return Err(format!("initial DT invalid: {:?}", dt.report));
     }
+    let recovery_start = std::time::Instant::now();
     let plc_vertices = dt.plc_vertices;
     let box3 = dt.box3;
     let initial_points = dt.verts.len();
@@ -279,6 +286,8 @@ pub fn recover_segments(plc: &Plc, opts: &SegmentOptions) -> Result<SegmentMesh,
         &box3,
     );
     report.input_segments = chains.len();
+    report.dt_ms = dt_ms;
+    report.recovery_ms = recovery_start.elapsed().as_secs_f64() * 1000.0;
     report.missing_before = missing_before;
     report.splits = splits;
     report.splits_cat1 = splits_cat1;

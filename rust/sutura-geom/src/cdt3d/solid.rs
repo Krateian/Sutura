@@ -80,7 +80,27 @@ pub struct ComponentOrientation {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct StageMs {
+    /// Top-level stages (filled by the binding's pipeline).
+    pub plc: f64,
+    pub dt: f64,
+    pub segments: f64,
+    pub faces: f64,
+    pub solid: f64,
+    pub total: f64,
+    /// GWN-threshold solid stages.
+    pub gwn_label: f64,
+    pub gwn_count: f64,
+    pub extract: f64,
+    pub finish: f64,
+    pub weld: f64,
+    pub topology: f64,
+    pub hausdorff: f64,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct SolidReport {
+    pub stage_ms: StageMs,
     pub cells: usize,
     pub tet_count: usize,
     pub constraint_faces: usize,
@@ -658,6 +678,7 @@ fn finish_solid(
         .iter()
         .map(|p| p.to_f64().unwrap_or([0.0; 3]))
         .collect();
+    let weld_start = std::time::Instant::now();
     let plc_face_count = plc_faces.len();
     let constraint_cut_area: f64 = plc_faces
         .iter()
@@ -698,6 +719,8 @@ fn finish_solid(
     let (em, _h5_moved) =
         crate::splint::emit::project_emitted(em, unary_verts, unary_tris, h5_tol);
     let (out_verts, tris) = snap_compact(&em.verts, &em.tris);
+    let weld_ms = weld_start.elapsed().as_secs_f64() * 1000.0;
+    let topo_start = std::time::Instant::now();
     let snapped_u32: Vec<[u32; 3]> = tris
         .iter()
         .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
@@ -730,6 +753,7 @@ fn finish_solid(
     }
 
     let input_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
+    let haus_start = std::time::Instant::now();
     let (shape_v, shape_t) = snap_compact(&all_verts, &plc_faces);
     let shape_bvh = MeshBvh::from_arrays(&shape_v, &shape_t);
     let (o2i, i2o) = hausdorff(
@@ -750,6 +774,8 @@ fn finish_solid(
         unary_verts,
         unary_tris,
     );
+    let hausdorff_ms = haus_start.elapsed().as_secs_f64() * 1000.0;
+    let topology_ms = (topo_start.elapsed().as_secs_f64() * 1000.0 - hausdorff_ms).max(0.0);
 
     let mut edge_counts: BTreeMap<(usize, usize), usize> = BTreeMap::new();
     for t in &tris {
@@ -774,6 +800,12 @@ fn finish_solid(
     let positive_volume = signed_volume > 0.0;
 
     let mut report = SolidReport {
+        stage_ms: StageMs {
+            weld: weld_ms,
+            topology: topology_ms,
+            hausdorff: hausdorff_ms,
+            ..StageMs::default()
+        },
         cells: meta.cells,
         tet_count: meta.tet_count,
         constraint_faces: meta.constraint_faces,
@@ -1079,15 +1111,29 @@ fn build_solid_gwn(
     }
 
     let raw_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
+    let label_start = std::time::Instant::now();
     let (raw_inside, raw_hist) = gwn_labels(&raw_bvh, &cen, &out);
+    let mut gwn_label_ms = label_start.elapsed().as_secs_f64() * 1000.0;
+    let count_start = std::time::Instant::now();
     let raw_plc = gwn_plc_count(points, tets, neighbours, &constraints, &raw_inside, surface);
+    let mut gwn_count_ms = count_start.elapsed().as_secs_f64() * 1000.0;
     let raw_ok = raw_inside.iter().any(|&x| x) && raw_inside.iter().any(|&x| !x);
 
     let (oriented_tris, orientation) = orient_for_winding(unary_verts, unary_tris);
     let oriented_bvh = MeshBvh::from_arrays(unary_verts, &oriented_tris);
+    let label_start = std::time::Instant::now();
     let (oriented_inside, oriented_hist) = gwn_labels(&oriented_bvh, &cen, &out);
+    gwn_label_ms += label_start.elapsed().as_secs_f64() * 1000.0;
+    let count_start = std::time::Instant::now();
     let oriented_plc = gwn_plc_count(points, tets, neighbours, &constraints, &oriented_inside, surface);
+    gwn_count_ms += count_start.elapsed().as_secs_f64() * 1000.0;
     let oriented_ok = oriented_inside.iter().any(|&x| x) && oriented_inside.iter().any(|&x| !x);
+    if std::env::var_os("CDT3D_STAGE_TIMES").is_some() {
+        eprintln!(
+            "cdt3d stage gwn label={:.1}ms count={:.1}ms",
+            gwn_label_ms, gwn_count_ms
+        );
+    }
 
     let use_oriented = match (raw_ok, oriented_ok) {
         (false, false) => {
@@ -1103,8 +1149,13 @@ fn build_solid_gwn(
         (raw_inside, raw_hist)
     };
     let inside_count = inside.iter().filter(|&&x| x).count();
+    let extract_start = std::time::Instant::now();
     let (plc_faces, free_faces, free_area) =
         extract_gwn_faces(points, tets, neighbours, &constraints, &inside, surface);
+    let extract_ms = extract_start.elapsed().as_secs_f64() * 1000.0;
+    if std::env::var_os("CDT3D_STAGE_TIMES").is_some() {
+        eprintln!("cdt3d stage extract={:.1}ms", extract_ms);
+    }
     let meta = SolidMeta {
         cells: n_tets,
         tet_count: n_tets,
@@ -1120,6 +1171,7 @@ fn build_solid_gwn(
         inside_cells: inside_count,
         contracted: false,
     };
+    let finish_start = std::time::Instant::now();
     let mut solid = finish_solid(
         points,
         plc,
@@ -1131,6 +1183,10 @@ fn build_solid_gwn(
         _opts,
         meta,
     )?;
+    solid.report.stage_ms.gwn_label = gwn_label_ms;
+    solid.report.stage_ms.gwn_count = gwn_count_ms;
+    solid.report.stage_ms.extract = extract_ms;
+    solid.report.stage_ms.finish = finish_start.elapsed().as_secs_f64() * 1000.0;
     solid.report.orientation_used = use_oriented;
     solid.report.orientation_components = orientation.components;
     solid.report.orientation_flipped = orientation.flipped;
