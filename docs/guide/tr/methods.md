@@ -729,8 +729,9 @@ motoru** ayarı son çareyi neyin yeniden inşa edeceğini seçer: `ftetwild`
 (varsayılan) mevcut fTetWild katmanını korur; `cdt` ise orijinal yüzeyi mümkün
 olduğunca birebir koruyan deneysel bir kesin kısıtlı dörtyüzlüleme çalıştırıp
 ondan su geçirmez bir katı çıkarır. Coaptation sonrası ve fTetWild öncesi
-çalışır; sonucunu doğrulayamazsa, başarısız olursa ya da zaman aşımına uğrarsa
-merdiven fTetWild'a geçer. `--solid-engine cdt|ftetwild`, `SUTURA_SOLID_ENGINE`,
+çalışır; sonucu denetimlerini geçemezse (su geçirmez, tek kapalı ve dışa dönük
+katı) ya da zaman aşımına uğrarsa merdiven fTetWild'a geçer; fTetWild kendi zaman
+sınırıyla çalışır, bu yüzden en kötü durum yaklaşık iki kat sürer. `--solid-engine cdt|ftetwild`, `SUTURA_SOLID_ENGINE`,
 Seçenekler → Onarım denetimi veya Sutura ayar dosyasındaki `solid_engine`
 anahtarıyla ayarlanır (GUI değeri oraya kaydedilir ve CLI, Hızlı İşlem, Dolphin
 ile OrcaSlicer eklentisince devralınır). Seçim `report['solid_engine']` altında

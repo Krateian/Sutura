@@ -742,8 +742,10 @@ the window closes.
 (default) keeps the existing fTetWild tier, while `cdt` runs an experimental
 exact constrained tetrahedralization that keeps the original surface exactly
 where it can and extracts a watertight solid from it. It runs after Coaptation
-and before fTetWild; if it cannot certify its result, fails or runs out of time
-the ladder falls through to fTetWild. Set it with `--solid-engine cdt|ftetwild`,
+and before fTetWild; if its result fails its checks (watertight, one closed
+outward-facing solid) or runs out of time, the ladder falls through to fTetWild,
+which then runs with its own time limit, so the worst case takes about twice as
+long. Set it with `--solid-engine cdt|ftetwild`,
 `SUTURA_SOLID_ENGINE`, the Options → Repair control, or the `solid_engine` key in
 the Sutura settings file (the GUI value is saved there and inherited by the CLI,
 Quick Action, Dolphin and the OrcaSlicer plugin). The choice is recorded under

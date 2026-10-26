@@ -10,8 +10,10 @@ düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../
   Varsayılan **fTetWild** olarak kalır; isteğe bağlı kesin bir yeniden inşa
   (**CDT**, kısıtlı dörtyüzlüleme) `--solid-engine cdt`, Seçenekler → Onarım →
   **Katı motoru** veya `solid_engine` ayar anahtarıyla kullanılabilir. CDT,
-  Coaptation sonrası ve fTetWild öncesi çalışır; sonucunu doğrulayamazsa,
-  başarısız olursa ya da zaman aşımına uğrarsa fTetWild'a geçer. Bilinen
+  Coaptation sonrası ve fTetWild öncesi çalışır; sonucu denetimlerini geçemezse
+  (su geçirmez, tek kapalı ve dışa dönük katı) ya da zaman aşımına uğrarsa
+  fTetWild'a geçer (o da kendi zaman sınırıyla çalışır, bu yüzden en kötü durum
+  yaklaşık iki kat sürer). Bilinen
   sınırlama: şimdilik büyük mesh'lerde yavaştır, bu yüzden küçük parçalarda
   daha iyidir. OrcaSlicer eklentisi de OrcaSlicer 2.5 izin desteği kazanır.
 - **v0.9.6 — 2026-10-26** — Son çare **fTetWild** katmanı artık varsayılan

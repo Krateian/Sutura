@@ -74,9 +74,11 @@ güvenilir şekilde algılayabilir.
 * **Deneysel katı motoru (CDT).** İsteğe bağlı kesin `--solid-engine cdt`
   yeniden inşası daha küçük parçaları hedefler: büyük mesh'lerde (on binlerce
   yüz) yavaştır, bu yüzden orada varsayılan `ftetwild` motoru daha iyi bir
-  seçimdir. CDT su geçirmez bir sonucu doğrulayamazsa, başarısız olursa ya da
-  zaman aşımına uğrarsa merdiven fTetWild'a geçer; yani yine de bir sonuç
-  üretilir ve rapor hangi motorun çalıştığını `solid_engine` altında kaydeder.
+  seçimdir. CDT'nin sonucu denetimlerini geçemezse (su geçirmez, tek kapalı ve
+  dışa dönük katı) ya da zaman aşımına uğrarsa merdiven fTetWild'a geçer (o da
+  kendi zaman sınırıyla çalışır, bu yüzden en kötü durum yaklaşık iki kat sürer);
+  yani yine de bir sonuç üretilir ve rapor hangi motorun çalıştığını
+  `solid_engine` altında kaydeder.
 * **STL yeniden yükleme ve sıkışmış köşeler.** STL köşe paylaşımı saklamaz;
   bellekte iki-manifold olan bir mesh, iki ayrı float32 konumunun birleşmesiyle
   yeniden yüklendiğinde sıkışmış köşeler taşıyabilir. P-WELD yaygın float32
