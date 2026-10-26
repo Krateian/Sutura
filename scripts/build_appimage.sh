@@ -103,6 +103,10 @@ cp -r "$REPO_ROOT/sutura/sutura_engine" "$LIB/sutura/sutura_engine"
 [ -f "$LIB/sutura_engine/__init__.py" ] || \
     install -m 0644 "$REPO_ROOT/sutura_engine/__init__.py" "$LIB/sutura_engine/__init__.py"
 
+# Run every smoke check exactly as AppRun runs the app (AppRun exports
+# SUTURA_DIR=$SUTURA_LIB); without it the tiers are looked up in a user
+# install that does not exist on a clean build machine.
+export SUTURA_DIR="$LIB"
 echo "==> smoke check: Graft (#13) available in the bundled runtime"
 # The .so being present is not enough; the bundled repair.py must actually
 # report the Graft method as available (which exercises graft_available() ->
@@ -110,7 +114,7 @@ echo "==> smoke check: Graft (#13) available in the bundled runtime"
 if ! "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null \
         | awk '$1==13 && $4=="yes" {ok=1} END {exit !ok}'; then
     echo "error: Graft (#13) is not reported available in the AppImage runtime:" >&2
-    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods 2>/dev/null >&2 || true
+    "$LIB/venv/bin/python" "$LIB/repair.py" --list-methods >&2 2>&1 || true
     exit 1
 fi
 echo "    Graft (#13) available in the bundled stage-1 runtime"
