@@ -2,7 +2,21 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased]
+## [0.9.7] - 2026-10-26
+
+### Added
+
+- **Experimental: an exact solid rebuild as a last resort (`--solid-engine cdt`).**
+  Alongside the fTetWild tier, Sutura can rebuild a broken model with an exact
+  constrained tetrahedralization (CDT) that keeps the original surface exactly
+  where it can and then extracts a watertight solid from it. It is experimental
+  and off unless you choose it: turn it on with `--solid-engine cdt` on the
+  command line, **Options → Repair → Solid engine** in the graphical interface,
+  or the `solid_engine` key in the settings file. fTetWild stays the default,
+  and if CDT cannot certify its result, fails or runs out of time, Sutura falls
+  back to fTetWild automatically. Known limitation: for now CDT is slow on
+  large meshes (tens of thousands of faces), where fTetWild remains the better
+  choice.
 
 ### Changed
 
