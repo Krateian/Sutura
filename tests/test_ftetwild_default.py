@@ -237,7 +237,7 @@ def test_gui_checkboxes_map_to_cli_flags():
         "                    (True, ['--experimental-fallback-ftetwild'])):\n"
         "    wk = gui.RepairWorker(['x.stl'], ftetwild=state)\n"
         "    wk._run_one('x.stl')\n"
-        "    got = [a for a in seen[-1] if 'ftetwild' in a]\n"
+        "    got = [a for a in seen[-1] if a.startswith('--') and 'ftetwild' in a]\n"
         "    assert got == want, (state, seen[-1])\n"
         "print('GUI-OK')\n" % SUTURA
     )
