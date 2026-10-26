@@ -472,14 +472,20 @@ Kurulum (OrcaSlicer 2.5.0+ / nightly):
 İzinler: `register_capabilities()` var olan Sutura CLI yolunu
 `request_permissions(fs_read=...)` ile, ayrıca `threading` ile ve önceden
 adlandırabildiği iki kararlı süreç hedefiyle (OrcaSlicer süreç sayımı yoklaması
-ve sabit klasör gösterme komutu) önceden beyan eder; böylece panel ilk
-kullanımda istem göstermez. Repair ve Analyze başlatmaları eklentinin
-oluşturduğu çalışan iş parçacıklarında gerçekleşir ve bu iş parçacıklarının
-denetim bağlamı boştur, dolayısıyla 2.5'te denetlenmezler; bir ret, sessiz bir
-başarısızlık yerine panelde net bir iletiyle bildirilir. Ek anahtar sözcükleri
-desteklemeyen eski nightly'ler yalnızca fs_read beyanına geri düşer ve mevcut
-okuma izni korunur. Gerçek bir
-OrcaSlicer **2.5.0-dev** nightly (macOS) üzerinde uçtan uca doğrulandı; eklenti API'sini içeren ilk stabil sürüm 2.5.0'dır; birincil hedef
+ve sabit klasör gösterme komutu) önceden beyan eder. Bu anahtar sözcükleri kabul
+eden bir sürüm yüklemede yalnızca bir kez istem gösterir. Gönderilen
+**2.5.0-alpha** yalnızca `fs_read` kabul eder; bu yüzden eklenti fs_read-yalnız
+beyana geri düşer (okuma izni korunur) ve kullanıcı **yüklemede bir dosya okuma
+istemi** ile **ilk kullanımda bir kez, tetiklendiğinde "bir iş parçacığı
+oluştur" istemi** ile karşılaşır; onaylandığında izin kalıcı olur ve sonraki
+Repair, Analyze ve Show file çalıştırmaları başka istem göstermez. Repair ve
+Analyze başlatmaları eklentinin oluşturduğu çalışan iş parçacıklarında
+gerçekleşir ve bu iş parçacıklarının denetim bağlamı boştur, dolayısıyla 2.5'te
+denetlenmezler. Bir ret, panelde başarısız olan işlemi adlandırarak bildirilir —
+kırmızı banner yalnızca repair veya Analyze işi başlatılamadığında, arka plan
+yenilemesi veya taraması reddedildiğinde ise sakin bir uyarı gösterilir. Gerçek
+bir OrcaSlicer **2.5.0-dev** nightly (macOS) üzerinde uçtan uca doğrulandı;
+eklenti API'sini içeren ilk stabil sürüm 2.5.0'dır; birincil hedef
 Linux'tur ve aynı dosya doğrulanmış bir bonus olarak macOS'ta da çalışır.
 Tam ayrıntı ve sınırlamalar için [eklenti README'sine](../../../orcaslicer-plugin/README.md)
 bakın.

@@ -149,16 +149,28 @@ advance:
   `str(argv_list)`, so each target is built the same way here and at the call
   site.
 
+**What the user actually sees.** On a build whose `request_permissions()`
+accepts the `threading`/`process` keywords, the plugin prompts **once at load**
+and never again. The shipped **2.5.0-alpha** accepts **only `fs_read`**, so the
+declaration above raises `TypeError` and the plugin falls back to an
+`fs_read`-only call that preserves the read grant; on that build the user sees
+a **file-read prompt at load** and then **one reactive "create a thread" prompt
+on the first thread start**. Approving the thread prompt persists the grant
+(`.install_state.json` then records the thread grant and no process grants);
+after that, **Repair, Analyze and Show file run with no further prompts**. (The
+same fallback keeps older nightlies working.)
+
 CLI repair/analyze spawns are **not** declared: they execute inside
 plugin-created worker threads, whose audit context is empty, so on OrcaSlicer
-2.5 they are not audited. This means no prompt appears on a normal repair. A
-denial that does occur (for example a thread-start denial raised off the UI
-thread) is surfaced as a clear panel message instead of a silent failure.
+2.5 they are not audited and raise no prompt.
 
-**Older nightlies.** A nightly whose `request_permissions()` lacks the
-`threading`/`process` keywords raises `TypeError`; the plugin then falls back to
-the `fs_read`-only declaration, so the existing read grant is never lost and
-older builds keep working.
+**Denials are named, not guessed.** When a permission is denied anyway, the
+panel message names the operation that failed: a **red banner** only when the
+repair or Analyze job itself could not start ("approve it to repair" /
+"approve it to analyze"), and a **quiet notice** for a denied background status
+refresh ("the panel cannot refresh background status") or broken-mesh scan
+("the broken-mesh scan is disabled"). A denied secondary thread therefore never
+reads as a repair failure.
 
 **Honest scope.** Process declarations are not existence-checked, and the
 per-run CLI commands carry unique staging paths, so they can never be a stable

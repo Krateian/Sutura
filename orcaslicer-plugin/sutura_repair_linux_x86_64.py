@@ -54,14 +54,20 @@ a "Load File" undo snapshot). The original object is never modified.
 Permissions (OrcaSlicer 2.5): ``register_capabilities()`` declares the existing
 ``fs_read`` paths plus ``threading`` and the two stable process targets it can
 name ahead of time (the OrcaSlicer process-count probe and the fixed-folder
-reveal command), so no prompt appears on first use. The CLI repair/analyze
-spawns happen inside plugin-created worker threads, whose audit context is
-empty, so on 2.5 they are not audited; a denial on a thread start or a spawn is
-reported as a clear panel message instead of a silent failure. Revealing a
+reveal command). A build whose ``request_permissions`` accepts those keywords
+prompts once at load. A build that accepts only ``fs_read`` -- the shipped
+2.5.0-alpha -- falls back to the ``fs_read``-only declaration (preserving the
+existing read grant), so it prompts for file reads at load and then raises ONE
+reactive "create a thread" prompt on the first thread start; approving it
+persists the grant, and no further prompt appears for Repair, Analyze or Show
+file. The CLI repair/analyze spawns happen inside plugin-created worker threads,
+whose audit context is empty, so on 2.5 they are not audited; a denial on a
+thread start or a spawn is reported as a panel message that names the operation
+that actually failed -- a red banner only when the repair or Analyze job itself
+could not start, and a quiet notice for a denied background status refresh or
+broken-mesh scan. Revealing a
 finished job opens the fixed ``out/`` folder (not a per-file select), so its
-command is identical on every click and can be declared once. Older nightlies
-whose ``request_permissions`` lacks the extra keywords are kept working through
-a progressive fallback that preserves the ``fs_read`` declaration.
+command is identical on every click and can be declared once.
 """
 
 import json
@@ -99,11 +105,22 @@ _PGREP_CMD = ['pgrep', '-f', 'OrcaSlicer']
 
 # Clear denial messages (the audit hook denies rather than prompts when the
 # grant is raised off the UI thread; these surface it instead of failing
-# silently).
+# silently). Each names the operation that actually failed: the repair job and
+# the Analyze job are red banner messages ("approve it to ..."); a denied
+# background status refresh or broken-mesh scan is a quieter informational
+# notice, so a secondary denial is never mistaken for a repair failure.
 _DENIED_CLI_MSG = ('OrcaSlicer denied the Sutura CLI permission \u2014 approve '
                    'it to repair')
 _DENIED_THREAD_MSG = ('OrcaSlicer denied the Sutura threading permission '
                       '\u2014 approve it to repair')
+_DENIED_ANALYZE_MSG = ('OrcaSlicer denied the Sutura threading permission '
+                       '\u2014 approve it to analyze')
+_DENIED_STATUS_MSG = ('OrcaSlicer denied the Sutura threading permission '
+                      '\u2014 the panel cannot refresh background status; '
+                      'approve it in OrcaSlicer to keep the panel in sync')
+_DENIED_SCAN_MSG = ('OrcaSlicer denied the Sutura threading permission '
+                    '\u2014 the broken-mesh scan is disabled; approve it in '
+                    'OrcaSlicer to be warned about broken meshes')
 
 _REPAIR_TIMEOUT = 600
 _ANALYZE_TIMEOUT = 300
@@ -122,7 +139,7 @@ _PANEL_CREATE_EVENTS = frozenset(('ProjectOpened', 'NewProject', 'ObjectAdded'))
 _MESH_EXTENSIONS = ('.stl', '.obj', '.3mf')
 
 # The dock page, embedded verbatim from orcaslicer-plugin/panel/panel.html
-# (sha256 981bf2044e12644179f1280b938a233297aace06e90a1fcc84c18e8ae6b6f539).
+# (sha256 d08739648fd12000c2fc5aeeb5f56a3f0c4432154c258f317a42a874092ae8f3).
 # It is embedded so the published single-file plugin is self-contained; whenever
 # panel/panel.html changes, copy its full contents back into this raw string and
 # update the digest.
@@ -185,11 +202,15 @@ button, input { font-family: inherit; font-size: inherit; }
 /* Content Area */
 .content-area { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; width: 100%; }
 
-/* Notice banner (permission denials and other transient errors) */
+/* Notice banner (repair/analyze failures are red; secondary denials are quiet) */
 .notice {
   margin: 8px 12px 0; padding: 6px 8px; border-radius: 6px;
   border: 1px solid rgba(239,68,68,0.35); background: rgba(239,68,68,0.12);
   color: #ef4444; font-size: 11px; line-height: 1.35;
+}
+.notice-info {
+  border-color: rgba(148,163,184,0.35); background: rgba(148,163,184,0.12);
+  color: var(--orca-muted);
 }
 
 /* CLI Missing */
@@ -378,10 +399,11 @@ button, input { font-family: inherit; font-size: inherit; }
   const esc = s => !s ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   let noticeTimer = null;
-  function showNotice(text) {
+  function showNotice(text, level) {
     const el = $('notice-view');
     if (!el) return;
     if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    el.classList.toggle('notice-info', level === 'info');
     if (!text) { el.classList.add('hidden'); el.textContent = ''; return; }
     el.textContent = text;
     el.classList.remove('hidden');
@@ -679,7 +701,7 @@ button, input { font-family: inherit; font-size: inherit; }
         }
         break;
       case 'notice':
-        showNotice(msg.message);
+        showNotice(msg.message, msg.level);
         break;
     }
   }
@@ -1496,25 +1518,28 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
         except Exception:  # noqa: BLE001
             pass
 
-    def _permission_denied(self, text=None):
+    def _permission_denied(self, text=None, level='error'):
         """Report a denied thread/timer start as a clear panel message (and a
-        stderr line) instead of letting the start fail silently."""
+        stderr line) instead of letting the start fail silently. ``level`` is
+        ``'error'`` for a red banner (a failed repair/Analyze job) or ``'info'``
+        for a quiet notice (a denied background refresh or scan)."""
         text = text or _DENIED_THREAD_MSG
         self._log(text)
-        self._post({'command': 'notice', 'message': text})
+        self._post({'command': 'notice', 'message': text, 'level': level})
 
-    def _start_thread(self, target, args=(), on_denied=None):
+    def _start_thread(self, target, args=(), on_denied=None, on_denied_level='error'):
         """Start a daemon worker thread, turning a PermissionError denial into a
         clear panel message. ``on_denied`` is an optional message string (the
-        default is the generic threading denial). Returns True when started."""
+        default is the generic threading denial) and ``on_denied_level`` its
+        banner level. Returns True when started."""
         try:
             threading.Thread(target=target, args=args, daemon=True).start()
             return True
         except PermissionError:
-            self._permission_denied(on_denied)
+            self._permission_denied(on_denied, on_denied_level)
             return False
 
-    def _start_timer(self, delay, target, on_denied=None):
+    def _start_timer(self, delay, target, on_denied=None, on_denied_level='error'):
         """Start a daemon timer, with the same denial handling as
         ``_start_thread``. Returns the timer, or None when the start was
         denied."""
@@ -1524,11 +1549,12 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
             timer.start()
             return timer
         except PermissionError:
-            self._permission_denied(on_denied)
+            self._permission_denied(on_denied, on_denied_level)
             return None
 
     def _post_state_async(self):
-        self._start_thread(self._post_state)
+        self._start_thread(self._post_state, on_denied=_DENIED_STATUS_MSG,
+                           on_denied_level='info')
 
     def _iter_objects(self):
         try:
@@ -1674,7 +1700,9 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
                 except Exception:  # noqa: BLE001
                     pass
             st['scan_timer'] = self._start_timer(_SCAN_DEBOUNCE,
-                                                 self._debounced_scan)
+                                                 self._debounced_scan,
+                                                 on_denied=_DENIED_SCAN_MSG,
+                                                 on_denied_level='info')
 
     def _debounced_scan(self):
         self._post_state()
@@ -1845,9 +1873,9 @@ class SuturaRepair(orca.script.ScriptPluginCapabilityBase):
     def _handle_analyze(self, message):
         oid = str(message.get('id'))
         if not self._start_thread(self._analyze_worker, args=(oid,),
-                                  on_denied=_DENIED_THREAD_MSG):
+                                  on_denied=_DENIED_ANALYZE_MSG):
             self._post({'command': 'analysis', 'id': oid,
-                        'error': _DENIED_THREAD_MSG})
+                        'error': _DENIED_ANALYZE_MSG})
 
     def _analyze_worker(self, oid):
         dest = None

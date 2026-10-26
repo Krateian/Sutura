@@ -57,11 +57,15 @@ button, input { font-family: inherit; font-size: inherit; }
 /* Content Area */
 .content-area { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; width: 100%; }
 
-/* Notice banner (permission denials and other transient errors) */
+/* Notice banner (repair/analyze failures are red; secondary denials are quiet) */
 .notice {
   margin: 8px 12px 0; padding: 6px 8px; border-radius: 6px;
   border: 1px solid rgba(239,68,68,0.35); background: rgba(239,68,68,0.12);
   color: #ef4444; font-size: 11px; line-height: 1.35;
+}
+.notice-info {
+  border-color: rgba(148,163,184,0.35); background: rgba(148,163,184,0.12);
+  color: var(--orca-muted);
 }
 
 /* CLI Missing */
@@ -250,10 +254,11 @@ button, input { font-family: inherit; font-size: inherit; }
   const esc = s => !s ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   let noticeTimer = null;
-  function showNotice(text) {
+  function showNotice(text, level) {
     const el = $('notice-view');
     if (!el) return;
     if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    el.classList.toggle('notice-info', level === 'info');
     if (!text) { el.classList.add('hidden'); el.textContent = ''; return; }
     el.textContent = text;
     el.classList.remove('hidden');
@@ -551,7 +556,7 @@ button, input { font-family: inherit; font-size: inherit; }
         }
         break;
       case 'notice':
-        showNotice(msg.message);
+        showNotice(msg.message, msg.level);
         break;
     }
   }

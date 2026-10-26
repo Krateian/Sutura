@@ -1240,12 +1240,15 @@ def test_repair_thread_start_denial_posts_panel_message():
         mod.threading = real
     fails = [p for p in _posts(handle, 'job') if p.get('phase') == 'failed']
     assert fails, handle.posts
-    assert 'denied' in fails[-1]['message'].lower(), fails[-1]
+    assert 'approve it to repair' in fails[-1]['message'].lower(), fails[-1]
     notices = _posts(handle, 'notice')
-    assert notices and 'denied' in notices[-1]['message'].lower(), handle.posts
+    assert notices and 'approve it to repair' in notices[-1]['message'].lower(), handle.posts
+    assert notices[-1].get('level') == 'error', notices[-1]
 
 
-def test_scan_timer_denial_posts_notice():
+def test_scan_timer_denial_posts_quiet_notice():
+    """A denied broken-mesh scan timer is a quiet 'info' notice that names the
+    scan and never claims the repair failed."""
     mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
     plugin = mod.SuturaRepair()
     plugin._open_panel()
@@ -1264,7 +1267,67 @@ def test_scan_timer_denial_posts_notice():
         mod.threading = real
     assert plugin._st()['scan_timer'] is None, plugin._st()['scan_timer']
     notices = _posts(handle, 'notice')
-    assert notices and 'denied' in notices[-1]['message'].lower(), handle.posts
+    assert notices, handle.posts
+    msg = notices[-1]['message'].lower()
+    assert notices[-1].get('level') == 'info', notices[-1]
+    assert 'scan' in msg and 'denied' in msg, notices[-1]
+    assert 'approve it to repair' not in msg, notices[-1]
+
+
+def test_status_refresh_denial_posts_quiet_notice():
+    """A denied background status refresh is a quiet 'info' notice that names
+    the refresh and never claims the repair failed."""
+    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+
+    real = mod.threading
+
+    class _DeniedThread:
+        def __init__(self, *a, **k):
+            raise PermissionError('Threading denied by OrcaSlicer')
+    mod.threading = types.SimpleNamespace(Thread=_DeniedThread,
+                                          Event=real.Event, Timer=real.Timer)
+    try:
+        plugin._post_state_async()
+    finally:
+        mod.threading = real
+    notices = _posts(handle, 'notice')
+    assert notices, handle.posts
+    msg = notices[-1]['message'].lower()
+    assert notices[-1].get('level') == 'info', notices[-1]
+    assert 'status' in msg and 'denied' in msg, notices[-1]
+    assert 'approve it to repair' not in msg, notices[-1]
+
+
+def test_analyze_thread_start_denial_names_analyze():
+    """A denied Analyze thread start is reported as an Analyze failure (red
+    banner), not as a repair failure."""
+    v, t = _cube()
+    obj = _Object([_Volume(_Mesh(v, t))], name='part', oid=1)
+    mod, _host, ui = _load_plugin(_Model([obj]), tempfile.mkdtemp())
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+
+    real = mod.threading
+
+    class _DeniedThread:
+        def __init__(self, *a, **k):
+            raise PermissionError('Threading denied by OrcaSlicer')
+    mod.threading = types.SimpleNamespace(Thread=_DeniedThread,
+                                          Event=real.Event, Timer=real.Timer)
+    try:
+        plugin._handle_analyze({'id': '1'})
+    finally:
+        mod.threading = real
+    errors = [p for p in _posts(handle, 'analysis') if p.get('error')]
+    assert errors, handle.posts
+    assert 'approve it to analyze' in errors[-1]['error'].lower(), errors[-1]
+    notices = _posts(handle, 'notice')
+    assert notices and notices[-1].get('level') == 'error', handle.posts
+    assert 'approve it to analyze' in notices[-1]['message'].lower(), notices[-1]
 
 
 def test_reveal_opens_fixed_out_dir():
