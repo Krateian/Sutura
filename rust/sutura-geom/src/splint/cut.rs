@@ -850,6 +850,7 @@ pub(crate) fn cut_winding_smooth(
     tau: f64,
     scale: f64,
     anchor: Option<&[bool]>,
+    sink: Option<&[bool]>,
 ) -> CutResult {
     let n_tets = phi.len();
     let mut area_sum = 0.0f64;
@@ -871,6 +872,11 @@ pub(crate) fn cut_winding_smooth(
             // vertex the soft winding unary would leave outside is still
             // covered by the output surface (shape preservation).
             g.add_tweights(ti, INF, 0.0);
+        } else if sink.is_some_and(|s| s[ti]) {
+            // H5b: hard-outside seed, the exterior partner of an anchor face.
+            // Pinning both sides of an input face forces the min-cut to run
+            // along that face, so the emitted boundary follows the input.
+            g.add_tweights(ti, 0.0, INF);
         } else if phi[ti] > 0.0 {
             g.add_tweights(ti, phi[ti] * a_ref, 0.0);
         } else if phi[ti] < 0.0 {

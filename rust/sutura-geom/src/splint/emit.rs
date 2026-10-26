@@ -118,6 +118,122 @@ pub(crate) fn snap_and_dedup_f32(
     (new_v, new_t)
 }
 
+/// H5: pull each emitted boundary vertex onto the closest point of the input
+/// surface when that point lies within `tol`. A move is skipped when it would
+/// flip or collapse one of the vertex's incident faces, so the face orientation
+/// and the combinatorial topology are preserved. Deterministic: vertices are
+/// visited in index order.
+fn project_verts(
+    verts: &mut [[f64; 3]],
+    tris: &[[usize; 3]],
+    in_verts: &[[f64; 3]],
+    in_tris: &[[usize; 3]],
+    tol: f64,
+) -> usize {
+    if in_verts.is_empty() || in_tris.is_empty() {
+        return 0;
+    }
+    let _ = in_tris;
+    let mut inc: Vec<Vec<usize>> = vec![Vec::new(); verts.len()];
+    for (fi, t) in tris.iter().enumerate() {
+        for &vi in t {
+            inc[vi].push(fi);
+        }
+    }
+    // One output vertex per input vertex: snapping two output vertices onto the
+    // same input corner would create coincident faces and non-manifold edges.
+    let mut used = vec![false; in_verts.len()];
+    let mut moved = 0usize;
+    for vi in 0..verts.len() {
+        // Snap to the nearest input VERTEX (not merely the nearest surface
+        // point): the emitted boundary may already touch the surface elsewhere,
+        // which would leave an uncovered input corner. Targeting the corners
+        // drives the input->output distance at those corners to zero.
+        let mut best = usize::MAX;
+        let mut bd = f64::INFINITY;
+        for (k, iv) in in_verts.iter().enumerate() {
+            if used[k] {
+                continue;
+            }
+            let dx = iv[0] - verts[vi][0];
+            let dy = iv[1] - verts[vi][1];
+            let dz = iv[2] - verts[vi][2];
+            let dd = dx * dx + dy * dy + dz * dz;
+            if dd < bd {
+                bd = dd;
+                best = k;
+            }
+        }
+        if best == usize::MAX {
+            continue;
+        }
+        let q = in_verts[best];
+        let d = bd.sqrt();
+        if d <= 0.0 || d > tol {
+            continue;
+        }
+        let old = verts[vi];
+        let mut ok = true;
+        for &fi in &inc[vi] {
+            let t = tris[fi];
+            let mut others = [usize::MAX; 2];
+            let mut k = 0;
+            for &x in &t {
+                if x != vi && k < 2 {
+                    others[k] = x;
+                    k += 1;
+                }
+            }
+            if k != 2 {
+                continue;
+            }
+            let base = verts[others[0]];
+            let e = sub(verts[others[1]], base);
+            let n0 = cross(e, sub(old, base));
+            let n1 = cross(e, sub(q, base));
+            if dot(n0, n1) <= 0.0 {
+                ok = false;
+                break;
+            }
+            // Degenerate guard: the post-move area must stay non-zero.
+            if dot(n1, n1) <= 1e-12 {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            verts[vi] = q;
+            used[best] = true;
+            moved += 1;
+        }
+    }
+    moved
+}
+
+/// Apply the H5 projection to an already emitted mesh and re-snap it to f32, so
+/// the reported manifoldness and part count match what a caller welds. Returns
+/// the number of vertices that actually moved.
+pub(crate) fn project_emitted(
+    mut em: Emitted,
+    in_verts: &[[f64; 3]],
+    in_tris: &[[usize; 3]],
+    tol: f64,
+) -> (Emitted, usize) {
+    let moved = project_verts(&mut em.verts, &em.tris, in_verts, in_tris, tol);
+    if moved > 0 {
+        let (sv, st) = snap_and_dedup_f32(&em.verts, &em.tris);
+        let u32_tris: Vec<[u32; 3]> = st
+            .iter()
+            .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+            .collect();
+        em.out_manifold = mesh_is_manifold(&sv, &u32_tris);
+        em.output_parts = output_parts(&sv, &st);
+        em.verts = sv;
+        em.tris = st;
+    }
+    (em, moved)
+}
+
 pub(crate) fn emit_boundary(
     coords: &[[f64; 3]],
     centroids: &[[f64; 3]],

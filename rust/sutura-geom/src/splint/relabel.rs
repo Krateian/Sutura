@@ -232,7 +232,101 @@ pub(crate) fn greedy_relabel(
             (Some(s), Some(r)) => (r.0, r.1, r.2) < (s.0, s.1, s.2),
             (None, Some(_)) => true,
             (Some(_), None) => false,
-            (None, None) => break,
+            (None, None) => {
+                // Local optimum for single/region moves: try a joint flip of two
+                // tets that share no facet (so their edge deltas simply add). Only
+                // tets incident to a non-manifold edge are candidates, which keeps
+                // the pair search small and deterministic. This is the escape a
+                // single-tet greedy cannot make: it breaks a pinch whose removal
+                // needs two coordinated flips.
+                let mut cand: Vec<usize> = Vec::new();
+                for (e, c) in bcount.iter() {
+                    if *c <= 2 {
+                        continue;
+                    }
+                    for ti in 0..n {
+                        if out_tet[ti] {
+                            continue;
+                        }
+                        let mut touches = false;
+                        for fi in tet_facets[ti].iter().flatten() {
+                            if edges_of(internal[*fi].0).contains(e) {
+                                touches = true;
+                                break;
+                            }
+                        }
+                        if touches {
+                            cand.push(ti);
+                        }
+                    }
+                }
+                cand.sort_unstable();
+                cand.dedup();
+                let delta_of = |ti: usize| -> HashMap<Edge, i32> {
+                    let mut d: HashMap<Edge, i32> = HashMap::new();
+                    for fi in tet_facets[ti].iter().flatten() {
+                        let sign = if is_boundary[*fi] { -1 } else { 1 };
+                        for e in edges_of(internal[*fi].0) {
+                            *d.entry(e).or_insert(0) += sign;
+                        }
+                    }
+                    d
+                };
+                let shares_facet = |a: usize, b: usize| -> bool {
+                    for fa in tet_facets[a].iter().flatten() {
+                        if tet_facets[b].iter().flatten().any(|fb| fb == fa) {
+                            return true;
+                        }
+                    }
+                    false
+                };
+                let mut best_pair: Option<(i32, i32, usize, usize)> = None;
+                for x in 0..cand.len() {
+                    for y in (x + 1)..cand.len() {
+                        let (ti, tj) = (cand[x], cand[y]);
+                        if shares_facet(ti, tj) {
+                            continue;
+                        }
+                        let (di, dj) = (delta_of(ti), delta_of(tj));
+                        let mut merged: HashMap<Edge, i32> = di;
+                        for (e, v) in dj {
+                            *merged.entry(e).or_insert(0) += v;
+                        }
+                        let mut dnm = 0i32;
+                        let mut dh = 0i32;
+                        for (e, d) in &merged {
+                            let before = bcount.get(e).copied().unwrap_or(0);
+                            let after = before + d;
+                            dnm += nm_weight(after) - nm_weight(before);
+                            dh += hole_weight(after) - hole_weight(before);
+                        }
+                        if dnm < 0 || (dnm == 0 && dh < 0) {
+                            let c = (dnm, dh, ti, tj);
+                            if best_pair.map_or(true, |b| c < b) {
+                                best_pair = Some(c);
+                            }
+                        }
+                    }
+                }
+                match best_pair {
+                    Some((_, _, ti, tj)) => {
+                        for t in [ti, tj] {
+                            is_inside[t] = !is_inside[t];
+                            for fi in tet_facets[t].iter().flatten() {
+                                let key = internal[*fi].0;
+                                let sign = if is_boundary[*fi] { -1 } else { 1 };
+                                is_boundary[*fi] = !is_boundary[*fi];
+                                for e in edges_of(key) {
+                                    *bcount.entry(e).or_insert(0) += sign;
+                                }
+                            }
+                            flips += 1;
+                        }
+                        continue;
+                    }
+                    None => break,
+                }
+            }
         };
 
         if use_region {

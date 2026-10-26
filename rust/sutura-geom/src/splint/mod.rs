@@ -44,6 +44,10 @@ const GREEDY_MAX_FLIPS: usize = 1_000_000;
 const WIND_CAP: f64 = 0.5;
 /// H7: ambiguous-band half-width for the relabel region guard (winding units).
 const WIND_TAU: f64 = 0.1;
+/// H5b: emitted-vertex snap radius, in units of the proxy voxel (one tet edge).
+/// Each emitted vertex within this radius of an input VERTEX is pulled onto it,
+/// which is what drives the input->output distance at that corner to zero.
+const H5_TOL_EDGES: f64 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SplintAdaptive {
@@ -200,6 +204,8 @@ pub(crate) struct SplintReport {
     pub input_tets_bridge_added: usize,
     pub input_tets_anchor: bool,
     pub anchor_tets: usize,
+    pub sink_tets: usize,
+    pub h5_projected_verts: usize,
     pub input_comps: usize,
     pub geodesic_comps: usize,
     pub inside_comps: usize,
@@ -341,15 +347,18 @@ fn run_pass(
             .collect()
     });
     let input_comps = input_components(verts, tris);
-    // H5: per-input-vertex hard-inside seed. The soft winding unary labels an
-    // open scan's folded flap exterior, so the cut would leave those input
-    // vertices uncovered (large input->output distance). For every input vertex
-    // pick the incident, non-corner tet with the largest (least exterior) phi
-    // and force it into the source set, so the emitted boundary must pass
-    // through that vertex. Deterministic: index order, strict `>` keeps the
-    // first (lowest) tet on ties.
-    let anchor: Option<Vec<bool>> = if opts.input_tets && opts.input_tets_anchor && input_comps == 1
-    {
+    // H5b: per-input-FACE hard inside/outside sandwich. The soft winding unary
+    // labels an open scan's folded flap exterior, so the cut would leave those
+    // input vertices uncovered (large input->output distance). For every input
+    // face, probe both sides at +/- half a voxel along the normal, take the
+    // higher-winding side as the source tet and the lower-winding side as the
+    // sink tet, so the min-cut must run along the face and the emitted boundary
+    // follows the input surface. Deterministic: face index order, canonical
+    // winding tie-break (plus side wins) and lowest tet index on distance ties;
+    // a face is skipped when both probes land in the same tet or when a side is
+    // already pinned the opposite way.
+    let anchor_sink: Option<(Vec<bool>, Vec<bool>)> =
+        if opts.input_tets && opts.input_tets_anchor && input_comps == 1 {
         let maps = input_tets::map_input_vertices(&proxy.verts, &nverts);
         let ct = corner_tet.as_ref().expect("H7 corner flags");
         let step = 0.5 * proxy.voxel;
@@ -369,6 +378,7 @@ fn run_pass(
             best
         };
         let mut a = vec![false; tets.len()];
+        let mut s = vec![false; tets.len()];
         for f in tris {
             let (Some(_i0), Some(_i1), Some(_i2)) = (maps[f[0]], maps[f[1]], maps[f[2]]) else {
                 continue;
@@ -399,20 +409,32 @@ fn run_pass(
             let minus = [c[0] - n[0] * step, c[1] - n[1] * step, c[2] - n[2] * step];
             // The interior side is the probe with the higher capped winding; the
             // sign of the face normal is irrelevant because both sides are
-            // sampled and compared.
-            let t_in = if wind_bvh.winding_at(plus) >= wind_bvh.winding_at(minus) {
-                nearest(plus)
+            // sampled and compared. `nearest` breaks ties on the lowest tet
+            // index, so the result is canonical.
+            let (p_in, p_out) = if wind_bvh.winding_at(plus) >= wind_bvh.winding_at(minus) {
+                (plus, minus)
             } else {
-                nearest(minus)
+                (minus, plus)
             };
-            if t_in != usize::MAX {
-                a[t_in] = true;
+            let t_in = nearest(p_in);
+            let t_out = nearest(p_out);
+            if t_in == usize::MAX || t_out == usize::MAX || t_in == t_out {
+                continue;
             }
+            // H5b: keep source and sink disjoint (both are INF terminals); a
+            // face whose side is already pinned the other way is skipped.
+            if s[t_in] || a[t_out] {
+                continue;
+            }
+            a[t_in] = true;
+            s[t_out] = true;
         }
-        Some(a)
+        Some((a, s))
     } else {
         None
     };
+    let anchor: Option<Vec<bool>> = anchor_sink.as_ref().map(|(a, _)| a.clone());
+    let sink: Option<Vec<bool>> = anchor_sink.as_ref().map(|(_, s)| s.clone());
     let cut = {
         let t = Instant::now();
         let cut = if opts.input_tets {
@@ -427,6 +449,7 @@ fn run_pass(
                 opts.input_tets_deep,
                 normalizer.scale(),
                 anchor.as_deref(),
+                sink.as_deref(),
             )
         } else {
             cut::cut_and_cleanup(
@@ -605,6 +628,20 @@ fn run_pass(
         &normalizer,
         opts.snap_f32 || opts.input_tets,
     );
+    // H5b follow-up: pull every emitted vertex that is within one tet edge of
+    // the input surface onto its closest input point, so input->output distance
+    // collapses toward the tolerance. Guarded per vertex against face flips and
+    // degeneracies; gated behind the same opt-in flag as the sandwich.
+    let (emitted, h5_projected_verts) = if opts.input_tets && opts.input_tets_anchor {
+        emit::project_emitted(
+            emitted,
+            verts,
+            tris,
+            H5_TOL_EDGES * proxy.voxel / normalizer.scale(),
+        )
+    } else {
+        (emitted, 0)
+    };
     let cut_shells = components::cut_shells(&emitted.tris);
 
     let report = SplintReport {
@@ -694,6 +731,8 @@ fn run_pass(
         input_tets_bridge_added: bridge_h7c_added,
         input_tets_anchor: opts.input_tets && opts.input_tets_anchor && input_comps == 1,
         anchor_tets: anchor.as_ref().map_or(0, |a| a.iter().filter(|&&b| b).count()),
+        sink_tets: sink.as_ref().map_or(0, |s| s.iter().filter(|&&b| b).count()),
+        h5_projected_verts,
         input_comps,
         geodesic_comps: geodesic_outcome.map_or(0, |(_, _, c)| c),
         inside_comps,

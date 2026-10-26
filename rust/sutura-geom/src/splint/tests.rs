@@ -99,6 +99,8 @@ fn same_report(a: &SplintReport, b: &SplintReport) {    let fields = [
     assert_eq!(a.input_tets_bridge_added, b.input_tets_bridge_added);
     assert_eq!(a.input_tets_anchor, b.input_tets_anchor);
     assert_eq!(a.anchor_tets, b.anchor_tets);
+    assert_eq!(a.sink_tets, b.sink_tets);
+    assert_eq!(a.h5_projected_verts, b.h5_projected_verts);
     assert_eq!(a.input_comps, b.input_comps);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
@@ -518,7 +520,9 @@ fn input_tets_anchor_is_deterministic() {
     let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
     assert!(a.report.input_tets_anchor);
     assert!(a.report.anchor_tets > 0);
+    assert!(a.report.sink_tets > 0);
     assert_eq!(a.report.anchor_tets, b.report.anchor_tets);
+    assert_eq!(a.report.sink_tets, b.report.sink_tets);
     same_report(&a.report, &b.report);
     assert_eq!(a.tris, b.tris);
     for (p, q) in a.verts.iter().zip(b.verts.iter()) {
@@ -533,4 +537,5 @@ fn input_tets_anchor_is_deterministic() {
     let base = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, off).expect("base");
     assert!(!base.report.input_tets_anchor);
     assert_eq!(base.report.anchor_tets, 0);
+    assert_eq!(base.report.sink_tets, 0);
 }

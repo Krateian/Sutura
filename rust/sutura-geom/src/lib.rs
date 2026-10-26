@@ -2061,6 +2061,8 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("input_tets_bridge_added", r.input_tets_bridge_added)?;
     d.set_item("input_tets_anchor", r.input_tets_anchor)?;
     d.set_item("anchor_tets", r.anchor_tets)?;
+    d.set_item("sink_tets", r.sink_tets)?;
+    d.set_item("h5_projected_verts", r.h5_projected_verts)?;
     d.set_item("input_comps", r.input_comps)?;
     d.set_item("geodesic_comps", r.geodesic_comps)?;
     d.set_item("inside_comps", r.inside_comps)?;
