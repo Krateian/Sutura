@@ -7,6 +7,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 
 use crate::mincut::BkGraph;
+use crate::winding::MeshBvh;
 
 const INF: f64 = 1e18;
 const LAMBDA: f64 = 20.0;
@@ -286,6 +287,124 @@ pub(crate) fn geodesic_flood(
         seeds,
         filled,
         comps,
+    }
+}
+
+/// H6c: result of the enclosed-cavity fill.
+pub(crate) struct CavityResult {
+    /// Outside components that touch no hull tet (geometrically enclosed
+    /// pockets), before the winding test.
+    pub(crate) candidates: usize,
+    /// Candidates whose ORIGINAL-INPUT winding number at the sample exceeds 0.5
+    /// and were therefore relabelled inside.
+    pub(crate) filled: usize,
+    /// Input winding number at each candidate's interior sample, in component
+    /// order (deterministic). A genuine hollow cavity reads ~0.
+    pub(crate) windings: Vec<f64>,
+    /// Tet count of each candidate, parallel to `windings`.
+    pub(crate) tet_counts: Vec<usize>,
+    /// Maximum input winding over each candidate's tets, parallel to `windings`
+    /// (diagnostic: tests whether a better interior sample could exceed 0.5).
+    pub(crate) max_windings: Vec<f64>,
+    /// Volume (normalised cube units) of each candidate, parallel to `windings`.
+    pub(crate) vols: Vec<f64>,
+}
+
+/// H6c: fill every enclosed outside cavity (an outside component that touches no
+/// hull tet) whose ORIGINAL-INPUT generalized winding number exceeds 0.5 anywhere
+/// in the cavity. After the H6 flood the inside set can be a single thin-wall
+/// basin, leaving the volume enclosed by the *inner* offset sheet labelled
+/// outside; on the open-scan class that volume is real material (fTetWild fills
+/// it). A genuine hollow cavity in a closed model has input winding ~0
+/// throughout and is correctly left hollow, so the test is safe.
+///
+/// The decision uses the *maximum* winding over the cavity's tets, not a single
+/// sample: the largest tet can sit at the opening where the winding dips
+/// negative, while the cavity interior still reads `> 0.5`. The reported
+/// `windings` is the largest-tet sample (for reference) and `max_windings` is the
+/// value the decision uses; both are index-order deterministic.
+pub(crate) fn fill_enclosed_cavities(
+    coords: &[[f64; 3]],
+    tets: &[[usize; 4]],
+    centroids: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    is_inside: &mut [bool],
+    bvh: &MeshBvh,
+    scale: f64,
+) -> CavityResult {
+    let n = is_inside.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(_, a, b) in internal {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let tet_vol = tet_volumes(tets, coords, scale);
+    let mut seen = vec![false; n];
+    let mut candidates = 0usize;
+    let mut filled = 0usize;
+    let mut windings = Vec::new();
+    let mut tet_counts = Vec::new();
+    let mut max_windings = Vec::new();
+    let mut vols = Vec::new();
+    for s in 0..n {
+        if is_inside[s] || seen[s] {
+            continue;
+        }
+        let mut comp = Vec::new();
+        let mut q = VecDeque::new();
+        seen[s] = true;
+        q.push_back(s);
+        let mut touches_hull = false;
+        while let Some(c) = q.pop_front() {
+            comp.push(c);
+            if out_tet[c] {
+                touches_hull = true;
+            }
+            for &nb in &adj[c] {
+                if !is_inside[nb] && !seen[nb] {
+                    seen[nb] = true;
+                    q.push_back(nb);
+                }
+            }
+        }
+        if touches_hull {
+            continue;
+        }
+        comp.sort_unstable();
+        candidates += 1;
+        // Largest tet by volume; strict `>` keeps the lowest index on ties.
+        let mut best = comp[0];
+        let mut best_v = tet_vol[best];
+        for &ti in &comp[1..] {
+            if tet_vol[ti] > best_v {
+                best_v = tet_vol[ti];
+                best = ti;
+            }
+        }
+        let w = bvh.winding_at(centroids[best]);
+        windings.push(w);
+        tet_counts.push(comp.len());
+        let mut max_w = f64::NEG_INFINITY;
+        for &ti in &comp {
+            max_w = max_w.max(bvh.winding_at(centroids[ti]));
+        }
+        max_windings.push(max_w);
+        vols.push(component_volume(&comp, &tet_vol));
+        if max_w > 0.5 {
+            filled += 1;
+            for &ti in &comp {
+                is_inside[ti] = true;
+            }
+        }
+    }
+    CavityResult {
+        candidates,
+        filled,
+        windings,
+        tet_counts,
+        vols,
+        max_windings,
     }
 }
 

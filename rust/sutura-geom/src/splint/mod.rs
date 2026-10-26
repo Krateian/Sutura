@@ -63,6 +63,9 @@ pub(crate) struct SplintOpts {
     /// min-cost tet bridge. Only applied when the input is a single connected
     /// component, so a genuinely separate input body is never merged.
     pub geodesic_bridge: bool,
+    /// H6c: fill enclosed outside cavities (no hull contact) whose ORIGINAL-INPUT
+    /// winding number at a deterministic interior sample exceeds 0.5.
+    pub cavity_fill: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +114,13 @@ pub(crate) struct SplintReport {
     pub geodesic_filled: usize,
     pub geodesic_bridge: bool,
     pub bridge_added: usize,
+    pub cavity_fill: bool,
+    pub cavity_candidates: usize,
+    pub cavity_filled: usize,
+    pub cavity_windings: Vec<f64>,
+    pub cavity_tet_counts: Vec<usize>,
+    pub cavity_vols: Vec<f64>,
+    pub cavity_max_windings: Vec<f64>,
     pub input_comps: usize,
     pub geodesic_comps: usize,
     pub inside_comps: usize,
@@ -270,6 +280,20 @@ fn run_pass(
     } else {
         0
     };
+    let cavity_outcome = if opts.cavity_fill {
+        Some(cut::fill_enclosed_cavities(
+            &proxy.verts,
+            &tets,
+            &topo.centroids,
+            &topo.internal,
+            &topo.out_tet,
+            &mut cut.is_inside,
+            &bvh,
+            normalizer.scale(),
+        ))
+    } else {
+        None
+    };
     let inside_comps = cut::inside_components(&topo.internal, &topo.out_tet, &cut.is_inside);
     let mut proxy_hash: u64 = 0xcbf29ce484222325;
     for p in &proxy.verts {
@@ -369,6 +393,15 @@ fn run_pass(
         geodesic_filled: geodesic_outcome.map_or(0, |(_, f, _)| f),
         geodesic_bridge: geodesic_outcome.is_some() && opts.geodesic_bridge && input_comps == 1,
         bridge_added,
+        cavity_fill: opts.cavity_fill,
+        cavity_candidates: cavity_outcome.as_ref().map_or(0, |c| c.candidates),
+        cavity_filled: cavity_outcome.as_ref().map_or(0, |c| c.filled),
+        cavity_windings: cavity_outcome.as_ref().map_or_else(Vec::new, |c| c.windings.clone()),
+        cavity_tet_counts: cavity_outcome.as_ref().map_or_else(Vec::new, |c| c.tet_counts.clone()),
+        cavity_vols: cavity_outcome.as_ref().map_or_else(Vec::new, |c| c.vols.clone()),
+        cavity_max_windings: cavity_outcome
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.max_windings.clone()),
         input_comps,
         geodesic_comps: geodesic_outcome.map_or(0, |(_, _, c)| c),
         inside_comps,

@@ -1933,6 +1933,9 @@ fn splint_cut_py<'py>(
         if let Some(v) = d.get_item("geodesic_bridge")? {
             s_opts.geodesic_bridge = v.extract::<bool>()?;
         }
+        if let Some(v) = d.get_item("cavity_fill")? {
+            s_opts.cavity_fill = v.extract::<bool>()?;
+        }
     }
     let (rv, rt) = parse_mesh(&verts, &tris)?;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2002,6 +2005,13 @@ fn splint_report_to_dict(d: &Bound<'_, PyDict>, r: &splint::SplintReport) -> PyR
     d.set_item("geodesic_filled", r.geodesic_filled)?;
     d.set_item("geodesic_bridge", r.geodesic_bridge)?;
     d.set_item("bridge_added", r.bridge_added)?;
+    d.set_item("cavity_fill", r.cavity_fill)?;
+    d.set_item("cavity_candidates", r.cavity_candidates)?;
+    d.set_item("cavity_filled", r.cavity_filled)?;
+    d.set_item("cavity_windings", r.cavity_windings.clone())?;
+    d.set_item("cavity_tet_counts", r.cavity_tet_counts.clone())?;
+    d.set_item("cavity_vols", r.cavity_vols.clone())?;
+    d.set_item("cavity_max_windings", r.cavity_max_windings.clone())?;
     d.set_item("input_comps", r.input_comps)?;
     d.set_item("geodesic_comps", r.geodesic_comps)?;
     d.set_item("inside_comps", r.inside_comps)?;

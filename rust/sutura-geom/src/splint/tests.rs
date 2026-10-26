@@ -69,6 +69,14 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     assert_eq!(a.geodesic, b.geodesic);
     assert_eq!(a.geodesic_seeds, b.geodesic_seeds);
     assert_eq!(a.geodesic_filled, b.geodesic_filled);
+    assert_eq!(a.cavity_fill, b.cavity_fill);
+    assert_eq!(a.cavity_candidates, b.cavity_candidates);
+    assert_eq!(a.cavity_filled, b.cavity_filled);
+    assert_eq!(a.cavity_windings, b.cavity_windings);
+    assert_eq!(a.cavity_tet_counts, b.cavity_tet_counts);
+    assert_eq!(a.cavity_vols, b.cavity_vols);
+    assert_eq!(a.cavity_max_windings, b.cavity_max_windings);
+    assert_eq!(a.input_comps, b.input_comps);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
     // init labels and the final cut labels. Deterministic only once the tet
@@ -349,4 +357,26 @@ fn geodesic_bridge_flag_follows_input_component_count() {
     assert_eq!(a.report.input_comps, 1);
     assert!(a.report.geodesic_bridge);
     assert_eq!(a.report.output_parts, 1);
+}
+
+#[test]
+fn cavity_fill_is_deterministic() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.geodesic = true;
+    o.greedy_relabel = true;
+    o.cavity_fill = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::Hardened, true, o).expect("b");
+    assert!(a.report.cavity_fill);
+    assert_eq!(a.report.cavity_candidates, b.report.cavity_candidates);
+    assert_eq!(a.report.cavity_filled, b.report.cavity_filled);
+    assert_eq!(a.report.cavity_windings, b.report.cavity_windings);
+    same_report(&a.report, &b.report);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
 }
