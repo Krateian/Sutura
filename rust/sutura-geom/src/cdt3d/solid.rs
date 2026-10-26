@@ -80,7 +80,27 @@ pub struct ComponentOrientation {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct StageMs {
+    /// Top-level stages (filled by the binding's pipeline).
+    pub plc: f64,
+    pub dt: f64,
+    pub segments: f64,
+    pub faces: f64,
+    pub solid: f64,
+    pub total: f64,
+    /// GWN-threshold solid stages.
+    pub gwn_label: f64,
+    pub gwn_count: f64,
+    pub extract: f64,
+    pub finish: f64,
+    pub weld: f64,
+    pub topology: f64,
+    pub hausdorff: f64,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct SolidReport {
+    pub stage_ms: StageMs,
     pub cells: usize,
     pub tet_count: usize,
     pub constraint_faces: usize,
@@ -108,6 +128,10 @@ pub struct SolidReport {
     pub parts: usize,
     pub holes: usize,
     pub nonmanifold: usize,
+    pub watertight: bool,
+    pub two_faces_per_edge: bool,
+    pub signed_volume: f64,
+    pub positive_volume: bool,
     pub bbox_ok: bool,
     pub bbox_error: [f64; 3],
     pub hausdorff_output_to_input: f64,
@@ -228,6 +252,43 @@ fn hash_output(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> u64 {
     h
 }
 
+fn surface_samples(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<[f64; 3]> {
+    let mut out = Vec::with_capacity(verts.len() + tris.len() * 8);
+    out.extend_from_slice(verts);
+    for t in tris {
+        let a = verts[t[0]];
+        let b = verts[t[1]];
+        let c = verts[t[2]];
+        let mid = |p: [f64; 3], q: [f64; 3]| {
+            [(p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, (p[2] + q[2]) * 0.5]
+        };
+        out.push(mid(a, b));
+        out.push(mid(b, c));
+        out.push(mid(c, a));
+        out.push([
+            (a[0] + b[0] + c[0]) / 3.0,
+            (a[1] + b[1] + c[1]) / 3.0,
+            (a[2] + b[2] + c[2]) / 3.0,
+        ]);
+        out.push([
+            (2.0 * a[0] + b[0] + c[0]) / 4.0,
+            (2.0 * a[1] + b[1] + c[1]) / 4.0,
+            (2.0 * a[2] + b[2] + c[2]) / 4.0,
+        ]);
+        out.push([
+            (a[0] + 2.0 * b[0] + c[0]) / 4.0,
+            (a[1] + 2.0 * b[1] + c[1]) / 4.0,
+            (a[2] + 2.0 * b[2] + c[2]) / 4.0,
+        ]);
+        out.push([
+            (a[0] + b[0] + 2.0 * c[0]) / 4.0,
+            (a[1] + b[1] + 2.0 * c[1]) / 4.0,
+            (a[2] + b[2] + 2.0 * c[2]) / 4.0,
+        ]);
+    }
+    out
+}
+
 fn hausdorff(
     input_bvh: &MeshBvh,
     output_bvh: &MeshBvh,
@@ -237,28 +298,12 @@ fn hausdorff(
     input_tris: &[[usize; 3]],
 ) -> (f64, f64) {
     let mut o2i = 0.0f64;
-    for p in output_verts {
-        o2i = o2i.max(input_bvh.unsigned_distance_at(*p));
-    }
-    for t in output_tris {
-        let c = [
-            (output_verts[t[0]][0] + output_verts[t[1]][0] + output_verts[t[2]][0]) / 3.0,
-            (output_verts[t[0]][1] + output_verts[t[1]][1] + output_verts[t[2]][1]) / 3.0,
-            (output_verts[t[0]][2] + output_verts[t[1]][2] + output_verts[t[2]][2]) / 3.0,
-        ];
-        o2i = o2i.max(input_bvh.unsigned_distance_at(c));
+    for p in surface_samples(output_verts, output_tris) {
+        o2i = o2i.max(input_bvh.unsigned_distance_at(p));
     }
     let mut i2o = 0.0f64;
-    for v in input_verts {
-        i2o = i2o.max(output_bvh.unsigned_distance_at(*v));
-    }
-    for t in input_tris {
-        let c = [
-            (input_verts[t[0]][0] + input_verts[t[1]][0] + input_verts[t[2]][0]) / 3.0,
-            (input_verts[t[0]][1] + input_verts[t[1]][1] + input_verts[t[2]][1]) / 3.0,
-            (input_verts[t[0]][2] + input_verts[t[1]][2] + input_verts[t[2]][2]) / 3.0,
-        ];
-        i2o = i2o.max(output_bvh.unsigned_distance_at(c));
+    for p in surface_samples(input_verts, input_tris) {
+        i2o = i2o.max(output_bvh.unsigned_distance_at(p));
     }
     (o2i, i2o)
 }
@@ -633,6 +678,7 @@ fn finish_solid(
         .iter()
         .map(|p| p.to_f64().unwrap_or([0.0; 3]))
         .collect();
+    let weld_start = std::time::Instant::now();
     let plc_face_count = plc_faces.len();
     let constraint_cut_area: f64 = plc_faces
         .iter()
@@ -673,6 +719,8 @@ fn finish_solid(
     let (em, _h5_moved) =
         crate::splint::emit::project_emitted(em, unary_verts, unary_tris, h5_tol);
     let (out_verts, tris) = snap_compact(&em.verts, &em.tris);
+    let weld_ms = weld_start.elapsed().as_secs_f64() * 1000.0;
+    let topo_start = std::time::Instant::now();
     let snapped_u32: Vec<[u32; 3]> = tris
         .iter()
         .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
@@ -705,6 +753,7 @@ fn finish_solid(
     }
 
     let input_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
+    let haus_start = std::time::Instant::now();
     let (shape_v, shape_t) = snap_compact(&all_verts, &plc_faces);
     let shape_bvh = MeshBvh::from_arrays(&shape_v, &shape_t);
     let (o2i, i2o) = hausdorff(
@@ -725,8 +774,38 @@ fn finish_solid(
         unary_verts,
         unary_tris,
     );
+    let hausdorff_ms = haus_start.elapsed().as_secs_f64() * 1000.0;
+    let topology_ms = (topo_start.elapsed().as_secs_f64() * 1000.0 - hausdorff_ms).max(0.0);
+
+    let mut edge_counts: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for t in &tris {
+        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *edge_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    let two_faces_per_edge = !tris.is_empty()
+        && edge_counts.values().all(|&n| n == 2);
+    let watertight = holes == 0 && two_faces_per_edge;
+    let mut signed_volume = 0.0f64;
+    for t in &tris {
+        let a = out_verts[t[0]];
+        let b = out_verts[t[1]];
+        let c = out_verts[t[2]];
+        signed_volume += (a[0] * (b[1] * c[2] - b[2] * c[1])
+            + a[1] * (b[2] * c[0] - b[0] * c[2])
+            + a[2] * (b[0] * c[1] - b[1] * c[0]))
+            / 6.0;
+    }
+    let positive_volume = signed_volume > 0.0;
 
     let mut report = SolidReport {
+        stage_ms: StageMs {
+            weld: weld_ms,
+            topology: topology_ms,
+            hausdorff: hausdorff_ms,
+            ..StageMs::default()
+        },
         cells: meta.cells,
         tet_count: meta.tet_count,
         constraint_faces: meta.constraint_faces,
@@ -748,6 +827,10 @@ fn finish_solid(
         parts,
         holes,
         nonmanifold: if manifold { 0 } else { 1 },
+        watertight,
+        two_faces_per_edge,
+        signed_volume,
+        positive_volume,
         bbox_ok,
         bbox_error,
         hausdorff_output_to_input: o2i,
@@ -763,6 +846,9 @@ fn finish_solid(
     report.valid = report.parts == 1
         && report.holes == 0
         && report.nonmanifold == 0
+        && report.watertight
+        && report.two_faces_per_edge
+        && report.positive_volume
         && report.bbox_ok
         && report.hausdorff <= 0.0125;
     Ok(SolidMesh {
@@ -874,16 +960,17 @@ fn gwn_labels(
     bvh: &MeshBvh,
     cen: &[[f64; 3]],
     out: &[bool],
-) -> (Vec<bool>, [usize; 10]) {
-    let labels = label_tets_winding(bvh, cen, out, false, 1.0);
+) -> Result<(Vec<bool>, [usize; 10]), String> {
+    let labels = label_tets_winding(bvh, cen, out, false, 1.0)?;
     let inside: Vec<bool> = labels.init_label.iter().map(|&l| l == 0).collect();
     let mut w_hist = [0usize; 10];
     for ti in 0..cen.len() {
+        crate::budget::tick(ti, "GWN labelling")?;
         let w = bvh.winding_at(cen[ti]);
         let bin = ((w * 10.0).floor() as i64).clamp(0, 9) as usize;
         w_hist[bin] += 1;
     }
-    (inside, w_hist)
+    Ok((inside, w_hist))
 }
 
 fn face_on_surface(
@@ -912,10 +999,11 @@ fn gwn_plc_count(
     constraints: &BTreeSet<[usize; 3]>,
     inside: &[bool],
     surface: Option<(&MeshBvh, f64)>,
-) -> usize {
+) -> Result<usize, String> {
     let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut count = 0usize;
     for ti in 0..tets.len() {
+        crate::budget::tick(ti, "GWN count")?;
         for lv in 0..4 {
             let n = neighbours[ti][lv];
             if n < 0 {
@@ -931,7 +1019,7 @@ fn gwn_plc_count(
             }
         }
     }
-    count
+    Ok(count)
 }
 
 fn extract_gwn_faces(
@@ -941,12 +1029,13 @@ fn extract_gwn_faces(
     constraints: &BTreeSet<[usize; 3]>,
     inside: &[bool],
     surface: Option<(&MeshBvh, f64)>,
-) -> (Vec<[usize; 3]>, Vec<[usize; 3]>, f64) {
+) -> Result<(Vec<[usize; 3]>, Vec<[usize; 3]>, f64), String> {
     let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut plc_faces: Vec<[usize; 3]> = Vec::new();
     let mut free_faces: Vec<[usize; 3]> = Vec::new();
     let mut free_area = 0.0f64;
     for ti in 0..tets.len() {
+        crate::budget::tick(ti, "GWN extraction")?;
         for lv in 0..4 {
             let n = neighbours[ti][lv];
             if n < 0 {
@@ -982,7 +1071,7 @@ fn extract_gwn_faces(
             }
         }
     }
-    (plc_faces, free_faces, free_area)
+    Ok((plc_faces, free_faces, free_area))
 }
 
 fn build_solid_gwn(
@@ -1025,15 +1114,29 @@ fn build_solid_gwn(
     }
 
     let raw_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
-    let (raw_inside, raw_hist) = gwn_labels(&raw_bvh, &cen, &out);
-    let raw_plc = gwn_plc_count(points, tets, neighbours, &constraints, &raw_inside, surface);
+    let label_start = std::time::Instant::now();
+    let (raw_inside, raw_hist) = gwn_labels(&raw_bvh, &cen, &out)?;
+    let mut gwn_label_ms = label_start.elapsed().as_secs_f64() * 1000.0;
+    let count_start = std::time::Instant::now();
+    let raw_plc = gwn_plc_count(points, tets, neighbours, &constraints, &raw_inside, surface)?;
+    let mut gwn_count_ms = count_start.elapsed().as_secs_f64() * 1000.0;
     let raw_ok = raw_inside.iter().any(|&x| x) && raw_inside.iter().any(|&x| !x);
 
     let (oriented_tris, orientation) = orient_for_winding(unary_verts, unary_tris);
     let oriented_bvh = MeshBvh::from_arrays(unary_verts, &oriented_tris);
-    let (oriented_inside, oriented_hist) = gwn_labels(&oriented_bvh, &cen, &out);
-    let oriented_plc = gwn_plc_count(points, tets, neighbours, &constraints, &oriented_inside, surface);
+    let label_start = std::time::Instant::now();
+    let (oriented_inside, oriented_hist) = gwn_labels(&oriented_bvh, &cen, &out)?;
+    gwn_label_ms += label_start.elapsed().as_secs_f64() * 1000.0;
+    let count_start = std::time::Instant::now();
+    let oriented_plc = gwn_plc_count(points, tets, neighbours, &constraints, &oriented_inside, surface)?;
+    gwn_count_ms += count_start.elapsed().as_secs_f64() * 1000.0;
     let oriented_ok = oriented_inside.iter().any(|&x| x) && oriented_inside.iter().any(|&x| !x);
+    if std::env::var_os("CDT3D_STAGE_TIMES").is_some() {
+        eprintln!(
+            "cdt3d stage gwn label={:.1}ms count={:.1}ms",
+            gwn_label_ms, gwn_count_ms
+        );
+    }
 
     let use_oriented = match (raw_ok, oriented_ok) {
         (false, false) => {
@@ -1049,8 +1152,13 @@ fn build_solid_gwn(
         (raw_inside, raw_hist)
     };
     let inside_count = inside.iter().filter(|&&x| x).count();
+    let extract_start = std::time::Instant::now();
     let (plc_faces, free_faces, free_area) =
-        extract_gwn_faces(points, tets, neighbours, &constraints, &inside, surface);
+        extract_gwn_faces(points, tets, neighbours, &constraints, &inside, surface)?;
+    let extract_ms = extract_start.elapsed().as_secs_f64() * 1000.0;
+    if std::env::var_os("CDT3D_STAGE_TIMES").is_some() {
+        eprintln!("cdt3d stage extract={:.1}ms", extract_ms);
+    }
     let meta = SolidMeta {
         cells: n_tets,
         tet_count: n_tets,
@@ -1066,6 +1174,7 @@ fn build_solid_gwn(
         inside_cells: inside_count,
         contracted: false,
     };
+    let finish_start = std::time::Instant::now();
     let mut solid = finish_solid(
         points,
         plc,
@@ -1077,6 +1186,10 @@ fn build_solid_gwn(
         _opts,
         meta,
     )?;
+    solid.report.stage_ms.gwn_label = gwn_label_ms;
+    solid.report.stage_ms.gwn_count = gwn_count_ms;
+    solid.report.stage_ms.extract = extract_ms;
+    solid.report.stage_ms.finish = finish_start.elapsed().as_secs_f64() * 1000.0;
     solid.report.orientation_used = use_oriented;
     solid.report.orientation_components = orientation.components;
     solid.report.orientation_flipped = orientation.flipped;
@@ -1423,15 +1536,18 @@ mod tests {
 
     #[test]
     fn cdt3d_fixtures_gwn_gate() {
+        // fTetWild baseline (pytetwild 0.4.2, optimize=False) measured with the
+        // same denser Hausdorff sampling.  Bound: no worse by
+        // max(0.0125 mm, 1% of the fTetWild value).
         let samples = [
-            "case1_open_cup.stl",
-            "case2_pipe.stl",
-            "case3_broken_cup.stl",
-            "case4_cracked_sphere.stl",
-            "case5_box_missing_face.stl",
-            "case6_thin_cup.stl",
+            ("case1_open_cup.stl", 1.492777f64),
+            ("case2_pipe.stl", 11.942217),
+            ("case3_broken_cup.stl", 2.892546),
+            ("case4_cracked_sphere.stl", 4.665224),
+            ("case5_box_missing_face.stl", 10.148891),
+            ("case6_thin_cup.stl", 15.152173),
         ];
-        for name in samples {
+        for (name, ftw_h) in samples {
             let plc = plc_for("fixture", name);
             let (uv, ut) = fixture(name);
             let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
@@ -1441,13 +1557,49 @@ mod tests {
             assert_eq!(solid.report.parts, 1, "{name}: parts");
             assert_eq!(solid.report.holes, 0, "{name}: holes");
             assert_eq!(solid.report.nonmanifold, 0, "{name}: NM");
+            assert!(solid.report.watertight, "{name}: watertight");
+            assert!(solid.report.two_faces_per_edge, "{name}: 2 faces/edge");
+            assert!(solid.report.positive_volume, "{name}: winding");
             assert!(solid.report.bbox_ok, "{name}: bbox");
+            let bound = ftw_h + (0.0125f64).max(0.01 * ftw_h);
             assert!(
-                solid.report.hausdorff <= 0.0125,
-                "{name}: h={}",
-                solid.report.hausdorff
+                solid.report.hausdorff <= bound,
+                "{name}: h={} bound={} (fTetWild {})",
+                solid.report.hausdorff,
+                bound,
+                ftw_h
             );
         }
+    }
+
+    #[test]
+    #[ignore = "plate asserted gate; run with --release -- --ignored"]
+    fn plate_a_dent_shape_gate() {
+        // fTetWild baseline with the same denser metric: 1.274534 mm
+        // (pytetwild 0.4.2, optimize=False).  Amended gate:
+        // CDT_h <= FTW_h + max(0.0125, 0.01 * FTW_h).
+        const FTW_H: f64 = 1.274534;
+        let name = "plate_a_dent.stl";
+        let plc = plc_for("fixture", name);
+        let (uv, ut) = fixture(name);
+        let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+        let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+        let solid = build_solid(&face, &plc, &uv, &ut, &SolidOptions::default()).unwrap();
+        assert_eq!(solid.report.parts, 1);
+        assert_eq!(solid.report.holes, 0);
+        assert_eq!(solid.report.nonmanifold, 0);
+        assert!(solid.report.watertight);
+        assert!(solid.report.two_faces_per_edge);
+        assert!(solid.report.positive_volume);
+        assert!(solid.report.bbox_ok);
+        let bound = FTW_H + (0.0125f64).max(0.01 * FTW_H);
+        assert!(
+            solid.report.hausdorff <= bound,
+            "plate h={} bound={} (fTetWild {})",
+            solid.report.hausdorff,
+            bound,
+            FTW_H
+        );
     }
 
     #[test]

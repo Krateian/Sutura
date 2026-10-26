@@ -18,6 +18,7 @@ pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
 pub mod cdt3d;
+mod budget;
 pub mod cluster;
 pub mod decimate;
 pub mod diagnosis;
@@ -276,6 +277,7 @@ fn run_cdt3d(
     o: &Cdt3dOpts,
 ) -> Result<(cdt3d::SolidMesh, cdt3d::FaceReport, cdt3d::PlcReport, f64), String> {
     let t0 = std::time::Instant::now();
+    let _budget = crate::budget::BudgetGuard::install(t0, o.wall_timeout_ms);
     let check = |what: &str| -> Result<(), String> {
         if o.wall_timeout_ms > 0 {
             let ms = t0.elapsed().as_millis() as u64;
@@ -288,18 +290,37 @@ fn run_cdt3d(
         }
         Ok(())
     };
+    let plc_start = std::time::Instant::now();
+    let log_stages = std::env::var_os("CDT3D_STAGE_TIMES").is_some();
     let plc = cdt3d::build_plc(rv, rt, &cdt3d::PlcOptions::default())
         .map_err(|e| format!("cdt3d PLC: {e}"))?;
+    let plc_ms = plc_start.elapsed().as_secs_f64() * 1000.0;
     check("PLC")?;
+    let seg_start = std::time::Instant::now();
     let seg = cdt3d::recover_segments(&plc, &cdt3d::SegmentOptions::default())
         .map_err(|e| format!("cdt3d segments: {e}"))?;
+    let seg_ms = seg_start.elapsed().as_secs_f64() * 1000.0;
+    if log_stages {
+        eprintln!(
+            "cdt3d stage plc={:.1}ms dt={:.1}ms segments={:.1}ms",
+            plc_ms, seg.report.dt_ms, seg_ms
+        );
+    }
     check("segments")?;
     let fopts = cdt3d::FaceOptions {
         verify_coverage: o.verify_coverage,
         ..cdt3d::FaceOptions::default()
     };
+    let face_start = std::time::Instant::now();
     let face = cdt3d::recover_faces(&seg, &plc, &fopts)
         .map_err(|e| format!("cdt3d faces: {e}"))?;
+    let face_ms = face_start.elapsed().as_secs_f64() * 1000.0;
+    if log_stages {
+        eprintln!(
+            "cdt3d stage faces={:.1}ms tets={} steiner={}",
+            face_ms, face.tets.len(), face.report.steiner_points
+        );
+    }
     check("faces")?;
     if face.tets.len() > o.max_tets {
         return Err(format!(
@@ -317,9 +338,25 @@ fn run_cdt3d(
         require_certificate: o.verify_coverage,
         ..cdt3d::SolidOptions::default()
     };
-    let solid = cdt3d::build_solid(&face, &plc, rv, rt, &sopts)
+    let solid_start = std::time::Instant::now();
+    let mut solid = cdt3d::build_solid(&face, &plc, rv, rt, &sopts)
         .map_err(|e| format!("cdt3d solid: {e}"))?;
+    let solid_ms = solid_start.elapsed().as_secs_f64() * 1000.0;
     check("solid")?;
+    solid.report.stage_ms.plc = plc_ms;
+    solid.report.stage_ms.dt = seg.report.dt_ms;
+    solid.report.stage_ms.segments = seg_ms;
+    solid.report.stage_ms.faces = face_ms;
+    solid.report.stage_ms.solid = solid_ms;
+    solid.report.stage_ms.total = t0.elapsed().as_secs_f64() * 1000.0;
+    if log_stages {
+        let s = &solid.report.stage_ms;
+        eprintln!(
+            "cdt3d stage solid={:.1}ms gwn_label={:.1} gwn_count={:.1} extract={:.1} finish={:.1} (weld={:.1} topo={:.1} haus={:.1}) total={:.1}ms",
+            s.solid, s.gwn_label, s.gwn_count, s.extract, s.finish,
+            s.weld, s.topology, s.hausdorff, s.total
+        );
+    }
     let seconds = t0.elapsed().as_secs_f64();
     Ok((solid, face.report, plc.report, seconds))
 }
@@ -413,6 +450,7 @@ fn cdt3d_solid_py<'py>(
     d.set_item("retetrahedralized", face_report.retetrahedralized)?;
     d.set_item("gift_wraps", face_report.gift_wraps)?;
     d.set_item("tets", face_report.tets)?;
+    d.set_item("steiner_points", face_report.steiner_points)?;
     d.set_item("verify_coverage", o.verify_coverage)?;
     d.set_item("coverage_certified", face_report.coverage_certified)?;
     d.set_item("coverage_checked", face_report.coverage_checked)?;
@@ -434,6 +472,10 @@ fn cdt3d_solid_py<'py>(
     d.set_item("parts", r.parts)?;
     d.set_item("holes", r.holes)?;
     d.set_item("nonmanifold", r.nonmanifold)?;
+    d.set_item("watertight", r.watertight)?;
+    d.set_item("two_faces_per_edge", r.two_faces_per_edge)?;
+    d.set_item("signed_volume", r.signed_volume)?;
+    d.set_item("positive_volume", r.positive_volume)?;
     d.set_item("bbox_ok", r.bbox_ok)?;
     d.set_item("bbox_error", r.bbox_error.to_vec())?;
     d.set_item("hausdorff", r.hausdorff)?;
@@ -444,6 +486,21 @@ fn cdt3d_solid_py<'py>(
     d.set_item("hash", r.hash)?;
     d.set_item("max_tets", o.max_tets)?;
     d.set_item("wall_timeout_ms", o.wall_timeout_ms)?;
+    let st = PyDict::new(py);
+    st.set_item("plc", r.stage_ms.plc)?;
+    st.set_item("dt", r.stage_ms.dt)?;
+    st.set_item("segments", r.stage_ms.segments)?;
+    st.set_item("faces", r.stage_ms.faces)?;
+    st.set_item("solid", r.stage_ms.solid)?;
+    st.set_item("gwn_label", r.stage_ms.gwn_label)?;
+    st.set_item("gwn_count", r.stage_ms.gwn_count)?;
+    st.set_item("extract", r.stage_ms.extract)?;
+    st.set_item("finish", r.stage_ms.finish)?;
+    st.set_item("weld", r.stage_ms.weld)?;
+    st.set_item("topology", r.stage_ms.topology)?;
+    st.set_item("hausdorff", r.stage_ms.hausdorff)?;
+    st.set_item("total", r.stage_ms.total)?;
+    d.set_item("stage_ms", st)?;
     Ok((verts_np, tris_np, d))
 }
 

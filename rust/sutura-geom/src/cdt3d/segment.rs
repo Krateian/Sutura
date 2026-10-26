@@ -85,6 +85,10 @@ pub struct SegmentChain {
 /// Validity report for one segment recovery run.
 #[derive(Clone, Debug, Default)]
 pub struct SegmentReport {
+    /// Wall time of the initial Delaunay tetrahedralization, in milliseconds.
+    pub dt_ms: f64,
+    /// Wall time of segment recovery after the initial DT, in milliseconds.
+    pub recovery_ms: f64,
     pub input_segments: usize,
     pub subsegments: usize,
     pub missing_before: usize,
@@ -133,10 +137,13 @@ pub fn recover_segments(plc: &Plc, opts: &SegmentOptions) -> Result<SegmentMesh,
     if plc.tris.is_empty() {
         return Err("segment recovery needs a non-empty PLC".into());
     }
+    let dt_start = std::time::Instant::now();
     let dt = build_dt(&plc.verts, &opts.dt)?;
+    let dt_ms = dt_start.elapsed().as_secs_f64() * 1000.0;
     if !dt.report.dt_valid {
         return Err(format!("initial DT invalid: {:?}", dt.report));
     }
+    let recovery_start = std::time::Instant::now();
     let plc_vertices = dt.plc_vertices;
     let box3 = dt.box3;
     let initial_points = dt.verts.len();
@@ -158,7 +165,7 @@ pub fn recover_segments(plc: &Plc, opts: &SegmentOptions) -> Result<SegmentMesh,
         })
         .collect();
     let mut edges = EdgeCounts::new(&tets);
-    let missing_before = missing_count(&chains, &edges);
+    let missing_before = missing_count(&chains, &edges)?;
     let cat1_segments = chains
         .iter()
         .filter(|c| c.meta.iter().all(|m| *m == SegmentCategory::None))
@@ -184,10 +191,14 @@ pub fn recover_segments(plc: &Plc, opts: &SegmentOptions) -> Result<SegmentMesh,
     let mut splits_cat3 = 0usize;
     let mut seed_hint = 0usize;
     loop {
+        crate::budget::check("segment recovery")?;
         passes += 1;
         let mut target = None;
+        let mut scanned = 0usize;
         'scan: for (ci, chain) in chains.iter().enumerate() {
             for i in 0..chain.points.len().saturating_sub(1) {
+                crate::budget::tick(scanned, "segment recovery")?;
+                scanned += 1;
                 if !edges.contains(chain.points[i].1, chain.points[i + 1].1) {
                     target = Some((ci, i));
                     break 'scan;
@@ -277,8 +288,10 @@ pub fn recover_segments(plc: &Plc, opts: &SegmentOptions) -> Result<SegmentMesh,
         plc_vertices,
         initial_points,
         &box3,
-    );
+    )?;
     report.input_segments = chains.len();
+    report.dt_ms = dt_ms;
+    report.recovery_ms = recovery_start.elapsed().as_secs_f64() * 1000.0;
     report.missing_before = missing_before;
     report.splits = splits;
     report.splits_cat1 = splits_cat1;
@@ -470,16 +483,19 @@ impl EdgeCounts {
     }
 }
 
-fn missing_count(chains: &[SegmentChain], edges: &EdgeCounts) -> usize {
-    chains
-        .iter()
-        .map(|c| {
-            c.points
-                .windows(2)
-                .filter(|w| !edges.contains(w[0].1, w[1].1))
-                .count()
-        })
-        .sum()
+fn missing_count(chains: &[SegmentChain], edges: &EdgeCounts) -> Result<usize, String> {
+    let mut count = 0usize;
+    let mut scanned = 0usize;
+    for chain in chains {
+        for w in chain.points.windows(2) {
+            crate::budget::tick(scanned, "segment recovery")?;
+            scanned += 1;
+            if !edges.contains(w[0].1, w[1].1) {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
 }
 
 struct PointStore {
@@ -848,7 +864,8 @@ fn locate_tet(
     }
     let mut t = if seed_hint < tets.len() { seed_hint } else { 0 };
     let max_steps = tets.len().saturating_mul(4).saturating_add(16);
-    for _ in 0..max_steps {
+    for step in 0..max_steps {
+        crate::budget::tick(step, "segment recovery")?;
         let mut moved = false;
         for lv in 0..4 {
             let (a, b, c, _) = oriented_face_apex(points, &tets[t], lv);
@@ -868,6 +885,7 @@ fn locate_tet(
         }
     }
     for (i, tet) in tets.iter().enumerate() {
+        crate::budget::tick(i, "segment recovery")?;
         if contains_point(points, tet, p)? {
             return Ok(i);
         }
@@ -886,7 +904,10 @@ fn collect_containing(
     let mut stack = vec![seed];
     seen[seed] = true;
     let mut out = vec![seed];
+    let mut pops = 0usize;
     while let Some(t) = stack.pop() {
+        crate::budget::tick(pops, "segment recovery")?;
+        pops += 1;
         for lv in 0..4 {
             let (a, b, c, _) = oriented_face_apex(points, &tets[t], lv);
             if orient3d_sign(&points[a], &points[b], &points[c], &points[p]) != 0.0 {
@@ -933,6 +954,7 @@ fn expand_coplanar_cavity(
     let mut steps = 0usize;
     let limit = tets.len().saturating_mul(8).saturating_add(16);
     while let Some(t) = queue.pop_front() {
+        crate::budget::tick(steps, "segment recovery")?;
         steps += 1;
         if steps > limit {
             return Err(format!("coplanar insertion cavity for point {p} did not converge"));
@@ -971,6 +993,7 @@ fn insert_point(
     seed_hint: &mut usize,
     p: usize,
 ) -> Result<(), String> {
+    crate::budget::check("segment recovery")?;
     let seed = locate_tet(points, tets, neighbours, p, *seed_hint)?;
     let containing = collect_containing(points, tets, neighbours, p, seed)?;
 
@@ -982,7 +1005,10 @@ fn insert_point(
             queue.push_back(t);
         }
     }
+    let mut pops = 0usize;
     while let Some(t) = queue.pop_front() {
+        crate::budget::tick(pops, "segment recovery")?;
+        pops += 1;
         for lv in 0..4 {
             let n = neighbours[t][lv];
             if n < 0 {
@@ -1012,6 +1038,7 @@ fn insert_point(
 
     let mut faces: Vec<([usize; 3], [usize; 3], usize, usize)> = Vec::new();
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "segment recovery")?;
         if !conflict[ti] {
             continue;
         }
@@ -1044,6 +1071,7 @@ fn insert_point(
     let mut new_tets = Vec::with_capacity(tets.len() - removed + faces.len());
     let mut remap: Vec<i32> = vec![-1; tets.len()];
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "segment recovery")?;
         if !conflict[ti] {
             remap[ti] = new_tets.len() as i32;
             new_tets.push(*t);
@@ -1054,6 +1082,7 @@ fn insert_point(
         new_tets.push([f[0], f[1], f[2], p]);
     }
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "segment recovery")?;
         if conflict[ti] {
             edges.remove_tet(t);
         }
@@ -1064,6 +1093,7 @@ fn insert_point(
 
     let mut new_neighbours = vec![[-1i32; 4]; new_tets.len()];
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "segment recovery")?;
         if conflict[ti] {
             continue;
         }
@@ -1246,7 +1276,7 @@ fn validate_mesh(
     plc_vertices: usize,
     initial_points: usize,
     box3: &BoundingBox3,
-) -> SegmentReport {
+) -> Result<SegmentReport, String> {
     let mut r = SegmentReport {
         subsegments: chains
             .iter()
@@ -1257,14 +1287,16 @@ fn validate_mesh(
         ..SegmentReport::default()
     };
 
-    for w in tets.windows(2) {
+    for (i, w) in tets.windows(2).enumerate() {
+        crate::budget::tick(i, "segment validation")?;
         if w[0] == w[1] {
             r.duplicate_tets += 1;
         }
     }
 
     let mut used = vec![false; points.len()];
-    for t in tets {
+    for (i, t) in tets.iter().enumerate() {
+        crate::budget::tick(i, "segment validation")?;
         for &v in t {
             used[v] = true;
         }
@@ -1277,6 +1309,7 @@ fn validate_mesh(
 
     let mut occurrences: BTreeMap<[usize; 3], Vec<(usize, usize)>> = BTreeMap::new();
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "segment validation")?;
         for lv in 0..4 {
             occurrences
                 .entry(sorted_face(t, lv))
@@ -1300,6 +1333,7 @@ fn validate_mesh(
     }
 
     for (ti, t) in tets.iter().enumerate() {
+        crate::budget::tick(ti, "segment validation")?;
         for lv in 0..4 {
             let face = sorted_face(t, lv);
             let n = neighbours[ti][lv];
@@ -1333,7 +1367,7 @@ fn validate_mesh(
         }
     }
 
-    r.missing_after = missing_count(chains, edges);
+    r.missing_after = missing_count(chains, edges)?;
     r.valid = r.tets > 0
         && r.missing_after == 0
         && r.duplicate_tets == 0
@@ -1343,7 +1377,7 @@ fn validate_mesh(
         && r.empty_sphere_violations == 0
         && r.hull_faces_off_box == 0
         && r.unused_vertices == 0;
-    r
+    Ok(r)
 }
 
 fn segment_hash(points: &[Point3], tets: &[[usize; 4]], chains: &[SegmentChain]) -> u64 {
