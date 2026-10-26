@@ -28,7 +28,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use crate::predicates2d::{orient2d_sign, Point2};
 use crate::triangle_intersection::{intersect_triangles, Triangle, TriangleIntersection};
 
-type V3 = [f64; 3];
+pub(crate) type V3 = [f64; 3];
 
 #[inline]
 fn sub(a: V3, b: V3) -> V3 {
@@ -463,7 +463,7 @@ fn cap_ok(verts: &[V3], tris_in: &[[i64; 3]], cand_faces: &[u32], cap: &[[i64; 3
 /// ear-clipper.  This guarantees a flat, non-self-intersecting cap for a
 /// genuinely planar boundary such as a scan's fold seam, which the weight-based
 /// ear-clipper can otherwise slice through the body.
-fn planar_cap(
+pub(crate) fn planar_cap(
     verts: &[V3],
     tris_in: &[[i64; 3]],
     _vfaces: &[Vec<u32>],

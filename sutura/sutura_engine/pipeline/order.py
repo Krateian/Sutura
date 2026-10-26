@@ -44,7 +44,7 @@ DEEP_TIER_METHOD_NUM = {
 # Precedence used by ``_deep_repair_offer`` when naming the reported final
 # tier. Kept separate from DEEP_TIER_ORDER because the reporting precedence is
 # not the run order (fTetWild is named first, not last).
-FINAL_TIER_PRECEDENCE = ('ftetwild', 'graft', 'dressing', 'splint',
+FINAL_TIER_PRECEDENCE = ('ftetwild', 'cdt', 'graft', 'dressing', 'splint',
                          'coaptation', 'local')
 
 # Convenience aliases for the two tiers whose relative order the auto policy

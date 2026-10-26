@@ -68,7 +68,7 @@ from sutura_engine.pipeline.presets import (
    resolve_deep_repair_flags, resolve_dressing, resolve_dressing_defects,
    resolve_dressing_drain, resolve_dressing_rmax_scale,
    resolve_dressing_scale, resolve_dressing_sigma_scale, resolve_flap,
-   resolve_ftetwild, resolve_ftetwild_optimize, resolve_graft,
+   resolve_ftetwild, resolve_ftetwild_optimize, resolve_graft, resolve_solid_engine,
    resolve_mode_params, resolve_si_mode, resolve_splint, resolve_tamponade,
    resolve_coaptation, tuning_applied_for
 )
@@ -176,6 +176,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
                  tamponade=False,
                  si_mode=None, dressing_force_adopt=False,
                  splint=False, splint_adaptive=None,
+                 solid_engine='ftetwild',
                  coaptation=False,
                  trace_path=None):
     """Repair one file. Returns (result_dict, category).
@@ -256,6 +257,7 @@ def process_file(src, human, mode='auto', profile=None, no_history=False,
             tamponade=tamponade,
             si_mode=si_mode,
             splint=splint, splint_adaptive=splint_adaptive,
+            solid_engine=solid_engine,
             coaptation=coaptation,
             dressing_force_adopt=dressing_force_adopt))
 
@@ -545,6 +547,13 @@ def main():
                         help='disable the Splint (#18) exact solid-rebuild tier '
                              '(it is off by default; this forces it off even '
                              'when SUTURA_SPLINT / the default switch enables it)')
+    parser.add_argument('--solid-engine', choices=('cdt', 'ftetwild'),
+                        default=None,
+                        help='last-resort solid engine: cdt (exact CDT, after '
+                             'Coaptation and before fTetWild) or ftetwild '
+                             '(default; current ladder). Resolved from '
+                             '--solid-engine > SUTURA_SOLID_ENGINE > the '
+                             'existing Sutura settings file.')
     parser.add_argument('--coaptation', action='store_true',
                         help='enable the Coaptation tier (#19): it is ON by '
                              'default (this flag is kept for compatibility); '
@@ -1006,6 +1015,7 @@ def main():
     # Coaptation (#19): ON by default; --no-coaptation disables it and
     # --coaptation forces it. SUTURA_COAPTATION (0/1) and
     # SUTURA_COAPTATION_DEFAULT override the built-in default.
+    _solid_engine = resolve_solid_engine(args.solid_engine)
     _coaptation_arg = resolve_coaptation(no_coaptation=args.no_coaptation,
                                          force=args.coaptation)
     # Flap: on by default; --no-flap disables it, --flap forces it, SUTURA_FLAP
@@ -1053,6 +1063,7 @@ def main():
                             dressing_rmax_scale=_dressing_rmax_scale,
                             dressing_sigma_scale=_dressing_sigma_scale,
                             splint=_splint_arg,
+                            solid_engine=_solid_engine,
                             coaptation=_coaptation_arg,
                             si_mode=si_mode,
                             dressing_force_adopt=args.dressing_force_adopt,

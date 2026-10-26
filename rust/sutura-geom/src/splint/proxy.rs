@@ -14,6 +14,12 @@ pub(crate) const JITTER: f64 = 2.0e-4;
 
 pub(crate) struct Proxy {
     pub(crate) verts: Vec<[f64; 3]>,
+    /// Number of leading entries of `verts` that come from the dual-contour
+    /// offset shell (the closed proxy pillow); the padded bbox corners and the
+    /// adaptive points follow it. H6 needs the pillow's own surface.
+    pub(crate) shell_len: usize,
+    /// Pillow surface triangles, indexing the leading `shell_len` vertices.
+    pub(crate) shell_tris: Vec<[usize; 3]>,
     pub(crate) voxel: f64,
     pub(crate) secs_udf: f64,
     pub(crate) secs_proxy: f64,
@@ -42,6 +48,12 @@ pub(crate) fn build(
         return Err("proxy shell extraction produced no vertices".into());
     }
 
+    let shell_len = shell.verts.len();
+    let shell_tris: Vec<[usize; 3]> = shell
+        .tris
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
     let mut proxy = shell.verts.clone();
     // Eight padded bbox corners guarantee the hull covers the domain.
     let pad = 0.1;
@@ -82,6 +94,8 @@ pub(crate) fn build(
 
     Ok(Proxy {
         verts: proxy,
+        shell_len,
+        shell_tris,
         voxel,
         secs_udf,
         secs_proxy,
