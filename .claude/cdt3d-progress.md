@@ -341,3 +341,20 @@ gift-wrapping fallback, SOS).
   rebuild after every insertion.
 - P3 still has no Python binding or CLI/GUI flag; that remains P6 work, or
   earlier only if P5 needs it.
+
+## 2026-10-26 — P3 closed / handoff
+
+- Committed P3 locally as `0f92065` ("cdt3d: add exact segment recovery with
+  LNC splits (P3)") on `spike/cdt3d`; not pushed.
+- `graphify update .` run after the commit: 9622 nodes, 22075 edges, 348
+  communities; only the pre-existing Geogram C++ syntax warnings remain.
+- `cargo test --release`: 377 passed, 0 failed, 4 ignored.
+- The 8-mesh gate was run in three separate processes (including the final
+  code); all eight hashes matched every time, and the in-process five-run
+  assertions passed for every mesh.
+
+Status: P0, P1, P2 and P3 complete and gated.  P4 (face recovery: missing-face
+detection, cavity split, local Delaunay, expansion, gift-wrapping fallback,
+SOS) is next.  Handoff point: any fresh session can resume from commit
+`0f92065` and this file.  P3 remains internal and opt-in; no CLI/GUI flag or
+Python binding exists yet (P6).
