@@ -51,6 +51,7 @@ pub struct FaceReport {
     pub nonmanifold_faces: usize,
     pub inconsistent_neighbours: usize,
     pub empty_sphere_violations: usize,
+    pub constraint_empty_sphere_faces: usize,
     pub cospherical_faces: usize,
     pub hull_faces_off_box: usize,
     pub unused_vertices: usize,
@@ -115,7 +116,10 @@ pub fn recover_faces(
             for comp in &comps {
                 cavities += 1;
                 match retetra_cavity(&points, &tets, &neighbours, comp, face, opts) {
-                    Ok(new_tets) => {
+                    Ok((new_tets, used_gift)) => {
+                        if used_gift {
+                            gift_wraps += 1;
+                        }
                         let mut merged = Vec::with_capacity(tets.len());
                         let in_comp: BTreeSet<usize> = comp.iter().copied().collect();
                         for (ti, t) in tets.iter().enumerate() {
@@ -181,6 +185,7 @@ pub fn recover_faces(
 struct BoundaryFace {
     oriented: [usize; 3],
     opp_tet: usize,
+    cav_apex: usize,
 }
 
 /// Face-connected cavities among the tetrahedra incident to piercing edges.
@@ -190,22 +195,12 @@ fn collect_cavities(
     neighbours: &[[i32; 4]],
     face: [usize; 3],
 ) -> Result<Vec<Vec<usize>>, String> {
-    let approx: Vec<[f64; 3]> = points
-        .iter()
-        .map(|p| p.to_f64().ok_or_else(|| "point has no approximate coordinates".to_string()))
-        .collect::<Result<_, _>>()?;
-    let f = [
-        Point3::Explicit(approx[face[0]]),
-        Point3::Explicit(approx[face[1]]),
-        Point3::Explicit(approx[face[2]]),
-    ];
+    let f = [&points[face[0]], &points[face[1]], &points[face[2]]];
     let mut in_tf = vec![false; tets.len()];
     for (ti, t) in tets.iter().enumerate() {
         'edges: for i in 0..4 {
             for j in (i + 1)..4 {
-                let a = Point3::Explicit(approx[t[i]]);
-                let b = Point3::Explicit(approx[t[j]]);
-                if edge_pierces_triangle(&a, &b, &f[0], &f[1], &f[2]) {
+                if edge_pierces_triangle(&points[t[i]], &points[t[j]], f[0], f[1], f[2]) {
                     in_tf[ti] = true;
                     break 'edges;
                 }
@@ -247,7 +242,7 @@ fn retetra_cavity(
     cavity: &[usize],
     face: [usize; 3],
     _opts: &FaceOptions,
-) -> Result<Vec<[usize; 4]>, String> {
+) -> Result<(Vec<[usize; 4]>, bool), String> {
     let in_cavity: BTreeSet<usize> = cavity.iter().copied().collect();
     let mut boundary: BTreeMap<[usize; 3], BoundaryFace> = BTreeMap::new();
     let mut verts = BTreeSet::new();
@@ -265,13 +260,14 @@ fn retetra_cavity(
                 continue;
             }
             let key = crate::cdt3d::dt::sorted_face(&t, lv);
-            let (a, b, c, _) = crate::cdt3d::segment::oriented_face_apex(points, &t, lv);
+            let (a, b, c, d) = crate::cdt3d::segment::oriented_face_apex(points, &t, lv);
             if boundary
                 .insert(
                     key,
                     BoundaryFace {
                         oriented: [a, b, c],
                         opp_tet: n as usize,
+                        cav_apex: d,
                     },
                 )
                 .is_some()
@@ -291,6 +287,7 @@ fn retetra_cavity(
         sign.insert(v, orient3d_sign(&p[0], &p[1], &p[2], &points[v]));
     }
 
+    let mut crossing = 0usize;
     for bf in boundary.values() {
         let s = [
             sign[&bf.oriented[0]],
@@ -300,28 +297,151 @@ fn retetra_cavity(
         let any_above = s.iter().any(|x| *x > 0.0);
         let any_below = s.iter().any(|x| *x < 0.0);
         if any_above && any_below {
+            crossing += 1;
             if std::env::var_os("CDT3D_DEBUG_FACE").is_some() {
                 eprintln!(
                     "crossing boundary face {:?} signs {:?} face {:?}",
                     bf.oriented, s, face
                 );
             }
-            return Err("cavity boundary crosses the face plane".into());
         }
+    }
+    if crossing > 0 {
+        return Err(format!(
+            "cavity boundary crosses the face plane ({crossing} faces)"
+        ));
     }
 
     let v1: Vec<usize> = verts.iter().copied().filter(|v| sign[v] >= 0.0).collect();
     let v2: Vec<usize> = verts.iter().copied().filter(|v| sign[v] <= 0.0).collect();
-    let d1 = half_delaunay(points, tets, &in_cavity, &v1)?;
-    let d2 = half_delaunay(points, tets, &in_cavity, &v2)?;
-    let mut new_tets = d1;
-    new_tets.extend(d2);
-    if new_tets.is_empty() {
-        return Err("local Delaunay produced no cavity tetrahedra".into());
+
+    if let (Ok(d1), Ok(d2)) = (
+        half_delaunay(points, tets, &in_cavity, &v1),
+        half_delaunay(points, tets, &in_cavity, &v2),
+    ) {
+        let mut fast = d1;
+        fast.extend(d2);
+        if !fast.is_empty() && verify_replacement(points, tets, cavity, &boundary, &fast, face).is_ok()
+        {
+            return Ok((fast, false));
+        }
     }
 
+    let mut c1_boundary = Vec::new();
+    let mut c2_boundary = Vec::new();
+    let mut original_keys = BTreeSet::new();
+    for (key, bf) in &boundary {
+        original_keys.insert(*key);
+        let s = [
+            sign[&bf.oriented[0]],
+            sign[&bf.oriented[1]],
+            sign[&bf.oriented[2]],
+        ];
+        let any_above = s.iter().any(|x| *x > 0.0);
+        let any_below = s.iter().any(|x| *x < 0.0);
+        let assign_c1 = if !any_below {
+            if any_above {
+                true
+            } else {
+                sign[&bf.cav_apex] > 0.0
+            }
+        } else {
+            false
+        };
+        let assign_c2 = if !any_above {
+            if any_below {
+                true
+            } else {
+                sign[&bf.cav_apex] < 0.0
+            }
+        } else {
+            false
+        };
+        if assign_c1 {
+            c1_boundary.push(bf.oriented);
+        }
+        if assign_c2 {
+            c2_boundary.push(bf.oriented);
+        }
+        if !assign_c1 && !assign_c2 {
+            return Err("cavity boundary crosses the face plane".into());
+        }
+    }
+
+    if std::env::var_os("CDT3D_DEBUG_FACE").is_some() {
+        eprintln!(
+            "gift face {:?}: v1={} v2={} c1b={} c2b={}",
+            face,
+            v1.len(),
+            v2.len(),
+            c1_boundary.len(),
+            c2_boundary.len()
+        );
+    }
+    let (tets1, interface) = gift_fill(
+        points,
+        &v1,
+        &c1_boundary,
+        &c1_boundary,
+        face,
+        true,
+        &original_keys,
+    )?;
+    if std::env::var_os("CDT3D_DEBUG_FACE").is_some() {
+        eprintln!(
+            "gift face {:?}: tets1={} interface={}",
+            face,
+            tets1.len(),
+            interface.len()
+        );
+    }
+    if tets1.is_empty() {
+        return Err("gift-wrapping filled no C1 tetrahedra".into());
+    }
+    if let Some(bad) = interface
+        .iter()
+        .find(|f| !tri_on_plane(points, **f, face))
+    {
+        return Err(format!(
+            "gift-wrapping left a non-plane C1 boundary face {bad:?}"
+        ));
+    }
+
+    let mut c2_all = c2_boundary;
+    for f in &interface {
+        c2_all.push([f[0], f[2], f[1]]);
+    }
+    let (tets2, leftover) = gift_fill(
+        points,
+        &v2,
+        &c2_all,
+        &c2_all,
+        face,
+        false,
+        &BTreeSet::new(),
+    )?;
+    if !leftover.is_empty() {
+        return Err(format!(
+            "gift-wrapping left {} C2 boundary faces",
+            leftover.len()
+        ));
+    }
+
+    let mut new_tets = tets1;
+    new_tets.extend(tets2);
+    if new_tets.is_empty() {
+        return Err("gift-wrapping produced no cavity tetrahedra".into());
+    }
+    if std::env::var_os("CDT3D_DEBUG_FACE").is_some() {
+        eprintln!(
+            "gift face {:?}: tets={} verify={:?}",
+            face,
+            new_tets.len(),
+            verify_replacement(points, tets, cavity, &boundary, &new_tets, face)
+        );
+    }
     verify_replacement(points, tets, cavity, &boundary, &new_tets, face)?;
-    Ok(new_tets)
+    Ok((new_tets, true))
 }
 
 fn half_delaunay(
@@ -429,17 +549,11 @@ fn verify_replacement(
         }
     }
 
-    let f = [
-        Point3::Explicit(points[face[0]].to_f64().unwrap()),
-        Point3::Explicit(points[face[1]].to_f64().unwrap()),
-        Point3::Explicit(points[face[2]].to_f64().unwrap()),
-    ];
+    let f = [&points[face[0]], &points[face[1]], &points[face[2]]];
     for t in new_tets {
         for i in 0..4 {
             for j in (i + 1)..4 {
-                let a = Point3::Explicit(points[t[i]].to_f64().unwrap());
-                let b = Point3::Explicit(points[t[j]].to_f64().unwrap());
-                if edge_pierces_triangle(&a, &b, &f[0], &f[1], &f[2]) {
+                if edge_pierces_triangle(&points[t[i]], &points[t[j]], f[0], f[1], f[2]) {
                     return Err("recovered cavity still pierces the face".into());
                 }
             }
@@ -477,6 +591,57 @@ fn tet_volume6(points: &[Point3], t: &[usize; 4]) -> f64 {
         ac[0] * ad[1] - ac[1] * ad[0],
     ];
     ab[0] * cross[0] + ab[1] * cross[1] + ab[2] * cross[2]
+}
+
+fn point_in_triangle_projected(p: [f64; 3], t: [[f64; 3]; 3]) -> bool {
+    let ab = [t[1][0] - t[0][0], t[1][1] - t[0][1], t[1][2] - t[0][2]];
+    let ac = [t[2][0] - t[0][0], t[2][1] - t[0][1], t[2][2] - t[0][2]];
+    let n = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    let axis = (0..3)
+        .max_by(|&i, &j| n[i].abs().partial_cmp(&n[j].abs()).unwrap())
+        .unwrap();
+    let (i, j) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    let cross = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        (b[i] - a[i]) * (c[j] - a[j]) - (b[j] - a[j]) * (c[i] - a[i])
+    };
+    let d0 = cross(t[0], t[1], p);
+    let d1 = cross(t[1], t[2], p);
+    let d2 = cross(t[2], t[0], p);
+    let eps = 1e-7;
+    (d0 >= -eps && d1 >= -eps && d2 >= -eps) || (d0 <= eps && d1 <= eps && d2 <= eps)
+}
+
+fn face_is_plc_piece(points: &[Point3], plc: &Plc, face: [usize; 3]) -> bool {
+    let mut p = [[0.0f64; 3]; 3];
+    for (i, &v) in face.iter().enumerate() {
+        match points[v].to_f64() {
+            Some(x) => p[i] = x,
+            None => return false,
+        }
+    }
+    'tri: for tri in &plc.tris {
+        let a = &points[tri[0]];
+        let b = &points[tri[1]];
+        let c = &points[tri[2]];
+        for &v in &face {
+            if orient3d_sign(a, b, c, &points[v]) != 0.0 {
+                continue 'tri;
+            }
+        }
+        let t = [plc.verts[tri[0]], plc.verts[tri[1]], plc.verts[tri[2]]];
+        if p.iter().all(|&q| point_in_triangle_projected(q, t)) {
+            return true;
+        }
+    }
+    false
 }
 
 fn validate_face_mesh(
@@ -563,7 +728,11 @@ fn validate_face_mesh(
                 &points[e],
             );
             if s > 0.0 {
-                r.empty_sphere_violations += 1;
+                if face_is_plc_piece(points, plc, face) {
+                    r.constraint_empty_sphere_faces += 1;
+                } else {
+                    r.empty_sphere_violations += 1;
+                }
             } else if s == 0.0 {
                 r.cospherical_faces += 1;
             }
@@ -575,6 +744,7 @@ fn validate_face_mesh(
         && r.orientation_violations == 0
         && r.nonmanifold_faces == 0
         && r.inconsistent_neighbours == 0
+        && r.empty_sphere_violations == 0
         && r.hull_faces_off_box == 0
         && r.unused_vertices == 0;
     r
@@ -716,12 +886,10 @@ pub fn detect_missing_faces(
                 continue;
             }
             let f = plc.tris[fi];
-            let a = Point3::Explicit(approx[e[0]]);
-            let b = Point3::Explicit(approx[e[1]]);
             let p0 = Point3::Explicit(plc.verts[f[0]]);
             let p1 = Point3::Explicit(plc.verts[f[1]]);
             let p2 = Point3::Explicit(plc.verts[f[2]]);
-            if edge_pierces_triangle(&a, &b, &p0, &p1, &p2) {
+            if edge_pierces_triangle(&points[e[0]], &points[e[1]], &p0, &p1, &p2) {
                 missing[fi] = true;
             }
         }
@@ -747,6 +915,389 @@ pub(crate) fn edge_pierces_triangle(
     let d1 = orient3d_sign(p1, p2, a, b);
     let d2 = orient3d_sign(p2, p0, a, b);
     (d0 > 0.0 && d1 > 0.0 && d2 > 0.0) || (d0 < 0.0 && d1 < 0.0 && d2 < 0.0)
+}
+
+fn sorted_tri(f: [usize; 3]) -> [usize; 3] {
+    let mut k = f;
+    k.sort_unstable();
+    k
+}
+
+fn tri_on_plane(points: &[Point3], tri: [usize; 3], plane: [usize; 3]) -> bool {
+    tri.iter().all(|&v| {
+        orient3d_sign(
+            &points[plane[0]],
+            &points[plane[1]],
+            &points[plane[2]],
+            &points[v],
+        ) == 0.0
+    })
+}
+
+fn point_in_tet_inclusive(points: &[Point3], t: &[usize; 4], v: usize) -> bool {
+    for lv in 0..4 {
+        let (a, b, c, _) = crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+        if orient3d_sign(&points[a], &points[b], &points[c], &points[v]) < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn point_in_tet_strict(points: &[Point3], t: &[usize; 4], v: usize) -> bool {
+    for lv in 0..4 {
+        let (a, b, c, _) = crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+        if orient3d_sign(&points[a], &points[b], &points[c], &points[v]) <= 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn tet_triangle_interiors_intersect(points: &[Point3], t: &[usize; 4], tri: [usize; 3]) -> bool {
+    if tri.iter().any(|&v| point_in_tet_strict(points, t, v)) {
+        return true;
+    }
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            if edge_pierces_triangle(
+                &points[t[i]],
+                &points[t[j]],
+                &points[tri[0]],
+                &points[tri[1]],
+                &points[tri[2]],
+            ) {
+                return true;
+            }
+        }
+    }
+    for k in 0..3 {
+        let s0 = tri[k];
+        let s1 = tri[(k + 1) % 3];
+        for lv in 0..4 {
+            let (a, b, c, _) = crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+            if edge_pierces_triangle(
+                &points[s0],
+                &points[s1],
+                &points[a],
+                &points[b],
+                &points[c],
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn triangles_intersect_as_subsimplex(points: &[Point3], t: &[usize; 4], tau: [usize; 3]) -> bool {
+    let shared: Vec<usize> = tau.iter().copied().filter(|&v| t.contains(&v)).collect();
+    match shared.len() {
+        3 => true,
+        2 => {
+            let un_tau = *tau.iter().find(|v| !shared.contains(v)).unwrap();
+            for (pos, &orig) in t.iter().enumerate() {
+                if shared.contains(&orig) {
+                    continue;
+                }
+                let mut repl = *t;
+                repl[pos] = un_tau;
+                if orient3d_sign(
+                    &points[repl[0]],
+                    &points[repl[1]],
+                    &points[repl[2]],
+                    &points[repl[3]],
+                ) < 0.0
+                {
+                    return true;
+                }
+            }
+            false
+        }
+        1 => {
+            let common = shared[0];
+            let other: Vec<usize> = tau.iter().copied().filter(|&v| v != common).collect();
+            if point_in_tet_inclusive(points, t, other[0])
+                || point_in_tet_inclusive(points, t, other[1])
+            {
+                return false;
+            }
+            let tau_edges = [
+                (common, other[0]),
+                (common, other[1]),
+                (other[0], other[1]),
+            ];
+            for (s0, s1) in tau_edges {
+                for lv in 0..4 {
+                    let (a, b, c, _) =
+                        crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+                    if edge_pierces_triangle(
+                        &points[s0],
+                        &points[s1],
+                        &points[a],
+                        &points[b],
+                        &points[c],
+                    ) {
+                        return false;
+                    }
+                }
+            }
+            for i in 0..4 {
+                for j in (i + 1)..4 {
+                    if edge_pierces_triangle(
+                        &points[t[i]],
+                        &points[t[j]],
+                        &points[tau[0]],
+                        &points[tau[1]],
+                        &points[tau[2]],
+                    ) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        0 => {
+            if tau.iter().any(|&v| point_in_tet_inclusive(points, t, v)) {
+                return false;
+            }
+            for k in 0..3 {
+                let s0 = tau[k];
+                let s1 = tau[(k + 1) % 3];
+                for lv in 0..4 {
+                    let (a, b, c, _) =
+                        crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+                    if edge_pierces_triangle(
+                        &points[s0],
+                        &points[s1],
+                        &points[a],
+                        &points[b],
+                        &points[c],
+                    ) {
+                        return false;
+                    }
+                }
+            }
+            for i in 0..4 {
+                for j in (i + 1)..4 {
+                    if edge_pierces_triangle(
+                        &points[t[i]],
+                        &points[t[j]],
+                        &points[tau[0]],
+                        &points[tau[1]],
+                        &points[tau[2]],
+                    ) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn convex_hull_tets(points: &[Point3], t: &[usize; 4], v: usize) -> Vec<[usize; 4]> {
+    let mut out = vec![*t];
+    if point_in_tet_inclusive(points, t, v) {
+        return out;
+    }
+    for lv in 0..4 {
+        let (a, b, c, _) = crate::cdt3d::segment::oriented_face_apex(points, t, lv);
+        if orient3d_sign(&points[a], &points[b], &points[c], &points[v]) < 0.0 {
+            let mut h = [a, b, c, v];
+            if orient3d_sign(&points[h[0]], &points[h[1]], &points[h[2]], &points[h[3]]) < 0.0 {
+                h.swap(1, 2);
+            }
+            out.push(h);
+        }
+    }
+    out
+}
+
+fn hull_boundary_faces(points: &[Point3], t: &[usize; 4], v: usize) -> BTreeSet<[usize; 3]> {
+    if point_in_tet_inclusive(points, t, v) {
+        return (0..4)
+            .map(|lv| crate::cdt3d::dt::sorted_face(t, lv))
+            .collect();
+    }
+    let mut pts = t.to_vec();
+    if !pts.contains(&v) {
+        pts.push(v);
+    }
+    let mut faces = BTreeSet::new();
+    for a in 0..pts.len() {
+        for b in (a + 1)..pts.len() {
+            for c in (b + 1)..pts.len() {
+                let tri = [pts[a], pts[b], pts[c]];
+                let mut pos = 0usize;
+                let mut neg = 0usize;
+                for &q in &pts {
+                    if tri.contains(&q) {
+                        continue;
+                    }
+                    let s = orient3d_sign(
+                        &points[tri[0]],
+                        &points[tri[1]],
+                        &points[tri[2]],
+                        &points[q],
+                    );
+                    if s > 0.0 {
+                        pos += 1;
+                    } else if s < 0.0 {
+                        neg += 1;
+                    }
+                }
+                if pos > 0 && neg > 0 {
+                    continue;
+                }
+                if pos == 0 && neg == 0 {
+                    continue;
+                }
+                faces.insert(sorted_tri(tri));
+            }
+        }
+    }
+    faces
+}
+
+fn vertex_visible_from_tet(
+    points: &[Point3],
+    t: &[usize; 4],
+    v: usize,
+    boundary: &[[usize; 3]],
+) -> bool {
+    let hull = convex_hull_tets(points, t, v);
+    let hull_faces = hull_boundary_faces(points, t, v);
+    for tau in boundary {
+        let tau_key = sorted_tri(*tau);
+        for h in &hull {
+            let is_face = (0..4).any(|lv| crate::cdt3d::dt::sorted_face(h, lv) == tau_key);
+            if is_face && !hull_faces.contains(&tau_key) {
+                return false;
+            }
+            if tet_triangle_interiors_intersect(points, h, *tau) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn gift_fill(
+    points: &[Point3],
+    vids: &[usize],
+    boundary: &[[usize; 3]],
+    initial_boundary: &[[usize; 3]],
+    plane: [usize; 3],
+    skip_new_plane: bool,
+    original_keys: &BTreeSet<[usize; 3]>,
+) -> Result<(Vec<[usize; 4]>, Vec<[usize; 3]>), String> {
+    let mut front: BTreeMap<[usize; 3], [usize; 3]> = BTreeMap::new();
+    let mut pending: BTreeSet<[usize; 3]> = BTreeSet::new();
+    for &f in boundary {
+        let key = sorted_tri(f);
+        if front.insert(key, f).is_some() {
+            return Err(format!("duplicate half-cavity boundary face {key:?}"));
+        }
+        pending.insert(key);
+    }
+
+    let mut new_tets = Vec::new();
+    let mut steps = 0usize;
+    let max_steps = 1_000_000usize;
+    while let Some(&key) = pending.iter().next() {
+        pending.remove(&key);
+        let Some(&oriented) = front.get(&key) else {
+            continue;
+        };
+        if skip_new_plane
+            && tri_on_plane(points, oriented, plane)
+            && !original_keys.contains(&key)
+        {
+            continue;
+        }
+        steps += 1;
+        if steps > max_steps {
+            return Err("gift-wrapping exceeded its step limit".into());
+        }
+
+        let mut chosen = None;
+        for &w in vids {
+            if oriented.contains(&w) {
+                continue;
+            }
+            if orient3d_sign(
+                &points[oriented[0]],
+                &points[oriented[1]],
+                &points[oriented[2]],
+                &points[w],
+            ) <= 0.0
+            {
+                continue;
+            }
+            let t = [oriented[0], oriented[1], oriented[2], w];
+            let mut ok = true;
+            for tau in front.values() {
+                if !triangles_intersect_as_subsimplex(points, &t, *tau) {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            for &v in vids {
+                if t.contains(&v) {
+                    continue;
+                }
+                let s = crate::predicates3d::insphere_sign_perturbed(
+                    &points[t[0]],
+                    &points[t[1]],
+                    &points[t[2]],
+                    &points[t[3]],
+                    &points[v],
+                    [t[0], t[1], t[2], t[3], v],
+                );
+                if s < 0.0 {
+                    continue;
+                }
+                if vertex_visible_from_tet(points, &t, v, initial_boundary) {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok {
+                chosen = Some(w);
+                break;
+            }
+        }
+        let Some(w) = chosen else {
+            return Err(format!(
+                "gift-wrapping found no valid apex for front face {oriented:?}"
+            ));
+        };
+
+        front.remove(&key);
+        let t = [oriented[0], oriented[1], oriented[2], w];
+        for lv in 0..4 {
+            let fkey = crate::cdt3d::dt::sorted_face(&t, lv);
+            if fkey == key {
+                continue;
+            }
+            let (a, b, c, _) = crate::cdt3d::segment::oriented_face_apex(points, &t, lv);
+            let outward = [a, c, b];
+            if front.remove(&fkey).is_some() {
+                pending.remove(&fkey);
+            } else {
+                front.insert(fkey, outward);
+                pending.insert(fkey);
+            }
+        }
+        new_tets.push(t);
+    }
+
+    Ok((new_tets, front.values().copied().collect()))
 }
 
 fn canonical_key(p: &Point3) -> Vec<u64> {
@@ -830,6 +1381,100 @@ mod tests {
     }
 
     #[test]
+    fn gift_wrapping_fills_a_single_tetrahedron() {
+        let points = vec![
+            explicit([0.0, 0.0, 0.0]),
+            explicit([1.0, 0.0, 0.0]),
+            explicit([0.0, 1.0, 0.0]),
+            explicit([0.0, 0.0, 1.0]),
+        ];
+        let mut t = [0usize, 1, 2, 3];
+        if orient3d_sign(&points[t[0]], &points[t[1]], &points[t[2]], &points[t[3]]) < 0.0 {
+            t.swap(2, 3);
+        }
+        let boundary: Vec<[usize; 3]> = (0..4)
+            .map(|lv| {
+                let (a, b, c, _) =
+                    crate::cdt3d::segment::oriented_face_apex(&points, &t, lv);
+                [a, b, c]
+            })
+            .collect();
+        let (tets, leftover) = gift_fill(
+            &points,
+            &[0, 1, 2, 3],
+            &boundary,
+            &boundary,
+            [0, 1, 2],
+            false,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(tets.len(), 1);
+        assert_eq!(sorted_tri([tets[0][0], tets[0][1], tets[0][2]]).len(), 3);
+        assert_eq!(
+            {
+                let mut k = tets[0];
+                k.sort_unstable();
+                k
+            },
+            {
+                let mut k = t;
+                k.sort_unstable();
+                k
+            }
+        );
+        assert!(leftover.is_empty());
+    }
+
+    #[test]
+    fn visibility_detects_a_shared_internal_face() {
+        let points = vec![
+            explicit([0.0, 0.0, 0.0]),
+            explicit([1.0, 0.0, 0.0]),
+            explicit([0.0, 1.0, 0.0]),
+            explicit([0.0, 0.0, 1.0]),
+            explicit([0.1, 0.1, -1.0]),
+        ];
+        let mut t = [0usize, 1, 2, 3];
+        if orient3d_sign(&points[t[0]], &points[t[1]], &points[t[2]], &points[t[3]]) < 0.0 {
+            t.swap(2, 3);
+        }
+        let base = [0usize, 1, 2];
+        assert!(!vertex_visible_from_tet(&points, &t, 4, &[base]));
+
+        let side = [0usize, 1, 3];
+        assert!(vertex_visible_from_tet(&points, &t, 4, &[side]));
+    }
+
+    #[test]
+    fn an_lnc_on_a_face_edge_is_not_a_piercing() {
+        let points = vec![
+            explicit([-1.0, -1.0, 0.0]),
+            explicit([1.0, -1.0, 0.0]),
+            explicit([0.0, 1.0, 0.0]),
+            Point3::Lnc {
+                a: [-1.0, -1.0, 0.0],
+                b: [1.0, -1.0, 0.0],
+                t: 0.5,
+            },
+            explicit([0.0, 0.0, 1.0]),
+            explicit([1.0, 0.0, 1.0]),
+            explicit([0.0, 1.0, 1.0]),
+        ];
+        let plc = Plc {
+            verts: points[..3]
+                .iter()
+                .map(|p| p.to_f64().unwrap())
+                .collect(),
+            tris: vec![[0, 1, 2]],
+            report: crate::cdt3d::plc::PlcReport::default(),
+        };
+        let tets = vec![[3, 4, 5, 6]];
+        let m = detect_missing_faces(&points, &tets, &plc).unwrap();
+        assert_eq!(m, vec![false]);
+    }
+
+    #[test]
     fn thingi10k_100827_missing_detection_is_deterministic() {
         let plc = plc_for("real", "thingi10k_100827.stl");
         let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
@@ -856,6 +1501,21 @@ mod tests {
     }
 
     #[test]
+    fn thingi10k_100827_face_recovery_is_deterministic() {
+        let plc = plc_for("real", "thingi10k_100827.stl");
+        let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+        let first = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+        for _ in 0..4 {
+            let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+            let again = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+            assert_eq!(again.report.hash, first.report.hash);
+            assert_eq!(again.report.missing_after, first.report.missing_after);
+            assert_eq!(again.report.tets, first.report.tets);
+            assert_eq!(again.tets, first.tets);
+        }
+    }
+
+    #[test]
     #[ignore = "P4 public-corpus gate; run with --release -- --ignored"]
     fn face_recovery_public_corpus_gate() {
         let samples = [
@@ -875,7 +1535,7 @@ mod tests {
             let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
             let secs = start.elapsed().as_secs_f64();
             println!(
-                "{name}: faces={} miss_before={} miss_after={} cav={} retet={} exp={} gift={} tets={} ori={} dup={} nm={} ngb={} unused={} empty={} secs={:.3}",
+                "{name}: faces={} miss_before={} miss_after={} cav={} retet={} exp={} gift={} tets={} ori={} dup={} nm={} ngb={} unused={} empty={} cempty={} valid={} hash={:016x} secs={:.3}",
                 face.report.input_plc_triangles,
                 face.report.missing_before,
                 face.report.missing_after,
@@ -890,7 +1550,15 @@ mod tests {
                 face.report.inconsistent_neighbours,
                 face.report.unused_vertices,
                 face.report.empty_sphere_violations,
+                face.report.constraint_empty_sphere_faces,
+                face.report.valid,
+                face.report.hash,
                 secs
+            );
+            assert!(
+                face.report.valid,
+                "{name}: face recovery report is not valid: {:?}",
+                face.report
             );
         }
     }

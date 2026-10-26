@@ -48,6 +48,10 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
 
     profile_count!(ORIENT3D_IMPLICIT, 1);
 
+    if let Some(s) = lnc_explicit_plane_sign(p1, p2, p3, p4) {
+        return s;
+    }
+
     // Rigorous interval filter on the homogeneous (λ, d) representation:
     // sign(det(c-a, b-a, d-a)) = sign(det4([λ_i, d_i])) * Π sign(d_i).
     // It decides only when the enclosure excludes zero; otherwise the exact
@@ -88,6 +92,74 @@ pub fn orient3d_sign(p1: &Point3, p2: &Point3, p3: &Point3, p4: &Point3) -> f64 
         1.0
     } else {
         -1.0
+    }
+}
+
+/// Exact fast path for `orient3d(plane, LNC)`.
+///
+/// When exactly one argument is an LNC and the other three are explicit, the
+/// LNC is a convex combination `t*a + (1-t)*b` of two explicit points.  The
+/// orientation determinant is linear in the LNC coordinate, so its sign is the
+/// sign of `t*orient3d(plane,a) + (1-t)*orient3d(plane,b)` with `t > 0` and
+/// `1-t > 0`.  If the two endpoint signs are equal the result is that sign
+/// (zero when both are zero); if they differ the combination may cross the
+/// plane and the caller must use the exact fallback.
+fn lnc_explicit_plane_sign(
+    p1: &Point3,
+    p2: &Point3,
+    p3: &Point3,
+    p4: &Point3,
+) -> Option<f64> {
+    let pts = [p1, p2, p3, p4];
+    let mut lnc_index = None;
+    for (i, p) in pts.iter().enumerate() {
+        if let Point3::Lnc { .. } = p {
+            if lnc_index.is_some() {
+                return None;
+            }
+            lnc_index = Some(i);
+        }
+    }
+    let k = lnc_index?;
+    let (a, b, t) = match pts[k] {
+        Point3::Lnc { a, b, t } => (*a, *b, *t),
+        _ => unreachable!(),
+    };
+    if !(0.0..=1.0).contains(&t) {
+        return None;
+    }
+    let mut ex = [[0.0f64; 3]; 3];
+    let mut j = 0;
+    for (i, p) in pts.iter().enumerate() {
+        if i == k {
+            continue;
+        }
+        match p {
+            Point3::Explicit(v) => ex[j] = *v,
+            _ => return None,
+        }
+        j += 1;
+    }
+    let coord = |p: [f64; 3]| Coord3D {
+        x: p[0],
+        y: p[1],
+        z: p[2],
+    };
+    let sa = robust_orient3d(coord(ex[0]), coord(ex[1]), coord(ex[2]), coord(a));
+    let sb = robust_orient3d(coord(ex[0]), coord(ex[1]), coord(ex[2]), coord(b));
+    let sign = if sa == 0.0 && sb == 0.0 {
+        0.0
+    } else if sa >= 0.0 && sb >= 0.0 {
+        1.0
+    } else if sa <= 0.0 && sb <= 0.0 {
+        -1.0
+    } else {
+        return None;
+    };
+    if (3 - k) % 2 == 1 {
+        Some(-sign)
+    } else {
+        Some(sign)
     }
 }
 
@@ -651,6 +723,31 @@ mod kernel_tests {
             );
         }
         assert!(decided > 100, "filter decided only {decided}/800");
+    }
+
+    #[test]
+    fn lnc_explicit_plane_fast_path_agrees_with_exact() {
+        let p0 = Point3::Explicit([0.0, 0.0, 0.0]);
+        let p1 = Point3::Explicit([1.0, 0.0, 0.0]);
+        let p2 = Point3::Explicit([0.0, 1.0, 0.0]);
+        let cases = [
+            (([0.0, 0.0, 1.0], [1.0, 1.0, 1.0]), 0.37),
+            (([0.0, 0.0, -1.0], [1.0, 1.0, -2.0]), 0.37),
+            (([0.5, 0.5, 0.0], [0.0, 0.0, 1.0]), 0.25),
+            (([0.5, 0.5, 0.0], [0.25, 0.0, 0.0]), 0.8),
+            (([0.0, 0.0, 1.0], [1.0, 0.0, -1.0]), 0.25),
+        ];
+        for ((a, b), t) in cases {
+            let lnc = Point3::Lnc { a, b, t };
+            let got = orient3d_sign(&p0, &p1, &p2, &lnc);
+            let exact = orient3d_sign_exact(&p0, &p1, &p2, &lnc);
+            assert_eq!(got, exact, "last-argument LNC {a:?}->{b:?} t={t}");
+
+            let got_first = orient3d_sign(&lnc, &p0, &p1, &p2);
+            let exact_first = orient3d_sign_exact(&lnc, &p0, &p1, &p2);
+            assert_eq!(got_first, exact_first, "first-argument LNC {a:?}->{b:?} t={t}");
+            assert_eq!(got_first, -got, "parity of moving the LNC must be odd");
+        }
     }
 
     #[test]

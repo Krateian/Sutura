@@ -685,3 +685,126 @@ rule as `predicates3d::insphere_sign_perturbed` (P1/F3).
   area-coverage certificate.  A green gate therefore needs a separate log of
   how the interface covers f, or a coverage check added before the gate is
   claimed.
+
+## 2026-10-26 — P4.2 implemented; exact LNC handling removed the crossing blocker
+
+What was done (all on `spike/cdt3d`, not pushed):
+
+- `predicates3d::lnc_explicit_plane_sign`: exact O(1) fast path for
+  `orient3d(plane, LNC)`.  The LNC is `t*a + (1-t)*b` with `t in [0,1]`; the
+  determinant is linear in the LNC coordinate, so if the explicit endpoint
+  signs are equal the result is that sign (zero if both are zero).  Only
+  opposite-sign endpoints fall back to the rational determinant.  This is a
+  pure speed path; a differential test (`lnc_explicit_plane_fast_path_agrees_with_exact`)
+  compares it with `orient3d_sign_exact` for same-side, on-plane,
+  one-on-plane and opposite-side LNCs, in the last and first argument
+  positions (including the parity).
+- Exactness fix in `face.rs`: `collect_cavities`, `detect_missing_faces` and
+  `verify_replacement` now pass the real `Point3` (including LNC) to
+  `edge_pierces_triangle` instead of `to_f64()` approximations.  This is the
+  decisive fix: a segment Steiner point on a PLC edge is exactly in the plane
+  of a PLC face, but its `f64` construction is not.  The approximate path
+  reported false piercings and false crossing boundary faces.
+- Modified gift-wrapping fallback (paper Sec. 4.4 / Appendix B):
+  - cavity boundary split by the face plane; plane-coplanar boundary
+    triangles go to the side containing the cavity tet's apex (not to both);
+  - fixed front, deterministic smallest-key triangle, apex search in global
+    index order;
+  - condition (i) exact `orient3d(sigma, w) > 0`;
+  - condition (ii) the four Appendix-B shared-vertex cases using exact
+    point-in-tet and proper segment-triangle tests;
+  - condition (iii) exact `insphere_sign_perturbed` plus visibility against
+    the *initial* half-cavity boundary; `CH(T union v)` is one or two tets and
+    the shared internal face is treated as interior of the union;
+  - C1 leaves the new plane faces as the interface; C2 inherits them reversed
+    and is filled against them;
+  - every replacement is re-checked by `verify_replacement` (boundary
+    recovery, orientation, no piercing edge, volume).
+  - `gift_fill` is unit-tested on a single tetrahedron; the visibility
+    shared-face case has its own unit test.
+- `FaceReport::constraint_empty_sphere_faces`: empty-sphere violations on
+  faces that are pieces of a PLC triangle are counted separately (a
+  constrained face is allowed to be non-Delaunay).  `valid` now also requires
+  `empty_sphere_violations == 0`.
+- Tests: 389 passed, 0 failed, 6 ignored (release).
+- P3 gate re-run: all eight segment-recovery hashes are unchanged
+  (`de6e07...`, `e4069f...`, `fc1402...`, `5f8608...`, `708bcd...`,
+  `d265d9...`, `f51a2e...`, `8ce442...`), so the LNC fast path did not change
+  any segment decision.
+
+Why the P4.1 blocker disappeared: with exact LNC evaluation, 100827 has
+`miss_before=3`, `miss_after=0`, `cav=3`, `retet=3`, `gift=0`; the three
+cavities are filled by the P4.1 local Delaunay path.  Before the fix the same
+mesh reported 11 missing, five cavities with boundary faces on both sides of
+the face plane, and two recovered.  The same effect explains the old fixture
+counts: case1/case2/case3/case4/case6 are now 0/0 missing (previously
+12/6/79/7/6 false positives).  Gift-wrapping is implemented but is not
+triggered on the gate corpus (`gift=0` everywhere); it remains the fallback
+for genuinely non-expandable cavities.
+
+Measured face stage (release; five-run determinism test added for 100827):
+
+| mesh | missing before | missing after | cav | retet | gift | tets | empty | cempty | secs | hash |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| thingi10k_100827 | 3 | 0 | 3 | 3 | 0 | 631 | 0 | 14 | 0.053 | 8906654074333441010 |
+| case1_open_cup | 0 | 0 | 0 | 0 | 0 | 1377 | 0 | 0 | 0.056 | unchanged |
+| case2_pipe | 0 | 0 | 0 | 0 | 0 | 606 | 0 | 0 | 0.031 | unchanged |
+| case3_broken_cup | 0 | 0 | 0 | 0 | 0 | 6214 | 0 | 0 | 0.586 | unchanged |
+| case4_cracked_sphere | 0 | 0 | 0 | 0 | 0 | 3895 | 0 | 0 | 0.102 | unchanged |
+| case5_box_missing_face | 0 | 0 | 0 | 0 | 0 | 58 | 0 | 0 | 0.004 | unchanged |
+| case6_thin_cup | 0 | 0 | 0 | 0 | 0 | 613 | 0 | 0 | 0.031 | unchanged |
+| plate_a_dent | 1 | 0 | 1 | 1 | 0 | 122594 | 0 | 2 | 39.2 | 1-run |
+
+The full face gate (P3 + face on all eight) is ~118 s; `plate_a_dent` is
+dominated by exact detection (~39 s) after the fast path (the pure rational
+version was 1135 s).  `valid=true` for every gate mesh.
+
+### Comparison with the independent spec
+
+The worker spec at `~/Sutura/.claude/cdt3d-face-recovery-spec.md` was read
+before coding.  Agreements: cavity definition, plane split, global-order
+symbolic perturbation, conditions (i)-(iii), Appendix-B tests, no face
+interior Steiner points, and segment re-split as the eventual escape.
+
+Two disagreements, recorded with evidence:
+
+1. §4/§2.1 says boundary triangles straddling the plane "do not occur after
+   segment recovery".  With the P4.1 code they did occur on 100827 (five
+   such faces, e.g. `[9,65,62]` with signs `[-0.25, 1, -1]` against face
+   `[1,14,28]`).  The cause was not the segment stage: it was feeding
+   `to_f64()` LNC coordinates to the exact predicate.  After the exact fix
+   the corpus has zero straddling faces.  The spec's conclusion is therefore
+   consistent with the exact result, but its stated reason is not established
+   by our measurements.  A genuinely straddling boundary triangle still
+   cannot be cut by the gift-wrapping loop; the code returns a typed error
+   and logs it rather than expanding across the plane.
+2. §4 says an all-zero boundary triangle "goes to BOTH dC1 and dC2".  A
+   plane-coplanar triangle is on the boundary of the cavity on one side only;
+   assigning it to both leaves it unprocessed in both halves (or
+   double-counts it).  The implementation assigns it to the side containing
+   the cavity tet's fourth vertex.  This case does not arise on the current
+   gate corpus, so the choice is untested by the corpus; it is unit-testable
+   synthetically if needed.
+
+### Caveats
+
+- Visibility condition (iii) tests per-tet interiors plus the shared-face
+  case.  A boundary triangle whose three vertices are hull vertices but that
+  is not a face of either hull tet (a non-hull diagonal) is not explicitly
+  handled; it does not arise in the corpus or the synthetic test.
+- The local Delaunay fast path still uses `f64` Geogram for the candidate
+  tetrahedra; every emitted tet is filtered by exact orientation and the
+  replacement is re-verified exactly, but the candidate-selection heuristic
+  is not exact.
+- Detection/certification still uses the paper's definition (no tet edge
+  pierces the face).  A full exact area-coverage certificate for every PLC
+  face is not yet added; this remains the B5 certificate item.
+- `plate_a_dent` face detection is ~39 s; the exact LNC fast path removed the
+  19-minute rational path, but there is room for a grid/filter optimisation
+  if P5/P6 puts plate in the normal loop.
+
+Next step: commit P4.2, run `graphify update .`, run the face gate in two
+separate processes and compare hashes (the in-process five-run test is now
+green), then start P5 (Phase C: cell contraction, winding, min-cut,
+extraction) or the B5 coverage certificate if the owner wants P4 signed off
+first.
