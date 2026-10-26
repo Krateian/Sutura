@@ -306,8 +306,9 @@ sessions (the GUI is a Qt application, not XWayland). The GUI ships its own
 dark Fusion theme (teal accent), so it looks the same on every platform and
 Qt version regardless of the system desktop theme. The batch-wide repair
 options — the fTetWild fallback tier, the last-resort **Solid engine** setting
-(*CDT (exact)* or *fTetWild*; also `--solid-engine`, saved in the Sutura settings
-file and inherited by the CLI and file-manager integrations) and the opt-in
+(*fTetWild*, the default, or *CDT (exact)*, experimental; also `--solid-engine`,
+saved in the Sutura settings file and inherited by the CLI and file-manager
+integrations) and the opt-in
 experimental passes — sit in a separate **Options** window (button next to **Mode**, or Ctrl+, /
 Cmd+,) that can stay open while repairing; the button label shows how many
 options differ from their defaults, e.g. *Options (2)*. Its tabs: *General*

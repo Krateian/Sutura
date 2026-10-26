@@ -71,6 +71,12 @@ güvenilir şekilde algılayabilir.
 * **Manifold çekirdeği.** Açık kenarlı herhangi bir girdiyi reddeder;
   aşama 1 bir deliği kapatamazsa aşama 2 atlanır ve aşama 1 sonucu olduğu gibi
   kullanılır (rapor bunu belirtir).
+* **Deneysel katı motoru (CDT).** İsteğe bağlı kesin `--solid-engine cdt`
+  yeniden inşası daha küçük parçaları hedefler: büyük mesh'lerde (on binlerce
+  yüz) yavaştır, bu yüzden orada varsayılan `ftetwild` motoru daha iyi bir
+  seçimdir. CDT su geçirmez bir sonucu doğrulayamazsa, başarısız olursa ya da
+  zaman aşımına uğrarsa merdiven fTetWild'a geçer; yani yine de bir sonuç
+  üretilir ve rapor hangi motorun çalıştığını `solid_engine` altında kaydeder.
 * **STL yeniden yükleme ve sıkışmış köşeler.** STL köşe paylaşımı saklamaz;
   bellekte iki-manifold olan bir mesh, iki ayrı float32 konumunun birleşmesiyle
   yeniden yüklendiğinde sıkışmış köşeler taşıyabilir. P-WELD yaygın float32

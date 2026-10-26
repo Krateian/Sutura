@@ -6,6 +6,14 @@
 Yalnızca kullanıcıya yönelik özellik ekleyen sürümler listelenir (yalnızca
 düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../../CHANGELOG.md).
 
+- **v0.9.7 — 2026-10-26** — Deneysel bir **son çare katı motoru** seçeneği.
+  Varsayılan **fTetWild** olarak kalır; isteğe bağlı kesin bir yeniden inşa
+  (**CDT**, kısıtlı dörtyüzlüleme) `--solid-engine cdt`, Seçenekler → Onarım →
+  **Katı motoru** veya `solid_engine` ayar anahtarıyla kullanılabilir. CDT,
+  Coaptation sonrası ve fTetWild öncesi çalışır; sonucunu doğrulayamazsa,
+  başarısız olursa ya da zaman aşımına uğrarsa fTetWild'a geçer. Bilinen
+  sınırlama: şimdilik büyük mesh'lerde yavaştır, bu yüzden küçük parçalarda
+  daha iyidir. OrcaSlicer eklentisi de OrcaSlicer 2.5 izin desteği kazanır.
 - **v0.9.6 — 2026-10-26** — Son çare **fTetWild** katmanı artık varsayılan
   olarak gelir ve çok daha küçüktür (katmanın hiç kullanmadığı PyVista/VTK
   bağımlılığından gelen ~1,1 GB yerine yaklaşık 6 MB); `SUTURA_WITH_FTETWILD=0`

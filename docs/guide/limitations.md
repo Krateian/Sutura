@@ -68,6 +68,12 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
 * **Manifold kernel.** It rejects any input with open edges; if stage 1
   cannot close a hole, stage 2 is skipped and the stage 1 result is used as-is
   (the report says so).
+* **Experimental solid engine (CDT).** The opt-in exact `--solid-engine cdt`
+  rebuild targets smaller parts: on large meshes (tens of thousands of faces) it
+  is slow, so the default `ftetwild` engine is the better choice there. When CDT
+  cannot certify a watertight result, fails or times out, the ladder falls back
+  to fTetWild, so a result is still produced; the report records which engine ran
+  under `solid_engine`.
 * **STL reload and pinched vertices.** STL stores no vertex sharing; a mesh
   that is two-manifold in memory can reload with pinched vertices where two
   distinct float32 positions weld into one. P-WELD separates the common

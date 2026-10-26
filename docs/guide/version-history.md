@@ -6,6 +6,14 @@
 Only versions that added user-facing features are listed (bug-fix-only
 versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
 
+- **v0.9.7 — 2026-10-26** — An experimental **last-resort solid engine**
+  choice. The default stays **fTetWild**; an opt-in exact rebuild (**CDT**,
+  constrained tetrahedralization) is available with `--solid-engine cdt`,
+  under Options → Repair → **Solid engine**, or via the `solid_engine` settings
+  key. CDT runs after Coaptation and before fTetWild and falls back to fTetWild
+  if it cannot certify its result, fails or times out. Known limitation: it is
+  slow on large meshes for now, so it is best on smaller parts. The OrcaSlicer
+  plugin also gains OrcaSlicer 2.5 permission support.
 - **v0.9.6 — 2026-10-26** — The last-resort **fTetWild** tier now ships by
   default and is far smaller (about 6 MB instead of ~1.1 GB, which came from a
   PyVista/VTK dependency the tier never used); `SUTURA_WITH_FTETWILD=0` still

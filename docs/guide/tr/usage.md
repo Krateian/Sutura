@@ -303,7 +303,7 @@ oturumlarında çalışır (GUI bir Qt uygulamasıdır, XWayland değildir). GUI
 kendi koyu Fusion temasıyla gelir (teal vurgu rengi), böylece sistem masaüstü
 temasından bağımsız olarak her platformda ve Qt sürümünde aynı görünür. Batch
 geneli onarım seçenekleri — fTetWild yedek katmanı, son çare **Katı motoru**
-ayarı (*CDT (kesin)* veya *fTetWild*; `--solid-engine` ile de seçilir, Sutura
+ayarı (*fTetWild*, varsayılan, veya *CDT (kesin)*, deneysel; `--solid-engine` ile de seçilir, Sutura
 ayar dosyasına kaydedilir ve CLI ile dosya yöneticisi entegrasyonlarınca
 devralınır) ve isteğe bağlı deneysel adımlar — ayrı bir **Seçenekler**
 penceresindedir (**Mod** düğmesinin
