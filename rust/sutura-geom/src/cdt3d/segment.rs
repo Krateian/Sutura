@@ -1504,14 +1504,80 @@ mod tests {
             explicit([0.0, 0.0, 1.0]),
             explicit([0.25, 0.25, 0.0]),
         ];
-        let tets = canonicalize_mesh(&points[..5], vec![[0, 1, 2, 3], [0, 1, 2, 4]])
+        let mut tets = canonicalize_mesh(&points[..5], vec![[0, 1, 2, 3], [0, 1, 2, 4]])
             .expect("fixture tets");
-        let neighbours = build_neighbours_fast(&tets).expect("neighbours");
+        let mut neighbours = build_neighbours_fast(&tets).expect("neighbours");
         let mut conflict = vec![false; tets.len()];
         conflict[0] = true;
         expand_coplanar_cavity(&points, &tets, &neighbours, &mut conflict, 5)
             .expect("coplanar cavity must expand");
         assert!(conflict[1], "the tet across the coplanar face must join the cavity");
+
+        // Drive the full insertion and validate the resulting local mesh.
+        let mut edges = EdgeCounts::new(&tets);
+        let mut seed_hint = 0usize;
+        insert_point(
+            &points,
+            &mut tets,
+            &mut neighbours,
+            &mut edges,
+            &mut seed_hint,
+            5,
+        )
+        .expect("coplanar insertion must succeed");
+        assert!(
+            tets.iter().any(|t| t.contains(&5)),
+            "the inserted point must be present"
+        );
+        let rebuilt = build_neighbours_fast(&tets).expect("valid manifold result");
+        for (ti, t) in tets.iter().enumerate() {
+            assert!(
+                orient3d_sign(&points[t[0]], &points[t[1]], &points[t[2]], &points[t[3]]) > 0.0,
+                "tet {ti} must be positive"
+            );
+            for lv in 0..4 {
+                let n = rebuilt[ti][lv];
+                if n < 0 {
+                    continue;
+                }
+                let n = n as usize;
+                let face = crate::cdt3d::dt::sorted_face(t, lv);
+                let lv2 = (0..4)
+                    .find(|&j| crate::cdt3d::dt::sorted_face(&tets[n], j) == face)
+                    .expect("reciprocal face");
+                assert_eq!(rebuilt[n][lv2], ti as i32, "reciprocal neighbour");
+                let (a, b, c, d) = oriented_face_apex(&points, t, lv);
+                let e = tets[n][lv2];
+                assert!(
+                    insphere_sign(&points[a], &points[b], &points[c], &points[d], &points[e]) <= 0.0,
+                    "local Delaunay face must remain empty-sphere"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn collinear_vertex_on_a_missing_segment_is_reused() {
+        // V lies exactly on the missing segment A--B but is only referenced by
+        // the second triangle.  The split scan must find it collinearly and
+        // reuse it instead of splitting the segment forever.
+        let verts = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.5, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let plc = crate::cdt3d::plc::Plc {
+            verts,
+            tris: vec![[0, 1, 2], [3, 2, 4]],
+            report: crate::cdt3d::plc::PlcReport::default(),
+        };
+        let mesh = recover_segments(&plc, &SegmentOptions::default())
+            .expect("collinear split must terminate");
+        assert_eq!(mesh.report.missing_after, 0, "{:?}", mesh.report);
+        assert!(mesh.report.reused_points >= 1, "{:?}", mesh.report);
+        assert!(mesh.report.valid, "{:?}", mesh.report);
     }
 
     #[test]
