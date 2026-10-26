@@ -434,6 +434,10 @@ fn cdt3d_solid_py<'py>(
     d.set_item("parts", r.parts)?;
     d.set_item("holes", r.holes)?;
     d.set_item("nonmanifold", r.nonmanifold)?;
+    d.set_item("watertight", r.watertight)?;
+    d.set_item("two_faces_per_edge", r.two_faces_per_edge)?;
+    d.set_item("signed_volume", r.signed_volume)?;
+    d.set_item("positive_volume", r.positive_volume)?;
     d.set_item("bbox_ok", r.bbox_ok)?;
     d.set_item("bbox_error", r.bbox_error.to_vec())?;
     d.set_item("hausdorff", r.hausdorff)?;

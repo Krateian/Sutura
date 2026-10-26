@@ -1437,3 +1437,57 @@ Python/settings:
 No push.  P5 code/algorithm is frozen for GOAT on `9f8deec`; the only P5-file
 changes in P6 are the additive coverage/require flags and the no-certificate
 PLC surface classifier.
+
+## 2026-10-26 — review-4 follow-ups: strict valid, asserted plate, denser Hausdorff, baseline version
+
+Review 4 verified P5, the plate gate amendment, and no shape regression against
+fTetWild.  This entry records the four non-blocking follow-ups.
+
+1. `SolidReport.valid` now also requires:
+   - `watertight` (`holes == 0` and every undirected edge has exactly two
+     incident faces),
+   - `two_faces_per_edge` (explicit edge count, not only the manifold flag),
+   - `positive_volume` (signed volume computed from the f32-welded output),
+   - single component (`parts == 1`).
+   New report fields: `watertight`, `two_faces_per_edge`, `signed_volume`,
+   `positive_volume`; the binding exposes them.
+   Note: `valid` keeps the absolute 0.0125 mm Hausdorff condition, so the plate
+   remains `valid=false`; the plate acceptance is the separate asserted
+   fTetWild-relative gate below.
+
+2. Plate asserted gate: `plate_a_dent_shape_gate` (ignored, release) uses
+   fTetWild baseline `1.274534 mm` and
+   `CDT_h <= FTW_h + max(0.0125, 0.01*FTW_h) = 1.28727934 mm`, plus
+   parts/holes/NM/watertight/2-faces/positive-volume/bbox.  It passes.
+
+3. Hausdorff now samples vertices, edge midpoints, triangle centroids and three
+   interior barycentric points per face, for both output->input and
+   input->output; the same scheme is in the external corpus driver.  The
+   fTetWild baseline was recomputed with this denser metric (pytetwild 0.4.2,
+   `optimize=False`, default bridge):
+   100827 0.000001; case1 1.492777; case2 11.942217; case3 2.892546;
+   case4 4.665224; case5 10.148891; case6 15.152173; plate 1.274534.
+   `cdt3d_fixtures_gwn_gate` now uses the relative fTetWild bound; case3's
+   denser CDT value is 1.496393, below its 2.92147 bound.  All fixtures pass.
+
+4. Baseline version/parameters are recorded here: **pytetwild 0.4.2**,
+   `ftetwild_bridge.run_bridge` default params (**`optimize=False`**),
+   measured 2026-10-26.  The corpus driver uses the same shipped bridge and
+   default params, and its summary states the same.
+
+Corpus driver (`~/sutura-toolkit/release-gate/`, not the repo):
+
+- Queued as `sq add cdt-corpus -- .../run_corpus.sh`; currently **running**.
+- Manifest `~/sutura-bench/manifests/core_all.jsonl` (250 meshes); one worker
+  per mesh; each engine in its own process with a **300 s** timeout; output dir
+  `~/sutura-toolkit/release-gate/runs/cdt-corpus-1`; summary path
+  `~/Sutura-cdt/.claude/cdt3d-corpus-1.md`.
+- Compares `cdt3d_solid` production defaults (B5 off) with the shipped
+  fTetWild path; records status/typed failure, wall time, peak RSS, parts,
+  holes, NM after f32 weld, bbox and two-sided Hausdorff with one metric
+  module; summary counts better/equal/worse, failure reasons and median/p95
+  time/RSS.  The summary currently says "running"; it is updated per mesh.
+- No default flip and no threshold tuning was done.
+
+Rust: **398 passed, 0 failed, 10 ignored** (plate gate ignored for runtime).
+Python targeted suite before these Rust-only follow-ups: 48 passed.
