@@ -23,10 +23,14 @@
 //! `.claude/cdt3d-design.md` for the licensing and algorithmic rationale.
 
 pub mod dt;
+pub mod face;
 pub mod plc;
 pub mod segment;
 
 pub use dt::{build_dt, BoundingBox3, Dt, DtOptions, DtReport};
+pub use face::{
+    detect_missing_faces, recover_faces, FaceMesh, FaceOptions, FaceReport,
+};
 pub use plc::{build_plc, Plc, PlcOptions, PlcReport};
 pub use segment::{recover_segments, SegmentMesh, SegmentOptions, SegmentReport};
 

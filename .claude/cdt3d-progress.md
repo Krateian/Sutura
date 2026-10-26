@@ -358,3 +358,45 @@ detection, cavity split, local Delaunay, expansion, gift-wrapping fallback,
 SOS) is next.  Handoff point: any fresh session can resume from commit
 `0f92065` and this file.  P3 remains internal and opt-in; no CLI/GUI flag or
 Python binding exists yet (P6).
+
+## 2026-10-26 — P4.0 missing-face detection
+
+What was done:
+- New `rust/sutura-geom/src/cdt3d/face.rs` scaffold: `FaceOptions`,
+  `FaceReport`, `FaceMesh`, `recover_faces`, and exact
+  `detect_missing_faces`.
+- A PLC face is missing exactly when a tet edge properly pierces its interior
+  (strict plane-side crossing plus the three interior edge-plane signs, all
+  `orient3d`).  Candidate faces are found through a deterministic uniform grid
+  over PLC face AABBs; tet edges are deduplicated in a `BTreeSet`, candidate
+  face lists are sorted, and no hash iteration drives a decision.
+- `recover_faces` currently copies the P3 mesh and reports the missing count;
+  retetrahedralization is not implemented yet (expected at P4.1).
+- Synthetic crossing/coplanar tests, a 5-run 100827 detection test, and an
+  ignored 8-mesh detection gate.
+
+Detection gate (`cargo test --release
+cdt3d::face::tests::face_detection_public_corpus_gate -- --ignored`):
+
+| mesh | PLC faces | tets | missing before | detect secs |
+|---|---|---:|---:|---:|
+| thingi10k_100827 | 83 | 634 | 11 | 0.001 |
+| case1_open_cup | 192 | 1377 | 12 | 0.005 |
+| case2_pipe | 64 | 606 | 6 | 0.001 |
+| case3_broken_cup | 316 | 6214 | 79 | 0.010 |
+| case4_cracked_sphere | 1120 | 3895 | 7 | 0.012 |
+| case5_box_missing_face | 10 | 58 | 0 | 0.000 |
+| case6_thin_cup | 96 | 613 | 6 | 0.002 |
+| plate_a_dent | 13734 | 122595 | 8 | 2.712 |
+
+`case5_box_missing_face` already has every surviving PLC face represented; its
+input hole is a boundary loop, not a missing interior face.  The detection grid
+makes `plate_a_dent` cheap (2.7 s); the ~82 s gate wall time is still dominated
+by P3 segment recovery (~68 s for plate).
+
+`cargo test --release`: **380 passed, 0 failed, 5 ignored** (P0/P2/P3 gates, the
+new P4 detection gate, and the pre-existing ignored test).
+
+Next step: P4.1 cavity construction, plane split, local Delaunay, and exact
+boundary/face verification.  If local Delaunay cannot represent a boundary
+triangle, expand the cavity; log each failure.
