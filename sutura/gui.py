@@ -429,12 +429,15 @@ STRINGS = {
         'dressing_defects_all': 'Holes + NM + SI',
         'dressing_defects_holes_nm': 'Holes + NM only',
         'solid_engine_label': 'Last-resort solid engine:',
-        'solid_engine_tip': 'CDT is the exact constrained tetrahedralization '
-                            '(after Coaptation, before fTetWild); fTetWild is '
-                            'the existing fallback. Saved in the Sutura settings '
-                            'file and inherited by the CLI, Quick Action, Dolphin '
-                            'and Orca.',
-        'solid_engine_cdt': 'CDT (exact)',
+        'solid_engine_tip': 'Last-resort rebuild when everything else fails. '
+                            'fTetWild is the default; CDT (exact constrained '
+                            'tetrahedralization, experimental) runs after '
+                            'Coaptation and before fTetWild and falls back to '
+                            'fTetWild if it fails or times out. Slow on large '
+                            'meshes. Saved in the Sutura settings file and '
+                            'inherited by the CLI, Quick Action, Dolphin and '
+                            'Orca.',
+        'solid_engine_cdt': 'CDT (exact, experimental)',
         'solid_engine_ftetwild': 'fTetWild',
         'si_mode_label': 'Self-intersections:',
         'si_mode_tip': 'Self-intersection policy. "Report" (default) measures '
@@ -1144,11 +1147,15 @@ STRINGS = {
         'dressing_defects_all': 'Delik + NM + SI',
         'dressing_defects_holes_nm': 'Yalnızca delik + NM',
         'solid_engine_label': 'Son çare katı motoru:',
-        'solid_engine_tip': 'CDT kesin kısıtlı dörtyüzlülemedir (Coaptation '
-                            'sonrası, fTetWild öncesi); fTetWild mevcut yedektir. '
-                            'Sutura ayar dosyasına kaydedilir ve CLI, Hızlı '
-                            'İşlem, Dolphin ile Orca tarafından devralınır.',
-        'solid_engine_cdt': 'CDT (kesin)',
+        'solid_engine_tip': 'Her şey başarısız olduğunda kullanılan son çare '
+                            'yeniden inşa. Varsayılan fTetWild; CDT (kesin '
+                            'kısıtlı dörtyüzlüleme, deneysel) Coaptation sonrası '
+                            've fTetWild öncesi çalışır, başarısız olursa ya da '
+                            'zaman aşımına uğrarsa fTetWild’a geçer. Büyük '
+                            'mesh’lerde yavaştır. Sutura ayar dosyasına kaydedilir '
+                            've CLI, Hızlı İşlem, Dolphin ile Orca tarafından '
+                            'devralınır.',
+        'solid_engine_cdt': 'CDT (kesin, deneysel)',
         'solid_engine_ftetwild': 'fTetWild',
         'si_mode_label': 'Kendisiyle-kesişim:',
         'si_mode_tip': 'Kendisiyle-kesişim politikası. "Yalnızca bildir" '
