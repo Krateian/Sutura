@@ -77,3 +77,20 @@ Observations:
 Next step: commit P0 locally, run `graphify update .`, then start P1 (exact
 LNC point + `orient3d`/`inSphere` for implicit points, rational fallback,
 symbolic perturbation) behind the same opt-in module.
+
+## 2026-10-26 — P0 closed
+
+- Committed P0 locally as `2ed5fbd` ("cdt3d: add opt-in PLC completion and
+  validator (P0)") on `spike/cdt3d`; not pushed.
+- Rebuilt the extension with `maturin develop --release` and verified the
+  opt-in binding on `thingi10k_100827`: 47/83 output, `plc_valid=True`,
+  `proper_si=0`, `t_junctions=0`, `touch_points=0`,
+  `coplanar_positive_after=0`, `boundary_edges=15`, `components=1`,
+  hash `0x6072b9f4276b666d` (same as the Rust gate).
+- `cargo test --release`: 357 passed, 0 failed, 2 ignored.
+- `graphify update .` run after the commit; graph clean.
+
+Status: P0 complete and gated. P1 (exact LNC point, implicit
+`orient3d`/`inSphere`, rational fallback, symbolic perturbation) is next.
+Handoff point: any fresh session can resume from this file and commit
+`2ed5fbd`.
