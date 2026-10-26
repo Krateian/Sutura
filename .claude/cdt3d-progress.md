@@ -1248,3 +1248,63 @@ are not the next bottleneck.  A decision is needed on the band definition
 (e.g. band in raw offset units vs normalized grid eps) or on the proxy/label
 strategy; the current fixed `2*eps` rule is implemented and recorded as
 failing.
+
+## 2026-10-26 — GWN-threshold default; band off; fixtures pass, 100827/plate fail
+
+Band: switched off.  The fixed `2*eps` zeroing and its single-anchor fallback
+were removed from the default path; the failed band result remains recorded
+above.  The min-cut path is retained as `LabelMode::MinCut`, not the default.
+
+New default `LabelMode::GwnThreshold` (reuses `label_tets_winding` on the raw
+input soup):
+
+- per CDT tet centroid, `w = generalized_winding(input)`; inside iff `!hull &&
+  w > 0.5`; no proxy, no min-cut, no contraction;
+- extract every internal face whose incident tets have different labels;
+  constraint faces are the PLC surface, all other cut faces are `cap_faces`;
+  f32 weld; no H5 projection (`h5_tol = 0`);
+- trivial labelling is a typed failure.
+
+100827 (GWN default): 65/631 tets inside, **46/198 PLC pieces on the cut**,
+46 free caps (area 176.799), 86 output faces, parts 1, holes 4, NM 1, bbox
+false (`[4.0, 1.0, 3.5]`), o2i 0, i2o **10.434318**, h **10.434318**,
+valid false, hash `17be8c425a831ace`.  198/198 is not met.
+
+Fixtures (GWN default, non-ignored `cdt3d_fixtures_gwn_gate`):
+
+| mesh | PLC on cut | caps | parts | holes | NM | bbox_ok | h |
+|---|---:|---:|---:|---:|---:|---|---:|
+| case1_open_cup | 448/448 | 64 | 1 | 0 | 0 | true | 0.000000 |
+| case2_pipe | 192/192 | 60 | 1 | 0 | 0 | true | 0.000001 |
+| case3_broken_cup | 1821/1822 | 69 | 1 | 0 | 0 | true | 0.000001 |
+| case4_cracked_sphere | 1435/1436 | 13 | 1 | 0 | 0 | true | 0.000001 |
+| case5_box_missing_face | 14/14 | 2 | 1 | 0 | 0 | true | 0.000000 |
+| case6_thin_cup | 224/224 | 30 | 1 | 0 | 0 | true | 0.000000 |
+
+Plate: 35,001/122,594 tets inside, **33,894/47,268 PLC pieces**, 2,020 caps,
+35,914 output faces, parts 1, holes 179, NM 1, bbox false, h **5.000000**,
+valid false, hash `e0a9111dc93ac76c`.
+
+Baseline comparison (fTetWild numbers from the previous entry):
+
+- Fixtures: CDT is **no worse on every metric**, and better on most:
+  case1 fTW 1/6/1 h1.368 → CDT 1/0/0 h0; case2 1/0/0 h10.935 → 1/0/0 h1e-6;
+  case3 1/7/1 h2.893 → 1/0/0 h1e-6; case4 1/0/0 h4.190 → 1/0/0 h1e-6;
+  case5 1/0/0 bbox false h10.149 → 1/0/0 bbox true h0; case6 1/0/0 bbox false
+  h15.152 → 1/0/0 bbox true h0.
+- 100827: fTetWild 1/0/0, bbox true, h≈1e-6 → CDT 1/4/1, bbox false,
+  h10.434: **worse**.
+- plate: fTetWild 1/11/1, bbox true, h1.2745 → CDT 1/179/1, bbox false,
+  h5.0: **worse**.
+
+The strict “CDT no worse than fTetWild on every metric” gate therefore passes
+for all six fixtures and fails for 100827 and plate.  No threshold sweep or
+case-specific tuning.  The raw GWN on 100827 is weak (max ≈0.89, 65/631
+positive); plate is likewise a thin/defective shell.  The next decision is
+whether to fix the input orientation/GWN for those two inputs or to keep the
+fixtures-only adoption.
+
+Determinism: 5 in-process runs pass; two cargo processes print the identical
+100827 hash `17be8c425a831ace`.  `cargo test --release`: **396 passed, 0
+failed, 9 ignored**.  Corpus diagnostic (P3+P4+GWN) took 194.5 s; no
+proxy/BkGraph in this mode, so the previous 1.42 GB upper bound is not repeated.

@@ -17,7 +17,7 @@ use crate::hole::{boundary_topology, close_holes_core};
 use crate::mincut::BkGraph;
 use crate::point::Point3;
 use crate::splint::emit::snap_and_dedup_f32;
-use crate::splint::label::label_tets;
+use crate::splint::label::{label_tets, label_tets_winding};
 use crate::splint::normalize::Normalizer;
 use crate::splint::proxy;
 use crate::winding::MeshBvh;
@@ -27,8 +27,21 @@ const INF: f64 = 1e300;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LabelMode {
+    GwnThreshold,
+    MinCut,
+}
+
+impl Default for LabelMode {
+    fn default() -> Self {
+        Self::GwnThreshold
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct SolidOptions {
+    pub label_mode: LabelMode,
     pub lambda: f64,
     pub winding_cap: f64,
     pub proxy_res: usize,
@@ -41,6 +54,7 @@ pub struct SolidOptions {
 impl Default for SolidOptions {
     fn default() -> Self {
         Self {
+            label_mode: LabelMode::default(),
             lambda: 0.5,
             winding_cap: 0.5,
             proxy_res: 128,
@@ -58,6 +72,7 @@ pub struct SolidReport {
     pub tet_count: usize,
     pub constraint_faces: usize,
     pub open_input: bool,
+    pub gwn_threshold: bool,
     pub proxy_shell_vertices: usize,
     pub proxy_shell_faces: usize,
     pub constraint_cut_faces: usize,
@@ -245,25 +260,7 @@ fn h7_proxy_phi(
     }
     let shell_bvh = MeshBvh::from_arrays(&proxy.verts[..proxy.shell_len], &proxy.shell_tris);
     let ncentroids: Vec<[f64; 3]> = centroids.iter().map(|p| normalizer.norm(*p)).collect();
-    let raw_phi = label_tets(&shell_bvh, &ncentroids, out, false).phi;
-    let band = 2.0 * normalizer.eps();
-    let mut phi = raw_phi.clone();
-    for p in &mut phi {
-        if p.abs() < band {
-            *p = 0.0;
-        }
-    }
-    if !phi.iter().any(|&p| p < 0.0) {
-        if let Some(i) = raw_phi
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| **p < 0.0)
-            .min_by(|(ia, a), (ib, b)| a.partial_cmp(b).unwrap().then(ia.cmp(ib)))
-            .map(|(i, _)| i)
-        {
-            phi[i] = -1.0;
-        }
-    }
+    let phi = label_tets(&shell_bvh, &ncentroids, out, false).phi;
     let h5_tol = 4.0 * proxy.voxel / normalizer.scale();
     Ok((
         phi,
@@ -293,6 +290,9 @@ pub fn build_solid(
             "P5 tet budget exceeded: {} > {}",
             n_tets, opts.max_tets
         ));
+    }
+    if opts.label_mode == LabelMode::GwnThreshold {
+        return build_solid_gwn(face, plc, unary_verts, unary_tris, opts);
     }
     if plc.report.boundary_edges > 0 {
         return build_solid_tets(face, plc, unary_verts, unary_tris, opts);
@@ -535,6 +535,7 @@ pub fn build_solid(
         tet_count: n_tets,
         constraint_faces: constraints.len(),
         open_input: false,
+        gwn_threshold: false,
         proxy_shell_vertices,
         proxy_shell_faces,
         free_cut_faces: 0,
@@ -562,6 +563,7 @@ struct SolidMeta {
     tet_count: usize,
     constraint_faces: usize,
     open_input: bool,
+    gwn_threshold: bool,
     proxy_shell_vertices: usize,
     proxy_shell_faces: usize,
     free_cut_faces: usize,
@@ -708,6 +710,7 @@ fn finish_solid(
         tet_count: meta.tet_count,
         constraint_faces: meta.constraint_faces,
         open_input: meta.open_input,
+        gwn_threshold: meta.gwn_threshold,
         proxy_shell_vertices: meta.proxy_shell_vertices,
         proxy_shell_faces: meta.proxy_shell_faces,
         constraint_cut_faces: plc_face_count,
@@ -748,6 +751,104 @@ fn finish_solid(
     })
 }
 
+
+fn build_solid_gwn(
+    face: &FaceMesh,
+    plc: &Plc,
+    unary_verts: &[[f64; 3]],
+    unary_tris: &[[usize; 3]],
+    _opts: &SolidOptions,
+) -> Result<SolidMesh, String> {
+    let points = &face.points;
+    let tets = &face.tets;
+    let neighbours = &face.neighbours;
+    let n_tets = tets.len();
+    let constraints: BTreeSet<[usize; 3]> = face.constraint_faces.iter().copied().collect();
+    let bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
+    let mut cen = vec![[0.0f64; 3]; n_tets];
+    let mut out = vec![false; n_tets];
+    for ti in 0..n_tets {
+        for &p in &tets[ti] {
+            let q = points[p].to_f64().unwrap_or([0.0; 3]);
+            for a in 0..3 {
+                cen[ti][a] += q[a] * 0.25;
+            }
+        }
+        for lv in 0..4 {
+            if neighbours[ti][lv] < 0 {
+                out[ti] = true;
+            }
+        }
+    }
+    let labels = label_tets_winding(&bvh, &cen, &out, false, 1.0);
+    let inside: Vec<bool> = labels.init_label.iter().map(|&l| l == 0).collect();
+    let inside_count = inside.iter().filter(|&&x| x).count();
+    if inside_count == 0 || inside_count == n_tets {
+        return Err(format!(
+            "gwn_threshold produced a trivial labelling: {inside_count}/{n_tets} inside"
+        ));
+    }
+
+    let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
+    let mut plc_faces: Vec<[usize; 3]> = Vec::new();
+    let mut free_faces: Vec<[usize; 3]> = Vec::new();
+    let mut free_cut_area = 0.0f64;
+    for ti in 0..n_tets {
+        for lv in 0..4 {
+            let n = neighbours[ti][lv];
+            if n < 0 {
+                continue;
+            }
+            let key = sorted_face(&tets[ti], lv);
+            if !seen.insert(key) || inside[ti] == inside[n as usize] {
+                continue;
+            }
+            let (t_in, lv_in) = if inside[ti] {
+                (ti, lv)
+            } else {
+                let nj = n as usize;
+                let lv2 = (0..4)
+                    .find(|&k| sorted_face(&tets[nj], k) == key)
+                    .ok_or_else(|| "neighbour face mismatch".to_string())?;
+                (nj, lv2)
+            };
+            let (a, b, c, _) =
+                crate::cdt3d::segment::oriented_face_apex(points, &tets[t_in], lv_in);
+            if constraints.contains(&key) {
+                plc_faces.push([a, b, c]);
+            } else {
+                free_cut_area += tri_area(points, key);
+                free_faces.push([a, b, c]);
+            }
+        }
+    }
+    let meta = SolidMeta {
+        cells: n_tets,
+        tet_count: n_tets,
+        constraint_faces: constraints.len(),
+        open_input: plc.report.boundary_edges > 0,
+        gwn_threshold: true,
+        proxy_shell_vertices: 0,
+        proxy_shell_faces: 0,
+        free_cut_faces: free_faces.len(),
+        free_cut_area,
+        self_loop_faces: 0,
+        boundary_constraint_faces: 0,
+        inside_cells: inside_count,
+        contracted: false,
+    };
+    finish_solid(
+        points,
+        plc,
+        plc_faces,
+        free_faces,
+        unary_verts,
+        unary_tris,
+        0.0,
+        _opts,
+        meta,
+    )
+}
 
 fn build_solid_tets(
     face: &FaceMesh,
@@ -899,6 +1000,7 @@ fn build_solid_tets(
         tet_count: n_tets,
         constraint_faces: constraints.len(),
         open_input: true,
+        gwn_threshold: false,
         proxy_shell_vertices,
         proxy_shell_faces,
         free_cut_faces,
@@ -941,10 +1043,11 @@ mod tests {
         let solid = build_solid(&face, &plc, &uv, &ut, &opts).unwrap();
         let secs = start.elapsed().as_secs_f64();
         println!(
-            "100827 solid: cells={} cfaces={} open={} pv={} pf={} selfloop={} bc={} inside={} outF={} capF={} capA={:.6} ccut={} ccutA={:.3} fcut={} fcutA={:.3} parts={} holes={} nm={} bbox_ok={} bbox={:?} h_o2i={:.6} h_i2o={:.6} h={:.6} valid={} hash={:016x} secs={:.3}",
+            "100827 solid: cells={} cfaces={} open={} gwn={} pv={} pf={} selfloop={} bc={} inside={} outF={} capF={} capA={:.6} ccut={} ccutA={:.3} fcut={} fcutA={:.3} parts={} holes={} nm={} bbox_ok={} bbox={:?} h_o2i={:.6} h_i2o={:.6} h={:.6} valid={} hash={:016x} secs={:.3}",
             solid.report.cells,
             solid.report.constraint_faces,
             solid.report.open_input,
+            solid.report.gwn_threshold,
             solid.report.proxy_shell_vertices,
             solid.report.proxy_shell_faces,
             solid.report.self_loop_faces,
@@ -1060,6 +1163,35 @@ mod tests {
     }
 
     #[test]
+    fn cdt3d_fixtures_gwn_gate() {
+        let samples = [
+            "case1_open_cup.stl",
+            "case2_pipe.stl",
+            "case3_broken_cup.stl",
+            "case4_cracked_sphere.stl",
+            "case5_box_missing_face.stl",
+            "case6_thin_cup.stl",
+        ];
+        for name in samples {
+            let plc = plc_for("fixture", name);
+            let (uv, ut) = fixture(name);
+            let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+            let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+            let solid = build_solid(&face, &plc, &uv, &ut, &SolidOptions::default()).unwrap();
+            assert!(solid.report.gwn_threshold, "{name}: not in GWN mode");
+            assert_eq!(solid.report.parts, 1, "{name}: parts");
+            assert_eq!(solid.report.holes, 0, "{name}: holes");
+            assert_eq!(solid.report.nonmanifold, 0, "{name}: NM");
+            assert!(solid.report.bbox_ok, "{name}: bbox");
+            assert!(
+                solid.report.hausdorff <= 0.0125,
+                "{name}: h={}",
+                solid.report.hausdorff
+            );
+        }
+    }
+
+    #[test]
     #[ignore = "fTetWild baseline; requires /tmp/opencode/ftw-baseline or CDT3D_FTETWILD_DIR"]
     fn ftetwild_baseline_diagnostic() {
         let dir = std::env::var("CDT3D_FTETWILD_DIR")
@@ -1120,9 +1252,12 @@ mod tests {
                 }
             };
             println!(
-                "{name}: cells={} cfaces={} selfloop={} inside={} outF={} capF={} parts={} holes={} nm={} bbox_ok={} h={:.6} valid={} hash={:016x}",
+                "{name}: cells={} cfaces={} gwn={} ccut={} fcut={} selfloop={} inside={} outF={} capF={} parts={} holes={} nm={} bbox_ok={} h={:.6} valid={} hash={:016x}",
                 solid.report.cells,
                 solid.report.constraint_faces,
+                solid.report.gwn_threshold,
+                solid.report.constraint_cut_faces,
+                solid.report.free_cut_faces,
                 solid.report.self_loop_faces,
                 solid.report.inside_cells,
                 solid.report.output_faces,
