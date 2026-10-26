@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 /// Safety cap on inserted Steiner points; exceeding it is a typed failure.
 pub const DEFAULT_MAX_SPLITS: usize = 200_000;
-const BOX_CORNERS: usize = 8;
+pub(crate) const BOX_CORNERS: usize = 8;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -134,6 +134,9 @@ pub fn recover_segments(plc: &Plc, opts: &SegmentOptions) -> Result<SegmentMesh,
         return Err("segment recovery needs a non-empty PLC".into());
     }
     let dt = build_dt(&plc.verts, &opts.dt)?;
+    if !dt.report.dt_valid {
+        return Err(format!("initial DT invalid: {:?}", dt.report));
+    }
     let plc_vertices = dt.plc_vertices;
     let box3 = dt.box3;
     let initial_points = dt.verts.len();
@@ -803,7 +806,7 @@ fn dist_f64(a: [f64; 3], b: [f64; 3]) -> f64 {
     (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
-fn oriented_face_apex(
+pub(crate) fn oriented_face_apex(
     points: &[Point3],
     t: &[usize; 4],
     lv: usize,
@@ -1076,7 +1079,7 @@ struct FaceOcc {
 /// Order-independent neighbour rebuild using a hash map for the face lookup;
 /// the output array is filled by iterating the tets, so determinism does not
 /// depend on hash iteration order.
-fn build_neighbours_fast(tets: &[[usize; 4]]) -> Result<Vec<[i32; 4]>, String> {
+pub(crate) fn build_neighbours_fast(tets: &[[usize; 4]]) -> Result<Vec<[i32; 4]>, String> {
     let mut faces: HashMap<[usize; 3], FaceOcc> =
         HashMap::with_capacity(tets.len().saturating_mul(4));
     for (ti, t) in tets.iter().enumerate() {
@@ -1129,7 +1132,7 @@ fn build_neighbours_fast(tets: &[[usize; 4]]) -> Result<Vec<[i32; 4]>, String> {
     Ok(neighbours)
 }
 
-fn canonicalize_mesh(points: &[Point3], tets: Vec<[usize; 4]>) -> Result<Vec<[usize; 4]>, String> {
+pub(crate) fn canonicalize_mesh(points: &[Point3], tets: Vec<[usize; 4]>) -> Result<Vec<[usize; 4]>, String> {
     let n = points.len();
     let mut out = Vec::with_capacity(tets.len());
     for mut t in tets {
@@ -1158,7 +1161,7 @@ fn canonicalize_mesh(points: &[Point3], tets: Vec<[usize; 4]>) -> Result<Vec<[us
     Ok(out)
 }
 
-fn face_on_box(points: &[Point3], plc_vertices: usize, b: &BoundingBox3, face: [usize; 3]) -> bool {
+pub(crate) fn face_on_box(points: &[Point3], plc_vertices: usize, b: &BoundingBox3, face: [usize; 3]) -> bool {
     if face
         .iter()
         .any(|&v| v < plc_vertices || v >= plc_vertices + BOX_CORNERS)

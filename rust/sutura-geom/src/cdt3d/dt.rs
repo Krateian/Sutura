@@ -96,7 +96,9 @@ pub struct Dt {
 ///
 /// `verts` must be finite and pairwise distinct (the P0 PLC already is).  The
 /// function returns a typed error rather than a silently invalid mesh when the
-/// backend returns a degenerate or duplicate cell.
+/// backend returns a degenerate or duplicate cell.  The returned mesh is still
+/// validated exactly: callers must check [`DtReport::dt_valid`] and fail closed
+/// before inserting Steiner points into it.
 pub fn build_dt(verts: &[[f64; 3]], opts: &DtOptions) -> Result<Dt, String> {
     if verts.is_empty() {
         return Err("initial Delaunay needs at least one PLC vertex".into());
