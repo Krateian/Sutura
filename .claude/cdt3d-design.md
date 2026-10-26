@@ -601,6 +601,31 @@ decide a sign from an undecidable interval. A failed segment/face recovery is
 also a typed error, not a tolerance-based retry. The only tolerance-based
 policy is the documented coplanar-sliver rule in Phase A, and it is reported.
 
+### 3.6 P4 face-path float heuristics
+
+The decisions that accept or reject a face tiling are exact: cavity detection,
+cavity boundary orientation, plane-side classification, gift-wrapping
+conditions (i)-(iii), the replacement boundary/volume checks and the B5
+area-coverage certificate all use `orient3d`/`inSphere` on real `Point3` values
+(including LNC rationals) and `BigRational` for the certificate.  The
+following float decisions remain in the face path.  They are heuristics only:
+none of them is the final authority for an accepted tiling, because every
+candidate is re-checked by the exact boundary/edge/area tests above.
+
+| site | float use | role / why it is safe |
+|---|---|---|
+| `half_delaunay` (local Delaunay fast path) | Geogram `f64` tetrahedra and an `f64` centroid-in-cavity filter | Candidate selection only.  Every emitted tet is re-oriented with exact `orient3d`; a wrong candidate set is rejected by the exact boundary/volume re-check, and the gift fallback remains available. |
+| `verify_replacement` volume test | `abs(old-new) <= 1e-6 * max(old,1)` | Bounds residual volume drift after the exact boundary-face and no-piercing checks have already passed.  A grossly wrong fill is excluded before this tolerance. |
+| `face_is_plc_piece` / `point_in_triangle_projected` | `f64` projection and `eps = 1e-7` | Classifies a constraint empty-sphere face for the `constraint_empty_sphere_faces` diagnostic only.  It does not decide `missing_after`, coverage or `valid`'s structural fields. |
+| `retetra_cavity` plane construction | `to_f64()` of the missing face's PLC vertices | Exact for the current corpus because the missing-face vertices are explicit PLC vertices.  Documented as latent if a face vertex ever becomes an implicit point; the gift path uses the same plane sign map. |
+| `detect_missing_faces` / cavity grid | `f64` AABB buckets | Conservative candidate filtering only; every candidate is confirmed by exact predicates.  The B5 certificate is an independent exact check and does not use the grid. |
+| B5 incidence traversal | `f64` AABBs for pair prefiltering | Only skips exact `BigRational` triangle-pair tests that provably cannot overlap in a separating axis; the exact test remains the decision. |
+
+The claim is therefore "the accepted tiling is exact", not "the face path is
+float-free".  A future hardening pass can replace the local-Delaunay candidate
+selection and the volume tolerance with exact decisions; neither is required
+for the P4 gate.
+
 ---
 
 ## 4. Effort estimate and milestones

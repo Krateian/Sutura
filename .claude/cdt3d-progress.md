@@ -923,3 +923,57 @@ effort:
 - fTetWild stays installed by default, so switching back needs no download;
 - if CDT fails or times out, the ladder may fall through to fTetWild
   automatically, and the report must say which engine produced the result.
+
+## 2026-10-26 — B5 exact coverage certificate and review-3 follow-ups
+
+B5 certificate (`cdt3d/certificate.rs`, `certify_face_coverage`):
+
+- For every PLC triangle, seed from its three corner vertices, then flood-fill
+  the edge-connected tet faces that are exactly coplanar with it.  Every
+  candidate face must lie inside the PLC triangle.  The final check is exact:
+  `BigRational` pairwise interior-disjointness (shared edges/vertices allowed)
+  plus exact area sum equality with the PLC triangle.  A gap makes the sum
+  short; an overlap is rejected explicitly.
+- No spatial plane search: vertex/edge incidence is built once
+  (`vertex_faces`, `edge_faces`).  This replaced two grid attempts: the 3D
+  grid found 785k coplanar candidates for the first 1000 plate faces and took
+  152 s; the 2D projection grids made the build worse (246 s).  The incidence
+  traversal reduces the same 1000 faces to 58k coplanar candidates and 15.8 s.
+- `FaceReport` now has `coverage_checked`, `coverage_failed`,
+  `coverage_certified`; `valid` requires `coverage_certified`.
+- Eight-mesh result: `cov=true cfail=0` everywhere, including
+  `plate_a_dent` (13,734 PLC triangles).  Plate face stage ~101 s
+  (~39 s face + ~62 s certificate); the full P3+face gate is ~184 s.
+- Unit tests cover exact area, containment, edge-sharing vs positive overlap,
+  and boundary-vertex containment.
+
+Review-3 follow-ups:
+
+- (a) Float audit: `.claude/cdt3d-design.md` §3.6 now lists every remaining
+  float heuristic in the face path (local Delaunay candidate selection, volume
+  tolerance, constraint empty-sphere epsilon, retetra plane construction,
+  detection/cavity grids, B5 AABB prefilter) and states that correctness of an
+  accepted tiling does not depend on them.
+- (b) Gift integration regression: `FaceOptions.force_gift` (default false,
+  test-only) bypasses the local-Delaunay fast path.  On 100827 the forced run
+  takes the gift path for all 3 cavities, `gift_wraps == cavities == 3`,
+  `missing_after=0`, coverage certified, and produces the **same tets and
+  hash** as the default run (`7b9acab0edee2bf2`).  The ignored
+  `plate_a_dent_force_gift_covers` test verifies the fourth real cavity
+  (plate, `gift=1`, valid, coverage certified).
+- (c) Mixed-sign cavity boundary faces no longer abort before the gift
+  attempt.  The cavity skips the local fast path and the face is assigned to
+  the half containing the cavity tet's fourth vertex; gift-wrapping then either
+  closes it or returns a typed error.  No blind expansion across the plane.
+  The corpus has no mixed-sign cavity after the exact LNC fix, so this is
+  code-path coverage, not a corpus-verified recovery.
+- `cargo test --release`: **393 passed, 0 failed, 7 ignored**.
+- P6 owner requirement (single `solid_engine = cdt | ftetwild` switch,
+  `--solid-engine`, one GUI dropdown, settings inheritance, reuse of the
+  existing ladder slots/flags, fTetWild installed by default, automatic
+  fall-through with the producing engine in the report) is recorded in the
+  plan entry above.
+
+Next: P5 — cell contraction, winding unary, constrained min-cut with PLC faces
+as cut constraints, extraction of PLC pieces plus reported caps, cell-level
+repair; 100827 shape gate first.

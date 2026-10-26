@@ -24,11 +24,17 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 pub struct FaceOptions {
     /// Maximum cavity-expansion rounds before a typed failure.
     pub max_expansions: usize,
+    /// Test-only: bypass the local-Delaunay fast path so the gift-wrapping
+    /// fallback is exercised on real cavities.  Never exposed through CLI/GUI.
+    pub force_gift: bool,
 }
 
 impl Default for FaceOptions {
     fn default() -> Self {
-        Self { max_expansions: 64 }
+        Self {
+            max_expansions: 64,
+            force_gift: false,
+        }
     }
 }
 
@@ -55,6 +61,9 @@ pub struct FaceReport {
     pub cospherical_faces: usize,
     pub hull_faces_off_box: usize,
     pub unused_vertices: usize,
+    pub coverage_checked: usize,
+    pub coverage_failed: usize,
+    pub coverage_certified: bool,
     pub valid: bool,
     pub hash: u64,
 }
@@ -171,6 +180,13 @@ pub fn recover_faces(
     report.gift_wraps = gift_wraps;
     report.passes = passes;
     report.steiner_points = points.len().saturating_sub(seg.plc_vertices + 8);
+    let coverage = crate::cdt3d::certificate::certify_face_coverage(&points, &tets, plc)?;
+    report.coverage_checked = coverage.plc_triangles;
+    report.coverage_failed = coverage.failed_triangles;
+    report.coverage_certified = coverage.certified;
+    if !coverage.certified {
+        report.valid = false;
+    }
     report.hash = face_hash(&points, &tets);
     Ok(FaceMesh {
         points,
@@ -241,7 +257,7 @@ fn retetra_cavity(
     neighbours: &[[i32; 4]],
     cavity: &[usize],
     face: [usize; 3],
-    _opts: &FaceOptions,
+    opts: &FaceOptions,
 ) -> Result<(Vec<[usize; 4]>, bool), String> {
     let in_cavity: BTreeSet<usize> = cavity.iter().copied().collect();
     let mut boundary: BTreeMap<[usize; 3], BoundaryFace> = BTreeMap::new();
@@ -306,24 +322,27 @@ fn retetra_cavity(
             }
         }
     }
-    if crossing > 0 {
-        return Err(format!(
-            "cavity boundary crosses the face plane ({crossing} faces)"
-        ));
+    if crossing > 0 && std::env::var_os("CDT3D_DEBUG_FACE").is_some() {
+        eprintln!(
+            "cavity boundary crosses the face plane ({crossing} faces); routing to gift-wrapping"
+        );
     }
 
     let v1: Vec<usize> = verts.iter().copied().filter(|v| sign[v] >= 0.0).collect();
     let v2: Vec<usize> = verts.iter().copied().filter(|v| sign[v] <= 0.0).collect();
 
-    if let (Ok(d1), Ok(d2)) = (
-        half_delaunay(points, tets, &in_cavity, &v1),
-        half_delaunay(points, tets, &in_cavity, &v2),
-    ) {
-        let mut fast = d1;
-        fast.extend(d2);
-        if !fast.is_empty() && verify_replacement(points, tets, cavity, &boundary, &fast, face).is_ok()
-        {
-            return Ok((fast, false));
+    if !opts.force_gift && crossing == 0 {
+        if let (Ok(d1), Ok(d2)) = (
+            half_delaunay(points, tets, &in_cavity, &v1),
+            half_delaunay(points, tets, &in_cavity, &v2),
+        ) {
+            let mut fast = d1;
+            fast.extend(d2);
+            if !fast.is_empty()
+                && verify_replacement(points, tets, cavity, &boundary, &fast, face).is_ok()
+            {
+                return Ok((fast, false));
+            }
         }
     }
 
@@ -339,20 +358,26 @@ fn retetra_cavity(
         ];
         let any_above = s.iter().any(|x| *x > 0.0);
         let any_below = s.iter().any(|x| *x < 0.0);
-        let assign_c1 = if !any_below {
+        let cav_side = sign[&bf.cav_apex];
+        let mixed = any_above && any_below;
+        let assign_c1 = if mixed {
+            cav_side >= 0.0
+        } else if !any_below {
             if any_above {
                 true
             } else {
-                sign[&bf.cav_apex] > 0.0
+                cav_side > 0.0
             }
         } else {
             false
         };
-        let assign_c2 = if !any_above {
+        let assign_c2 = if mixed {
+            cav_side < 0.0
+        } else if !any_above {
             if any_below {
                 true
             } else {
-                sign[&bf.cav_apex] < 0.0
+                cav_side < 0.0
             }
         } else {
             false
@@ -364,7 +389,7 @@ fn retetra_cavity(
             c2_boundary.push(bf.oriented);
         }
         if !assign_c1 && !assign_c2 {
-            return Err("cavity boundary crosses the face plane".into());
+            return Err("cavity boundary face has no clear side".into());
         }
     }
 
@@ -1549,6 +1574,29 @@ mod tests {
     }
 
     #[test]
+    fn thingi10k_100827_force_gift_matches_the_default_tets() {
+        let plc = plc_for("real", "thingi10k_100827.stl");
+        let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+        let normal = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
+        let forced = recover_faces(
+            &seg,
+            &plc,
+            &FaceOptions {
+                force_gift: true,
+                ..FaceOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(forced.report.cavities > 0);
+        assert_eq!(forced.report.gift_wraps, forced.report.cavities);
+        assert_eq!(forced.report.missing_after, 0);
+        assert!(forced.report.coverage_certified);
+        assert!(forced.report.valid);
+        assert_eq!(forced.tets, normal.tets);
+        assert_eq!(forced.report.hash, normal.report.hash);
+    }
+
+    #[test]
     fn thingi10k_100827_face_recovery_is_deterministic() {
         let plc = plc_for("real", "thingi10k_100827.stl");
         let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
@@ -1583,7 +1631,7 @@ mod tests {
             let face = recover_faces(&seg, &plc, &FaceOptions::default()).unwrap();
             let secs = start.elapsed().as_secs_f64();
             println!(
-                "{name}: faces={} miss_before={} miss_after={} cav={} retet={} exp={} gift={} tets={} ori={} dup={} nm={} ngb={} unused={} empty={} cempty={} valid={} hash={:016x} secs={:.3}",
+                "{name}: faces={} miss_before={} miss_after={} cav={} retet={} exp={} gift={} tets={} ori={} dup={} nm={} ngb={} unused={} empty={} cempty={} cov={} cfail={} valid={} hash={:016x} secs={:.3}",
                 face.report.input_plc_triangles,
                 face.report.missing_before,
                 face.report.missing_after,
@@ -1599,6 +1647,8 @@ mod tests {
                 face.report.unused_vertices,
                 face.report.empty_sphere_violations,
                 face.report.constraint_empty_sphere_faces,
+                face.report.coverage_certified,
+                face.report.coverage_failed,
                 face.report.valid,
                 face.report.hash,
                 secs
@@ -1609,6 +1659,27 @@ mod tests {
                 face.report
             );
         }
+    }
+
+    #[test]
+    #[ignore = "P4 gift-path public-corpus regression; run with --release -- --ignored"]
+    fn plate_a_dent_force_gift_covers() {
+        let plc = plc_for("fixture", "plate_a_dent.stl");
+        let seg = recover_segments(&plc, &SegmentOptions::default()).unwrap();
+        let forced = recover_faces(
+            &seg,
+            &plc,
+            &FaceOptions {
+                force_gift: true,
+                ..FaceOptions::default()
+            },
+        )
+        .unwrap();
+        assert!(forced.report.cavities > 0);
+        assert_eq!(forced.report.gift_wraps, forced.report.cavities);
+        assert_eq!(forced.report.missing_after, 0);
+        assert!(forced.report.coverage_certified);
+        assert!(forced.report.valid);
     }
 
     #[test]

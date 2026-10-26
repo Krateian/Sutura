@@ -22,11 +22,13 @@
 //! literature; no GPL/AGPL/LGPL source is copied.  See
 //! `.claude/cdt3d-design.md` for the licensing and algorithmic rationale.
 
+pub mod certificate;
 pub mod dt;
 pub mod face;
 pub mod plc;
 pub mod segment;
 
+pub use certificate::{certify_face_coverage, CoverageReport};
 pub use dt::{build_dt, BoundingBox3, Dt, DtOptions, DtReport};
 pub use face::{
     detect_missing_faces, recover_faces, FaceMesh, FaceOptions, FaceReport,
