@@ -224,3 +224,17 @@ P1:
   indirectly, not as a dedicated property.
 - The rational fallback is correctness-first.  Near-cospherical/near-coplanar
   inputs can be slow until the paper's indirect polynomial filters land.
+
+## 2026-10-26 — P2 closed
+
+- Committed P2 locally as `8339fce` ("cdt3d: add initial Delaunay and
+  tet/neighbour validation (P2)") on `spike/cdt3d`; not pushed.
+- `graphify update .` run after the commit: 9545 nodes, 21819 edges, 356
+  communities; only the pre-existing Geogram C++ syntax warnings remain.
+- `cargo test --release`: 370 passed, 0 failed, 3 ignored.
+- Gate hashes were reproduced in three separate processes.
+
+Status: P0, P1 and P2 complete and gated.  P3 (segment recovery) is next.
+Handoff point: any fresh session can resume from commit `8339fce` and this
+file.  P2 is opt-in and absent from the default path; no CLI/GUI flag or
+Python binding exists yet (expected at P6, or earlier if P5 needs it).
