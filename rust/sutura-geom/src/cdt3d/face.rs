@@ -27,6 +27,10 @@ pub struct FaceOptions {
     /// Test-only: bypass the local-Delaunay fast path so the gift-wrapping
     /// fallback is exercised on real cavities.  Never exposed through CLI/GUI.
     pub force_gift: bool,
+    /// Run the exact B5 area-coverage certificate.  Production repair sets
+    /// this false (the certificate is a verification cost); the P4/P5 gates
+    /// keep it true.
+    pub verify_coverage: bool,
 }
 
 impl Default for FaceOptions {
@@ -34,6 +38,7 @@ impl Default for FaceOptions {
         Self {
             max_expansions: 64,
             force_gift: false,
+            verify_coverage: true,
         }
     }
 }
@@ -181,12 +186,22 @@ pub fn recover_faces(
     report.gift_wraps = gift_wraps;
     report.passes = passes;
     report.steiner_points = points.len().saturating_sub(seg.plc_vertices + 8);
-    let coverage = crate::cdt3d::certificate::certify_face_coverage(&points, &tets, plc)?;
-    report.coverage_checked = coverage.plc_triangles;
-    report.coverage_failed = coverage.failed_triangles;
-    report.coverage_certified = coverage.certified;
-    if !coverage.certified {
-        report.valid = false;
+    let constraint_faces: Vec<[usize; 3]>;
+    if opts.verify_coverage {
+        let coverage =
+            crate::cdt3d::certificate::certify_face_coverage(&points, &tets, plc)?;
+        report.coverage_checked = coverage.plc_triangles;
+        report.coverage_failed = coverage.failed_triangles;
+        report.coverage_certified = coverage.certified;
+        if !coverage.certified {
+            report.valid = false;
+        }
+        constraint_faces = coverage.constraint_faces;
+    } else {
+        report.coverage_checked = 0;
+        report.coverage_failed = 0;
+        report.coverage_certified = false;
+        constraint_faces = Vec::new();
     }
     report.hash = face_hash(&points, &tets);
     Ok(FaceMesh {
@@ -195,7 +210,7 @@ pub fn recover_faces(
         box3: seg.box3,
         tets,
         neighbours,
-        constraint_faces: coverage.constraint_faces.clone(),
+        constraint_faces,
         report,
     })
 }

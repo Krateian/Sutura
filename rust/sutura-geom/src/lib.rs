@@ -260,6 +260,193 @@ fn arrangement_lite<'py>(
 /// the default `arrangement_lite` or Splint behaviour.  The returned report
 /// contains `plc_valid` and the deterministic `hash`; callers must check
 /// `plc_valid` before feeding the PLC to the constrained tetrahedralization.
+struct Cdt3dOpts {
+    verify_coverage: bool,
+    max_tets: usize,
+    wall_timeout_ms: u64,
+    label_mode: cdt3d::solid::LabelMode,
+    lambda: f64,
+    constraint_fraction: f64,
+    proxy_res: usize,
+}
+
+fn run_cdt3d(
+    rv: &[[f64; 3]],
+    rt: &[[usize; 3]],
+    o: &Cdt3dOpts,
+) -> Result<(cdt3d::SolidMesh, cdt3d::FaceReport, cdt3d::PlcReport, f64), String> {
+    let t0 = std::time::Instant::now();
+    let check = |what: &str| -> Result<(), String> {
+        if o.wall_timeout_ms > 0 {
+            let ms = t0.elapsed().as_millis() as u64;
+            if ms > o.wall_timeout_ms {
+                return Err(format!(
+                    "cdt3d wall-time budget exceeded after {what}: {ms} ms > {} ms",
+                    o.wall_timeout_ms
+                ));
+            }
+        }
+        Ok(())
+    };
+    let plc = cdt3d::build_plc(rv, rt, &cdt3d::PlcOptions::default())
+        .map_err(|e| format!("cdt3d PLC: {e}"))?;
+    check("PLC")?;
+    let seg = cdt3d::recover_segments(&plc, &cdt3d::SegmentOptions::default())
+        .map_err(|e| format!("cdt3d segments: {e}"))?;
+    check("segments")?;
+    let fopts = cdt3d::FaceOptions {
+        verify_coverage: o.verify_coverage,
+        ..cdt3d::FaceOptions::default()
+    };
+    let face = cdt3d::recover_faces(&seg, &plc, &fopts)
+        .map_err(|e| format!("cdt3d faces: {e}"))?;
+    check("faces")?;
+    if face.tets.len() > o.max_tets {
+        return Err(format!(
+            "cdt3d tet budget exceeded: {} > {}",
+            face.tets.len(),
+            o.max_tets
+        ));
+    }
+    let sopts = cdt3d::SolidOptions {
+        label_mode: o.label_mode,
+        lambda: o.lambda,
+        constraint_fraction: o.constraint_fraction,
+        proxy_res: o.proxy_res,
+        max_tets: o.max_tets,
+        require_certificate: o.verify_coverage,
+        ..cdt3d::SolidOptions::default()
+    };
+    let solid = cdt3d::build_solid(&face, &plc, rv, rt, &sopts)
+        .map_err(|e| format!("cdt3d solid: {e}"))?;
+    check("solid")?;
+    let seconds = t0.elapsed().as_secs_f64();
+    Ok((solid, face.report, plc.report, seconds))
+}
+
+#[pyfunction]
+#[pyo3(name = "cdt3d_solid")]
+#[pyo3(signature = (verts, tris, opts=None))]
+fn cdt3d_solid_py<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+    opts: Option<Bound<'py, PyDict>>,
+) -> PyResult<(
+    Bound<'py, numpy::PyArray2<f64>>,
+    Bound<'py, numpy::PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let (rv, rt) = parse_mesh(&verts, &tris)?;
+    let mut o = Cdt3dOpts {
+        verify_coverage: false,
+        max_tets: 250_000,
+        wall_timeout_ms: 0,
+        label_mode: cdt3d::solid::LabelMode::GwnThreshold,
+        lambda: 0.5,
+        constraint_fraction: 0.05,
+        proxy_res: 128,
+    };
+    if let Some(d) = opts.as_ref() {
+        if let Some(v) = d.get_item("verify_coverage")? {
+            o.verify_coverage = v.extract::<bool>()?;
+        }
+        if let Some(v) = d.get_item("max_tets")? {
+            o.max_tets = v.extract::<usize>()?;
+        }
+        if let Some(v) = d.get_item("wall_timeout_ms")? {
+            o.wall_timeout_ms = v.extract::<u64>()?;
+        }
+        if let Some(v) = d.get_item("label_mode")? {
+            let s = v.extract::<String>()?;
+            o.label_mode = match s.as_str() {
+                "gwn_threshold" => cdt3d::solid::LabelMode::GwnThreshold,
+                "min_cut" => cdt3d::solid::LabelMode::MinCut,
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "label_mode must be 'gwn_threshold' or 'min_cut' (got {other:?})"
+                    )))
+                }
+            };
+        }
+        if let Some(v) = d.get_item("lambda")? {
+            o.lambda = v.extract::<f64>()?;
+        }
+        if let Some(v) = d.get_item("constraint_fraction")? {
+            o.constraint_fraction = v.extract::<f64>()?;
+        }
+        if let Some(v) = d.get_item("proxy_res")? {
+            o.proxy_res = v.extract::<usize>()?;
+        }
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_cdt3d(&rv, &rt, &o)
+    }));
+    let (solid, face_report, plc_report, seconds) = match result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(PyValueError::new_err(e)),
+        Err(_) => {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "cdt3d panicked",
+            ))
+        }
+    };
+    let out_verts: Vec<Vec<f64>> = solid.verts.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = solid
+        .tris
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let verts_np = numpy::PyArray2::<f64>::from_vec2(py, &out_verts)?;
+    let tris_np = numpy::PyArray2::<i32>::from_vec2(py, &out_tris)?;
+    let d = PyDict::new(py);
+    let r = &solid.report;
+    d.set_item("ok", r.valid)?;
+    d.set_item("engine", "cdt")?;
+    d.set_item("seconds", seconds)?;
+    d.set_item("wall_ms", (seconds * 1000.0) as u64)?;
+    d.set_item("plc_valid", plc_report.plc_valid)?;
+    d.set_item("input_plc_triangles", face_report.input_plc_triangles)?;
+    d.set_item("missing_before", face_report.missing_before)?;
+    d.set_item("missing_after", face_report.missing_after)?;
+    d.set_item("cavities", face_report.cavities)?;
+    d.set_item("retetrahedralized", face_report.retetrahedralized)?;
+    d.set_item("gift_wraps", face_report.gift_wraps)?;
+    d.set_item("tets", face_report.tets)?;
+    d.set_item("verify_coverage", o.verify_coverage)?;
+    d.set_item("coverage_certified", face_report.coverage_certified)?;
+    d.set_item("coverage_checked", face_report.coverage_checked)?;
+    d.set_item("coverage_failed", face_report.coverage_failed)?;
+    d.set_item("cells", r.cells)?;
+    d.set_item("constraint_faces", r.constraint_faces)?;
+    d.set_item("constraint_cut_faces", r.constraint_cut_faces)?;
+    d.set_item("free_cut_faces", r.free_cut_faces)?;
+    d.set_item("inside_cells", r.inside_cells)?;
+    d.set_item("gwn_threshold", r.gwn_threshold)?;
+    d.set_item("orientation_used", r.orientation_used)?;
+    d.set_item("orientation_components", r.orientation_components)?;
+    d.set_item("orientation_flipped", r.orientation_flipped)?;
+    d.set_item("orientation_fallback", r.orientation_fallback)?;
+    d.set_item("w_hist", r.w_hist.to_vec())?;
+    d.set_item("output_faces", r.output_faces)?;
+    d.set_item("cap_faces", r.cap_faces)?;
+    d.set_item("cap_area", r.cap_area)?;
+    d.set_item("parts", r.parts)?;
+    d.set_item("holes", r.holes)?;
+    d.set_item("nonmanifold", r.nonmanifold)?;
+    d.set_item("bbox_ok", r.bbox_ok)?;
+    d.set_item("bbox_error", r.bbox_error.to_vec())?;
+    d.set_item("hausdorff", r.hausdorff)?;
+    d.set_item("hausdorff_output_to_input", r.hausdorff_output_to_input)?;
+    d.set_item("hausdorff_input_to_output", r.hausdorff_input_to_output)?;
+    d.set_item("hausdorff_full", r.hausdorff_full)?;
+    d.set_item("valid", r.valid)?;
+    d.set_item("hash", r.hash)?;
+    d.set_item("max_tets", o.max_tets)?;
+    d.set_item("wall_timeout_ms", o.wall_timeout_ms)?;
+    Ok((verts_np, tris_np, d))
+}
+
 #[pyfunction]
 #[pyo3(signature = (verts, tris))]
 fn cdt3d_plc<'py>(
@@ -2218,6 +2405,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(insphere, m)?)?;
     m.add_function(wrap_pyfunction!(arrangement_lite, m)?)?;
     m.add_function(wrap_pyfunction!(cdt3d_plc, m)?)?;
+    m.add_function(wrap_pyfunction!(cdt3d_solid_py, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::stage2_rebuild, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::watertight_check, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::outer_shell_union, m)?)?;
@@ -2509,5 +2697,37 @@ mod raster_tests {
         assert_eq!(a.0, b.0);
         assert_eq!(a.1, b.1);
         assert_eq!(a.2, b.2);
+    }
+}
+
+#[cfg(test)]
+mod cdt3d_binding_tests {
+    use super::*;
+
+    #[test]
+    fn production_core_skips_b5_and_enforces_wall_budget() {
+        let (v, t) = cdt3d::testutil::real_sample("thingi10k_100827.stl");
+        let o = Cdt3dOpts {
+            verify_coverage: false,
+            max_tets: 250_000,
+            wall_timeout_ms: 120_000,
+            label_mode: cdt3d::solid::LabelMode::GwnThreshold,
+            lambda: 0.5,
+            constraint_fraction: 0.05,
+            proxy_res: 128,
+        };
+        let (solid, face, _plc, _secs) = run_cdt3d(&v, &t, &o).unwrap();
+        assert!(!face.coverage_certified);
+        assert_eq!(face.coverage_checked, 0);
+        assert!(solid.report.constraint_cut_faces >= 198);
+        assert!(solid.report.valid);
+        assert!(solid.report.parts == 1 && solid.report.holes == 0);
+        assert_eq!(solid.report.nonmanifold, 0);
+        assert!(solid.report.hausdorff <= 0.0125);
+
+        let mut o2 = o;
+        o2.wall_timeout_ms = 1;
+        let err = run_cdt3d(&v, &t, &o2).unwrap_err();
+        assert!(err.contains("wall-time budget"), "{err}");
     }
 }

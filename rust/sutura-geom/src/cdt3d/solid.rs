@@ -50,6 +50,7 @@ pub struct SolidOptions {
     pub proxy_res: usize,
     pub constraint_fraction: f64,
     pub max_tets: usize,
+    pub require_certificate: bool,
     pub cap_max_loop: i64,
     pub min_component_volume_frac: f64,
 }
@@ -63,6 +64,7 @@ impl Default for SolidOptions {
             proxy_res: 128,
             constraint_fraction: 0.05,
             max_tets: 250_000,
+            require_certificate: true,
             cap_max_loop: 200,
             min_component_volume_frac: 0.01,
         }
@@ -295,7 +297,9 @@ pub fn build_solid(
     unary_tris: &[[usize; 3]],
     opts: &SolidOptions,
 ) -> Result<SolidMesh, String> {
-    if !face.report.valid || !face.report.coverage_certified {
+    if !face.report.valid
+        || (opts.require_certificate && !face.report.coverage_certified)
+    {
         return Err("P5 needs a valid face recovery with the B5 certificate".into());
     }
     let points = &face.points;
@@ -882,11 +886,32 @@ fn gwn_labels(
     (inside, w_hist)
 }
 
+fn face_on_surface(
+    points: &[Point3],
+    face: [usize; 3],
+    bvh: &MeshBvh,
+    tol: f64,
+) -> bool {
+    let mut c = [0.0f64; 3];
+    for &v in &face {
+        let p = points[v].to_f64().unwrap_or([0.0; 3]);
+        if bvh.unsigned_distance_at(p) > tol {
+            return false;
+        }
+        for a in 0..3 {
+            c[a] += p[a] / 3.0;
+        }
+    }
+    bvh.unsigned_distance_at(c) <= tol
+}
+
 fn gwn_plc_count(
+    points: &[Point3],
     tets: &[[usize; 4]],
     neighbours: &[[i32; 4]],
     constraints: &BTreeSet<[usize; 3]>,
     inside: &[bool],
+    surface: Option<(&MeshBvh, f64)>,
 ) -> usize {
     let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut count = 0usize;
@@ -897,10 +922,11 @@ fn gwn_plc_count(
                 continue;
             }
             let key = sorted_face(&tets[ti], lv);
-            if constraints.contains(&key)
-                && inside[ti] != inside[n as usize]
-                && seen.insert(key)
-            {
+            let is_plc = match surface {
+                Some((bvh, tol)) => face_on_surface(points, key, bvh, tol),
+                None => constraints.contains(&key),
+            };
+            if is_plc && inside[ti] != inside[n as usize] && seen.insert(key) {
                 count += 1;
             }
         }
@@ -914,6 +940,7 @@ fn extract_gwn_faces(
     neighbours: &[[i32; 4]],
     constraints: &BTreeSet<[usize; 3]>,
     inside: &[bool],
+    surface: Option<(&MeshBvh, f64)>,
 ) -> (Vec<[usize; 3]>, Vec<[usize; 3]>, f64) {
     let mut seen: BTreeSet<[usize; 3]> = BTreeSet::new();
     let mut plc_faces: Vec<[usize; 3]> = Vec::new();
@@ -943,7 +970,11 @@ fn extract_gwn_faces(
             };
             let (a, b, c, _) =
                 crate::cdt3d::segment::oriented_face_apex(points, &tets[t_in], lv_in);
-            if constraints.contains(&key) {
+            let is_plc = match surface {
+                Some((bvh, tol)) => face_on_surface(points, key, bvh, tol),
+                None => constraints.contains(&key),
+            };
+            if is_plc {
                 plc_faces.push([a, b, c]);
             } else {
                 free_area += tri_area(points, key);
@@ -966,6 +997,17 @@ fn build_solid_gwn(
     let neighbours = &face.neighbours;
     let n_tets = tets.len();
     let constraints: BTreeSet<[usize; 3]> = face.constraint_faces.iter().copied().collect();
+    let surface_bvh = if constraints.is_empty() {
+        let (lo, hi) = aabb(&plc.verts);
+        let diag = ((hi[0] - lo[0]).powi(2)
+            + (hi[1] - lo[1]).powi(2)
+            + (hi[2] - lo[2]).powi(2))
+        .sqrt();
+        Some((MeshBvh::from_arrays(&plc.verts, &plc.tris), 1e-6 * diag.max(1e-12)))
+    } else {
+        None
+    };
+    let surface = surface_bvh.as_ref().map(|(b, t)| (b, *t));
     let mut cen = vec![[0.0f64; 3]; n_tets];
     let mut out = vec![false; n_tets];
     for ti in 0..n_tets {
@@ -984,13 +1026,13 @@ fn build_solid_gwn(
 
     let raw_bvh = MeshBvh::from_arrays(unary_verts, unary_tris);
     let (raw_inside, raw_hist) = gwn_labels(&raw_bvh, &cen, &out);
-    let raw_plc = gwn_plc_count(tets, neighbours, &constraints, &raw_inside);
+    let raw_plc = gwn_plc_count(points, tets, neighbours, &constraints, &raw_inside, surface);
     let raw_ok = raw_inside.iter().any(|&x| x) && raw_inside.iter().any(|&x| !x);
 
     let (oriented_tris, orientation) = orient_for_winding(unary_verts, unary_tris);
     let oriented_bvh = MeshBvh::from_arrays(unary_verts, &oriented_tris);
     let (oriented_inside, oriented_hist) = gwn_labels(&oriented_bvh, &cen, &out);
-    let oriented_plc = gwn_plc_count(tets, neighbours, &constraints, &oriented_inside);
+    let oriented_plc = gwn_plc_count(points, tets, neighbours, &constraints, &oriented_inside, surface);
     let oriented_ok = oriented_inside.iter().any(|&x| x) && oriented_inside.iter().any(|&x| !x);
 
     let use_oriented = match (raw_ok, oriented_ok) {
@@ -1008,7 +1050,7 @@ fn build_solid_gwn(
     };
     let inside_count = inside.iter().filter(|&&x| x).count();
     let (plc_faces, free_faces, free_area) =
-        extract_gwn_faces(points, tets, neighbours, &constraints, &inside);
+        extract_gwn_faces(points, tets, neighbours, &constraints, &inside, surface);
     let meta = SolidMeta {
         cells: n_tets,
         tet_count: n_tets,
