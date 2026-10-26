@@ -1427,6 +1427,54 @@ mod tests {
     }
 
     #[test]
+    fn gift_wrapping_fills_a_two_tet_bipyramid() {
+        let points = vec![
+            explicit([0.0, 0.0, 0.0]),
+            explicit([1.0, 0.0, 0.0]),
+            explicit([0.0, 1.0, 0.0]),
+            explicit([0.2, 0.2, 1.0]),
+            explicit([0.2, 0.2, -1.0]),
+        ];
+        let make_positive = |mut t: [usize; 4]| {
+            if orient3d_sign(&points[t[0]], &points[t[1]], &points[t[2]], &points[t[3]]) < 0.0 {
+                t.swap(2, 3);
+            }
+            t
+        };
+        let t1 = make_positive([0, 1, 2, 3]);
+        let t2 = make_positive([0, 1, 2, 4]);
+        let mut faces: BTreeMap<[usize; 3], [usize; 3]> = BTreeMap::new();
+        for t in [t1, t2] {
+            for lv in 0..4 {
+                let (a, b, c, _) =
+                    crate::cdt3d::segment::oriented_face_apex(&points, &t, lv);
+                let key = sorted_tri([a, b, c]);
+                if faces.remove(&key).is_none() {
+                    faces.insert(key, [a, b, c]);
+                }
+            }
+        }
+        let boundary: Vec<[usize; 3]> = faces.values().copied().collect();
+        let (tets, leftover) = gift_fill(
+            &points,
+            &[0, 1, 2, 3, 4],
+            &boundary,
+            &boundary,
+            [0, 1, 2],
+            false,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+        assert_eq!(tets.len(), 2);
+        assert!(leftover.is_empty());
+        for t in &tets {
+            assert!(
+                orient3d_sign(&points[t[0]], &points[t[1]], &points[t[2]], &points[t[3]]) > 0.0
+            );
+        }
+    }
+
+    #[test]
     fn visibility_detects_a_shared_internal_face() {
         let points = vec![
             explicit([0.0, 0.0, 0.0]),

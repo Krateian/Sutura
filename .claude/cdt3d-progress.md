@@ -842,3 +842,15 @@ Handoff: commit `ee0858c` plus this progress entry on `spike/cdt3d`.  The
 working tree is clean after the follow-up commit; `graphify update .` has been
 run.  Any fresh session can resume from `ee0858c` (or the progress commit that
 follows it) and this file.
+
+## 2026-10-26 — gift fallback test follow-up
+
+Added `gift_wrapping_fills_a_two_tet_bipyramid`: the gift front advances over a
+two-tetrahedron cavity, cancels the shared internal face correctly, and emits
+two positively oriented tets with no leftover front.  Together with the
+single-tet test this covers the fill loop and front bookkeeping; the corpus
+does not trigger the fallback (`gift=0`) because the exact LNC fix leaves only
+locally fillable cavities.
+
+`cargo test --release`: **390 passed, 0 failed, 6 ignored**.  Tree clean after
+the test commit; `graphify update .` re-run after it.
