@@ -14,8 +14,11 @@ düzeltme içeren sürümler atlanır). Ayrıntılı bilgi [CHANGELOG.md](../../
   (su geçirmez, tek kapalı ve dışa dönük katı) ya da zaman aşımına uğrarsa
   fTetWild'a geçer (o da kendi zaman sınırıyla çalışır, bu yüzden en kötü durum
   yaklaşık iki kat sürer). Bilinen
-  sınırlama: şimdilik büyük mesh'lerde yavaştır, bu yüzden küçük parçalarda
-  daha iyidir. OrcaSlicer eklentisi de OrcaSlicer 2.5 izin desteği kazanır.
+  sınırlama: CDT şimdilik yavaştır — birçok modelde, birkaç bin yüzlü olanlarda
+  bile zaman sınırı içinde bitmez ve Sutura o zaman otomatik olarak fTetWild'a
+  döner. Küçük ya da basit modellerde veya orijinal yüzeyin birebir korunmasını
+  istediğinizde kullanın. OrcaSlicer eklentisi de OrcaSlicer 2.5 izin desteği
+  kazanır.
 - **v0.9.6 — 2026-10-26** — Son çare **fTetWild** katmanı artık varsayılan
   olarak gelir ve çok daha küçüktür (katmanın hiç kullanmadığı PyVista/VTK
   bağımlılığından gelen ~1,1 GB yerine yaklaşık 6 MB); `SUTURA_WITH_FTETWILD=0`

@@ -110,8 +110,10 @@ sutura a.stl b.stl c.3mf         # batch
   chooses the rebuild used when everything else failed (also under Options →
   Repair and inherited by the integrations). The default stays **fTetWild**;
   `cdt` is an experimental exact rebuild that runs after Coaptation and before
-  fTetWild, and falls back to fTetWild on failure or timeout. It is slow on
-  large meshes for now, so prefer it on smaller parts.
+  fTetWild, and falls back to fTetWild on failure or timeout. For now it is slow:
+  on many models, even ones with a few thousand faces, it does not finish within
+  its time limit, and Sutura falls back to fTetWild automatically. Use it on small
+  or simple models, or when you want the original surface kept exactly.
 
 Every option, report field and integration is described in [Usage](docs/guide/usage.md).
 

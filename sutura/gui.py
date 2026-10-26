@@ -433,8 +433,12 @@ STRINGS = {
                             'fTetWild is the default; CDT (exact constrained '
                             'tetrahedralization, experimental) runs after '
                             'Coaptation and before fTetWild and falls back to '
-                            'fTetWild if it fails or times out. Slow on large '
-                            'meshes. Saved in the Sutura settings file and '
+                            'fTetWild if it fails or times out. For now it is '
+                            'slow: on many models, even ones with a few thousand '
+                            'faces, it does not finish within its time limit, and '
+                            'Sutura falls back to fTetWild automatically. Use it on '
+                            'small or simple models, or when you want the original '
+                            'surface kept exactly. Saved in the Sutura settings file and '
                             'inherited by the CLI, Quick Action, Dolphin and '
                             'Orca.',
         'solid_engine_cdt': 'CDT (exact, experimental)',
@@ -1151,8 +1155,12 @@ STRINGS = {
                             'yeniden inşa. Varsayılan fTetWild; CDT (kesin '
                             'kısıtlı dörtyüzlüleme, deneysel) Coaptation sonrası '
                             've fTetWild öncesi çalışır, başarısız olursa ya da '
-                            'zaman aşımına uğrarsa fTetWild’a geçer. Büyük '
-                            'mesh’lerde yavaştır. Sutura ayar dosyasına kaydedilir '
+                            'zaman aşımına uğrarsa fTetWild’a geçer. Şimdilik '
+                            'yavaştır: birçok modelde, birkaç bin yüzlü olanlarda bile '
+                            'zaman sınırı içinde bitmez ve Sutura otomatik olarak '
+                            'fTetWild’a döner. Küçük ya da basit modellerde veya '
+                            'orijinal yüzeyin birebir korunmasını istediğinizde '
+                            'kullanın. Sutura ayar dosyasına kaydedilir '
                             've CLI, Hızlı İşlem, Dolphin ile Orca tarafından '
                             'devralınır.',
         'solid_engine_cdt': 'CDT (kesin, deneysel)',

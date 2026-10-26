@@ -13,8 +13,11 @@ versions are skipped). Full detail in [CHANGELOG.md](../../CHANGELOG.md).
   key. CDT runs after Coaptation and before fTetWild and falls back to fTetWild
   if its result fails its checks (watertight, one closed outward-facing solid) or
   runs out of time (fTetWild then runs with its own time limit, so the worst case
-  takes about twice as long). Known limitation: it is
-  slow on large meshes for now, so it is best on smaller parts. The OrcaSlicer
+  takes about twice as long). Known limitation: for now CDT is
+  slow — on many models, even ones with a few thousand faces, it does not finish
+  within its time limit, and Sutura then falls back to fTetWild automatically. Use
+  it on small or simple models, or when you want the original surface kept
+  exactly. The OrcaSlicer
   plugin also gains OrcaSlicer 2.5 permission support.
 - **v0.9.6 — 2026-10-26** — The last-resort **fTetWild** tier now ships by
   default and is far smaller (about 6 MB instead of ~1.1 GB, which came from a

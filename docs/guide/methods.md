@@ -750,5 +750,7 @@ long. Set it with `--solid-engine cdt|ftetwild`,
 the Sutura settings file (the GUI value is saved there and inherited by the CLI,
 Quick Action, Dolphin and the OrcaSlicer plugin). The choice is recorded under
 `report['solid_engine']` (`selected` / `produced` / `reason`). Known limitation:
-for now CDT is slow on large meshes (tens of thousands of faces), where fTetWild
-stays the better choice.
+for now CDT is slow — on many models, even ones with a few thousand faces, it
+does not finish within its time limit, and Sutura then falls back to fTetWild
+automatically. Use it on small or simple models, or when you want the original
+surface kept exactly.

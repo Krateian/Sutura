@@ -72,9 +72,10 @@ güvenilir şekilde algılayabilir.
   aşama 1 bir deliği kapatamazsa aşama 2 atlanır ve aşama 1 sonucu olduğu gibi
   kullanılır (rapor bunu belirtir).
 * **Deneysel katı motoru (CDT).** İsteğe bağlı kesin `--solid-engine cdt`
-  yeniden inşası daha küçük parçaları hedefler: büyük mesh'lerde (on binlerce
-  yüz) yavaştır, bu yüzden orada varsayılan `ftetwild` motoru daha iyi bir
-  seçimdir. CDT'nin sonucu denetimlerini geçemezse (su geçirmez, tek kapalı ve
+  yeniden inşası şimdilik yavaştır: birçok modelde, birkaç bin yüzlü olanlarda
+  bile zaman sınırı içinde bitmez ve Sutura o zaman otomatik olarak fTetWild'a
+  döner. Küçük ya da basit modellerde veya orijinal yüzeyin birebir korunmasını
+  istediğinizde kullanın. CDT'nin sonucu denetimlerini geçemezse (su geçirmez, tek kapalı ve
   dışa dönük katı) ya da zaman aşımına uğrarsa merdiven fTetWild'a geçer (o da
   kendi zaman sınırıyla çalışır, bu yüzden en kötü durum yaklaşık iki kat sürer);
   yani yine de bir sonuç üretilir ve rapor hangi motorun çalıştığını

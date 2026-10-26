@@ -110,7 +110,10 @@ sutura a.stl b.stl c.3mf         # toplu onarım
   altında da; entegrasyonlarca devralınır). Varsayılan **fTetWild** olarak
   kalır; `cdt` Coaptation sonrası ve fTetWild öncesi çalışan deneysel bir kesin
   yeniden inşadır ve başarısız olursa ya da zaman aşımına uğrarsa fTetWild'a
-  geçer. Şimdilik büyük mesh'lerde yavaştır; küçük parçalarda tercih edin.
+  geçer. Şimdilik yavaştır: birçok modelde, birkaç bin yüzlü olanlarda bile zaman
+  sınırı içinde bitmez ve Sutura otomatik olarak fTetWild'a döner. Küçük ya da
+  basit modellerde veya orijinal yüzeyin birebir korunmasını istediğinizde
+  kullanın.
 
 Tüm seçenekler, rapor alanları ve entegrasyonlar [Kullanım](docs/guide/tr/usage.md)
 sayfasındadır.

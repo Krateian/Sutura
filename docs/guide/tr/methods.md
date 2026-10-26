@@ -736,5 +736,6 @@ Seçenekler → Onarım denetimi veya Sutura ayar dosyasındaki `solid_engine`
 anahtarıyla ayarlanır (GUI değeri oraya kaydedilir ve CLI, Hızlı İşlem, Dolphin
 ile OrcaSlicer eklentisince devralınır). Seçim `report['solid_engine']` altında
 kaydedilir (`selected` / `produced` / `reason`). Bilinen sınırlama: CDT şimdilik
-büyük mesh'lerde (on binlerce yüz) yavaştır; bu durumda fTetWild daha iyi bir
-seçim olarak kalır.
+yavaştır — birçok modelde, birkaç bin yüzlü olanlarda bile zaman sınırı içinde
+bitmez ve Sutura o zaman otomatik olarak fTetWild'a döner. Küçük ya da basit
+modellerde veya orijinal yüzeyin birebir korunmasını istediğinizde kullanın.

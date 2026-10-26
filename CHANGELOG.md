@@ -16,9 +16,10 @@ All notable changes to this project are documented here.
   if CDT's result fails its checks (watertight, one closed outward-facing
   solid) or runs out of time, Sutura falls back to fTetWild automatically. When
   CDT runs out of time, fTetWild then runs with its own time limit, so the worst
-  case takes about twice as long. Known limitation: for now CDT is slow on
-  large meshes (tens of thousands of faces), where fTetWild remains the better
-  choice.
+  case takes about twice as long. Known limitation: for now CDT is slow — on
+  many models, even ones with a few thousand faces, it does not finish within its
+  time limit, and Sutura then falls back to fTetWild automatically. Use it on
+  small or simple models, or when you want the original surface kept exactly.
 
 ### Changed
 

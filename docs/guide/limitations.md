@@ -69,8 +69,10 @@ Any of these returns exit code 1, so scripts can reliably detect failure.
   cannot close a hole, stage 2 is skipped and the stage 1 result is used as-is
   (the report says so).
 * **Experimental solid engine (CDT).** The opt-in exact `--solid-engine cdt`
-  rebuild targets smaller parts: on large meshes (tens of thousands of faces) it
-  is slow, so the default `ftetwild` engine is the better choice there. When
+  rebuild is slow for now: on many models, even ones with a few thousand faces,
+  it does not finish within its time limit, and Sutura then falls back to fTetWild
+  automatically. Use it on small or simple models, or when the original surface
+  must be kept exactly. When
   CDT's result fails its checks (watertight, one closed outward-facing solid) or
   runs out of time, the ladder falls back to fTetWild (which then runs with its
   own time limit, so the worst case takes about twice as long), so a result is
