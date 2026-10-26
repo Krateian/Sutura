@@ -10,25 +10,25 @@
 //! **only** to evaluate the winding field: they are never part of the basis or
 //! the emitted mesh.
 //!
-//! Reuses the hole closer's own machinery: `hole::boundary_topology` walks the
-//! boundary loops in half-edge index order and `hole::planar_cap` triangulates a
-//! planar, simple loop with the boundary-cancelling winding. When the planar
-//! fill declines (non-planar opening) a deterministic fan to the loop centroid
-//! is used as the fallback. No RNG is read, so the result is a pure function of
+//! The fill reuses the hole closer itself (`hole::close_holes_core`): a planar,
+//! simple loop is capped flat in its own plane (boundary-cancelling winding) and
+//! every other loop is closed with the weight-based ear clipper that the repair
+//! pipeline already ships. That closer only emits triangles over the original
+//! vertices, so the capped point set is the input point set and no extra
+//! vertices are introduced. No RNG is read, so the result is a pure function of
 //! the input.
 
 pub(crate) struct TempCap {
-    /// Centroid vertices added by the fan fallback (appended after the input
-    /// vertices in the capped point set).
+    /// Always empty: the hole closer reuses the input vertices, so the capped
+    /// point set equals the input point set. Kept for the caller's symmetry.
     pub(crate) extra_verts: Vec<[f64; 3]>,
-    /// Cap triangles: indices `< verts.len()` address the input vertices,
-    /// indices `>= verts.len()` address `extra_verts`.
+    /// Cap triangles: indices address the input vertices.
     pub(crate) tris: Vec<[usize; 3]>,
-    /// Boundary loops seen.
+    /// Boundary loops closed by the fill.
     pub(crate) loops: usize,
-    /// Loops closed with the planar fill.
+    /// Loops that the planar fill caps flat.
     pub(crate) planar: usize,
-    /// Loops closed with the centroid fan.
+    /// Loops closed by the weight-based ear clipper (non-planar openings).
     pub(crate) fanned: usize,
 }
 
@@ -53,50 +53,40 @@ pub(crate) fn temporary_cap(verts: &[[f64; 3]], tris: &[[usize; 3]]) -> TempCap 
         .iter()
         .map(|t| [t[0] as i64, t[1] as i64, t[2] as i64])
         .collect();
-    let topo = match crate::hole::boundary_topology(&tris_i64, false) {
-        Ok(t) => t,
+
+    // The fill: planar loops flat, non-planar loops via the ear clipper. The
+    // returned point set equals the input point set, so `rep.tris` past the
+    // input length is exactly the cap.
+    let rep = match crate::hole::close_holes_core(verts, &tris_i64, i64::MAX, false) {
+        Ok(r) => r,
         Err(_) => return TempCap::empty(),
     };
-
-    let mut out = TempCap::empty();
-    for lp in &topo.loops {
-        // Ordered loop vertices: the start vertex of each boundary half-edge.
-        let vids: Vec<i64> = lp.iter().map(|&he| tris_i64[he / 3][he % 3]).collect();
-        if vids.len() < 3 {
-            continue;
-        }
-        out.loops += 1;
-        // Primary: the hole closer's planar cap (boundary-cancelling winding).
-        if let Some(cap) = crate::hole::planar_cap(verts, &tris_i64, &[], &vids) {
-            for t in cap {
-                out.tris
-                    .push([t[0] as usize, t[1] as usize, t[2] as usize]);
-            }
-            out.planar += 1;
-            continue;
-        }
-        // Fallback: deterministic fan to the loop centroid, reversed winding.
-        let k = vids.len();
-        let mut c = [0.0f64; 3];
-        for &v in &vids {
-            let p = verts[v as usize];
-            for d in 0..3 {
-                c[d] += p[d];
-            }
-        }
-        for d in 0..3 {
-            c[d] /= k as f64;
-        }
-        let ci = verts.len() + out.extra_verts.len();
-        out.extra_verts.push(c);
-        for i in 0..k {
-            let a = vids[i] as usize;
-            let b = vids[(i + 1) % k] as usize;
-            out.tris.push([b, a, ci]);
-        }
-        out.fanned += 1;
+    if rep.tris.len() <= tris.len() {
+        return TempCap::empty();
     }
-    out
+    let cap: Vec<[usize; 3]> = rep.tris[tris.len()..]
+        .iter()
+        .map(|t| [t[0] as usize, t[1] as usize, t[2] as usize])
+        .collect();
+
+    // Diagnostics: how many of the loops the planar fill would cap on its own.
+    let mut planar = 0usize;
+    if let Ok(topo) = crate::hole::boundary_topology(&tris_i64, false) {
+        for lp in &topo.loops {
+            let vids: Vec<i64> = lp.iter().map(|&he| tris_i64[he / 3][he % 3]).collect();
+            if vids.len() >= 3 && crate::hole::planar_cap(verts, &tris_i64, &[], &vids).is_some() {
+                planar += 1;
+            }
+        }
+    }
+
+    TempCap {
+        extra_verts: Vec::new(),
+        tris: cap,
+        loops: rep.closed_holes,
+        planar,
+        fanned: rep.closed_holes.saturating_sub(planar),
+    }
 }
 
 #[cfg(test)]
@@ -145,15 +135,17 @@ mod tests {
     }
 
     #[test]
-    fn non_planar_loop_falls_back_to_a_fan() {
+    fn non_planar_loop_is_closed_on_the_input_vertices() {
         let (mut v, t) = cube_missing_top();
         v[6][2] += 0.5; // push one loop vertex out of the plane
         let a = temporary_cap(&v, &t);
+        let b = temporary_cap(&v, &t);
         assert_eq!(a.loops, 1);
         assert_eq!(a.fanned, 1);
         assert_eq!(a.planar, 0);
-        assert_eq!(a.extra_verts.len(), 1);
-        assert_eq!(a.tris.len(), 4);
+        assert_eq!(a.extra_verts.len(), 0);
+        assert_eq!(a.tris.len(), 2);
+        assert_eq!(a.tris, b.tris);
     }
 
     #[test]
