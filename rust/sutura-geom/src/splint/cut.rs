@@ -633,6 +633,104 @@ pub(crate) fn cut_and_cleanup(
     }
 }
 
+/// H7: min s-t cut on the input-based tet basis. Source = inside. The unary is
+/// the soft, capped winding offset `phi = clamp(GWN - 0.5, ±cap)` scaled by the
+/// mean internal-facet area (`a_ref`), so a tet whose centroid reads strongly
+/// inside prefers the source. Hull tets and tets touching a padded-box corner
+/// are hard sinks (outside), which anchors the far field. Every internal facet
+/// gets a symmetric `area * lambda` smoothness capacity, so the cut minimises
+/// boundary area: capping the opening is cheaper than wrapping the pillow.
+/// Deterministic: terminal and edge capacities are added in index order.
+pub(crate) fn cut_winding_smooth(
+    tets: &[[usize; 4]],
+    coords: &[[f64; 3]],
+    internal: &[([usize; 3], usize, usize)],
+    out_tet: &[bool],
+    corner_tet: &[bool],
+    phi: &[f64],
+    lambda: f64,
+    tau: f64,
+    scale: f64,
+) -> CutResult {
+    let n_tets = phi.len();
+    let mut area_sum = 0.0f64;
+    for (key, _, _) in internal {
+        area_sum += tri_area(coords[key[0]], coords[key[1]], coords[key[2]]);
+    }
+    let a_ref = if internal.is_empty() {
+        1.0
+    } else {
+        area_sum / internal.len() as f64
+    };
+    let mut g = BkGraph::new(n_tets);
+    for ti in 0..n_tets {
+        if out_tet[ti] || corner_tet[ti] {
+            g.add_tweights(ti, 0.0, INF);
+        } else if phi[ti] > 0.0 {
+            g.add_tweights(ti, phi[ti] * a_ref, 0.0);
+        } else if phi[ti] < 0.0 {
+            g.add_tweights(ti, 0.0, -phi[ti] * a_ref);
+        }
+    }
+    for (key, a, b) in internal {
+        let area = tri_area(coords[key[0]], coords[key[1]], coords[key[2]]);
+        let cap = area * lambda;
+        g.add_edge(*a, *b, cap, cap);
+    }
+    let _flow = g.maxflow();
+    let mut is_inside: Vec<bool> = (0..n_tets).map(|ti| g.is_in_source(ti)).collect();
+
+    let mut adj: Vec<Vec<usize>> = vec![Vec::with_capacity(4); n_tets];
+    for &(_, a, b) in internal {
+        adj[a].push(b);
+        adj[b].push(a);
+    }
+    let tet_vol = tet_volumes(tets, coords, scale);
+    // H7 analogue of the base island cleanup: in H7's sign convention `phi > 0`
+    // is interior, so an inside component is a keeper only if it contains a
+    // confident interior tet (`phi > +tau`); the rest are shallow specks that
+    // the soft unary leaves behind and are dropped. Deterministic: BFS and the
+    // volume sum run in index order.
+    let mut visited = vec![false; n_tets];
+    let mut dropped_inside_comps = 0usize;
+    let mut dropped_inside_vol = 0.0f64;
+    for ti in 0..n_tets {
+        if is_inside[ti] && !visited[ti] {
+            let mut comp = Vec::new();
+            let mut q = VecDeque::new();
+            visited[ti] = true;
+            q.push_back(ti);
+            while let Some(curr) = q.pop_front() {
+                comp.push(curr);
+                for &next in &adj[curr] {
+                    if is_inside[next] && !visited[next] {
+                        visited[next] = true;
+                        q.push_back(next);
+                    }
+                }
+            }
+            comp.sort_unstable();
+            if !comp.iter().any(|&idx| phi[idx] > tau) {
+                dropped_inside_comps += 1;
+                dropped_inside_vol += component_volume(&comp, &tet_vol);
+                for &idx in &comp {
+                    is_inside[idx] = false;
+                }
+            }
+        }
+    }
+
+    CutResult {
+        is_inside,
+        dropped_inside_comps,
+        dropped_inside_vol,
+        filled_outside_comps: 0,
+        filled_outside_vol: 0.0,
+        hard_inside_comps: 0,
+        hard_inside_tets: 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

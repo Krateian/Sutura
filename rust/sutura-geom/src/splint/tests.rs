@@ -76,6 +76,9 @@ fn same_report(a: &SplintReport, b: &SplintReport) {
     assert_eq!(a.cavity_tet_counts, b.cavity_tet_counts);
     assert_eq!(a.cavity_vols, b.cavity_vols);
     assert_eq!(a.cavity_max_windings, b.cavity_max_windings);
+    assert_eq!(a.input_tets, b.input_tets);
+    assert_eq!(a.input_tets_points, b.input_tets_points);
+    assert_eq!(a.input_tets_corner_tets, b.input_tets_corner_tets);
     assert_eq!(a.input_comps, b.input_comps);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
@@ -379,4 +382,36 @@ fn cavity_fill_is_deterministic() {
             assert_eq!(p[k].to_bits(), q[k].to_bits());
         }
     }
+}
+
+#[test]
+fn input_tets_is_deterministic_and_default_off_is_unchanged() {
+    let (v, t) = cube();
+    // Default OFF must reproduce the 5-arg core byte-for-byte.
+    let base = splint_cut_core(&v, &t, 32, SplintAdaptive::None, true).expect("base");
+    let off = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, SplintOpts::default())
+        .expect("off");
+    assert_eq!(base.tris, off.tris);
+    for (p, q) in base.verts.iter().zip(off.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+
+    let mut o = SplintOpts::default();
+    o.input_tets = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.input_tets);
+    assert!(a.report.input_tets_points >= 8);
+    assert!(a.report.input_tets_corner_tets >= 1);
+    assert!(!a.tris.is_empty());
+    assert_eq!(a.report.output_parts, 1);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+    same_report(&a.report, &b.report);
 }

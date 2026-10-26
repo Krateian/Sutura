@@ -20,6 +20,7 @@ mod components;
 mod cut;
 mod delaunay;
 mod emit;
+mod input_tets;
 mod label;
 mod normalize;
 mod proxy;
@@ -31,13 +32,17 @@ use std::time::Instant;
 use crate::shell::compute_shell_components;
 use crate::winding::MeshBvh;
 
-use adaptive::RETRY_COMPS;
+use adaptive::{AdaptiveStats, RETRY_COMPS};
 use normalize::Normalizer;
 
 pub(crate) const MIN_RES: usize = 16;
 pub(crate) const MAX_RES: usize = 512;
 /// Upper bound on greedy relabel flips (safety valve; the search is monotone).
 const GREEDY_MAX_FLIPS: usize = 1_000_000;
+/// H7: cap on the winding offset `|w - 0.5|` used as the soft unary.
+const WIND_CAP: f64 = 0.5;
+/// H7: ambiguous-band half-width for the relabel region guard (winding units).
+const WIND_TAU: f64 = 0.1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SplintAdaptive {
@@ -46,10 +51,10 @@ pub(crate) enum SplintAdaptive {
     Retry,
 }
 
-/// Opt-in, per-hypothesis switches for the v2 spike. Every field defaults to
+/// Opt-in, per-hypothesis switches for the v2 spike. Every boolean defaults to
 /// `false`, so `SplintOpts::default()` reproduces the historical core output
 /// bit-for-bit.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct SplintOpts {
     /// H2: canonicalize emitted world-space vertices through `f32` and dedup on
     /// the `f32` grid (post `de_norm`), so the output equals its reload weld.
@@ -66,6 +71,35 @@ pub(crate) struct SplintOpts {
     /// H6c: fill enclosed outside cavities (no hull contact) whose ORIGINAL-INPUT
     /// winding number at a deterministic interior sample exceeds 0.5.
     pub cavity_fill: bool,
+    /// H7: rebuild the tet basis from the INPUT (fTetWild-shaped) and classify
+    /// with a soft winding min-cut, bypassing the dual-contour proxy pillow.
+    pub input_tets: bool,
+    /// H7: Steiner sampling spacing as a fraction of the bbox diagonal.
+    pub input_tets_steiner: f64,
+    /// H7: min-cut face-area smoothness multiplier.
+    pub input_tets_lambda: f64,
+    /// H7: coarse interior-lattice cells per box axis.
+    pub input_tets_lattice: usize,
+    /// H7: keep an inside component only if it holds a tet whose winding offset
+    /// `GWN - 0.5` exceeds this (`WIND_TAU` by default); shallower specks dropped.
+    pub input_tets_deep: f64,
+}
+
+impl Default for SplintOpts {
+    fn default() -> Self {
+        Self {
+            snap_f32: false,
+            greedy_relabel: false,
+            geodesic: false,
+            geodesic_bridge: false,
+            cavity_fill: false,
+            input_tets: false,
+            input_tets_steiner: 1.0 / 24.0,
+            input_tets_lambda: 0.5,
+            input_tets_lattice: 7,
+            input_tets_deep: WIND_TAU,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +155,9 @@ pub(crate) struct SplintReport {
     pub cavity_tet_counts: Vec<usize>,
     pub cavity_vols: Vec<f64>,
     pub cavity_max_windings: Vec<f64>,
+    pub input_tets: bool,
+    pub input_tets_points: usize,
+    pub input_tets_corner_tets: usize,
     pub input_comps: usize,
     pub geodesic_comps: usize,
     pub inside_comps: usize,
@@ -200,7 +237,33 @@ fn run_pass(
     } else {
         None
     };
-    let proxy = proxy::build(&bvh, res, normalizer.eps(), shell_map.as_deref(), broad)?;
+    let (proxy, corner_pts) = if opts.input_tets {
+        let t_proxy = Instant::now();
+        let basis = input_tets::build(
+            &nverts,
+            tris,
+            opts.input_tets_steiner,
+            opts.input_tets_lattice,
+        );
+        let secs_proxy = t_proxy.elapsed().as_secs_f64();
+        (
+            proxy::Proxy {
+                verts: basis.points,
+                shell_len: 0,
+                shell_tris: Vec::new(),
+                voxel: basis.voxel,
+                secs_udf: 0.0,
+                secs_proxy,
+                adaptive: AdaptiveStats::default(),
+            },
+            Some(basis.corner),
+        )
+    } else {
+        (
+            proxy::build(&bvh, res, normalizer.eps(), shell_map.as_deref(), broad)?,
+            None,
+        )
+    };
     let t_delaunay = Instant::now();
     // The Geogram engine emits the same cells in a nondeterministic order;
     // canonicalise once here so every index-ordered downstream pass (min-cut
@@ -209,23 +272,46 @@ fn run_pass(
     delaunay::canonicalize_tets(&mut tets);
     let secs_delaunay = t_delaunay.elapsed().as_secs_f64();
     let topo = tetra::build(&tets, &proxy.verts);
-    let labels = label::label_tets(&bvh, &topo.centroids, &topo.out_tet, parallel);
+    let labels = if opts.input_tets {
+        label::label_tets_winding(&bvh, &topo.centroids, &topo.out_tet, parallel, WIND_CAP)
+    } else {
+        label::label_tets(&bvh, &topo.centroids, &topo.out_tet, parallel)
+    };
+    let corner_tet: Option<Vec<bool>> = corner_pts.as_ref().map(|cp| {
+        tets.iter()
+            .map(|t| t.iter().any(|&v| cp[v]))
+            .collect()
+    });
     let cut = {
         let t = Instant::now();
-        let cut = cut::cut_and_cleanup(
-            &tets,
-            &proxy.verts,
-            &topo.internal,
-            &topo.out_tet,
-            &labels.phi,
-            &labels.init_label,
-            normalizer.scale(),
-            proxy.voxel,
-        );
+        let cut = if opts.input_tets {
+            cut::cut_winding_smooth(
+                &tets,
+                &proxy.verts,
+                &topo.internal,
+                &topo.out_tet,
+                corner_tet.as_ref().expect("H7 corner flags"),
+                &labels.phi,
+                opts.input_tets_lambda,
+                opts.input_tets_deep,
+                normalizer.scale(),
+            )
+        } else {
+            cut::cut_and_cleanup(
+                &tets,
+                &proxy.verts,
+                &topo.internal,
+                &topo.out_tet,
+                &labels.phi,
+                &labels.init_label,
+                normalizer.scale(),
+                proxy.voxel,
+            )
+        };
         (cut, t.elapsed().as_secs_f64())
     };
     let (mut cut, secs_cut) = cut;
-    let geodesic_outcome = if opts.geodesic {
+    let geodesic_outcome = if opts.geodesic && !opts.input_tets {
         // The pillow is the dual-contour offset shell (leading proxy vertices);
         // a tet is inside it when the pillow's own winding number exceeds 0.5.
         let pillow =
@@ -280,7 +366,7 @@ fn run_pass(
     } else {
         0
     };
-    let cavity_outcome = if opts.cavity_fill {
+    let cavity_outcome = if opts.cavity_fill && !opts.input_tets {
         Some(cut::fill_enclosed_cavities(
             &proxy.verts,
             &tets,
@@ -327,14 +413,19 @@ fn run_pass(
         }
         h
     };
-    let relabel_outcome = opts.greedy_relabel.then(|| {
+    let relabel_tau = if opts.input_tets {
+        WIND_TAU
+    } else {
+        0.25 * proxy.voxel
+    };
+    let relabel_outcome = (opts.greedy_relabel || opts.input_tets).then(|| {
         relabel::greedy_relabel(
             &tets,
             &topo.internal,
             &topo.out_tet,
             &mut cut.is_inside,
             &labels.phi,
-            0.25 * proxy.voxel,
+            relabel_tau,
             GREEDY_MAX_FLIPS,
         )
     });
@@ -344,7 +435,7 @@ fn run_pass(
         &topo.internal,
         &cut.is_inside,
         &normalizer,
-        opts.snap_f32,
+        opts.snap_f32 || opts.input_tets,
     );
     let cut_shells = components::cut_shells(&emitted.tris);
 
@@ -402,6 +493,15 @@ fn run_pass(
         cavity_max_windings: cavity_outcome
             .as_ref()
             .map_or_else(Vec::new, |c| c.max_windings.clone()),
+        input_tets: opts.input_tets,
+        input_tets_points: if opts.input_tets {
+            proxy.verts.len()
+        } else {
+            0
+        },
+        input_tets_corner_tets: corner_tet
+            .as_ref()
+            .map_or(0, |c| c.iter().filter(|&&b| b).count()),
         input_comps,
         geodesic_comps: geodesic_outcome.map_or(0, |(_, _, c)| c),
         inside_comps,
