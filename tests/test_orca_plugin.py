@@ -1134,6 +1134,13 @@ def test_register_capabilities_declares_cli_fs_read():
             os.environ['SUTURA_CLI'] = old
     assert calls, 'request_permissions was not called'
     assert cli in calls[0]['fs_read'], calls[0]
+    # 2.5: threading and the two stable process targets are declared up front so
+    # the panel never prompts on first use.
+    assert calls[0].get('threading') is True, calls[0]
+    process = calls[0].get('process')
+    assert process, calls[0]
+    assert str(['pgrep', '-f', 'OrcaSlicer']) in process, calls[0]
+    assert str(mod._reveal_command()) in process, calls[0]
     assert registered == [mod.SuturaRepair], registered
 
 
@@ -1152,7 +1159,129 @@ def test_register_capabilities_skips_missing_cli():
         mod.shutil.which = old_which
         if old is not None:
             os.environ['SUTURA_CLI'] = old
-    assert calls == [], calls
+    # the missing CLI contributes no fs_read path, but threading and the stable
+    # process targets are still declared
+    assert len(calls) == 1, calls
+    assert calls[0]['fs_read'] == [], calls[0]
+    assert calls[0].get('threading') is True, calls[0]
+    assert calls[0].get('process'), calls[0]
+
+
+def test_register_capabilities_fallback_preserves_fs_read():
+    """An older nightly whose request_permissions() lacks the threading/process
+    keywords raises TypeError; the plugin must retry with the fs_read-only call
+    so the existing declaration is never lost."""
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    cli = os.path.join(tempfile.mkdtemp(), 'sutura')
+    with open(cli, 'w'):
+        pass
+    old = os.environ.get('SUTURA_CLI')
+    os.environ['SUTURA_CLI'] = cli
+    calls = []
+
+    def flaky(**kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            raise TypeError("request_permissions() got an unexpected keyword "
+                            "argument 'threading'")
+    sys.modules['orca'].request_permissions = flaky
+    registered = []
+    sys.modules['orca'].register_capability = lambda cap: registered.append(cap)
+    try:
+        mod.SuturaRepairPlugin().register_capabilities()
+    finally:
+        if old is None:
+            os.environ.pop('SUTURA_CLI', None)
+        else:
+            os.environ['SUTURA_CLI'] = old
+    assert len(calls) == 2, calls
+    assert calls[0].get('threading') is True and calls[0].get('process'), calls[0]
+    assert 'threading' not in calls[1] and 'process' not in calls[1], calls[1]
+    assert cli in calls[1]['fs_read'], calls[1]
+    assert registered == [mod.SuturaRepair], registered
+
+
+def test_run_cli_spawn_denial_message():
+    """A ProcessCreate denial must be reported clearly, not as a missing CLI."""
+    mod, _host, _ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    real = mod.subprocess.Popen
+
+    def denied(*a, **k):
+        raise PermissionError('ProcessCreate denied by OrcaSlicer')
+    mod.subprocess.Popen = denied
+    try:
+        status, report, msg = mod._run_cli(['/bin/true'], None, 5)
+    finally:
+        mod.subprocess.Popen = real
+    assert status == 'failed', (status, msg)
+    assert 'denied' in msg.lower(), msg
+    assert 'not found' not in msg.lower(), msg
+
+
+def test_repair_thread_start_denial_posts_panel_message():
+    v, t = _cube()
+    obj = _Object([_Volume(_Mesh(v, t))], name='part', oid=1)
+    mod, _host, ui = _load_plugin(_Model([obj]), tempfile.mkdtemp())
+    mod._resolve_cli = lambda cfg=None: ('/usr/bin/sutura', True, '0.7.1')
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+
+    real = mod.threading
+
+    class _DeniedThread:
+        def __init__(self, *a, **k):
+            raise PermissionError('Threading denied by OrcaSlicer')
+    mod.threading = types.SimpleNamespace(Thread=_DeniedThread,
+                                          Event=real.Event, Timer=real.Timer)
+    try:
+        plugin._handle_repair({'ids': ['1'], 'preset': 'balanced'})
+    finally:
+        mod.threading = real
+    fails = [p for p in _posts(handle, 'job') if p.get('phase') == 'failed']
+    assert fails, handle.posts
+    assert 'denied' in fails[-1]['message'].lower(), fails[-1]
+    notices = _posts(handle, 'notice')
+    assert notices and 'denied' in notices[-1]['message'].lower(), handle.posts
+
+
+def test_scan_timer_denial_posts_notice():
+    mod, _host, ui = _load_plugin(_Model([]), tempfile.mkdtemp())
+    plugin = mod.SuturaRepair()
+    plugin._open_panel()
+    handle = ui.dock_panels[-1]
+
+    real = mod.threading
+
+    class _DeniedTimer:
+        def __init__(self, *a, **k):
+            raise PermissionError('Threading denied by OrcaSlicer')
+    mod.threading = types.SimpleNamespace(Thread=real.Thread,
+                                          Event=real.Event, Timer=_DeniedTimer)
+    try:
+        plugin._schedule_scan()
+    finally:
+        mod.threading = real
+    assert plugin._st()['scan_timer'] is None, plugin._st()['scan_timer']
+    notices = _posts(handle, 'notice')
+    assert notices and 'denied' in notices[-1]['message'].lower(), handle.posts
+
+
+def test_reveal_opens_fixed_out_dir():
+    """The reveal command opens the fixed out/ folder on every click (so it can
+    be declared once up front and never prompts)."""
+    d = tempfile.mkdtemp()
+    mod, _host, _ui = _load_plugin(_Model([]), d)
+    captured = []
+    real = mod.subprocess.Popen
+    mod.subprocess.Popen = lambda cmd, *a, **k: captured.append(cmd)
+    try:
+        mod._reveal(os.path.join(mod._out_dir(), 'part_sutura_1.stl'))
+    finally:
+        mod.subprocess.Popen = real
+    assert captured, 'reveal did not spawn'
+    assert captured[-1] == mod._reveal_command(), (captured, mod._reveal_command())
+    assert captured[-1][-1] == mod._out_dir(), captured
 
 
 if __name__ == '__main__':

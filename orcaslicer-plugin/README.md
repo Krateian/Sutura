@@ -62,8 +62,8 @@ panel lists every object on the plate and offers:
   "Select broken" shortcut;
 - live job phases (queued → exporting → repairing → loading → done / failed /
   cancelled) with elapsed time and a Cancel button;
-- a **Show file** link for a finished job that reveals the repaired file in
-  the platform file browser;
+- a **Show file** link for a finished job that opens the repaired-output
+  folder in the platform file browser;
 - collapsible settings for the preset, notifications and panel-at-startup.
 
 The panel HTML is embedded in the plugin file (copied from
@@ -110,9 +110,11 @@ Notifications can be disabled with the **Notify about broken meshes** setting.
   copy keeps the exported world coordinates, so OrcaSlicer places it on top of
   the original; the panel's done row says so: **Added as a new object — press
   A (Arrange) to separate it from the original; Ctrl/Cmd+Z removes it.** It is
-  kept after the job so OrcaSlicer can still read it while the asynchronous
-  load-back completes; the **Show file** link reveals it (`open -R` on macOS,
-  the folder via `xdg-open` on Linux). Only the per-job input staging
+kept after the job so OrcaSlicer can still read it while the asynchronous
+load-back completes; the **Show file** link opens that fixed `out/` folder in
+the platform file browser (`open` on macOS, `explorer` on Windows, `xdg-open` on
+Linux) — a stable command, so it is declared once and never prompts. Only the
+per-job input staging
   (`<uuid>/input.stl`) is deleted; output files and staging dirs older than
   seven days are pruned when the plugin loads.
 
@@ -123,20 +125,45 @@ Repair always runs via the **subprocess CLI** (`~/.local/bin/sutura <stage>
 `pip` (plus the declared `numpy`), so in-process repair is not possible. The
 CLI is run with a 600 s timeout and can be cancelled from the panel; Analyze
 runs `sutura <stage> --analyze` (read-only, no output file). The JSON report
-on stdout is parsed and mapped onto the panel protocol. The installed CLI
+on stdout is parsed and mapped onto the panel protocol. Each spawn runs on a
+plugin-created worker thread, whose audit context is empty, so on OrcaSlicer 2.5
+it is not audited and raises no prompt; a denial would be reported as a clear
+panel message. The installed CLI
 exposes all 18 repair methods; the experimental **Splint (#18)** exact solid
 rebuild is opt-in and off by default, so the panel presets do not enable it.
 
 ## Permissions
 
-`register_capabilities()` declares the Sutura CLI path up front with
-`orca.request_permissions(fs_read=[...])`, but **only for paths that actually
-exist** (the resolved `SUTURA_CLI`, `~/.local/bin/sutura`, or a `sutura`
-found on `PATH`); requesting a non-existent path is rejected, so it is
-skipped. HONEST SCOPE: this only pre-declares filesystem **reads** -- the
-audit API has no declarative form for subprocess spawns, and their persisted
-grant matches the exact command line (which contains unique staging paths),
-so a subprocess permission prompt can still appear once per command target.
+`register_capabilities()` declares, up front, everything the plugin can name in
+advance:
+
+- **`fs_read`** for the Sutura CLI path — **only for paths that actually
+  exist** (the resolved `SUTURA_CLI`, `~/.local/bin/sutura`, or a `sutura`
+  found on `PATH`); requesting a non-existent path is rejected, so it is
+  skipped.
+- **`threading`** — the panel and the job workers run on plugin-created
+  threads, so Threading is granted during load, before any thread starts.
+- **`process`** for the two stable commands: the OrcaSlicer process-count probe
+  (`pgrep -f OrcaSlicer`) and the fixed-folder reveal command (one per
+  platform). The audit hook keys a process grant on the exact
+  `str(argv_list)`, so each target is built the same way here and at the call
+  site.
+
+CLI repair/analyze spawns are **not** declared: they execute inside
+plugin-created worker threads, whose audit context is empty, so on OrcaSlicer
+2.5 they are not audited. This means no prompt appears on a normal repair. A
+denial that does occur (for example a thread-start denial raised off the UI
+thread) is surfaced as a clear panel message instead of a silent failure.
+
+**Older nightlies.** A nightly whose `request_permissions()` lacks the
+`threading`/`process` keywords raises `TypeError`; the plugin then falls back to
+the `fs_read`-only declaration, so the existing read grant is never lost and
+older builds keep working.
+
+**Honest scope.** Process declarations are not existence-checked, and the
+per-run CLI commands carry unique staging paths, so they can never be a stable
+declared target; they are covered by the unaudited-worker behaviour above
+rather than by a declaration.
 
 ## Install (OrcaSlicer 2.5.0+ / nightly)
 

@@ -472,9 +472,14 @@ Install (OrcaSlicer 2.5.0+ / nightly):
    the panel.
 
 Permissions: `register_capabilities()` pre-declares the existing Sutura CLI
-path with `request_permissions(fs_read=...)`, but the audit API has no
-declarative form for subprocess spawns, so a spawn permission prompt can still
-appear once per command target. It has been verified end-to-end in a real
+path with `request_permissions(fs_read=...)`, plus `threading` and the two
+stable process targets it can name up front (the OrcaSlicer process-count probe
+and the fixed-folder reveal command), so the panel does not prompt on first use.
+Repair and Analyze spawns run on plugin-created worker threads, whose audit
+context is empty, so they are not audited on 2.5; a denial is surfaced as a
+clear panel message instead of a silent failure. Older nightlies without the
+extra keywords fall back to the fs_read-only declaration, so the existing read
+grant is preserved. It has been verified end-to-end in a real
 OrcaSlicer **2.5.0-dev** nightly (macOS); the first stable release with the
 plugin API is 2.5.0; primary target is Linux, and the same file
 runs on macOS as a verified bonus. See the

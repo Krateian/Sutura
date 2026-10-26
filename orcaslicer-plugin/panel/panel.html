@@ -57,6 +57,13 @@ button, input { font-family: inherit; font-size: inherit; }
 /* Content Area */
 .content-area { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 0; width: 100%; }
 
+/* Notice banner (permission denials and other transient errors) */
+.notice {
+  margin: 8px 12px 0; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid rgba(239,68,68,0.35); background: rgba(239,68,68,0.12);
+  color: #ef4444; font-size: 11px; line-height: 1.35;
+}
+
 /* CLI Missing */
 .cli-missing { padding: 24px 16px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .cli-missing-badge { font-size: 24px; }
@@ -180,6 +187,8 @@ button, input { font-family: inherit; font-size: inherit; }
 
   <!-- Main Scrollable Area -->
   <div class="content-area">
+    <div id="notice-view" class="notice hidden" role="alert"></div>
+
     <div id="cli-missing-view" class="cli-missing hidden" role="alert">
       <div class="cli-missing-badge">⚠️</div>
       <div class="cli-missing-title">Sutura is not installed</div>
@@ -239,6 +248,18 @@ button, input { font-family: inherit; font-size: inherit; }
   const send = msg => { if (window.orca?.postMessage) window.orca.postMessage(msg); };
   const announce = txt => { const el = $('aria-status'); if (el) el.textContent = txt; };
   const esc = s => !s ? '' : String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  let noticeTimer = null;
+  function showNotice(text) {
+    const el = $('notice-view');
+    if (!el) return;
+    if (noticeTimer) { clearTimeout(noticeTimer); noticeTimer = null; }
+    if (!text) { el.classList.add('hidden'); el.textContent = ''; return; }
+    el.textContent = text;
+    el.classList.remove('hidden');
+    announce(text);
+    noticeTimer = setTimeout(() => { el.classList.add('hidden'); el.textContent = ''; }, 8000);
+  }
 
   const formatTris = n => typeof n !== 'number' ? '0 tris' : n >= 1e6 ? (n/1e6).toFixed(1)+'M tris' : n >= 1e3 ? (n/1e3).toFixed(1)+'k tris' : n+' tris';
   const renderMetaLine = o => `${o.parts > 1 ? o.parts + ' parts' : '1 part'} · ${formatTris(o.triangles)}${o.modifiers > 0 ? ' · ' + o.modifiers + ' mod' : ''}`;
@@ -528,6 +549,9 @@ button, input { font-family: inherit; font-size: inherit; }
             ? `Analysis failed for object ${id}: ${msg.error}`
             : `Analysis ready for object ${id}`);
         }
+        break;
+      case 'notice':
+        showNotice(msg.message);
         break;
     }
   }
