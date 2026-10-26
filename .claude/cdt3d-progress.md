@@ -581,3 +581,107 @@ folded in as `10ae897` ("cdt3d: harden coplanar and collinear split tests
 Status: P0-P3 and the P4.0/P4.1 face stages are on `spike/cdt3d`; P4.2/P4.3
 (gift-wrapping and the collar) are open and the P4 gate is not claimed.  The
 working tree is clean; no push, no merge, no version bump.
+
+## 2026-10-26 — P4.2 gift-wrapping: paper conditions recorded
+
+Source read: Diazzi, Panozzo, Vaxman, Attene, *Constrained Delaunay
+Tetrahedrization: A Robust and Practical Approach*, ACM TOG 42(6), 2023,
+arXiv:2309.09805v1, Sec. 4.4 and Appendix B; Si & Gaertner 2005 as the
+cavity-expansion reference.  Implementation is from the paper text only; no
+reference code was read or copied.
+
+The modified gift-wrapping procedure in the paper (Sec. 4.4) states:
+
+> For any missing PLC-face f we first delete all tetrahedra T_f whose interior
+> intersects f and keep track of all their vertices V_f. ... we keep track of
+> all the triangles dC that bound the resulting cavity C, each oriented so that
+> the normal points toward the exterior. Then, we create the half-cavities C_1
+> and C_2 by splitting C through f and, at the same time, we split dC in two
+> subsets dC_1 and dC_2. Furthermore, we split the set V_f in two subsets V_1
+> and V_2 whose vertices are over (or on) and below (or on) f respectively.
+
+> We iteratively pick a triangle sigma from dC_cur and search for a suitable
+> apex vertex w in V_1 such that the resulting tetrahedron t is *valid*. ...
+> After the first iteration, sigma might be on the plane of f: in this case we
+> simply skip it and move to the next one. ... When C_1 is completed, we repeat
+> the same process on C_2, though in this case we reuse the triangles produced
+> on f while filling C_1.
+
+The three validity conditions are quoted verbatim:
+
+> i) w is in the opposite half-space with respect to sigma outgoing normal
+> (i.e. t has positive volume);
+>
+> ii) if t intersects a triangle of dC_cur then the intersection is a common
+> subsimplex;
+>
+> iii) no vertex in V_1 is in the circumsphere of t, except those whose
+> visibility is occluded by dC_1.
+
+Appendix B expands them exactly:
+
+> Condition i) is equivalent to checking whether orient3d(t_0,t_1,t_2,w) > 0.
+>
+> Condition ii) holds if, for each triangle tau in dC_curr, one of the
+> following holds:
+> - tau and T share three vertices (i.e. tau is a face of T);
+> - tau and T share two vertices and at least one of the tets obtained by
+>   replacing one of the unshared vertices in T with the unshared vertex in tau
+>   have negative volume;
+> - tau and T share one vertex and the other two vertices of tau are not
+>   contained in the volume of T and no edge of tau intersects a face of T and
+>   no edge of T intersects tau except for the common vertex;
+> - tau and T have no common vertices and no vertex of tau is contained in the
+>   volume of T and no edge of tau intersects a face of T and no edge of T
+>   intersects tau.
+>
+> Condition iii) holds if, for each vertex v in the half-cavity, either v is
+> not in the circumsphere of T or it is not visible from within T. ... v is
+> visible from within T if and only if, for each triangle tau in dC_i,
+> I(CH(T union v)) intersect tau = empty, where I(.) denotes the interior
+> operator and CH(.) denotes the convex hull operator.
+
+The paper resolves cospherical ties with Algorithm 1 (`perturbedInCircumphere`):
+sort the five global indices ascending by n iterative swaps, return the
+unperturbed inSphere if nonzero, otherwise orient3D on the last four (negated
+for odd n), otherwise orient3D on the first, third, fourth and fifth (negated
+for even n).  The subvectors V_1 and V_2 must be stored in global mesh-index
+order so that both halves break ties identically.  The crate already has this
+rule as `predicates3d::insphere_sign_perturbed` (P1/F3).
+
+### Plan
+
+1. Add exact triangle/tetrahedron helpers for condition ii
+   (point-in-tet inclusive/strict, proper segment-triangle crossing,
+   tetrahedron-interior/triangle-interior intersection) with synthetic tests.
+2. Split the cavity boundary by the face plane (vertices on the plane belong to
+   both halves; a plane-coplanar boundary triangle goes to the cavity side).
+   V_1/V_2 are the cavity vertices with orient3d >= 0 / <= 0, sorted by global
+   index.
+3. Fill C_1 by gift-wrapping: pick the smallest-key front triangle, search V_1
+   in ascending index order, enforce (i)-(iii) exactly, cancel matching front
+   faces, leave new plane faces as the shared interface.  Fill C_2 against the
+   reversed C_1 interface.  Verify every original cavity boundary triangle is
+   restored, no new boundary face is introduced, and no tet edge pierces f.
+4. Fast path stays the P4.1 local Delaunay; gift-wrapping is the fallback only
+   when that fails.  Report `gift_wraps` and a typed failure reason.
+5. Measure 100827 and the fixtures after each step.  If a crossing boundary
+   triangle persists, diagnose it before any expansion loop; do not repeat the
+   P4.2 expansion-to-hull experiment.
+
+### Challenges
+
+- The paper's half-cavity split assumes the cavity boundary triangles can be
+  assigned to one side of the face plane.  The P4.1 measurements show boundary
+  triangles crossing the plane *outside* the PLC triangle on 100827.  Step 2
+  must detect this explicitly; a crossing triangle cannot be cut without either
+  a new vertex on a shared mesh edge or splitting the outside tet.  The first
+  attempt will count and log these cases rather than expand.
+- Condition iii is the expensive part: O(|V_1| * |dC_1|) per candidate apex.
+  Cavities are small, but `plate_a_dent` may need a bound/log if it explodes.
+- Symbolic perturbation must use global vertex ids, and V_1/V_2 must be
+  globally ordered; otherwise the two halves can disagree on the shared face.
+- The current detection criterion is "no tet edge pierces f", not a full
+  area-coverage certificate.  A green gate therefore needs a separate log of
+  how the interface covers f, or a coverage check added before the gate is
+  claimed.
