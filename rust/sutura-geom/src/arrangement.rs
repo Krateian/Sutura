@@ -233,7 +233,7 @@ fn touch_segment_source(
     }
 }
 
-fn clip_polygon_simplex(
+pub(crate) fn clip_polygon_simplex(
     poly: &[crate::cdt2d::Point2D],
 ) -> Vec<crate::cdt2d::Point2D> {
     use num_traits::{One, Signed, Zero};
@@ -483,7 +483,7 @@ fn weld_point(
 
 /// Order-independent key of the input edge between vertices `a` and `b`,
 /// by coordinates so that duplicated input vertices still share the key.
-fn edge_key(verts: &[[f64; 3]], a: usize, b: usize) -> [u64; 6] {
+pub(crate) fn edge_key(verts: &[[f64; 3]], a: usize, b: usize) -> [u64; 6] {
     let pa = verts[a].map(f64::to_bits);
     let pb = verts[b].map(f64::to_bits);
     let (lo, hi) = if pa <= pb { (pa, pb) } else { (pb, pa) };
@@ -559,6 +559,20 @@ fn collect_edge_points(
     out
 }
 
+/// Extra conformance points supplied by the PLC completion layer.  The
+/// default (empty) value leaves the arrangement output unchanged.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ExtraConstraints {
+    /// Points lying strictly inside an input edge, keyed by the same
+    /// coordinate edge key used by `arrangement_core`.
+    pub edge_points: HashMap<[u64; 6], Vec<Point3>>,
+    /// Per-input-triangle points lying strictly inside the triangle.
+    pub face_points: Vec<Vec<Point3>>,
+    /// Force the segment-endpoint edge propagation pass even when the
+    /// experimental thread-local bit is off.
+    pub force_edge_points: bool,
+}
+
 /// Split a self-intersecting triangle soup along its proper-intersection
 /// segments.
 ///
@@ -568,6 +582,16 @@ fn collect_edge_points(
 pub fn arrangement_lite_core(
     verts: &[[f64; 3]],
     tris: &[[usize; 3]],
+) -> Result<(Vec<[BigRational; 3]>, Vec<[usize; 3]>, Report), String> {
+    arrangement_core(verts, tris, &ExtraConstraints::default())
+}
+
+/// Arrangement core with optional conformance points.  `arrangement_lite_core`
+/// calls this with an empty extra set, so its output is unchanged.
+pub(crate) fn arrangement_core(
+    verts: &[[f64; 3]],
+    tris: &[[usize; 3]],
+    extra_constraints: &ExtraConstraints,
 ) -> Result<(Vec<[BigRational; 3]>, Vec<[usize; 3]>, Report), String> {
     let m = tris.len();
     let mut degenerate: HashMap<String, usize> = HashMap::new();
@@ -646,17 +670,23 @@ pub fn arrangement_lite_core(
         }
     }
 
-    // Optional (experimental) edge conformity: a segment endpoint that lies
-    // in the interior of a host's edge is also a vertex of every other input
-    // triangle sharing that edge; without it the host is split there and
-    // its edge neighbour is not, which leaves a T-junction in the output.
-    let edge_points = if crate::cdt2d::experimental::enabled(
-        crate::cdt2d::experimental::PROPAGATE_EDGE_POINTS,
-    ) {
+    // Edge conformity: a segment endpoint that lies in the interior of a
+    // host's edge is also a vertex of every other input triangle sharing that
+    // edge; without it the host is split there and its edge neighbour is not,
+    // which leaves a T-junction in the output.  The PLC completion layer can
+    // additionally supply every input vertex that lies on an edge, and force
+    // the pass on independently of the experimental thread-local bit.
+    let mut edge_points = if extra_constraints.force_edge_points
+        || crate::cdt2d::experimental::enabled(
+            crate::cdt2d::experimental::PROPAGATE_EDGE_POINTS,
+        ) {
         collect_edge_points(verts, tris, &segments)
     } else {
         HashMap::new()
     };
+    for (key, pts) in &extra_constraints.edge_points {
+        edge_points.entry(*key).or_default().extend(pts.iter().cloned());
+    }
 
     let mut pool: Vec<[BigRational; 3]> = Vec::new();
     let mut weld: HashMap<[RatKey; 3], usize> = HashMap::new();
@@ -676,6 +706,9 @@ pub fn arrangement_lite_core(
                     extra.extend(pts.iter());
                 }
             }
+        }
+        if let Some(pts) = extra_constraints.face_points.get(ti) {
+            extra.extend(pts.iter());
         }
 
         if !extra.is_empty()

@@ -17,6 +17,7 @@ use robust::{insphere as robust_insphere, orient3d as robust_orient3d, Coord3D};
 pub mod antipodal;
 pub mod arrangement;
 pub mod cdt2d;
+pub mod cdt3d;
 pub mod cluster;
 pub mod decimate;
 pub mod diagnosis;
@@ -251,6 +252,94 @@ fn arrangement_lite<'py>(
     report_dict.set_item("degenerate_cases", degen)?;
 
     Ok((verts_np, tris_np, report_dict))
+}
+
+/// CDT3D Phase A: build and validate a PLC from a triangle soup.
+///
+/// This is an opt-in entry point for the exact CDT path.  It does not change
+/// the default `arrangement_lite` or Splint behaviour.  The returned report
+/// contains `plc_valid` and the deterministic `hash`; callers must check
+/// `plc_valid` before feeding the PLC to the constrained tetrahedralization.
+#[pyfunction]
+#[pyo3(signature = (verts, tris))]
+fn cdt3d_plc<'py>(
+    py: Python<'py>,
+    verts: PyArrayLike2<'py, f64, AllowTypeChange>,
+    tris: PyArrayLike2<'py, i32, AllowTypeChange>,
+) -> PyResult<(
+    Bound<'py, numpy::PyArray2<f64>>,
+    Bound<'py, numpy::PyArray2<i32>>,
+    Bound<'py, PyDict>,
+)> {
+    let vv = verts.as_array();
+    let tt = tris.as_array();
+    let n = vv.nrows();
+    let m = tt.nrows();
+    if vv.ncols() != 3 || tt.ncols() != 3 {
+        return Err(PyValueError::new_err(
+            "verts must be Nx3 and tris must be Mx3",
+        ));
+    }
+    let mut rust_verts: Vec<[f64; 3]> = Vec::with_capacity(n);
+    for i in 0..n {
+        rust_verts.push([vv[[i, 0]], vv[[i, 1]], vv[[i, 2]]]);
+    }
+    let mut rust_tris: Vec<[usize; 3]> = Vec::with_capacity(m);
+    for i in 0..m {
+        let a = tt[[i, 0]];
+        let b = tt[[i, 1]];
+        let c = tt[[i, 2]];
+        if a < 0 || b < 0 || c < 0 || a as usize >= n || b as usize >= n || c as usize >= n {
+            return Err(PyValueError::new_err("triangle index out of range"));
+        }
+        rust_tris.push([a as usize, b as usize, c as usize]);
+    }
+
+    let plc = cdt3d::build_plc(&rust_verts, &rust_tris, &cdt3d::PlcOptions::default())
+        .map_err(PyValueError::new_err)?;
+
+    let out_verts: Vec<Vec<f64>> = plc.verts.iter().map(|p| p.to_vec()).collect();
+    let out_tris: Vec<Vec<i32>> = plc
+        .tris
+        .iter()
+        .map(|t| vec![t[0] as i32, t[1] as i32, t[2] as i32])
+        .collect();
+    let verts_np = numpy::PyArray2::from_vec2(py, &out_verts)?;
+    let tris_np = numpy::PyArray2::from_vec2(py, &out_tris)?;
+
+    let d = PyDict::new(py);
+    let r = &plc.report;
+    d.set_item("input_vertices", r.input_vertices)?;
+    d.set_item("input_faces", r.input_faces)?;
+    d.set_item("canonical_vertices", r.canonical_vertices)?;
+    d.set_item("canonical_faces", r.canonical_faces)?;
+    d.set_item("dropped_degenerate_faces", r.dropped_degenerate_faces)?;
+    d.set_item("dropped_duplicate_faces", r.dropped_duplicate_faces)?;
+    d.set_item("coplanar_positive_before", r.coplanar_positive_before)?;
+    d.set_item("coplanar_positive_after", r.coplanar_positive_after)?;
+    d.set_item("perturbed_vertices", r.perturbed_vertices)?;
+    d.set_item("perturbed_faces", r.perturbed_faces)?;
+    d.set_item("passes", r.passes)?;
+    d.set_item("converged", r.converged)?;
+    d.set_item("output_vertices", r.output_vertices)?;
+    d.set_item("output_faces", r.output_faces)?;
+    d.set_item("proper_si", r.proper_si)?;
+    d.set_item("t_junctions", r.t_junctions)?;
+    d.set_item("touch_points", r.touch_points)?;
+    d.set_item("duplicate_faces", r.duplicate_faces)?;
+    d.set_item("degenerate_faces", r.degenerate_faces)?;
+    d.set_item("rounded_duplicate_vertices", r.rounded_duplicate_vertices)?;
+    d.set_item("nonmanifold_edges", r.nonmanifold_edges)?;
+    d.set_item("boundary_edges", r.boundary_edges)?;
+    d.set_item("boundary_components", r.boundary_components)?;
+    d.set_item("components", r.components)?;
+    d.set_item("input_area", r.input_area)?;
+    d.set_item("output_area", r.output_area)?;
+    d.set_item("area_ratio", r.area_ratio)?;
+    d.set_item("plc_valid", r.plc_valid)?;
+    d.set_item("hash", r.hash)?;
+
+    Ok((verts_np, tris_np, d))
 }
 
 /// Developer hook: set the experimental, output-changing CDT behaviours
@@ -2128,6 +2217,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
     m.add_function(wrap_pyfunction!(insphere, m)?)?;
     m.add_function(wrap_pyfunction!(arrangement_lite, m)?)?;
+    m.add_function(wrap_pyfunction!(cdt3d_plc, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::stage2_rebuild, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::watertight_check, m)?)?;
     m.add_function(wrap_pyfunction!(manifold::outer_shell_union, m)?)?;
