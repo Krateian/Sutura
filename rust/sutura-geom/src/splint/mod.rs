@@ -87,6 +87,18 @@ pub(crate) struct SplintOpts {
     /// H7b: evaluate the winding unary on a TEMPORARY cap of the input's open
     /// boundary loops (never emitted), so the opening reads as interior.
     pub input_tets_cap: bool,
+    /// H4: after the cut/island stage under the input-tets basis, drop every
+    /// inside component whose volume is below `input_tets_prune_frac` of the
+    /// largest component's volume. Only applied when the input is a single
+    /// connected body, so a genuinely separate input part is never removed.
+    pub input_tets_prune: bool,
+    /// H4: the volume-fraction threshold (relative to the largest component).
+    pub input_tets_prune_frac: f64,
+    /// H7c: after the H4 prune under the input-tets basis, join each residual
+    /// inside basin to the largest with a min-cost tet bridge, keeping only the
+    /// merges that reduce the emitted boundary-component count. Only applied when
+    /// the input is a single connected body.
+    pub input_tets_bridge: bool,
 }
 
 impl Default for SplintOpts {
@@ -103,6 +115,9 @@ impl Default for SplintOpts {
             input_tets_lattice: 7,
             input_tets_deep: WIND_TAU,
             input_tets_cap: false,
+            input_tets_prune: false,
+            input_tets_prune_frac: 0.01,
+            input_tets_bridge: false,
         }
     }
 }
@@ -168,6 +183,15 @@ pub(crate) struct SplintReport {
     pub cap_planar: usize,
     pub cap_fanned: usize,
     pub cap_tris: usize,
+    pub input_tets_prune: bool,
+    pub prune_frac: f64,
+    pub prune_kept: usize,
+    pub prune_dropped: usize,
+    pub prune_speck_vol: f64,
+    pub prune_speck_faces: usize,
+    pub prune_comp_vols: Vec<f64>,
+    pub prune_comp_faces: Vec<usize>,
+    pub input_tets_bridge_added: usize,
     pub input_comps: usize,
     pub geodesic_comps: usize,
     pub inside_comps: usize,
@@ -406,6 +430,42 @@ fn run_pass(
     } else {
         None
     };
+    // H4: volume-fraction prune of inside components. Always computed under the
+    // input-tets basis (so the component volumes/facet counts are reported for
+    // measurement), but it only DROPS anything when the flag is on and the input
+    // is a single body. A zero fraction is a pure measurement pass (no drop).
+    let prune_outcome = if opts.input_tets {
+        let frac = if opts.input_tets_prune && input_comps == 1 {
+            opts.input_tets_prune_frac
+        } else {
+            0.0
+        };
+        Some(cut::prune_inside_by_volume(
+            &proxy.verts,
+            &tets,
+            &topo.internal,
+            &mut cut.is_inside,
+            frac,
+            normalizer.scale(),
+        ))
+    } else {
+        None
+    };
+    // H7c: after the prune, join each residual inside basin to the largest with a
+    // min-cost tet bridge (acceptance-gated on the emitted boundary-component
+    // count), so a material-sized second basin is merged instead of dropped.
+    let bridge_h7c_added = if opts.input_tets && opts.input_tets_bridge && input_comps == 1 {
+        cut::bridge_basins_to_largest(
+            &proxy.verts,
+            &topo.internal,
+            &topo.out_tet,
+            &labels.phi,
+            &mut cut.is_inside,
+            proxy.verts.len(),
+        )
+    } else {
+        0
+    };
     let inside_comps = cut::inside_components(&topo.internal, &topo.out_tet, &cut.is_inside);
     let mut proxy_hash: u64 = 0xcbf29ce484222325;
     for p in &proxy.verts {
@@ -533,6 +593,23 @@ fn run_pass(
         cap_planar: cap.as_ref().map_or(0, |c| c.planar),
         cap_fanned: cap.as_ref().map_or(0, |c| c.fanned),
         cap_tris: cap.as_ref().map_or(0, |c| c.tris.len()),
+        input_tets_prune: opts.input_tets_prune,
+        prune_frac: if opts.input_tets_prune {
+            opts.input_tets_prune_frac
+        } else {
+            0.0
+        },
+        prune_kept: prune_outcome.as_ref().map_or(0, |p| p.kept),
+        prune_dropped: prune_outcome.as_ref().map_or(0, |p| p.dropped),
+        prune_speck_vol: prune_outcome.as_ref().map_or(0.0, |p| p.speck_vol),
+        prune_speck_faces: prune_outcome.as_ref().map_or(0, |p| p.speck_faces),
+        prune_comp_vols: prune_outcome
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.comp_vols.clone()),
+        prune_comp_faces: prune_outcome
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.comp_faces.clone()),
+        input_tets_bridge_added: bridge_h7c_added,
         input_comps,
         geodesic_comps: geodesic_outcome.map_or(0, |(_, _, c)| c),
         inside_comps,

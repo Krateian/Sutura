@@ -90,6 +90,13 @@ fn same_report(a: &SplintReport, b: &SplintReport) {    let fields = [
     assert_eq!(a.cap_planar, b.cap_planar);
     assert_eq!(a.cap_fanned, b.cap_fanned);
     assert_eq!(a.cap_tris, b.cap_tris);
+    assert_eq!(a.input_tets_prune, b.input_tets_prune);
+    assert_eq!(a.prune_frac, b.prune_frac);
+    assert_eq!(a.prune_kept, b.prune_kept);
+    assert_eq!(a.prune_dropped, b.prune_dropped);
+    assert_eq!(a.prune_speck_faces, b.prune_speck_faces);
+    assert_eq!(a.prune_comp_faces, b.prune_comp_faces);
+    assert_eq!(a.input_tets_bridge_added, b.input_tets_bridge_added);
     assert_eq!(a.input_comps, b.input_comps);
     assert_eq!(a.delaunay_hash, b.delaunay_hash);
     // The full per-tet diagnostic chain: proxy, Delaunay, centroids, phi,
@@ -111,6 +118,11 @@ fn same_report(a: &SplintReport, b: &SplintReport) {    let fields = [
     // feed the emitted geometry.
     assert!((a.dropped_inside_vol - b.dropped_inside_vol).abs() <= 1e-12);
     assert!((a.filled_outside_vol - b.filled_outside_vol).abs() <= 1e-12);
+    assert!((a.prune_speck_vol - b.prune_speck_vol).abs() <= 1e-12);
+    assert_eq!(a.prune_comp_vols.len(), b.prune_comp_vols.len());
+    for (x, y) in a.prune_comp_vols.iter().zip(b.prune_comp_vols.iter()) {
+        assert!((x - y).abs() <= 1e-12);
+    }
 }
 
 #[test]
@@ -453,4 +465,43 @@ fn input_tets_cap_is_deterministic_and_fires_on_open_input() {
     assert!(!base.report.input_tets_cap);
     assert_eq!(base.report.cap_tris, 0);
     assert_eq!(base.report.cap_loops, 0);
+}
+
+#[test]
+fn input_tets_prune_is_deterministic() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.input_tets = true;
+    o.input_tets_prune = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.input_tets_prune);
+    assert_eq!(a.report.prune_frac, 0.01);
+    assert!(!a.report.prune_comp_vols.is_empty());
+    same_report(&a.report, &b.report);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
+}
+
+#[test]
+fn input_tets_bridge_is_deterministic() {
+    let (v, t) = cube();
+    let mut o = SplintOpts::default();
+    o.input_tets = true;
+    o.input_tets_bridge = true;
+    let a = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("a");
+    let b = splint_cut_core_opts(&v, &t, 32, SplintAdaptive::None, true, o).expect("b");
+    assert!(a.report.input_tets);
+    assert_eq!(a.report.input_tets_bridge_added, b.report.input_tets_bridge_added);
+    same_report(&a.report, &b.report);
+    assert_eq!(a.tris, b.tris);
+    for (p, q) in a.verts.iter().zip(b.verts.iter()) {
+        for k in 0..3 {
+            assert_eq!(p[k].to_bits(), q[k].to_bits());
+        }
+    }
 }
