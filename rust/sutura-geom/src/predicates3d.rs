@@ -716,6 +716,95 @@ mod kernel_tests {
     }
 
     #[test]
+    fn perturbed_insphere_last_four_coplanar_branch() {
+        // Four equatorial points on the unit circle in z = 0 plus the north
+        // pole.  The pole gets the smallest global id, so the sorted order
+        // puts it first and the four equatorial points (the "last four") are
+        // exactly coplanar: r1 == 0 and the r2 branch must decide.
+        let pts = [
+            Point3::Explicit([0.0, 0.0, 1.0]),
+            Point3::Explicit([1.0, 0.0, 0.0]),
+            Point3::Explicit([0.0, 1.0, 0.0]),
+            Point3::Explicit([-1.0, 0.0, 0.0]),
+            Point3::Explicit([0.0, -1.0, 0.0]),
+        ];
+        let ids = [0usize, 1, 2, 3, 4];
+        assert_eq!(
+            orient3d_sign(&pts[1], &pts[2], &pts[3], &pts[4]),
+            0.0,
+            "the last four points must be coplanar to reach r1 == 0"
+        );
+        assert_ne!(
+            orient3d_sign(&pts[0], &pts[2], &pts[3], &pts[4]),
+            0.0,
+            "the r2 orientation must be non-zero"
+        );
+        assert_eq!(
+            insphere_sign(&pts[0], &pts[1], &pts[2], &pts[3], &pts[4]),
+            0.0,
+            "the five points must be cospherical"
+        );
+        let base = insphere_sign_perturbed(
+            &pts[0], &pts[1], &pts[2], &pts[3], &pts[4], ids,
+        );
+        assert_ne!(base, 0.0);
+
+        // Total antisymmetry over all 120 permutations of the (point, id)
+        // pairs pins the parity rule of the r2 branch.
+        let perms = permutations(5);
+        assert_eq!(perms.len(), 120);
+        for perm in perms {
+            let p = [
+                &pts[perm[0]],
+                &pts[perm[1]],
+                &pts[perm[2]],
+                &pts[perm[3]],
+                &pts[perm[4]],
+            ];
+            let pid = [
+                ids[perm[0]],
+                ids[perm[1]],
+                ids[perm[2]],
+                ids[perm[3]],
+                ids[perm[4]],
+            ];
+            let got = insphere_sign_perturbed(p[0], p[1], p[2], p[3], p[4], pid);
+            let want = if permutation_parity(&perm) == 0 { base } else { -base };
+            assert_eq!(got, want, "permutation {perm:?}");
+        }
+    }
+
+    fn permutations(n: usize) -> Vec<Vec<usize>> {
+        fn rec(k: usize, cur: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+            if k == cur.len() {
+                out.push(cur.clone());
+                return;
+            }
+            for i in k..cur.len() {
+                cur.swap(k, i);
+                rec(k + 1, cur, out);
+                cur.swap(k, i);
+            }
+        }
+        let mut out = Vec::new();
+        let mut cur: Vec<usize> = (0..n).collect();
+        rec(0, &mut cur, &mut out);
+        out
+    }
+
+    fn permutation_parity(p: &[usize]) -> usize {
+        let mut parity = 0;
+        for i in 0..p.len() {
+            for j in (i + 1)..p.len() {
+                if p[i] > p[j] {
+                    parity ^= 1;
+                }
+            }
+        }
+        parity
+    }
+
+    #[test]
     fn interval_det5_contains_the_exact_value() {
         use crate::interval::{det5, Iv};
         let mut rng = rand::rngs::StdRng::seed_from_u64(0x5eed_de7);
