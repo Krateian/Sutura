@@ -18,9 +18,18 @@
 //!    points, degeneracies) and report boundary loops and non-manifold edges;
 //! 6. hand off canonical `f64` vertices/triangles plus a deterministic hash.
 //!
-//! The algorithm follows the published exact-arrangement and CDT-validity
-//! literature; no GPL/AGPL/LGPL source is copied.  See
-//! `.claude/cdt3d-design.md` for the licensing and algorithmic rationale.
+//! Implementation note.  This is a clean-room implementation written from the
+//! published literature, not a port: no GPL/AGPL/LGPL source is copied or
+//! translated.  The constrained Delaunay tetrahedralization follows Shewchuk's
+//! work on constrained Delaunay tetrahedralizations and provably good boundary
+//! recovery; the acute-vertex segment-recovery rules follow Si (TetGen, a
+//! Delaunay-Based Quality Tetrahedral Mesh Generator, ACM TOMS 2015); and the
+//! face-cavity retriangulation with a gift-wrapping fallback follows Diazzi,
+//! Panozzo, Vaxman and Attene, "Constrained Delaunay Tetrahedrization: A Robust
+//! and Practical Approach" (ACM TOG 42(6), 2023; arXiv:2309.09805).  The initial
+//! unconstrained Delaunay uses the vendored Geogram Delaunay PSM (BSD-3-Clause),
+//! and the exact `orient3d`/`insphere` predicates use the `robust` crate
+//! (Shewchuk's adaptive predicates).
 
 pub mod certificate;
 pub mod dt;

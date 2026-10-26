@@ -1451,10 +1451,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "fTetWild baseline; requires /tmp/opencode/ftw-baseline or CDT3D_FTETWILD_DIR"]
+    #[ignore = "fTetWild baseline; requires CDT3D_FTETWILD_DIR (skips when unset)"]
     fn ftetwild_baseline_diagnostic() {
-        let dir = std::env::var("CDT3D_FTETWILD_DIR")
-            .unwrap_or_else(|_| "/tmp/opencode/ftw-baseline".into());
+        let dir = match std::env::var("CDT3D_FTETWILD_DIR") {
+            Ok(dir) => dir,
+            Err(_) => {
+                println!(
+                    "FTW baseline skipped: set CDT3D_FTETWILD_DIR to the fTetWild output directory"
+                );
+                return;
+            }
+        };
         let samples = [
             ("real", "thingi10k_100827.stl", "thingi10k_100827.stl.obj"),
             ("fixture", "case1_open_cup.stl", "case1_open_cup.stl.obj"),

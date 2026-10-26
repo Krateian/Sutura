@@ -12,9 +12,11 @@ All notable changes to this project are documented here.
   where it can and then extracts a watertight solid from it. It is experimental
   and off unless you choose it: turn it on with `--solid-engine cdt` on the
   command line, **Options → Repair → Solid engine** in the graphical interface,
-  or the `solid_engine` key in the settings file. fTetWild stays the default,
-  and if CDT cannot certify its result, fails or runs out of time, Sutura falls
-  back to fTetWild automatically. Known limitation: for now CDT is slow on
+  or the `solid_engine` key in the settings file. fTetWild stays the default;
+  if CDT's result fails its checks (watertight, one closed outward-facing
+  solid) or runs out of time, Sutura falls back to fTetWild automatically. When
+  CDT runs out of time, fTetWild then runs with its own time limit, so the worst
+  case takes about twice as long. Known limitation: for now CDT is slow on
   large meshes (tens of thousands of faces), where fTetWild remains the better
   choice.
 
