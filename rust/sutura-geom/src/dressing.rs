@@ -720,9 +720,17 @@ pub fn dressing_coat(
     let t_extract = std::time::Instant::now();
     let dc = if crate::hermite::enabled_by_default() {
         // Exact crossings on the same marching-tetrahedra topology: the offset
-        // `c = r - drain * healthy` is the smooth part of `F = s - c`.
+        // `c = r - drain * healthy - corr` is the smooth part of `F = s - c`
+        // (the band-cell adaptive-drain correction is added to the field above).
         let cfield: Vec<f32> = (0..n)
-            .map(|i| r_dense[i] - if do_drain { drain32 * healthy_at(i) } else { 0.0 })
+            .map(|i| {
+                r_dense[i]
+                    - if do_drain { drain32 * healthy_at(i) } else { 0.0 }
+                    - match corr_values {
+                        Some(cv) if band_mask[i] != 0 => cv[i],
+                        _ => 0.0,
+                    }
+            })
             .collect();
         let inside = |p: [f64; 3]| match antipodal_gwn {
             Some(ref g) => g.inside_with_fallback(p).0,
