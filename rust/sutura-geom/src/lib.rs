@@ -1029,7 +1029,7 @@ fn morph_close<'py>(
 /// re-centres on the original boundary while the defect coverage is kept.
 /// `0.0` (the default) leaves the plain outward coat.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0))]
+#[pyo3(signature = (verts, tris, defect_pts=None, voxel=None, r_base=None, r_max=None, sigma=None, band_voxels=2.0, margin_voxels=3.0, drain=0.0, corr_origin=None, corr_dims=None, corr_voxel=None, corr_values=None))]
 fn dressing_coat<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -1042,6 +1042,10 @@ fn dressing_coat<'py>(
     band_voxels: f64,
     margin_voxels: f64,
     drain: f64,
+    corr_origin: Option<[f64; 3]>,
+    corr_dims: Option<[usize; 3]>,
+    corr_voxel: Option<f64>,
+    corr_values: Option<PyArrayLike1<'py, f32, AllowTypeChange>>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -1067,7 +1071,18 @@ fn dressing_coat<'py>(
         margin_voxels,
         drain,
     };
-    let m = dressing::dressing_coat(&rv, &rt, &dp, &params);
+    let corr = match (corr_origin, corr_dims, corr_voxel, &corr_values) {
+        (Some(origin), Some(dims), Some(voxel), Some(values)) => {
+            Some(dressing::CorrectionGrid {
+                origin,
+                dims,
+                voxel,
+                values: values.as_array().to_vec(),
+            })
+        }
+        _ => None,
+    };
+    let m = dressing::dressing_coat(&rv, &rt, &dp, &params, corr.as_ref());
 
     let out_verts: Vec<Vec<f64>> = m.verts.iter().map(|p| p.to_vec()).collect();
     let out_tris: Vec<Vec<i32>> = m
@@ -1095,6 +1110,7 @@ fn dressing_coat<'py>(
     info.set_item("coarsened", m.info.coarsened)?;
     info.set_item("fallback", m.info.fallback)?;
     info.set_item("manifold", m.info.manifold)?;
+    info.set_item("correction_applied", m.info.correction_applied)?;
     info.set_item("seconds", m.info.seconds)?;
     info.set_item("band_seconds", m.info.band_seconds)?;
     info.set_item("field_seconds", m.info.field_seconds)?;
