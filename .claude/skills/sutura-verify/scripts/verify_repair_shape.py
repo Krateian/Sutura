@@ -378,7 +378,7 @@ def _render_pair(in_raw, out_raw, added_keys, crop, out_dir, tag, w=720, h=540):
 # main
 # --------------------------------------------------------------------------- #
 def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
-           tag=None, repo=None, surface=True):
+           tag=None, repo=None, surface=True, surface_budget='sweep'):
     wire_repo(repo or default_repo())
     in_raw = read_stl_raw(in_path)
     out_raw = read_stl_raw(out_path)
@@ -442,7 +442,8 @@ def verify(in_path, out_path, crop=None, out_dir=None, do_render=False,
     if surface:
         try:
             import surface_metrics as sm
-            result.update(sm.measure(vi, ti, vo, to, in_rep))
+            result.update(sm.measure(vi, ti, vo, to, in_rep,
+                                     budget=surface_budget))
         except Exception as e:  # noqa: BLE001
             result['surface_metrics_note'] = 'surface metrics failed: %s' % e
 
@@ -479,12 +480,15 @@ def main():
                     help='repository root (default: parent of scripts/)')
     ap.add_argument('--no-surface', dest='surface', action='store_false',
                     help='skip the feature-recall / healthy-fill metrics')
+    ap.add_argument('--surface-budget', choices=('sweep', 'gate'),
+                    default='sweep',
+                    help='surface sampling budget (default: sweep 4k x 10)')
     args = ap.parse_args()
     if os.environ.get('QT_QPA_PLATFORM') is None:
         os.environ['QT_QPA_PLATFORM'] = 'offscreen'
     r = verify(args.input, args.output, crop=args.crop, out_dir=args.out_dir,
                do_render=args.render, tag=args.tag, repo=args.repo,
-               surface=args.surface)
+               surface=args.surface, surface_budget=args.surface_budget)
     print(json.dumps(r, indent=2))
 
 

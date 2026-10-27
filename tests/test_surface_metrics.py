@@ -75,6 +75,27 @@ def test_identity_recall_and_zero_fill():
         m['healthy_removed_mm3'], m['feature_input_sharp_edges']))
 
 
+def test_budget_profiles():
+    v, t = _box()
+    rep = detect(v, t, with_indices=True)
+    c = v.mean(axis=0)
+    grow = c + (v - c) * 1.05
+    sw = sm.measure(v, t, grow, t, rep)
+    ga = sm.measure(v, t, grow, t, rep, budget='gate')
+    cu = sm.measure(v, t, grow, t, rep, area_samples=1234, layers=6)
+    assert sw['healthy_budget'] == 'sweep', sw
+    assert (sw['healthy_area_samples'], sw['healthy_offset_layers']) == (4000, 10)
+    assert ga['healthy_budget'] == 'gate', ga
+    assert (ga['healthy_area_samples'], ga['healthy_offset_layers']) == (10000, 16)
+    assert cu['healthy_budget'] == 'custom', cu
+    assert (cu['healthy_area_samples'], cu['healthy_offset_layers']) == (1234, 6)
+    assert sw['feature_samples_per_edge'] == 8, sw
+    print('budgets: sweep=%sx%s gate=%sx%s custom=%sx%s' % (
+        sw['healthy_area_samples'], sw['healthy_offset_layers'],
+        ga['healthy_area_samples'], ga['healthy_offset_layers'],
+        cu['healthy_area_samples'], cu['healthy_offset_layers']))
+
+
 def test_open_box_cap_is_not_counted():
     vo, to = _box(open_top=True)
     vc, tc = _box()
@@ -117,6 +138,7 @@ def test_translated_hole_loses_recall():
 
 if __name__ == '__main__':
     test_identity_recall_and_zero_fill()
+    test_budget_profiles()
     test_open_box_cap_is_not_counted()
     test_growth_and_shrink()
     test_translated_hole_loses_recall()

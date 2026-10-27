@@ -98,8 +98,9 @@ def cli_report(stdout):
     return {}
 
 
-def measure(in_path, out_path, elapsed, repo):
-    m = vrs.verify(in_path, out_path, repo=repo)
+def measure(in_path, out_path, elapsed, repo, surface_budget='sweep'):
+    m = vrs.verify(in_path, out_path, repo=repo,
+                   surface_budget=surface_budget)
     m['time_s'] = round(elapsed, 2)
     return m
 
@@ -295,6 +296,7 @@ def judge_quality(b, c, tol):
 SURFACE_RECALL_DROP = 0.005
 SURFACE_FILL_RISE_MM3 = 1.0
 SURFACE_FILL_FRACTION = 1e-4
+SURFACE_BUDGETS = {'sweep': (4000, 10), 'gate': (10000, 16)}
 
 
 def _num(v):
@@ -319,7 +321,7 @@ def judge_surface(b, c):
     return flags, '; '.join(reasons)
 
 
-def _markdown_modes(results, mode):
+def _markdown_modes(results, mode, surface_budget='sweep'):
     if mode == 'byte':
         lines = ['# Byte gate (refactors)', '',
                  '| Mesh | Baseline MD5 | Candidate MD5 | Verdict | Note |',
@@ -331,7 +333,11 @@ def _markdown_modes(results, mode):
                 r['name'], (b.get('md5') or '')[:8], (c.get('md5') or '')[:8],
                 r['verdict'], r.get('verdict_reason', '')))
         return '\n'.join(lines) + '\n'
+    area, layers = SURFACE_BUDGETS.get(surface_budget, (0, 0))
     lines = ['# Quality gate (behaviour changes)', '',
+             '- Surface budget: `%s` (`%d` area samples x `%d` offset '
+             'layers).' % (surface_budget, area, layers),
+             '',
              '| Mesh | Holes b/c | NM b/c | SI b/c | 2-sided max b/c | '
              'Vol err b/c | Parts b/c | Recall b/c | Fill b/c | Removed b/c | '
              'Surface | Verdict | Changed |',
@@ -420,6 +426,9 @@ def main():
     ap.add_argument('--extra-arg', action='append', default=[])
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--timeout', type=int, default=900)
+    ap.add_argument('--surface-budget', choices=('sweep', 'gate'),
+                    default='sweep',
+                    help='surface sampling budget (default: sweep 4k x 10)')
     ap.add_argument('--visual', dest='visual', action='store_true', default=None,
                     help='visual QA: render comparison on changed meshes (default on with --quality)')
     ap.add_argument('--no-visual', dest='visual', action='store_false',
@@ -501,7 +510,8 @@ def main():
         with open(out_stl, 'rb') as f:
             md5 = hashlib.md5(f.read()).hexdigest()
         if mode in ('quality', 'feature'):
-            meas = measure(in_path, out_stl, el, repo_x)
+            meas = measure(in_path, out_stl, el, repo_x,
+                           args.surface_budget)
         else:
             meas = {'time_s': round(el, 2)}
         meas.update({'md5': md5, 'ftetwild_adopted': ftetwild_adopted(report),
@@ -601,7 +611,7 @@ def main():
         md = generate_markdown([r for r in results if r['verdict'] != 'ERROR'],
                                args.opt_out_flag)
     else:
-        md = _markdown_modes(results, mode)
+        md = _markdown_modes(results, mode, args.surface_budget)
     with open(os.path.join(out_dir, 'report.md'), 'w') as f:
         f.write(md)
     bad = [r['name'] for r in results if r['verdict'] in ('WORSE', 'CHANGED', 'ERROR', 'VISUAL-WORSE')]

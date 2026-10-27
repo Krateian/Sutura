@@ -18,6 +18,13 @@ row.
 The input defect report and face mask are supplied by the caller, so the
 module does not depend on ``defects.py`` and cannot drift from the repair's
 own classification.
+
+Sampling budgets are named: ``sweep`` (4k area samples x 10 offset layers,
+the default for corpus sweeps) and ``gate`` (10k x 16, for final gates).
+Every result records ``healthy_budget`` plus the actual area/layer counts, and
+every report must show it.  Fill/removed are normal-lattice prism estimates:
+adjacent normal prisms overlap at convex edges, so the absolute mm3 is biased;
+use them for relative before/after comparison, not absolute metrology.
 """
 import time
 
@@ -37,12 +44,35 @@ RECALL_SAMPLES_PER_EDGE = 8
 DETAIL_TOL_MM = 0.1
 DETAIL_TOL_FRACTION = 0.002
 K_TOL = 4.0
-AREA_SAMPLES = 10000
+SWEEP_AREA_SAMPLES = 4000
+SWEEP_OFFSET_LAYERS = 10
+GATE_AREA_SAMPLES = 10000
+GATE_OFFSET_LAYERS = 16
+SURFACE_BUDGETS = {
+    'sweep': (SWEEP_AREA_SAMPLES, SWEEP_OFFSET_LAYERS),
+    'gate': (GATE_AREA_SAMPLES, GATE_OFFSET_LAYERS),
+}
+DEFAULT_SURFACE_BUDGET = 'sweep'
+# Backward-compatible aliases for the default (sweep) budget.
+AREA_SAMPLES = SWEEP_AREA_SAMPLES
+OFFSET_LAYERS = SWEEP_OFFSET_LAYERS
 MAX_AREA_SAMPLES = 30000
-OFFSET_LAYERS = 16
 BAND_FACTOR = 8.0
 BAND_FRACTION = 0.01
 WINDING_CHUNK = 65536
+
+
+def resolve_budget(budget=None, area_samples=None, layers=None):
+    """Resolve a named budget, returning (area, layers, label)."""
+    name = str(budget or DEFAULT_SURFACE_BUDGET).lower()
+    if name not in SURFACE_BUDGETS:
+        raise ValueError('unknown surface budget %r (expected sweep or gate)'
+                         % budget)
+    base_area, base_layers = SURFACE_BUDGETS[name]
+    area = base_area if area_samples is None else int(area_samples)
+    lay = base_layers if layers is None else int(layers)
+    label = name if (area == base_area and lay == base_layers) else 'custom'
+    return area, lay, label
 
 
 def _bbox_diag(v):
@@ -238,6 +268,7 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
         'feature_match_deg': float(match_deg),
         'feature_input_sharp_edges': int(len(in_e)),
         'feature_output_sharp_edges': int(len(out_e)),
+        'feature_samples_per_edge': int(max_per_edge),
         'feature_samples': int(len(q)),
         'feature_total_length_mm': round(float(qw.sum()), 4),
         'feature_kept_length_mm': 0.0,
@@ -388,8 +419,9 @@ def _is_closed(t):
 
 def healthy_fill(vi, ti, vo, to, defect_report=None,
                  defect_face_mask=None, tol=None, k_tol=K_TOL,
-                 area_samples=AREA_SAMPLES, max_area_samples=MAX_AREA_SAMPLES,
-                 layers=OFFSET_LAYERS, band_factor=BAND_FACTOR,
+                 budget=DEFAULT_SURFACE_BUDGET,
+                 area_samples=None, max_area_samples=MAX_AREA_SAMPLES,
+                 layers=None, band_factor=BAND_FACTOR,
                  band_fraction=BAND_FRACTION):
     """Added / removed volume on healthy skin.
 
@@ -403,6 +435,8 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
     ti = np.asarray(ti, dtype=np.int64)
     vo = np.asarray(vo, dtype=np.float64)
     to = np.asarray(to, dtype=np.int64)
+    area_samples, layers, budget_label = resolve_budget(
+        budget, area_samples, layers)
     tol = float(tol if tol is not None else default_tol(vi))
     diag = _bbox_diag(vi)
     band = max(float(band_factor) * tol, float(band_fraction) * diag)
@@ -416,6 +450,7 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
         'healthy_fill_fraction': None,
         'healthy_removed_mm3': None,
         'healthy_removed_fraction': None,
+        'healthy_budget': budget_label,
         'healthy_band_mm': round(band, 6),
         'healthy_delta_mm': round(delta, 6),
         'healthy_area_samples': int(area_samples),
@@ -509,13 +544,15 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
 
 
 def measure(vi, ti, vo, to, defect_report=None, *, tol=None,
+            budget=DEFAULT_SURFACE_BUDGET,
             recall_samples_per_edge=RECALL_SAMPLES_PER_EDGE,
-            area_samples=AREA_SAMPLES, layers=OFFSET_LAYERS):
+            area_samples=None, layers=None):
     """Both metrics as one flat dict, ready to merge into a verify result."""
     mask = defect_face_mask(ti, defect_report)
     out = feature_recall(vi, ti, vo, to, defect_face_mask=mask, tol=tol,
                          max_per_edge=recall_samples_per_edge)
     out.update(healthy_fill(vi, ti, vo, to, defect_report=defect_report,
-                            defect_face_mask=mask, tol=tol,
+                            defect_face_mask=mask, tol=tol, budget=budget,
                             area_samples=area_samples, layers=layers))
+    out['surface_budget'] = out.get('healthy_budget', 'custom')
     return out
