@@ -44,6 +44,19 @@ const EDGE: [[usize; 2]; 12] = [
     [3, 7],
 ];
 
+/// Star decomposition of the cube around the body diagonal 0-7.  The earlier
+/// table was authored for a corner numbering where index 6 was the corner
+/// opposite 0; with this module's `CORNER` (6 = (0,1,1)) it left overlaps and
+/// gaps and produced a cracked, non-manifold surface.
+const TETS: [[usize; 4]; 6] = [
+    [0, 5, 1, 7],
+    [0, 1, 3, 7],
+    [0, 3, 2, 7],
+    [0, 2, 6, 7],
+    [0, 6, 4, 7],
+    [0, 4, 5, 7],
+];
+
 /// Cyclic corner order of each cell face.
 const FACE_CORNERS: [[usize; 4]; 6] = [
     [0, 2, 6, 4],
@@ -157,7 +170,56 @@ pub fn marching_tets_mesh(
     origin: [f64; 3],
     voxel: f64,
 ) -> DcMesh {
-    let (v, t) = marching_tets(f, dims, origin, voxel);
+    marching_tets_mesh_exact(f, dims, origin, voxel, None)
+}
+
+/// Sign-change tetrahedron edges of `f` as sorted unique node pairs
+/// `(lo, hi)` with `lo < hi` (linear node indices, `i`-fastest).  These are the
+/// edges `marching_tets_mesh_exact` looks crossing positions up for.
+pub fn tet_crossing_edges(f: &[f32], dims: [usize; 3]) -> Vec<(usize, usize)> {
+    let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    if nx < 2 || ny < 2 || nz < 2 {
+        return out;
+    }
+    for ck in 0..(nz - 1) {
+        for cj in 0..(ny - 1) {
+            for ci in 0..(nx - 1) {
+                let mut ids = [0usize; 8];
+                for c in 0..8 {
+                    ids[c] = (ci + CORNER[c][0]) + nx * ((cj + CORNER[c][1]) + ny * (ck + CORNER[c][2]));
+                }
+                for tet in TETS {
+                    for x in 0..4 {
+                        for y in (x + 1)..4 {
+                            let (a, b) = (ids[tet[x]], ids[tet[y]]);
+                            if (f[a] < 0.0) != (f[b] < 0.0) {
+                                out.push(if a < b { (a, b) } else { (b, a) });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Marching tetrahedra where each crossing sits at `exact[(lo, hi)]` (the
+/// fraction from node `lo` toward node `hi`) when present, else at the linear
+/// interpolation.  Every vertex stays on its tetrahedron edge between the two
+/// sign-change nodes, so the combinatorics, two-manifoldness and the absence of
+/// self-intersections of the plain marching-tetrahedra surface are unchanged.
+pub fn marching_tets_mesh_exact(
+    f: &[f32],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+    exact: Option<&HashMap<(usize, usize), f64>>,
+) -> DcMesh {
+    let (v, t) = marching_tets(f, dims, origin, voxel, exact);
     let manifold = mesh_is_manifold(&v, &t);
     DcMesh {
         verts: v,
@@ -615,19 +677,8 @@ fn marching_tets(
     dims: [usize; 3],
     origin: [f64; 3],
     voxel: f64,
+    exact: Option<&HashMap<(usize, usize), f64>>,
 ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
-    // Star decomposition of the cube around the body diagonal 0-7.  The
-    // earlier table was authored for a corner numbering where index 6 was the
-    // corner opposite 0; with this module's `CORNER` (6 = (0,1,1)) it left
-    // overlaps and gaps and produced a cracked, non-manifold surface.
-    const TETS: [[usize; 4]; 6] = [
-        [0, 5, 1, 7],
-        [0, 1, 3, 7],
-        [0, 3, 2, 7],
-        [0, 2, 6, 7],
-        [0, 6, 4, 7],
-        [0, 4, 5, 7],
-    ];
     let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
     if nx < 2 || ny < 2 || nz < 2 {
         return (Vec::new(), Vec::new());
@@ -648,9 +699,11 @@ fn marching_tets(
             for ci in 0..(nx - 1) {
                 let mut vals = [0.0f32; 8];
                 let mut pos = [[0.0f64; 3]; 8];
+                let mut ids = [0usize; 8];
                 for c in 0..8 {
                     vals[c] = at(ci + CORNER[c][0], cj + CORNER[c][1], ck + CORNER[c][2]);
                     pos[c] = cpos(ci, cj, ck, c);
+                    ids[c] = (ci + CORNER[c][0]) + nx * ((cj + CORNER[c][1]) + ny * (ck + CORNER[c][2]));
                 }
                 for tet in TETS {
                     let mut inside = [false; 4];
@@ -669,11 +722,21 @@ fn marching_tets(
                     let crossing = |ia: usize, ib: usize| -> [f64; 3] {
                         let va = vals[tet[ia]] as f64;
                         let vb = vals[tet[ib]] as f64;
-                        let t = if (vb - va).abs() > 1e-12 {
+                        let mut t = if (vb - va).abs() > 1e-12 {
                             (-va / (vb - va)).clamp(0.0, 1.0)
                         } else {
                             0.5
                         };
+                        if let Some(tab) = exact {
+                            let (na, nb) = (ids[tet[ia]], ids[tet[ib]]);
+                            if na < nb {
+                                if let Some(&te) = tab.get(&(na, nb)) {
+                                    t = te;
+                                }
+                            } else if let Some(&te) = tab.get(&(nb, na)) {
+                                t = 1.0 - te;
+                            }
+                        }
                         let pa = pos[tet[ia]];
                         let pb = pos[tet[ib]];
                         [
@@ -791,7 +854,7 @@ mod tests {
         // with this module's CORNER it left cracks.  Weld by position and
         // require every undirected edge to be used exactly twice.
         let (f, dims, origin, voxel) = sphere_field(24);
-        let (v, t) = marching_tets(&f, dims, origin, voxel);
+        let (v, t) = marching_tets(&f, dims, origin, voxel, None);
         let scale = 1.0 / (voxel * 1.0e-6);
         let mut map: std::collections::HashMap<(i64, i64, i64), u32> =
             std::collections::HashMap::new();

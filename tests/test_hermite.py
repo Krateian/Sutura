@@ -90,3 +90,46 @@ def test_env_opt_out_matches_kwarg(monkeypatch):
     monkeypatch.setenv("SUTURA_HERMITE", "1")
     on = sutura_geom.morph_close(v, t, 0.6, 0.4)
     assert on[2]["hermite"]["used"]
+
+
+# --- Dressing: exact crossings on the marching-tetrahedra coat ---------------
+def _coat(v, t, voxel, monkeypatch, hermite):
+    monkeypatch.setenv("SUTURA_HERMITE", "1" if hermite else "0")
+    r = 1.0 * voxel
+    cv, ct, info = sutura_geom.dressing_coat(
+        v, t, defect_pts=np.zeros((0, 3)), voxel=voxel, r_base=r, r_max=r,
+        sigma=3.0 * voxel, drain=r)
+    return np.asarray(cv), np.asarray(ct, dtype=np.int64), info
+
+
+def _abs_offset(v, t, cv, ct):
+    q, _d, f = sutura_geom.closest_points(v, t.astype(np.int64), cv)
+    tri = v[t[np.asarray(f)]]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    n /= np.linalg.norm(n, axis=1, keepdims=True)
+    return np.abs(((cv - np.asarray(q)) * n).sum(axis=1))
+
+
+def test_dressing_exact_crossings_remove_the_extractor_offset(monkeypatch):
+    m = trimesh.creation.icosphere(subdivisions=3, radius=10.0)
+    v, t = _arrays(m)
+    voxel = 20.0 / 48
+    bv, bt, binfo = _coat(v, t, voxel, monkeypatch, False)
+    hv, ht, hinfo = _coat(v, t, voxel, monkeypatch, True)
+    assert binfo["manifold"] and hinfo["manifold"]
+    assert len(ht) == len(bt)
+    b = _abs_offset(v, t, bv, bt)
+    h = _abs_offset(v, t, hv, ht)
+    assert np.percentile(h, 95) < 0.25 * np.percentile(b, 95), (
+        np.percentile(b, 95), np.percentile(h, 95))
+    assert int(sutura_geom.self_intersecting_faces(hv, ht)[1]) == 0
+
+
+def test_dressing_opt_out_is_deterministic_and_unchanged(monkeypatch):
+    v, t = _arrays(trimesh.creation.icosphere(subdivisions=2, radius=10.0))
+    a = _coat(v, t, 0.5, monkeypatch, False)
+    b = _coat(v, t, 0.5, monkeypatch, False)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+    c = _coat(v, t, 0.5, monkeypatch, True)
+    d = _coat(v, t, 0.5, monkeypatch, True)
+    assert np.array_equal(c[0], d[0]) and np.array_equal(c[1], d[1])

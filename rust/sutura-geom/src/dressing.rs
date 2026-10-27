@@ -718,7 +718,20 @@ pub fn dressing_coat(
 
     let field_seconds = t_field.elapsed().as_secs_f64();
     let t_extract = std::time::Instant::now();
-    let dc = marching_tets_mesh(&field, dims, origin, voxel);
+    let dc = if crate::hermite::enabled_by_default() {
+        // Exact crossings on the same marching-tetrahedra topology: the offset
+        // `c = r - drain * healthy` is the smooth part of `F = s - c`.
+        let cfield: Vec<f32> = (0..n)
+            .map(|i| r_dense[i] - if do_drain { drain32 * healthy_at(i) } else { 0.0 })
+            .collect();
+        let inside = |p: [f64; 3]| match antipodal_gwn {
+            Some(ref g) => g.inside_with_fallback(p).0,
+            None => bvh.winding_at(p) > 0.5,
+        };
+        crate::hermite::exact_coat_mesh(bvh, &field, &cfield, dims, origin, voxel, &inside).0
+    } else {
+        marching_tets_mesh(&field, dims, origin, voxel)
+    };
     let (out_verts, mut out_tris) = weld_and_clean(&dc.verts, &dc.tris, voxel);
     orient_consistently(&mut out_tris);
     let manifold = mesh_is_manifold(&out_verts, &out_tris);

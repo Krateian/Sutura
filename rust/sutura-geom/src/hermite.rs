@@ -175,6 +175,170 @@ pub fn build_edges(
     HermiteEdges { map, nx, ny, stats }
 }
 
+#[derive(Default, Clone, Copy, Debug)]
+pub struct CrossingStats {
+    pub edges: usize,
+    pub exact: usize,
+    pub distance_queries: usize,
+}
+
+/// Maximum distance evaluations per edge (the two bracket ends are free).
+const MAX_EVALS: usize = 6;
+/// Stop when `|F|` falls below this fraction of a voxel.
+const F_TOL_VOXELS: f64 = 1e-3;
+
+/// Exact crossing fractions of `F = s - c` on the given sign-change edges.
+///
+/// `field` holds `F` at the nodes, `cfield` the smooth offset `c` (so that
+/// `s = F + c` is the exact signed distance of the original at a node).  On
+/// an edge `F(p) = sign * u(p) - c(p)`, with `u` the exact unsigned distance
+/// (BVH) and `c` trilinearly interpolated.  The sign of `s` is that of the end
+/// nodes when they agree, else `inside(p)` (the caller's winding oracle), since
+/// near the original surface a sign error turns `F` into `|u| - c`.  The root
+/// is bracketed by the nodal values and found with the Illinois variant of
+/// regula falsi.  An edge whose root cannot be bracketed, evaluated or
+/// converged within the evaluation budget keeps no entry (linear crossing).
+///
+/// The result maps `(lo, hi)` to the fraction from node `lo` toward `hi`.
+pub fn exact_offset_crossings(
+    bvh: &MeshBvh,
+    field: &[f32],
+    cfield: &[f32],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+    edges: &[(usize, usize)],
+    inside: &(dyn Fn([f64; 3]) -> bool + Sync),
+) -> (HashMap<(usize, usize), f64>, CrossingStats) {
+    let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
+    let coords = |n: usize| (n % nx, (n / nx) % ny, n / (nx * ny));
+    let c_at = |p: [f64; 3]| -> f64 {
+        let g = |d: usize, n: usize| {
+            ((p[d] - origin[d]) / voxel).clamp(0.0, (n - 1) as f64 - 1e-9)
+        };
+        let (gx, gy, gz) = (g(0, nx), g(1, ny), g(2, nz));
+        let (i, j, k) = (gx as usize, gy as usize, gz as usize);
+        let (fx, fy, fz) = (gx - i as f64, gy - j as f64, gz - k as f64);
+        let v = |a: usize, b: usize, c: usize| cfield[a + nx * (b + ny * c)] as f64;
+        let l = |a: f64, b: f64, t: f64| a + t * (b - a);
+        let x00 = l(v(i, j, k), v(i + 1, j, k), fx);
+        let x10 = l(v(i, j + 1, k), v(i + 1, j + 1, k), fx);
+        let x01 = l(v(i, j, k + 1), v(i + 1, j, k + 1), fx);
+        let x11 = l(v(i, j + 1, k + 1), v(i + 1, j + 1, k + 1), fx);
+        l(l(x00, x10, fy), l(x01, x11, fy), fz)
+    };
+
+    let per: Vec<(Option<f64>, usize)> = edges
+        .par_iter()
+        .map(|&(lo, hi)| {
+            let (fa, fb) = (field[lo] as f64, field[hi] as f64);
+            let (sa, sb) = (fa + cfield[lo] as f64, fb + cfield[hi] as f64);
+            let (ia, ja, ka) = coords(lo);
+            let (ib, jb, kb) = coords(hi);
+            let pa = [
+                origin[0] + voxel * ia as f64,
+                origin[1] + voxel * ja as f64,
+                origin[2] + voxel * ka as f64,
+            ];
+            let pb = [
+                origin[0] + voxel * ib as f64,
+                origin[1] + voxel * jb as f64,
+                origin[2] + voxel * kb as f64,
+            ];
+            let mut queries = 0usize;
+            let mut eval = |t: f64| -> f64 {
+                let p = [
+                    pa[0] + t * (pb[0] - pa[0]),
+                    pa[1] + t * (pb[1] - pa[1]),
+                    pa[2] + t * (pb[2] - pa[2]),
+                ];
+                queries += 1;
+                let u = bvh.unsigned_distance_at(p);
+                let sg = if (sa < 0.0) == (sb < 0.0) {
+                    if sa < 0.0 { -1.0 } else { 1.0 }
+                } else if inside(p) {
+                    -1.0
+                } else {
+                    1.0
+                };
+                sg * u - c_at(p)
+            };
+            // Bracket ends use the nodal values (exact by construction).
+            let (mut t0, mut f0, mut t1, mut f1) = (0.0f64, fa, 1.0f64, fb);
+            if !((f0 < 0.0) != (f1 < 0.0)) {
+                return (None, queries);
+            }
+            let tol = F_TOL_VOXELS * voxel;
+            let mut side = 0i32;
+            let mut t = if (f1 - f0).abs() > 1e-12 {
+                (-f0 / (f1 - f0)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            for _ in 0..MAX_EVALS {
+                let ft = eval(t);
+                if !ft.is_finite() {
+                    return (None, queries);
+                }
+                if ft.abs() <= tol {
+                    return (Some(t), queries);
+                }
+                if (ft < 0.0) == (f0 < 0.0) {
+                    t0 = t;
+                    f0 = ft;
+                    if side == -1 {
+                        f1 *= 0.5;
+                    }
+                    side = -1;
+                } else {
+                    t1 = t;
+                    f1 = ft;
+                    if side == 1 {
+                        f0 *= 0.5;
+                    }
+                    side = 1;
+                }
+                let d = f1 - f0;
+                t = if d.abs() > 1e-300 { (t0 * f1 - t1 * f0) / d } else { 0.5 * (t0 + t1) };
+                if !t.is_finite() {
+                    return (None, queries);
+                }
+                t = t.clamp(t0.min(t1), t0.max(t1));
+            }
+            (None, queries)
+        })
+        .collect();
+
+    let mut stats = CrossingStats { edges: edges.len(), ..Default::default() };
+    let mut map = HashMap::with_capacity(edges.len());
+    for (e, (t, q)) in edges.iter().zip(per) {
+        stats.distance_queries += q;
+        if let Some(t) = t {
+            stats.exact += 1;
+            map.insert(*e, t);
+        }
+    }
+    (map, stats)
+}
+
+/// Marching-tetrahedra coat of `F = s - c` with exact crossings (see
+/// `exact_offset_crossings`; unconverged edges keep the linear crossing); topology equals the plain marching-tetrahedra
+/// surface of `field`.  Also returns the crossing statistics.
+pub fn exact_coat_mesh(
+    bvh: &MeshBvh,
+    field: &[f32],
+    cfield: &[f32],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+    inside: &(dyn Fn([f64; 3]) -> bool + Sync),
+) -> (crate::dual_contour::DcMesh, CrossingStats) {
+    let edges = crate::dual_contour::tet_crossing_edges(field, dims);
+    let (tab, st) = exact_offset_crossings(bvh, field, cfield, dims, origin, voxel, &edges, inside);
+    let m = crate::dual_contour::marching_tets_mesh_exact(field, dims, origin, voxel, Some(&tab));
+    (m, st)
+}
+
 /// `SUTURA_HERMITE=0|false|no|off` opts out; ON by default.
 pub fn enabled_by_default() -> bool {
     match std::env::var("SUTURA_HERMITE") {
@@ -452,6 +616,44 @@ mod tests {
         let m2 = crate::dual_contour::dual_contour_hermite(&f, dims, origin, h, &hook2);
         assert_eq!(m.verts, m2.verts);
         assert_eq!(m.tris, m2.tris);
+    }
+
+    /// Exact crossings of the true signed distance of a cube: every coat
+    /// vertex lies on the cube surface (to the solver tolerance), the topology
+    /// is the plain marching-tetrahedra one, and each vertex is on its edge.
+    #[test]
+    fn exact_coat_vertices_lie_on_the_surface() {
+        let (bvh, _f, dims, origin, h) = cube_fixture();
+        let n = dims[0];
+        let mut f = vec![0f32; n * n * n];
+        for k in 0..n {
+            for j in 0..n {
+                for i in 0..n {
+                    let p = [
+                        origin[0] + h * i as f64,
+                        origin[1] + h * j as f64,
+                        origin[2] + h * k as f64,
+                    ];
+                    let u = bvh.unsigned_distance_at(p);
+                    let inside = p.iter().all(|x| x.abs() < 2.3);
+                    f[i + n * (j + n * k)] = if inside { -u } else { u } as f32;
+                }
+            }
+        }
+        let c = vec![0f32; n * n * n];
+        let inside = |p: [f64; 3]| p.iter().all(|x| x.abs() < 2.3);
+        let (m, st) = exact_coat_mesh(&bvh, &f, &c, dims, origin, h, &inside);
+        let plain = crate::dual_contour::marching_tets_mesh(&f, dims, origin, h);
+        assert!(st.edges > 0 && st.exact * 10 >= st.edges * 9, "{} of {}", st.exact, st.edges);
+        assert_eq!(m.tris, plain.tris);
+        let mut worst_exact = 0.0f64;
+        let mut worst_plain = 0.0f64;
+        for (a, b) in m.verts.iter().zip(&plain.verts) {
+            worst_exact = worst_exact.max(bvh.unsigned_distance_at(*a));
+            worst_plain = worst_plain.max(bvh.unsigned_distance_at(*b));
+        }
+        assert!(worst_exact < 2e-3 * h, "exact coat off surface: {worst_exact}");
+        assert!(worst_exact <= worst_plain + 1e-12);
     }
 
     #[test]
