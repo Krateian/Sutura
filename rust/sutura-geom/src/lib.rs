@@ -43,6 +43,7 @@ pub mod profile;
 pub mod rbf;
 pub mod raycast;
 pub mod resample;
+pub mod roi;
 pub mod shell;
 pub mod splint;
 pub mod tamponade;
@@ -2422,6 +2423,44 @@ fn interior_depth(
     Ok(melt::interior_depth_norm(&rv, &rt, max_cells))
 }
 
+/// Stitch two nested, near-planar boundary loops with a triangle band.
+///
+/// `loop_a` and `loop_b` are the two closed rims as `(P, 3)` and `(Q, 3)`
+/// float64 arrays.  Returns a list of `(i, j, k)` triples indexing into the
+/// concatenation `loop_a ++ loop_b`, or `None` when the seam cannot be built
+/// safely (not near-planar, a loop not simple, loops not nested, or a folded
+/// band whose area does not match the annulus).
+#[pyfunction]
+fn triangulate_annulus<'py>(
+    py: Python<'py>,
+    loop_a: PyArrayLike2<'py, f64, AllowTypeChange>,
+    loop_b: PyArrayLike2<'py, f64, AllowTypeChange>,
+) -> PyResult<Option<Bound<'py, PyList>>> {
+    let a = loop_a.as_array();
+    let b = loop_b.as_array();
+    if a.ncols() != 3 || b.ncols() != 3 {
+        return Err(PyValueError::new_err("loops must be Nx3"));
+    }
+    let mut la: Vec<[f64; 3]> = Vec::with_capacity(a.nrows());
+    for i in 0..a.nrows() {
+        la.push([a[[i, 0]], a[[i, 1]], a[[i, 2]]]);
+    }
+    let mut lb: Vec<[f64; 3]> = Vec::with_capacity(b.nrows());
+    for i in 0..b.nrows() {
+        lb.push([b[[i, 0]], b[[i, 1]], b[[i, 2]]]);
+    }
+    match roi::triangulate_annulus(&la, &lb) {
+        None => Ok(None),
+        Some(tris) => {
+            let list = PyList::empty(py);
+            for t in tris {
+                list.append((t[0], t[1], t[2]))?;
+            }
+            Ok(Some(list))
+        }
+    }
+}
+
 #[pymodule]
 fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(orient3d, m)?)?;
@@ -2469,6 +2508,7 @@ fn sutura_geom(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(diagnose, m)?)?;
     m.add_function(wrap_pyfunction!(interior_depth, m)?)?;
     m.add_function(wrap_pyfunction!(hole::close_holes, m)?)?;
+    m.add_function(wrap_pyfunction!(triangulate_annulus, m)?)?;
     m.add_function(wrap_pyfunction!(cluster::cluster_decimate, m)?)?;
     m.add_function(wrap_pyfunction!(decimate::decimate_qem, m)?)?;
     m.add_function(wrap_pyfunction!(resample::resample_uniform, m)?)?;

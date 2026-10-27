@@ -187,7 +187,7 @@ const PLANAR_MAX_STARTS: usize = 128;
 /// Best-fit plane of a loop: `(centroid, unit normal, extent, max out-of-plane
 /// distance)`.  The normal is the Newell normal (translation invariant); the
 /// extent is the loop's bounding-box diagonal.  `None` for a degenerate loop.
-fn loop_plane(pts: &[V3]) -> Option<(V3, V3, f64, f64)> {
+pub(crate) fn loop_plane(pts: &[V3]) -> Option<(V3, V3, f64, f64)> {
     let k = pts.len();
     if k < 3 {
         return None;
@@ -241,7 +241,7 @@ fn loop_plane(pts: &[V3]) -> Option<(V3, V3, f64, f64)> {
 
 /// Right-handed orthonormal 2D basis `(u, v)` of the plane with normal `n`
 /// (`u x v == n`).
-fn plane_basis(n: V3) -> (V3, V3) {
+pub(crate) fn plane_basis(n: V3) -> (V3, V3) {
     let ax = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
         [1.0, 0.0, 0.0]
     } else if n[1].abs() <= n[2].abs() {
@@ -255,7 +255,7 @@ fn plane_basis(n: V3) -> (V3, V3) {
 }
 
 /// Signed area of a 2D polygon (positive == counter-clockwise).
-fn signed_area_2d(uv: &[[f64; 2]]) -> f64 {
+pub(crate) fn signed_area_2d(uv: &[[f64; 2]]) -> f64 {
     let k = uv.len();
     let mut s = 0.0;
     for i in 0..k {
@@ -280,7 +280,7 @@ fn ori2(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
 /// Do two 2D segments cross (proper interior intersection or a collinear
 /// touch/overlap)?  Endpoint-only touching where the contact is a shared
 /// polygon vertex is filtered by the caller; here any contact counts.
-fn seg_proper_intersect(p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], p4: [f64; 2]) -> bool {
+pub(crate) fn seg_proper_intersect(p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], p4: [f64; 2]) -> bool {
     let d1 = ori2(p3, p4, p1);
     let d2 = ori2(p3, p4, p2);
     let d3 = ori2(p1, p2, p3);
@@ -301,7 +301,7 @@ fn seg_proper_intersect(p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], p4: [f64; 2]) 
 }
 
 /// Is the projected polygon simple (no non-adjacent edge crossings)?
-fn polygon_simple(uv: &[[f64; 2]]) -> bool {
+pub(crate) fn polygon_simple(uv: &[[f64; 2]]) -> bool {
     let k = uv.len();
     for i in 0..k {
         let a1 = uv[i];
