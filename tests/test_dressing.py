@@ -297,6 +297,76 @@ def test_adaptive_drain_iteration0_wins_ties():
     assert np.array_equal(np.asarray(ct), np.asarray(t0))
 
 
+def test_adaptive_drain_early_exit_skips_second_extraction():
+    """A negligible predicted correction must not trigger a second extraction.
+
+    The pre-loop selector returns iteration 0 when the predicted level-set
+    shift cannot move a crossing, so a no-gain mesh pays for one extraction
+    only (the loop is otherwise a full extra Rust build)."""
+    from unittest import mock
+    V = np.array(TET_V, float)
+    T = np.array(TET_T, np.int64)
+    voxel, r_base, r_max, sigma = 0.5, 1.0, 1.0, 1.0
+    defect = np.zeros(0, np.int64)
+    margin = r_max + 3.0 * voxel
+    box = np.vstack([V.min(0) - margin, V.max(0) + margin])
+    real = dressing._extract_iteration
+    calls = {'n': 0}
+
+    def counting(*a, **k):
+        calls['n'] += 1
+        return real(*a, **k)
+
+    # Force past the "target met at iteration 0" trigger so the negligible
+    # correction predictor is the one under test.
+    big = {'n': 100, 'median': 1.0, 'p95': 5.0, 'mean_abs': 1.0}
+    zeros = np.zeros((1, 1, 1), np.float32)
+    with mock.patch.object(dressing, '_extract_iteration',
+                           side_effect=counting), \
+            mock.patch.object(dressing, '_build_correction',
+                              return_value=zeros), \
+            mock.patch.object(dressing, '_iteration_stats',
+                              return_value=big):
+        cv, ct, _meta, loop = dressing._adaptive_coat(
+            V, T, voxel, r_base, r_max, sigma, defect, box, r_base)
+    assert calls['n'] == 1, calls
+    assert loop['chosen_iteration'] == 0, loop
+    assert loop['correction_applied'] is False, loop
+    v0, t0, _m0, _e0 = real(V, T, voxel, r_base, r_max, sigma, defect, box,
+                            r_base)
+    assert np.array_equal(np.asarray(cv), np.asarray(v0))
+    assert np.array_equal(np.asarray(ct), np.asarray(t0))
+
+
+def test_adaptive_drain_material_correction_still_runs_loop():
+    """A material predicted correction must still enter the drain loop."""
+    from unittest import mock
+    V = np.array(TET_V, float)
+    T = np.array(TET_T, np.int64)
+    voxel, r_base, r_max, sigma = 0.5, 1.0, 1.0, 1.0
+    defect = np.zeros(0, np.int64)
+    margin = r_max + 3.0 * voxel
+    box = np.vstack([V.min(0) - margin, V.max(0) + margin])
+    real = dressing._extract_iteration
+    calls = {'n': 0}
+
+    def counting(*a, **k):
+        calls['n'] += 1
+        return real(*a, **k)
+
+    big = {'n': 100, 'median': 1.0, 'p95': 5.0, 'mean_abs': 1.0}
+    material = np.full((1, 1, 1), float(voxel), np.float32)
+    with mock.patch.object(dressing, '_extract_iteration',
+                           side_effect=counting), \
+            mock.patch.object(dressing, '_build_correction',
+                              return_value=material), \
+            mock.patch.object(dressing, '_iteration_stats',
+                              return_value=big):
+        dressing._adaptive_coat(V, T, voxel, r_base, r_max, sigma, defect,
+                                box, r_base)
+    assert calls['n'] >= 2, calls
+
+
 def test_registry_method_16_and_opt_in():
     m = get_method('16')
     assert m is not None and m.id == 'dressing'

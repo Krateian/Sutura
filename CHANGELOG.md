@@ -21,7 +21,11 @@ All notable changes to this project are documented here.
   is ignored transparently and the constant drain is kept. The near-surface
   field is evaluated with the true winding sign in a one-and-a-half-voxel shell
   when a correction is present, so the correction shifts the isosurface by the
-  full delta on both the Rust and numpy engines.
+  full delta on both the Rust and numpy engines. A cheap pre-loop selector
+  returns iteration 0 before any corrected re-extraction when the healthy
+  deviation is already within half a voxel of the target or the predicted
+  level-set shift is below a quarter voxel (too small to move a crossing), so a
+  mesh the loop cannot improve pays for one extraction instead of two.
 
 ## [0.9.8] - 2026-10-31
 

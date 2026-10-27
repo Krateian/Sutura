@@ -137,6 +137,12 @@ ADAPTIVE_DRAIN_G_ZERO = 0.5
 ADAPTIVE_DRAIN_IMPROVE_EPS = 1e-3
 ADAPTIVE_DRAIN_TANGENT_EPS = 0.05
 ADAPTIVE_DRAIN_BAND_VOXELS = 2.0
+# Pre-loop selector (no-gain meshes must not pay a second extraction):
+# skip the loop when iteration 0's healthy p95 is already within this many
+# voxels of the target, or when the predicted level-set shift is below this
+# fraction of a voxel (too small to move an isosurface crossing).
+ADAPTIVE_DRAIN_TARGET_VOXELS = 0.5
+ADAPTIVE_DRAIN_MIN_SHIFT_FRAC = 0.25
 # Iteration 0 wins ties; a candidate with more pieces than iteration 0 is
 # rejected outright (strict, so the loop can never fragment the coat).
 ADAPTIVE_DRAIN_PARTS_SLACK = 0
@@ -914,6 +920,21 @@ def _adaptive_coat(v0, t0, voxel, r_base, r_max, sigma, defect_idx, box,
         'holes': h0, 'non_manifold': nm0, 'parts': p0, 'valid': True,
     }]
     if g_voxel is None:
+        return cv0, ct0, meta0, _loop_report(True, detail, 0, False, engine0)
+
+    # Cheap pre-loop selector: return iteration 0 without paying for the second
+    # (full) extraction when a corrected re-extraction cannot help.  Two
+    # triggers, either sufficient: (1) iteration 0 already meets the
+    # healthy-deviation target, or (2) the predicted level-set correction is
+    # too small to move a crossing.  The loop below is unchanged for meshes
+    # that pass the selector.
+    if st0['n'] == 0 or (
+            st0['p95'] is not None
+            and st0['p95'] <= ADAPTIVE_DRAIN_TARGET_VOXELS * g_voxel):
+        return cv0, ct0, meta0, _loop_report(True, detail, 0, False, engine0)
+    delta0 = _build_correction(best['dev'], best['healthy'], best['cv'],
+                               origin, dims, g_voxel, g0)
+    if float(np.max(np.abs(delta0))) < ADAPTIVE_DRAIN_MIN_SHIFT_FRAC * g_voxel:
         return cv0, ct0, meta0, _loop_report(True, detail, 0, False, engine0)
 
     corr_total = np.zeros(dims, np.float32)
