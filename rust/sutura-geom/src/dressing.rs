@@ -636,6 +636,14 @@ pub fn dressing_coat(
             (1.0 - (r_dense[idx] - r_base32) * inv_dr).clamp(0.0, 1.0)
         }
     };
+    // The `u <= r` "certainly inside" shortcut makes `F` a V-field (slope -1
+    // inside, +1 outside), so a constant correction added to both bracketing
+    // cells is attenuated by ~h/(2r).  When a correction is present, push the
+    // certainty edge down by one-and-a-half cells so the cells bracketing the
+    // isosurface take the true winding sign and `F` is a smooth signed distance
+    // across the surface; the correction then shifts it linearly.  Without a
+    // correction the field is byte-identical to before.
+    let corr_guard = if corr_values.is_some() { voxel32 * 1.5 } else { 0.0 };
 
     // Scalar field F = s - r, with the winding sign evaluated only for band
     // cells whose sign is not already forced negative by u < r.
@@ -668,7 +676,7 @@ pub fn dressing_coat(
                         // (`drain == 0` keeps the historical `u <= r`).  In the
                         // shell between `r - drain` and `r` the sign is needed:
                         // an outside cell there is already drained.
-                        if uu <= (r - drain32).max(0.0) {
+                        if uu <= (r - drain32 - corr_guard).max(0.0) {
                             val = -uu - r;
                         } else {
                             let x = origin[0] + voxel * i as f64;
@@ -839,6 +847,11 @@ mod tests {
             .collect()
     }
 
+    fn nearest_distances(m: &DressingMesh, verts: &[[f64; 3]], tris: &[[usize; 3]]) -> Vec<f64> {
+        let bvh = MeshBvh::from_arrays(verts, tris);
+        m.verts.iter().map(|p| bvh.closest_point(*p).1).collect()
+    }
+
     fn report_stats(tag: &str, offs: &[f64], voxel: f64) {
         let mut s = offs.to_vec();
         s.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -992,10 +1005,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "correction is attenuated by the MT kink at the u<=r certainty \
-branch: a uniform +0.2 field delta shifts the coat only ~0.04 instead of 0.2, \
-so Rust and numpy disagree.  Fix the field (true signed distance near the \
-surface) before enabling the loop.  See /tmp/surf-drain-handoff.md."]
     fn correction_grid_shifts_healthy_coat() {
         let (v, f) = cube(10.0);
         let p = DressingParams {
@@ -1005,8 +1014,19 @@ surface) before enabling the loop.  See /tmp/surf-drain-handoff.md."]
             sigma: Some(1.0),
             ..Default::default()
         };
-        let base = dressing_coat(&v, &f, &[], &p, None);
-        let n = base.info.dims[0] * base.info.dims[1] * base.info.dims[2];
+        // A correction is present in both legs so both use the smooth field;
+        // the *difference* then isolates the grid delta (a constant added to the
+        // kinked corr=None field would be attenuated by ~h/2r).
+        let zero = dressing_coat(&v, &f, &[], &p, None);
+        let n = zero.info.dims[0] * zero.info.dims[1] * zero.info.dims[2];
+        let corr0 = CorrectionGrid {
+            origin: zero.info.origin,
+            dims: zero.info.dims,
+            voxel: zero.info.voxel,
+            values: vec![0.0f32; n],
+        };
+        let base = dressing_coat(&v, &f, &[], &p, Some(&corr0));
+        assert!(base.info.correction_applied, "correction must apply");
         // A uniform positive field correction moves the isosurface inward.
         let delta = 0.2f32;
         let corr = CorrectionGrid {
@@ -1017,8 +1037,11 @@ surface) before enabling the loop.  See /tmp/surf-drain-handoff.md."]
         };
         let shifted = dressing_coat(&v, &f, &[], &p, Some(&corr));
         assert!(shifted.info.correction_applied, "correction must apply");
-        let o0 = signed_offsets(&base, &v, &f);
-        let o1 = signed_offsets(&shifted, &v, &f);
+        // Unsigned nearest distance (exactly `r` on the offset surface) is the
+        // correct shift metric; the signed face-normal projection undercounts
+        // near the rounded edges/corners of a cube.
+        let o0 = nearest_distances(&base, &v, &f);
+        let o1 = nearest_distances(&shifted, &v, &f);
         let m0 = o0.iter().sum::<f64>() / o0.len() as f64;
         let m1 = o1.iter().sum::<f64>() / o1.len() as f64;
         assert!(

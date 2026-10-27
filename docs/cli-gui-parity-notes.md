@@ -106,6 +106,14 @@ and a cancellable progress dialog; the GUI's confirmation dialog is the
   when not run, or
   `  ⚠ Not watertight. Dressing ran but its result was rejected by the quality gate (...).\n    Force it with --dressing-force-adopt if you accept the deformation (the shape may deform).`
   when gate-rejected.
+- **Dressing closed-loop adaptive drain:** `SUTURA_DRESSING_ADAPTIVE_DRAIN`
+  (default ON, `0` disables) is a documented env-only knob with no CLI or GUI
+  control. It runs only alongside the constant drain and is safe to keep ON by
+  design (iteration 0 wins ties; a corrected iteration is kept only when it is
+  strictly better without adding holes/non-manifold/parts), so a mesh it cannot
+  improve is byte-identical to the constant-drain output. Because both the CLI
+  and the GUI reach Dressing through the same `dressing_coat` call, the knob
+  applies identically on both sides and needs no parity control.
 - **FAZ14:** added the `--experimental-join-components` GUI checkbox (was
   CLI-only), closing the one small parity gap; documented the remaining
   CLI-only / GUI-only items above.

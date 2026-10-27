@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **Dressing: closed-loop adaptive drain.** When the constant drain is engaged,
+  Dressing can refine it: each iteration measures the healthy signed deviation
+  of the previous coat from the input, splats it into the *same* grid
+  (Gaussian-smoothed, zeroed over the defect influence mask, damped and clamped
+  to two voxels), and re-extracts the level set with `F + delta`. Iteration 0
+  (the constant drain) is always a candidate and wins ties, and a corrected
+  iteration is kept only when it strictly reduces the healthy deviation without
+  adding holes, non-manifold edges or parts, so a coat that cannot improve is
+  byte-identical to the constant drain. It runs only together with the constant
+  drain and can be turned off with `SUTURA_DRESSING_ADAPTIVE_DRAIN=0` (on by
+  default; no CLI or GUI flag). The Rust extractor gains a `CorrectionGrid`
+  (origin/dims/voxel/values) and reports `correction_applied`; a grid mismatch
+  is ignored transparently and the constant drain is kept. The near-surface
+  field is evaluated with the true winding sign in a one-and-a-half-voxel shell
+  when a correction is present, so the correction shifts the isosurface by the
+  full delta on both the Rust and numpy engines.
+
 ## [0.9.8] - 2026-10-31
 
 ### Added
