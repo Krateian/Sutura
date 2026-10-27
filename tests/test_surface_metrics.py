@@ -68,11 +68,31 @@ def test_identity_recall_and_zero_fill():
     m = sm.measure(v, t, v, t, rep)
     assert m['feature_input_sharp_edges'] > 0, m
     assert abs(m['feature_recall'] - 1.0) < 1e-12, m
+    assert abs(m['feature_recall_exterior'] - 1.0) < 1e-12, m
     assert m['healthy_fill_mm3'] == 0.0, m
     assert m['healthy_removed_mm3'] == 0.0, m
     print('identity: recall=%.6f fill=%.6f removed=%.6f edges=%d' % (
         m['feature_recall'], m['healthy_fill_mm3'],
         m['healthy_removed_mm3'], m['feature_input_sharp_edges']))
+
+
+def test_exterior_recall_buried_component():
+    vo, to = _box(10.0, 2)
+    vi, ti = _box(2.0, 2)
+    v = np.vstack([vo, vi])
+    t = np.vstack([to, ti + len(vo)])
+    rep = detect(v, t, with_indices=True)
+    m = sm.measure(v, t, vo, to, rep)
+    assert m['feature_exterior_available'] is True, m
+    assert m['feature_exterior_sharp_edges'] > 0, m
+    assert m['feature_buried_sharp_edges'] > 0, m
+    assert m['feature_recall'] < 1.0, m
+    assert abs(m['feature_recall_exterior'] - 1.0) < 1e-9, m
+    assert m['healthy_buried_face_samples'] > 0, m
+    print('buried component: all=%.4f ext=%.4f buried_edges=%d ignored_faces=%d' % (
+        m['feature_recall'], m['feature_recall_exterior'],
+        m['feature_buried_sharp_edges'],
+        m['healthy_ignored_buried_face_samples']))
 
 
 def test_budget_profiles():
@@ -138,6 +158,7 @@ def test_translated_hole_loses_recall():
 
 if __name__ == '__main__':
     test_identity_recall_and_zero_fill()
+    test_exterior_recall_buried_component()
     test_budget_profiles()
     test_open_box_cap_is_not_counted()
     test_growth_and_shrink()

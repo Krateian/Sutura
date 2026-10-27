@@ -303,10 +303,15 @@ def _num(v):
     return v if isinstance(v, (int, float)) else None
 
 
+def _recall(m):
+    v = _num(m.get('feature_recall_exterior'))
+    return v if v is not None else _num(m.get('feature_recall'))
+
+
 def judge_surface(b, c):
-    """Non-blocking WORSE flag for feature recall / healthy fill."""
+    """Non-blocking WORSE flag for exterior recall / healthy fill."""
     flags, reasons = [], []
-    rb, rc = _num(b.get('feature_recall')), _num(c.get('feature_recall'))
+    rb, rc = _recall(b), _recall(c)
     if rb is not None and rc is not None and rc < rb - SURFACE_RECALL_DROP:
         flags.append('recall')
         reasons.append('recall %.4f -> %.4f' % (rb, rc))
@@ -337,34 +342,38 @@ def _markdown_modes(results, mode, surface_budget='sweep'):
     lines = ['# Quality gate (behaviour changes)', '',
              '- Surface budget: `%s` (`%d` area samples x `%d` offset '
              'layers).' % (surface_budget, area, layers),
+             '- Recall ext = exterior-only (buried input edges removed); '
+             'all = all healthy input sharp edges.',
              '',
              '| Mesh | Holes b/c | NM b/c | SI b/c | 2-sided max b/c | '
-             'Vol err b/c | Parts b/c | Recall b/c | Fill b/c | Removed b/c | '
-             'Surface | Verdict | Changed |',
-             '|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+             'Vol err b/c | Parts b/c | Recall ext b/c | Recall all b/c | '
+             'Fill b/c | Removed b/c | Surface | Verdict | Changed |',
+             '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
     for r in results:
         b = r.get('baseline') or {}
         c = r.get('candidate') or {}
         if not b or not c:
-            lines.append('| %s | - | - | - | - | - | - | - | - | - | - | **%s** | - |' % (
+            lines.append('| %s | - | - | - | - | - | - | - | - | - | - | - | **%s** | - |' % (
                 r['name'], r['verdict']))
             continue
         bp = b['orca_number_of_parts'] if b['orca_number_of_parts'] is not None else b['components']
         cp = c['orca_number_of_parts'] if c['orca_number_of_parts'] is not None else c['components']
-        rb, rc = _num(b.get('feature_recall')), _num(c.get('feature_recall'))
+        re_b, re_c = _recall(b), _recall(c)
+        ra_b, ra_c = _num(b.get('feature_recall')), _num(c.get('feature_recall'))
         fb, fc = _num(b.get('healthy_fill_mm3')), _num(c.get('healthy_fill_mm3'))
         rmb, rmc = _num(b.get('healthy_removed_mm3')), _num(c.get('healthy_removed_mm3'))
-        rec = ('%.3f/%.3f' % (rb, rc)) if rb is not None and rc is not None else '-'
+        rec_ext = ('%.3f/%.3f' % (re_b, re_c)) if re_b is not None and re_c is not None else '-'
+        rec_all = ('%.3f/%.3f' % (ra_b, ra_c)) if ra_b is not None and ra_c is not None else '-'
         fill = ('%.3f/%.3f' % (fb, fc)) if fb is not None and fc is not None else '-'
         rem = ('%.3f/%.3f' % (rmb, rmc)) if rmb is not None and rmc is not None else '-'
         surf = '**WORSE**' if r.get('surface_worse') else '-'
-        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %.6f/%.6f | %s/%s | %s | %s | %s | %s | **%s** | %s |' % (
+        lines.append('| %s | %d/%d | %d/%d | %s/%s | %.4f/%.4f | %.6f/%.6f | %s/%s | %s | %s | %s | %s | %s | **%s** | %s |' % (
             r['name'], b['reload_holes'], c['reload_holes'],
             b['reload_non_manifold_edges'], c['reload_non_manifold_edges'],
             b['si_output'], c['si_output'],
             b['two_sided_max_mm'], c['two_sided_max_mm'],
             b['volume_error_rel'], c['volume_error_rel'], bp, cp,
-            rec, fill, rem, surf,
+            rec_ext, rec_all, fill, rem, surf,
             r['verdict'], 'yes' if r.get('changed') else 'no'))
     surf_bad = [r for r in results if r.get('surface_worse')]
     if surf_bad:

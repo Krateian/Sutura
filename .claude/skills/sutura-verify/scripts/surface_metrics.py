@@ -10,10 +10,18 @@ row.
   still represents with a matching dihedral.  Input edges are "healthy"
   (both incident faces outside the input defect mask); the output is the
   candidate, so every sharp output edge is a match candidate.
+  ``feature_recall_exterior`` is the primary value: it excludes input edges
+  whose incident faces have a vertex buried inside the output solid (a
+  3-ray parity vote plus a surface-distance guard).  ``feature_recall``
+  remains the all-input secondary value for backward comparison.
 * ``healthy_fill`` - volume the output adds outside the input on healthy
   skin, and volume it removes.  A surface-normal lattice (area samples x
   offset layers) is used instead of a full 3-D band grid: the latter cannot
   resolve a 0.1 mm coat on a 100 mm part without 10^7+ cells.
+  Deep-buried input faces (distance to the output surface greater than the
+  sampling band) are ignored for added/removed volume: they are internal
+  shells, not printed skin.  A shallow coat stays, because its distance to
+  the output surface is below the band.
 
 The input defect report and face mask are supplied by the caller, so the
 module does not depend on ``defects.py`` and cannot drift from the repair's
@@ -124,18 +132,22 @@ def _face_normals(v, t):
     return n, ok
 
 
-def _sharp_edges(v, t, face_mask=None, angle_deg=SHARP_ANGLE_DEG):
-    """(edges, dihedral_deg) for manifold edges above the angle threshold."""
+def _sharp_edges(v, t, face_mask=None, angle_deg=SHARP_ANGLE_DEG,
+                 with_faces=False):
+    """(edges, dihedral_deg[, face_pairs]) above the angle threshold."""
     t = np.asarray(t, dtype=np.int64)
     v = np.asarray(v, dtype=np.float64)
+    empty = (np.zeros((0, 2), np.int64), np.zeros(0))
+    if with_faces:
+        empty = empty + (np.zeros((0, 2), np.int64),)
     if len(t) == 0:
-        return np.zeros((0, 2), np.int64), np.zeros(0)
+        return empty
     normals, valid_face = _face_normals(v, t)
     edges, counts, inv = edge_table(t)
     half_face = np.tile(np.arange(len(t)), 3)
     sel = counts[inv] == 2
     if not sel.any():
-        return np.zeros((0, 2), np.int64), np.zeros(0)
+        return empty
     eids = inv[sel]
     faces = half_face[sel]
     order = np.argsort(eids, kind='stable')
@@ -153,15 +165,23 @@ def _sharp_edges(v, t, face_mask=None, angle_deg=SHARP_ANGLE_DEG):
     keep = ok & (dih > float(angle_deg))
     chosen = np.unique(eidx[keep])
     if len(chosen) == 0:
-        return np.zeros((0, 2), np.int64), np.zeros(0)
+        return empty
     # unique(eidx) also restores edge-table order; map dihedral back by edge
     by_edge = np.full(len(edges), np.nan)
     by_edge[eidx[keep]] = dih[keep]
     e = edges[chosen]
+    if with_faces:
+        by_f0 = np.full(len(edges), -1, dtype=np.int64)
+        by_f1 = np.full(len(edges), -1, dtype=np.int64)
+        by_f0[eidx[keep]] = f0[keep]
+        by_f1[eidx[keep]] = f1[keep]
+        faces = np.stack([by_f0[chosen], by_f1[chosen]], axis=1)
+        return e, by_edge[chosen], faces
     return e, by_edge[chosen]
 
 
-def _sample_sharp(v, edges, dih, step, max_per_edge):
+def _sample_sharp(v, edges, dih, step, max_per_edge, edge_flag=None,
+                  return_flag=False):
     """Stratified midpoints per edge, length-weighted and order-free.
 
     ``n`` depends only on this edge's length and the fixed ``step``, never on
@@ -170,11 +190,17 @@ def _sample_sharp(v, edges, dih, step, max_per_edge):
     """
     v = np.asarray(v, dtype=np.float64)
     if len(edges) == 0:
+        if return_flag:
+            return np.zeros((0, 3)), np.zeros(0), np.zeros(0), np.zeros(0, bool)
         return np.zeros((0, 3)), np.zeros(0), np.zeros(0)
     lengths = np.linalg.norm(v[edges[:, 1]] - v[edges[:, 0]], axis=1)
     keep = lengths > 0.0
     if not keep.any():
+        if return_flag:
+            return np.zeros((0, 3)), np.zeros(0), np.zeros(0), np.zeros(0, bool)
         return np.zeros((0, 3)), np.zeros(0), np.zeros(0)
+    if edge_flag is not None:
+        edge_flag = np.asarray(edge_flag, dtype=bool)[keep]
     edges = edges[keep]
     dih = dih[keep]
     lengths = lengths[keep]
@@ -189,6 +215,9 @@ def _sample_sharp(v, edges, dih, step, max_per_edge):
     p = (v[edges[idx, 0]] * (1.0 - frac)[:, None]
          + v[edges[idx, 1]] * frac[:, None])
     w = lengths[idx] / n[idx]
+    if return_flag:
+        flag = edge_flag[idx] if edge_flag is not None else None
+        return p, dih[idx], w, flag
     return p, dih[idx], w
 
 
@@ -244,7 +273,7 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
                    max_per_edge=RECALL_SAMPLES_PER_EDGE,
                    angle_deg=SHARP_ANGLE_DEG,
                    match_deg=DIHEDRAL_MATCH_DEG,
-                   strict_deg=STRICT_DIHEDRAL_DEG):
+                   strict_deg=STRICT_DIHEDRAL_DEG, exterior=None):
     """Fraction of healthy input sharp-edge length the output represents.
 
     A sample is kept when the nearest output sharp-edge sample is within
@@ -256,10 +285,21 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
     vo = np.asarray(vo, dtype=np.float64)
     to = np.asarray(to, dtype=np.int64)
     tol = float(tol if tol is not None else default_tol(vi))
-    in_e, in_d = _sharp_edges(vi, ti, face_mask=defect_face_mask,
-                              angle_deg=angle_deg)
+    if exterior is None:
+        exterior = _inside_output(vo, to, vi)
+    inside_v, out_dist, ext_avail, ext_note = exterior
+    in_e, in_d, in_faces = _sharp_edges(vi, ti, face_mask=defect_face_mask,
+                                        angle_deg=angle_deg, with_faces=True)
     out_e, out_d = _sharp_edges(vo, to, face_mask=None, angle_deg=angle_deg)
-    q, qd, qw = _sample_sharp(vi, in_e, in_d, tol, max_per_edge)
+    ext_mask = None
+    if ext_avail and len(in_e):
+        f0 = in_faces[:, 0]
+        f1 = in_faces[:, 1]
+        ext_mask = ~((inside_v[ti[f0]].any(axis=1))
+                     | (inside_v[ti[f1]].any(axis=1)))
+    q, qd, qw, ext_sample = _sample_sharp(
+        vi, in_e, in_d, tol, max_per_edge, edge_flag=ext_mask,
+        return_flag=True)
     r, rd, _rw = _sample_sharp(vo, out_e, out_d, tol, max_per_edge)
 
     out = {
@@ -277,10 +317,36 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
         'feature_recall_10deg': 1.0 if len(q) == 0 else 0.0,
         'feature_dihedral_delta_p50_deg': 0.0,
         'feature_dihedral_delta_p95_deg': 0.0,
+        'feature_exterior_available': bool(ext_avail),
+        'feature_exterior_note': ext_note,
+        'feature_exterior_sharp_edges': (
+            int(ext_mask.sum()) if ext_mask is not None else None),
+        'feature_buried_sharp_edges': (
+            int((~ext_mask).sum()) if ext_mask is not None else None),
+        'feature_exterior_total_length_mm': 0.0,
+        'feature_exterior_kept_length_mm': 0.0,
+        'feature_buried_length_mm': 0.0,
+        'feature_buried_fraction': 0.0,
+        'feature_recall_exterior': (
+            1.0 if (ext_avail and (ext_mask is None or not ext_mask.any()))
+            else (None if not ext_avail else 0.0)),
+        'feature_recall_exterior_tol_half': (
+            1.0 if (ext_avail and (ext_mask is None or not ext_mask.any()))
+            else (None if not ext_avail else 0.0)),
+        'feature_recall_exterior_10deg': (
+            1.0 if (ext_avail and (ext_mask is None or not ext_mask.any()))
+            else (None if not ext_avail else 0.0)),
+        'feature_exterior_dihedral_delta_p50_deg': 0.0,
+        'feature_exterior_dihedral_delta_p95_deg': 0.0,
     }
     if len(q) == 0:
         return out
     if len(r) == 0:
+        if ext_sample is not None:
+            out['feature_recall_exterior'] = (
+                0.0 if ext_sample.any() else 1.0)
+            out['feature_recall_exterior_tol_half'] = out['feature_recall_exterior']
+            out['feature_recall_exterior_10deg'] = out['feature_recall_exterior']
         return out
 
     dist, idx = _nearest_within(q, r, tol)
@@ -301,6 +367,28 @@ def feature_recall(vi, ti, vo, to, defect_face_mask=None, tol=None,
             float(np.percentile(matched, 50)), 3)
         out['feature_dihedral_delta_p95_deg'] = round(
             float(np.percentile(matched, 95)), 3)
+    if ext_sample is not None:
+        ext_total = float(qw[ext_sample].sum())
+        out['feature_exterior_total_length_mm'] = round(ext_total, 4)
+        out['feature_exterior_kept_length_mm'] = round(
+            float(qw[keep & ext_sample].sum()), 4)
+        out['feature_buried_length_mm'] = round(
+            float(qw[~ext_sample].sum()), 4)
+        out['feature_buried_fraction'] = float(
+            qw[~ext_sample].sum() / total)
+        if ext_total > 0.0:
+            out['feature_recall_exterior'] = float(
+                qw[keep & ext_sample].sum() / ext_total)
+            out['feature_recall_exterior_tol_half'] = float(
+                qw[keep_half & ext_sample].sum() / ext_total)
+            out['feature_recall_exterior_10deg'] = float(
+                qw[keep_strict & ext_sample].sum() / ext_total)
+            matched_ext = delta[dist_ok & ext_sample]
+            if len(matched_ext):
+                out['feature_exterior_dihedral_delta_p50_deg'] = round(
+                    float(np.percentile(matched_ext, 50)), 3)
+                out['feature_exterior_dihedral_delta_p95_deg'] = round(
+                    float(np.percentile(matched_ext, 95)), 3)
     return out
 
 
@@ -417,12 +505,43 @@ def _is_closed(t):
     return bool(len(counts) and np.all(counts == 2))
 
 
+def _inside_output(vo, to, vi, n_dirs=3):
+    """Per input vertex: buried inside the output solid?
+
+    3-ray parity vote (``raystab_points``), plus a small surface-distance
+    margin so vertices on the shared exterior are not classified as buried.
+    Returns ``(inside, output_distance, available, note)``.
+    """
+    n = len(vi)
+    inside = np.zeros(n, dtype=bool)
+    dist = np.zeros(n, dtype=np.float64)
+    if sutura_geom is None or n == 0:
+        return inside, dist, False, 'sutura_geom unavailable'
+    if len(to) == 0:
+        return inside, dist, False, 'empty output'
+    if not _is_closed(to):
+        return inside, dist, False, 'output not watertight'
+    try:
+        res = sutura_geom.raystab_points(vo, to, vi, n_dirs=3, parity=True)
+        votes = np.asarray(res[1], dtype=np.int64)
+    except Exception as e:  # noqa: BLE001
+        return inside, dist, False, 'raystab failed: %s' % e
+    try:
+        _closest, dd, _faces = sutura_geom.closest_points(vo, to, vi)
+        dist = np.asarray(dd, dtype=np.float64)
+    except Exception as e:  # noqa: BLE001
+        return inside, dist, False, 'closest_points failed: %s' % e
+    margin = max(1e-6, 1e-4 * _bbox_diag(vo))
+    inside = (votes >= 2) & (dist > margin)
+    return inside, dist, True, None
+
+
 def healthy_fill(vi, ti, vo, to, defect_report=None,
                  defect_face_mask=None, tol=None, k_tol=K_TOL,
                  budget=DEFAULT_SURFACE_BUDGET,
                  area_samples=None, max_area_samples=MAX_AREA_SAMPLES,
                  layers=None, band_factor=BAND_FACTOR,
-                 band_fraction=BAND_FRACTION):
+                 band_fraction=BAND_FRACTION, exterior=None):
     """Added / removed volume on healthy skin.
 
     A surface-normal lattice is evaluated in a band around the input.  A
@@ -435,6 +554,9 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
     ti = np.asarray(ti, dtype=np.int64)
     vo = np.asarray(vo, dtype=np.float64)
     to = np.asarray(to, dtype=np.int64)
+    if exterior is None:
+        exterior = _inside_output(vo, to, vi)
+    inside_v, out_dist_v, ext_avail, ext_note = exterior
     area_samples, layers, budget_label = resolve_budget(
         budget, area_samples, layers)
     tol = float(tol if tol is not None else default_tol(vi))
@@ -459,6 +581,11 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
         'healthy_input_volume_mm3': None,
         'healthy_volume_basis': 'unavailable',
         'healthy_defect_influence_mm': 0.0,
+        'healthy_exterior_available': bool(ext_avail),
+        'healthy_exterior_note': ext_note,
+        'healthy_buried_face_samples': 0,
+        'healthy_buried_face_fraction': 0.0,
+        'healthy_ignored_buried_face_samples': 0,
         'healthy_elapsed_ms': 0.0,
         'surface_metrics_note': None,
     }
@@ -482,7 +609,19 @@ def healthy_fill(vi, ti, vo, to, defect_report=None,
     if len(base) == 0:
         out['surface_metrics_note'] = 'no area samples'
         return out
-    healthy = ~mask[face_idx]
+    deep_buried_face = np.zeros(len(ti), dtype=bool)
+    buried_face = np.zeros(len(ti), dtype=bool)
+    if ext_avail:
+        inside_face = np.asarray(inside_v, dtype=bool)[ti]
+        buried_face = np.all(inside_face, axis=1)
+        face_out_dist = np.asarray(out_dist_v, dtype=np.float64)[ti].min(axis=1)
+        deep_buried_face = buried_face & (face_out_dist > band)
+    buried = buried_face[face_idx]
+    deep = deep_buried_face[face_idx]
+    out['healthy_buried_face_samples'] = int(buried.sum())
+    out['healthy_buried_face_fraction'] = float(buried.mean())
+    out['healthy_ignored_buried_face_samples'] = int(deep.sum())
+    healthy = ~mask[face_idx] & ~deep
     if boxes:
         healthy &= ~_in_boxes(base, boxes)
     if len(rim_pts):
@@ -549,10 +688,18 @@ def measure(vi, ti, vo, to, defect_report=None, *, tol=None,
             area_samples=None, layers=None):
     """Both metrics as one flat dict, ready to merge into a verify result."""
     mask = defect_face_mask(ti, defect_report)
+    exterior = _inside_output(np.asarray(vo), np.asarray(to),
+                              np.asarray(vi))
     out = feature_recall(vi, ti, vo, to, defect_face_mask=mask, tol=tol,
-                         max_per_edge=recall_samples_per_edge)
+                         max_per_edge=recall_samples_per_edge,
+                         exterior=exterior)
     out.update(healthy_fill(vi, ti, vo, to, defect_report=defect_report,
                             defect_face_mask=mask, tol=tol, budget=budget,
-                            area_samples=area_samples, layers=layers))
+                            area_samples=area_samples, layers=layers,
+                            exterior=exterior))
+    out['surface_exterior_available'] = bool(exterior[2])
+    out['surface_exterior_note'] = exterior[3]
+    out['surface_exterior_buried_vertices'] = int(
+        np.asarray(exterior[0], dtype=bool).sum())
     out['surface_budget'] = out.get('healthy_budget', 'custom')
     return out
