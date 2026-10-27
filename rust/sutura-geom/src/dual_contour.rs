@@ -64,6 +64,11 @@ const FACE_EDGES: [[usize; 4]; 6] = [
     [2, 7, 3, 6],
 ];
 
+/// Optional exact Hermite sample `(point, outward normal)` for the grid edge
+/// between nodes `ia < ib` (linear node indices, `i`-fastest).  `None` keeps
+/// the field-gradient sample.
+pub type HermiteHook<'a> = &'a (dyn Fn(usize, usize) -> Option<([f64; 3], [f64; 3])> + Sync);
+
 pub struct DcMesh {
     pub verts: Vec<[f64; 3]>,
     pub tris: Vec<[u32; 3]>,
@@ -93,7 +98,35 @@ pub fn dual_contour_mode(
     voxel: f64,
     mass_point: bool,
 ) -> DcMesh {
-    let dc = dual_contour_core(f, dims, origin, voxel, mass_point);
+    dual_contour_finish(f, dims, origin, voxel, dual_contour_core(f, dims, origin, voxel, mass_point, None))
+}
+
+/// Dual contouring with exact Hermite samples supplied by `hook` and an
+/// SVD-truncated QEF solve (`tau = 0.05`, toward the mass point).  Topology is
+/// identical to `dual_contour` on the same field; only vertex positions differ.
+pub fn dual_contour_hermite(
+    f: &[f32],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+    hook: HermiteHook,
+) -> DcMesh {
+    dual_contour_finish(
+        f,
+        dims,
+        origin,
+        voxel,
+        dual_contour_core(f, dims, origin, voxel, false, Some(hook)),
+    )
+}
+
+fn dual_contour_finish(
+    f: &[f32],
+    dims: [usize; 3],
+    origin: [f64; 3],
+    voxel: f64,
+    dc: (Vec<[f64; 3]>, Vec<[u32; 3]>),
+) -> DcMesh {
     if mesh_is_manifold(&dc.0, &dc.1) {
         return DcMesh {
             verts: dc.0,
@@ -140,6 +173,7 @@ fn dual_contour_core(
     origin: [f64; 3],
     voxel: f64,
     mass_point: bool,
+    hook: Option<HermiteHook>,
 ) -> (Vec<[f64; 3]>, Vec<[u32; 3]>) {
     let (nx, ny, nz) = (dims[0], dims[1], dims[2]);
     if nx < 2 || ny < 2 || nz < 2 {
@@ -265,7 +299,20 @@ fn dual_contour_core(
                         pa[1] + t * (pb[1] - pa[1]),
                         pa[2] + t * (pb[2] - pa[2]),
                     ];
-                    let n = gradient_normal(f, dims, origin, voxel, p, pb, pa, vb - va);
+                    let mut p = p;
+                    let mut n = gradient_normal(f, dims, origin, voxel, p, pb, pa, vb - va);
+                    if let Some(h) = hook {
+                        let node = |c: usize| {
+                            (ci + CORNER[c][0])
+                                + nx * ((cj + CORNER[c][1]) + ny * (ck + CORNER[c][2]))
+                        };
+                        let (na, nb) = (node(a), node(b));
+                        let (lo, hi) = if na < nb { (na, nb) } else { (nb, na) };
+                        if let Some((hp, hn)) = h(lo, hi) {
+                            p = hp;
+                            n = hn;
+                        }
+                    }
 
                     let entry = &mut comps[cid2 as usize];
                     for i in 0..3 {
@@ -291,8 +338,15 @@ fn dual_contour_core(
                         psum[1] / *count as f64,
                         psum[2] / *count as f64,
                     ];
+                    let cell_max = [
+                        cell_min[0] + voxel,
+                        cell_min[1] + voxel,
+                        cell_min[2] + voxel,
+                    ];
                     let mut x = if mass_point {
                         mass
+                    } else if hook.is_some() {
+                        crate::lava::solve_qef_svd(a, b, mass, cell_min, cell_max, 0.05)
                     } else {
                         solve_qef(a, b, mass, 1e-4)
                     };

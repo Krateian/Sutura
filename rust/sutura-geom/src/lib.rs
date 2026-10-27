@@ -26,6 +26,7 @@ pub mod diagnosis;
 pub mod dressing;
 pub mod dual_contour;
 pub mod flap;
+pub mod hermite;
 pub mod hole;
 pub mod interval;
 pub mod lava;
@@ -859,7 +860,7 @@ fn sdf_grid<'py>(
 /// default; when both raystab and antipodal are enabled, antipodal runs last
 /// and wins.  `SUTURA_ANTIPODAL=0` opts out in the environment.
 #[pyfunction]
-#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None))]
+#[pyo3(signature = (verts, tris, r, voxel=None, r#box=None, fill_cavities=false, surface=None, raystab=false, raystab_dirs=None, raystab_seed=0, raystab_parity=false, antipodal=None, hermite=None))]
 fn morph_close<'py>(
     py: Python<'py>,
     verts: PyArrayLike2<'py, f64, AllowTypeChange>,
@@ -874,6 +875,7 @@ fn morph_close<'py>(
     raystab_seed: u64,
     raystab_parity: bool,
     antipodal: Option<bool>,
+    hermite: Option<bool>,
 ) -> PyResult<(
     Bound<'py, PyArray2<f64>>,
     Bound<'py, PyArray2<i32>>,
@@ -977,11 +979,17 @@ fn morph_close<'py>(
         surface.as_deref(),
         Some("tets") | Some("tet") | Some("marching_tets")
     );
-    let dc = if use_tets {
+    let mut dc = if use_tets {
         dual_contour::marching_tets_mesh(&field, dims, origin, voxel)
     } else {
         dual_contour::dual_contour(&field, dims, origin, voxel)
     };
+    let mut hermite_info: Option<hermite::HermiteReport> = None;
+    if !use_tets && hermite.unwrap_or_else(hermite::enabled_by_default) {
+        let (better, rep) = hermite::refine_vertices(bvh, &field, dims, origin, voxel, dc);
+        dc = better;
+        hermite_info = Some(rep);
+    }
 
     let out_verts: Vec<Vec<f64>> = dc.verts.iter().map(|p| p.to_vec()).collect();
     let out_tris: Vec<Vec<i32>> = dc
@@ -1005,6 +1013,9 @@ fn morph_close<'py>(
     info.set_item("manifold", dc.manifold)?;
     info.set_item("fill_cavities", fill_cavities)?;
     info.set_item("surface", if use_tets { "tets" } else { "dual" })?;
+    if let Some(h) = hermite_info {
+        info.set_item("hermite", hermite::report_dict(py, &h)?)?;
+    }
     if let Some(st) = stab_stats {
         info.set_item("raystab", raystab_info(py, st.dirs, raystab_seed, st.parity, &st)?)?;
     }
