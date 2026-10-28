@@ -7,7 +7,7 @@
 # oracle/builder, so it is installed for development and CI test runs only.
 # The runtime guard tests/test_no_trimesh.py enforces that sutura/ imports
 # no trimesh.
-trimesh==5.1.1
+trimesh==5.2.0
 
 # PyMeshLab is NOT a Sutura runtime dependency either: Stage 1 topology, hole
 # closing, self-intersection classification and decimation now run natively in
